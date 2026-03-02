@@ -8,7 +8,6 @@ import { homedir } from 'os';
 import { existsSync } from 'fs';
 import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, PTY_CONSTANTS, type WorkingStatus } from '../../constants.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
-import { OrchestratorRestartService } from '../orchestrator/orchestrator-restart.service.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
