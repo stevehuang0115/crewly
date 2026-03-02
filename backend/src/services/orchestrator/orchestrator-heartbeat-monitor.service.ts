@@ -44,6 +44,8 @@ export interface HeartbeatMonitorState {
 	autoRestartCount: number;
 	/** Timestamp when the service started monitoring */
 	startedAt: number | null;
+	/** Timestamp when the orchestrator was first seen in_progress (null if idle) */
+	inProgressSince: number | null;
 }
 
 /**
@@ -82,6 +84,11 @@ export class OrchestratorHeartbeatMonitorService {
 
 	/** When monitoring started */
 	private startedAt: number | null = null;
+
+	/** When the orchestrator was first seen with recent activity but no idle period.
+	 *  Used to detect stuck in_progress state where spinner animation prevents
+	 *  idle detection from ever exceeding the heartbeat threshold. */
+	private inProgressSince: number | null = null;
 
 	/** Session backend for writing to orchestrator PTY */
 	private sessionBackend: ISessionBackend | null = null;
@@ -137,6 +144,7 @@ export class OrchestratorHeartbeatMonitorService {
 		this.startedAt = Date.now();
 		this.heartbeatRequestSentAt = null;
 		this.heartbeatRequestCount = 0;
+		this.inProgressSince = null;
 
 		this.logger.info('Starting orchestrator heartbeat monitor', {
 			checkIntervalMs: ORCHESTRATOR_HEARTBEAT_CONSTANTS.CHECK_INTERVAL_MS,
@@ -164,6 +172,7 @@ export class OrchestratorHeartbeatMonitorService {
 			this.logger.info('Orchestrator heartbeat monitor stopped');
 		}
 		this.heartbeatRequestSentAt = null;
+		this.inProgressSince = null;
 	}
 
 	/**
@@ -187,6 +196,7 @@ export class OrchestratorHeartbeatMonitorService {
 			heartbeatRequestCount: this.heartbeatRequestCount,
 			autoRestartCount: this.autoRestartCount,
 			startedAt: this.startedAt,
+			inProgressSince: this.inProgressSince,
 		};
 	}
 
@@ -242,8 +252,30 @@ export class OrchestratorHeartbeatMonitorService {
 				this.logger.info('Orchestrator responded to heartbeat request, clearing pending state');
 				this.heartbeatRequestSentAt = null;
 			}
+
+			// Track continuous in_progress duration. Spinner animation counts as
+			// "activity" so idleTime stays low, but the orchestrator may be stuck
+			// in a processing loop without making real progress.
+			if (this.inProgressSince === null) {
+				this.inProgressSince = Date.now();
+			} else if (
+				ORCHESTRATOR_HEARTBEAT_CONSTANTS.IN_PROGRESS_TIMEOUT_MS &&
+				Date.now() - this.inProgressSince > ORCHESTRATOR_HEARTBEAT_CONSTANTS.IN_PROGRESS_TIMEOUT_MS
+			) {
+				const stuckDurationMs = Date.now() - this.inProgressSince;
+				this.logger.warn('Orchestrator stuck in_progress for extended period, sending heartbeat', {
+					stuckDurationMs,
+					thresholdMs: ORCHESTRATOR_HEARTBEAT_CONSTANTS.IN_PROGRESS_TIMEOUT_MS,
+				});
+				this.inProgressSince = null;
+				await this.sendHeartbeatRequest();
+			}
+
 			return;
 		}
+
+		// Orchestrator is idle — reset in_progress tracker
+		this.inProgressSince = null;
 
 		// If we already sent a heartbeat request, check if it's time to restart
 		if (this.heartbeatRequestSentAt !== null) {
@@ -266,9 +298,6 @@ export class OrchestratorHeartbeatMonitorService {
 		// work, skip synthetic heartbeat pings to avoid idle token burn.
 		const pendingWork = this.hasPendingWork ? this.hasPendingWork() : true;
 		if (!pendingWork) {
-			if (this.heartbeatRequestSentAt !== null) {
-				this.heartbeatRequestSentAt = null;
-			}
 			this.logger.debug('Skipping heartbeat request: no pending orchestrator work');
 			return;
 		}

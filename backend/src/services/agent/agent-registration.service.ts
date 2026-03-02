@@ -1909,6 +1909,19 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				`http://localhost:${WEB_CONSTANTS.PORTS.BACKEND}`
 			);
 
+			// Pass Gemini API key to gemini-cli agents so they authenticate
+			// with the paid API key instead of the free-tier Google login.
+			if (runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+				const geminiApiKey = process.env[ENV_CONSTANTS.GEMINI_API_KEY];
+				if (geminiApiKey) {
+					await sessionHelper.setEnvironmentVariable(
+						sessionName,
+						ENV_CONSTANTS.GEMINI_API_KEY,
+						geminiApiKey
+					);
+				}
+			}
+
 			this.logger.info('Agent session created and environment variables set, initializing with registration', {
 				sessionName,
 				role,
@@ -2150,9 +2163,17 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			const delivered = await this.sendMessageWithRetry(sessionName, message, 3, runtimeType);
 
 			if (!delivered) {
+				// Check if the agent is actively processing (busy) — the queue
+				// processor can re-queue instead of permanently failing the message.
+				const busyOutput = sessionHelper.capturePane(sessionName).slice(-2000);
+				const isBusy = TERMINAL_PATTERNS.BUSY_STATUS_BAR.test(busyOutput) ||
+					TERMINAL_PATTERNS.PROCESSING_WITH_TEXT.test(busyOutput);
+
 				return {
 					success: false,
-					error: 'Failed to deliver message after multiple attempts',
+					error: isBusy
+						? '[AGENT_BUSY] Failed to deliver message — agent is actively processing'
+						: 'Failed to deliver message after multiple attempts',
 				};
 			}
 
@@ -3336,6 +3357,22 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 	private async scanForStuckMessages(): Promise<void> {
 		const sessionHelper = this._sessionHelper;
 		if (!sessionHelper) return;
+
+		// --- Part 0: Rewind mode detection (all sessions) ---
+		// If Claude Code is stuck in Rewind mode (triggered by ESC during
+		// processing), send 'q' to exit before any other recovery attempts.
+		for (const sessionName of sessionHelper.listSessions()) {
+			try {
+				const output = sessionHelper.capturePane(sessionName);
+				if (TERMINAL_PATTERNS.REWIND_MODE.test(output)) {
+					this.logger.warn('Rewind mode detected, sending q to exit', { sessionName });
+					sessionHelper.writeRaw(sessionName, 'q');
+					await delay(500);
+				}
+			} catch {
+				// Non-fatal: session may have been destroyed
+			}
+		}
 
 		// --- Part 1: Existing TUI prompt-line scanning (unchanged) ---
 		for (const [sessionName] of this.tuiSessionRegistry) {

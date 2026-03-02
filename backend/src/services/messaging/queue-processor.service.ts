@@ -215,11 +215,15 @@ export class QueueProcessorService extends EventEmitter {
       const runtimeType: RuntimeType = storedRuntimeType || RUNTIME_TYPES.CLAUDE_CODE;
 
       // Determine if this is a user message (Slack/web chat) vs system event.
-      // User messages get shorter timeouts and force-delivery to reduce delay.
-      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT;
+      // User messages and system events get shorter timeouts and force-delivery
+      // to reduce delay. System events are fire-and-forget so force-delivery is
+      // lower risk — prevents the 5×120s=10min retry loop that blocks notifications.
+      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT || message.source === MESSAGE_SOURCES.WHATSAPP;
       const readyTimeout = isUserMessage
         ? EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_TIMEOUT
-        : EVENT_DELIVERY_CONSTANTS.AGENT_READY_TIMEOUT;
+        : isSystemEvent
+          ? EVENT_DELIVERY_CONSTANTS.SYSTEM_EVENT_TIMEOUT
+          : EVENT_DELIVERY_CONSTANTS.AGENT_READY_TIMEOUT;
 
       // Wait for orchestrator to be at prompt before attempting delivery.
       // After processing a previous message the orchestrator may still be busy
@@ -240,18 +244,26 @@ export class QueueProcessorService extends EventEmitter {
       }
 
       if (!isReady) {
-        // For user messages: force-deliver immediately instead of re-queuing
-        // to avoid the 120s × 5 retry loop that causes ~6 min delays
-        if (isUserMessage && EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_FORCE_DELIVER) {
-          this.logger.warn('Agent not ready but force-delivering user message to reduce delay', {
+        // For user messages and system events: force-deliver immediately instead
+        // of re-queuing to avoid the retry loop that causes multi-minute delays.
+        // System events are fire-and-forget (no response expected), so force-delivery
+        // is lower risk. The orchestrator will process input when it returns to prompt.
+        const shouldForceDeliver =
+          (isUserMessage && EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_FORCE_DELIVER) ||
+          (isSystemEvent && EVENT_DELIVERY_CONSTANTS.SYSTEM_EVENT_FORCE_DELIVER);
+        if (shouldForceDeliver) {
+          this.logger.warn('Agent not ready but force-delivering message to reduce delay', {
             messageId: message.id,
             source: message.source,
             timeoutMs: readyTimeout,
+            isUserMessage,
+            isSystemEvent,
           });
           // Fall through to delivery below — the message will be sent even though
           // the orchestrator may not be at prompt. This is acceptable because:
-          // 1. The user expects a timely response
-          // 2. The orchestrator will process the input when it returns to prompt
+          // 1. The user expects a timely response (user messages)
+          // 2. System events are fire-and-forget notifications
+          // 3. The orchestrator will process the input when it returns to prompt
         } else {
           const currentRetries = message.retryCount || 0;
           const maxRetries = MESSAGE_QUEUE_CONSTANTS.MAX_REQUEUE_RETRIES;
@@ -342,6 +354,31 @@ export class QueueProcessorService extends EventEmitter {
 
       if (!deliveryResult.success) {
         const errorMsg = deliveryResult.error || 'Failed to deliver message to orchestrator';
+
+        // If agent is busy (actively processing), re-queue instead of permanently failing.
+        // This allows the message to be retried once the agent returns to prompt.
+        const isAgentBusy = errorMsg.includes('[AGENT_BUSY]');
+        const currentRetries = message.retryCount || 0;
+
+        if (isAgentBusy && currentRetries < MESSAGE_QUEUE_CONSTANTS.MAX_REQUEUE_RETRIES) {
+          this.logger.info('Agent busy, re-queuing message for later delivery', {
+            messageId: message.id,
+            retryCount: currentRetries + 1,
+            maxRetries: MESSAGE_QUEUE_CONSTANTS.MAX_REQUEUE_RETRIES,
+          });
+
+          this.queueService.requeue(message);
+          // Also re-queue any batched system event messages
+          for (const batchedMsg of batchedMessages) {
+            this.queueService.requeue(batchedMsg);
+          }
+
+          this.scheduleProcessNext(EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL);
+          this.nextAlreadyScheduled = true;
+          clearInterval(keepaliveInterval);
+          return;
+        }
+
         this.logger.warn('Message delivery failed', {
           messageId: message.id,
           error: errorMsg,
@@ -404,11 +441,17 @@ export class QueueProcessorService extends EventEmitter {
       // Wait for orchestrator to finish all post-response work before next message.
       // The orchestrator may continue managing agents or running commands after
       // emitting its chat response.
-      await this.agentRegistrationService.waitForAgentReady(
-        ORCHESTRATOR_SESSION_NAME,
-        EVENT_DELIVERY_CONSTANTS.AGENT_READY_TIMEOUT,
-        runtimeType
-      );
+      // Skip for system events: they're fire-and-forget with no response expected.
+      // The next processNext() iteration already calls waitForAgentReady before
+      // delivery, so we don't need to block here. Skipping this avoids the 120s
+      // wait that prevents user [CHAT] messages from being processed promptly.
+      if (!isSystemEvent) {
+        await this.agentRegistrationService.waitForAgentReady(
+          ORCHESTRATOR_SESSION_NAME,
+          EVENT_DELIVERY_CONSTANTS.AGENT_READY_TIMEOUT,
+          runtimeType
+        );
+      }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.logger.error('Error processing message', {

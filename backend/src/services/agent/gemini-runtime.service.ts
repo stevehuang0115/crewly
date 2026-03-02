@@ -288,7 +288,7 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 	}
 
 	/**
-	 * Ensure the project root `.env` file contains GOOGLE_GENAI_API_KEY.
+	 * Ensure the project root `.env` file contains GEMINI_API_KEY.
 	 * Gemini CLI reads this key from `.env` in the working directory.
 	 * If the key exists in the process environment but not in `.env`, append it.
 	 * Also ensures `.gitignore` includes `.env` to prevent accidental commits.
@@ -296,14 +296,14 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 	 * @param projectPath - Project directory where `.env` will be created/updated
 	 */
 	private async ensureGeminiEnvFile(projectPath: string): Promise<void> {
-		const apiKey = process.env.GOOGLE_GENAI_API_KEY;
+		const apiKey = process.env.GEMINI_API_KEY;
 		if (!apiKey) {
-			this.logger.debug('GOOGLE_GENAI_API_KEY not found in process environment, skipping .env setup');
+			this.logger.debug('GEMINI_API_KEY not found in process environment, skipping .env setup');
 			return;
 		}
 
 		const envPath = path.join(projectPath, '.env');
-		const envLine = `GOOGLE_GENAI_API_KEY="${apiKey}"`;
+		const envLine = `GEMINI_API_KEY="${apiKey}"`;
 
 		try {
 			// Check if .env already contains the key
@@ -315,8 +315,8 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 			}
 
 			if (existingContent !== null) {
-				if (existingContent.includes('GOOGLE_GENAI_API_KEY=')) {
-					this.logger.debug('GOOGLE_GENAI_API_KEY already present in .env', { projectPath });
+				if (existingContent.includes('GEMINI_API_KEY=')) {
+					this.logger.debug('GEMINI_API_KEY already present in .env', { projectPath });
 					return;
 				}
 				// Append to existing .env
@@ -326,9 +326,9 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 				// Create new .env
 				await fsPromises.writeFile(envPath, `${envLine}\n`);
 			}
-			this.logger.info('Added GOOGLE_GENAI_API_KEY to .env', { projectPath });
+			this.logger.info('Added GEMINI_API_KEY to .env', { projectPath });
 		} catch (error) {
-			this.logger.warn('Failed to write GOOGLE_GENAI_API_KEY to .env (non-fatal)', {
+			this.logger.warn('Failed to write GEMINI_API_KEY to .env (non-fatal)', {
 				projectPath,
 				error: error instanceof Error ? error.message : String(error),
 			});

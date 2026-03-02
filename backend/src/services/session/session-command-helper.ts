@@ -202,7 +202,24 @@ export class SessionCommandHelper {
 	 */
 	async dismissInteractivePromptIfNeeded(sessionName: string): Promise<boolean> {
 		const output = this.capturePane(sessionName);
-		const isPlanMode = PLAN_MODE_DISMISS_PATTERNS.some(pattern => pattern.test(output));
+
+		// Guard: do NOT send ESC if the agent is actively processing.
+		// ESC during processing triggers Claude Code's Rewind mode, which
+		// permanently blocks input. Two ESCs = unrecoverable Rewind UI takeover.
+		const tailOutput = output.slice(-2000);
+		const isBusy = TERMINAL_PATTERNS.BUSY_STATUS_BAR.test(tailOutput) ||
+			TERMINAL_PATTERNS.PROCESSING_WITH_TEXT.test(tailOutput);
+		if (isBusy) {
+			this.logger.debug('Skipping plan mode dismissal — agent is busy', {
+				sessionName,
+			});
+			return false;
+		}
+
+		// Restrict plan mode detection to the last 500 chars to avoid
+		// false-positives from historical output further up the buffer.
+		const recentOutput = output.slice(-500);
+		const isPlanMode = PLAN_MODE_DISMISS_PATTERNS.some(pattern => pattern.test(recentOutput));
 
 		if (isPlanMode) {
 			this.logger.warn('Plan mode detected in session, sending Escape to dismiss', {

@@ -16,8 +16,6 @@ import type { MessageQueueService } from '../messaging/message-queue.service.js'
 import type { SlackThreadStoreService } from '../slack/slack-thread-store.service.js';
 import type {
   AgentEvent,
-  EventType,
-  EventFilter,
   EventSubscription,
   CreateSubscriptionInput,
 } from '../../types/event-bus.types.js';
@@ -43,6 +41,18 @@ import { isValidCreateSubscriptionInput } from '../../types/event-bus.types.js';
  * eventBus.publish(agentIdleEvent);
  * ```
  */
+/**
+ * Buffered notification entry pending delivery after debounce window.
+ */
+interface BufferedNotification {
+  /** The formatted notification message */
+  message: string;
+  /** The original event that triggered this notification */
+  event: AgentEvent;
+  /** Timestamp when this entry was last updated (for dedup overwrites) */
+  updatedAt: number;
+}
+
 export class EventBusService extends EventEmitter {
   private logger: ComponentLogger;
   private subscriptions: Map<string, EventSubscription> = new Map();
@@ -50,6 +60,24 @@ export class EventBusService extends EventEmitter {
   private slackThreadStore: SlackThreadStoreService | null = null;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private deliveryCount = 0;
+
+  /**
+   * Buffered notifications pending delivery after debounce window.
+   * Key: `${subscriberSession}:${event.sessionName}` for per-agent dedup.
+   * When the same agent fires multiple events within the debounce window,
+   * only the latest event is kept (deduplication by overwrite).
+   */
+  private pendingNotifications: Map<string, BufferedNotification> = new Map();
+
+  /** Debounce timer for batching event notifications */
+  private batchTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Dedup guard for publish(): ignores duplicate events for the same
+   * (type, sessionName) within EVENT_DEBOUNCE_WINDOW_MS (5s).
+   * Key: `${eventType}:${sessionName}`, value: timestamp (ms).
+   */
+  private recentPublishMap: Map<string, number> = new Map();
 
   constructor() {
     super();
@@ -156,6 +184,31 @@ export class EventBusService extends EventEmitter {
    * @param event - The agent lifecycle event to publish
    */
   publish(event: AgentEvent): void {
+    // Dedup: ignore duplicate events for the same (type, sessionName) within
+    // the debounce window. This prevents redundant notifications when both
+    // the file watcher and ActivityMonitor detect the same status transition.
+    const dedupKey = `${event.type}:${event.sessionName}`;
+    const nowMs = Date.now();
+    const lastPublished = this.recentPublishMap.get(dedupKey);
+    if (lastPublished && nowMs - lastPublished < EVENT_BUS_CONSTANTS.EVENT_DEBOUNCE_WINDOW_MS) {
+      this.logger.debug('Duplicate event suppressed within debounce window', {
+        type: event.type,
+        sessionName: event.sessionName,
+        msSinceLast: nowMs - lastPublished,
+      });
+      return;
+    }
+    this.recentPublishMap.set(dedupKey, nowMs);
+
+    // Clean up old entries periodically (keep map small)
+    if (this.recentPublishMap.size > 100) {
+      for (const [key, ts] of this.recentPublishMap) {
+        if (nowMs - ts > EVENT_BUS_CONSTANTS.EVENT_DEBOUNCE_WINDOW_MS) {
+          this.recentPublishMap.delete(key);
+        }
+      }
+    }
+
     this.logger.info('Event published', {
       eventId: event.id,
       type: event.type,
@@ -179,9 +232,10 @@ export class EventBusService extends EventEmitter {
         continue;
       }
 
-      // Format and deliver notification
+      // Format notification and buffer for debounced delivery.
+      // Dedup: same agent + same subscriber = keep only latest event.
       const message = this.formatNotification(event, sub);
-      this.deliverNotification(sub, message);
+      this.bufferNotification(sub, message, event);
       this.deliveryCount++;
 
       this.emit('event_delivered', {
@@ -245,8 +299,109 @@ export class EventBusService extends EventEmitter {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
     }
+
+    // Flush any pending notifications before shutdown
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
+    if (this.pendingNotifications.size > 0) {
+      this.flushNotifications();
+    }
+
     this.subscriptions.clear();
+    this.recentPublishMap.clear();
     this.logger.info('EventBusService cleaned up');
+  }
+
+  /**
+   * Buffer a notification for debounced delivery with per-agent deduplication.
+   * If the same agent already has a pending notification for this subscriber,
+   * it is overwritten with the latest event (only final state matters).
+   *
+   * @param sub - The subscription whose subscriber should receive the message
+   * @param message - The formatted notification message
+   * @param event - The original agent event
+   */
+  private bufferNotification(sub: EventSubscription, message: string, event: AgentEvent): void {
+    // Dedup key: same subscriber + same agent = keep only the latest event.
+    // If agent-joe transitions idle→active→idle in 5 seconds, the orchestrator
+    // only receives the final "idle" notification, not all three.
+    const dedupKey = `${sub.subscriberSession}:${event.sessionName}`;
+
+    this.pendingNotifications.set(dedupKey, {
+      message,
+      event,
+      updatedAt: Date.now(),
+    });
+
+    // Reset debounce timer — wait for EVENT_DEBOUNCE_WINDOW_MS of quiet time
+    // before flushing all buffered notifications as one batch.
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+    }
+
+    this.batchTimer = setTimeout(() => {
+      this.flushNotifications();
+    }, EVENT_BUS_CONSTANTS.EVENT_DEBOUNCE_WINDOW_MS);
+  }
+
+  /**
+   * Flush all buffered notifications as a single combined message.
+   * Groups by subscriber session and delivers one enqueue per subscriber.
+   */
+  private flushNotifications(): void {
+    this.batchTimer = null;
+
+    if (this.pendingNotifications.size === 0) {
+      return;
+    }
+
+    if (!this.messageQueueService) {
+      this.logger.warn('MessageQueueService not set, discarding buffered notifications', {
+        count: this.pendingNotifications.size,
+      });
+      this.pendingNotifications.clear();
+      return;
+    }
+
+    // Group messages by subscriber session
+    const bySubscriber = new Map<string, string[]>();
+    for (const [, entry] of this.pendingNotifications) {
+      // Extract subscriber from the dedup key isn't possible cleanly,
+      // so we just collect all messages (all go to orchestrator in practice)
+      const subscriber = 'system'; // All event notifications use conversationId 'system'
+      const existing = bySubscriber.get(subscriber) ?? [];
+      existing.push(entry.message);
+      bySubscriber.set(subscriber, existing);
+    }
+
+    const totalCount = this.pendingNotifications.size;
+
+    // Deliver one combined message per subscriber
+    for (const [, messages] of bySubscriber) {
+      const combinedContent = messages.join('\n');
+
+      try {
+        this.messageQueueService.enqueue({
+          content: combinedContent,
+          conversationId: 'system',
+          source: 'system_event',
+        });
+      } catch (error) {
+        this.logger.error('Failed to enqueue batched event notifications', {
+          error: error instanceof Error ? error.message : String(error),
+          messageCount: messages.length,
+        });
+      }
+    }
+
+    this.logger.info('Flushed batched event notifications', {
+      dedupedCount: totalCount,
+      originalEvents: '(deduplicated)',
+    });
+
+    this.pendingNotifications.clear();
   }
 
   /**
@@ -310,39 +465,6 @@ export class EventBusService extends EventEmitter {
     }
 
     return baseMessage;
-  }
-
-  /**
-   * Deliver a notification message to the subscriber via the message queue.
-   *
-   * @param sub - The subscription whose subscriber should receive the message
-   * @param message - The formatted notification message
-   */
-  private deliverNotification(sub: EventSubscription, message: string): void {
-    if (!this.messageQueueService) {
-      this.logger.warn('MessageQueueService not set, cannot deliver event notification', {
-        subscriptionId: sub.id,
-      });
-      return;
-    }
-
-    try {
-      this.messageQueueService.enqueue({
-        content: message,
-        conversationId: 'system',
-        source: 'system_event',
-      });
-
-      this.logger.debug('Event notification enqueued', {
-        subscriptionId: sub.id,
-        subscriber: sub.subscriberSession,
-      });
-    } catch (error) {
-      this.logger.error('Failed to enqueue event notification', {
-        subscriptionId: sub.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
   }
 
   /**

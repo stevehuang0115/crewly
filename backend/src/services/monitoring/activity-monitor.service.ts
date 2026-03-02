@@ -6,9 +6,11 @@ import { writeFile, readFile, rename, unlink } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
-import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, RUNTIME_EXIT_CONSTANTS, type WorkingStatus } from '../../constants.js';
-import { OrchestratorRestartService } from '../orchestrator/orchestrator-restart.service.js';
+import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, PTY_CONSTANTS, type WorkingStatus } from '../../constants.js';
+import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
+import type { EventBusService } from '../event-bus/event-bus.service.js';
+import type { AgentEvent } from '../../types/event-bus.types.js';
 
 /**
  * Team Working Status File Structure
@@ -67,6 +69,11 @@ export class ActivityMonitorService {
   private lastCleanup: number = Date.now();
   private crewlyHome: string;
   private teamWorkingStatusFile: string;
+  private eventBusService: EventBusService | null = null;
+  /** Tracks when each session entered in_progress (epoch ms) */
+  private busyTransitionTimestamps: Map<string, number> = new Map();
+  /** Tracks which sessions have had their agent:busy event emitted */
+  private busyEventEmitted: Set<string> = new Set();
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ActivityMonitor');
@@ -89,21 +96,104 @@ export class ActivityMonitorService {
     return this._sessionBackend;
   }
 
-  /**
-   * Get the session backend synchronously (may return null if not initialized).
-   */
-  private get sessionBackend(): ISessionBackend | null {
-    if (!this._sessionBackend) {
-      this._sessionBackend = getSessionBackendSync();
-    }
-    return this._sessionBackend;
-  }
-
   public static getInstance(): ActivityMonitorService {
     if (!ActivityMonitorService.instance) {
       ActivityMonitorService.instance = new ActivityMonitorService();
     }
     return ActivityMonitorService.instance;
+  }
+
+  /**
+   * Inject the EventBusService for direct event publishing on status transitions.
+   *
+   * @param service - The EventBusService instance
+   */
+  setEventBusService(service: EventBusService): void {
+    this.eventBusService = service;
+  }
+
+  /**
+   * Build an AgentEvent for a working status transition.
+   *
+   * @param type - The event type ('agent:busy' or 'agent:idle')
+   * @param timestamp - ISO timestamp for the event
+   * @param identity - Agent identity fields (team/member/session)
+   * @param previousValue - The previous working status
+   * @param newValue - The new working status
+   * @returns A fully-formed AgentEvent
+   */
+  private buildAgentEvent(
+    type: AgentEvent['type'],
+    timestamp: string,
+    identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
+    previousValue: string,
+    newValue: string,
+  ): AgentEvent {
+    return {
+      id: crypto.randomUUID(),
+      type,
+      timestamp,
+      teamId: identity.teamId,
+      teamName: identity.teamName,
+      memberId: identity.memberId,
+      memberName: identity.memberName,
+      sessionName: identity.sessionName,
+      previousValue,
+      newValue,
+      changedField: 'workingStatus',
+    } as AgentEvent;
+  }
+
+  /**
+   * Handle duration-gated event emission for a session status transition.
+   * Suppresses spurious idle→busy→idle cycles by requiring a minimum
+   * busy duration (MIN_BUSY_DURATION_MS) before emitting events.
+   *
+   * @param key - Unique key for tracking (e.g. 'orchestrator' or session name)
+   * @param newStatus - The new working status
+   * @param previousStatus - The previous working status
+   * @param statusChanged - Whether the status actually changed this poll
+   * @param identity - Agent identity fields for building the event
+   * @param now - ISO timestamp for the event
+   */
+  private handleDurationGatedEmission(
+    key: string,
+    newStatus: WorkingStatus,
+    previousStatus: WorkingStatus,
+    statusChanged: boolean,
+    identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
+    now: string,
+  ): void {
+    if (statusChanged && newStatus === 'in_progress') {
+      if (!this.busyTransitionTimestamps.has(key)) {
+        this.busyTransitionTimestamps.set(key, Date.now());
+      }
+    }
+
+    if (statusChanged) {
+      const busyStart = this.busyTransitionTimestamps.get(key);
+      const elapsed = busyStart != null ? Date.now() - busyStart : 0;
+
+      if (newStatus === 'in_progress') {
+        if (elapsed >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && !this.busyEventEmitted.has(key) && this.eventBusService) {
+          this.busyEventEmitted.add(key);
+          this.eventBusService.publish(this.buildAgentEvent('agent:busy', now, identity, previousStatus, newStatus));
+        }
+      } else {
+        if (elapsed >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.busyEventEmitted.has(key) && this.eventBusService) {
+          this.eventBusService.publish(this.buildAgentEvent('agent:idle', now, identity, previousStatus, newStatus));
+        }
+        this.busyTransitionTimestamps.delete(key);
+        this.busyEventEmitted.delete(key);
+      }
+    } else if (newStatus === 'in_progress' && this.busyTransitionTimestamps.has(key) && !this.busyEventEmitted.has(key)) {
+      // Still in_progress across polls — check if deferred busy event can now be emitted
+      const busyStart = this.busyTransitionTimestamps.get(key)!;
+      if (Date.now() - busyStart >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.eventBusService) {
+        this.busyEventEmitted.add(key);
+        this.eventBusService.publish(this.buildAgentEvent('agent:busy', now, identity, 'idle', 'in_progress'));
+      }
+    }
   }
 
   public startPolling(): void {
@@ -276,8 +366,11 @@ export class ActivityMonitorService {
         }
 
         const newWorkingStatus: WorkingStatus = outputChanged ? 'in_progress' : 'idle';
+        const orchKey = 'orchestrator';
+        const previousStatus = workingStatusData.orchestrator.workingStatus;
+        const statusChanged = previousStatus !== newWorkingStatus;
 
-        if (workingStatusData.orchestrator.workingStatus !== newWorkingStatus) {
+        if (statusChanged) {
           workingStatusData.orchestrator.workingStatus = newWorkingStatus;
           workingStatusData.orchestrator.lastActivityCheck = now;
           workingStatusData.orchestrator.updatedAt = now;
@@ -289,6 +382,14 @@ export class ActivityMonitorService {
             outputChanged
           });
         }
+
+        this.handleDurationGatedEmission(orchKey, newWorkingStatus, previousStatus, statusChanged, {
+          teamId: 'orchestrator',
+          teamName: 'Orchestrator',
+          memberId: AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID,
+          memberName: 'Orchestrator',
+          sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        }, now);
 
         this.lastTerminalOutputs.set('orchestrator', orchestratorOutput);
       } else {
@@ -336,6 +437,8 @@ export class ActivityMonitorService {
                 }
 
                 this.lastTerminalOutputs.delete(memberKey);
+                this.busyTransitionTimestamps.delete(memberKey);
+                this.busyEventEmitted.delete(memberKey);
                 continue;
               }
 
@@ -356,20 +459,33 @@ export class ActivityMonitorService {
                   updatedAt: now
                 };
                 hasChanges = true;
-              } else if (workingStatusData.teamMembers[memberKey].workingStatus !== newWorkingStatus) {
-                workingStatusData.teamMembers[memberKey].workingStatus = newWorkingStatus;
-                workingStatusData.teamMembers[memberKey].lastActivityCheck = now;
-                workingStatusData.teamMembers[memberKey].updatedAt = now;
-                hasChanges = true;
+              } else {
+                const previousMemberStatus = workingStatusData.teamMembers[memberKey].workingStatus;
+                const memberStatusChanged = previousMemberStatus !== newWorkingStatus;
 
-                this.logger.info('Team member working status updated', {
+                if (memberStatusChanged) {
+                  workingStatusData.teamMembers[memberKey].workingStatus = newWorkingStatus;
+                  workingStatusData.teamMembers[memberKey].lastActivityCheck = now;
+                  workingStatusData.teamMembers[memberKey].updatedAt = now;
+                  hasChanges = true;
+
+                  this.logger.info('Team member working status updated', {
+                    teamId: team.id,
+                    memberId: member.id,
+                    memberName: member.name,
+                    sessionName: member.sessionName,
+                    newWorkingStatus,
+                    outputChanged
+                  });
+                }
+
+                this.handleDurationGatedEmission(memberKey, newWorkingStatus, previousMemberStatus, memberStatusChanged, {
                   teamId: team.id,
+                  teamName: team.name,
                   memberId: member.id,
                   memberName: member.name,
                   sessionName: member.sessionName,
-                  newWorkingStatus,
-                  outputChanged
-                });
+                }, now);
               }
 
               this.lastTerminalOutputs.set(member.sessionName, currentOutput);
@@ -393,9 +509,6 @@ export class ActivityMonitorService {
         await this.saveTeamWorkingStatusFile(workingStatusData);
         this.logger.debug('Updated teamWorkingStatus.json with activity changes');
       }
-
-      // Perform periodic cleanup
-      this.performPeriodicCleanup();
 
     } catch (error) {
       this.logger.error('Error during activity check', {
@@ -527,10 +640,14 @@ export class ActivityMonitorService {
         )
       ]);
 
+      // Strip ANSI escape codes so TUI re-renders (spinners, cursor
+      // repositioning) don't register as meaningful output changes.
+      const cleaned = stripAnsiCodes(output).trim();
+
       // Limit output size to prevent memory issues
-      return output.length > this.MAX_OUTPUT_SIZE
-        ? output.substring(output.length - this.MAX_OUTPUT_SIZE)
-        : output;
+      return cleaned.length > this.MAX_OUTPUT_SIZE
+        ? cleaned.substring(cleaned.length - this.MAX_OUTPUT_SIZE)
+        : cleaned;
     } catch (error) {
       return '';
     }
