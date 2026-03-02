@@ -391,5 +391,85 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 
 			restartSpy.mockRestore();
 		});
+
+		it('should set inProgressSince when orchestrator has recent activity', async () => {
+			service.start();
+			service.stop();
+
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+
+			// Record recent activity so idleTime is low
+			PtyActivityTrackerService.getInstance().recordActivity(ORCHESTRATOR_SESSION_NAME);
+
+			await service.performCheck();
+
+			expect(service.getState().inProgressSince).not.toBeNull();
+		});
+
+		it('should send heartbeat when stuck in_progress exceeds timeout', async () => {
+			service.start();
+			service.stop();
+
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+
+			// Record activity so idleTime is low
+			PtyActivityTrackerService.getInstance().recordActivity(ORCHESTRATOR_SESSION_NAME);
+
+			// First performCheck sets inProgressSince
+			await service.performCheck();
+			expect(service.getState().inProgressSince).not.toBeNull();
+
+			// Backdate inProgressSince to simulate being stuck past the timeout
+			(service as any).inProgressSince = Date.now() - ORCHESTRATOR_HEARTBEAT_CONSTANTS.IN_PROGRESS_TIMEOUT_MS - 1;
+
+			// Record activity again so idleTime stays low on the next check
+			PtyActivityTrackerService.getInstance().recordActivity(ORCHESTRATOR_SESSION_NAME);
+
+			await performCheckAndFlush(service);
+
+			// Heartbeat should have been sent
+			expect(mockSession.write).toHaveBeenCalledWith(
+				ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_MESSAGE
+			);
+			expect(mockSession.write).toHaveBeenCalledWith('\r');
+
+			// inProgressSince should be reset after sending heartbeat
+			expect(service.getState().inProgressSince).toBeNull();
+		});
+
+		it('should reset inProgressSince when orchestrator becomes idle', async () => {
+			service.start();
+			service.stop();
+
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+
+			// Record activity, performCheck sets inProgressSince
+			PtyActivityTrackerService.getInstance().recordActivity(ORCHESTRATOR_SESSION_NAME);
+			await service.performCheck();
+			expect(service.getState().inProgressSince).not.toBeNull();
+
+			// Advance past heartbeat threshold so orchestrator appears idle
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+
+			await performCheckAndFlush(service);
+
+			// inProgressSince should be reset when the orchestrator becomes idle
+			expect(service.getState().inProgressSince).toBeNull();
+		});
+
+		it('should reset inProgressSince on stop', async () => {
+			service.start();
+			service.stop();
+
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+
+			PtyActivityTrackerService.getInstance().recordActivity(ORCHESTRATOR_SESSION_NAME);
+			await service.performCheck();
+			expect(service.getState().inProgressSince).not.toBeNull();
+
+			service.stop();
+
+			expect(service.getState().inProgressSince).toBeNull();
+		});
 	});
 });

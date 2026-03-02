@@ -17,9 +17,11 @@ PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
 require_param "to" "$TO"
 require_param "task" "$TASK"
 
-# Monitor parameters (optional)
-MONITOR_IDLE=$(echo "$INPUT" | jq -r '.monitor.idleEvent // false')
-MONITOR_FALLBACK_MINUTES=$(echo "$INPUT" | jq -r '.monitor.fallbackCheckMinutes // 0')
+# Monitor parameters — enabled by default to ensure proactive progress notifications.
+# Use explicit null-check so that `false` / `0` are respected as opt-out values,
+# while omitted fields default to enabled (idleEvent=true, fallbackCheckMinutes=5).
+MONITOR_IDLE=$(echo "$INPUT" | jq -r 'if .monitor.idleEvent == null then true else .monitor.idleEvent end')
+MONITOR_FALLBACK_MINUTES=$(echo "$INPUT" | jq -r 'if .monitor.fallbackCheckMinutes == null then 5 else .monitor.fallbackCheckMinutes end')
 
 # Resolve Crewly root from this script path:
 # config/skills/orchestrator/delegate-task/execute.sh -> project root
@@ -42,7 +44,7 @@ if [ -n "$CONTEXT" ]; then
 fi
 
 # Build a structured task message
-TASK_MESSAGE="[TASK] Priority: ${PRIORITY}\n\n${TASK}"
+TASK_MESSAGE="New task from orchestrator (priority: ${PRIORITY}):\n\n${TASK}"
 [ -n "$CONTEXT" ] && TASK_MESSAGE="${TASK_MESSAGE}\n\nContext: ${CONTEXT}"
 TASK_MESSAGE="${TASK_MESSAGE}\n\nWhen done, report back using: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"status\":\"done\",\"summary\":\"<brief summary>\"}'"
 
@@ -93,7 +95,7 @@ if [ "$MONITOR_FALLBACK_MINUTES" != "0" ] && [ -n "$MONITOR_FALLBACK_MINUTES" ];
   SCHED_BODY=$(jq -n \
     --arg target "$SCHEDULE_TARGET" \
     --arg minutes "$MONITOR_FALLBACK_MINUTES" \
-    --arg message "[CHECK] Review progress of ${TO} — task: ${TASK:0:100}" \
+    --arg message "Progress check: review ${TO} status — task: ${TASK:0:100}" \
     '{targetSession: $target, minutes: ($minutes | tonumber), intervalMinutes: ($minutes | tonumber), message: $message, isRecurring: true}')
   SCHED_RESULT=$(api_call POST "/schedule" "$SCHED_BODY" 2>/dev/null || true)
   SCHED_ID=$(echo "$SCHED_RESULT" | jq -r '.checkId // .data.checkId // empty' 2>/dev/null || true)

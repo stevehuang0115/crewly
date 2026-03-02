@@ -1,6 +1,6 @@
 {
   "name": "crewly",
-  "version": "1.1.2",
+  "version": "1.2.1",
   "type": "module",
   "description": "Multi-agent orchestration platform for AI coding teams — coordinates Claude Code, Gemini CLI, and Codex agents with a real-time web dashboard",
   "main": "dist/cli/cli/src/index.js",
@@ -60,6 +60,7 @@
     "lint": "eslint . --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
     "postinstall": "npm rebuild node-pty --build-from-source 2>/dev/null || npm rebuild node-pty 2>/dev/null || true",
+    "postbuild": "npm rebuild node-pty --build-from-source 2>/dev/null || npm rebuild node-pty 2>/dev/null || true",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

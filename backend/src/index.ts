@@ -271,6 +271,7 @@ export class CrewlyServer {
 		this.eventBusService = new EventBusService();
 		this.eventBusService.setMessageQueueService(this.messageQueueService);
 		this.teamsJsonWatcherService.setEventBusService(this.eventBusService);
+		this.activityMonitorService.setEventBusService(this.eventBusService);
 		setEventBusControllerService(this.eventBusService);
 		setTeamControllerEventBusService(this.eventBusService);
 		setEventBusServiceForTaskCleanup(this.eventBusService);

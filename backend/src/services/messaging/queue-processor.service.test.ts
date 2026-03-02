@@ -21,6 +21,11 @@ jest.mock('../agent/pty-activity-tracker.service.js', () => ({
   },
 }));
 
+// Module-level variable to allow per-test override of the system event force-deliver flag.
+// Default: true (system events force-deliver). Set to false in tests that exercise the
+// requeue/retry code path.
+let mockSystemEventForceDeliver = true;
+
 // Mock constants
 jest.mock('../../constants.js', () => ({
   MESSAGE_QUEUE_CONSTANTS: {
@@ -53,6 +58,8 @@ jest.mock('../../constants.js', () => ({
     TOTAL_DELIVERY_TIMEOUT: 10000,
     USER_MESSAGE_TIMEOUT: 2000,
     USER_MESSAGE_FORCE_DELIVER: true,
+    SYSTEM_EVENT_TIMEOUT: 3000,
+    get SYSTEM_EVENT_FORCE_DELIVER() { return mockSystemEventForceDeliver; },
   },
   RUNTIME_TYPES: {
     CLAUDE_CODE: 'claude-code',
@@ -68,6 +75,7 @@ jest.mock('../../constants.js', () => ({
   },
   MESSAGE_SOURCES: {
     SLACK: 'slack',
+    WHATSAPP: 'whatsapp',
     WEB_CHAT: 'web_chat',
     SYSTEM_EVENT: 'system_event',
   },
@@ -146,6 +154,9 @@ describe('QueueProcessorService', () => {
 
     // Default: orchestrator has recent activity (not idle)
     mockIdleTimeMs = 0;
+
+    // Default: system events force-deliver (override per-test for requeue tests)
+    mockSystemEventForceDeliver = true;
 
     processor = new QueueProcessorService(
       queueService,
@@ -461,7 +472,7 @@ describe('QueueProcessorService', () => {
       expect(mockAgentRegistrationService.waitForAgentReady).toHaveBeenCalledTimes(2);
     });
 
-    it('should wait for idle after system event', async () => {
+    it('should skip post-delivery idle wait for system events', async () => {
       processor.start();
 
       queueService.enqueue({
@@ -476,8 +487,9 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
 
-      // Two calls: pre-delivery ready check + post-completion idle wait
-      expect(mockAgentRegistrationService.waitForAgentReady).toHaveBeenCalledTimes(2);
+      // Only one call: pre-delivery ready check. No post-completion idle wait
+      // for system events (fire-and-forget) to avoid blocking user messages.
+      expect(mockAgentRegistrationService.waitForAgentReady).toHaveBeenCalledTimes(1);
     });
 
     it('should NOT wait for idle after delivery failure', async () => {
@@ -554,9 +566,10 @@ describe('QueueProcessorService', () => {
       );
     });
 
-    it('should re-queue message when agent is not ready', async () => {
-      // Use system_event source because user messages (web_chat/slack) now
-      // force-deliver instead of re-queuing
+    it('should re-queue message when agent is not ready and force-deliver is off', async () => {
+      // Disable force-deliver for system events to exercise the requeue path.
+      // In production, both user messages and system events force-deliver by default.
+      mockSystemEventForceDeliver = false;
       mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(false);
 
       processor.start();
@@ -579,9 +592,9 @@ describe('QueueProcessorService', () => {
     });
 
     it('should retry after re-queue when agent becomes ready', async () => {
+      // Disable force-deliver to exercise the requeue path
+      mockSystemEventForceDeliver = false;
       // First attempt: not ready; second attempt: ready
-      // Use system_event source because user messages (web_chat/slack) now
-      // force-deliver instead of re-queuing
       mockAgentRegistrationService.waitForAgentReady
         .mockResolvedValueOnce(false)
         .mockResolvedValueOnce(true);
@@ -696,8 +709,9 @@ describe('QueueProcessorService', () => {
     });
 
     it('should permanently fail message after exceeding max requeue retries', async () => {
-      // Agent never becomes ready — use system_event source which retains the
-      // requeue behavior (user messages force-deliver instead of re-queuing)
+      // Disable force-deliver to exercise the requeue/max-retry path
+      mockSystemEventForceDeliver = false;
+      // Agent never becomes ready
       mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(false);
 
       const routeErrorSpy = jest.spyOn(responseRouter, 'routeError');
@@ -803,8 +817,9 @@ describe('QueueProcessorService', () => {
     });
 
     it('should increment retryCount on each requeue', async () => {
+      // Disable force-deliver to exercise the requeue path
+      mockSystemEventForceDeliver = false;
       // Agent not ready for first 2 attempts, then ready
-      // Use system_event source because user messages now force-deliver
       mockAgentRegistrationService.waitForAgentReady
         .mockResolvedValueOnce(false)
         .mockResolvedValueOnce(false)
@@ -1000,7 +1015,7 @@ describe('QueueProcessorService', () => {
       );
     });
 
-    it('should use AGENT_READY_TIMEOUT for system_event source', async () => {
+    it('should use SYSTEM_EVENT_TIMEOUT for system_event source', async () => {
       processor.start();
 
       queueService.enqueue({
@@ -1013,10 +1028,10 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
 
-      // waitForAgentReady should use AGENT_READY_TIMEOUT (5000ms in mock) for system events
+      // waitForAgentReady should use SYSTEM_EVENT_TIMEOUT (3000ms in mock) for system events
       expect(mockAgentRegistrationService.waitForAgentReady).toHaveBeenCalledWith(
         'crewly-orc',
-        5000,
+        3000,
         'claude-code'
       );
     });
@@ -1111,6 +1126,88 @@ describe('QueueProcessorService', () => {
 
       // 3 events should remain pending
       expect(queueService.pendingCount).toBe(3);
+    });
+  });
+
+  describe('agent busy retry', () => {
+    it('should re-queue message when agent is busy', async () => {
+      const requeueSpy = jest.spyOn(queueService, 'requeue');
+      const markFailedSpy = jest.spyOn(queueService, 'markFailed');
+
+      mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({
+        success: false,
+        error: '[AGENT_BUSY] Failed to deliver message — agent is actively processing',
+      });
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Hello from Slack',
+        conversationId: 'conv-1',
+        source: 'slack',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(requeueSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: 'conv-1' })
+      );
+      expect(markFailedSpy).not.toHaveBeenCalled();
+    });
+
+    it('should use USER_MESSAGE_TIMEOUT for whatsapp source', async () => {
+      mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(true);
+      mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true });
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Hello from WhatsApp',
+        conversationId: 'conv-wa',
+        source: 'whatsapp',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+
+      expect(mockAgentRegistrationService.waitForAgentReady).toHaveBeenCalledWith(
+        'crewly-orc',
+        2000,
+        'claude-code'
+      );
+    });
+
+    it('should force-deliver system events when agent not ready', async () => {
+      mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(false);
+      mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true });
+
+      const requeueSpy = jest.spyOn(queueService, 'requeue');
+
+      processor.start();
+
+      queueService.enqueue({
+        content: '[EVENT:agent_status] Agent Sam started',
+        conversationId: 'conv-sys',
+        source: 'system_event',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      // system_event should force-deliver even when agent is not ready
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc',
+        '[EVENT:agent_status] Agent Sam started',
+        'claude-code'
+      );
+      expect(requeueSpy).not.toHaveBeenCalled();
     });
   });
 });

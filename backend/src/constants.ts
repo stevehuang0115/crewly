@@ -88,6 +88,8 @@ export const PTY_CONSTANTS = {
 	FORCE_DESTROY_ESCALATION_DELAY: 1000,
 	/** Minimum non-whitespace characters in stripped PTY output to count as meaningful activity */
 	MIN_MEANINGFUL_OUTPUT_BYTES: 2,
+	/** Minimum time (ms) an agent must remain in_progress before emitting busy/idle events */
+	MIN_BUSY_DURATION_MS: 10000,
 } as const;
 
 // Session command timing delays (in milliseconds)
@@ -186,6 +188,12 @@ export const EVENT_DELIVERY_CONSTANTS = {
 	USER_MESSAGE_TIMEOUT: 30000,
 	/** Whether to force-deliver user messages after timeout instead of re-queuing */
 	USER_MESSAGE_FORCE_DELIVER: true,
+	/** Shorter timeout for system events to reduce notification delay (ms) */
+	SYSTEM_EVENT_TIMEOUT: 60000,
+	/** Whether to force-deliver system events after timeout instead of re-queuing.
+	 *  System events are fire-and-forget (no response expected), so force-delivery
+	 *  is lower risk than for user messages. Prevents the 5×120s=10min retry loop. */
+	SYSTEM_EVENT_FORCE_DELIVER: true,
 	/** Interval for polling agent prompt readiness (ms) */
 	AGENT_READY_POLL_INTERVAL: 2000,
 	/** Interval for deep-scan polling with larger buffer when fast poll misses prompt (ms) */
@@ -297,6 +305,13 @@ export const TERMINAL_PATTERNS = {
 	 * a reliable busy indicator. It's absent when the agent is idle at prompt.
 	 */
 	BUSY_STATUS_BAR: /esc\s+to\s+interrupt/i,
+
+	/**
+	 * Pattern for detecting Claude Code's Rewind mode.
+	 * Rewind mode is triggered by ESC during processing and displays a
+	 * restore UI. If detected, send 'q' to exit before attempting delivery.
+	 */
+	REWIND_MODE: /Rewind[\s\S]*?Restore the code/,
 } as const;
 
 /**
@@ -360,6 +375,10 @@ export const MESSAGE_QUEUE_CONSTANTS = {
  * Used by EventBusService for subscription management and notification delivery.
  */
 export const EVENT_BUS_CONSTANTS = {
+	/** Debounce window for batching event notifications (ms).
+	 *  Events within this window are deduplicated per agent and delivered
+	 *  as a single combined message to reduce orchestrator context consumption. */
+	EVENT_DEBOUNCE_WINDOW_MS: 5000,
 	/** Default subscription time-to-live in minutes (2 hours) */
 	DEFAULT_SUBSCRIPTION_TTL_MINUTES: 120,
 	/** Maximum allowed subscription TTL in minutes (24 hours) */

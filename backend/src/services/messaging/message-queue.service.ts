@@ -239,7 +239,7 @@ export class MessageQueueService extends EventEmitter {
 
     // Prioritize user messages over system events
     const userIdx = this.queue.findIndex(
-      (m) => m.source === 'slack' || m.source === 'web_chat'
+      (m) => m.source === 'slack' || m.source === 'web_chat' || m.source === 'whatsapp'
     );
     const idx = userIdx >= 0 ? userIdx : 0;
     const [message] = this.queue.splice(idx, 1);

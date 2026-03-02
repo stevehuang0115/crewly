@@ -6,9 +6,12 @@ import { writeFile, readFile, rename, unlink } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
-import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, RUNTIME_EXIT_CONSTANTS, type WorkingStatus } from '../../constants.js';
+import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, RUNTIME_EXIT_CONSTANTS, PTY_CONSTANTS, type WorkingStatus } from '../../constants.js';
+import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { OrchestratorRestartService } from '../orchestrator/orchestrator-restart.service.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
+import type { EventBusService } from '../event-bus/event-bus.service.js';
+import type { AgentEvent } from '../../types/event-bus.types.js';
 
 /**
  * Team Working Status File Structure
@@ -67,6 +70,11 @@ export class ActivityMonitorService {
   private lastCleanup: number = Date.now();
   private crewlyHome: string;
   private teamWorkingStatusFile: string;
+  private eventBusService: EventBusService | null = null;
+  /** Tracks when each session entered in_progress (epoch ms) */
+  private busyTransitionTimestamps: Map<string, number> = new Map();
+  /** Tracks which sessions have had their agent:busy event emitted */
+  private busyEventEmitted: Set<string> = new Set();
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ActivityMonitor');
@@ -104,6 +112,15 @@ export class ActivityMonitorService {
       ActivityMonitorService.instance = new ActivityMonitorService();
     }
     return ActivityMonitorService.instance;
+  }
+
+  /**
+   * Inject the EventBusService for direct event publishing on status transitions.
+   *
+   * @param service - The EventBusService instance
+   */
+  setEventBusService(service: EventBusService): void {
+    this.eventBusService = service;
   }
 
   public startPolling(): void {
@@ -276,8 +293,10 @@ export class ActivityMonitorService {
         }
 
         const newWorkingStatus: WorkingStatus = outputChanged ? 'in_progress' : 'idle';
+        const orchKey = 'orchestrator';
 
         if (workingStatusData.orchestrator.workingStatus !== newWorkingStatus) {
+          const previousStatus = workingStatusData.orchestrator.workingStatus;
           workingStatusData.orchestrator.workingStatus = newWorkingStatus;
           workingStatusData.orchestrator.lastActivityCheck = now;
           workingStatusData.orchestrator.updatedAt = now;
@@ -288,6 +307,76 @@ export class ActivityMonitorService {
             newWorkingStatus,
             outputChanged
           });
+
+          // Duration-gated event emission: suppress spurious idle→busy→idle cycles
+          if (newWorkingStatus === 'in_progress') {
+            if (!this.busyTransitionTimestamps.has(orchKey)) {
+              this.busyTransitionTimestamps.set(orchKey, Date.now());
+            }
+          }
+
+          const busyStart = this.busyTransitionTimestamps.get(orchKey);
+          const elapsed = busyStart != null ? Date.now() - busyStart : 0;
+          const minDuration = PTY_CONSTANTS.MIN_BUSY_DURATION_MS;
+
+          if (newWorkingStatus === 'in_progress') {
+            // Only emit agent:busy after the minimum duration has elapsed
+            if (elapsed >= minDuration && !this.busyEventEmitted.has(orchKey) && this.eventBusService) {
+              this.busyEventEmitted.add(orchKey);
+              this.eventBusService.publish({
+                id: crypto.randomUUID(),
+                type: 'agent:busy',
+                timestamp: now,
+                teamId: 'orchestrator',
+                teamName: 'Orchestrator',
+                memberId: AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID,
+                memberName: 'Orchestrator',
+                sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+                previousValue: previousStatus,
+                newValue: newWorkingStatus,
+                changedField: 'workingStatus',
+              } as AgentEvent);
+            }
+          } else {
+            // Transitioning to idle — only emit if the busy period was long enough
+            if (elapsed >= minDuration && this.busyEventEmitted.has(orchKey) && this.eventBusService) {
+              this.eventBusService.publish({
+                id: crypto.randomUUID(),
+                type: 'agent:idle',
+                timestamp: now,
+                teamId: 'orchestrator',
+                teamName: 'Orchestrator',
+                memberId: AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID,
+                memberName: 'Orchestrator',
+                sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+                previousValue: previousStatus,
+                newValue: newWorkingStatus,
+                changedField: 'workingStatus',
+              } as AgentEvent);
+            }
+            // Clean up tracking state
+            this.busyTransitionTimestamps.delete(orchKey);
+            this.busyEventEmitted.delete(orchKey);
+          }
+        } else if (newWorkingStatus === 'in_progress' && this.busyTransitionTimestamps.has(orchKey) && !this.busyEventEmitted.has(orchKey)) {
+          // Still in_progress across polls — check if we can now emit the deferred busy event
+          const busyStart = this.busyTransitionTimestamps.get(orchKey)!;
+          if (Date.now() - busyStart >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.eventBusService) {
+            this.busyEventEmitted.add(orchKey);
+            this.eventBusService.publish({
+              id: crypto.randomUUID(),
+              type: 'agent:busy',
+              timestamp: now,
+              teamId: 'orchestrator',
+              teamName: 'Orchestrator',
+              memberId: AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID,
+              memberName: 'Orchestrator',
+              sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+              previousValue: 'idle',
+              newValue: 'in_progress',
+              changedField: 'workingStatus',
+            } as AgentEvent);
+          }
         }
 
         this.lastTerminalOutputs.set('orchestrator', orchestratorOutput);
@@ -336,6 +425,8 @@ export class ActivityMonitorService {
                 }
 
                 this.lastTerminalOutputs.delete(memberKey);
+                this.busyTransitionTimestamps.delete(memberKey);
+                this.busyEventEmitted.delete(memberKey);
                 continue;
               }
 
@@ -357,6 +448,7 @@ export class ActivityMonitorService {
                 };
                 hasChanges = true;
               } else if (workingStatusData.teamMembers[memberKey].workingStatus !== newWorkingStatus) {
+                const previousMemberStatus = workingStatusData.teamMembers[memberKey].workingStatus;
                 workingStatusData.teamMembers[memberKey].workingStatus = newWorkingStatus;
                 workingStatusData.teamMembers[memberKey].lastActivityCheck = now;
                 workingStatusData.teamMembers[memberKey].updatedAt = now;
@@ -370,6 +462,73 @@ export class ActivityMonitorService {
                   newWorkingStatus,
                   outputChanged
                 });
+
+                // Duration-gated event emission: suppress spurious idle→busy→idle cycles
+                if (newWorkingStatus === 'in_progress') {
+                  if (!this.busyTransitionTimestamps.has(memberKey)) {
+                    this.busyTransitionTimestamps.set(memberKey, Date.now());
+                  }
+                }
+
+                const busyStart = this.busyTransitionTimestamps.get(memberKey);
+                const elapsed = busyStart != null ? Date.now() - busyStart : 0;
+                const minDuration = PTY_CONSTANTS.MIN_BUSY_DURATION_MS;
+
+                if (newWorkingStatus === 'in_progress') {
+                  if (elapsed >= minDuration && !this.busyEventEmitted.has(memberKey) && this.eventBusService) {
+                    this.busyEventEmitted.add(memberKey);
+                    this.eventBusService.publish({
+                      id: crypto.randomUUID(),
+                      type: 'agent:busy',
+                      timestamp: now,
+                      teamId: team.id,
+                      teamName: team.name,
+                      memberId: member.id,
+                      memberName: member.name,
+                      sessionName: member.sessionName,
+                      previousValue: previousMemberStatus,
+                      newValue: newWorkingStatus,
+                      changedField: 'workingStatus',
+                    } as AgentEvent);
+                  }
+                } else {
+                  if (elapsed >= minDuration && this.busyEventEmitted.has(memberKey) && this.eventBusService) {
+                    this.eventBusService.publish({
+                      id: crypto.randomUUID(),
+                      type: 'agent:idle',
+                      timestamp: now,
+                      teamId: team.id,
+                      teamName: team.name,
+                      memberId: member.id,
+                      memberName: member.name,
+                      sessionName: member.sessionName,
+                      previousValue: previousMemberStatus,
+                      newValue: newWorkingStatus,
+                      changedField: 'workingStatus',
+                    } as AgentEvent);
+                  }
+                  this.busyTransitionTimestamps.delete(memberKey);
+                  this.busyEventEmitted.delete(memberKey);
+                }
+              } else if (newWorkingStatus === 'in_progress' && this.busyTransitionTimestamps.has(memberKey) && !this.busyEventEmitted.has(memberKey)) {
+                // Still in_progress across polls — check if we can now emit the deferred busy event
+                const busyStart = this.busyTransitionTimestamps.get(memberKey)!;
+                if (Date.now() - busyStart >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.eventBusService) {
+                  this.busyEventEmitted.add(memberKey);
+                  this.eventBusService.publish({
+                    id: crypto.randomUUID(),
+                    type: 'agent:busy',
+                    timestamp: now,
+                    teamId: team.id,
+                    teamName: team.name,
+                    memberId: member.id,
+                    memberName: member.name,
+                    sessionName: member.sessionName,
+                    previousValue: 'idle',
+                    newValue: 'in_progress',
+                    changedField: 'workingStatus',
+                  } as AgentEvent);
+                }
               }
 
               this.lastTerminalOutputs.set(member.sessionName, currentOutput);
@@ -527,10 +686,14 @@ export class ActivityMonitorService {
         )
       ]);
 
+      // Strip ANSI escape codes so TUI re-renders (spinners, cursor
+      // repositioning) don't register as meaningful output changes.
+      const cleaned = stripAnsiCodes(output).trim();
+
       // Limit output size to prevent memory issues
-      return output.length > this.MAX_OUTPUT_SIZE
-        ? output.substring(output.length - this.MAX_OUTPUT_SIZE)
-        : output;
+      return cleaned.length > this.MAX_OUTPUT_SIZE
+        ? cleaned.substring(cleaned.length - this.MAX_OUTPUT_SIZE)
+        : cleaned;
     } catch (error) {
       return '';
     }
