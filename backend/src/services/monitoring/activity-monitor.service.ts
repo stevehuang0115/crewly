@@ -6,7 +6,7 @@ import { writeFile, readFile, rename, unlink } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
-import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, RUNTIME_EXIT_CONSTANTS, PTY_CONSTANTS, type WorkingStatus } from '../../constants.js';
+import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, PTY_CONSTANTS, type WorkingStatus } from '../../constants.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { OrchestratorRestartService } from '../orchestrator/orchestrator-restart.service.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
@@ -93,16 +93,6 @@ export class ActivityMonitorService {
       if (!this._sessionBackend) {
         this._sessionBackend = await createSessionBackend('pty');
       }
-    }
-    return this._sessionBackend;
-  }
-
-  /**
-   * Get the session backend synchronously (may return null if not initialized).
-   */
-  private get sessionBackend(): ISessionBackend | null {
-    if (!this._sessionBackend) {
-      this._sessionBackend = getSessionBackendSync();
     }
     return this._sessionBackend;
   }

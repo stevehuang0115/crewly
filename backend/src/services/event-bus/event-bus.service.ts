@@ -16,8 +16,6 @@ import type { MessageQueueService } from '../messaging/message-queue.service.js'
 import type { SlackThreadStoreService } from '../slack/slack-thread-store.service.js';
 import type {
   AgentEvent,
-  EventType,
-  EventFilter,
   EventSubscription,
   CreateSubscriptionInput,
 } from '../../types/event-bus.types.js';
