@@ -123,6 +123,90 @@ export class ActivityMonitorService {
     this.eventBusService = service;
   }
 
+  /**
+   * Build an AgentEvent for a working status transition.
+   *
+   * @param type - The event type ('agent:busy' or 'agent:idle')
+   * @param timestamp - ISO timestamp for the event
+   * @param identity - Agent identity fields (team/member/session)
+   * @param previousValue - The previous working status
+   * @param newValue - The new working status
+   * @returns A fully-formed AgentEvent
+   */
+  private buildAgentEvent(
+    type: AgentEvent['type'],
+    timestamp: string,
+    identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
+    previousValue: string,
+    newValue: string,
+  ): AgentEvent {
+    return {
+      id: crypto.randomUUID(),
+      type,
+      timestamp,
+      teamId: identity.teamId,
+      teamName: identity.teamName,
+      memberId: identity.memberId,
+      memberName: identity.memberName,
+      sessionName: identity.sessionName,
+      previousValue,
+      newValue,
+      changedField: 'workingStatus',
+    } as AgentEvent;
+  }
+
+  /**
+   * Handle duration-gated event emission for a session status transition.
+   * Suppresses spurious idle→busy→idle cycles by requiring a minimum
+   * busy duration (MIN_BUSY_DURATION_MS) before emitting events.
+   *
+   * @param key - Unique key for tracking (e.g. 'orchestrator' or session name)
+   * @param newStatus - The new working status
+   * @param previousStatus - The previous working status
+   * @param statusChanged - Whether the status actually changed this poll
+   * @param identity - Agent identity fields for building the event
+   * @param now - ISO timestamp for the event
+   */
+  private handleDurationGatedEmission(
+    key: string,
+    newStatus: WorkingStatus,
+    previousStatus: WorkingStatus,
+    statusChanged: boolean,
+    identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
+    now: string,
+  ): void {
+    if (statusChanged && newStatus === 'in_progress') {
+      if (!this.busyTransitionTimestamps.has(key)) {
+        this.busyTransitionTimestamps.set(key, Date.now());
+      }
+    }
+
+    if (statusChanged) {
+      const busyStart = this.busyTransitionTimestamps.get(key);
+      const elapsed = busyStart != null ? Date.now() - busyStart : 0;
+
+      if (newStatus === 'in_progress') {
+        if (elapsed >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && !this.busyEventEmitted.has(key) && this.eventBusService) {
+          this.busyEventEmitted.add(key);
+          this.eventBusService.publish(this.buildAgentEvent('agent:busy', now, identity, previousStatus, newStatus));
+        }
+      } else {
+        if (elapsed >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.busyEventEmitted.has(key) && this.eventBusService) {
+          this.eventBusService.publish(this.buildAgentEvent('agent:idle', now, identity, previousStatus, newStatus));
+        }
+        this.busyTransitionTimestamps.delete(key);
+        this.busyEventEmitted.delete(key);
+      }
+    } else if (newStatus === 'in_progress' && this.busyTransitionTimestamps.has(key) && !this.busyEventEmitted.has(key)) {
+      // Still in_progress across polls — check if deferred busy event can now be emitted
+      const busyStart = this.busyTransitionTimestamps.get(key)!;
+      if (Date.now() - busyStart >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.eventBusService) {
+        this.busyEventEmitted.add(key);
+        this.eventBusService.publish(this.buildAgentEvent('agent:busy', now, identity, 'idle', 'in_progress'));
+      }
+    }
+  }
+
   public startPolling(): void {
     if (this.intervalId) {
       this.logger.warn('Activity monitoring already running');
@@ -294,9 +378,10 @@ export class ActivityMonitorService {
 
         const newWorkingStatus: WorkingStatus = outputChanged ? 'in_progress' : 'idle';
         const orchKey = 'orchestrator';
+        const previousStatus = workingStatusData.orchestrator.workingStatus;
+        const statusChanged = previousStatus !== newWorkingStatus;
 
-        if (workingStatusData.orchestrator.workingStatus !== newWorkingStatus) {
-          const previousStatus = workingStatusData.orchestrator.workingStatus;
+        if (statusChanged) {
           workingStatusData.orchestrator.workingStatus = newWorkingStatus;
           workingStatusData.orchestrator.lastActivityCheck = now;
           workingStatusData.orchestrator.updatedAt = now;
@@ -307,77 +392,15 @@ export class ActivityMonitorService {
             newWorkingStatus,
             outputChanged
           });
-
-          // Duration-gated event emission: suppress spurious idle→busy→idle cycles
-          if (newWorkingStatus === 'in_progress') {
-            if (!this.busyTransitionTimestamps.has(orchKey)) {
-              this.busyTransitionTimestamps.set(orchKey, Date.now());
-            }
-          }
-
-          const busyStart = this.busyTransitionTimestamps.get(orchKey);
-          const elapsed = busyStart != null ? Date.now() - busyStart : 0;
-          const minDuration = PTY_CONSTANTS.MIN_BUSY_DURATION_MS;
-
-          if (newWorkingStatus === 'in_progress') {
-            // Only emit agent:busy after the minimum duration has elapsed
-            if (elapsed >= minDuration && !this.busyEventEmitted.has(orchKey) && this.eventBusService) {
-              this.busyEventEmitted.add(orchKey);
-              this.eventBusService.publish({
-                id: crypto.randomUUID(),
-                type: 'agent:busy',
-                timestamp: now,
-                teamId: 'orchestrator',
-                teamName: 'Orchestrator',
-                memberId: AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID,
-                memberName: 'Orchestrator',
-                sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
-                previousValue: previousStatus,
-                newValue: newWorkingStatus,
-                changedField: 'workingStatus',
-              } as AgentEvent);
-            }
-          } else {
-            // Transitioning to idle — only emit if the busy period was long enough
-            if (elapsed >= minDuration && this.busyEventEmitted.has(orchKey) && this.eventBusService) {
-              this.eventBusService.publish({
-                id: crypto.randomUUID(),
-                type: 'agent:idle',
-                timestamp: now,
-                teamId: 'orchestrator',
-                teamName: 'Orchestrator',
-                memberId: AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID,
-                memberName: 'Orchestrator',
-                sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
-                previousValue: previousStatus,
-                newValue: newWorkingStatus,
-                changedField: 'workingStatus',
-              } as AgentEvent);
-            }
-            // Clean up tracking state
-            this.busyTransitionTimestamps.delete(orchKey);
-            this.busyEventEmitted.delete(orchKey);
-          }
-        } else if (newWorkingStatus === 'in_progress' && this.busyTransitionTimestamps.has(orchKey) && !this.busyEventEmitted.has(orchKey)) {
-          // Still in_progress across polls — check if we can now emit the deferred busy event
-          const busyStart = this.busyTransitionTimestamps.get(orchKey)!;
-          if (Date.now() - busyStart >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.eventBusService) {
-            this.busyEventEmitted.add(orchKey);
-            this.eventBusService.publish({
-              id: crypto.randomUUID(),
-              type: 'agent:busy',
-              timestamp: now,
-              teamId: 'orchestrator',
-              teamName: 'Orchestrator',
-              memberId: AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID,
-              memberName: 'Orchestrator',
-              sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
-              previousValue: 'idle',
-              newValue: 'in_progress',
-              changedField: 'workingStatus',
-            } as AgentEvent);
-          }
         }
+
+        this.handleDurationGatedEmission(orchKey, newWorkingStatus, previousStatus, statusChanged, {
+          teamId: 'orchestrator',
+          teamName: 'Orchestrator',
+          memberId: AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID,
+          memberName: 'Orchestrator',
+          sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        }, now);
 
         this.lastTerminalOutputs.set('orchestrator', orchestratorOutput);
       } else {
@@ -447,88 +470,33 @@ export class ActivityMonitorService {
                   updatedAt: now
                 };
                 hasChanges = true;
-              } else if (workingStatusData.teamMembers[memberKey].workingStatus !== newWorkingStatus) {
+              } else {
                 const previousMemberStatus = workingStatusData.teamMembers[memberKey].workingStatus;
-                workingStatusData.teamMembers[memberKey].workingStatus = newWorkingStatus;
-                workingStatusData.teamMembers[memberKey].lastActivityCheck = now;
-                workingStatusData.teamMembers[memberKey].updatedAt = now;
-                hasChanges = true;
+                const memberStatusChanged = previousMemberStatus !== newWorkingStatus;
 
-                this.logger.info('Team member working status updated', {
-                  teamId: team.id,
-                  memberId: member.id,
-                  memberName: member.name,
-                  sessionName: member.sessionName,
-                  newWorkingStatus,
-                  outputChanged
-                });
+                if (memberStatusChanged) {
+                  workingStatusData.teamMembers[memberKey].workingStatus = newWorkingStatus;
+                  workingStatusData.teamMembers[memberKey].lastActivityCheck = now;
+                  workingStatusData.teamMembers[memberKey].updatedAt = now;
+                  hasChanges = true;
 
-                // Duration-gated event emission: suppress spurious idle→busy→idle cycles
-                if (newWorkingStatus === 'in_progress') {
-                  if (!this.busyTransitionTimestamps.has(memberKey)) {
-                    this.busyTransitionTimestamps.set(memberKey, Date.now());
-                  }
-                }
-
-                const busyStart = this.busyTransitionTimestamps.get(memberKey);
-                const elapsed = busyStart != null ? Date.now() - busyStart : 0;
-                const minDuration = PTY_CONSTANTS.MIN_BUSY_DURATION_MS;
-
-                if (newWorkingStatus === 'in_progress') {
-                  if (elapsed >= minDuration && !this.busyEventEmitted.has(memberKey) && this.eventBusService) {
-                    this.busyEventEmitted.add(memberKey);
-                    this.eventBusService.publish({
-                      id: crypto.randomUUID(),
-                      type: 'agent:busy',
-                      timestamp: now,
-                      teamId: team.id,
-                      teamName: team.name,
-                      memberId: member.id,
-                      memberName: member.name,
-                      sessionName: member.sessionName,
-                      previousValue: previousMemberStatus,
-                      newValue: newWorkingStatus,
-                      changedField: 'workingStatus',
-                    } as AgentEvent);
-                  }
-                } else {
-                  if (elapsed >= minDuration && this.busyEventEmitted.has(memberKey) && this.eventBusService) {
-                    this.eventBusService.publish({
-                      id: crypto.randomUUID(),
-                      type: 'agent:idle',
-                      timestamp: now,
-                      teamId: team.id,
-                      teamName: team.name,
-                      memberId: member.id,
-                      memberName: member.name,
-                      sessionName: member.sessionName,
-                      previousValue: previousMemberStatus,
-                      newValue: newWorkingStatus,
-                      changedField: 'workingStatus',
-                    } as AgentEvent);
-                  }
-                  this.busyTransitionTimestamps.delete(memberKey);
-                  this.busyEventEmitted.delete(memberKey);
-                }
-              } else if (newWorkingStatus === 'in_progress' && this.busyTransitionTimestamps.has(memberKey) && !this.busyEventEmitted.has(memberKey)) {
-                // Still in_progress across polls — check if we can now emit the deferred busy event
-                const busyStart = this.busyTransitionTimestamps.get(memberKey)!;
-                if (Date.now() - busyStart >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.eventBusService) {
-                  this.busyEventEmitted.add(memberKey);
-                  this.eventBusService.publish({
-                    id: crypto.randomUUID(),
-                    type: 'agent:busy',
-                    timestamp: now,
+                  this.logger.info('Team member working status updated', {
                     teamId: team.id,
-                    teamName: team.name,
                     memberId: member.id,
                     memberName: member.name,
                     sessionName: member.sessionName,
-                    previousValue: 'idle',
-                    newValue: 'in_progress',
-                    changedField: 'workingStatus',
-                  } as AgentEvent);
+                    newWorkingStatus,
+                    outputChanged
+                  });
                 }
+
+                this.handleDurationGatedEmission(memberKey, newWorkingStatus, previousMemberStatus, memberStatusChanged, {
+                  teamId: team.id,
+                  teamName: team.name,
+                  memberId: member.id,
+                  memberName: member.name,
+                  sessionName: member.sessionName,
+                }, now);
               }
 
               this.lastTerminalOutputs.set(member.sessionName, currentOutput);
@@ -552,9 +520,6 @@ export class ActivityMonitorService {
         await this.saveTeamWorkingStatusFile(workingStatusData);
         this.logger.debug('Updated teamWorkingStatus.json with activity changes');
       }
-
-      // Perform periodic cleanup
-      this.performPeriodicCleanup();
 
     } catch (error) {
       this.logger.error('Error during activity check', {

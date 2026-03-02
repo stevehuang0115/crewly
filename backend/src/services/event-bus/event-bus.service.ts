@@ -470,39 +470,6 @@ export class EventBusService extends EventEmitter {
   }
 
   /**
-   * Deliver a notification message to the subscriber via the message queue.
-   *
-   * @param sub - The subscription whose subscriber should receive the message
-   * @param message - The formatted notification message
-   */
-  private deliverNotification(sub: EventSubscription, message: string): void {
-    if (!this.messageQueueService) {
-      this.logger.warn('MessageQueueService not set, cannot deliver event notification', {
-        subscriptionId: sub.id,
-      });
-      return;
-    }
-
-    try {
-      this.messageQueueService.enqueue({
-        content: message,
-        conversationId: 'system',
-        source: 'system_event',
-      });
-
-      this.logger.debug('Event notification enqueued', {
-        subscriptionId: sub.id,
-        subscriber: sub.subscriberSession,
-      });
-    } catch (error) {
-      this.logger.error('Failed to enqueue event notification', {
-        subscriptionId: sub.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  /**
    * Get the number of subscriptions for a given subscriber session.
    *
    * @param subscriberSession - Session name to count

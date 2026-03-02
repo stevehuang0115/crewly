@@ -298,9 +298,6 @@ export class OrchestratorHeartbeatMonitorService {
 		// work, skip synthetic heartbeat pings to avoid idle token burn.
 		const pendingWork = this.hasPendingWork ? this.hasPendingWork() : true;
 		if (!pendingWork) {
-			if (this.heartbeatRequestSentAt !== null) {
-				this.heartbeatRequestSentAt = null;
-			}
 			this.logger.debug('Skipping heartbeat request: no pending orchestrator work');
 			return;
 		}
