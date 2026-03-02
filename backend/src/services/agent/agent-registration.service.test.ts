@@ -61,6 +61,16 @@ jest.mock('./runtime-service.factory.js', () => ({
 	},
 }));
 
+// Mock PtyActivityTrackerService — default to high idle time (agent not busy)
+const mockGetIdleTimeMs = jest.fn().mockReturnValue(999999);
+jest.mock('./pty-activity-tracker.service.js', () => ({
+	PtyActivityTrackerService: {
+		getInstance: jest.fn().mockReturnValue({
+			getIdleTimeMs: (...args: unknown[]) => mockGetIdleTimeMs(...args),
+		}),
+	},
+}));
+
 describe('AgentRegistrationService', () => {
 	let service: AgentRegistrationService;
 	let mockStorageService: jest.Mocked<StorageService>;
@@ -71,6 +81,9 @@ describe('AgentRegistrationService', () => {
 
 	beforeEach(() => {
 		jest.clearAllMocks();
+
+		// Reset idle time mock to default (agent not busy)
+		mockGetIdleTimeMs.mockReturnValue(999999);
 
 		// Mock session for event-driven delivery
 		// The onData callback simulates terminal output stream
@@ -115,6 +128,8 @@ describe('AgentRegistrationService', () => {
 			capturePane: jest.fn().mockReturnValue('❯ '), // Claude at prompt by default
 			setEnvironmentVariable: jest.fn().mockResolvedValue(undefined),
 			getSession: jest.fn().mockReturnValue(mockSession), // For event-driven delivery
+			listSessions: jest.fn().mockReturnValue([]), // For scanForStuckMessages rewind detection
+			writeRaw: jest.fn(), // For rewind mode recovery
 		};
 
 		// Mock RuntimeService
@@ -1691,18 +1706,12 @@ describe('AgentRegistrationService', () => {
 	});
 
 	describe('sendMessageWithRetry — busy agent protection', () => {
-		it('should not force-deliver when agent is busy (esc to interrupt)', async () => {
-			// Simulate busy terminal with "esc to interrupt" in status bar but no prompt
-			const busyOutput = [
-				'Tool output line 1',
-				'Tool output line 2',
-				'Tool output line 3',
-				'────────────────────────────────────────',
-				'⏵⏵ bypass permissions on · esc to interrupt · ctrl+t',
-			].join('\n');
+		it('should not force-deliver when agent is busy (low idle time)', async () => {
+			// Simulate agent actively processing — PTY output within the busy threshold
+			mockGetIdleTimeMs.mockReturnValue(1000); // 1s idle < 5s threshold = busy
 
-			// All 3 attempts show agent as busy (no prompt, has "esc to interrupt")
-			mockSessionHelper.capturePane.mockReturnValue(busyOutput);
+			// No prompt visible (agent is working)
+			mockSessionHelper.capturePane.mockReturnValue('Tool output line 1\nTool output line 2');
 
 			const result = await service.sendMessageToAgent('test-session', 'Hello');
 
@@ -1711,15 +1720,11 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.sendMessage).not.toHaveBeenCalled();
 		});
 
-		it('should not force-deliver when processing indicators (⏺) are present', async () => {
-			const busyOutput = [
-				'⏺ Running Bash command...',
-				'  $ npm test',
-				'  PASS test1.ts',
-				'  PASS test2.ts',
-			].join('\n');
+		it('should not force-deliver when idle time is zero (active output)', async () => {
+			// Simulate agent with very recent PTY output
+			mockGetIdleTimeMs.mockReturnValue(0); // Just produced output = busy
 
-			mockSessionHelper.capturePane.mockReturnValue(busyOutput);
+			mockSessionHelper.capturePane.mockReturnValue('⏺ Running Bash command...\n  $ npm test');
 
 			const result = await service.sendMessageToAgent('test-session', 'Hello');
 

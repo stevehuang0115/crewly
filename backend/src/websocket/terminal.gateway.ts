@@ -16,13 +16,14 @@ import {
 	type ISessionBackend,
 } from '../services/session/index.js';
 import { getChatGateway } from './chat.gateway.js';
-import { ORCHESTRATOR_SESSION_NAME, CHAT_ROUTING_CONSTANTS, NOTIFY_CONSTANTS, SLACK_NOTIFY_CONSTANTS } from '../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, NOTIFY_CONSTANTS, SLACK_NOTIFY_CONSTANTS } from '../constants.js';
 import { getSlackOrchestratorBridge } from '../services/slack/slack-orchestrator-bridge.js';
 import { getChatService } from '../services/chat/chat.service.js';
 import type { SlackNotification } from '../types/slack.types.js';
 import { stripAnsiCodes, generateResponseHash, ResponseDeduplicator } from '../utils/terminal-output.utils.js';
+import { extractConversationId, extractMarkerBlocks, extractChatResponseBlocks } from '../utils/terminal-string-ops.js';
 import { parseNotifyContent, type NotifyPayload } from '../types/chat.types.js';
-import { PtyActivityTrackerService } from '../services/agent/pty-activity-tracker.service.js';
+
 
 /**
  * Terminal Gateway class for WebSocket-based terminal streaming.
@@ -206,9 +207,6 @@ export class TerminalGateway {
 
 		// Subscribe to PTY onData events - real-time streaming
 		const unsubscribeData = session.onData((data: string) => {
-			// Record activity for idle detection
-			PtyActivityTrackerService.getInstance().recordActivity(sessionName);
-
 			const terminalOutput: TerminalOutput = {
 				sessionName,
 				content: data,
@@ -509,10 +507,10 @@ export class TerminalGateway {
 
 		// Extract conversation ID from the output if present
 		// The format is [CHAT:conversationId] at the start of a response
-		const chatIdMatch = cleanContent.match(CHAT_ROUTING_CONSTANTS.CONVERSATION_ID_PATTERN);
-		if (chatIdMatch) {
-			this.logger.debug('Extracted conversation ID from output', { conversationId: chatIdMatch[1] });
-			this.activeConversationId = chatIdMatch[1];
+		const extractedConvId = extractConversationId(cleanContent);
+		if (extractedConvId) {
+			this.logger.debug('Extracted conversation ID from output', { conversationId: extractedConvId });
+			this.activeConversationId = extractedConvId;
 		}
 
 		// Always buffer content — notifications don't require a conversation ID
@@ -608,19 +606,22 @@ export class TerminalGateway {
 			return;
 		}
 
+		const blocks = extractMarkerBlocks(
+			this.orchestratorOutputBuffer,
+			NOTIFY_CONSTANTS.OPEN_TAG,
+			NOTIFY_CONSTANTS.CLOSE_TAG
+		);
+
 		let lastMatchEnd = 0;
 		let inToolOutput = false;
 
-		for (const match of this.orchestratorOutputBuffer.matchAll(NOTIFY_CONSTANTS.MARKER_PATTERN)) {
-			const matchStart = match.index!;
-			const matchEnd = matchStart + match[0].length;
-
+		for (const block of blocks) {
 			// Check if this NOTIFY block is inside Claude Code tool output.
 			// Tool output is preceded by ⏺ (U+23FA). Look at the text between
 			// the previous match end and this match start for state transitions:
 			// - ⏺ with no following ❯ → entering/still in tool output
 			// - ❯ after ⏺ → tool output ended, back to direct AI output
-			const gapText = this.orchestratorOutputBuffer.slice(lastMatchEnd, matchStart);
+			const gapText = this.orchestratorOutputBuffer.slice(lastMatchEnd, block.startIndex);
 			if (gapText.includes('⏺')) {
 				inToolOutput = true;
 			}
@@ -629,15 +630,15 @@ export class TerminalGateway {
 			}
 			if (inToolOutput) {
 				this.logger.debug('Skipping NOTIFY inside tool output (false positive)', {
-					matchStart,
+					matchStart: block.startIndex,
 					gapSnippet: gapText.slice(-80),
 				});
-				lastMatchEnd = matchEnd;
+				lastMatchEnd = block.endIndex;
 				continue;
 			}
 
-			const rawContent = match[1].trim();
-			lastMatchEnd = matchEnd;
+			const rawContent = block.content;
+			lastMatchEnd = block.endIndex;
 
 			const payload = parseNotifyContent(rawContent);
 			if (!payload) {
@@ -799,14 +800,13 @@ export class TerminalGateway {
 			return;
 		}
 
-		const responsePattern = /\[CHAT_RESPONSE(?::([^\]]*))?\]([\s\S]*?)\[\/CHAT_RESPONSE\]/g;
-		let match: RegExpExecArray | null;
+		const blocks = extractChatResponseBlocks(this.orchestratorOutputBuffer);
 		let lastMatchEnd = 0;
 
-		while ((match = responsePattern.exec(this.orchestratorOutputBuffer)) !== null) {
-			const embeddedConversationId = match[1] || null;
-			const responseContent = match[2].trim();
-			lastMatchEnd = match.index + match[0].length;
+		for (const block of blocks) {
+			const embeddedConversationId = block.conversationId;
+			const responseContent = block.content;
+			lastMatchEnd = block.endIndex;
 
 			const conversationId = embeddedConversationId || this.activeConversationId;
 
@@ -856,13 +856,16 @@ export class TerminalGateway {
 
 		this.logger.debug('Processing legacy [SLACK_NOTIFY] markers (deprecated — use [NOTIFY])');
 
-		SLACK_NOTIFY_CONSTANTS.MARKER_PATTERN.lastIndex = 0;
-		let match: RegExpExecArray | null;
+		const blocks = extractMarkerBlocks(
+			this.orchestratorOutputBuffer,
+			SLACK_NOTIFY_CONSTANTS.OPEN_TAG,
+			SLACK_NOTIFY_CONSTANTS.CLOSE_TAG
+		);
 		let lastMatchEnd = 0;
 
-		while ((match = SLACK_NOTIFY_CONSTANTS.MARKER_PATTERN.exec(this.orchestratorOutputBuffer)) !== null) {
-			const rawContent = match[1].trim();
-			lastMatchEnd = match.index + match[0].length;
+		for (const block of blocks) {
+			const rawContent = block.content;
+			lastMatchEnd = block.endIndex;
 
 			// Legacy SLACK_NOTIFY is always JSON — use parseNotifyContent which
 			// auto-detects JSON and applies PTY cleanup

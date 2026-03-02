@@ -108,6 +108,8 @@ export const SESSION_COMMAND_DELAYS = {
 	MESSAGE_RETRY_DELAY: 1000,
 	/** Additional delay for Claude Code to start processing after message sent */
 	MESSAGE_PROCESSING_DELAY: 500,
+	/** Max idle time (ms) to consider an agent busy. If PTY output occurred within this window, skip delivery. */
+	AGENT_BUSY_IDLE_THRESHOLD_MS: 5000,
 	/** Progressive re-check intervals for Claude Code delivery verification (ms).
 	 *  Total window: 500ms (processing delay) + 1000 + 2000 + 3000 = 6.5s */
 	CLAUDE_VERIFICATION_INTERVALS: [1000, 2000, 3000] as const,
@@ -122,10 +124,6 @@ export const TERMINAL_CONTROLLER_CONSTANTS = {
 
 // Chat routing constants (message markers and patterns for orchestrator communication)
 export const CHAT_ROUTING_CONSTANTS = {
-	/** Regex pattern for extracting conversation ID from chat messages */
-	CONVERSATION_ID_PATTERN: /\[CHAT:([^\]]+)\]/,
-	/** Regex pattern for extracting conversation ID from response markers */
-	RESPONSE_CONVERSATION_ID_PATTERN: /\[CHAT_RESPONSE:([^\]]+)\]/,
 	/** Message format prefix for chat routing */
 	MESSAGE_PREFIX: 'CHAT',
 } as const;
@@ -136,8 +134,6 @@ export const CHAT_ROUTING_CONSTANTS = {
  * via a single `[NOTIFY]...[/NOTIFY]` block with a JSON payload.
  */
 export const NOTIFY_CONSTANTS = {
-	/** Regex for extracting complete [NOTIFY]...[/NOTIFY] blocks from terminal output */
-	MARKER_PATTERN: /\[NOTIFY\]([\s\S]*?)\[\/NOTIFY\]/g,
 	/** Opening marker string for detection */
 	OPEN_TAG: '[NOTIFY]',
 	/** Closing marker string */
@@ -150,8 +146,6 @@ export const NOTIFY_CONSTANTS = {
  * processed for backward compatibility but new orchestrator output should use [NOTIFY].
  */
 export const SLACK_NOTIFY_CONSTANTS = {
-	/** Regex for extracting complete [SLACK_NOTIFY]...[/SLACK_NOTIFY] blocks from terminal output */
-	MARKER_PATTERN: /\[SLACK_NOTIFY\]([\s\S]*?)\[\/SLACK_NOTIFY\]/g,
 	/** Opening marker string for detection */
 	OPEN_TAG: '[SLACK_NOTIFY]',
 	/** Closing marker string */
@@ -217,19 +211,9 @@ export const TERMINAL_FORMATTING_CONSTANTS = {
  */
 export const TERMINAL_PATTERNS = {
 	/**
-	 * Braille spinner characters used by Claude Code to indicate processing.
-	 * Pattern: ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏
-	 */
-	SPINNER: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/,
-
-	/**
-	 * Claude Code's "working" indicator (filled circle).
-	 */
-	WORKING_INDICATOR: /⏺/,
-
-	/**
-	 * Combined pattern for detecting any processing activity.
-	 * Includes spinner, working indicator, and status text.
+	 * Combined pattern for detecting spinner/working processing activity.
+	 * Simple single-char alternation — O(n), no backtracking risk.
+	 * Kept as RegExp for session-command-helper.ts waitForPattern() compatibility.
 	 */
 	PROCESSING: /⏺|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/,
 
@@ -249,69 +233,6 @@ export const TERMINAL_PATTERNS = {
 	 * Includes Claude Code (❯, >, ⏵), bash ($), and Gemini CLI (!).
 	 */
 	PROMPT_CHARS: ['❯', '>', '›', '⏵', '$', '!'] as const,
-
-	/**
-	 * Claude Code idle prompt detection.
-	 * Matches:
-	 * - ❯ or ⏵ or $ alone on a line (standard Claude Code prompt)
-	 * - ❯❯ or ⏵⏵ followed by space or end-of-line (bypass permissions prompt,
-	 *   e.g. "⏵⏵ bypass permissions on (shift+tab to cycle)")
-	 */
-	CLAUDE_CODE_PROMPT: /(?:^|\n)\s*(?:[❯⏵$]\s*(?:\n|$)|❯❯(?:\s|$))/,
-
-	/**
-	 * Gemini CLI idle prompt detection.
-	 * Matches:
-	 * - > or ! followed by a space (TUI prompt, may have placeholder text)
-	 * - Box-drawing border (│, ┃) followed by > or ! (TUI bordered prompt)
-	 * - "Type your message …" or "YOLO mode …" textual prompts
-	 */
-	GEMINI_CLI_PROMPT: /(?:^|\n)\s*(?:[>!]\s|[│┃]\s*[>!]\s|.*?(?:Type\s+your\s+message|YOLO\s+mode))/i,
-
-	/**
-	 * Codex CLI idle prompt detection.
-	 * Matches:
-	 * - `› ` prompt lines (Codex TUI prompt indicator)
-	 * - Box-drawing border followed by `›` or `>`
-	 * - Textual input placeholder shown by Codex
-	 */
-	CODEX_CLI_PROMPT: /(?:^|\n)\s*(?:›\s|[│┃]\s*[›>]\s|.*?Type\s+your\s+message(?:\s+or\s+@path\/to\/file)?)/i,
-
-	/**
-	 * Combined prompt pattern for any runtime (union of Claude Code + Gemini CLI).
-	 * Use runtime-specific patterns when you need to distinguish between runtimes.
-	 */
-	PROMPT_STREAM: /(?:^|\n)\s*(?:[❯⏵$]\s*(?:\n|$)|❯❯(?:\s|$)|[>!]\s|[│┃]\s*[>!]\s|[›>]\s|[│┃]\s*[›>]\s|.*?(?:Type\s+your\s+message|YOLO\s+mode))/i,
-
-	/**
-	 * Processing indicators including status text patterns.
-	 */
-	PROCESSING_INDICATORS: [
-		/⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/, // Spinner characters
-		/Thinking|Processing|Analyzing|Running/i, // Status text
-		/\[\d+\/\d+\]/, // Progress indicators like [1/3]
-		/\.\.\.$/, // Trailing dots indicating activity
-	] as const,
-
-	/**
-	 * Pattern for detecting Claude Code processing with status text.
-	 * Includes spinner characters, working indicator (⏺), and common status verbs.
-	 */
-	PROCESSING_WITH_TEXT: /thinking|processing|analyzing|running|calling|frosting|⏺|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/i,
-
-	/**
-	 * Pattern for detecting Claude Code's "esc to interrupt" status bar text.
-	 * This text only appears when the agent is actively processing, making it
-	 * a reliable busy indicator. It's absent when the agent is idle at prompt.
-	 */
-	BUSY_STATUS_BAR: /esc\s+to\s+interrupt/i,
-
-	/**
-	 * Pattern for detecting Claude Code's Rewind mode.
-	 * Rewind mode is triggered by ESC during processing and displays a
-	 * restore UI. If detected, send 'q' to exit before attempting delivery.
-	 */
-	REWIND_MODE: /Rewind[\s\S]*?Restore the code/,
 } as const;
 
 /**

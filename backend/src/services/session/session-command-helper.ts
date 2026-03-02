@@ -20,6 +20,7 @@ import type { ISession, ISessionBackend } from './session-backend.interface.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SESSION_COMMAND_DELAYS, EVENT_DELIVERY_CONSTANTS, TERMINAL_PATTERNS, PLAN_MODE_DISMISS_PATTERNS } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
+import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 
 /**
  * Key code mappings for special keys
@@ -206,9 +207,9 @@ export class SessionCommandHelper {
 		// Guard: do NOT send ESC if the agent is actively processing.
 		// ESC during processing triggers Claude Code's Rewind mode, which
 		// permanently blocks input. Two ESCs = unrecoverable Rewind UI takeover.
-		const tailOutput = output.slice(-2000);
-		const isBusy = TERMINAL_PATTERNS.BUSY_STATUS_BAR.test(tailOutput) ||
-			TERMINAL_PATTERNS.PROCESSING_WITH_TEXT.test(tailOutput);
+		// Use PTY idle time for robust cross-runtime detection instead of regex.
+		const idleMs = PtyActivityTrackerService.getInstance().getIdleTimeMs(sessionName);
+		const isBusy = idleMs < SESSION_COMMAND_DELAYS.AGENT_BUSY_IDLE_THRESHOLD_MS;
 		if (isBusy) {
 			this.logger.debug('Skipping plan mode dismissal — agent is busy', {
 				sessionName,
@@ -267,7 +268,17 @@ export class SessionCommandHelper {
 		const output = this.backend.captureOutput(sessionName, lines);
 		// Strip trailing empty/whitespace-only lines from terminal buffer.
 		// xterm.js returns empty rows for unused terminal space below content.
-		return output.replace(/(\n\s*)+$/, '\n');
+		// NOTE: The previous regex /(\n\s*)+$/ caused catastrophic backtracking
+		// (ReDoS) because \s* includes \n, creating exponential backtracking on
+		// long terminal output with many trailing blank lines. This iterative
+		// approach is O(n) and immune to ReDoS.
+		const outputLines = output.split('\n');
+		let lastContentLine = outputLines.length - 1;
+		while (lastContentLine >= 0 && outputLines[lastContentLine].trim() === '') {
+			lastContentLine--;
+		}
+		if (lastContentLine < 0) return '\n';
+		return outputLines.slice(0, lastContentLine + 1).join('\n') + '\n';
 	}
 
 	/**

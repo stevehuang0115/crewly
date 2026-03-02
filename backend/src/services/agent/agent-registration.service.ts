@@ -34,6 +34,20 @@ import { ContextWindowMonitorService } from './context-window-monitor.service.js
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
+import {
+	isPromptLine,
+	isAgentAtPrompt,
+	containsSpinnerOrWorkingIndicator,
+	containsProcessingIndicator,
+	containsBusyStatusBar,
+	containsRewindMode,
+	containsGeminiProcessingKeywords,
+	extractChatPrefix,
+	stripTuiLineBorders,
+	matchTuiPromptLine,
+	stripBoxDrawing,
+} from '../../utils/terminal-string-ops.js';
+import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 
 export interface OrchestratorConfig {
 	sessionName: string;
@@ -87,17 +101,9 @@ export class AgentRegistrationService {
 
 
 	// Terminal patterns are now centralized in TERMINAL_PATTERNS constant
-	// Keeping these as static getters for backwards compatibility within the class
+	// Keeping prompt chars as static getter for backwards compatibility within the class
 	private static get CLAUDE_PROMPT_INDICATORS() {
 		return TERMINAL_PATTERNS.PROMPT_CHARS;
-	}
-
-	private static get CLAUDE_PROMPT_STREAM_PATTERN() {
-		return TERMINAL_PATTERNS.PROMPT_STREAM;
-	}
-
-	private static get CLAUDE_PROCESSING_INDICATORS() {
-		return TERMINAL_PATTERNS.PROCESSING_INDICATORS;
 	}
 
 	constructor(
@@ -2165,9 +2171,9 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			if (!delivered) {
 				// Check if the agent is actively processing (busy) — the queue
 				// processor can re-queue instead of permanently failing the message.
-				const busyOutput = sessionHelper.capturePane(sessionName).slice(-2000);
-				const isBusy = TERMINAL_PATTERNS.BUSY_STATUS_BAR.test(busyOutput) ||
-					TERMINAL_PATTERNS.PROCESSING_WITH_TEXT.test(busyOutput);
+				// Use PTY idle time instead of regex patterns for robust cross-runtime detection.
+				const idleMs = PtyActivityTrackerService.getInstance().getIdleTimeMs(sessionName);
+				const isBusy = idleMs < SESSION_COMMAND_DELAYS.AGENT_BUSY_IDLE_THRESHOLD_MS;
 
 				return {
 					success: false,
@@ -2244,10 +2250,6 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			return false;
 		}
 
-		// Use runtime-specific pattern for stream detection to avoid false positives
-		// (e.g. Gemini's `> ` pattern matching markdown blockquotes in Claude Code output)
-		const streamPattern = this.getPromptPatternForRuntime(runtimeType);
-
 		return new Promise<boolean>((resolve) => {
 			let resolved = false;
 			const pollInterval = EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL;
@@ -2295,9 +2297,13 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			const unsubscribe = session.onData((data) => {
 				if (resolved) return;
 				// Strip ANSI escape sequences before testing — raw PTY data contains
-				// cursor positioning, color codes, etc. that break regex matching (#106)
+				// cursor positioning, color codes, etc. that break pattern matching (#106)
 				const cleanData = stripAnsiCodes(data);
-				if (streamPattern.test(cleanData)) {
+				// Check each line for prompt pattern (string-based, no regex)
+				const hasPromptInStream = cleanData.split('\n').some(
+					line => line.trim().length > 0 && isPromptLine(line, runtimeType)
+				);
+				if (hasPromptInStream) {
 					// Double-check with capturePane to avoid false positives from partial data
 					const output = sessionHelper.capturePane(sessionName);
 					if (this.isClaudeAtPrompt(output, runtimeType)) {
@@ -2554,7 +2560,9 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 				// Phase 1: Wait for Claude to be at prompt before sending
 				if (!messageSent) {
-					const isAtPrompt = AgentRegistrationService.CLAUDE_PROMPT_STREAM_PATTERN.test(buffer);
+					const isAtPrompt = buffer.split('\n').some(
+						line => line.trim().length > 0 && isPromptLine(line)
+					);
 
 					if (isAtPrompt) {
 						sendMessageNow();
@@ -2568,14 +2576,12 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				}
 
 				// Look for processing indicators confirming delivery
-				const hasProcessingIndicator =
-					AgentRegistrationService.CLAUDE_PROCESSING_INDICATORS.some((pattern) =>
-						pattern.test(buffer)
-					);
+				const hasProcessingIndicator = containsProcessingIndicator(buffer);
 
 				// Also check if prompt disappeared (Claude is working)
-				const promptStillVisible =
-					AgentRegistrationService.CLAUDE_PROMPT_STREAM_PATTERN.test(buffer);
+				const promptStillVisible = buffer.split('\n').some(
+					line => line.trim().length > 0 && isPromptLine(line)
+				);
 
 				// Use constant for minimum buffer check (P3.2 fix)
 				if (hasProcessingIndicator || (!promptStillVisible && buffer.length > EVENT_DELIVERY_CONSTANTS.MIN_BUFFER_FOR_PROCESSING_DETECTION)) {
@@ -2634,12 +2640,10 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				if (!this.isClaudeAtPrompt(output, runtimeType)) {
 					if (attempt === maxAttempts) {
 						// On the final attempt, check if the agent is DEFINITELY busy
-						// before force-delivering. If we see "esc to interrupt" or
-						// processing indicators, the agent is actively working and
-						// force-delivery risks corrupting its current task.
-						const tailForBusyCheck = output.slice(-2000);
-						const isBusy = TERMINAL_PATTERNS.BUSY_STATUS_BAR.test(tailForBusyCheck) ||
-							TERMINAL_PATTERNS.PROCESSING_WITH_TEXT.test(tailForBusyCheck);
+						// before force-delivering. Use PTY idle time for robust
+						// cross-runtime detection instead of fragile regex patterns.
+						const idleMs = PtyActivityTrackerService.getInstance().getIdleTimeMs(sessionName);
+						const isBusy = idleMs < SESSION_COMMAND_DELAYS.AGENT_BUSY_IDLE_THRESHOLD_MS;
 
 						if (isBusy) {
 							this.logger.warn('Agent is busy (processing indicators detected), skipping force delivery', {
@@ -2705,8 +2709,28 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				//    for focus cycling and overlay dismissal.
 				if (isClaudeCode) {
 					if (attempt > 1) {
+						// On retry: Ctrl+C to cancel stale input, then PTY resize to force
+						// TUI re-render (SIGWINCH), then Tab to cycle Ink focus.
 						await sessionHelper.sendCtrlC(sessionName);
 						await delay(300);
+						try {
+							const session = sessionHelper.getSession(sessionName);
+							if (session) {
+								session.resize(81, 25);
+								await delay(200);
+								session.resize(80, 24);
+								await delay(300);
+							}
+						} catch { /* non-fatal */ }
+						await sessionHelper.sendKey(sessionName, 'Tab');
+						await delay(300);
+					} else {
+						// First attempt: lightweight focus nudge — Tab key cycles Ink's
+						// focusNext() to ensure the InputPrompt is active. This prevents
+						// the "write succeeds but TUI ignores it" failure mode without
+						// the overhead of Ctrl+C or PTY resize.
+						await sessionHelper.sendKey(sessionName, 'Tab');
+						await delay(200);
 					}
 				} else {
 					// Detect recent /compress — Ink TUI loses internal focus after
@@ -2849,7 +2873,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 						//    definitive proof the agent accepted and is working.
 						//    Only check spinner/⏺ chars — NOT text words like
 						//    "thinking" which appear in historical response text.
-						if (TERMINAL_PATTERNS.PROCESSING.test(currentOutput)) {
+						if (containsSpinnerOrWorkingIndicator(currentOutput)) {
 							this.logger.debug('Processing indicators detected — message accepted', {
 								sessionName,
 								attempt,
@@ -2887,7 +2911,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 								// Verify recovery
 								const postEnterOutput = sessionHelper.capturePane(sessionName);
-								if (TERMINAL_PATTERNS.PROCESSING.test(postEnterOutput) ||
+								if (containsSpinnerOrWorkingIndicator(postEnterOutput) ||
 									!this.isClaudeAtPrompt(postEnterOutput, runtimeType)) {
 									this.logger.info('Enter recovery from prompt successful', {
 										sessionName,
@@ -2938,7 +2962,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 							// Verify recovery: check if processing started
 							const recoveryOutput = sessionHelper.capturePane(sessionName);
-							if (TERMINAL_PATTERNS.PROCESSING.test(recoveryOutput)) {
+							if (containsSpinnerOrWorkingIndicator(recoveryOutput)) {
 								this.logger.info('Enter recovery successful — processing started', {
 									sessionName,
 									attempt,
@@ -3027,11 +3051,11 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 								.join('\n');
 						}
 
-						const hasProcessingIndicators = TERMINAL_PATTERNS.PROCESSING_WITH_TEXT.test(
+						const hasProcessingIndicators = containsProcessingIndicator(
 							newContent || afterOutput.slice(-500)
 						);
 						const hasGeminiIndicators = newContent.length > 0
-							&& /reading|thinking|processing|analyzing|generating|searching/i.test(newContent);
+							&& containsGeminiProcessingKeywords(newContent);
 
 						const significantLengthChange = Math.abs(lengthDiff) > 10;
 						// For Gemini CLI, contentChanged alone is sufficient evidence of
@@ -3115,19 +3139,11 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			}
 		}
 
-		// Verification failed, but the message was physically written to the PTY.
-		// If the session is still alive, the agent will likely process it — return
-		// true to avoid false "Failed to deliver" errors shown to users (#99).
-		const backend = getSessionBackendSync();
-		const childAlive = backend?.isChildProcessAlive?.(sessionName);
-		if (childAlive !== false) {
-			this.logger.warn('Message delivery verification inconclusive but session alive — assuming success', {
-				sessionName,
-				maxAttempts,
-				messageLength: message.length,
-			});
-			return true;
-		}
+		this.logger.warn('Message delivery verification failed — all attempts exhausted', {
+			sessionName,
+			maxAttempts,
+			messageLength: message.length,
+		});
 
 		this.logger.error('Message delivery failed after all retry attempts', {
 			sessionName,
@@ -3161,14 +3177,14 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 			// Extract a search token from the message:
 			// Strip [CHAT:uuid] prefix if present, then take the first 40 chars
-			const chatPrefixMatch = message.match(/^\[CHAT:[^\]]+\]\s*/);
-			const contentAfterPrefix = chatPrefixMatch
-				? message.slice(chatPrefixMatch[0].length)
+			const { prefixLength } = extractChatPrefix(message);
+			const contentAfterPrefix = prefixLength > 0
+				? message.slice(prefixLength)
 				: message;
 			const searchToken = contentAfterPrefix.slice(0, 40).trim();
 
 			// Also use [CHAT: as a secondary token if message has a CHAT prefix
-			const chatToken = chatPrefixMatch ? '[CHAT:' : null;
+			const chatToken = prefixLength > 0 ? '[CHAT:' : null;
 
 			// Check last 20 non-empty lines for either token.
 			// Gemini CLI TUI has status bars at the bottom (branch, sandbox, model info)
@@ -3178,7 +3194,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 			const isStuck = linesToCheck.some((line) => {
 				// Strip TUI box-drawing borders before checking (Gemini CLI wraps content in │...│)
-				const stripped = line.replace(/^[│┃║|\s]+/, '').replace(/[│┃║|\s]+$/, '');
+				const stripped = stripTuiLineBorders(line);
 				if (searchToken && (line.includes(searchToken) || stripped.includes(searchToken))) return true;
 				if (chatToken && (line.includes(chatToken) || stripped.includes(chatToken))) return true;
 				return false;
@@ -3228,9 +3244,9 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 			// Extract search token: first 30 chars of the message content
 			// (after stripping any [CHAT:uuid] prefix)
-			const chatPrefixMatch = message.match(/^\[CHAT:[^\]]+\]\s*/);
-			const contentAfterPrefix = chatPrefixMatch
-				? message.slice(chatPrefixMatch[0].length)
+			const { prefixLength } = extractChatPrefix(message);
+			const contentAfterPrefix = prefixLength > 0
+				? message.slice(prefixLength)
 				: message;
 			const searchToken = contentAfterPrefix.slice(0, 30).trim();
 
@@ -3241,15 +3257,14 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			// Or without borders: > text
 			// The prompt line is the line with `> ` followed by actual content.
 			const lines = output.split('\n');
-			const promptLineRegex = /^[│┃║|\s]*>\s+(.+)/;
 
 			for (let i = lines.length - 1; i >= Math.max(0, lines.length - 25); i--) {
 				const line = lines[i];
-				const match = line.match(promptLineRegex);
-				if (match) {
-					const promptContent = match[1].replace(/[│┃║|\s]+$/, '').trim();
+				const promptContent = matchTuiPromptLine(line);
+				if (promptContent !== null) {
+					const trimmedContent = stripTuiLineBorders(promptContent).trim();
 					// Check if the prompt line content contains our message text
-					if (promptContent.length > 5 && promptContent.includes(searchToken)) {
+					if (trimmedContent.length > 5 && trimmedContent.includes(searchToken)) {
 						this.logger.warn('Text stuck at TUI prompt — Enter was not pressed', {
 							sessionName,
 							searchToken: searchToken.slice(0, 20),
@@ -3364,7 +3379,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		for (const sessionName of sessionHelper.listSessions()) {
 			try {
 				const output = sessionHelper.capturePane(sessionName);
-				if (TERMINAL_PATTERNS.REWIND_MODE.test(output)) {
+				if (containsRewindMode(output)) {
 					this.logger.warn('Rewind mode detected, sending q to exit', { sessionName });
 					sessionHelper.writeRaw(sessionName, 'q');
 					await delay(500);
@@ -3388,21 +3403,21 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 				// Look for any text sitting on the prompt line
 				const lines = output.split('\n');
-				const promptLineRegex = /^[│┃║|\s]*>\s+(.+)/;
 
 				for (let i = lines.length - 1; i >= Math.max(0, lines.length - 25); i--) {
-					const match = lines[i].match(promptLineRegex);
-					if (match) {
-						const promptContent = match[1].replace(/[│┃║|\s]+$/, '').trim();
+					const promptContent = matchTuiPromptLine(lines[i]);
+					if (promptContent !== null) {
+						const trimmedContent = stripTuiLineBorders(promptContent).trim();
 						// Only act on substantial text (> 10 chars) to avoid false positives
 						// from TUI rendering artifacts or short status text
-						if (promptContent.length > 10) {
+						if (trimmedContent.length > 10) {
 							// Skip known Gemini CLI idle placeholder text that sits at
 							// the `> ` prompt when no user input is present. These are
 							// NOT stuck messages — they are TUI decoration.
+							const lowerContent = trimmedContent.toLowerCase();
 							const isPlaceholder =
-								/^Type your message/i.test(promptContent) ||
-								/^@[\w/.]+/.test(promptContent);  // e.g., "@path/to/file"
+								lowerContent.startsWith('type your message') ||
+								trimmedContent.startsWith('@');  // e.g., "@path/to/file"
 							if (isPlaceholder) {
 								break;
 							}
@@ -3502,8 +3517,8 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 	 */
 	trackSentMessage(sessionName: string, message: string): void {
 		// Extract a search snippet: skip [CHAT:uuid] prefix, take first 80 chars
-		const prefixMatch = message.match(/^\[CHAT:[^\]]+\]\s*/);
-		const contentStart = prefixMatch ? prefixMatch[0].length : 0;
+		const { prefixLength } = extractChatPrefix(message);
+		const contentStart = prefixLength;
 		// Normalize whitespace: messages may contain \n from enhanced templates.
 		// Terminal bottom text is join(' '), so \n in snippet would never match.
 		const snippet = message.slice(contentStart, contentStart + 80).replace(/\s+/g, ' ').trim();
@@ -3524,24 +3539,9 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 	}
 
 	/**
-	 * Get the runtime-specific prompt regex pattern.
-	 * Avoids false positives by using narrow patterns when runtime is known.
-	 *
-	 * @param runtimeType - The runtime type (claude-code, gemini-cli, etc.)
-	 * @returns The appropriate prompt detection regex
-	 */
-	private getPromptPatternForRuntime(runtimeType?: RuntimeType): RegExp {
-		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) return TERMINAL_PATTERNS.CLAUDE_CODE_PROMPT;
-		if (runtimeType === RUNTIME_TYPES.GEMINI_CLI) return TERMINAL_PATTERNS.GEMINI_CLI_PROMPT;
-		if (runtimeType === RUNTIME_TYPES.CODEX_CLI) return TERMINAL_PATTERNS.CODEX_CLI_PROMPT;
-		return TERMINAL_PATTERNS.PROMPT_STREAM;
-	}
-
-	/**
 	 * Check if the agent appears to be at an input prompt.
-	 * Looks for prompt indicators (❯, ⏵, $, ❯❯, ⏵⏵) in terminal output.
-	 * Also checks for busy indicators (esc to interrupt, spinners, ⏺)
-	 * to avoid false negatives when the agent is processing.
+	 * Delegates to the regex-free isAgentAtPrompt() from terminal-string-ops,
+	 * with additional logging and per-line prompt detection using isPromptLine().
 	 *
 	 * @param terminalOutput - The terminal output to check
 	 * @param runtimeType - The runtime type for pattern selection
@@ -3560,65 +3560,13 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		// further back in the buffer (#106).
 		const tailSection = terminalOutput.slice(-5000);
 
-		const isGemini = runtimeType === RUNTIME_TYPES.GEMINI_CLI;
-		const isClaudeCode = runtimeType === RUNTIME_TYPES.CLAUDE_CODE;
-		const isCodex = runtimeType === RUNTIME_TYPES.CODEX_CLI;
-		const streamPattern = this.getPromptPatternForRuntime(runtimeType);
-
 		// Check for prompt FIRST. Processing indicators like "thinking" or "analyzing"
 		// can appear in the agent's previous response text and persist in the terminal
 		// scroll buffer, causing false negatives if checked before the prompt.
-		if (streamPattern.test(tailSection)) {
-			return true;
-		}
-
-		// Fallback: check last several lines for prompt indicators.
-		// The prompt may not be on the very last line due to status bars,
-		// notifications, or terminal wrapping below the prompt.
 		const lines = tailSection.split('\n').filter((line) => line.trim().length > 0);
 		const linesToCheck = lines.slice(-10);
 
-		const hasPrompt = linesToCheck.some((line) => {
-			const trimmed = line.trim();
-			// Strip TUI box-drawing borders that Gemini CLI and other TUI frameworks
-			// wrap around prompts. Covers full Unicode box-drawing range (#106).
-			const stripped = trimmed
-				.replace(/^[\u2500-\u257F|+\-═║╭╮╰╯]+\s*/, '')
-				.replace(/\s*[\u2500-\u257F|+\-═║╭╮╰╯]+$/, '');
-
-			// Claude Code prompts: ❯, ⏵, $ alone on a line
-			if (!isGemini && !isCodex) {
-				if (['❯', '⏵', '$'].some(ch => trimmed === ch || stripped === ch)) {
-					return true;
-				}
-				// ❯❯ = bypass permissions prompt (idle).
-				// Matches "❯❯", "❯❯ ", and "❯❯ bypass permissions on (shift+tab to cycle)".
-				// Note: ⏵⏵ appears in the status bar but is visible both when idle AND
-				// busy, so it cannot be used as a reliable prompt indicator.
-				if (trimmed.startsWith('❯❯')) {
-					return true;
-				}
-			}
-
-			// Gemini CLI prompts: > or ! followed by space
-			if (!isClaudeCode) {
-				if (isCodex) {
-					// Codex prompt uses `›`; avoid plain `> ` to prevent false-positives
-					// from markdown blockquotes in agent output.
-					if (trimmed.startsWith('› ') || stripped.startsWith('› ')) {
-						return true;
-					}
-				} else if (
-					trimmed.startsWith('> ') || trimmed.startsWith('! ') ||
-					stripped.startsWith('> ') || stripped.startsWith('! ')
-				) {
-					return true;
-				}
-			}
-
-			return false;
-		});
-
+		const hasPrompt = linesToCheck.some(line => isPromptLine(line, runtimeType));
 		if (hasPrompt) {
 			return true;
 		}
@@ -3627,7 +3575,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		// Check last 10 lines (not just 5) because tool output can push processing
 		// indicators further up while the status bar stays at the bottom.
 		const recentLines = linesToCheck.join('\n');
-		if (TERMINAL_PATTERNS.PROCESSING_WITH_TEXT.test(recentLines)) {
+		if (containsProcessingIndicator(recentLines)) {
 			this.logger.debug('Processing indicators present near bottom of output');
 			return false;
 		}
@@ -3635,7 +3583,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		// Check for "esc to interrupt" in the status bar — this is a definitive
 		// busy signal. Claude Code only shows this text while actively processing.
 		// It disappears when the agent returns to idle at the prompt.
-		if (TERMINAL_PATTERNS.BUSY_STATUS_BAR.test(recentLines)) {
+		if (containsBusyStatusBar(recentLines)) {
 			this.logger.debug('Busy status bar detected (esc to interrupt)');
 			return false;
 		}
@@ -3957,7 +3905,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 						const currentOutput = sessionHelper.capturePane(sessionName);
 
 						// Processing indicators (spinners) = definitive success
-						if (TERMINAL_PATTERNS.PROCESSING.test(currentOutput)) {
+						if (containsSpinnerOrWorkingIndicator(currentOutput)) {
 							this.logger.debug('Kickoff delivered — processing indicators detected', {
 								sessionName, checkIndex: i,
 							});

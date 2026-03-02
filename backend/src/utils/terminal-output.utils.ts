@@ -10,6 +10,7 @@
 /**
  * Strip ANSI escape codes from PTY output for reliable pattern matching.
  *
+ * Delegates to the regex-free state-machine implementation in terminal-string-ops.
  * Handles color codes, cursor movements, OSC sequences, and other control
  * characters. Cursor forward movements are replaced with spaces to preserve
  * word boundaries in rendered output.
@@ -17,34 +18,7 @@
  * @param content - Raw PTY output containing ANSI codes
  * @returns Clean text with ANSI codes removed
  */
-export function stripAnsiCodes(content: string): string {
-	return content
-		// Replace cursor forward movements with a space (\d* is safe here because \x1b prefix
-		// prevents false matches with text like [CHAT_RESPONSE]; orphaned CSI below uses \d+)
-		.replace(/\x1b\[\d*C/g, ' ')
-		// Remove private-mode CSI sequences (e.g. ESC[?25h, ESC[?2026l) used by TUI renderers
-		.replace(/\x1b\[\?[0-9;]*[A-Za-z]/g, '')
-		// Remove other CSI sequences (colors, cursor positioning, etc.)
-		.replace(/\x1b\[[0-9;]*[A-Za-zH]/g, '')
-		// Remove OSC sequences (title changes, hyperlinks, etc.)
-		.replace(/\x1b\][^\x07]*\x07/g, '')
-		// Remove other escape sequences
-		.replace(/\x1b[^[\]].?/g, '')
-		// Clean orphaned CSI fragments from PTY buffer boundary splits.
-		// When ESC char lands in one chunk and the CSI params in the next,
-		// artifacts like "[1C", "[22m", or "[38;2;249;226;175m" appear mid-word.
-		// Note: \d+ (one or more digits) required to avoid matching [C in [CHAT_RESPONSE]
-		.replace(/\[\d+C/g, ' ')
-		.replace(/\[\d+(?:;\d+)*[A-BJKHfm]/g, '')
-		// Clean orphaned private-mode fragments where ESC was lost at buffer boundary.
-		// Examples: "[?25h", "[?25l", "[?2026h", "[?2026l"
-		.replace(/\[\?[0-9;]*[A-Za-z]/g, '')
-		// Replace carriage returns with newline (CR/LF normalization)
-		.replace(/\r\n/g, '\n')
-		.replace(/\r/g, '\n')
-		// Remove remaining control characters but keep tabs and newlines
-		.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
-}
+export { stripAnsiCodes } from './terminal-string-ops.js';
 
 /**
  * Generate a hash key for a chat response to detect duplicates.

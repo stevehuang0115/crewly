@@ -20,12 +20,25 @@ jest.mock('../core/logger.service.js', () => ({
 	},
 }));
 
+// Mock PtyActivityTrackerService — default to high idle time (agent not busy)
+const mockGetIdleTimeMs = jest.fn().mockReturnValue(999999);
+jest.mock('../agent/pty-activity-tracker.service.js', () => ({
+	PtyActivityTrackerService: {
+		getInstance: jest.fn().mockReturnValue({
+			getIdleTimeMs: (...args: unknown[]) => mockGetIdleTimeMs(...args),
+		}),
+	},
+}));
+
 describe('SessionCommandHelper', () => {
 	let mockBackend: jest.Mocked<ISessionBackend>;
 	let mockSession: jest.Mocked<ISession>;
 	let helper: SessionCommandHelper;
 
 	beforeEach(() => {
+		// Reset idle time mock to default (agent not busy)
+		mockGetIdleTimeMs.mockReturnValue(999999);
+
 		// Create mock session
 		mockSession = {
 			name: 'test-session',
@@ -665,6 +678,17 @@ describe('SessionCommandHelper', () => {
 
 		it('should return false when no plan mode detected', async () => {
 			mockBackend.captureOutput.mockReturnValue('Normal terminal output\n❯ ');
+			const result = await helper.dismissInteractivePromptIfNeeded('test-session');
+			expect(result).toBe(false);
+			expect(mockSession.write).not.toHaveBeenCalled();
+		});
+
+		it('should skip plan mode dismissal when agent is busy (low idle time)', async () => {
+			// Agent is actively processing — idle time below threshold
+			mockGetIdleTimeMs.mockReturnValue(1000); // 1s idle < 5s threshold = busy
+
+			// Even though plan mode text is in the output, should skip because agent is busy
+			mockBackend.captureOutput.mockReturnValue('Plan mode active');
 			const result = await helper.dismissInteractivePromptIfNeeded('test-session');
 			expect(result).toBe(false);
 			expect(mockSession.write).not.toHaveBeenCalled();
