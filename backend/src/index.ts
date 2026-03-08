@@ -233,6 +233,7 @@ export class CrewlyServer {
 			this.apiController.agentRegistrationService
 		);
 		this.schedulerService.setTaskTrackingService(this.taskTrackingService);
+		this.schedulerService.setMessageQueueService(this.messageQueueService);
 
 		this.terminalGateway = new TerminalGateway(this.io);
 

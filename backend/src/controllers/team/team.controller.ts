@@ -268,14 +268,23 @@ async function _startTeamMemberCore(
             (member as MutableTeamMember).updatedAt = new Date().toISOString();
           }
         } else {
-          // Session exists and agent status is active/activating - this is normal conflict
+          // Session exists and agent status is active/activating/starting — skip this member
+          // Restore the agentStatus to ACTIVE in storage (it may have been set to STARTING by the caller)
+          const freshTeams = await context.storageService.getTeams();
+          const freshTeam = freshTeams.find(t => t.id === team.id);
+          const freshMember = freshTeam?.members.find(m => m.id === member.id) as MutableTeamMember | undefined;
+          if (freshTeam && freshMember && freshMember.agentStatus !== CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE) {
+            freshMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+            freshMember.updatedAt = new Date().toISOString();
+            await context.storageService.saveTeam(freshTeam);
+          }
+
           return {
-            success: false,
+            success: true,
             memberName: member.name,
             memberId: member.id,
             sessionName: member.sessionName,
             status: 'already_active',
-            error: 'Team member already has an active session'
           };
         }
       }
@@ -597,6 +606,15 @@ export async function createTeam(this: ApiContext, req: Request, res: Response):
 
     // Validate parentTeamId references an existing team
     if (parentTeamId) {
+      // Orchestrator is a system team and cannot be used as a parent
+      if (parentTeamId === CREWLY_CONSTANTS.AGENT_IDS.ORCHESTRATOR_ID) {
+        res.status(400).json({
+          success: false,
+          error: 'Cannot use Orchestrator Team as parent — it is a system team'
+        } as ApiResponse);
+        return;
+      }
+
       const parentTeam = existingTeams.find(t => t.id === parentTeamId);
       if (!parentTeam) {
         res.status(400).json({
@@ -868,16 +886,46 @@ export async function startTeam(this: ApiContext, req: Request, res: Response): 
     let sessionsAlreadyRunning = 0;
     const results: TeamMemberOperationResult[] = [];
 
-    // PHASE 2: Immediately set ALL members to 'starting' for instant UI feedback
+    // PHASE 2: Set inactive members to 'starting' for instant UI feedback
+    // Skip members that are already active/started/starting to avoid interrupting running agents
+    const NON_STARTABLE_STATUSES: Set<string> = new Set([
+      CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE,
+      CREWLY_CONSTANTS.AGENT_STATUSES.STARTED,
+      CREWLY_CONSTANTS.AGENT_STATUSES.STARTING,
+      CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVATING,
+    ]);
+    const alreadyActiveMembers = new Set<string>();
     for (const member of team.members) {
-      const mutableMember = member as MutableTeamMember;
-      mutableMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.STARTING;
-      mutableMember.updatedAt = new Date().toISOString();
+      if (NON_STARTABLE_STATUSES.has(member.agentStatus)) {
+        alreadyActiveMembers.add(member.id);
+      } else {
+        const mutableMember = member as MutableTeamMember;
+        mutableMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.STARTING;
+        mutableMember.updatedAt = new Date().toISOString();
+      }
     }
     await this.storageService.saveTeam(team);
 
-    // Start each team member using the internal helper function
+    // Start each team member using the internal helper function (skip verified active members)
     for (const member of team.members) {
+      // Fast-path: if the member was already active before PHASE 2, verify session and skip
+      if (alreadyActiveMembers.has(member.id) && member.sessionName) {
+        const sessions = await this.tmuxService.listSessions();
+        const hasLiveSession = sessions.some(s => s.sessionName === member.sessionName);
+        if (hasLiveSession) {
+          sessionsAlreadyRunning++;
+          results.push({
+            memberName: member.name,
+            sessionName: member.sessionName,
+            status: 'already_running',
+            success: true,
+            memberId: member.id,
+          });
+          continue;
+        }
+        // Session doesn't exist despite active status — fall through to start it
+      }
+
       const result = await _startTeamMemberCore(this, team, member, assignedProject.path);
 
       // Convert internal result to the expected format for the response
@@ -1170,7 +1218,32 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
       return;
     }
 
-    // PHASE 3: Immediately set target member to 'starting' for instant UI feedback
+    // Skip members that are already active to avoid interrupting running agents
+    const skipStatuses: Set<string> = new Set([
+      CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE,
+      CREWLY_CONSTANTS.AGENT_STATUSES.STARTED,
+      CREWLY_CONSTANTS.AGENT_STATUSES.STARTING,
+      CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVATING,
+    ]);
+    if (skipStatuses.has(member.agentStatus) && member.sessionName) {
+      // Verify the session actually exists before skipping
+      const sessions = await this.tmuxService.listSessions();
+      const hasLiveSession = sessions.some(s => s.sessionName === member.sessionName);
+      if (hasLiveSession) {
+        res.json({
+          success: true,
+          message: `Team member ${member.name} is already active`,
+          data: {
+            memberId: member.id,
+            sessionName: member.sessionName,
+            status: member.agentStatus
+          }
+        } as ApiResponse);
+        return;
+      }
+    }
+
+    // Set target member to 'starting' for instant UI feedback
     const mutableMember = member as MutableTeamMember;
     mutableMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.STARTING;
     mutableMember.updatedAt = new Date().toISOString();
@@ -1798,7 +1871,16 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
     }
 
     // Handle orchestrator team specially
-    if (id === 'orchestrator') {
+    if (id === CREWLY_CONSTANTS.AGENT_IDS.ORCHESTRATOR_ID) {
+      // Orchestrator is a system team — cannot have a parent
+      if (updates.parentTeamId !== undefined && updates.parentTeamId !== null) {
+        res.status(400).json({
+          success: false,
+          error: 'Cannot set parentTeamId on Orchestrator Team — it is a system team'
+        } as ApiResponse);
+        return;
+      }
+
       // Orchestrator team is virtual and stored separately
       const orchestratorStatus = await this.storageService.getOrchestratorStatus();
 
@@ -1970,6 +2052,15 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
         // Explicitly remove parent (make top-level)
         team.parentTeamId = undefined;
       } else {
+        // Orchestrator is a system team and cannot be used as a parent
+        if (updates.parentTeamId === CREWLY_CONSTANTS.AGENT_IDS.ORCHESTRATOR_ID) {
+          res.status(400).json({
+            success: false,
+            error: 'Cannot use Orchestrator Team as parent — it is a system team'
+          } as ApiResponse);
+          return;
+        }
+
         // Validate parent team exists and prevent self-reference / circular references
         if (updates.parentTeamId === id) {
           res.status(400).json({

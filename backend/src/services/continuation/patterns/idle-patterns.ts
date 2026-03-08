@@ -8,15 +8,29 @@
  */
 
 /**
- * Patterns indicating shell prompt is visible (agent returned to shell)
+ * Patterns indicating shell prompt is visible (agent returned to shell).
+ *
+ * IMPORTANT: These patterns run against `tmux capture-pane` output to verify
+ * that an agent CLI has actually exited back to the shell. They must be
+ * specific enough to avoid false positives from normal CLI output (e.g.,
+ * markdown `>` blockquotes, `$variable` references, `100%` progress bars).
+ *
+ * Each pattern requires a prompt-like prefix (username, path, or start-of-line)
+ * to distinguish real shell prompts from incidental occurrences in output text.
  */
 export const SHELL_PROMPT_PATTERNS: RegExp[] = [
-  /\$\s*$/m,
-  />\s*$/m,
+  // user@host:path$ or ~/path$  (bash-style prompts)
+  /[~\/\w].*\$\s*$/m,
+  // user@host:path> or C:\path> (cmd/powershell-style prompts — requires path prefix)
+  /[~\/\\:\w].*>\s*$/m,
+  // ❯ is almost exclusively a shell prompt indicator (starship, powerline)
   /❯\s*$/m,
-  /%\s*$/m,
+  // user@host:path% or host% (zsh-style prompts — requires prefix)
+  /[~\/\w].*%\s*$/m,
+  // Explicit versioned prompts
   /bash-\d+\.\d+\$\s*$/m,
   /zsh.*%\s*$/m,
+  // Gemini CLI ready indicators
   /Type\s+your\s+message/i,
   /YOLO\s+mode/i,
 ];

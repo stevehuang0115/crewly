@@ -19,7 +19,7 @@ import { StorageService } from '../core/storage.service.js';
 import { MessageDeliveryLogModel } from '../../models/ScheduledMessage.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { AgentRegistrationService } from '../agent/agent-registration.service.js';
-import { RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, RuntimeType } from '../../constants.js';
+import { RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, RuntimeType, type MessageSource } from '../../constants.js';
 import {
   ScheduledMessageType,
   EnhancedScheduledMessage,
@@ -58,6 +58,12 @@ interface IActivityMonitorLike {
  */
 interface ITaskTrackingServiceLike {
   getAllInProgressTasks(): Promise<{ id: string; status: string; scheduleIds?: string[] }[]>;
+}
+
+/** Minimal interface for MessageQueueService to avoid circular imports. */
+interface IMessageQueueServiceLike {
+  enqueue(input: { content: string; conversationId: string; source: MessageSource; sourceMetadata?: Record<string, string> }): unknown;
+  isProcessing(): boolean;
 }
 
 /**
@@ -139,6 +145,7 @@ export class SchedulerService extends EventEmitter {
   private activityMonitor: IActivityMonitorLike | null = null;
   private agentRegistrationService: AgentRegistrationService | null = null;
   private taskTrackingService: ITaskTrackingServiceLike | null = null;
+  private messageQueueService: IMessageQueueServiceLike | null = null;
 
   // Per-session delivery guard: prevents concurrent deliveries to the same session.
   // When multiple scheduled checks fire simultaneously (e.g., 25+ checks at once),
@@ -230,6 +237,19 @@ export class SchedulerService extends EventEmitter {
   public setTaskTrackingService(service: ITaskTrackingServiceLike): void {
     this.taskTrackingService = service;
     this.logger.info('TaskTrackingService integration enabled for task-aware cleanup');
+  }
+
+  /**
+   * Set the MessageQueueService for serialized orchestrator delivery.
+   * When set, scheduled checks targeting the orchestrator are routed through
+   * the queue instead of direct PTY delivery, preventing interruption of
+   * in-flight chat messages.
+   *
+   * @param service - MessageQueueService instance (must have enqueue method)
+   */
+  public setMessageQueueService(service: IMessageQueueServiceLike): void {
+    this.messageQueueService = service;
+    this.logger.info('MessageQueueService integration enabled for orchestrator delivery serialization');
   }
 
   /**
@@ -833,6 +853,31 @@ export class SchedulerService extends EventEmitter {
    * @param message - Message to send
    */
   private async executeCheck(targetSession: string, message: string): Promise<void> {
+    // Route orchestrator-targeted checks through the message queue when available.
+    // This prevents scheduled checks from interrupting in-flight chat messages
+    // (Slack, WhatsApp, web) that the queue processor is currently delivering.
+    if (targetSession === ORCHESTRATOR_SESSION_NAME && this.messageQueueService) {
+      try {
+        this.messageQueueService.enqueue({
+          content: message,
+          conversationId: 'scheduler',
+          source: 'system_event',
+          sourceMetadata: { origin: 'scheduler' },
+        });
+        this.logger.info('Scheduled check enqueued via message queue for orchestrator', {
+          targetSession,
+          messageLength: message.length,
+        });
+        return;
+      } catch (enqueueError) {
+        this.logger.warn('Failed to enqueue scheduled check, falling back to direct delivery', {
+          targetSession,
+          error: enqueueError instanceof Error ? enqueueError.message : String(enqueueError),
+        });
+        // Fall through to direct delivery
+      }
+    }
+
     // Per-session guard: skip if a delivery to this session is already in progress.
     // Prevents flood-delivering when multiple scheduled checks fire simultaneously,
     // which causes 25+ concurrent Ctrl+C presses that crash the runtime.
@@ -1015,8 +1060,10 @@ export class SchedulerService extends EventEmitter {
 
       // Auto-cancel stale recurring checks when the target stays idle.
       // This avoids indefinite "check again" loops for agents that are no
-      // longer actively working on a task.
-      if (this.activityMonitor && targetSession !== ORCHESTRATOR_SESSION_NAME) {
+      // longer actively working on a task. Applies to ALL sessions including
+      // the orchestrator — if the orchestrator has been idle across 3 check
+      // intervals it means nobody is acting on these checks.
+      if (this.activityMonitor) {
         try {
           const status = await this.activityMonitor.getWorkingStatusForSession(targetSession);
           if (status === 'idle') {

@@ -901,7 +901,7 @@ describe('SchedulerService', () => {
       expect(service.getStats().recurringChecks).toBe(0);
     });
 
-    it('should not auto-cancel recurring checks for orchestrator session when idle', async () => {
+    it('should auto-cancel recurring checks for orchestrator session after 3 idle hits', async () => {
       const mockActivityMonitor = {
         getWorkingStatusForSession: jest.fn().mockResolvedValue('idle'),
       };
@@ -915,16 +915,20 @@ describe('SchedulerService', () => {
         }
       };
 
+      // Idle hit 1 — check still executes
       jest.advanceTimersByTime(60000);
       await flushMicrotasks();
+      // Idle hit 2 — check still executes
       jest.advanceTimersByTime(60000);
       await flushMicrotasks();
+      // Idle hit 3 — auto-cancelled before execution
       jest.advanceTimersByTime(60000);
       await flushMicrotasks();
 
-      expect(service.getStats().recurringChecks).toBe(1);
-      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(3);
-      expect(mockActivityMonitor.getWorkingStatusForSession).not.toHaveBeenCalled();
+      // Should be auto-cancelled after 3 idle hits
+      expect(service.getStats().recurringChecks).toBe(0);
+      // Only 2 executions (hit 3 was cancelled before execution)
+      expect(mockActivityMonitor.getWorkingStatusForSession).toHaveBeenCalled();
     });
   });
 

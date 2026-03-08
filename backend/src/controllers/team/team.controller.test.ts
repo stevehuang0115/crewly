@@ -1173,6 +1173,84 @@ describe('Teams Handlers', () => {
     });
   });
 
+  describe('orchestrator team system protection', () => {
+    it('should reject creating a team with parentTeamId=orchestrator', async () => {
+      mockStorageService.getTeams.mockResolvedValue([]);
+
+      mockRequest.body = {
+        name: 'Bad Child',
+        parentTeamId: 'orchestrator',
+        members: [
+          {
+            name: 'Dev',
+            role: 'developer',
+            systemPrompt: 'You are a developer',
+          },
+        ],
+      };
+
+      await teamsHandlers.createTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(responseMock.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Cannot use Orchestrator Team as parent — it is a system team',
+      });
+    });
+
+    it('should reject updating parentTeamId to orchestrator', async () => {
+      const team = {
+        id: 'team-1',
+        name: 'Some Team',
+        members: [],
+        projectIds: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      mockStorageService.getTeams.mockResolvedValue([team]);
+      mockRequest.params = { id: 'team-1' };
+      mockRequest.body = { parentTeamId: 'orchestrator' };
+
+      await teamsHandlers.updateTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(responseMock.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Cannot use Orchestrator Team as parent — it is a system team',
+      });
+    });
+
+    it('should reject setting parentTeamId on the orchestrator team itself', async () => {
+      mockStorageService.getOrchestratorStatus.mockResolvedValue({
+        agentStatus: 'active',
+        sessionName: 'crewly-orc',
+      });
+
+      mockRequest.params = { id: 'orchestrator' };
+      mockRequest.body = { parentTeamId: 'some-team' };
+
+      await teamsHandlers.updateTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(responseMock.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Cannot set parentTeamId on Orchestrator Team — it is a system team',
+      });
+    });
+  });
+
   describe('deleteTeam - parentTeamId cascade', () => {
     it('should unset parentTeamId on child teams when parent is deleted', async () => {
       const parentTeam = {
@@ -1420,6 +1498,80 @@ describe('Teams Handlers', () => {
         success: false,
         error: 'Team not found'
       });
+    });
+
+    it('should skip already-active members instead of restarting them (#133)', async () => {
+      const mockTeam: Team = {
+        id: 'team-456',
+        name: 'SteamFun',
+        members: [
+          {
+            id: 'member-active',
+            name: 'Nick',
+            sessionName: 'steamfun-nick-38e207cb',
+            role: 'developer',
+            runtimeType: 'claude-code',
+            systemPrompt: 'Test prompt',
+            agentStatus: 'active',
+            workingStatus: 'in_progress',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          },
+          {
+            id: 'member-inactive',
+            name: 'Leo',
+            sessionName: '',
+            role: 'tester',
+            runtimeType: 'claude-code',
+            systemPrompt: 'Test prompt',
+            agentStatus: 'inactive',
+            workingStatus: 'idle',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }
+        ],
+        projectIds: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      mockRequest.params = { id: 'team-456' };
+      mockRequest.body = { projectId: 'project-1' };
+      mockStorageService.getTeams.mockResolvedValue([mockTeam]);
+      mockStorageService.getProjects.mockResolvedValue([{
+        id: 'project-1',
+        path: '/test/project',
+        name: 'Test Project',
+      }]);
+      // Nick's session exists in tmux
+      mockTmuxService.listSessions.mockResolvedValue([
+        { sessionName: 'steamfun-nick-38e207cb' }
+      ]);
+      mockStorageService.saveTeam.mockResolvedValue(undefined);
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>().mockResolvedValue({ success: true, sessionName: 'steamfun-leo-inactive1' })
+      } as any;
+
+      await teamsHandlers.startTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // createAgentSession should only be called for Leo (inactive), NOT for Nick (active)
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).toHaveBeenCalledTimes(1);
+
+      // Verify response includes Nick as already_running and Leo as started
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+        })
+      );
+
+      // Nick's agentStatus should NOT have been changed to 'starting'
+      const firstSave = (mockStorageService.saveTeam as jest.Mock).mock.calls[0]?.[0] as Team;
+      const nickAfterSave = firstSave?.members.find(m => m.id === 'member-active');
+      expect(nickAfterSave?.agentStatus).toBe('active');
     });
   });
 
@@ -2323,6 +2475,55 @@ describe('Teams Handlers', () => {
       expect(responseMock.json).toHaveBeenCalledWith(
         expect.objectContaining({
           success: true,
+        })
+      );
+    });
+
+    it('should skip already-active members with a live session (#133)', async () => {
+      const mockTeam: Team = {
+        id: 'team-1',
+        name: 'Test Team',
+        members: [{
+          id: 'member-1',
+          name: 'Nick',
+          sessionName: 'steamfun-nick-38e207cb',
+          role: 'developer',
+          systemPrompt: 'Test prompt',
+          agentStatus: 'active',
+          workingStatus: 'in_progress',
+          runtimeType: 'claude-code',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }],
+        projectIds: ['project-1'],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      mockStorageService.getTeams.mockResolvedValue([mockTeam]);
+      // Session exists in tmux
+      mockTmuxService.listSessions.mockResolvedValue([
+        { sessionName: 'steamfun-nick-38e207cb' }
+      ]);
+
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>()
+      } as any;
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // createAgentSession should NOT be called since the member is already active
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
+
+      // Should return success with already-active info
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          message: expect.stringContaining('already active'),
         })
       );
     });

@@ -207,7 +207,7 @@ describe('OutputAnalyzer', () => {
 
   describe('detectIdleState', () => {
     it('should detect shell prompt', () => {
-      const output = 'Some output here\n$ ';
+      const output = 'Some output here\nuser@host:~/project$ ';
       expect(analyzer.detectIdleState(output)).toBe(true);
     });
 
@@ -293,7 +293,7 @@ describe('OutputAnalyzer', () => {
     });
 
     it('should return INCOMPLETE when session is idle', async () => {
-      const output = 'Task started...\nDone with part 1.\n$ ';
+      const output = 'Task started...\nDone with part 1.\nuser@host:~/project$ ';
       const analysis = await analyzer.analyze('test-session', output);
 
       expect(analysis.conclusion).toBe('INCOMPLETE');
@@ -368,7 +368,7 @@ describe('OutputAnalyzer', () => {
     });
 
     it('should handle very long output', async () => {
-      const longOutput = 'Log line\n'.repeat(10000) + '$ ';
+      const longOutput = 'Log line\n'.repeat(10000) + 'user@host:~/project$ ';
       const analysis = await analyzer.analyze('test-session', longOutput);
       expect(analysis.conclusion).toBe('INCOMPLETE'); // Detected shell prompt
     });
