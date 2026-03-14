@@ -1002,8 +1002,19 @@ export class CrewlyServer {
 			// regardless of what was stored from a previous (possibly different) deployment.
 			const envRuntime = process.env.DEFAULT_RUNTIME;
 			if (envRuntime && Object.values(RUNTIME_TYPES).includes(envRuntime as RuntimeType)) {
+				const previousRuntime = runtimeType;
 				runtimeType = envRuntime as RuntimeType;
-				this.logger.info('DEFAULT_RUNTIME env overrides stored runtime', { runtimeType });
+				this.logger.info('DEFAULT_RUNTIME env overrides stored runtime', { runtimeType, previousRuntime });
+
+				// #183: Persist the override so stored status stays in sync
+				if (previousRuntime !== runtimeType) {
+					try {
+						await this.storageService.updateOrchestratorRuntimeType(runtimeType);
+						this.logger.info('Synced orchestrator runtime to storage', { runtimeType });
+					} catch {
+						this.logger.warn('Failed to sync orchestrator runtime to storage');
+					}
+				}
 			}
 
 			// Create orchestrator agent session

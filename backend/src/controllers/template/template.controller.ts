@@ -126,3 +126,77 @@ export const handleCreateTeamFromTemplate = asyncHandler(async (req: Request, re
 
   res.status(201).json({ success: true, data: result });
 });
+
+/**
+ * POST /api/templates/:id/deploy - Deploy a template: create team + save to storage (#184).
+ *
+ * Unlike create-team (which returns a team object without saving),
+ * deploy creates the team, persists it to ~/.crewly/teams/, and
+ * optionally assigns it to a project.
+ *
+ * @param req - Express request with template ID in params, teamName + projectId in body
+ * @param res - Express response with created team data
+ */
+export const handleDeployTemplate = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const { teamName, nameOverrides, projectId, defaultRuntime } = req.body as {
+    teamName?: string;
+    nameOverrides?: Record<string, string>;
+    projectId?: string;
+    defaultRuntime?: string;
+  };
+
+  if (!teamName || typeof teamName !== 'string' || teamName.trim().length === 0) {
+    res.status(400).json({ success: false, error: 'teamName is required' });
+    return;
+  }
+
+  const templateService = TemplateService.getInstance();
+  const result = templateService.createTeamFromTemplate(id, teamName.trim(), nameOverrides);
+
+  if (!result) {
+    res.status(404).json({ success: false, error: `Template "${id}" not found` });
+    return;
+  }
+
+  // Override runtime if specified (for crewly-pro/SMB deployments)
+  if (defaultRuntime) {
+    for (const member of result.team.members) {
+      member.runtimeType = defaultRuntime as any;
+    }
+  }
+
+  // Get template for mission/budget/qualityGate
+  const template = templateService.getTemplate(id);
+  if (template) {
+    result.team.mission = (template as any).mission || result.team.description;
+    result.team.budget = (template as any).budget;
+    result.team.qualityGate = (template as any).qualityGate;
+  }
+
+  // Assign to project if specified
+  if (projectId) {
+    result.team.projectIds = [projectId];
+  }
+
+  // Generate session names for members
+  const teamSlug = teamName.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+  for (const member of result.team.members) {
+    const memberSlug = member.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    member.sessionName = `${teamSlug}-${memberSlug}-${member.id.slice(0, 8)}`;
+  }
+
+  // Save team to storage via API (StorageService)
+  const { StorageService } = await import('../../services/core/storage.service.js');
+  const storage = StorageService.getInstance();
+  await storage.saveTeam(result.team);
+
+  res.status(201).json({
+    success: true,
+    data: {
+      ...result,
+      deployed: true,
+      message: `Team "${teamName}" deployed from template "${id}" with ${result.memberCount} members`,
+    },
+  });
+});
