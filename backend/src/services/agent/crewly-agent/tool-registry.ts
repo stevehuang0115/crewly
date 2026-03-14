@@ -79,6 +79,40 @@ export function stripNotifyMarkers(text: string): string {
 }
 
 /**
+ * Convert GitHub-flavored Markdown to Slack mrkdwn format (#181).
+ *
+ * Transformations applied (in order):
+ * 1. Escape &, <, > to HTML entities (Slack requirement)
+ * 2. Convert fenced code blocks (```lang\n...\n```) to Slack code blocks
+ * 3. Convert **bold** to *bold* (Slack uses single asterisks)
+ * 4. Convert [text](url) links to <url|text> (Slack link format)
+ *
+ * @param text - Markdown-formatted text
+ * @returns Text formatted for Slack mrkdwn
+ */
+export function convertMarkdownToSlackMrkdwn(text: string): string {
+  // 1. Escape special Slack characters (must happen first, before adding <> for links)
+  let result = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 2. Convert fenced code blocks: ```lang\n...\n``` → ```\n...\n```
+  // Slack doesn't support language hints in code blocks, so strip them
+  result = result.replace(/```\w*\n/g, '```\n');
+
+  // 3. Convert **bold** to *bold* (Slack bold is single asterisk)
+  // Must not touch single * (already italic in both formats)
+  result = result.replace(/\*\*(.+?)\*\*/g, '*$1*');
+
+  // 4. Convert [text](url) links to <url|text>
+  // The url may contain escaped &gt; from step 1, but real URLs won't have those
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>');
+
+  return result;
+}
+
+/**
  * Sensitivity classification for each tool.
  * Used by the audit trail to classify tool invocations.
  */
@@ -450,6 +484,8 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
       }),
       execute: async ({ channelId, text, threadTs }) => {
         let cleanText = stripNotifyMarkers(text as string);
+        // #181: Convert markdown to Slack mrkdwn format
+        cleanText = convertMarkdownToSlackMrkdwn(cleanText);
 
         // Auto-prefix with agent display name so Slack messages are attributable
         // Session format: "crewly-{team}-{name}-{uuid}" → extract {name}

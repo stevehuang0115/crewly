@@ -16,8 +16,35 @@ CONTEXT=$(echo "$INPUT" | jq -r '.context // empty')
 PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
 # #150: Task type classification — 'technical' tasks can bypass PM routing
 TASK_TYPE=$(echo "$INPUT" | jq -r '.taskType // "general"')
+# #180: Cross-team validation
+TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // empty')
+FORCE_CROSS_TEAM=$(echo "$INPUT" | jq -r '.forceCrossTeam // "false"')
 require_param "to" "$TO"
 require_param "task" "$TASK"
+
+# #180: Validate target agent belongs to the specified team
+if [ -n "$TEAM_ID" ] && [ "$FORCE_CROSS_TEAM" != "true" ]; then
+  TEAM_DATA=$(api_call GET "/teams/${TEAM_ID}" 2>/dev/null || echo '{}')
+  MEMBER_SESSION=$(echo "$TEAM_DATA" | jq -r --arg to "$TO" '.data.members[]? | select(.sessionName == $to) | .sessionName // empty' 2>/dev/null || true)
+  if [ -z "$MEMBER_SESSION" ]; then
+    echo "{\"success\":false,\"error\":\"Cross-team delegation blocked: ${TO} is not a member of team ${TEAM_ID}. Use forceCrossTeam:true to override.\"}"
+    exit 1
+  fi
+fi
+
+# #182: Technical task routing — if taskType=technical and target is PM with a TL,
+# auto-redirect to the TL to skip PM middleman latency
+if [ "$TASK_TYPE" = "technical" ] && [ -n "$TEAM_ID" ]; then
+  TARGET_ROLE=$(echo "$TEAM_DATA" | jq -r --arg to "$TO" '.data.members[]? | select(.sessionName == $to) | .role // empty' 2>/dev/null || true)
+  if [ "$TARGET_ROLE" = "product-manager" ]; then
+    # Find TL in the same team
+    TL_SESSION=$(echo "$TEAM_DATA" | jq -r '.data.members[]? | select(.role == "team-leader" or .canDelegate == true) | .sessionName // empty' 2>/dev/null | head -1 || true)
+    if [ -n "$TL_SESSION" ]; then
+      echo "{\"info\":\"Technical task redirected from PM (${TO}) to TL (${TL_SESSION})\"}" >&2
+      TO="$TL_SESSION"
+    fi
+  fi
+fi
 
 # Structured message parameters (for hierarchical teams)
 TITLE=$(echo "$INPUT" | jq -r '.title // empty')

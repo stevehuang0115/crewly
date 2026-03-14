@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, jest, afterEach } from '@jest/globals';
-import { createTools, getToolNames, TOOL_SENSITIVITY, stripNotifyMarkers } from './tool-registry.js';
+import { createTools, getToolNames, TOOL_SENSITIVITY, stripNotifyMarkers, convertMarkdownToSlackMrkdwn } from './tool-registry.js';
 import { CrewlyApiClient } from './api-client.js';
 import type { AuditEntry, ToolCallbacks, CompactionResult, AuditLogFilters } from './types.js';
 import { WRITE_TOOLS } from './types.js';
@@ -309,6 +309,57 @@ describe('Tool Registry', () => {
     it('should be case-insensitive', () => {
       const input = '[notify]\n---\nContent\n[/notify]';
       expect(stripNotifyMarkers(input)).toBe('Content');
+    });
+  });
+
+  describe('#181: convertMarkdownToSlackMrkdwn', () => {
+    it('should convert **bold** to *bold*', () => {
+      expect(convertMarkdownToSlackMrkdwn('This is **bold** text')).toBe('This is *bold* text');
+    });
+
+    it('should convert multiple **bold** segments', () => {
+      expect(convertMarkdownToSlackMrkdwn('**one** and **two**')).toBe('*one* and *two*');
+    });
+
+    it('should convert [text](url) to <url|text>', () => {
+      expect(convertMarkdownToSlackMrkdwn('Visit [Google](https://google.com) now'))
+        .toBe('Visit <https://google.com|Google> now');
+    });
+
+    it('should escape & < > to HTML entities', () => {
+      expect(convertMarkdownToSlackMrkdwn('A & B < C > D'))
+        .toBe('A &amp; B &lt; C &gt; D');
+    });
+
+    it('should strip language hints from fenced code blocks', () => {
+      const input = '```typescript\nconst x = 1;\n```';
+      const expected = '```\nconst x = 1;\n```';
+      expect(convertMarkdownToSlackMrkdwn(input)).toBe(expected);
+    });
+
+    it('should preserve plain code blocks without language hint', () => {
+      const input = '```\ncode here\n```';
+      expect(convertMarkdownToSlackMrkdwn(input)).toBe('```\ncode here\n```');
+    });
+
+    it('should handle combined formatting', () => {
+      const input = '**Important**: See [docs](https://docs.io) for A & B';
+      const result = convertMarkdownToSlackMrkdwn(input);
+      expect(result).toContain('*Important*');
+      expect(result).toContain('<https://docs.io|docs>');
+      expect(result).toContain('A &amp; B');
+    });
+
+    it('should not touch single asterisks (italic)', () => {
+      expect(convertMarkdownToSlackMrkdwn('This is *italic* text')).toBe('This is *italic* text');
+    });
+
+    it('should return empty string unchanged', () => {
+      expect(convertMarkdownToSlackMrkdwn('')).toBe('');
+    });
+
+    it('should handle text with no markdown', () => {
+      expect(convertMarkdownToSlackMrkdwn('Plain text')).toBe('Plain text');
     });
   });
 
