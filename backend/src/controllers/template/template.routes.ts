@@ -12,6 +12,7 @@ import {
   handleListTemplates,
   handleGetTemplate,
   handleCreateTeamFromTemplate,
+  handleDeployTemplate,
 } from './template.controller.js';
 
 /**
@@ -36,6 +37,7 @@ export function createTemplateRouter(): Router {
   // Parameterized routes
   router.get('/:id', handleGetTemplate);
   router.post('/:id/create-team', handleCreateTeamFromTemplate);
+  router.post('/:id/deploy', handleDeployTemplate);
 
   return router;
 }
