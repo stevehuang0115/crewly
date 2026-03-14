@@ -983,15 +983,26 @@ export class CrewlyServer {
 
 			this.logger.info('Auto-start orchestrator is enabled, starting orchestrator...');
 
-			// Determine runtime type from orchestrator status
+			// Determine runtime type: env var > stored status > default (claude-code)
+			// DEFAULT_RUNTIME env var enables crewly-pro/Docker/headless deployments
+			// to use crewly-agent without needing a pre-existing orchestrator status file.
 			let runtimeType: RuntimeType = RUNTIME_TYPES.CLAUDE_CODE;
+
+			// Priority 1: DEFAULT_RUNTIME env var (product-level configuration)
+			const envRuntime = process.env.DEFAULT_RUNTIME;
+			if (envRuntime && Object.values(RUNTIME_TYPES).includes(envRuntime as RuntimeType)) {
+				runtimeType = envRuntime as RuntimeType;
+				this.logger.info('Using DEFAULT_RUNTIME from environment', { runtimeType });
+			}
+
+			// Priority 2: Stored orchestrator status (user changed runtime via UI)
 			try {
 				const orchestratorStatus = await this.storageService.getOrchestratorStatus();
 				if (orchestratorStatus?.runtimeType) {
 					runtimeType = orchestratorStatus.runtimeType as RuntimeType;
 				}
 			} catch {
-				// Use default runtime type
+				// Use env or default runtime type
 			}
 
 			// Create orchestrator agent session
