@@ -341,6 +341,9 @@ export class CrewlyServer {
 						scriptSrc: ["'self'"],
 						imgSrc: ["'self'", 'data:', 'https:'],
 						connectSrc: ["'self'", 'ws:', 'wss:'],
+						// Disable upgrade-insecure-requests for HTTP-only deployments (ESTestNode)
+						// Without this, browsers on HTTP upgrade all asset requests to HTTPS → ERR_SSL_PROTOCOL_ERROR
+						upgradeInsecureRequests: null,
 					},
 				},
 			})
