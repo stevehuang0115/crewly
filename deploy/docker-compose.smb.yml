@@ -43,7 +43,7 @@ services:
     environment:
       - NODE_ENV=production
       - WEB_PORT=8787
-      - CREWLY_HEADLESS=true
+      - CREWLY_HEADLESS=false
       # Agent runtime: use crewly-agent (in-process, no PTY required)
       - DEFAULT_RUNTIME=crewly-agent
       # Model configuration (set in .env.smb)
