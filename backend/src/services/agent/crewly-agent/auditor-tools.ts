@@ -13,6 +13,7 @@ import * as path from 'path';
 import { z } from 'zod';
 import type { CrewlyApiClient } from './api-client.js';
 import type { ToolDefinition } from './types.js';
+import { convertMarkdownToSlackMrkdwn } from './tool-registry.js';
 
 /** Severity levels for audit findings */
 const AUDIT_SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
@@ -207,8 +208,66 @@ export function createAuditorTools(
       }),
       execute: async (args) => {
         const { text, channelId, threadTs } = args as { text: string; channelId: string; threadTs: string };
-        const result = await client.post('/slack/send', { channelId, text, threadTs });
+        // #181: Convert markdown to Slack mrkdwn format
+        const slackText = convertMarkdownToSlackMrkdwn(text);
+        const result = await client.post('/slack/send', { channelId, text: slackText, threadTs });
         return result.success ? { sent: true } : { error: result.error };
+      },
+    },
+
+    create_github_issue: {
+      description: 'Create a GitHub issue for a bug or enhancement found during audit (#178). Deduplicates: checks existing open issues before creating. Requires gh CLI to be available.',
+      inputSchema: z.object({
+        title: z.string().describe('Issue title (include severity prefix like [Critical], [High], [Medium])'),
+        body: z.string().describe('Issue body in markdown format'),
+        labels: z.array(z.string()).default(['bug']).describe('GitHub labels (e.g., bug, enhancement)'),
+      }),
+      execute: async (args) => {
+        const { title, body, labels } = args as { title: string; body: string; labels: string[] };
+        const { execSync } = await import('child_process');
+
+        try {
+          // Dedup: search for existing open issues with similar title
+          const searchQuery = title.replace(/\[.*?\]\s*/, '').slice(0, 50);
+          let existingIssues = '';
+          try {
+            existingIssues = execSync(
+              `gh issue list --state open --search "${searchQuery.replace(/"/g, '\\"')}" --json number,title --limit 5`,
+              { encoding: 'utf-8', timeout: 15000 }
+            );
+          } catch { /* gh not available or no repo */ }
+
+          if (existingIssues) {
+            const issues = JSON.parse(existingIssues);
+            const duplicate = issues.find((i: { title: string }) =>
+              i.title.toLowerCase().includes(searchQuery.toLowerCase().slice(0, 30))
+            );
+            if (duplicate) {
+              return {
+                success: true,
+                created: false,
+                duplicate: true,
+                existingIssue: `#${duplicate.number}: ${duplicate.title}`,
+              };
+            }
+          }
+
+          // Create the issue
+          const labelFlag = labels.map(l => `--label "${l}"`).join(' ');
+          const result = execSync(
+            `gh issue create --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" ${labelFlag}`,
+            { encoding: 'utf-8', timeout: 30000 }
+          );
+
+          const issueUrl = result.trim();
+          return { success: true, created: true, url: issueUrl, title };
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+            note: 'GitHub CLI (gh) may not be installed or authenticated',
+          };
+        }
       },
     },
 
@@ -245,6 +304,6 @@ export function getAuditorToolNames(): string[] {
   return [
     'get_team_status', 'get_agent_logs', 'get_tasks', 'recall_goals',
     'heartbeat', 'get_agent_status', 'subscribe_event',
-    'write_audit_report', 'reply_slack', 'read_audit_history',
+    'write_audit_report', 'reply_slack', 'read_audit_history', 'create_github_issue',
   ];
 }

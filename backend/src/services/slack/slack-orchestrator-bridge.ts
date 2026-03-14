@@ -260,6 +260,33 @@ export class SlackOrchestratorBridge extends EventEmitter {
         return;
       }
 
+      // #177: @mention routing — route to specific agent if @name is detected
+      const mentionTarget = await this.resolveMentionTarget(enrichedText);
+      if (mentionTarget) {
+        const isActive = await isAgentActive(mentionTarget.sessionName);
+        if (isActive) {
+          this.logger.info('Routing message to mentioned agent', {
+            agent: mentionTarget.name,
+            session: mentionTarget.sessionName,
+          });
+          if (this.config.showTypingIndicator) {
+            await this.addTypingIndicator(message);
+          }
+          // Strip the @mention prefix and send to the target agent
+          const cleanMessage = enrichedText.replace(new RegExp(`^@${mentionTarget.name}\\s*`, 'i'), '').trim();
+          const response = await this.sendToAgent(mentionTarget.sessionName, cleanMessage || enrichedText, context);
+          await this.sendSlackResponse(message, response);
+          if (this.config.showTypingIndicator) {
+            await this.markComplete(message);
+          }
+          return;
+        } else {
+          this.logger.info('Mentioned agent is inactive, falling back to orchestrator', {
+            agent: mentionTarget.name,
+          });
+        }
+      }
+
       // Parse command intent
       const command = this.parseCommand(message.text);
 
@@ -1324,6 +1351,129 @@ Just type naturally to chat with the orchestrator!`;
       urgency: 'low',
       timestamp: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Resolve @mention in message text to an agent session (#177).
+   *
+   * Matches patterns: @assistant, @auditor, @sam, @leo, etc.
+   * Looks up the agent name in team configs to find the session name.
+   *
+   * @param text - Message text to scan for @mentions
+   * @returns Target agent info, or null if no mention found
+   */
+  private async resolveMentionTarget(text: string): Promise<{ name: string; sessionName: string } | null> {
+    // Match @name at the start of the message
+    const mentionMatch = text.match(/^@(\w+)\s/i);
+    if (!mentionMatch) return null;
+
+    const mentionedName = mentionMatch[1].toLowerCase();
+
+    // Built-in aliases
+    const aliases: Record<string, string> = {
+      assistant: 'crewly-orc-assistant',
+      auditor: 'crewly-auditor',
+      orc: 'crewly-orc',
+      orchestrator: 'crewly-orc',
+    };
+
+    if (aliases[mentionedName]) {
+      return { name: mentionedName, sessionName: aliases[mentionedName] };
+    }
+
+    // Look up in team configs
+    try {
+      const StorageService = (await import('../core/storage.service.js')).StorageService;
+      const storage = StorageService.getInstance();
+      const teams = await storage.getTeams();
+      for (const team of teams) {
+        for (const member of (team.members || [])) {
+          // Match by name (case-insensitive) or session name fragment
+          const memberName = member.name?.toLowerCase() || '';
+          const sessionParts = (member.sessionName || '').split('-');
+          const shortName = sessionParts.length >= 3 ? sessionParts[2] : '';
+
+          if (memberName === mentionedName || shortName === mentionedName) {
+            return { name: mentionedName, sessionName: member.sessionName };
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.warn('Failed to look up mention target', {
+        mention: mentionedName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return null;
+  }
+
+  /**
+   * Send a message to a specific agent session via terminal deliver (#177).
+   *
+   * @param sessionName - Target agent session
+   * @param message - Message to send
+   * @param context - Slack context for response routing
+   * @returns Agent response text
+   */
+  private async sendToAgent(
+    sessionName: string,
+    message: string,
+    context?: SlackConversationContext,
+  ): Promise<string> {
+    try {
+      // Enrich with Slack context for reply routing
+      let enrichedMessage = message;
+      if (context) {
+        enrichedMessage = `[SLACK_CONTEXT:channelId=${context.channelId},threadTs=${context.threadTs || ''}]\n${message}`;
+      }
+
+      // Use message queue for agents that support it, or deliver directly
+      if (this.messageQueueService) {
+        const chatResult = await this.chatService.sendMessage({
+          content: enrichedMessage,
+          conversationId: context?.conversationId,
+          metadata: { source: 'slack', channelId: context?.channelId },
+        });
+
+        return new Promise<string>((resolve) => {
+          let resolved = false;
+          const timeoutId = setTimeout(() => {
+            if (!resolved) { resolved = true; resolve('Agent is processing your message. Check back shortly.'); }
+          }, this.config.responseTimeoutMs);
+
+          this.messageQueueService!.enqueue({
+            content: enrichedMessage,
+            conversationId: chatResult.conversation.id,
+            source: 'slack',
+            targetSession: sessionName,
+            sourceMetadata: {
+              slackResolve: (resp: string) => {
+                if (!resolved) { resolved = true; clearTimeout(timeoutId); resolve(resp); }
+              },
+              channelId: context?.channelId,
+              threadTs: context?.threadTs,
+            },
+          });
+        });
+      }
+
+      // Fallback: direct terminal delivery
+      const { default: fetch } = await import('node-fetch' as any).catch(() => ({ default: globalThis.fetch }));
+      const apiUrl = process.env.CREWLY_API_URL || 'http://localhost:8787';
+      await fetch(`${apiUrl}/api/terminal/${sessionName}/deliver`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: enrichedMessage, force: true }),
+      });
+      return 'Message delivered to agent. Response will arrive shortly.';
+    } catch (err) {
+      this.logger.error('Failed to send to agent', {
+        session: sessionName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return `Failed to reach agent. Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 }
 
