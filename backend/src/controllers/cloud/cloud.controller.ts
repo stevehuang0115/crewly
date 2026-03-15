@@ -18,9 +18,9 @@ import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudController');
 
-/** Relay server URL — derived from the Cloud API URL. */
+/** Relay server URL — env var overrides the default from constants. */
 const RELAY_WS_URL = (): string =>
-  process.env['CREWLY_RELAY_WS_URL'] || 'wss://api.crewlyai.com/relay';
+  process.env['CREWLY_RELAY_WS_URL'] || CLOUD_CONSTANTS.RELAY.DEFAULT_WS_URL;
 
 /**
  * Auto-connect to the Cloud Relay after a successful cloud login.

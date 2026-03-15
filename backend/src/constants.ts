@@ -1106,8 +1106,8 @@ export const CLOUD_CONSTANTS = {
 		CIPHER_ALGORITHM: 'aes-256-gcm',
 		/** Key length (bytes) */
 		KEY_LENGTH: 32,
-		/** Default Cloud API URL for relay queue auto-connect */
-		DEFAULT_API_URL: 'https://crewlyai.com',
+		/** Default WebSocket relay URL for Cloud Relay auto-connect */
+		DEFAULT_WS_URL: 'wss://api.crewlyai.com/relay',
 	},
 } as const;
 
