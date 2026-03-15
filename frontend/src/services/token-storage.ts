@@ -7,7 +7,7 @@
  * Tokens are stored in localStorage and attached as Bearer
  * tokens to subsequent API calls.
  *
- * @module services/supabase
+ * @module services/token-storage
  */
 
 // ---------------------------------------------------------------------------

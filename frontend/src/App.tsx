@@ -16,6 +16,7 @@ import { TerminalProvider } from './contexts/TerminalContext';
 import { SidebarProvider } from './contexts/SidebarContext';
 import { ChatProvider } from './contexts/ChatContext';
 import { AuthProvider } from './contexts/AuthContext';
+import { AuthCallback } from './pages/AuthCallback';
 
 function App() {
   return (
@@ -24,6 +25,9 @@ function App() {
       <SidebarProvider>
         <Router>
           <Routes>
+            {/* OAuth callback route (outside AppLayout — no sidebar/header) */}
+            <Route path="/auth/callback" element={<AuthCallback />} />
+
             {/* Admin / Internal UI */}
             <Route path="/" element={<AppLayout />}>
               <Route index element={<Dashboard />} />
