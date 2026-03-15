@@ -166,6 +166,8 @@ export class AgentRunnerService {
   private mcpClient: McpClientService | null = null;
   /** Cached MCP tool definitions loaded during initialization */
   private mcpToolDefs: Record<string, ToolDefinition> = {};
+  /** Approval queue for tools requiring explicit approval */
+  private approvalQueue: ApprovalQueueService = new ApprovalQueueService();
   private tracing = TracingService.getInstance();
   /** @internal Override for testing — replaces the AI SDK generateText call */
   _generateTextFn: GenerateTextFn | null = null;

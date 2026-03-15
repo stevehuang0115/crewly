@@ -76,30 +76,9 @@ export interface ApprovalResolution {
  * ```
  */
 export class ApprovalQueueService {
-  private static instance: ApprovalQueueService | null = null;
   private approvals: Map<string, PendingApproval> = new Map();
   private idCounter = 0;
   private ttlMs: number;
-
-  /**
-   * Get the shared singleton instance.
-   * All agent-runners and API controllers share the same queue.
-   *
-   * @returns The shared ApprovalQueueService instance
-   */
-  static getInstance(): ApprovalQueueService {
-    if (!ApprovalQueueService.instance) {
-      ApprovalQueueService.instance = new ApprovalQueueService();
-    }
-    return ApprovalQueueService.instance;
-  }
-
-  /**
-   * Reset the singleton instance (for testing only).
-   */
-  static resetInstance(): void {
-    ApprovalQueueService.instance = null;
-  }
 
   /**
    * Create a new ApprovalQueueService.
@@ -268,23 +247,14 @@ export class ApprovalQueueService {
    */
   private expireStale(): void {
     const now = Date.now();
-    const resolvedRetentionMs = this.ttlMs * 3; // Keep resolved entries 3x TTL then prune
-
-    for (const [id, approval] of this.approvals.entries()) {
-      if (approval.status === 'pending') {
-        const requestedAt = new Date(approval.requestedAt).getTime();
-        if (now - requestedAt > this.ttlMs) {
-          approval.status = 'expired';
-          approval.resolvedAt = new Date().toISOString();
-          approval.resolvedBy = 'auto-expire';
-          approval.reason = 'Approval request expired';
-        }
-      } else if (approval.resolvedAt) {
-        // Prune resolved entries that are older than retention window
-        const resolvedAt = new Date(approval.resolvedAt).getTime();
-        if (now - resolvedAt > resolvedRetentionMs) {
-          this.approvals.delete(id);
-        }
+    for (const approval of this.approvals.values()) {
+      if (approval.status !== 'pending') continue;
+      const requestedAt = new Date(approval.requestedAt).getTime();
+      if (now - requestedAt > this.ttlMs) {
+        approval.status = 'expired';
+        approval.resolvedAt = new Date().toISOString();
+        approval.resolvedBy = 'auto-expire';
+        approval.reason = 'Approval request expired';
       }
     }
   }

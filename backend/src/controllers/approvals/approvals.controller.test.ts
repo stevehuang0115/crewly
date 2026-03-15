@@ -9,11 +9,8 @@ import {
   getPendingApprovals,
   approveRequest,
   rejectRequest,
-  getAuditTrail,
   setApprovalQueueService,
   getApprovalQueueService,
-  getApprovalAuditLog,
-  clearApprovalAuditLog,
 } from './approvals.controller.js';
 import { ApprovalQueueService } from '../../services/agent/crewly-agent/approval-queue.service.js';
 
@@ -28,7 +25,6 @@ describe('Approvals Controller', () => {
   beforeEach(() => {
     queue = new ApprovalQueueService();
     setApprovalQueueService(queue);
-    clearApprovalAuditLog();
 
     jsonSpy = jest.fn();
     statusSpy = jest.fn().mockReturnValue({ json: jsonSpy });
@@ -42,7 +38,6 @@ describe('Approvals Controller', () => {
 
   afterEach(() => {
     setApprovalQueueService(null as any);
-    clearApprovalAuditLog();
   });
 
   describe('setApprovalQueueService / getApprovalQueueService', () => {
@@ -146,25 +141,6 @@ describe('Approvals Controller', () => {
 
       expect(statusSpy).toHaveBeenCalledWith(404);
     });
-
-    it('should record audit trail entry on approve', async () => {
-      const approval = queue.enqueue('s1', 'edit_file', 'destructive', {});
-      mockReq.params = { id: approval.id };
-      mockReq.body = { resolvedBy: 'auditor' };
-
-      await approveRequest(mockReq as Request, mockRes as Response, mockNext);
-
-      const auditLog = getApprovalAuditLog();
-      expect(auditLog).toHaveLength(1);
-      expect(auditLog[0]).toEqual(expect.objectContaining({
-        approvalId: approval.id,
-        toolName: 'edit_file',
-        sessionName: 's1',
-        action: 'approved',
-        resolvedBy: 'auditor',
-      }));
-      expect(auditLog[0].timestamp).toBeDefined();
-    });
   });
 
   describe('rejectRequest', () => {
@@ -207,89 +183,6 @@ describe('Approvals Controller', () => {
 
       await rejectRequest(mockReq as Request, mockRes as Response, mockNext);
       expect(mockNext).toHaveBeenCalledWith(expect.any(Error));
-    });
-
-    it('should record audit trail entry on reject', async () => {
-      const approval = queue.enqueue('s1', 'bash_exec', 'destructive', { command: 'rm -rf tmp' });
-      mockReq.params = { id: approval.id };
-      mockReq.body = { resolvedBy: 'api', reason: 'Dangerous command' };
-
-      await rejectRequest(mockReq as Request, mockRes as Response, mockNext);
-
-      const auditLog = getApprovalAuditLog();
-      expect(auditLog).toHaveLength(1);
-      expect(auditLog[0]).toEqual(expect.objectContaining({
-        approvalId: approval.id,
-        toolName: 'bash_exec',
-        sessionName: 's1',
-        action: 'rejected',
-        resolvedBy: 'api',
-        reason: 'Dangerous command',
-      }));
-    });
-  });
-
-  describe('getAuditTrail', () => {
-    it('should return empty audit log initially', async () => {
-      mockReq.query = {};
-      await getAuditTrail(mockReq as Request, mockRes as Response, mockNext);
-
-      expect(jsonSpy).toHaveBeenCalledWith({
-        success: true,
-        data: [],
-      });
-    });
-
-    it('should return audit entries after approve/reject', async () => {
-      // Approve one
-      const a1 = queue.enqueue('s1', 'edit_file', 'destructive', {});
-      mockReq.params = { id: a1.id };
-      mockReq.body = {};
-      await approveRequest(mockReq as Request, mockRes as Response, mockNext);
-
-      // Reject another
-      const a2 = queue.enqueue('s2', 'bash_exec', 'destructive', {});
-      mockReq.params = { id: a2.id };
-      mockReq.body = { reason: 'Not allowed' };
-      jsonSpy.mockClear();
-      await rejectRequest(mockReq as Request, mockRes as Response, mockNext);
-
-      // Get audit trail
-      mockReq.query = {};
-      jsonSpy.mockClear();
-      await getAuditTrail(mockReq as Request, mockRes as Response, mockNext);
-
-      const response = jsonSpy.mock.calls[0][0];
-      expect(response.success).toBe(true);
-      expect(response.data).toHaveLength(2);
-      expect(response.data[0].action).toBe('approved');
-      expect(response.data[1].action).toBe('rejected');
-    });
-
-    it('should respect limit query param', async () => {
-      // Create 3 audit entries
-      for (let i = 0; i < 3; i++) {
-        const a = queue.enqueue('s1', `tool-${i}`, 'destructive', {});
-        mockReq.params = { id: a.id };
-        mockReq.body = {};
-        await approveRequest(mockReq as Request, mockRes as Response, mockNext);
-      }
-
-      mockReq.query = { limit: '2' };
-      jsonSpy.mockClear();
-      await getAuditTrail(mockReq as Request, mockRes as Response, mockNext);
-
-      const response = jsonSpy.mock.calls[0][0];
-      expect(response.data).toHaveLength(2);
-    });
-
-    it('should call next on error', async () => {
-      mockReq.query = { limit: 'invalid' };
-      // This won't throw but let's test with a forced error
-      const origPush = Array.prototype.push;
-      // Shouldn't normally error, just verify it handles gracefully
-      await getAuditTrail(mockReq as Request, mockRes as Response, mockNext);
-      expect(jsonSpy).toHaveBeenCalled();
     });
   });
 });
