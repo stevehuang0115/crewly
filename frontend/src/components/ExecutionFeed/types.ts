@@ -36,6 +36,4 @@ export interface ExecutionFeedProps {
 	maxEvents?: number;
 	/** Optional CSS class name */
 	className?: string;
-	/** Filter events to a specific team by ID. When set, only events from agents belonging to this team are shown. */
-	teamId?: string;
 }

@@ -31,20 +31,17 @@ function nextId(): string {
  * Hook that aggregates real-time WebSocket events into a FeedEvent list.
  *
  * @param maxEvents - Maximum events to retain (oldest are evicted)
- * @param teamId - Optional team ID to filter events by. Only events from this team's agents are shown.
  * @returns Object with events array and a clearEvents function
  *
  * @example
  * ```tsx
- * const { events, clearEvents } = useExecutionFeed(50, 'team-abc');
+ * const { events, clearEvents } = useExecutionFeed(50);
  * ```
  */
-export function useExecutionFeed(maxEvents: number = DEFAULT_MAX_EVENTS, teamId?: string) {
+export function useExecutionFeed(maxEvents: number = DEFAULT_MAX_EVENTS) {
 	const [events, setEvents] = useState<FeedEvent[]>([]);
 	const maxRef = useRef(maxEvents);
 	maxRef.current = maxEvents;
-	const teamIdRef = useRef(teamId);
-	teamIdRef.current = teamId;
 
 	/** Push a new event, evicting the oldest when over capacity. */
 	const pushEvent = useCallback((event: FeedEvent) => {
@@ -64,14 +61,12 @@ export function useExecutionFeed(maxEvents: number = DEFAULT_MAX_EVENTS, teamId?
 		 * Handle team_member_status_changed events.
 		 */
 		const handleMemberStatus = (payload: {
-			teamId?: string;
 			sessionName?: string;
 			name?: string;
 			role?: string;
 			agentStatus?: string;
 			workingStatus?: string;
 		}) => {
-			if (teamIdRef.current && payload.teamId && payload.teamId !== teamIdRef.current) return;
 			const name = payload.name || payload.sessionName || 'Agent';
 			const status = payload.agentStatus || payload.workingStatus || 'unknown';
 			const type: FeedEventType = status === 'error' ? 'error' : 'agent_status';
