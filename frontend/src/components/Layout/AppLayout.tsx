@@ -5,6 +5,7 @@ import { Navigation } from './Navigation';
 import { TerminalPanel } from '../TerminalPanel/TerminalPanel';
 import { OrchestratorStatusBanner } from '../OrchestratorStatusBanner';
 import { UpdateBanner } from '../UpdateBanner';
+import { CloudBar } from '../CloudBar';
 
 import { SessionResumePopup } from '../SessionResumePopup';
 import { TeamsRestorePopup } from '../TeamsRestorePopup';
