@@ -165,6 +165,73 @@ describe('Cloud Controller', () => {
       );
     });
 
+    it('should skip relay auto-connect if relay already connected', async () => {
+      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1' });
+      mockRelayGetState.mockReturnValue('registered');
+
+      const req = mockReq({ body: { token: 'test-token' } });
+      const res = mockRes();
+
+      await connectToCloud(req, res, mockNext);
+
+      expect(mockRelayConnect).not.toHaveBeenCalled();
+    });
+
+    it('should skip relay auto-connect if JWT has no sub claim', async () => {
+      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
+      mockVerifyJwt.mockReturnValue(null);
+      mockRelayGetState.mockReturnValue('disconnected');
+
+      const req = mockReq({ body: { token: 'bad-token' } });
+      const res = mockRes();
+
+      await connectToCloud(req, res, mockNext);
+
+      expect(mockRelayConnect).not.toHaveBeenCalled();
+      // Cloud connect still succeeds
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('should not fail cloud connect if relay auto-connect throws', async () => {
+      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1' });
+      mockRelayGetState.mockReturnValue('disconnected');
+      mockRelayConnect.mockImplementation(() => { throw new Error('WS failed'); });
+
+      const req = mockReq({ body: { token: 'test-token' } });
+      const res = mockRes();
+
+      await connectToCloud(req, res, mockNext);
+
+      // Cloud connect still returns success despite relay failure
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('should generate deterministic pairing code for same user', async () => {
+      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-123' });
+      mockRelayGetState.mockReturnValue('disconnected');
+
+      const req = mockReq({ body: { token: 'test-token' } });
+      const res = mockRes();
+
+      await connectToCloud(req, res, mockNext);
+      const firstCall = mockRelayConnect.mock.calls[0][0];
+
+      jest.clearAllMocks();
+      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-123' });
+      mockRelayGetState.mockReturnValue('disconnected');
+
+      await connectToCloud(req, res, mockNext);
+      const secondCall = mockRelayConnect.mock.calls[0][0];
+
+      // Same user → same pairing code and shared secret
+      expect(firstCall.pairingCode).toBe(secondCall.pairingCode);
+      expect(firstCall.sharedSecret).toBe(secondCall.sharedSecret);
+    });
+
     it('should use default cloud URL when not provided', async () => {
       mockVerifyJwt.mockReturnValue(null);
       mockConnect.mockResolvedValue({ success: true, tier: 'free' });
