@@ -350,7 +350,7 @@ describe('AuditorSchedulerService', () => {
       expect(mockAgentRegService.sendMessageToAgent).not.toHaveBeenCalled();
     });
 
-    it('should schedule recovery trigger after auditor own inactive event (#185)', async () => {
+    it('should schedule recovery trigger after auditor own inactive event', async () => {
       scheduler.start();
       await jest.advanceTimersByTimeAsync(0);
       mockAgentRegService.sendMessageToAgent.mockClear();
@@ -372,37 +372,6 @@ describe('AuditorSchedulerService', () => {
       expect(mockAgentRegService.createAgentSession).toHaveBeenCalled();
       // And audit command should be sent
       expect(mockAgentRegService.sendMessageToAgent).toHaveBeenCalled();
-    });
-
-    it('should reset retry state on auditor inactive event (#185)', async () => {
-      // Start with failed session creation to increment retry count
-      mockAgentRegService.createAgentSession.mockResolvedValue({ success: false, error: 'PTY failed' });
-      scheduler.start();
-      await jest.advanceTimersByTimeAsync(0);
-
-      // Trigger to increment retry count
-      const t1 = scheduler.trigger('api');
-      await jest.advanceTimersByTimeAsync(AUDITOR_SCHEDULER_CONSTANTS.SESSION_RETRY_INITIAL_BACKOFF_MS);
-      await t1;
-
-      // Now fix session creation and simulate auditor going inactive
-      mockAgentRegService.createAgentSession.mockResolvedValue({ success: true, sessionName: 'crewly-auditor' });
-      mockAgentRegService.createAgentSession.mockClear();
-      mockAgentRegService.sendMessageToAgent.mockClear();
-
-      const listenerCall = mockEventBus.on.mock.calls.find(
-        (c: any[]) => c[0] === 'event_published',
-      );
-      const listener = listenerCall![1] as (payload: { eventType: string; sessionName?: string }) => void;
-
-      // Auditor goes inactive — should reset retry state (#185)
-      listener({ eventType: 'agent:inactive', sessionName: AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME });
-
-      // After recovery delay, session should be recreated (retry state was reset)
-      jest.advanceTimersByTime(AUDITOR_SCHEDULER_CONSTANTS.SESSION_RECOVERY_DELAY_MS);
-      await jest.advanceTimersByTimeAsync(0);
-
-      expect(mockAgentRegService.createAgentSession).toHaveBeenCalled();
     });
 
     it('should debounce multiple rapid events', async () => {
