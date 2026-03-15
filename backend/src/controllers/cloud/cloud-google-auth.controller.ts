@@ -383,9 +383,12 @@ export async function cloudGoogleCallbackPost(req: Request, res: Response, next:
       type: 'access',
     });
 
-    // Issue refresh token (longer lived)
+    // Issue refresh token (longer lived, carries user claims for token refresh)
     const refreshToken = signJwt({
       sub: result.user.id,
+      email: result.profile.email,
+      name: result.profile.name || '',
+      plan: DEFAULT_USER_PLAN,
       iat: now,
       exp: now + AUTH_CONSTANTS.JWT.REFRESH_TOKEN_EXPIRY_S,
       iss: AUTH_CONSTANTS.JWT.ISSUER,

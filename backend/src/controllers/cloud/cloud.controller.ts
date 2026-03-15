@@ -48,8 +48,9 @@ function autoConnectRelay(token: string): void {
     const userId = String(payload.sub);
     // Deterministic pairing code from user ID — both devices of the same user get the same code
     const pairingCode = crypto.createHash('sha256').update(`crewly-pair-${userId}`).digest('hex').slice(0, 12);
-    // Deterministic shared secret for E2EE — derived from user ID + salt
-    const sharedSecret = crypto.createHash('sha256').update(`crewly-e2ee-${userId}-relay`).digest('hex');
+    // Shared secret incorporates the JWT secret so it can't be derived from user ID alone
+    const jwtSecret = AUTH_CONSTANTS.JWT.DEFAULT_SECRET;
+    const sharedSecret = crypto.createHash('sha256').update(`crewly-e2ee-${userId}-${jwtSecret}`).digest('hex');
 
     relay.connect({
       wsUrl: RELAY_WS_URL(),
@@ -293,7 +294,11 @@ export async function disconnectFromCloud(req: Request, res: Response, next: Nex
         relay.disconnect();
         logger.info('Relay disconnected as part of cloud disconnect');
       }
-    } catch { /* best-effort */ }
+    } catch (err) {
+      logger.warn('Relay disconnect failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     logger.info('Disconnected from CrewlyAI Cloud');
     res.json({ success: true });

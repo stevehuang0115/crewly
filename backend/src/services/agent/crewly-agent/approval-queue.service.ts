@@ -247,14 +247,23 @@ export class ApprovalQueueService {
    */
   private expireStale(): void {
     const now = Date.now();
-    for (const approval of this.approvals.values()) {
-      if (approval.status !== 'pending') continue;
-      const requestedAt = new Date(approval.requestedAt).getTime();
-      if (now - requestedAt > this.ttlMs) {
-        approval.status = 'expired';
-        approval.resolvedAt = new Date().toISOString();
-        approval.resolvedBy = 'auto-expire';
-        approval.reason = 'Approval request expired';
+    const resolvedRetentionMs = this.ttlMs * 3; // Keep resolved entries 3x TTL then prune
+
+    for (const [id, approval] of this.approvals.entries()) {
+      if (approval.status === 'pending') {
+        const requestedAt = new Date(approval.requestedAt).getTime();
+        if (now - requestedAt > this.ttlMs) {
+          approval.status = 'expired';
+          approval.resolvedAt = new Date().toISOString();
+          approval.resolvedBy = 'auto-expire';
+          approval.reason = 'Approval request expired';
+        }
+      } else if (approval.resolvedAt) {
+        // Prune resolved entries that are older than retention window
+        const resolvedAt = new Date(approval.resolvedAt).getTime();
+        if (now - resolvedAt > resolvedRetentionMs) {
+          this.approvals.delete(id);
+        }
       }
     }
   }
