@@ -1,10 +1,11 @@
 /**
  * Auth Context
  *
- * React context that manages CrewlyAI Cloud authentication state
- * using HTTP calls to the Cloud API. No direct Supabase SDK dependency.
+ * React context that manages CrewlyAI Cloud authentication state.
+ * Authentication happens via Cloud redirect (OAuth). Tokens are
+ * received from the callback and stored in localStorage via the
+ * token-storage helpers.
  *
- * Tokens are stored in localStorage via the supabase.ts token helpers.
  * On mount the context checks for a stored token, validates it via
  * the /auth/me endpoint, and restores the session.
  *
@@ -12,7 +13,7 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { getAccessToken, getRefreshToken, storeTokens, clearTokens } from '../services/supabase';
+import { getAccessToken, getRefreshToken, storeTokens, clearTokens } from '../services/token-storage';
 import { apiService } from '../services/api.service';
 import type { UserProfile, LicenseStatus, AuthState, AuthTokenResponse } from '../types/auth.types';
 
@@ -22,10 +23,8 @@ import type { UserProfile, LicenseStatus, AuthState, AuthTokenResponse } from '.
 
 /** Actions and state exposed by the Auth context. */
 export interface AuthContextType extends AuthState {
-  /** Register a new account */
-  register: (email: string, password: string, displayName: string) => Promise<void>;
-  /** Log in with email and password */
-  login: (email: string, password: string) => Promise<void>;
+  /** Apply tokens received from Cloud OAuth callback */
+  applyCloudAuth: (response: AuthTokenResponse) => Promise<void>;
   /** Log out and clear stored tokens */
   logout: () => void;
   /** Get the current access token (for manual API calls) */
@@ -138,25 +137,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // Actions
   // -----------------------------------------------------------------------
 
-  const register = useCallback(async (email: string, password: string, displayName: string) => {
+  const applyCloudAuth = useCallback(async (response: AuthTokenResponse) => {
     setError(null);
     try {
-      const response = await apiService.authRegister(email, password, displayName);
       await applyAuthResponse(response);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Registration failed';
-      setError(msg);
-      throw err;
-    }
-  }, [applyAuthResponse]);
-
-  const login = useCallback(async (email: string, password: string) => {
-    setError(null);
-    try {
-      const response = await apiService.authLogin(email, password);
-      await applyAuthResponse(response);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Login failed';
+      const msg = err instanceof Error ? err.message : 'Authentication failed';
       setError(msg);
       throw err;
     }
@@ -189,8 +175,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     license,
     isLoading,
     error,
-    register,
-    login,
+    applyCloudAuth,
     logout,
     getAccessToken: getToken,
     hasFeature,
@@ -217,7 +202,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
  *
  * @example
  * ```typescript
- * const { isAuthenticated, user, login, logout } = useAuth();
+ * const { isAuthenticated, user, applyCloudAuth, logout } = useAuth();
  * ```
  */
 export function useAuth(): AuthContextType {
