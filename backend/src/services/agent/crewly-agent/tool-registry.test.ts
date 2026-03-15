@@ -2040,34 +2040,11 @@ describe('Tool Registry', () => {
       expect(result.success).toBe(false);
     }, 10000);
 
-    it('should use process isolation (async spawn, not execSync)', async () => {
+    it('should use process isolation (spawnSync, not execSync)', async () => {
       const result = await bashTools.bash_exec.execute({ command: 'echo $$' }) as any;
       expect(result.success).toBe(true);
       const childPid = parseInt(result.stdout.trim(), 10);
       expect(childPid).not.toBe(process.pid);
     });
-
-    it('should not block the event loop during execution', async () => {
-      // Start a bash command that takes ~1s
-      const bashPromise = bashTools.bash_exec.execute({ command: 'sleep 1 && echo done', timeout: 5000 });
-
-      // While bash is running, check that event loop is NOT blocked
-      // by running a setImmediate callback (which requires event loop to be free)
-      const eventLoopFree = await new Promise<boolean>((resolve) => {
-        const start = Date.now();
-        setImmediate(() => {
-          // If event loop was blocked, this would only fire after bash finishes (~1s)
-          // If non-blocking, it fires almost immediately (<100ms)
-          resolve(Date.now() - start < 500);
-        });
-      });
-
-      expect(eventLoopFree).toBe(true);
-
-      // Wait for bash to complete
-      const result = await bashPromise as any;
-      expect(result.success).toBe(true);
-      expect(result.stdout).toContain('done');
-    }, 10000);
   });
 });

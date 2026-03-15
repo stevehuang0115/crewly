@@ -26,8 +26,6 @@ export interface RateLimiterConfig {
   maxBackoffMs: number;
   /** Coalescing window — how long to wait for additional messages before processing (ms) */
   coalesceWindowMs: number;
-  /** Cooldown period in milliseconds after rate limit retries are exhausted */
-  cooldownMs: number;
 }
 
 /**
@@ -36,12 +34,11 @@ export interface RateLimiterConfig {
 export const RATE_LIMITER_DEFAULTS: RateLimiterConfig = {
   maxRequestsPerWindow: 10,
   windowMs: 60_000,
-  maxRetries: 2,
+  maxRetries: 3,
   initialBackoffMs: 5_000,
   backoffMultiplier: 2,
-  maxBackoffMs: 30_000,
+  maxBackoffMs: 60_000,
   coalesceWindowMs: 2_000,
-  cooldownMs: 300_000,
 };
 
 /**
@@ -52,8 +49,6 @@ interface QueuedMessage<T> {
   message: string;
   /** Optional metadata passed through to the handler */
   metadata?: Record<string, string>;
-  /** The handler function for this specific message */
-  handler: (message: string, metadata?: Record<string, string>) => Promise<T>;
   /** Promise resolve callback */
   resolve: (value: T) => void;
   /** Promise reject callback */
@@ -84,8 +79,6 @@ export class RateLimiter<T> {
   private queue: QueuedMessage<T>[] = [];
   private processing = false;
   private coalesceTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Timestamp when cooldown started (0 = not cooling down) */
-  private cooldownStartedAt = 0;
 
   /**
    * Create a new RateLimiter instance.
@@ -97,40 +90,10 @@ export class RateLimiter<T> {
   }
 
   /**
-   * Check if the rate limiter is in a cooldown period after exhausting retries.
-   *
-   * @returns True if currently cooling down
-   */
-  isCoolingDown(): boolean {
-    if (this.cooldownStartedAt === 0) return false;
-    if (Date.now() - this.cooldownStartedAt >= this.config.cooldownMs) {
-      this.cooldownStartedAt = 0;
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Get the remaining cooldown time in milliseconds.
-   *
-   * @returns Remaining cooldown time, or 0 if not cooling down
-   */
-  getCooldownRemainingMs(): number {
-    if (this.cooldownStartedAt === 0) return 0;
-    const remaining = this.config.cooldownMs - (Date.now() - this.cooldownStartedAt);
-    if (remaining <= 0) {
-      this.cooldownStartedAt = 0;
-      return 0;
-    }
-    return remaining;
-  }
-
-  /**
    * Enqueue a message for rate-limited processing.
    *
    * If multiple messages arrive within the coalescing window, they are
    * merged into a single request to reduce API call count.
-   * Rejects immediately if the rate limiter is in cooldown.
    *
    * @param message - Message to process
    * @param metadata - Optional metadata
@@ -142,19 +105,10 @@ export class RateLimiter<T> {
     metadata: Record<string, string> | undefined,
     handler: (message: string, metadata?: Record<string, string>) => Promise<T>,
   ): Promise<T> {
-    // Reject immediately during cooldown to avoid triggering more rate limits
-    if (this.isCoolingDown()) {
-      const remainingMs = this.getCooldownRemainingMs();
-      return Promise.reject(
-        new Error(`Rate limiter is in cooldown (${Math.ceil(remainingMs / 1000)}s remaining). Try again later.`),
-      );
-    }
-
     return new Promise<T>((resolve, reject) => {
       this.queue.push({
         message,
         metadata,
-        handler,
         resolve,
         reject,
         enqueuedAt: Date.now(),
@@ -168,7 +122,7 @@ export class RateLimiter<T> {
       this.coalesceTimer = setTimeout(() => {
         this.coalesceTimer = null;
         if (!this.processing) {
-          this.processQueue().catch(() => {
+          this.processQueue(handler).catch(() => {
             // Errors are already routed to individual promise reject callbacks
           });
         }
@@ -220,7 +174,6 @@ export class RateLimiter<T> {
     this.requestTimestamps = [];
     this.queue = [];
     this.processing = false;
-    this.cooldownStartedAt = 0;
     if (this.coalesceTimer) {
       clearTimeout(this.coalesceTimer);
       this.coalesceTimer = null;
@@ -230,11 +183,11 @@ export class RateLimiter<T> {
   /**
    * Process the queue: coalesce messages, enforce rate limit, execute with retry.
    *
-   * Each queued message stores its own handler so the correct closure is used
-   * even when messages arrive during an in-flight processQueue cycle. The most
-   * recent message's handler is used for coalesced batches.
+   * @param handler - The actual API call handler
    */
-  private async processQueue(): Promise<void> {
+  private async processQueue(
+    handler: (message: string, metadata?: Record<string, string>) => Promise<T>,
+  ): Promise<void> {
     this.processing = true;
 
     try {
@@ -245,9 +198,6 @@ export class RateLimiter<T> {
         // Coalesce all pending messages into one
         const batch = this.queue.splice(0, this.queue.length);
         const coalesced = this.coalesceMessages(batch);
-
-        // Use the most recent message's handler (matches metadata selection)
-        const handler = batch[batch.length - 1].handler;
 
         // Record this request timestamp
         this.requestTimestamps.push(Date.now());
@@ -275,12 +225,9 @@ export class RateLimiter<T> {
     } finally {
       this.processing = false;
 
-      // Re-check: messages may have arrived while processing. Without this,
-      // messages enqueued after the while-loop's last check but before
-      // processing=false would be stranded — their coalesce timer saw
-      // processing=true and skipped processQueue.
+      // Check if more messages arrived while processing
       if (this.queue.length > 0) {
-        this.processQueue().catch(() => {
+        this.processQueue(handler).catch(() => {
           // Errors are already routed to individual promise reject callbacks
         });
       }
@@ -356,9 +303,6 @@ export class RateLimiter<T> {
     handler: (message: string, metadata?: Record<string, string>) => Promise<T>,
   ): Promise<T> {
     let lastError: Error | null = null;
-    const startTime = Date.now();
-    // Total retry budget: sum of all possible backoff sleeps + buffer
-    const maxTotalMs = this.config.maxBackoffMs * (this.config.maxRetries + 1);
 
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
       try {
@@ -375,11 +319,6 @@ export class RateLimiter<T> {
           break;
         }
 
-        // Check total time budget before sleeping
-        if (Date.now() - startTime >= maxTotalMs) {
-          break;
-        }
-
         // Exponential backoff
         const backoffMs = Math.min(
           this.config.initialBackoffMs * Math.pow(this.config.backoffMultiplier, attempt),
@@ -390,11 +329,8 @@ export class RateLimiter<T> {
       }
     }
 
-    // Enter cooldown to prevent immediate re-triggering of rate limits
-    this.cooldownStartedAt = Date.now();
-
     throw new Error(
-      `Rate limit retries exhausted (${this.config.maxRetries} attempts, ${Date.now() - startTime}ms elapsed, cooldown ${this.config.cooldownMs / 1000}s). Last error: ${lastError?.message}`,
+      `Rate limit retries exhausted (${this.config.maxRetries} attempts). Last error: ${lastError?.message}`,
     );
   }
 

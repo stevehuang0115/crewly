@@ -810,18 +810,12 @@ export const ORCHESTRATOR_HEARTBEAT_CONSTANTS = {
 	 *  (e.g. running a build, tests, or other long commands) since that proves the
 	 *  orchestrator is alive and working — just not making API calls. */
 	HEARTBEAT_REQUEST_THRESHOLD_PTY_ACTIVE_MS: 900_000,
-	/** PTY idle time below which the orchestrator is considered "PTY active" (3 minutes).
+	/** PTY idle time below which the orchestrator is considered "PTY active" (2 minutes).
 	 *  If the orchestrator produced terminal output within this window, the longer
-	 *  HEARTBEAT_REQUEST_THRESHOLD_PTY_ACTIVE_MS threshold is used instead.
-	 *  Increased from 2 min to 3 min (#194) — Claude Code model inference pauses
-	 *  commonly exceed 2 minutes during complex reasoning, causing a premature
-	 *  threshold drop from 15-min to 5-min that triggers false heartbeat requests. */
-	PTY_ACTIVE_WINDOW_MS: 180_000,
-	/** Time after heartbeat request before triggering auto-restart (2 minutes).
-	 *  Increased from 1 min to 2 min (#194) — skill scripts may spend 30-60s
-	 *  on argument parsing and local processing before their first api_call,
-	 *  so 60s was too tight when a heartbeat fires mid-skill execution. */
-	RESTART_THRESHOLD_MS: 120_000,
+	 *  HEARTBEAT_REQUEST_THRESHOLD_PTY_ACTIVE_MS threshold is used instead. */
+	PTY_ACTIVE_WINDOW_MS: 120_000,
+	/** Time after heartbeat request before triggering auto-restart (1 minute) */
+	RESTART_THRESHOLD_MS: 60_000,
 	/** Message sent to orchestrator PTY to request a heartbeat */
 	HEARTBEAT_REQUEST_MESSAGE: 'Please run your heartbeat skill now: bash config/skills/orchestrator/heartbeat/execute.sh',
 	/** Grace period after server start before monitoring begins (120 seconds).
