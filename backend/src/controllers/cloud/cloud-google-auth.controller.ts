@@ -1,14 +1,14 @@
 /**
  * Cloud Google OAuth Controller
  *
- * Handles Google OAuth login flow for the CrewlyAI Cloud Console.
+ * Handles Google OAuth login flow for the CrewlyAI Cloud Portal.
  * Provides both browser-redirect (GET) and API (POST) flows.
  *
  * Routes:
- * - GET  /api/cloud/google/start    -> Redirects to Google consent screen
- * - GET  /api/cloud/google/callback  -> Handles Google redirect, issues JWT, redirects to frontend
- * - POST /api/cloud/google/url       -> Returns Google OAuth URL as JSON (for SPA clients)
- * - POST /api/cloud/google/callback  -> Exchanges code for JWT, returns JSON (for SPA clients)
+ * - GET  /api/cloud/google/start    → Redirects to Google consent screen
+ * - GET  /api/cloud/google/callback  → Handles Google redirect, issues JWT, redirects to frontend
+ * - POST /api/cloud/google/url       → Returns Google OAuth URL as JSON (for SPA clients)
+ * - POST /api/cloud/google/callback  → Exchanges code for JWT, returns JSON (for SPA clients)
  *
  * @module controllers/cloud/cloud-google-auth.controller
  */
@@ -239,6 +239,29 @@ export async function cloudGoogleStart(req: Request, res: Response, next: NextFu
       res.status(500).json({ success: false, error: error.message });
       return;
     }
+
+    const redirectUri = CLOUD_GOOGLE_REDIRECT_URI(req);
+    const postLoginRedirect = req.query['redirect'] ? String(req.query['redirect']) : '';
+
+    const statePayload = {
+      redirectTo: postLoginRedirect,
+      t: Date.now(),
+      nonce: crypto.randomUUID(),
+    };
+    const state = Buffer.from(JSON.stringify(statePayload)).toString('base64url');
+
+    const url = new URL(GOOGLE_OAUTH_CONSTANTS.AUTH_BASE_URL);
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('redirect_uri', redirectUri);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('access_type', 'offline');
+    url.searchParams.set('prompt', 'consent');
+    url.searchParams.set('scope', LOGIN_SCOPES.join(' '));
+    url.searchParams.set('state', state);
+
+    logger.info('Redirecting to Google OAuth consent screen', { redirectUri });
+    res.redirect(url.toString());
+  } catch (error) {
     logger.error('Failed to initiate Google OAuth', {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -324,26 +347,77 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
 }
 
 /**
+ * Verify a JWT signed with HMAC-SHA256.
+ *
+ * @param token - JWT string (header.payload.signature)
+ * @returns Decoded payload if valid, null if invalid or expired
+ */
+export function verifyJwt(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+
+    const [headerB64, payloadB64, signature] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', AUTH_CONSTANTS.JWT.DEFAULT_SECRET)
+      .update(`${headerB64}.${payloadB64}`)
+      .digest('base64url');
+
+    if (signature !== expectedSig) return null;
+
+    const payload = JSON.parse(Buffer.from(payloadB64!, 'base64url').toString('utf8'));
+
+    // Check expiry
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * POST /api/cloud/google/url
  *
  * Returns the Google OAuth consent URL as JSON (for SPA clients).
+ * The SPA can redirect the browser itself rather than having the server redirect.
  *
- * @param req - Request with optional body: { redirectTo, redirectUrl }
+ * @param req - Request with optional body: { redirectUrl }
  * @param res - Response returning { success, data: { url } }
  * @param next - Next function for error propagation
  */
 export async function cloudGoogleUrl(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const postLoginRedirect = req.body?.redirectTo || req.body?.redirectUrl || '';
-    const url = buildGoogleOAuthUrl(req, postLoginRedirect);
-
-    logger.info('Returning Google OAuth URL for SPA client');
-    res.json({ success: true, data: { url } });
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('GOOGLE_CLIENT_ID')) {
-      res.status(500).json({ success: false, error: error.message });
+    const clientId = CLOUD_AUTH_CONSTANTS.GOOGLE.CLIENT_ID;
+    if (!clientId) {
+      res.status(500).json({ success: false, error: 'GOOGLE_CLIENT_ID is not configured' });
       return;
     }
+
+    const redirectUri = CLOUD_GOOGLE_REDIRECT_URI(req);
+    const postLoginRedirect = req.body?.redirectTo || req.body?.redirectUrl || '';
+
+    const statePayload = {
+      redirectTo: postLoginRedirect,
+      t: Date.now(),
+      nonce: crypto.randomUUID(),
+    };
+    const state = Buffer.from(JSON.stringify(statePayload)).toString('base64url');
+
+    const url = new URL(GOOGLE_OAUTH_CONSTANTS.AUTH_BASE_URL);
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('redirect_uri', redirectUri);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('access_type', 'offline');
+    url.searchParams.set('prompt', 'consent');
+    url.searchParams.set('scope', LOGIN_SCOPES.join(' '));
+    url.searchParams.set('state', state);
+
+    logger.info('Returning Google OAuth URL for SPA client', { redirectUri });
+    res.json({ success: true, data: { url: url.toString() } });
+  } catch (error) {
     logger.error('Failed to generate Google OAuth URL', {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -355,6 +429,7 @@ export async function cloudGoogleUrl(req: Request, res: Response, next: NextFunc
  * POST /api/cloud/google/callback
  *
  * SPA-friendly code exchange: accepts { code } in body, returns JWT + user as JSON.
+ * Used by the frontend portal/login page to complete the OAuth flow client-side.
  *
  * @param req - Request with body: { code }
  * @param res - Response returning { success, data: { accessToken, refreshToken, expiresIn, user } }
@@ -368,34 +443,100 @@ export async function cloudGoogleCallbackPost(req: Request, res: Response, next:
       return;
     }
 
-    const result = await exchangeCodeAndCreateUser(code, req);
+    const clientId = CLOUD_AUTH_CONSTANTS.GOOGLE.CLIENT_ID;
+    const clientSecret = process.env['GOOGLE_CLIENT_SECRET'] || '';
+    const redirectUri = CLOUD_GOOGLE_REDIRECT_URI(req);
 
-    // Issue access token
+    if (!clientId || !clientSecret) {
+      res.status(500).json({ success: false, error: 'Google OAuth credentials not configured' });
+      return;
+    }
+
+    // Exchange code for Google tokens
+    const tokenResp = await fetch(GOOGLE_OAUTH_CONSTANTS.TOKEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    if (!tokenResp.ok) {
+      const details = await tokenResp.text();
+      logger.error('Failed to exchange Google OAuth code (POST)', { status: tokenResp.status, details });
+      res.status(400).json({ success: false, error: 'Failed to exchange authorization code' });
+      return;
+    }
+
+    const tokenData = (await tokenResp.json()) as {
+      access_token: string;
+      refresh_token?: string;
+      id_token?: string;
+    };
+
+    // Fetch Google profile
+    const profileResp = await fetch(GOOGLE_OAUTH_CONSTANTS.USERINFO_ENDPOINT, {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+
+    if (!profileResp.ok) {
+      logger.error('Failed to fetch Google profile (POST)', { status: profileResp.status });
+      res.status(400).json({ success: false, error: 'Failed to fetch Google profile' });
+      return;
+    }
+
+    const profile = (await profileResp.json()) as {
+      email?: string;
+      name?: string;
+      picture?: string;
+    };
+
+    if (!profile.email) {
+      res.status(400).json({ success: false, error: 'Google profile missing email' });
+      return;
+    }
+
+    // Create or find user
+    const users = UserIdentityService.getInstance();
+    const user = await users.createOrUpdateUser({ email: profile.email });
+
+    if (tokenData.refresh_token || tokenData.access_token) {
+      await users.connectService(user.id, 'google', {
+        refreshToken: tokenData.refresh_token || tokenData.access_token,
+        accessToken: tokenData.access_token,
+        scopes: LOGIN_SCOPES,
+      });
+    }
+
+    // Issue JWT
     const now = Math.floor(Date.now() / 1000);
-    const accessToken = signJwt({
-      sub: result.user.id,
-      email: result.profile.email,
-      name: result.profile.name || '',
-      plan: DEFAULT_USER_PLAN,
+    const accessJwtPayload = {
+      sub: user.id,
+      email: profile.email,
+      name: profile.name || '',
+      plan: 'free',
       iat: now,
       exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
       iss: AUTH_CONSTANTS.JWT.ISSUER,
       type: 'access',
-    });
+    };
+    const accessToken = signJwt(accessJwtPayload);
 
-    // Issue refresh token (longer lived, carries user claims for token refresh)
-    const refreshToken = signJwt({
-      sub: result.user.id,
-      email: result.profile.email,
-      name: result.profile.name || '',
-      plan: DEFAULT_USER_PLAN,
+    // Issue refresh token (longer lived)
+    const refreshJwtPayload = {
+      sub: user.id,
       iat: now,
       exp: now + AUTH_CONSTANTS.JWT.REFRESH_TOKEN_EXPIRY_S,
       iss: AUTH_CONSTANTS.JWT.ISSUER,
       type: 'refresh',
-    });
+    };
+    const refreshToken = signJwt(refreshJwtPayload);
 
-    logger.info('Cloud Google OAuth login successful (POST)', { email: result.profile.email, userId: result.user.id });
+    logger.info('Cloud Google OAuth login successful (POST)', { email: profile.email, userId: user.id });
     res.json({
       success: true,
       data: {
@@ -403,25 +544,18 @@ export async function cloudGoogleCallbackPost(req: Request, res: Response, next:
         refreshToken,
         expiresIn: AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
         user: {
-          id: result.user.id,
-          email: result.profile.email,
-          displayName: result.profile.name || '',
-          plan: DEFAULT_USER_PLAN,
-          createdAt: result.user.createdAt || '',
+          id: user.id,
+          email: profile.email,
+          displayName: profile.name || '',
+          plan: 'free',
+          createdAt: user.createdAt || '',
         },
       },
     });
   } catch (error) {
-    const errMsg = error instanceof Error ? error.message : String(error);
-    if (errMsg.includes('credentials not configured')) {
-      res.status(500).json({ success: false, error: 'Google OAuth credentials not configured' });
-      return;
-    }
-    if (errMsg.startsWith('token_exchange_failed') || errMsg.startsWith('profile_fetch_failed') || errMsg === 'no_email') {
-      res.status(400).json({ success: false, error: errMsg.includes(':') ? errMsg.split(':')[0]! : errMsg });
-      return;
-    }
-    logger.error('Cloud Google OAuth callback (POST) error', { error: errMsg });
+    logger.error('Cloud Google OAuth callback (POST) error', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     next(error);
   }
 }

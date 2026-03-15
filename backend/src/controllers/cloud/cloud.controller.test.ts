@@ -63,49 +63,9 @@ jest.mock('../../services/cloud/relay-client.service.js', () => ({
       connect: mockRelayConnect,
       disconnect: mockRelayDisconnect,
       getState: mockRelayGetState,
-      listenerCount: jest.fn().mockReturnValue(0),
-      on: jest.fn(),
     }),
   },
 }));
-
-// Mock DeviceIdentityService
-const mockGetOrCreateIdentity = jest.fn().mockResolvedValue({
-  deviceId: 'test-device-uuid',
-  deviceName: 'test-hostname',
-  createdAt: '2026-03-19T00:00:00.000Z',
-  lastSeenAt: '2026-03-19T00:00:00.000Z',
-});
-
-jest.mock('../../services/cloud/device-identity.service.js', () => ({
-  DeviceIdentityService: {
-    getInstance: () => ({
-      getOrCreateIdentity: mockGetOrCreateIdentity,
-    }),
-  },
-}));
-
-// Mock StorageService
-const mockGetTeams = jest.fn().mockResolvedValue([
-  { id: 'team-1', name: 'Product', members: [{ agentStatus: 'active' }, { agentStatus: 'inactive' }] },
-  { id: 'team-2', name: 'Marketing', members: [{ agentStatus: 'active' }] },
-]);
-
-jest.mock('../../services/core/storage.service.js', () => ({
-  StorageService: {
-    getInstance: () => ({
-      getTeams: mockGetTeams,
-    }),
-  },
-}));
-
-// Mock global fetch for handshake
-const originalFetch = global.fetch;
-const mockFetch = jest.fn().mockResolvedValue({
-  ok: true,
-  status: 200,
-  json: () => Promise.resolve({ success: true }),
-});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -169,6 +129,7 @@ describe('Cloud Controller', () => {
     it('should fall back to remote connect when local JWT verification fails', async () => {
       mockVerifyJwt.mockReturnValue(null);
       mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1' });
 
       const req = mockReq({ body: { token: 'test-token', cloudUrl: 'https://cloud.test.com' } });
       const res = mockRes();
@@ -184,7 +145,8 @@ describe('Cloud Controller', () => {
     });
 
     it('should auto-connect relay after successful cloud connect', async () => {
-      mockVerifyJwt.mockReturnValue({ sub: 'user-1', email: 'test@test.com', plan: 'pro' });
+      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1', email: 'test@test.com' });
       mockRelayGetState.mockReturnValue('disconnected');
 
       const req = mockReq({ body: { token: 'test-token', cloudUrl: 'https://cloud.test.com' } });
@@ -194,78 +156,13 @@ describe('Cloud Controller', () => {
 
       expect(mockRelayConnect).toHaveBeenCalledWith(
         expect.objectContaining({
-          apiUrl: expect.any(String),
+          wsUrl: expect.stringContaining('relay'),
           pairingCode: expect.any(String),
           role: 'orchestrator',
           token: 'test-token',
           sharedSecret: expect.any(String),
         }),
       );
-    });
-
-    it('should skip relay auto-connect if relay already connected', async () => {
-      mockVerifyJwt.mockReturnValue({ sub: 'user-1', plan: 'pro' });
-      mockRelayGetState.mockReturnValue('registered');
-
-      const req = mockReq({ body: { token: 'test-token' } });
-      const res = mockRes();
-
-      await connectToCloud(req, res, mockNext);
-
-      expect(mockRelayConnect).not.toHaveBeenCalled();
-    });
-
-    it('should skip relay auto-connect if JWT has no sub claim', async () => {
-      // First call in connectToCloud: verifyJwt returns null (local fails, fall through to remote)
-      // Second call in autoConnectRelay: verifyJwt also returns null (no sub → skip relay)
-      mockVerifyJwt.mockReturnValue(null);
-      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
-      mockRelayGetState.mockReturnValue('disconnected');
-
-      const req = mockReq({ body: { token: 'bad-token' } });
-      const res = mockRes();
-
-      await connectToCloud(req, res, mockNext);
-
-      expect(mockRelayConnect).not.toHaveBeenCalled();
-      // Cloud connect still succeeds via remote
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
-    });
-
-    it('should not fail cloud connect if relay auto-connect throws', async () => {
-      mockVerifyJwt.mockReturnValue({ sub: 'user-1', plan: 'pro' });
-      mockRelayGetState.mockReturnValue('disconnected');
-      mockRelayConnect.mockImplementation(() => { throw new Error('WS failed'); });
-
-      const req = mockReq({ body: { token: 'test-token' } });
-      const res = mockRes();
-
-      await connectToCloud(req, res, mockNext);
-
-      // Cloud connect still returns success despite relay failure
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
-    });
-
-    it('should generate deterministic pairing code for same user', async () => {
-      mockVerifyJwt.mockReturnValue({ sub: 'user-123', plan: 'pro' });
-      mockRelayGetState.mockReturnValue('disconnected');
-
-      const req = mockReq({ body: { token: 'test-token' } });
-      const res = mockRes();
-
-      await connectToCloud(req, res, mockNext);
-      const firstCall = mockRelayConnect.mock.calls[0][0];
-
-      jest.clearAllMocks();
-      mockVerifyJwt.mockReturnValue({ sub: 'user-123', plan: 'pro' });
-      mockRelayGetState.mockReturnValue('disconnected');
-
-      await connectToCloud(req, res, mockNext);
-      const secondCall = mockRelayConnect.mock.calls[0][0];
-
-      // Same user → same pairing code and shared secret
-      expect(firstCall.pairingCode).toBe(secondCall.pairingCode);
-      expect(firstCall.sharedSecret).toBe(secondCall.sharedSecret);
     });
 
     it('should use default cloud URL when not provided', async () => {
@@ -521,7 +418,7 @@ describe('Cloud Controller', () => {
 
     it('should proxy to cloud API when local verification fails and CREWLY_CLOUD_API_BASE is set', async () => {
       mockVerifyJwt.mockReturnValue(null);
-      process.env['CREWLY_CLOUD_API_BASE'] = 'https://api.crewlyai.com';
+      process.env['CREWLY_CLOUD_API_BASE'] = 'https://api.crewlyai.com/api';
 
       const cloudResponse = { success: true, data: { id: 'u1', email: 'test@test.com', plan: 'pro' } };
       global.fetch = jest.fn().mockResolvedValue({

@@ -296,6 +296,10 @@ export const MESSAGE_QUEUE_CONSTANTS = {
 	PERSISTENCE_FILE: 'message-queue.json',
 	/** Queue persistence directory name */
 	PERSISTENCE_DIR: 'queue',
+	/** Initial delay before the first progress message in waitForResponse (ms) */
+	PROGRESS_INITIAL_MS: 60_000,
+	/** Interval between subsequent progress messages (ms) */
+	PROGRESS_INTERVAL_MS: 60_000,
 	/** Socket.IO event names for queue status updates */
 	SOCKET_EVENTS: {
 		/** Emitted when a new message is enqueued */

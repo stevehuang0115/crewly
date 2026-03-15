@@ -23,8 +23,9 @@ import { createKnowledgeRouter } from '../controllers/knowledge/index.js';
 import { createTemplateRouter } from '../controllers/template/index.js';
 import { createAuditorRouter } from '../controllers/auditor/auditor.routes.js';
 import { createPaymentRouter } from '../controllers/payment/payment.routes.js';
-import { createRelayRouter } from '../controllers/cloud/index.js';
+import { createCloudRouter, createRelayRouter } from '../controllers/cloud/index.js';
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
+import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -102,6 +103,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // PR review routes for automated GitHub PR reviews via webhooks
   router.use('/pr-review', createPrReviewRouter());
+
+  // Tool approval management routes for granular tool execution control
+  router.use('/approvals', createApprovalsRouter());
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here

@@ -356,7 +356,7 @@ describe('Cloud Google Auth Controller', () => {
       expect(redirectUrl.startsWith('https://crewlyai.com/legacy')).toBe(true);
     });
 
-    it('should redirect with error when exchange fails with network error', async () => {
+    it('should call next on unexpected error', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Network failure'));
 
       const req = mockReq({ query: { code: 'valid-code' } });
