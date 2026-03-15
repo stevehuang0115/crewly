@@ -3,13 +3,13 @@ title: "Crewly vs Competitors: Comprehensive Feature Gap Matrix"
 category: "Strategy"
 tags: ["competitive-analysis", "gap-matrix", "O1-KR1", "O1-KR3"]
 author: "Mia (Product Manager)"
-version: "4.4"
-date: "2026-03-16"
+version: "4.3"
+date: "2026-03-14"
 ---
 
 # Crewly vs Competitors: Comprehensive Feature Gap Matrix
 
-> O1-KR1 & O1-KR3 Deliverable | Bi-weekly Update | March 16, 2026 | v4.4
+> O1-KR1 & O1-KR3 Deliverable | Bi-weekly Update | March 14, 2026 | v4.3
 
 ## Executive Summary (March 16, 2026 Update)
 
@@ -23,12 +23,12 @@ Crewly has successfully established its "Security Moat" as the primary different
 | **Crewly** | ~61 | TypeScript | **v1.3.34.** Delivered F13, F27, F9. **Positioned as the "Safe Choice" for Enterprise & SMB.** |
 
 **Key Progress**: 
-- **OpenClaw Crisis Response**: Identified specific vulnerabilities (CVE-2026-25253, CVE-2026-0104) to target in marketing.
-- **F13 (Autonomous Context Compaction)**: **DONE**. Crewly agents now intelligently manage their own context window.
-- **F27 (Security Audit & Approval)**: **DONE**. Granular tool control and audit logs provide a massive advantage over OpenClaw's "All-or-Nothing" model.
-- **F9 (Local Vector Storage)**: **DONE**. On-device memory ensures data sovereignty.
-- **F6 (Ollama Support)**: **DONE**. Integrated for local LLM execution.
-- **F7 (MCP Client Integration)**: **DONE**. Secure consumption of 8,600+ MCP tools.
+- **F13 (Autonomous Context Compaction)**: **DONE**. Crewly agents now intelligently manage their own context window, matching LangChain's latest feature.
+- **F27 (Security Audit & Approval)**: **DONE**. Granular tool control and audit logs provide a massive advantage in enterprise security over OpenClaw.
+- **F9 (Local Vector Storage)**: **DONE**. On-device memory ensures data sovereignty and offline capability.
+- **F6 (Ollama Support)**: **DONE**. Integrated `ollama-ai-provider` for local LLM execution.
+- **F7 (MCP Client Integration)**: **DONE**. Fully integrated MCP tools into the agent runtime with namespacing and security classification.
+- **Strategy Docs**: Published "Why Crewly is the Safe Choice" deep dive.
 
 ---
 
@@ -42,15 +42,18 @@ Crewly has successfully established its "Security Moat" as the primary different
 | G2: OS Readiness | **CLOSED** | F2, F3, F4 | MIT License, README, CONTRIBUTING added. |
 | G3: Vector Memory | **CLOSED** | F9 | Local SQLite storage integrated and active. |
 | G16: Autonomous Compaction | **CLOSED** | F13 | MATCHED LangChain v0.4. |
-| G27: Security Audit Mode | **CLOSED** | F27 | **MASSIVE LEAD**. Surpassed OpenClaw security model. |
-| G6: LLM Agnostic | **CLOSED** | F6 | Ollama integration provides 100% privacy fallback. |
-| G9: MCP Protocol | **CLOSED** | F7 | Fully integrated. |
+| G27: Security Audit Mode | **CLOSED** | F27 | **DIFFERENTIATOR**. Surpassed OpenClaw security model. |
+| G6: LLM Agnostic | **CLOSED** | F6 | Gemini, Anthropic, OpenAI, and Ollama all supported. |
+| G9: MCP Protocol | **CLOSED** | F7 | Both MCP Server and MCP Client integration completed. |
 
 ---
 
 ## 2. Strategic Recommendations (O1-KR3)
 
-1. **"Safe-Switch" Migration Campaign**: Launch a dedicated campaign targeting OpenClaw users, offering "1-Click Skill Import" from ClawHub (with security scanning).
-2. **Verified Skill Registry**: Implement a "Verified by Crewly" program for skills to prevent the supply-chain attacks seen in ClawHavoc.
-3. **PTY Transparency**: Deepen the "Live Terminal" feature to allow users to see and approve exact shell commands in real-time.
-4. **Phase 2 Execution**: Accelerate GTM via Steve's content channels focusing on the "Security Reckoning".
+1. **GTM: The "Safe Choice" Campaign**: Use the newly published security documentation to target enterprise users moving away from OpenClaw.
+2. **Real-time Execution Feed**: (In Progress) Leverage PTY streaming for a "Transparency Dashboard" in the Portal.
+3. **Deep MCP Integration**: Promote F7 capability to allow Crewly agents to consume any tool from the rapidly growing MCP ecosystem.
+4. **Phase 2 Readiness**: With 5+ core differentiators closed, we are ready to transition to Phase 2 (Promotion).
+
+---
+*Last updated: 2026-03-14 | v4.3 | Author: Mia (Product Manager)*

@@ -23,12 +23,8 @@ import { createKnowledgeRouter } from '../controllers/knowledge/index.js';
 import { createTemplateRouter } from '../controllers/template/index.js';
 import { createAuditorRouter } from '../controllers/auditor/auditor.routes.js';
 import { createPaymentRouter } from '../controllers/payment/payment.routes.js';
-import { createCloudRouter, createRelayRouter } from '../controllers/cloud/index.js';
+import { createRelayRouter } from '../controllers/cloud/index.js';
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
-import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
-import { setApprovalQueueService } from '../controllers/approvals/approvals.controller.js';
-import { ApprovalQueueService } from '../services/agent/crewly-agent/approval-queue.service.js';
-import { createMonitoringRouter } from '../controllers/monitoring/monitoring.routes.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -106,21 +102,6 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // PR review routes for automated GitHub PR reviews via webhooks
   router.use('/pr-review', createPrReviewRouter());
-
-  // Monitoring routes for token usage tracking and system metrics
-  router.use('/monitoring', createMonitoringRouter());
-
-  // Tool approval management routes for granular tool execution control
-  // Wire the shared approval queue singleton to the API controller
-  setApprovalQueueService(ApprovalQueueService.getInstance());
-  router.use('/approvals', createApprovalsRouter());
-
-  // #200: Explicit heartbeat endpoint for skill scripts that POST to /api/heartbeat.
-  // The heartbeat middleware already records activity from X-Agent-Session header,
-  // but without an actual handler the POST returns 404. This no-op handler returns 200.
-  router.post('/heartbeat', (_req, res) => {
-    res.json({ success: true });
-  });
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here
