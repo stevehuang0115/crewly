@@ -567,6 +567,94 @@ export class QueueProcessorService extends EventEmitter {
   }
 
   /**
+   * Wait for an orchestrator response on a given conversation.
+   * Listens to ChatService 'message' events for matching orchestrator messages.
+   *
+   * Includes an early ACK check: if the orchestrator terminal produces zero
+   * output within ACK_TIMEOUT (15s) of delivery, the context is likely
+   * exhausted and we resolve immediately with an actionable error message
+   * instead of waiting the full timeout.
+   *
+   * NOTE: This method intentionally resolves (not rejects) with error messages
+   * for timeout/unresponsive cases. The caller marks the message as "completed"
+   * with the error text as the response, so the user sees the error in their
+   * conversation rather than having it silently swallowed by a catch block.
+   *
+   * @param conversationId - Conversation to monitor
+   * @param timeoutMs - Timeout in milliseconds
+   * @returns Response content
+   */
+  private waitForResponse(conversationId: string, timeoutMs: number): Promise<string> {
+    return new Promise((resolve) => {
+      const chatService = getChatService();
+
+      const onMessage = (chatMessage: ChatMessage): void => {
+        if (
+          chatMessage.conversationId === conversationId &&
+          chatMessage.from.type === 'orchestrator'
+        ) {
+          cleanup();
+          resolve(chatMessage.content);
+        }
+      };
+
+      const timeoutId = setTimeout(() => {
+        cleanup();
+        resolve('The orchestrator is still processing your request. It will reply when ready — no need to resend.');
+      }, timeoutMs);
+
+      // Early ACK check: if no terminal output within ACK_TIMEOUT after
+      // delivery, the orchestrator is likely context-exhausted.
+      const ackTimeoutId = setTimeout(() => {
+        const tracker = PtyActivityTrackerService.getInstance();
+        const idleMs = tracker.getIdleTimeMs(ORCHESTRATOR_SESSION_NAME);
+        if (idleMs >= MESSAGE_QUEUE_CONSTANTS.ACK_TIMEOUT) {
+          this.logger.warn('No orchestrator output within ACK window, likely context exhausted', {
+            conversationId,
+            idleMs,
+            ackTimeout: MESSAGE_QUEUE_CONSTANTS.ACK_TIMEOUT,
+          });
+          cleanup();
+          resolve(
+            'The orchestrator appears to be unresponsive (no output detected). ' +
+            'Its context may be exhausted. Please restart the orchestrator and try again.'
+          );
+        }
+      }, MESSAGE_QUEUE_CONSTANTS.ACK_TIMEOUT);
+
+      // Progress timer: emit "still working" updates during long operations.
+      // First fires at 90s, then every 60s thereafter.
+      let progressIntervalId: ReturnType<typeof setInterval> | undefined;
+      let cleaned = false;
+
+      const startProgressInterval = (): void => {
+        if (cleaned) return;
+        progressIntervalId = setInterval(() => {
+          const tracker = PtyActivityTrackerService.getInstance();
+          const idleMs = tracker.getIdleTimeMs(ORCHESTRATOR_SESSION_NAME);
+          // Only emit progress if the orchestrator is still producing output
+          if (idleMs < MESSAGE_QUEUE_CONSTANTS.PROGRESS_INTERVAL_MS) {
+            chatService.emitProgress(conversationId, 'Processing... (still working)');
+          }
+        }, MESSAGE_QUEUE_CONSTANTS.PROGRESS_INTERVAL_MS);
+      };
+
+      const progressStartId = setTimeout(startProgressInterval, MESSAGE_QUEUE_CONSTANTS.PROGRESS_INITIAL_MS);
+
+      const cleanup = (): void => {
+        cleaned = true;
+        clearTimeout(timeoutId);
+        clearTimeout(ackTimeoutId);
+        clearTimeout(progressStartId);
+        if (progressIntervalId) clearInterval(progressIntervalId);
+        chatService.removeListener('message', onMessage);
+      };
+
+      chatService.on('message', onMessage);
+    });
+  }
+
+  /**
    * Schedule processing of the next message if there are pending messages.
    * Uses INTER_MESSAGE_DELAY to avoid overwhelming the orchestrator.
    *
