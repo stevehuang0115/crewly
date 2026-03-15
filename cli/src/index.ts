@@ -15,7 +15,6 @@ import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
 import { pairCommand } from './commands/pair.js';
-import { migrateCommand } from './commands/migrate.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion } from './utils/version-check.js';
 
@@ -131,14 +130,6 @@ program
   .option('--disconnect', 'Disconnect from active relay session')
   .option('--devices', 'List paired devices')
   .action(pairCommand);
-
-program
-  .command('migrate')
-  .description('Import skills from other platforms (e.g. OpenClaw) with security scanning')
-  .requiredOption('--from <source>', 'Source platform to migrate from (e.g. openclaw)')
-  .option('--dir <path>', 'Source project directory (default: current directory)')
-  .option('--output <path>', 'Output directory for imported skills')
-  .action(migrateCommand);
 
 // Error handling
 program.exitOverride();
