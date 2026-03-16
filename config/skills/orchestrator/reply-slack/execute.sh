@@ -204,34 +204,3 @@ else
 
   api_call POST "/slack/send" "$BODY"
 fi
-
-# Emit a [NOTIFY] block so the chat service/logs capture this reply and
-# unblock any pending Slack queue items. conversationId is optional –
-# TerminalGateway will fall back to the active conversation when omitted.
-{
-  echo "[NOTIFY]"
-  echo "type: slack_reply"
-  echo "title: Slack Reply"
-  if [ -n "$CONVERSATION_ID" ]; then
-    echo "conversationId: $CONVERSATION_ID"
-  fi
-  echo "channelId: $CHANNEL_ID"
-  if [ -n "$THREAD_TS" ]; then
-    echo "threadTs: $THREAD_TS"
-  fi
-  echo "---"
-  if [ -n "$IMAGE_PATH" ]; then
-    printf 'Image uploaded: %s\n' "$IMAGE_PATH"
-    if [ -n "$TEXT" ]; then
-      printf '%s\n' "$TEXT"
-    fi
-  elif [ -n "$FILE_PATH" ]; then
-    printf 'File uploaded: %s\n' "$FILE_PATH"
-    if [ -n "$TEXT" ]; then
-      printf '%s\n' "$TEXT"
-    fi
-  else
-    printf '%s\n' "$TEXT"
-  fi
-  echo "[/NOTIFY]"
-} >&2

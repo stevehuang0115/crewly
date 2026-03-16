@@ -29,6 +29,7 @@ import {
   matchesSkillFilter,
 } from '../../types/skill.types.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { parseSkillMd } from '../../utils/skill-md-parser.js';
 
 /**
  * Options for initializing the SkillService
@@ -421,10 +422,20 @@ export class SkillService {
   }
 
   /**
+   * Check if a directory is a skill directory (has SKILL.md or legacy skill.json).
+   *
+   * @param dir - Directory path to check
+   * @returns True if the directory contains a skill definition
+   */
+  private isSkillDirectory(dir: string): boolean {
+    return existsSync(path.join(dir, 'SKILL.md')) || existsSync(path.join(dir, 'skill.json'));
+  }
+
+  /**
    * Load skills from a directory
    *
-   * Handles both flat structure (skill.json in immediate subdirs)
-   * and nested category structure (category/skill/skill.json).
+   * Handles both flat structure (SKILL.md in immediate subdirs)
+   * and nested category structure (category/skill/SKILL.md).
    *
    * @param dir - Directory path
    * @param isBuiltin - Whether these are built-in skills
@@ -439,11 +450,9 @@ export class SkillService {
       if (!entry.isDirectory()) continue;
 
       const subDir = path.join(dir, entry.name);
-      const skillJsonPath = path.join(subDir, 'skill.json');
 
-      // Check if this is a skill directory (has skill.json)
-      if (existsSync(skillJsonPath)) {
-        const skill = await this.loadSkillFromPath(subDir, skillJsonPath, isBuiltin);
+      if (this.isSkillDirectory(subDir)) {
+        const skill = await this.loadSkillFromDir(subDir, isBuiltin);
         if (skill) {
           skills.push(skill);
         }
@@ -474,10 +483,9 @@ export class SkillService {
         if (!entry.isDirectory()) continue;
 
         const skillDir = path.join(categoryDir, entry.name);
-        const skillJsonPath = path.join(skillDir, 'skill.json');
 
-        if (existsSync(skillJsonPath)) {
-          const skill = await this.loadSkillFromPath(skillDir, skillJsonPath, isBuiltin);
+        if (this.isSkillDirectory(skillDir)) {
+          const skill = await this.loadSkillFromDir(skillDir, isBuiltin);
           if (skill) {
             skills.push(skill);
           }
@@ -491,14 +499,97 @@ export class SkillService {
   }
 
   /**
-   * Load a single skill from a skill.json path
+   * Load a single skill from a directory. Tries SKILL.md first,
+   * then falls back to legacy skill.json format.
+   *
+   * @param skillDir - Directory containing the skill
+   * @param isBuiltin - Whether this is a built-in skill
+   * @returns Loaded skill or null if loading fails
+   */
+  private async loadSkillFromDir(
+    skillDir: string,
+    isBuiltin: boolean
+  ): Promise<Skill | null> {
+    const skillMdPath = path.join(skillDir, 'SKILL.md');
+
+    if (existsSync(skillMdPath)) {
+      return this.loadSkillFromSkillMd(skillDir, skillMdPath, isBuiltin);
+    }
+
+    // Legacy fallback: skill.json
+    const skillJsonPath = path.join(skillDir, 'skill.json');
+    if (existsSync(skillJsonPath)) {
+      return this.loadSkillFromLegacyJson(skillDir, skillJsonPath, isBuiltin);
+    }
+
+    return null;
+  }
+
+  /**
+   * Load a skill from SKILL.md format (YAML frontmatter + markdown body).
+   *
+   * @param skillDir - Directory containing the skill
+   * @param skillMdPath - Path to SKILL.md file
+   * @param isBuiltin - Whether this is a built-in skill
+   * @returns Loaded skill or null if loading fails
+   */
+  private async loadSkillFromSkillMd(
+    skillDir: string,
+    skillMdPath: string,
+    isBuiltin: boolean
+  ): Promise<Skill | null> {
+    try {
+      const content = await fs.readFile(skillMdPath, 'utf-8');
+      const { frontmatter, body } = parseSkillMd(content);
+
+      const dirName = path.basename(skillDir);
+      const fm = frontmatter as Record<string, unknown>;
+
+      // Validate required fields
+      if (!fm.name || !fm.description) {
+        this.logger.warn('SKILL.md missing required fields (name/description)', { skillDir });
+        return null;
+      }
+
+      const skill: Skill = {
+        id: (fm.id as string) || `skill-${dirName}`,
+        name: fm.name as string,
+        description: fm.description as string,
+        category: ((fm.category as string) || 'general') as Skill['category'],
+        skillType: ((fm.skillType as string) || 'claude-skill') as Skill['skillType'],
+        promptFile: skillMdPath, // body content is in the SKILL.md itself
+        execution: fm.execution as Skill['execution'],
+        environment: fm.environment as Skill['environment'],
+        runtime: fm.runtime as Skill['runtime'],
+        notices: fm.notices as Skill['notices'],
+        assignableRoles: (fm.assignableRoles as string[]) || [],
+        triggers: (fm.triggers as string[]) || [],
+        tags: (fm.tags as string[]) || [],
+        version: (fm.version as string) || '1.0.0',
+        requiredTier: fm.requiredTier as string | undefined,
+        fallbackSkill: fm.fallbackSkill as string | undefined,
+        isBuiltin,
+        isEnabled: true,
+        createdAt: (fm.createdAt as string) || new Date().toISOString(),
+        updatedAt: (fm.updatedAt as string) || new Date().toISOString(),
+      };
+
+      return skill;
+    } catch (error) {
+      this.logger.warn('Failed to load skill from SKILL.md', { skillDir, error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+  }
+
+  /**
+   * Load a single skill from a legacy skill.json file.
    *
    * @param skillDir - Directory containing the skill
    * @param skillJsonPath - Path to skill.json file
    * @param isBuiltin - Whether this is a built-in skill
    * @returns Loaded skill or null if loading fails
    */
-  private async loadSkillFromPath(
+  private async loadSkillFromLegacyJson(
     skillDir: string,
     skillJsonPath: string,
     isBuiltin: boolean
@@ -522,60 +613,73 @@ export class SkillService {
   }
 
   /**
-   * Load prompt content for a skill
+   * Load prompt content for a skill.
+   *
+   * For SKILL.md format, extracts the markdown body (after frontmatter).
+   * For legacy format, reads the separate instructions.md file.
    *
    * @param skill - Skill to load prompt for
    * @returns Prompt content string
    */
   private async loadPromptContent(skill: Skill): Promise<string> {
     try {
-      return await fs.readFile(skill.promptFile, 'utf-8');
+      const content = await fs.readFile(skill.promptFile, 'utf-8');
+
+      // If promptFile points to a SKILL.md, extract just the body
+      if (skill.promptFile.endsWith('SKILL.md')) {
+        const { body } = parseSkillMd(content);
+        return body;
+      }
+
+      return content;
     } catch (error) {
-      // Return empty string if prompt file doesn't exist
       this.logger.warn('Failed to load prompt for skill', { skillId: skill.id, error: error instanceof Error ? error.message : String(error) });
       return '';
     }
   }
 
   /**
-   * Save a skill to disk
+   * Save a skill to disk in SKILL.md format (YAML frontmatter + markdown body).
    *
    * @param skill - Skill to save
-   * @param promptContent - Optional prompt content to save
+   * @param promptContent - Optional prompt content (markdown body)
    */
   private async saveSkill(skill: Skill, promptContent?: string): Promise<void> {
+    // Lazy import to avoid circular dependency issues at module load time
+    const { stringify: stringifyYAML } = await import('yaml');
+
     const skillDir = path.join(this.userSkillsDir, skill.id);
     await fs.mkdir(skillDir, { recursive: true });
 
-    // Save skill.json
-    const storageData: SkillStorageFormat = {
+    // Build frontmatter object (id included for reload identity)
+    const frontmatter: Record<string, unknown> = {
       id: skill.id,
       name: skill.name,
       description: skill.description,
+      version: skill.version,
       category: skill.category,
       skillType: skill.skillType,
-      promptFile: 'instructions.md',
-      execution: skill.execution,
-      environment: skill.environment,
-      runtime: skill.runtime,
-      notices: skill.notices,
-      assignableRoles: skill.assignableRoles,
-      triggers: skill.triggers,
-      tags: skill.tags,
-      version: skill.version,
-      createdAt: skill.createdAt,
-      updatedAt: skill.updatedAt,
     };
 
-    await fs.writeFile(path.join(skillDir, 'skill.json'), JSON.stringify(storageData, null, 2));
+    if (skill.assignableRoles?.length) frontmatter.assignableRoles = skill.assignableRoles;
+    if (skill.triggers?.length) frontmatter.triggers = skill.triggers;
+    if (skill.tags?.length) frontmatter.tags = skill.tags;
+    if (skill.execution) frontmatter.execution = skill.execution;
+    if (skill.environment) frontmatter.environment = skill.environment;
+    if (skill.runtime) frontmatter.runtime = skill.runtime;
+    if (skill.notices?.length) frontmatter.notices = skill.notices;
+    if (skill.requiredTier) frontmatter.requiredTier = skill.requiredTier;
+    if (skill.fallbackSkill) frontmatter.fallbackSkill = skill.fallbackSkill;
 
-    // Save prompt content if provided
-    if (promptContent !== undefined) {
-      await fs.writeFile(path.join(skillDir, 'instructions.md'), promptContent);
-    }
+    const yamlStr = stringifyYAML(frontmatter).trim();
+    const body = promptContent || '';
+    const skillMdContent = `---\n${yamlStr}\n---\n\n${body}\n`;
+
+    const skillMdPath = path.join(skillDir, 'SKILL.md');
+    await fs.writeFile(skillMdPath, skillMdContent);
 
     // Update skill's prompt file path
-    skill.promptFile = path.join(skillDir, 'instructions.md');
+    skill.promptFile = skillMdPath;
   }
 }
 

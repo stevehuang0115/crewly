@@ -46,6 +46,21 @@ if [ "$USE_STRUCTURED" = "true" ] && [ -n "$TASK_ID" ]; then
   api_call POST "/chat/agent-response" "$VER_BODY" || true
 fi
 
+# #186: If the task file was already moved from in_progress/ to done/ by
+# report-status (via complete-by-session), succeed silently instead of failing.
+if echo "$ABSOLUTE_TASK_PATH" | grep -q '/in_progress/'; then
+  DONE_PATH="${ABSOLUTE_TASK_PATH/\/in_progress\///done/}"
+  if [ -f "$DONE_PATH" ] && [ ! -f "$ABSOLUTE_TASK_PATH" ]; then
+    echo '{"success":true,"message":"Task already completed (moved to done by report-status)"}'
+    # Still persist knowledge below, then exit
+    if [ -n "$SUMMARY" ]; then
+      PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+      auto_remember "$SESSION_NAME" "Task completed by ${SESSION_NAME}: ${SUMMARY}" "pattern" "project" "$PROJECT_PATH"
+    fi
+    exit 0
+  fi
+fi
+
 BODY=$(jq -n \
   --arg absoluteTaskPath "$ABSOLUTE_TASK_PATH" \
   --arg taskPath "$ABSOLUTE_TASK_PATH" \

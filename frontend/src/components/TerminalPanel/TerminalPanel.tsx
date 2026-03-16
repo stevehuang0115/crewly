@@ -59,6 +59,16 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
   // Smart scrolling: track if user has scrolled away from bottom
   const isUserScrolledUp = useRef<boolean>(false);
 
+  // Swipe-to-close gesture tracking refs
+  const touchStartXRef = useRef<number>(0);
+  const touchStartYRef = useRef<number>(0);
+  const touchDeltaXRef = useRef<number>(0);
+  const isSwiping = useRef<boolean>(false);
+  const [swipeOffset, setSwipeOffset] = useState(0);
+
+  // Touch scroll detection refs (replaces wheel-only detection for mobile)
+  const lastTouchYRef = useRef<number>(0);
+
   // Ref to track the current session for use in recursive timeouts
   // This prevents stale closures in the retry logic
   const selectedSessionRef = useRef<string>(selectedSession);
@@ -210,6 +220,26 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
     };
     container.addEventListener('wheel', handleWheel);
 
+    // Touch scroll detection for mobile devices (wheel events don't fire on touch)
+    const handleTouchStart = (e: TouchEvent) => {
+      lastTouchYRef.current = e.touches[0].clientY;
+    };
+    const handleTouchMove = (e: TouchEvent) => {
+      const currentY = e.touches[0].clientY;
+      const deltaY = lastTouchYRef.current - currentY; // positive = scrolling up in content
+      lastTouchYRef.current = currentY;
+
+      if (deltaY < 0) {
+        // Finger moving down = scrolling up through content
+        isUserScrolledUp.current = true;
+      } else if (deltaY > 0 && isAtBottom()) {
+        // Finger moving up = scrolling down, and we reached bottom
+        isUserScrolledUp.current = false;
+      }
+    };
+    container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: true });
+
     // Handle resize
     const handleResize = () => {
       if (fitAddonRef.current && xtermRef.current) {
@@ -232,6 +262,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
         viewportElement.removeEventListener('scroll', handleScroll);
       }
       container.removeEventListener('wheel', handleWheel);
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
@@ -663,122 +695,184 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
     }
   }, [isOpen, xtermInitialized]);
 
+  // Swipe-to-close gesture: detect horizontal swipe on the panel header area
+  const SWIPE_THRESHOLD = 80; // px needed to trigger close
+  const handlePanelTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartXRef.current = e.touches[0].clientX;
+    touchStartYRef.current = e.touches[0].clientY;
+    touchDeltaXRef.current = 0;
+    isSwiping.current = false;
+  }, []);
+
+  const handlePanelTouchMove = useCallback((e: React.TouchEvent) => {
+    const deltaX = e.touches[0].clientX - touchStartXRef.current;
+    const deltaY = Math.abs(e.touches[0].clientY - touchStartYRef.current);
+
+    // Only track horizontal swipes (rightward) when horizontal movement > vertical
+    if (deltaX > 10 && deltaX > deltaY) {
+      isSwiping.current = true;
+      touchDeltaXRef.current = deltaX;
+      setSwipeOffset(deltaX);
+    }
+  }, []);
+
+  const handlePanelTouchEnd = useCallback(() => {
+    if (isSwiping.current && touchDeltaXRef.current > SWIPE_THRESHOLD) {
+      onClose();
+    }
+    // Reset swipe state
+    isSwiping.current = false;
+    touchDeltaXRef.current = 0;
+    setSwipeOffset(0);
+  }, [onClose]);
+
+  // Compute inline transform for swipe-in-progress feedback
+  const panelStyle: React.CSSProperties = swipeOffset > 0
+    ? { transform: `translateX(${swipeOffset}px)`, transition: 'none' }
+    : {};
+
   return (
-    <div
-      ref={terminalPanelRef}
-      className={`fixed top-0 right-0 h-full bg-surface-dark border-l border-border-dark flex flex-col z-50 transition-transform duration-300 ${
-        isOpen ? 'translate-x-0' : 'translate-x-full'
-      } w-full sm:w-[600px]`}
-    >
-      <div className="flex items-center justify-between p-3 sm:p-4 border-b border-border-dark">
-        <div className="flex items-center space-x-2 sm:space-x-3 min-w-0">
-          <TerminalIcon className="w-5 h-5 text-text-secondary-dark shrink-0" />
-          <span className="font-medium text-text-primary-dark truncate">Terminal</span>
-          <div className="flex items-center space-x-1.5 shrink-0">
-            <div className={`w-2 h-2 rounded-full ${
-              connectionStatus === 'connected' ? 'bg-green-400' :
-              connectionStatus === 'connecting' || connectionStatus === 'reconnecting' ? 'bg-yellow-400' :
-              connectionStatus === 'error' ? 'bg-red-400' : 'bg-gray-400'
-            }`}></div>
-            <span className="text-xs sm:text-sm text-text-secondary-dark">
-              {connectionStatus === 'connected' ? 'Live' :
-               connectionStatus === 'connecting' ? 'Connecting...' :
-               connectionStatus === 'reconnecting' ? 'Reconnecting...' :
-               connectionStatus === 'error' ? 'Error' : 'Disconnected'}
-            </span>
-          </div>
-        </div>
-
-        <button
+    <>
+      {/* Backdrop overlay for mobile — provides context and tap-to-close */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 sm:hidden"
           onClick={onClose}
-          className="p-1 text-text-secondary-dark hover:text-text-primary-dark hover:bg-background-dark rounded transition-colors shrink-0"
-          aria-label="Close Terminal"
+          aria-hidden="true"
+        />
+      )}
+
+      <div
+        ref={terminalPanelRef}
+        className={`fixed top-0 right-0 h-full bg-surface-dark border-l border-border-dark flex flex-col z-50 transition-transform duration-300 ${
+          isOpen ? 'translate-x-0' : 'translate-x-full'
+        } w-full sm:w-[600px]`}
+        style={isOpen ? panelStyle : undefined}
+      >
+        {/* Header — larger touch targets on mobile, swipe gesture zone */}
+        <div
+          className="flex items-center justify-between p-3 sm:p-4 border-b border-border-dark"
+          style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
+          onTouchStart={handlePanelTouchStart}
+          onTouchMove={handlePanelTouchMove}
+          onTouchEnd={handlePanelTouchEnd}
         >
-          <X className="w-5 h-5" />
-        </button>
-      </div>
+          {/* Swipe indicator pill — visible on mobile only */}
+          <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-8 h-1 rounded-full bg-text-secondary-dark/30 sm:hidden" />
 
-      <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-border-dark">
-        <div className="flex items-center space-x-2 sm:space-x-3">
-          <label htmlFor="session-select" className="text-xs sm:text-sm font-medium text-text-secondary-dark shrink-0">
-            Session:
-          </label>
-          <select
-            id="session-select"
-            value={selectedSession}
-            onChange={(e) => setSelectedSession(e.target.value)}
-            className="flex-1 min-w-0 px-2 sm:px-3 py-1 bg-background-dark border border-border-dark rounded text-xs sm:text-sm text-text-primary-dark focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent disabled:opacity-50"
-            disabled={connectionStatus !== 'connected'}
-          >
-            {availableSessions.map((session) => (
-              <option key={session.id} value={session.id}>
-                {session.isInProcess ? `${session.displayName} (Log)` : session.displayName}
-              </option>
-            ))}
-          </select>
-          {isCurrentSessionReadOnly && (
-            <span className="px-2 py-0.5 text-xs font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded shrink-0">
-              Read Only
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="flex-1 flex flex-col">
-        {error && (
-          <div className="mx-4 my-2 px-4 py-3 bg-red-500/10 border-l-4 border-red-500 text-red-400 flex items-center space-x-2">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1 text-sm">{error}</span>
-            <Button onClick={retryConnection} variant="ghost" size="sm" className="text-red-400 hover:text-red-300">
-              Retry
-            </Button>
+          <div className="flex items-center space-x-2 sm:space-x-3 min-w-0">
+            <TerminalIcon className="w-5 h-5 text-text-secondary-dark shrink-0" />
+            <span className="font-medium text-text-primary-dark truncate">Terminal</span>
+            <div className="flex items-center space-x-1.5 shrink-0">
+              <div className={`w-2 h-2 rounded-full ${
+                connectionStatus === 'connected' ? 'bg-green-400' :
+                connectionStatus === 'connecting' || connectionStatus === 'reconnecting' ? 'bg-yellow-400' :
+                connectionStatus === 'error' ? 'bg-red-400' : 'bg-gray-400'
+              }`}></div>
+              <span className="text-xs sm:text-sm text-text-secondary-dark">
+                {connectionStatus === 'connected' ? 'Live' :
+                 connectionStatus === 'connecting' ? 'Connecting...' :
+                 connectionStatus === 'reconnecting' ? 'Reconnecting...' :
+                 connectionStatus === 'error' ? 'Error' : 'Disconnected'}
+              </span>
+            </div>
           </div>
-        )}
 
-        <div className="flex-1 overflow-hidden">
-          {/* Show empty state when no sessions available */}
-          {sessionsLoaded && availableSessions.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center p-8 text-center">
-              <div className="w-16 h-16 rounded-full bg-surface-dark border border-border-dark flex items-center justify-center mb-4">
-                <TerminalIcon className="w-8 h-8 text-text-secondary-dark" />
-              </div>
-              <h3 className="text-lg font-medium text-text-primary-dark mb-2">
-                No Terminal Sessions Available
-              </h3>
-              <p className="text-sm text-text-secondary-dark mb-6 max-w-sm">
-                The orchestrator is not running. Start the orchestrator to enable terminal sessions for your agents.
-              </p>
-              <Button
-                onClick={() => {
-                  onClose();
-                  navigate('/teams/orchestrator');
-                }}
-                variant="primary"
-                size="default"
-                className="flex items-center space-x-2"
-              >
-                <Play className="w-4 h-4" />
-                <span>Go to Orchestrator</span>
+          <button
+            onClick={onClose}
+            className="p-2 sm:p-1 text-text-secondary-dark hover:text-text-primary-dark hover:bg-background-dark rounded-lg sm:rounded transition-colors shrink-0 min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+            aria-label="Close Terminal"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Session selector — taller touch target for the dropdown on mobile */}
+        <div className="px-3 sm:px-4 py-2.5 sm:py-3 border-b border-border-dark">
+          <div className="flex items-center space-x-2 sm:space-x-3">
+            <label htmlFor="session-select" className="text-xs sm:text-sm font-medium text-text-secondary-dark shrink-0">
+              Session:
+            </label>
+            <select
+              id="session-select"
+              value={selectedSession}
+              onChange={(e) => setSelectedSession(e.target.value)}
+              className="flex-1 min-w-0 px-2 sm:px-3 py-2 sm:py-1 bg-background-dark border border-border-dark rounded-lg sm:rounded text-sm text-text-primary-dark focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent disabled:opacity-50"
+              disabled={connectionStatus !== 'connected'}
+            >
+              {availableSessions.map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.isInProcess ? `${session.displayName} (Log)` : session.displayName}
+                </option>
+              ))}
+            </select>
+            {isCurrentSessionReadOnly && (
+              <span className="px-2 py-0.5 text-xs font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded shrink-0">
+                Read Only
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex-1 flex flex-col">
+          {error && (
+            <div className="mx-3 sm:mx-4 my-2 px-3 sm:px-4 py-3 bg-red-500/10 border-l-4 border-red-500 text-red-400 flex items-center space-x-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span className="flex-1 text-sm">{error}</span>
+              <Button onClick={retryConnection} variant="ghost" size="sm" className="text-red-400 hover:text-red-300 min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0">
+                Retry
               </Button>
             </div>
-          ) : (
+          )}
+
+          <div className="flex-1 overflow-hidden">
+            {/* Show empty state when no sessions available */}
+            {sessionsLoaded && availableSessions.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center p-6 sm:p-8 text-center">
+                <div className="w-16 h-16 rounded-full bg-surface-dark border border-border-dark flex items-center justify-center mb-4">
+                  <TerminalIcon className="w-8 h-8 text-text-secondary-dark" />
+                </div>
+                <h3 className="text-lg font-medium text-text-primary-dark mb-2">
+                  No Terminal Sessions Available
+                </h3>
+                <p className="text-sm text-text-secondary-dark mb-6 max-w-sm">
+                  The orchestrator is not running. Start the orchestrator to enable terminal sessions for your agents.
+                </p>
+                <Button
+                  onClick={() => {
+                    onClose();
+                    navigate('/teams/orchestrator');
+                  }}
+                  variant="primary"
+                  size="default"
+                  className="flex items-center space-x-2"
+                >
+                  <Play className="w-4 h-4" />
+                  <span>Go to Orchestrator</span>
+                </Button>
+              </div>
+            ) : (
+              <div
+                ref={terminalContainerRef}
+                className="h-full w-full bg-background-dark touch-pan-y"
+                style={{ minHeight: '100%' }}
+              />
+            )}
+          </div>
+
+          {loading && connectionStatus === 'connected' && (
             <div
-              ref={terminalContainerRef}
-              className="h-full w-full bg-background-dark"
-              style={{ minHeight: '100%' }}
-            />
+              className="px-3 sm:px-4 py-2 border-t border-border-dark"
+              style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
+            >
+              <div className="flex items-center space-x-2 text-sm text-text-secondary-dark">
+                <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                <span>Loading terminal output...</span>
+              </div>
+            </div>
           )}
         </div>
-
-        {loading && connectionStatus === 'connected' && (
-          <div className="px-4 py-2 border-t border-border-dark">
-            <div className="flex items-center space-x-2 text-sm text-text-secondary-dark">
-              <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-              <span>Loading terminal output...</span>
-            </div>
-          </div>
-        )}
       </div>
-    </div>
+    </>
   );
 };

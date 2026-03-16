@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Crewly Quality Gates — Git pre-commit hook
+#
+# Calls the Crewly Quality Gates API before each commit.
+# Blocks the commit if the quality gate check fails.
+# Gracefully allows the commit if the API is unreachable.
+#
+# Install: bash config/hooks/install-hooks.sh
+# Or:      npx crewly install-hooks
+
+set -euo pipefail
+
+CREWLY_PORT="${CREWLY_PORT:-8787}"
+CREWLY_HOST="${CREWLY_HOST:-localhost}"
+CREWLY_API_URL="http://${CREWLY_HOST}:${CREWLY_PORT}/api/quality-gates/pre-commit"
+CREWLY_TIMEOUT="${CREWLY_TIMEOUT:-5}"
+
+# Resolve session name from environment or fallback
+SESSION_NAME="${CREWLY_SESSION_NAME:-}"
+if [ -z "$SESSION_NAME" ]; then
+  # Try to detect from terminal title or default to unknown
+  SESSION_NAME="unknown"
+fi
+
+BRANCH="$(git branch --show-current 2>/dev/null || echo "detached")"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+# Check if curl is available
+if ! command -v curl &>/dev/null; then
+  echo -e "${YELLOW}[CREWLY] curl not found — skipping quality gate check${NC}"
+  exit 0
+fi
+
+# Check if jq is available (used for JSON parsing)
+HAS_JQ=false
+if command -v jq &>/dev/null; then
+  HAS_JQ=true
+fi
+
+# Call the Quality Gates API
+RESPONSE=""
+HTTP_CODE=""
+
+RESPONSE=$(curl -s -w "\n%{http_code}" \
+  --connect-timeout "$CREWLY_TIMEOUT" \
+  --max-time "$((CREWLY_TIMEOUT * 2))" \
+  -X POST "$CREWLY_API_URL" \
+  -H "Content-Type: application/json" \
+  -d "{\"sessionName\":\"${SESSION_NAME}\",\"branch\":\"${BRANCH}\"}" \
+  2>/dev/null) || {
+  # API unreachable — graceful degradation
+  echo -e "${YELLOW}[CREWLY] Quality Gates API unreachable at ${CREWLY_API_URL}${NC}"
+  echo -e "${YELLOW}[CREWLY] Proceeding with commit (graceful degradation)${NC}"
+  exit 0
+}
+
+# Split response body and HTTP status code
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+# Handle non-200 HTTP responses
+if [ "$HTTP_CODE" != "200" ]; then
+  echo -e "${YELLOW}[CREWLY] Quality Gates API returned HTTP ${HTTP_CODE}${NC}"
+  echo -e "${YELLOW}[CREWLY] Proceeding with commit (graceful degradation)${NC}"
+  exit 0
+fi
+
+# Parse the response
+if [ "$HAS_JQ" = true ]; then
+  PASS=$(echo "$BODY" | jq -r '.pass // false' 2>/dev/null || echo "false")
+  FEEDBACK=$(echo "$BODY" | jq -r '.feedback // "No feedback provided"' 2>/dev/null || echo "No feedback provided")
+else
+  # Fallback: basic string matching without jq
+  if echo "$BODY" | grep -q '"pass"\s*:\s*true'; then
+    PASS="true"
+  else
+    PASS="false"
+  fi
+  # Extract feedback with basic regex
+  FEEDBACK=$(echo "$BODY" | grep -o '"feedback"\s*:\s*"[^"]*"' | sed 's/"feedback"\s*:\s*"//' | sed 's/"$//' || echo "No feedback provided")
+fi
+
+# Act on the result
+if [ "$PASS" = "true" ]; then
+  echo -e "${GREEN}[CREWLY] Quality Gates: All checks passed${NC}"
+  exit 0
+else
+  echo ""
+  echo -e "${RED}============================================${NC}"
+  echo -e "${RED}  CREWLY QUALITY GATE: COMMIT BLOCKED${NC}"
+  echo -e "${RED}============================================${NC}"
+  echo ""
+  echo -e "${RED}${FEEDBACK}${NC}"
+  echo ""
+  echo -e "${YELLOW}Fix the above issues before committing.${NC}"
+  echo -e "${YELLOW}To bypass (not recommended): git commit --no-verify${NC}"
+  echo -e "${RED}============================================${NC}"
+  exit 1
+fi

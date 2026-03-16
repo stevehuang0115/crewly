@@ -8,6 +8,13 @@
   "icon": "laptop",
   "hierarchical": true,
   "defaultRuntime": "claude-code",
+  "norms": {
+    "enabled": true,
+    "files": [
+      { "file": "code-commit-sop.md", "trigger": "before_commit", "roles": ["developer", "team-leader"] },
+      { "file": "quality-gates.md", "trigger": "before_deploy", "roles": ["*"] }
+    ]
+  },
   "roles": [
     {
       "role": "team-leader",
@@ -111,5 +118,14 @@
     "idleEvent": true,
     "fallbackCheckMinutes": 5
   },
-  "maxWorkersPerLeader": 4
+  "maxWorkersPerLeader": 4,
+  "mission": "Build and maintain fullstack web applications with high code quality and test coverage",
+  "budget": {
+    "maxTokensPerDay": 5000000,
+    "alertThreshold": 80
+  },
+  "qualityGate": {
+    "autoApprove": false,
+    "minQualityScore": 80
+  }
 }

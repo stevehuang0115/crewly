@@ -1,0 +1,22 @@
+{
+  "id": "advanced-code-review",
+  "name": "Advanced Code Review",
+  "description": "AI-powered deep code review with security analysis, performance profiling, and architectural pattern detection",
+  "category": "quality",
+  "skillType": "claude-skill",
+  "promptFile": "instructions.md",
+  "execution": {
+    "type": "script",
+    "script": {
+      "file": "execute.sh",
+      "interpreter": "bash",
+      "timeoutMs": 60000
+    }
+  },
+  "assignableRoles": ["developer", "team-leader", "qa-engineer"],
+  "triggers": ["code review", "pull request", "PR review", "security review"],
+  "tags": ["code-quality", "security", "performance", "premium"],
+  "version": "1.0.0",
+  "requiredTier": "pro",
+  "fallbackSkill": "code-review"
+}

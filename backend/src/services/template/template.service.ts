@@ -8,13 +8,15 @@
  * @module services/template/template
  */
 
-import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, statSync, mkdirSync, copyFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { LoggerService } from '../core/logger.service.js';
 import { randomUUID } from 'crypto';
 import type { TeamTemplate, TemplateRole } from '../../types/team-template.types.js';
 import { isValidTeamTemplate } from '../../types/team-template.types.js';
 import type { TeamMember, Team, TeamMemberRole } from '../../types/index.js';
+import { SkillTierService, type SkillTierInfo } from '../skill/skill-tier.service.js';
+import { type CloudTier, CLOUD_CONSTANTS } from '../../constants.js';
 
 // =============================================================================
 // Constants
@@ -187,17 +189,53 @@ export class TemplateService {
   createTeamFromTemplate(
     templateId: string,
     teamName: string,
-    nameOverrides?: Record<string, string>
+    nameOverrides?: Record<string, string>,
+    userTier?: CloudTier
   ): CreateFromTemplateResult | null {
     const template = this.getTemplate(templateId);
     if (!template) return null;
 
+    // Check if user's tier is sufficient for this template
+    const effectiveTier = userTier || (CLOUD_CONSTANTS.TIERS.FREE as CloudTier);
+    if (template.requiredTier) {
+      const tierService = SkillTierService.getInstance();
+      if (!tierService.isTierSufficient(effectiveTier, template.requiredTier as CloudTier)) {
+        throw new Error(
+          `Template "${template.name}" requires ${template.requiredTier} plan. ` +
+          `Current plan: ${effectiveTier}. Upgrade at https://crewlyai.com/pricing`
+        );
+      }
+    }
+
     const members: TeamMember[] = [];
     const memberIdsByRole = new Map<string, string[]>();
+
+    // Resolve skills with tier-based graceful degradation
+    const tierService = SkillTierService.getInstance();
 
     // First pass: create all members
     for (const role of template.roles) {
       const roleMembers: string[] = [];
+
+      // Apply skill tier filtering for this role
+      let resolvedSkills = role.defaultSkills;
+      if (role.defaultSkills.length > 0) {
+        const skillInfos: SkillTierInfo[] = role.defaultSkills.map(id => ({
+          id,
+          // Skills without requiredTier are free by default
+        }));
+        const resolution = tierService.resolveSkills(skillInfos, effectiveTier);
+        resolvedSkills = resolution.skills.map(s => s.id);
+
+        if (resolution.degraded.length > 0) {
+          logger.info('Skills degraded for role due to tier', {
+            templateId,
+            role: role.role,
+            userTier: effectiveTier,
+            degraded: resolution.degraded.map(d => d.original),
+          });
+        }
+      }
 
       for (let i = 0; i < role.count; i++) {
         const memberId = randomUUID();
@@ -216,7 +254,7 @@ export class TemplateService {
           runtimeType: role.runtimeOverride ?? template.defaultRuntime,
           hierarchyLevel: role.hierarchyLevel,
           canDelegate: role.canDelegate,
-          skillOverrides: role.defaultSkills.length > 0 ? role.defaultSkills : undefined,
+          skillOverrides: resolvedSkills.length > 0 ? resolvedSkills : undefined,
           excludedRoleSkills: role.excludedSkills,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -267,11 +305,89 @@ export class TemplateService {
       updatedAt: new Date().toISOString(),
     };
 
+    // Copy norms from template to team directory
+    this.copyTeamNorms(template.id, team.id);
+
     return {
       team,
       templateId: template.id,
       memberCount: members.length,
     };
+  }
+
+  /**
+   * Copy norms files from a template to the team's norms directory.
+   *
+   * Copies config/templates/{templateId}/norms/*.md to ~/.crewly/teams/{teamId}/norms/.
+   * Also copies the norms config from template.json into the team's config.json.
+   *
+   * @param templateId - Source template ID
+   * @param teamId - Target team ID
+   */
+  private copyTeamNorms(templateId: string, teamId: string): void {
+    try {
+      const normsSourceDir = join(this.templatesDir, templateId, 'norms');
+      if (!existsSync(normsSourceDir)) return;
+
+      const normsFiles = readdirSync(normsSourceDir).filter(f => f.endsWith('.md'));
+      if (normsFiles.length === 0) return;
+
+      const crewlyHome = join(process.env['HOME'] || '/tmp', '.crewly');
+      const normsTargetDir = join(crewlyHome, 'teams', teamId, 'norms');
+      mkdirSync(normsTargetDir, { recursive: true });
+
+      for (const file of normsFiles) {
+        copyFileSync(join(normsSourceDir, file), join(normsTargetDir, file));
+      }
+
+      // Copy norms config from template.json into team config
+      const template = this.getTemplate(templateId);
+      if (template) {
+        const teamConfigPath = join(crewlyHome, 'teams', teamId, 'config.json');
+        if (existsSync(teamConfigPath)) {
+          try {
+            const config = JSON.parse(readFileSync(teamConfigPath, 'utf-8'));
+            const templateJson = this.loadTemplateJson(templateId);
+            if (templateJson?.norms) {
+              config.norms = templateJson.norms;
+              const { writeFileSync } = require('fs');
+              writeFileSync(teamConfigPath, JSON.stringify(config, null, 2));
+            }
+          } catch {
+            // Best-effort — config update failure doesn't block team creation
+          }
+        }
+      }
+
+      logger.info('Copied team norms from template', {
+        templateId,
+        teamId,
+        normsCount: normsFiles.length,
+        files: normsFiles,
+      });
+    } catch (err) {
+      logger.warn('Failed to copy team norms (non-fatal)', {
+        templateId,
+        teamId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Load the raw template.json for a template (including norms config).
+   *
+   * @param templateId - Template ID
+   * @returns Parsed template.json or null
+   */
+  private loadTemplateJson(templateId: string): Record<string, unknown> | null {
+    try {
+      const jsonPath = join(this.templatesDir, templateId, 'template.json');
+      if (!existsSync(jsonPath)) return null;
+      return JSON.parse(readFileSync(jsonPath, 'utf-8'));
+    } catch {
+      return null;
+    }
   }
 
   /**

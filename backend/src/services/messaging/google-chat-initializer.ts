@@ -21,7 +21,6 @@ import { getGchatThreadStore } from './gchat-thread-store.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { formatError } from '../../utils/format-error.js';
 import { cleanGoogleChatResponse } from '../../utils/terminal-output.utils.js';
-import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import type { MessageQueueService } from './message-queue.service.js';
 import type { IncomingMessage } from './messenger-adapter.interface.js';
 
@@ -93,17 +92,6 @@ export function createIncomingCallback(
   adapter: GoogleChatMessengerAdapter,
 ): (msg: IncomingMessage) => void {
   return (msg: IncomingMessage) => {
-    // Register the thread mapping in the terminal gateway so follow-up
-    // NOTIFY messages for this space auto-route to the correct thread.
-    if (msg.channelId && msg.threadId) {
-      try {
-        const tg = getTerminalGateway();
-        if (tg) {
-          tg.registerGchatThread(msg.channelId, msg.threadId);
-        }
-      } catch { /* non-critical */ }
-    }
-
     logger.info('Enqueuing Google Chat message', {
       conversationId: msg.conversationId,
       threadId: msg.threadId,

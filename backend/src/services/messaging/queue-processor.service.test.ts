@@ -36,7 +36,6 @@ jest.mock('../../constants.js', () => ({
     MAX_HISTORY_SIZE: 50,
     INTER_MESSAGE_DELAY: 10,
     MAX_REQUEUE_RETRIES: 3,
-    ACK_TIMEOUT: 1000,
     MAX_SYSTEM_EVENT_BATCH: 5,
     PERSISTENCE_FILE: 'message-queue.json',
     PERSISTENCE_DIR: 'queue',
@@ -268,7 +267,7 @@ describe('QueueProcessorService', () => {
       expect(routeErrorSpy).toHaveBeenCalled();
     });
 
-    it('should complete message when response arrives', async () => {
+    it('should complete message immediately after delivery (fire-and-forget)', async () => {
       processor.start();
 
       queueService.enqueue({
@@ -280,14 +279,6 @@ describe('QueueProcessorService', () => {
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
-
-      // Simulate orchestrator response via chat service event
-      mockChatService.emit('message', {
-        conversationId: 'conv-1',
-        from: { type: 'orchestrator' },
-        content: 'Here is the response',
-      });
-
       await flushPromises();
       await flushPromises();
 
@@ -296,29 +287,7 @@ describe('QueueProcessorService', () => {
       expect(status.isProcessing).toBe(false);
     });
 
-    it('should timeout if no response arrives', async () => {
-      processor.start();
-
-      queueService.enqueue({
-        content: 'Test',
-        conversationId: 'conv-1',
-        source: 'web_chat',
-      });
-
-      jest.advanceTimersByTime(0);
-      await flushPromises();
-      await flushPromises();
-
-      // Advance past the timeout (5000ms in mock constants)
-      jest.advanceTimersByTime(6000);
-      await flushPromises();
-      await flushPromises();
-
-      const status = queueService.getStatus();
-      expect(status.totalProcessed).toBe(1);
-    });
-
-    it('should route slack response via slackResolve', async () => {
+    it('should resolve slackResolve with empty string (fire-and-forget)', async () => {
       const slackResolve = jest.fn();
 
       processor.start();
@@ -333,18 +302,12 @@ describe('QueueProcessorService', () => {
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
-
-      // Simulate response
-      mockChatService.emit('message', {
-        conversationId: 'conv-slack',
-        from: { type: 'orchestrator' },
-        content: 'Slack response',
-      });
-
       await flushPromises();
       await flushPromises();
 
-      expect(slackResolve).toHaveBeenCalledWith('Slack response');
+      // Fire-and-forget: slackResolve called with empty string to unblock callers.
+      // Actual reply comes via reply-slack skill.
+      expect(slackResolve).toHaveBeenCalledWith('');
     });
 
     it('should not process when stopped', async () => {
@@ -379,17 +342,9 @@ describe('QueueProcessorService', () => {
         source: 'web_chat',
       });
 
-      // Process first message
+      // Process first message (fire-and-forget: completes immediately after delivery)
       jest.advanceTimersByTime(0);
       await flushPromises();
-      await flushPromises();
-
-      mockChatService.emit('message', {
-        conversationId: 'conv-1',
-        from: { type: 'orchestrator' },
-        content: 'Response 1',
-      });
-
       await flushPromises();
       await flushPromises();
       await flushPromises();
@@ -444,7 +399,7 @@ describe('QueueProcessorService', () => {
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalled();
     });
 
-    it('should wait for idle after chat response', async () => {
+    it('should wait for idle after delivery (fire-and-forget)', async () => {
       processor.start();
 
       queueService.enqueue({
@@ -456,23 +411,10 @@ describe('QueueProcessorService', () => {
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
-
-      // First call: pre-delivery ready check
-      expect(mockAgentRegistrationService.waitForAgentReady).toHaveBeenCalledTimes(1);
-
-      // Simulate orchestrator response
-      mockChatService.emit('message', {
-        conversationId: 'conv-1',
-        from: { type: 'orchestrator' },
-        content: 'Response',
-      });
-
-      await flushPromises();
-      await flushPromises();
       await flushPromises();
       await flushPromises();
 
-      // Second call: post-completion idle wait
+      // Two calls: pre-delivery ready check + post-delivery idle wait
       expect(mockAgentRegistrationService.waitForAgentReady).toHaveBeenCalledTimes(2);
     });
 
@@ -520,11 +462,11 @@ describe('QueueProcessorService', () => {
       expect(mockAgentRegistrationService.waitForAgentReady).toHaveBeenCalledTimes(1);
     });
 
-    it('should proceed to next message even if post-completion idle wait times out', async () => {
-      // First waitForAgentReady (pre-delivery) succeeds, second (post-completion) fails
+    it('should proceed to next message even if post-delivery idle wait times out', async () => {
+      // First waitForAgentReady (pre-delivery) succeeds, second (post-delivery idle) fails
       mockAgentRegistrationService.waitForAgentReady
         .mockResolvedValueOnce(true)   // pre-delivery: ready
-        .mockResolvedValueOnce(false)  // post-completion idle: timed out
+        .mockResolvedValueOnce(false)  // post-delivery idle: timed out
         .mockResolvedValueOnce(true);  // next message pre-delivery: ready
 
       processor.start();
@@ -540,17 +482,8 @@ describe('QueueProcessorService', () => {
         source: 'web_chat',
       });
 
-      // Process first message
+      // Process first message (fire-and-forget: completes immediately)
       jest.advanceTimersByTime(0);
-      await flushPromises();
-      await flushPromises();
-
-      mockChatService.emit('message', {
-        conversationId: 'conv-1',
-        from: { type: 'orchestrator' },
-        content: 'Response 1',
-      });
-
       await flushPromises();
       await flushPromises();
       await flushPromises();
@@ -756,6 +689,11 @@ describe('QueueProcessorService', () => {
     });
 
     it('should keep heartbeat alive while processing and clear on completion', async () => {
+      // Make waitForAgentReady take some time so we can observe keepalive during processing
+      mockAgentRegistrationService.waitForAgentReady
+        .mockResolvedValueOnce(true)   // pre-delivery
+        .mockResolvedValueOnce(true);  // post-delivery idle
+
       processor.start();
 
       queueService.enqueue({
@@ -767,29 +705,11 @@ describe('QueueProcessorService', () => {
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
-
-      // Keepalive interval is HEARTBEAT_REQUEST_THRESHOLD_MS / 2 = 150000ms
-      // Advance past one keepalive tick
-      mockRecordApiActivity.mockClear();
-      jest.advanceTimersByTime(150_000);
-
-      expect(mockRecordApiActivity).toHaveBeenCalledWith('crewly-orc');
-      const callCountDuringProcessing = mockRecordApiActivity.mock.calls.length;
-      expect(callCountDuringProcessing).toBeGreaterThanOrEqual(1);
-
-      // Simulate response to complete processing
-      mockChatService.emit('message', {
-        conversationId: 'conv-1',
-        from: { type: 'orchestrator' },
-        content: 'Done',
-      });
-
-      await flushPromises();
-      await flushPromises();
       await flushPromises();
       await flushPromises();
 
-      // Clear mock and advance another keepalive period — should NOT fire again
+      // Processing completes immediately in fire-and-forget mode.
+      // Verify keepalive is cleared after completion.
       mockRecordApiActivity.mockClear();
       jest.advanceTimersByTime(150_000);
       expect(mockRecordApiActivity).not.toHaveBeenCalled();
@@ -866,10 +786,7 @@ describe('QueueProcessorService', () => {
       );
     });
 
-    it('should resolve early with error when orchestrator has no output within ACK window', async () => {
-      // Simulate orchestrator being idle (context exhausted)
-      mockIdleTimeMs = 2000; // >= ACK_TIMEOUT (1000ms in mock)
-
+    it('should complete message immediately without waiting for response (fire-and-forget)', async () => {
       processor.start();
 
       queueService.enqueue({
@@ -878,70 +795,17 @@ describe('QueueProcessorService', () => {
         source: 'web_chat',
       });
 
-      // Process message — delivery succeeds
+      // Process message — delivery succeeds, completes immediately
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
-
-      // Advance past ACK_TIMEOUT (1000ms in mock constants)
-      jest.advanceTimersByTime(1100);
-      await flushPromises();
-      await flushPromises();
       await flushPromises();
       await flushPromises();
 
-      // Message should be completed (with the error response)
+      // Message should be completed immediately (no waiting for chat response)
       const status = queueService.getStatus();
       expect(status.totalProcessed).toBe(1);
-
-      // The response should contain the context-exhaustion message
-      const history = queueService.getHistory();
-      expect(history[0].response).toContain('unresponsive');
-      expect(history[0].response).toContain('context may be exhausted');
-    });
-
-    it('should NOT resolve early when orchestrator has output within ACK window', async () => {
-      // Simulate orchestrator actively producing output
-      mockIdleTimeMs = 500; // < ACK_TIMEOUT (1000ms in mock)
-
-      processor.start();
-
-      queueService.enqueue({
-        content: 'Hello',
-        conversationId: 'conv-1',
-        source: 'web_chat',
-      });
-
-      // Process message
-      jest.advanceTimersByTime(0);
-      await flushPromises();
-      await flushPromises();
-
-      // Advance past ACK_TIMEOUT
-      jest.advanceTimersByTime(1100);
-      await flushPromises();
-      await flushPromises();
-
-      // Message should still be processing (waiting for real response)
-      const status = queueService.getStatus();
-      expect(status.totalProcessed).toBe(0);
-      expect(status.isProcessing).toBe(true);
-
-      // Now simulate the real response arriving
-      mockChatService.emit('message', {
-        conversationId: 'conv-1',
-        from: { type: 'orchestrator' },
-        content: 'Real response',
-      });
-
-      await flushPromises();
-      await flushPromises();
-      await flushPromises();
-      await flushPromises();
-
-      const finalStatus = queueService.getStatus();
-      expect(finalStatus.totalProcessed).toBe(1);
-      expect(queueService.getHistory()[0].response).toBe('Real response');
+      expect(status.isProcessing).toBe(false);
     });
 
     it('should force-deliver web_chat messages when agent is not ready', async () => {
@@ -1263,7 +1127,7 @@ describe('QueueProcessorService', () => {
       );
     });
 
-    it('should match waitForResponse when NOTIFY conversationId has thread suffix', async () => {
+    it('should resolve googleChatResolve with empty string (fire-and-forget)', async () => {
       mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(true);
       mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true });
 
@@ -1285,35 +1149,27 @@ describe('QueueProcessorService', () => {
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
-
-      // Simulate orchestrator NOTIFY with thread-suffixed conversationId
-      // (matches the bug: NOTIFY includes "spaces/X thread=spaces/X/threads/Y")
-      mockChatService.emit('message', {
-        conversationId: 'spaces/jycUeSAAAAE thread=spaces/jycUeSAAAAE/threads/NqhNzlr_WgY',
-        from: { type: 'orchestrator' },
-        content: 'Reply from orchestrator',
-      });
-
       await flushPromises();
       await flushPromises();
 
-      // googleChatResolve should be called with the response (not the timeout message)
-      expect(googleChatResolve).toHaveBeenCalledWith('Reply from orchestrator');
+      // Fire-and-forget: googleChatResolve called with empty string to unblock.
+      // Actual reply comes via reply-gchat skill.
+      expect(googleChatResolve).toHaveBeenCalledWith('');
     });
 
-    it('should NOT requeue or route error for google_chat messages when agent is busy', async () => {
+    it('should requeue google_chat messages when agent is busy', async () => {
       mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(true);
       mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({
         success: false,
         error: '[AGENT_BUSY] Agent is actively processing',
       });
-      const routeErrorSpy = jest.spyOn(responseRouter, 'routeError');
+      const requeueSpy = jest.spyOn(queueService, 'requeue');
 
       processor.start();
 
       queueService.enqueue({
         content: 'Hello GCHAT',
-        conversationId: 'conv-gchat-no-requeue',
+        conversationId: 'conv-gchat-requeue',
         source: 'google_chat',
         sourceMetadata: { channelId: 'spaces/AAA', userId: 'users/1' },
       });
@@ -1321,31 +1177,26 @@ describe('QueueProcessorService', () => {
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
-
-      // Message should NOT be requeued
-      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
-      // Error should NOT be routed to Google Chat (no ugly error message for users)
-      expect(routeErrorSpy).not.toHaveBeenCalled();
-      // Should NOT be requeued — verify no retry
-      jest.advanceTimersByTime(10000);
       await flushPromises();
-      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+      await flushPromises();
+
+      // google_chat messages follow standard user message path: requeue on AGENT_BUSY
+      expect(requeueSpy).toHaveBeenCalled();
     });
 
-    it('should requeue google_chat messages on non-AGENT_BUSY delivery failure', async () => {
+    it('should fail google_chat messages on non-AGENT_BUSY delivery failure', async () => {
       mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(true);
       mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({
         success: false,
         error: 'Failed to deliver message after multiple attempts',
       });
       const routeErrorSpy = jest.spyOn(responseRouter, 'routeError');
-      const requeueSpy = jest.spyOn(queueService, 'requeue');
 
       processor.start();
 
       queueService.enqueue({
         content: 'Hello from GCHAT',
-        conversationId: 'conv-gchat-retry',
+        conversationId: 'conv-gchat-fail',
         source: 'google_chat',
         sourceMetadata: { channelId: 'spaces/BBB', userId: 'users/2' },
       });
@@ -1353,10 +1204,11 @@ describe('QueueProcessorService', () => {
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
+      await flushPromises();
+      await flushPromises();
 
-      // Should requeue instead of routing error
-      expect(requeueSpy).toHaveBeenCalled();
-      expect(routeErrorSpy).not.toHaveBeenCalled();
+      // google_chat follows standard user message path: markFailed + routeError on non-AGENT_BUSY
+      expect(routeErrorSpy).toHaveBeenCalled();
     });
 
     it('should force-deliver system events when agent not ready', async () => {

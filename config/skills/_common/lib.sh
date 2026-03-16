@@ -78,6 +78,13 @@ auto_remember() {
   local agent_id="$1" content="$2"
   local category="${3:-pattern}" scope="${4:-project}"
   local project_path="${5:-}"
+
+  # #187: If scope is "project" but projectPath is empty, fall back to "agent" scope
+  # to avoid 400 errors from the memory API.
+  if [ "$scope" = "project" ] && [ -z "$project_path" ]; then
+    scope="agent"
+  fi
+
   local body
   if [ -n "$project_path" ]; then
     body=$(jq -n \

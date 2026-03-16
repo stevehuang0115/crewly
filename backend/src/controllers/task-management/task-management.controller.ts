@@ -9,6 +9,8 @@ import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.servi
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { TaskOutputValidatorService } from '../../services/quality/task-output-validator.service.js';
+import { TracingService } from '../../services/core/tracing.service.js';
+import { TRACING_CONSTANTS } from '../../constants.js';
 import { TASK_OUTPUT_CONSTANTS, type TaskOutputRetryInfo, type TaskOutputSchema } from '../../types/task-output.types.js';
 import type { EventBusService } from '../../services/event-bus/event-bus.service.js';
 
@@ -77,8 +79,14 @@ export function getEventBusServiceForTaskCleanup(): EventBusService | null {
  * @param res - Response with success status, created task path, and status
  */
 export async function createTask(this: ApiController, req: Request, res: Response): Promise<void> {
-	try {
-		const {
+	return TracingService.getInstance().withSpan(TRACING_CONSTANTS.SPANS.TASK_CREATE, {
+		attributes: {
+			'task.priority': req.body.priority || 'medium',
+			'task.milestone': req.body.milestone || 'delegated',
+		}
+	}, async (span) => {
+		try {
+			const {
 			projectPath,
 			task,
 			priority = 'medium',
@@ -181,6 +189,7 @@ export async function createTask(this: ApiController, req: Request, res: Respons
 		logger.error('Error creating task', { error: error instanceof Error ? error.message : String(error) });
 		res.status(500).json({ success: false, error: 'Failed to create task' });
 	}
+	});
 }
 
 /**
@@ -190,8 +199,14 @@ export async function createTask(this: ApiController, req: Request, res: Respons
  * @param res - Response with success status and task information
  */
 export async function assignTask(this: ApiController, req: Request, res: Response): Promise<void> {
-	try {
-		const { taskPath, sessionName } = req.body;
+	return TracingService.getInstance().withSpan(TRACING_CONSTANTS.SPANS.TASK_ASSIGN, {
+		attributes: {
+			'task.path': req.body.taskPath || 'unknown',
+			'agent.session': req.body.sessionName || 'unknown',
+		}
+	}, async (span) => {
+		try {
+			const { taskPath, sessionName } = req.body;
 
 		// Update agent heartbeat (proof of life)
 		try {
@@ -311,6 +326,7 @@ export async function assignTask(this: ApiController, req: Request, res: Respons
 		logger.error('Error assigning task', { error: error instanceof Error ? error.message : String(error) });
 		res.status(500).json({ success: false, error: 'Failed to assign task' });
 	}
+	});
 }
 
 /**
@@ -324,8 +340,14 @@ export async function completeTask(
 	req: Request,
 	res: Response
 ): Promise<void> {
-	try {
-		const { taskPath, sessionName, output, qualityScore } = req.body;
+	return TracingService.getInstance().withSpan(TRACING_CONSTANTS.SPANS.TASK_COMPLETE, {
+		attributes: {
+			'task.path': req.body.taskPath || 'unknown',
+			'agent.session': req.body.sessionName || 'unknown',
+		}
+	}, async (span) => {
+		try {
+			const { taskPath, sessionName, output, qualityScore } = req.body;
 
 		// Update agent heartbeat (proof of life)
 		try {
@@ -558,6 +580,7 @@ export async function completeTask(
 		logger.error('Error completing task', { error: error instanceof Error ? error.message : String(error) });
 		res.status(500).json({ success: false, error: 'Failed to complete task' });
 	}
+	});
 }
 
 /**

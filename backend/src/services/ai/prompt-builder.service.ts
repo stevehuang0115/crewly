@@ -42,6 +42,8 @@ interface PromptParts {
   sopContext?: string;
   /** Team Lead responsibilities section (injected when canDelegate=true) */
   teamLeadContext?: string;
+  /** Team norms/SOPs from template (injected for matching roles) */
+  teamNormsContext?: string;
   /** Project name */
   projectName?: string;
   /** Project path */
@@ -54,6 +56,8 @@ interface PromptParts {
   role?: string;
   /** Team ID */
   teamId?: string;
+  /** Runtime type (e.g. 'claude-code', 'gemini-cli') for runtime-specific instructions */
+  runtimeType?: string;
 }
 
 /**
@@ -257,18 +261,26 @@ Start all teams on Phase 1 simultaneously.`.trim();
 		// Build Team Lead section if applicable (loads tl-addon.md when available)
 		const teamLeadContext = await this.buildTeamLeadSection(config);
 
-		// Compose final prompt with memory, SOPs, and TL context
-		if (memoryContext || sopContext || teamLeadContext) {
+		// Build Team Norms section (from template norms/*.md)
+		const teamNormsContext = await this.buildTeamNormsSection(
+			config.teamId || '',
+			config.role
+		);
+
+		// Compose final prompt with memory, SOPs, TL context, and norms
+		if (memoryContext || sopContext || teamLeadContext || teamNormsContext) {
 			return this.composePromptWithMemory({
 				basePrompt,
 				memoryContext,
 				sopContext,
 				teamLeadContext,
+				teamNormsContext,
 				sessionName: config.name,
 				memberId: config.memberId,
 				role: config.role,
 				projectPath: config.projectPath,
 				teamId: config.teamId,
+				runtimeType: config.runtimeType,
 			});
 		}
 
@@ -442,7 +454,7 @@ ${fullContext}
 	 */
 	private buildWorkerList(subordinates: SubordinateInfo[]): string {
 		return subordinates
-			.map((sub) => `- **${sub.name}** (session: \`${sub.sessionName}\`) — ${sub.role}`)
+			.map((sub) => `- **${sub.name}** (session: \`${sub.sessionName}\`, memberId: \`${sub.memberId}\`) — ${sub.role}`)
 			.join('\n');
 	}
 
@@ -504,6 +516,107 @@ Report back via report-status when done.
 	}
 
 	/**
+	 * Build the team norms section for prompt injection.
+	 *
+	 * Loads norms from the team's norms directory (copied from template at team creation).
+	 * Only includes norms whose role list matches the agent's role (or '*' for all).
+	 *
+	 * @param teamId - Team ID to load norms for
+	 * @param role - Agent's role (used to filter norm applicability)
+	 * @returns Formatted norms markdown, or empty string if no norms found
+	 */
+	async buildTeamNormsSection(teamId: string, role: string): Promise<string> {
+		if (!teamId) return '';
+
+		try {
+			const { existsSync: exists, readdirSync, readFileSync } = await import('fs');
+			const { join } = await import('path');
+
+			const crewlyHome = join(process.env['HOME'] || '/tmp', '.crewly');
+			const normsDir = join(crewlyHome, 'teams', teamId, 'norms');
+
+			if (!exists(normsDir)) return '';
+
+			// Try to load norms config from team config
+			const configPath = join(crewlyHome, 'teams', teamId, 'config.json');
+			let normsConfig: Array<{ file: string; trigger: string; roles: string[] }> = [];
+
+			if (exists(configPath)) {
+				try {
+					const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+					normsConfig = config?.norms?.files || [];
+				} catch {
+					// Config parse failed — fall back to loading all .md files
+				}
+			}
+
+			const sections: string[] = [];
+
+			if (normsConfig.length > 0) {
+				// Use config-driven loading with role filtering
+				for (const norm of normsConfig) {
+					const roleMatch = norm.roles.includes('*') || norm.roles.includes(role);
+					if (!roleMatch) continue;
+
+					const normPath = join(normsDir, norm.file);
+					if (!exists(normPath)) continue;
+
+					const content = readFileSync(normPath, 'utf-8');
+					sections.push(content.trim());
+				}
+			} else {
+				// Fallback: load all .md files in norms dir
+				const files = readdirSync(normsDir).filter(f => f.endsWith('.md')).sort();
+				for (const file of files) {
+					const content = readFileSync(join(normsDir, file), 'utf-8');
+					sections.push(content.trim());
+				}
+			}
+
+			if (sections.length === 0) return '';
+
+			this.logger.info('Built team norms section', { teamId, role, normCount: sections.length });
+
+			return `\n## Team Norms & Standard Operating Procedures\n\nThe following norms are defined by your team template. Follow them strictly.\n\n${sections.join('\n\n---\n\n')}`;
+		} catch (err) {
+			this.logger.warn('Failed to load team norms', {
+				teamId,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return '';
+		}
+	}
+
+	/**
+	 * Build the memory routing rules section that tells agents where to store
+	 * different types of knowledge.
+	 *
+	 * - User prefs / team conventions → Crewly `remember` with `scope: project`
+	 * - Personal work patterns → Crewly `remember` with `scope: agent`
+	 * - Temporary task notes → project files or Claude native memory
+	 *
+	 * @returns Formatted markdown section with memory routing guidance
+	 */
+	buildMemoryRoutingSection(): string {
+		return `## Memory Routing Rules
+
+When you learn something worth remembering, store it in the **right place**:
+
+| What you learned | Where to store it | How |
+|---|---|---|
+| Team conventions, coding standards, project patterns, shared decisions | Crewly knowledge (project-wide) | \`remember\` with \`scope: "project"\`, \`category: "pattern"\` or \`"decision"\` |
+| User preferences, working style, role-specific tips | Crewly knowledge (agent-specific) | \`remember\` with \`scope: "agent"\`, \`category: "preference"\` or \`"fact"\` |
+| Gotchas, bugs, workarounds discovered during work | Crewly knowledge (project-wide) | \`remember\` with \`scope: "project"\`, \`category: "gotcha"\` |
+| Temporary task notes, in-progress state, scratch data | Project files or Claude native memory | Write to a file in the project, or keep in your conversation context |
+
+**Rules of thumb:**
+- If another agent or a future session would benefit → use \`remember\` with \`scope: "project"\`
+- If only YOU would benefit in future sessions → use \`remember\` with \`scope: "agent"\`
+- If it's only useful right now → keep it in your conversation context or a scratch file
+- **Never store secrets, credentials, or tokens** in any memory system`;
+	}
+
+	/**
 	 * Compose a prompt with memory and SOP context included
 	 *
 	 * @param parts - Prompt parts to compose
@@ -533,6 +646,12 @@ Report back via report-status when done.
 			sections.push(parts.teamLeadContext);
 		}
 
+		// Add Team Norms if available
+		if (parts.teamNormsContext && parts.teamNormsContext.trim()) {
+			sections.push('\n---\n');
+			sections.push(parts.teamNormsContext);
+		}
+
 		// Add agent identity section
 		if (parts.sessionName || parts.memberId || parts.role) {
 			sections.push('\n---\n');
@@ -543,6 +662,10 @@ Report back via report-status when done.
 			if (parts.teamId) sections.push(`- **Team:** ${parts.teamId}`);
 			if (parts.projectPath) sections.push(`- **Project Path:** ${parts.projectPath}`);
 		}
+
+		// Add memory routing rules
+		sections.push('\n---\n');
+		sections.push(this.buildMemoryRoutingSection());
 
 		// Add communication instructions
 		sections.push('\n---\n');
@@ -563,7 +686,72 @@ This ensures your knowledge is stored under your identity and in the correct pro
 
 **IMPORTANT for recall:** Before answering questions about the project, deployment, architecture, or past decisions, ALWAYS call \`recall\` first to check your stored knowledge.`);
 
+		// Add anti-deliberation instructions for Gemini CLI agents
+		if (parts.runtimeType === 'gemini-cli') {
+			sections.push('\n---\n');
+			sections.push(`## Execution Discipline
+
+**IMPORTANT:** Execute tool calls immediately. Do not plan more than 3 tool calls at once.
+Never use phrases like "Wait, I'll also...", "Actually, I'll...", or "Let me also check..." — just execute your tools directly.
+Read files ONE AT A TIME, do not try to batch plan multiple reads.
+If you catch yourself deliberating about what to do next, STOP and execute the most obvious next action immediately.
+Action over deliberation — a wrong tool call is better than no tool call.`);
+		}
+
+		// Add language matching instruction
+		sections.push('\n---\n');
+		sections.push(`## Language Matching
+
+**IMPORTANT:** Always reply in the same language the user writes in. If the user sends a message in Chinese, reply in Chinese. If the user writes in English, reply in English. Match the language of each individual message — do not default to English unless the user is writing in English.`);
+
 		return sections.join('\n').trim();
+	}
+
+	/**
+	 * Build the mandatory session recovery protocol section that instructs agents
+	 * to execute context recovery commands immediately after registration.
+	 *
+	 * This section is injected into ALL agent registration prompts (both regular
+	 * agents and orchestrator) to ensure agents always recover context on startup.
+	 * The agent will run `recall` and `get-my-context` to load previous knowledge,
+	 * then report any unfinished work before accepting new tasks.
+	 *
+	 * @param sessionName - Agent's session name (used as agentId in skill calls)
+	 * @param role - Agent's role
+	 * @param projectPath - Absolute path to the project
+	 * @returns Formatted markdown section with executable bash commands
+	 */
+	buildSessionRecoverySection(sessionName: string, role: string, projectPath: string): string {
+		const section = `## Session Recovery Protocol (MANDATORY)
+
+**IMMEDIATELY after registering**, you MUST execute the following context recovery steps before saying "Ready" or accepting any tasks. This ensures you recover context from previous sessions and avoid repeating work or missing ongoing tasks.
+
+### Step 1: Recall previous knowledge
+\`\`\`bash
+bash ${this.agentSkillsPath}/core/recall/execute.sh '{"agentId":"${sessionName}","context":"${role} session startup, recent tasks, unfinished work, blockers, key decisions","projectPath":"${projectPath}"}'
+\`\`\`
+
+### Step 2: Load your full context
+\`\`\`bash
+bash ${this.agentSkillsPath}/core/get-my-context/execute.sh '{"agentId":"${sessionName}","agentRole":"${role}","projectPath":"${projectPath}"}'
+\`\`\`
+
+### Step 3: Assess and report
+After reviewing the results from Steps 1 and 2:
+1. **Check for unfinished work** — If you find tasks that were in progress but not completed, note them
+2. **Check for pending blockers** — If previous sessions recorded blockers, note them
+3. **Report status** — Include a brief summary of recovered context in your first status message
+
+**Do NOT skip these steps.** Context recovery prevents duplicate work and ensures continuity across sessions.`;
+
+		this.logger.debug('Built session recovery section', {
+			sessionName,
+			role,
+			projectPath,
+			sectionLength: section.length,
+		});
+
+		return section;
 	}
 
 	/**

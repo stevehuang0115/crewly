@@ -14,6 +14,7 @@ import { mcpServerCommand } from './commands/mcp-server.js';
 import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
+import { pairCommand } from './commands/pair.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion } from './utils/version-check.js';
 
@@ -111,6 +112,17 @@ program
   .description('Manage Crewly as a macOS background service (install|uninstall|status)')
   .option('--force', 'Overwrite existing installation')
   .action(serviceCommand);
+
+program
+  .command('pair')
+  .description('Pair two Crewly instances via Cloud Relay for remote collaboration')
+  .option('--cloud', 'Use Cloud Relay for pairing')
+  .option('--code <code>', 'Join an existing pairing session with this code')
+  .option('--role <role>', 'Node role: orchestrator or agent')
+  .option('--secret <secret>', 'Shared secret for E2EE (prompted if omitted)')
+  .option('--disconnect', 'Disconnect from active relay session')
+  .option('--devices', 'List paired devices')
+  .action(pairCommand);
 
 // Error handling
 program.exitOverride();

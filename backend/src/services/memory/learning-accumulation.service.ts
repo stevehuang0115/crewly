@@ -155,14 +155,16 @@ export class LearningAccumulationService {
    * // ---
    * ```
    */
-  private formatEntry(agentId: string, role: string, description: string, context?: string): string {
+  private formatEntry(agentId: string, role: string, description: string, context?: string, supersedes?: string): string {
     const timestamp = new Date().toISOString();
-    return (
-      `### [${timestamp}] ${role} / ${agentId}\n` +
+    let entry = `### [${timestamp}] ${role} / ${agentId}\n` +
       `${description}\n` +
-      `Context: ${context || 'None'}\n` +
-      '\n---\n\n'
-    );
+      `Context: ${context || 'None'}\n`;
+    if (supersedes) {
+      entry += `Supersedes: ${supersedes}\n`;
+    }
+    entry += '\n---\n\n';
+    return entry;
   }
 
   /**
@@ -175,6 +177,58 @@ export class LearningAccumulationService {
     const existing = await this.safeReadFile(filePath);
     if (existing === null) {
       await fs.writeFile(filePath, header, 'utf-8');
+    }
+  }
+
+  /**
+   * Filters out superseded entries from a learning markdown file.
+   *
+   * Entries marked with `[SUPERSEDED]` are removed from the output.
+   * The file header (everything before the first `### [`) is preserved.
+   *
+   * @param content - Raw markdown file content
+   * @returns Content with superseded entries removed
+   */
+  private filterSuperseded(content: string): string {
+    // Split into entries by the --- separator
+    const parts = content.split('\n---\n');
+    const filtered = parts.filter(part => !part.includes('[SUPERSEDED]'));
+    return filtered.join('\n---\n');
+  }
+
+  /**
+   * Marks entries in a learning file as superseded by inserting a
+   * `[SUPERSEDED]` marker into matching entries.
+   *
+   * An entry is considered a match if its description contains the
+   * supersedes keyword (case-insensitive substring match).
+   *
+   * @param filePath - Path to the markdown learning file
+   * @param keyword - Keyword to match against entry descriptions
+   */
+  private async markSupersededInFile(filePath: string, keyword: string): Promise<void> {
+    const content = await this.safeReadFile(filePath);
+    if (!content) return;
+
+    const lowerKeyword = keyword.toLowerCase();
+    const entries = content.split('\n---\n');
+    let modified = false;
+
+    const updated = entries.map(entry => {
+      // Skip if already superseded or if it's the header
+      if (entry.includes('[SUPERSEDED]') || !entry.includes('### [')) return entry;
+
+      // Check if the entry description matches the keyword
+      if (entry.toLowerCase().includes(lowerKeyword)) {
+        modified = true;
+        // Insert [SUPERSEDED] marker after the heading line
+        return entry.replace(/(### \[.*\].*\n)/, '$1[SUPERSEDED] ');
+      }
+      return entry;
+    });
+
+    if (modified) {
+      await fs.writeFile(filePath, updated.join('\n---\n'), 'utf-8');
     }
   }
 
@@ -209,6 +263,7 @@ export class LearningAccumulationService {
     role: string,
     description: string,
     context?: string,
+    supersedes?: string,
   ): Promise<void> {
     const learningDir = this.getLearningDir(projectPath);
     await ensureDir(learningDir);
@@ -216,10 +271,18 @@ export class LearningAccumulationService {
     const filePath = path.join(learningDir, MEMORY_CONSTANTS.PATHS.WHAT_WORKED_FILE);
     await this.ensureFileWithHeader(filePath, WHAT_WORKED_HEADER);
 
-    const entry = this.formatEntry(agentId, role, description, context);
+    const entry = this.formatEntry(agentId, role, description, context, supersedes);
     await fs.appendFile(filePath, entry, 'utf-8');
 
-    this.logger.info('Recorded success learning', { projectPath, agentId, role });
+    // If supersedes is provided, also mark matching entries in what_failed.md
+    if (supersedes) {
+      await this.markSupersededInFile(
+        path.join(learningDir, MEMORY_CONSTANTS.PATHS.WHAT_FAILED_FILE),
+        supersedes,
+      );
+    }
+
+    this.logger.info('Recorded success learning', { projectPath, agentId, role, supersedes });
   }
 
   /**
@@ -251,6 +314,7 @@ export class LearningAccumulationService {
     role: string,
     description: string,
     context?: string,
+    supersedes?: string,
   ): Promise<void> {
     const learningDir = this.getLearningDir(projectPath);
     await ensureDir(learningDir);
@@ -258,10 +322,18 @@ export class LearningAccumulationService {
     const filePath = path.join(learningDir, MEMORY_CONSTANTS.PATHS.WHAT_FAILED_FILE);
     await this.ensureFileWithHeader(filePath, WHAT_FAILED_HEADER);
 
-    const entry = this.formatEntry(agentId, role, description, context);
+    const entry = this.formatEntry(agentId, role, description, context, supersedes);
     await fs.appendFile(filePath, entry, 'utf-8');
 
-    this.logger.info('Recorded failure learning', { projectPath, agentId, role });
+    // If supersedes is provided, also mark matching entries in what_worked.md
+    if (supersedes) {
+      await this.markSupersededInFile(
+        path.join(learningDir, MEMORY_CONSTANTS.PATHS.WHAT_WORKED_FILE),
+        supersedes,
+      );
+    }
+
+    this.logger.info('Recorded failure learning', { projectPath, agentId, role, supersedes });
   }
 
   /**
@@ -335,11 +407,13 @@ export class LearningAccumulationService {
       return null;
     }
 
-    if (tailChars !== undefined && content.length > tailChars) {
-      return content.slice(-tailChars);
+    const filtered = this.filterSuperseded(content);
+
+    if (tailChars !== undefined && filtered.length > tailChars) {
+      return filtered.slice(-tailChars);
     }
 
-    return content;
+    return filtered;
   }
 
   /**
@@ -369,11 +443,13 @@ export class LearningAccumulationService {
       return null;
     }
 
-    if (tailChars !== undefined && content.length > tailChars) {
-      return content.slice(-tailChars);
+    const filtered = this.filterSuperseded(content);
+
+    if (tailChars !== undefined && filtered.length > tailChars) {
+      return filtered.slice(-tailChars);
     }
 
-    return content;
+    return filtered;
   }
 
   /**

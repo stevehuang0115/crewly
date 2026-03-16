@@ -119,5 +119,14 @@
     "idleEvent": true,
     "fallbackCheckMinutes": 10
   },
-  "maxWorkersPerLeader": 3
+  "maxWorkersPerLeader": 3,
+  "mission": "Produce high-quality UGC video content for YouTube, TikTok, and Instagram Reels with consistent branding",
+  "budget": {
+    "maxTokensPerDay": 3000000,
+    "alertThreshold": 80
+  },
+  "qualityGate": {
+    "autoApprove": false,
+    "minQualityScore": 75
+  }
 }

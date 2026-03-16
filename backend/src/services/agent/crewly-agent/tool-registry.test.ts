@@ -1156,6 +1156,62 @@ describe('Tool Registry', () => {
     });
   });
 
+  describe('get_context_budget', () => {
+    it('should return budget status when callback is configured', async () => {
+      const mockBudget = jest.fn<any>().mockReturnValue({
+        totalTokensUsed: 50000,
+        contextWindowSize: 200000,
+        usagePercent: 0.25,
+        level: 'normal',
+        messageCount: 20,
+        compactionPending: false,
+        summary: '25.0% of context budget used (50,000/200,000 tokens, 20 messages)',
+      });
+      const callbacks: ToolCallbacks = { onGetContextBudget: mockBudget };
+      const toolsWithCallbacks = createTools(mockClient, 'crewly-orc', '/test/project', callbacks);
+
+      const result = await (toolsWithCallbacks.get_context_budget as any).execute({});
+
+      expect(result.success).toBe(true);
+      expect(result.totalTokensUsed).toBe(50000);
+      expect(result.contextWindowSize).toBe(200000);
+      expect(result.usagePercent).toBe(0.25);
+      expect(result.level).toBe('normal');
+      expect(mockBudget).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return error when no callback configured', async () => {
+      const result = await (tools.get_context_budget as any).execute({});
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('not available');
+    });
+
+    it('should return warning level when approaching threshold', async () => {
+      const mockBudget = jest.fn<any>().mockReturnValue({
+        totalTokensUsed: 140000,
+        contextWindowSize: 200000,
+        usagePercent: 0.7,
+        level: 'warning',
+        messageCount: 80,
+        compactionPending: false,
+        summary: '70.0% of context budget used — WARNING: approaching compaction threshold',
+      });
+      const callbacks: ToolCallbacks = { onGetContextBudget: mockBudget };
+      const toolsWithCallbacks = createTools(mockClient, 'crewly-orc', '/test/project', callbacks);
+
+      const result = await (toolsWithCallbacks.get_context_budget as any).execute({});
+
+      expect(result.success).toBe(true);
+      expect(result.level).toBe('warning');
+      expect(result.summary).toContain('WARNING');
+    });
+
+    it('should be classified as safe', () => {
+      expect(TOOL_SENSITIVITY.get_context_budget).toBe('safe');
+    });
+  });
+
   // ===== F27: Security Audit Trail & Hardening =====
 
   describe('get_audit_log', () => {
@@ -1790,6 +1846,89 @@ describe('Tool Registry', () => {
       expect(names).toContain('git_status');
       expect(names).toContain('git_diff');
       expect(names).toContain('git_commit');
+    });
+  });
+
+  describe('validateBashCommand', () => {
+    let validateFn: typeof import('./tool-registry.js')['validateBashCommand'];
+
+    beforeEach(async () => {
+      const mod = await import('./tool-registry.js');
+      validateFn = mod.validateBashCommand;
+    });
+
+    it('should allow safe commands', () => {
+      expect(validateFn('ls -la')).toBeNull();
+      expect(validateFn('npm run build')).toBeNull();
+      expect(validateFn('git status')).toBeNull();
+      expect(validateFn('cat package.json')).toBeNull();
+      expect(validateFn('echo "hello world"')).toBeNull();
+      expect(validateFn('node -e "console.log(1)"')).toBeNull();
+    });
+
+    it('should block kill commands', () => {
+      expect(validateFn('kill 1234')).not.toBeNull();
+      expect(validateFn('kill -9 $$')).not.toBeNull();
+      expect(validateFn('killall node')).not.toBeNull();
+      expect(validateFn('pkill -f crewly')).not.toBeNull();
+    });
+
+    it('should block system commands', () => {
+      expect(validateFn('shutdown -h now')).not.toBeNull();
+      expect(validateFn('reboot')).not.toBeNull();
+      expect(validateFn('launchctl unload com.crewly')).not.toBeNull();
+      expect(validateFn('systemctl stop crewly')).not.toBeNull();
+    });
+
+    it('should block destructive disk commands', () => {
+      expect(validateFn('mkfs /dev/sda1')).not.toBeNull();
+      expect(validateFn('dd if=/dev/zero of=/dev/sda')).not.toBeNull();
+    });
+
+    it('should allow rm for specific files (not root wipe)', () => {
+      expect(validateFn('rm file.txt')).toBeNull();
+      expect(validateFn('rm -rf ./dist')).toBeNull();
+      expect(validateFn('rm -rf node_modules')).toBeNull();
+    });
+  });
+
+  describe('bash_exec tool', () => {
+    let bashTools: ReturnType<typeof createTools>;
+
+    beforeEach(() => {
+      // Use a real directory so spawnSync can set cwd
+      bashTools = createTools(mockClient, 'crewly-orc', '/tmp');
+    });
+
+    it('should execute simple commands successfully', async () => {
+      const result = await bashTools.bash_exec.execute({ command: 'echo "hello"' }) as any;
+      expect(result.success).toBe(true);
+      expect(result.stdout).toContain('hello');
+    });
+
+    it('should block dangerous commands', async () => {
+      const result = await bashTools.bash_exec.execute({ command: 'kill 1234' }) as any;
+      expect(result.success).toBe(false);
+      expect(result.exitCode).toBe(126);
+      expect(result.error).toContain('blocked');
+    });
+
+    it('should handle command failure gracefully', async () => {
+      const result = await bashTools.bash_exec.execute({ command: 'false' }) as any;
+      expect(result.success).toBe(false);
+      expect(result.exitCode).not.toBe(0);
+    });
+
+    it('should respect timeout', async () => {
+      const result = await bashTools.bash_exec.execute({ command: 'sleep 30', timeout: 1000 }) as any;
+      expect(result.success).toBe(false);
+    }, 10000);
+
+    it('should use process isolation (spawnSync, not execSync)', async () => {
+      const result = await bashTools.bash_exec.execute({ command: 'echo $$' }) as any;
+      expect(result.success).toBe(true);
+      const childPid = parseInt(result.stdout.trim(), 10);
+      expect(childPid).not.toBe(process.pid);
     });
   });
 });

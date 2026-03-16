@@ -640,12 +640,12 @@ fi
 
 cd "$CREWLY_DIR" || { echo "Cannot cd to $CREWLY_DIR"; exit 1; }
 
-${NATIVE_MODULE_CHECK}
-
 echo "$(date): Starting Crewly backend (node $(node --version))..." | tee -a "$LOG_DIR/service.log"
 
 # Run in foreground so Terminal keeps the tab open; restart on crash
 while true; do
+  ${NATIVE_MODULE_CHECK}
+
   node dist/cli/cli/src/index.js start >> "$LOG_DIR/service.log" 2>&1 &
   NODE_PID=$!
   echo "$NODE_PID" > "$PIDFILE"

@@ -7,16 +7,17 @@
  */
 
 import React, { useState } from 'react';
-import { Settings as SettingsIcon, User, Wrench, Link2, LucideIcon } from 'lucide-react';
+import { Settings as SettingsIcon, User, Wrench, Link2, Cloud, LucideIcon } from 'lucide-react';
 import { GeneralTab } from '../components/Settings/GeneralTab';
 import { RolesTab } from '../components/Settings/RolesTab';
 import { SkillsTab } from '../components/Settings/SkillsTab';
 import { IntegrationsTab } from '../components/Settings/IntegrationsTab';
+import { CloudTab } from '../components/Settings/CloudTab';
 
 /**
  * Available settings tabs
  */
-type SettingsTab = 'general' | 'roles' | 'skills' | 'integrations';
+type SettingsTab = 'general' | 'roles' | 'skills' | 'integrations' | 'cloud';
 
 /**
  * Tab configuration
@@ -40,6 +41,7 @@ export const Settings: React.FC = () => {
     { id: 'roles', label: 'Roles', icon: User },
     { id: 'skills', label: 'Skills', icon: Wrench },
     { id: 'integrations', label: 'Integrations', icon: Link2 },
+    { id: 'cloud', label: 'Cloud', icon: Cloud },
   ];
 
   /**
@@ -55,6 +57,8 @@ export const Settings: React.FC = () => {
         return <SkillsTab />;
       case 'integrations':
         return <IntegrationsTab />;
+      case 'cloud':
+        return <CloudTab />;
       default:
         return null;
     }

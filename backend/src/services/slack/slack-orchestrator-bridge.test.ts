@@ -13,7 +13,6 @@ import {
 import { resetSlackService } from './slack.service.js';
 import { resetChatService } from '../chat/chat.service.js';
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
-import type { NotifyPayload } from '../../types/chat.types.js';
 
 // Mock the orchestrator status module
 jest.mock('../orchestrator/index.js', () => ({
@@ -246,51 +245,6 @@ describe('SlackOrchestratorBridge', () => {
       const result = bridge.formatForSlack(input);
       expect(result).toContain('*Title*');
       expect(result).toContain('Some text');
-    });
-  });
-
-  describe('notify helpers', () => {
-    it('should extract NOTIFY payloads and build fallback response', () => {
-      const bridge = new SlackOrchestratorBridge();
-      const raw = `[NOTIFY]\nconversationId: conv-1\n---\nHello from NOTIFY\n[/NOTIFY]`;
-      const payloads = (bridge as unknown as {
-        extractNotifyPayloads: (text: string) => NotifyPayload[];
-      }).extractNotifyPayloads(raw);
-
-      const fallback = (bridge as unknown as {
-        buildFallbackResponse: (text: string, payloads: NotifyPayload[]) => string;
-      }).buildFallbackResponse(raw, payloads);
-
-      expect(fallback).toBe('Hello from NOTIFY');
-    });
-
-    it('should detect Slack-targeted NOTIFY payload for matching thread', () => {
-      const bridge = new SlackOrchestratorBridge();
-      const raw = `[NOTIFY]\nchannelId: C123\nthreadTs: 1707.001\n---\nHandled in skill\n[/NOTIFY]`;
-      const payloads = (bridge as unknown as {
-        extractNotifyPayloads: (text: string) => NotifyPayload[];
-      }).extractNotifyPayloads(raw);
-
-      const message: SlackIncomingMessage = {
-        id: '123',
-        type: 'message',
-        text: 'hello',
-        userId: 'U123',
-        channelId: 'C123',
-        threadTs: '1707.001',
-        ts: '1707.001',
-        teamId: 'T1',
-        eventTs: '1707.001',
-      };
-
-      const match = (bridge as unknown as {
-        findSlackPayloadForMessage: (
-          msg: SlackIncomingMessage,
-          payloads: NotifyPayload[]
-        ) => NotifyPayload | undefined;
-      }).findSlackPayloadForMessage(message, payloads);
-
-      expect(match?.message).toBe('Handled in skill');
     });
   });
 
@@ -1304,7 +1258,7 @@ describe('SlackOrchestratorBridge', () => {
       });
 
       const response = await messagePromise;
-      expect(response).toBe('The orchestrator is taking longer than expected. Please try again.');
+      expect(response).toBe('The orchestrator is still processing your request. It will reply here when ready — no need to resend.');
     }, 30000);
 
     it('should handle enqueue failure gracefully', async () => {
@@ -1343,16 +1297,11 @@ describe('SlackOrchestratorBridge', () => {
     }, 30000);
   });
 
-  describe('sendSlackResponse fallback', () => {
+  describe('sendSlackResponse', () => {
     let bridge: SlackOrchestratorBridge;
-    let slackService: any;
-    let sendMessageSpy: jest.SpyInstance;
 
     beforeEach(() => {
-      // Use skillDeliveryWaitMs: 0 to avoid real 10s waits in tests
       bridge = new SlackOrchestratorBridge({ skillDeliveryWaitMs: 0 });
-      slackService = (bridge as any).slackService;
-      sendMessageSpy = jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
     });
 
     const makeMessage = (overrides: Partial<SlackIncomingMessage> = {}): SlackIncomingMessage => ({
@@ -1367,81 +1316,14 @@ describe('SlackOrchestratorBridge', () => {
       ...overrides,
     });
 
-    it('should skip sending when response is empty', async () => {
-      const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
-      await sendSlackResponse(makeMessage(), '');
-      expect(sendMessageSpy).not.toHaveBeenCalled();
-    });
-
-    it('should skip sending when response is whitespace-only', async () => {
-      const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
-      await sendSlackResponse(makeMessage(), '   \n  ');
-      expect(sendMessageSpy).not.toHaveBeenCalled();
-    });
-
-    it('should skip fallback when skill already delivered', async () => {
-      const message = makeMessage();
-      const threadTs = message.threadTs || message.ts;
-
-      // Mark as delivered by skill before sendSlackResponse checks
-      bridge.markDeliveredBySkill(message.channelId, threadTs);
-
-      const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
-      await sendSlackResponse(message, 'Hello from orchestrator');
-
-      expect(sendMessageSpy).not.toHaveBeenCalled();
-    });
-
-    it('should send fallback when skill did not deliver', async () => {
-      const message = makeMessage();
-
-      const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
-      await sendSlackResponse(message, 'Hello from orchestrator');
-
-      expect(sendMessageSpy).toHaveBeenCalledTimes(1);
-      expect(sendMessageSpy).toHaveBeenCalledWith({
-        channelId: 'C123',
-        text: 'Hello from orchestrator',
-        threadTs: '1707.001',
-      });
-    });
-
-    it('should use threadTs when present on original message', async () => {
-      const message = makeMessage({ threadTs: '1700.000', ts: '1707.001' });
-
-      const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
-      await sendSlackResponse(message, 'Reply in thread');
-
-      expect(sendMessageSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ threadTs: '1700.000' })
-      );
-    });
-
-    it('should catch and log errors when fallback send fails', async () => {
-      sendMessageSpy.mockRejectedValue(new Error('Slack API error'));
-      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
-
-      const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
-      await sendSlackResponse(makeMessage(), 'Will fail');
-
-      // Should not throw, error is caught internally
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Fallback Slack delivery failed')
-      );
-
-      consoleSpy.mockRestore();
-    });
-
-    it('should record thread reply regardless of delivery path', async () => {
+    it('should record thread reply to thread store', async () => {
       const mockThreadStore = {
         appendOrchestratorReply: jest.fn().mockResolvedValue(undefined),
         getThreadFilePath: jest.fn(),
       };
       bridge.setSlackThreadStore(mockThreadStore as any);
 
-      // Mark as delivered by skill — fallback should be skipped but thread record still saved
       const message = makeMessage();
-      bridge.markDeliveredBySkill(message.channelId, message.ts);
 
       const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
       await sendSlackResponse(message, 'Recorded response');
@@ -1451,98 +1333,6 @@ describe('SlackOrchestratorBridge', () => {
         '1707.001',
         'Recorded response'
       );
-      // Fallback send should be skipped
-      expect(sendMessageSpy).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('sanitizeForSlack', () => {
-    let sanitizeBridge: SlackOrchestratorBridge;
-    let sanitize: (raw: string) => string;
-
-    beforeEach(() => {
-      sanitizeBridge = new SlackOrchestratorBridge();
-      sanitize = (sanitizeBridge as any).sanitizeForSlack.bind(sanitizeBridge);
-    });
-
-    it('should strip entire NOTIFY blocks including body', () => {
-      const input = '[NOTIFY]\nconversationId: slack-C123\ntype: update\ntitle: Test\n---\nActual message\n[/NOTIFY]';
-      expect(sanitize(input)).toBe('');
-    });
-
-    it('should preserve text outside NOTIFY blocks', () => {
-      const input = 'Before text [NOTIFY]\ntype: update\n---\nbody\n[/NOTIFY] After text';
-      const result = sanitize(input);
-      expect(result).toContain('Before text');
-      expect(result).toContain('After text');
-      expect(result).not.toContain('type: update');
-      expect(result).not.toContain('body');
-    });
-
-    it('should strip Claude Code satisfaction survey', () => {
-      const input = 'Real response\n● How is Claude doing this session? (optional)\n1: Bad   2: Fine   3: Good   0: Dismiss';
-      expect(sanitize(input)).toBe('Real response');
-    });
-
-    it('should strip Claude Code permission and status bar text', () => {
-      const input = 'Real text\n⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\nUse meta+t to toggle thinking';
-      expect(sanitize(input)).toBe('Real text');
-    });
-
-    it('should strip Claude Code tool indicators', () => {
-      const input = '⏺ Bash(some command)\n⏺ Read(file.ts)\nActual content';
-      expect(sanitize(input)).toBe('Actual content');
-    });
-
-    it('should strip Osmosing and Baked lines', () => {
-      const input = 'Done\n✻ Baked for 1m 0s\n✢ Osmosing… (running stop hook)';
-      expect(sanitize(input)).toBe('Done');
-    });
-
-    it('should strip CHAT session headers and thread context lines', () => {
-      const input = '[CHAT:slack-D0AC7NF5N7L-1772987441-763389] 填写了\n[Thread context file: /path/to/file.md]\nReal response';
-      expect(sanitize(input)).toBe('Real response');
-    });
-
-    it('should return empty string when only UI chrome remains', () => {
-      const input = '● How is Claude doing this session? (optional)\n1: Bad   2: Fine   3: Good   0: Dismiss\n───────────';
-      expect(sanitize(input)).toBe('');
-    });
-
-    it('should preserve clean messages unchanged', () => {
-      expect(sanitize('Sam 已接单')).toBe('Sam 已接单');
-    });
-  });
-
-  describe('markDeliveredBySkill / wasDeliveredBySkill', () => {
-    it('should mark and detect delivery', () => {
-      const bridge = new SlackOrchestratorBridge();
-      bridge.markDeliveredBySkill('C123', '1707.001');
-      expect(bridge.wasDeliveredBySkill('C123', '1707.001')).toBe(true);
-    });
-
-    it('should consume the delivery flag on check', () => {
-      const bridge = new SlackOrchestratorBridge();
-      bridge.markDeliveredBySkill('C123', '1707.001');
-      bridge.wasDeliveredBySkill('C123', '1707.001'); // consumes
-      expect(bridge.wasDeliveredBySkill('C123', '1707.001')).toBe(false);
-    });
-
-    it('should return false for undelivered threads', () => {
-      const bridge = new SlackOrchestratorBridge();
-      expect(bridge.wasDeliveredBySkill('C999', '1707.999')).toBe(false);
-    });
-
-    it('should evict oldest entries when exceeding max', () => {
-      const bridge = new SlackOrchestratorBridge();
-      // Add MAX_SKILL_DELIVERY_RECORDS + 1 entries
-      for (let i = 0; i <= 50; i++) {
-        bridge.markDeliveredBySkill(`C${i}`, `ts-${i}`);
-      }
-      // First entry should have been evicted
-      expect(bridge.wasDeliveredBySkill('C0', 'ts-0')).toBe(false);
-      // Recent entry should still exist
-      expect(bridge.wasDeliveredBySkill('C50', 'ts-50')).toBe(true);
     });
   });
 

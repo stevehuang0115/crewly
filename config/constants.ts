@@ -799,8 +799,17 @@ export const ORCHESTRATOR_RESTART_CONSTANTS = {
 export const ORCHESTRATOR_HEARTBEAT_CONSTANTS = {
 	/** Interval between heartbeat checks in milliseconds (30 seconds) */
 	CHECK_INTERVAL_MS: 30_000,
-	/** Time without API activity before sending a heartbeat request to orchestrator (5 minutes) */
+	/** Time without API activity before sending a heartbeat request when PTY is idle (5 minutes) */
 	HEARTBEAT_REQUEST_THRESHOLD_MS: 300_000,
+	/** Time without API activity before sending a heartbeat request when PTY is active (15 minutes).
+	 *  A longer threshold is used when the orchestrator's terminal is producing output
+	 *  (e.g. running a build, tests, or other long commands) since that proves the
+	 *  orchestrator is alive and working — just not making API calls. */
+	HEARTBEAT_REQUEST_THRESHOLD_PTY_ACTIVE_MS: 900_000,
+	/** PTY idle time below which the orchestrator is considered "PTY active" (2 minutes).
+	 *  If the orchestrator produced terminal output within this window, the longer
+	 *  HEARTBEAT_REQUEST_THRESHOLD_PTY_ACTIVE_MS threshold is used instead. */
+	PTY_ACTIVE_WINDOW_MS: 120_000,
 	/** Time after heartbeat request before triggering auto-restart (1 minute) */
 	RESTART_THRESHOLD_MS: 60_000,
 	/** Message sent to orchestrator PTY to request a heartbeat */

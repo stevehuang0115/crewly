@@ -255,6 +255,7 @@ export interface SubordinateInfo {
   name: string;
   sessionName: string;
   role: TeamMemberRole;
+  memberId: string;
 }
 
 export interface TeamMemberSessionConfig {

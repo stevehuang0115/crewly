@@ -219,10 +219,23 @@
 
 	.terminal-content {
 		padding: 2px;
+		/* Enable smooth momentum scrolling on iOS */
+		-webkit-overflow-scrolling: touch;
 	}
 
 	.terminal-content .xterm-viewport {
 		overflow-x: auto !important;
+		/* Smooth momentum scrolling for touch devices */
+		-webkit-overflow-scrolling: touch;
+	}
+
+	/* Wider scrollbar thumb for easier touch grab on mobile */
+	.terminal-content .xterm-viewport::-webkit-scrollbar {
+		width: 12px;
+	}
+
+	.terminal-content .xterm-viewport::-webkit-scrollbar-thumb {
+		min-height: 40px;
 	}
 }
 

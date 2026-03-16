@@ -9,11 +9,64 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
+import { RelayClientService } from '../../services/cloud/relay-client.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
-import { CLOUD_CONSTANTS } from '../../constants.js';
+import { CLOUD_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
+import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudController');
+
+/** Relay server URL — env var overrides the default from constants. */
+const RELAY_WS_URL = (): string =>
+  process.env['CREWLY_RELAY_WS_URL'] || CLOUD_CONSTANTS.RELAY.DEFAULT_WS_URL;
+
+/**
+ * Auto-connect to the Cloud Relay after a successful cloud login.
+ *
+ * Derives a deterministic pairing code and shared secret from the user's ID
+ * so that all devices belonging to the same user auto-pair via the relay.
+ * Best-effort — failures are logged but do not affect cloud connect.
+ *
+ * @param token - JWT access token from cloud login
+ */
+function autoConnectRelay(token: string): void {
+  try {
+    const relay = RelayClientService.getInstance();
+    if (relay.getState() !== 'disconnected' && relay.getState() !== 'error') {
+      logger.info('Relay already connected or connecting, skipping auto-connect');
+      return;
+    }
+
+    const payload = verifyJwt(token);
+    if (!payload || !payload.sub) {
+      logger.warn('Cannot auto-connect relay: invalid token payload');
+      return;
+    }
+
+    const userId = String(payload.sub);
+    // Deterministic pairing code from user ID — both devices of the same user get the same code
+    const pairingCode = crypto.createHash('sha256').update(`crewly-pair-${userId}`).digest('hex').slice(0, 12);
+    // Shared secret incorporates the JWT secret so it can't be derived from user ID alone
+    const jwtSecret = AUTH_CONSTANTS.JWT.DEFAULT_SECRET;
+    const sharedSecret = crypto.createHash('sha256').update(`crewly-e2ee-${userId}-${jwtSecret}`).digest('hex');
+
+    relay.connect({
+      wsUrl: RELAY_WS_URL(),
+      pairingCode,
+      role: 'orchestrator',
+      token,
+      sharedSecret,
+    });
+
+    logger.info('Relay auto-connect initiated', { pairingCode: pairingCode.slice(0, 4) + '...' });
+  } catch (err) {
+    logger.warn('Relay auto-connect failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 /**
  * POST /api/cloud/connect
@@ -38,6 +91,10 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
     const result = await client.connect(resolvedUrl, token);
 
     logger.info('Connected to CrewlyAI Cloud', { tier: result.tier });
+
+    // Auto-initiate relay connection (best-effort, non-blocking)
+    autoConnectRelay(token);
+
     res.json({ success: true, data: { tier: result.tier } });
   } catch (error) {
     logger.error('Failed to connect to cloud', {
@@ -64,6 +121,19 @@ export async function disconnectFromCloud(req: Request, res: Response, next: Nex
   try {
     const client = CloudClientService.getInstance();
     client.disconnect();
+
+    // Also disconnect relay
+    try {
+      const relay = RelayClientService.getInstance();
+      if (relay.getState() !== 'disconnected') {
+        relay.disconnect();
+        logger.info('Relay disconnected as part of cloud disconnect');
+      }
+    } catch (err) {
+      logger.warn('Relay disconnect failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     logger.info('Disconnected from CrewlyAI Cloud');
     res.json({ success: true });
@@ -92,6 +162,129 @@ export async function getCloudStatus(req: Request, res: Response, next: NextFunc
     res.json({ success: true, data: status });
   } catch (error) {
     logger.error('Failed to get cloud status', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    next(error);
+  }
+}
+
+/**
+ * POST /api/cloud/validate
+ *
+ * Validate a JWT access token locally by verifying its HMAC signature
+ * and expiry. Returns user profile from the token payload.
+ *
+ * Falls back to proxying to the Cloud API if CREWLY_CLOUD_API_BASE
+ * is explicitly set (for OSS→Cloud validation).
+ *
+ * @param req - Request with Authorization: Bearer <token> header
+ * @param res - Response returning { success, data: { id, email, displayName, plan } }
+ * @param next - Next function for error propagation
+ */
+export async function validateCloudToken(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      res.status(401).json({ success: false, error: 'Missing Authorization header' });
+      return;
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    if (!token) {
+      res.status(401).json({ success: false, error: 'Missing token' });
+      return;
+    }
+
+    // Try local JWT verification first
+    const payload = verifyJwt(token);
+    if (payload) {
+      res.json({
+        success: true,
+        data: {
+          id: payload.sub as string,
+          email: payload.email as string,
+          displayName: (payload.name as string) || '',
+          plan: (payload.plan as string) || 'free',
+        },
+      });
+      return;
+    }
+
+    // If local verification fails and a cloud API base is explicitly configured,
+    // proxy to the remote cloud API (used by OSS instances)
+    const cloudApiBase = process.env['CREWLY_CLOUD_API_BASE'];
+    if (cloudApiBase) {
+      const response = await fetch(`${cloudApiBase}/cloud/validate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: authHeader,
+        },
+        signal: AbortSignal.timeout(CLOUD_CONSTANTS.TIMEOUTS.CONNECT),
+      });
+
+      const data = await response.json();
+      res.status(response.status).json(data);
+      return;
+    }
+
+    // Token invalid and no proxy configured
+    res.status(401).json({ success: false, error: 'Invalid or expired token' });
+  } catch (error) {
+    logger.error('Failed to validate cloud token', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    res.status(502).json({
+      success: false,
+      error: 'Could not validate token. Check your internet connection.',
+    });
+  }
+}
+
+/**
+ * POST /api/cloud/refresh
+ *
+ * Exchange a valid refresh token for a new access token.
+ *
+ * @param req - Request with body: { refreshToken }
+ * @param res - Response returning { success, data: { accessToken, expiresIn } }
+ * @param next - Next function for error propagation
+ */
+export async function refreshCloudToken(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) {
+      res.status(400).json({ success: false, error: 'Missing refreshToken' });
+      return;
+    }
+
+    const payload = verifyJwt(refreshToken);
+    if (!payload || payload.type !== 'refresh') {
+      res.status(401).json({ success: false, error: 'Invalid or expired refresh token' });
+      return;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const accessToken = signJwt({
+      sub: payload.sub,
+      email: payload.email || '',
+      name: payload.name || '',
+      plan: payload.plan || 'free',
+      iat: now,
+      exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
+      iss: AUTH_CONSTANTS.JWT.ISSUER,
+      type: 'access',
+    });
+
+    res.json({
+      success: true,
+      data: {
+        accessToken,
+        expiresIn: AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to refresh token', {
       error: error instanceof Error ? error.message : String(error),
     });
     next(error);

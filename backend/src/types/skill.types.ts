@@ -224,6 +224,12 @@ export interface Skill {
   /** Whether this skill was installed from the marketplace */
   isMarketplace?: boolean;
 
+  /** Minimum cloud tier required to use this skill (defaults to 'free') */
+  requiredTier?: string;
+
+  /** Skill ID to use as a free-tier fallback when tier is insufficient */
+  fallbackSkill?: string;
+
   /** ISO timestamp of creation */
   createdAt: string;
 

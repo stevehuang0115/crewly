@@ -8,11 +8,10 @@
  * @module components/Auth/AuthStatusIndicator
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import { Cloud, LogOut, Loader2 } from 'lucide-react';
 import { Badge } from '../UI';
 import { useAuth } from '../../contexts/AuthContext';
-import { CloudAuthModal } from './CloudAuthModal';
 import type { UserPlan } from '../../types/auth.types';
 
 // ---------------------------------------------------------------------------
@@ -55,7 +54,6 @@ export const AuthStatusIndicator: React.FC<AuthStatusIndicatorProps> = ({
   isCollapsed = false,
 }) => {
   const { isAuthenticated, user, isLoading, logout } = useAuth();
-  const [showAuthModal, setShowAuthModal] = useState(false);
 
   if (isLoading) {
     return (
@@ -100,25 +98,7 @@ export const AuthStatusIndicator: React.FC<AuthStatusIndicatorProps> = ({
     );
   }
 
-  return (
-    <>
-      <button
-        onClick={() => setShowAuthModal(true)}
-        className="flex items-center w-full px-4 py-2 text-sm text-violet-300 hover:bg-violet-500/10 rounded-lg transition-colors group"
-        title={isCollapsed ? 'Connect to CrewlyAI Cloud' : undefined}
-      >
-        <Cloud className="h-5 w-5 flex-shrink-0 text-violet-400 group-hover:text-violet-300" />
-        {!isCollapsed && (
-          <span className="ml-3 truncate">Connect to Cloud</span>
-        )}
-      </button>
-
-      <CloudAuthModal
-        isOpen={showAuthModal}
-        onClose={() => setShowAuthModal(false)}
-      />
-    </>
-  );
+  return null;
 };
 
 AuthStatusIndicator.displayName = 'AuthStatusIndicator';

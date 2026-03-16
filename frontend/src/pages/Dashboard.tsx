@@ -13,11 +13,8 @@ import { ProjectCard } from '@/components/Cards/ProjectCard';
 import TeamsGridCard from '@/components/Teams/TeamsGridCard';
 import { CreateCard } from '@/components/Cards/CreateCard';
 import { Team, Project } from '@/types';
-import { Factory, Cloud, Crown } from 'lucide-react';
+import { Factory } from 'lucide-react';
 import { apiService } from '@/services/api.service';
-import { useAuth } from '@/contexts/AuthContext';
-import { Badge } from '@/components/UI';
-import { CloudAuthModal } from '@/components/Auth/CloudAuthModal';
 
 
 interface ProjectProgress {
@@ -57,8 +54,6 @@ const StatCard: React.FC<{title: string; value: string | number}> = ({title, val
  */
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { isAuthenticated, user } = useAuth();
-  const [showAuthModal, setShowAuthModal] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamsMap, setTeamsMap] = useState<Record<string, Team[]>>({});
@@ -211,7 +206,7 @@ export const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6 mb-10">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 mb-10">
         <StatCard title="Projects" value={projects.length} />
         <StatCard title="Teams" value={teams.length} />
         <StatCard title="Active Projects" value={projects.filter(p => p.status === 'active').length} />
@@ -229,39 +224,7 @@ export const Dashboard: React.FC = () => {
             </div>
           </div>
         </button>
-        {isAuthenticated && user ? (
-          <div className="bg-gradient-to-br from-emerald-500/10 to-teal-500/10 p-6 rounded-lg border border-emerald-500/30">
-            <div className="flex items-center gap-3">
-              <Cloud className="w-8 h-8 text-emerald-400" />
-              <div className="text-left">
-                <p className="text-sm font-medium text-text-secondary-dark">Cloud</p>
-                <div className="flex items-center gap-2">
-                  <p className="text-lg font-bold text-emerald-400">{user.displayName}</p>
-                  <Badge variant={user.plan === 'pro' ? 'primary' : 'default'} size="sm">
-                    {user.plan === 'pro' ? <><Crown size={10} className="mr-0.5" />Pro</> : 'Free'}
-                  </Badge>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setShowAuthModal(true)}
-            className="bg-gradient-to-br from-violet-500/15 to-indigo-500/15 p-6 rounded-lg border border-violet-500/30 transition-all hover:shadow-lg hover:shadow-violet-500/20 hover:border-violet-500 hover:scale-[1.02] group"
-          >
-            <div className="flex items-center gap-3">
-              <Cloud className="w-8 h-8 text-violet-400 group-hover:scale-110 transition-transform" />
-              <div className="text-left">
-                <p className="text-sm font-medium text-text-secondary-dark">CrewlyAI</p>
-                <p className="text-lg font-bold text-violet-400">Connect to Cloud</p>
-              </div>
-            </div>
-          </button>
-        )}
       </div>
-
-      <CloudAuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} />
 
       <div className="space-y-10">
         <section>

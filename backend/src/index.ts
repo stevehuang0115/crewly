@@ -85,8 +85,6 @@ import { VersionCheckService } from './services/system/version-check.service.js'
 import { LogRotationService } from './services/session/log-rotation.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
-import { RuntimeServiceFactory } from './services/agent/runtime-service.factory.js';
-import { CrewlyAgentRuntimeService } from './services/agent/crewly-agent/crewly-agent-runtime.service.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -189,7 +187,9 @@ export class CrewlyServer {
 		this.httpServer = createServer(this.app);
 		this.io = new SocketIOServer(this.httpServer, {
 			cors: {
-				origin: process.env.NODE_ENV === 'production' ? false : '*',
+				origin: process.env.NODE_ENV === 'production'
+					? ['https://crewlyai.com', 'https://www.crewlyai.com']
+					: '*',
 				methods: ['GET', 'POST'],
 			},
 			// Configure ping/pong to keep connections alive
@@ -251,14 +251,6 @@ export class CrewlyServer {
 
 		// Set terminal gateway singleton for chat integration
 		setTerminalGateway(this.terminalGateway);
-
-		// Pre-load Gemini CLI session names so NOTIFY processing is skipped
-		// for existing sessions before registerGeminiCliSession fires.
-		this.terminalGateway.loadGeminiCliSessions().catch((error) => {
-			this.logger.warn('Failed to pre-load Gemini CLI sessions', {
-				error: error instanceof Error ? error.message : String(error),
-			});
-		});
 
 		// Initialize ChatGateway for chat message forwarding
 		// This sets up the event listeners that forward chat messages to WebSocket clients
@@ -349,10 +341,15 @@ export class CrewlyServer {
 			})
 		);
 
-		// CORS
+		// CORS — allow Cloud Portal frontend and localhost OSS instances
+		const CORS_ALLOWED_ORIGINS = process.env['CORS_ALLOWED_ORIGINS']
+			? process.env['CORS_ALLOWED_ORIGINS'].split(',')
+			: ['https://crewlyai.com', 'https://www.crewlyai.com', 'http://localhost:8787', 'http://localhost:3000'];
 		this.app.use(
 			cors({
-				origin: process.env.NODE_ENV === 'production' ? false : '*',
+				origin: process.env.NODE_ENV === 'production'
+					? CORS_ALLOWED_ORIGINS
+					: '*',
 				credentials: true,
 			})
 		);
@@ -485,6 +482,10 @@ export class CrewlyServer {
 			if (!envValidation.valid) {
 				throw new Error('Environment configuration validation failed — see errors above');
 			}
+
+			// Initialize OpenTelemetry tracing (early, before other services)
+			const { TracingService } = await import('./services/core/tracing.service.js');
+			TracingService.getInstance().initialize();
 
 			this.logger.info('Starting Crewly server...');
 			this.logger.info('Server startup info', {
@@ -855,16 +856,11 @@ export class CrewlyServer {
 			// Start AuditorSchedulerService (non-critical — audit scheduling)
 			try {
 				const auditorScheduler = AuditorSchedulerService.getInstance();
-				const auditorRuntime = RuntimeServiceFactory.createFresh(
-					RUNTIME_TYPES.CREWLY_AGENT as RuntimeType,
-					null,
-					findPackageRoot(__dirname)
-				) as CrewlyAgentRuntimeService;
-				auditorScheduler.setAuditorRuntime(auditorRuntime);
+				auditorScheduler.setAgentRegistrationService(this.apiController.agentRegistrationService);
 				auditorScheduler.setEventBusService(this.eventBusService);
 				setAuditorSchedulerService(auditorScheduler);
 				auditorScheduler.start();
-				this.logger.info('AuditorSchedulerService started');
+				this.logger.info('AuditorSchedulerService started (Claude Code PTY mode)');
 			} catch (error) {
 				this.logger.warn('Failed to start AuditorSchedulerService (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
@@ -1103,8 +1099,21 @@ export class CrewlyServer {
 
 			let restored = 0;
 			const failed: string[] = [];
+			const RESTORE_DELAY_MS = 10_000; // 10 seconds between each session restore to avoid resource pressure
 
-			for (const session of agentSessions) {
+			for (let i = 0; i < agentSessions.length; i++) {
+				const session = agentSessions[i];
+
+				// Wait between session restores to avoid SIGTERM from resource pressure
+				if (i > 0) {
+					this.logger.info('Waiting before restoring next session to avoid resource pressure', {
+						delayMs: RESTORE_DELAY_MS,
+						nextSession: session.name,
+						progress: `${i}/${agentSessions.length}`,
+					});
+					await new Promise((resolve) => setTimeout(resolve, RESTORE_DELAY_MS));
+				}
+
 				try {
 					const result = await this.apiController.agentRegistrationService.createAgentSession({
 						sessionName: session.name,
@@ -1122,6 +1131,7 @@ export class CrewlyServer {
 							name: session.name,
 							role: session.role,
 							runtimeType: session.runtimeType,
+							progress: `${restored}/${agentSessions.length}`,
 						});
 					} else {
 						failed.push(session.name);
@@ -1459,6 +1469,14 @@ export class CrewlyServer {
 
 			// Stop auditor scheduler
 			AuditorSchedulerService.getInstance().stop();
+
+			// Flush and shutdown OpenTelemetry tracing
+			try {
+				const { TracingService: TracingSvc } = await import('./services/core/tracing.service.js');
+				await TracingSvc.getInstance().shutdown();
+			} catch {
+				// Ignore if not initialized
+			}
 
 			// Clean up tmux service resources
 			this.tmuxService.destroy();

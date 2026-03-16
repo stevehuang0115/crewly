@@ -29,7 +29,7 @@ import {
 import type { MarketplaceItemType, MarketplaceCategory, SortOption, SubmissionStatus } from '../../types/marketplace.types.js';
 import { asyncHandler } from '../../utils/async-handler.js';
 
-const VALID_TYPES: MarketplaceItemType[] = ['skill', 'model', 'role'];
+const VALID_TYPES: MarketplaceItemType[] = ['skill', 'model', 'role', 'mcp_tool'];
 const VALID_SORTS: SortOption[] = ['popular', 'rating', 'newest'];
 const VALID_SUBMISSION_STATUSES: SubmissionStatus[] = ['pending', 'approved', 'rejected'];
 

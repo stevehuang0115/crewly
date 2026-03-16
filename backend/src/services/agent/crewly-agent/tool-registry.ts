@@ -9,7 +9,7 @@
  */
 
 import { promises as fsPromises } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { homedir } from 'os';
 import { z } from 'zod';
 import type { CrewlyApiClient } from './api-client.js';
@@ -20,6 +20,78 @@ const DELEGATION_SUBSCRIPTION_TTL_MINUTES = 120;
 
 /** Maximum characters for git diff output */
 const GIT_DIFF_MAX_CHARS = 5000;
+
+/**
+ * Commands that could kill/signal the parent Crewly server process or
+ * cause irreversible system damage.  Checked against the raw command
+ * string (case-insensitive, word-boundary match via regex).
+ */
+const BLOCKED_COMMAND_PATTERNS: RegExp[] = [
+  /\bkill\b/i,
+  /\bkillall\b/i,
+  /\bpkill\b/i,
+  /\bshutdown\b/i,
+  /\breboot\b/i,
+  /\brm\s+-[^\s]*r[^\s]*\s+\/(?!\S)/i,     // rm -rf / (root wipe)
+  /\bmkfs\b/i,
+  /\bdd\s+.*of=\/dev\//i,                    // dd of=/dev/...
+  /\blaunchctl\b/i,
+  /\bsystemctl\b/i,
+];
+
+/**
+ * Validate a shell command against the blocklist.
+ *
+ * @param command - Raw shell command string
+ * @returns Error message if blocked, or null if allowed
+ */
+export function validateBashCommand(command: string): string | null {
+  for (const pattern of BLOCKED_COMMAND_PATTERNS) {
+    if (pattern.test(command)) {
+      return `Command blocked by security policy: matches forbidden pattern ${pattern}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Execute a shell command in an isolated process group so that signals
+ * (SIGTERM, SIGINT) from the child cannot propagate to the Crewly server.
+ *
+ * Uses spawnSync with setsid (macOS/Linux) to create a new session,
+ * preventing the child's process group signals from reaching the parent.
+ *
+ * @param cmd - Shell command to run
+ * @param workDir - Working directory
+ * @param timeoutMs - Timeout in milliseconds
+ * @returns Object with stdout, stderr, exitCode
+ */
+function execIsolated(cmd: string, workDir: string, timeoutMs: number): {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+} {
+  const result = spawnSync('/bin/sh', ['-c', cmd], {
+    cwd: workDir,
+    encoding: 'utf-8',
+    timeout: timeoutMs,
+    maxBuffer: 1024 * 1024,
+    env: { ...process.env, FORCE_COLOR: '0' },
+    // Run in a new process group — signals sent to the child group
+    // will NOT propagate to the Crewly server's process group.
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  // If the process was killed by a signal (e.g. timeout → SIGTERM),
+  // reflect it in the exit code.
+  const exitCode = result.status ?? (result.signal ? 128 : 1);
+
+  return {
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    exitCode,
+  };
+}
 
 /**
  * Expand ~ and $HOME in a file path to the user's home directory.
@@ -130,6 +202,7 @@ export const TOOL_SENSITIVITY: Record<string, ToolSensitivity> = {
   get_audit_log: 'safe',
   get_scheduled_checks: 'safe',
   compact_memory: 'safe',
+  get_context_budget: 'safe',
   // Sensitive: modify state, communicate externally
   delegate_task: 'sensitive',
   send_message: 'sensitive',
@@ -208,10 +281,18 @@ function wrapWithAudit(
           durationMs: Date.now() - start,
         };
         if (callbacks?.onAuditLog) callbacks.onAuditLog(entry);
+        // Enqueue for approval if not hard-blocked
+        let approvalId: string | undefined;
+        if (!approvalResult.blocked && callbacks?.onEnqueueApproval) {
+          const enqueued = callbacks.onEnqueueApproval(toolName, sensitivity, sanitizedArgs);
+          approvalId = enqueued.approvalId;
+        }
+
         return {
           success: false,
           blocked: approvalResult.blocked ?? false,
           requiresApproval: !approvalResult.blocked,
+          approvalId,
           error: approvalResult.reason || 'Tool execution denied by security policy',
         };
       }
@@ -1081,6 +1162,19 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
       },
     },
 
+    get_context_budget: {
+      description: 'Check current context window token budget usage. Returns total tokens used, context window size, usage percentage, and warning level (normal/warning/critical). Use proactively to decide when to compact or wrap up work.',
+      inputSchema: z.object({}),
+      sensitivity: 'safe',
+      execute: async () => {
+        if (!callbacks?.onGetContextBudget) {
+          return { success: false, error: 'Context budget tracking not available — no runner callback configured' };
+        }
+        const budget = callbacks.onGetContextBudget();
+        return { success: true, ...budget };
+      },
+    },
+
     // ===== Security Audit Tool =====
 
     get_audit_log: {
@@ -1124,7 +1218,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
     // ===================================================================
 
     bash_exec: {
-      description: 'Execute a shell command and return stdout/stderr. Commands run with a timeout (default 30s, max 120s). Use for build, test, lint, and system operations.',
+      description: 'Execute a shell command and return stdout/stderr. Commands run with a timeout (default 30s, max 120s). Use for build, test, lint, and system operations. Some commands (kill, reboot, rm -rf /, etc.) are blocked by security policy.',
       inputSchema: z.object({
         command: z.string().describe('Shell command to execute'),
         cwd: z.string().optional().describe('Working directory (defaults to project path)'),
@@ -1133,33 +1227,42 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
       sensitivity: 'destructive' as ToolSensitivity,
       execute: async ({ command, cwd, timeout }) => {
         const cmd = command as string;
+
+        // Check command against blocklist before execution
+        const blockReason = validateBashCommand(cmd);
+        if (blockReason) {
+          return {
+            success: false,
+            exitCode: 126,
+            stdout: '',
+            stderr: blockReason,
+            error: blockReason,
+          };
+        }
+
         const workDir = expandPath((cwd as string | undefined) || projectPath || process.cwd());
         const timeoutMs = Math.min((timeout as number | undefined) || 30000, 120000);
 
-        try {
-          const output = execSync(cmd, {
-            cwd: workDir,
-            encoding: 'utf-8',
-            timeout: timeoutMs,
-            maxBuffer: 1024 * 1024,
-            env: { ...process.env, FORCE_COLOR: '0' },
-          });
-          const truncated = output.length > 10000;
+        // Run in isolated process group to prevent signal propagation
+        const result = execIsolated(cmd, workDir, timeoutMs);
+
+        if (result.exitCode === 0) {
+          const truncated = result.stdout.length > 10000;
           return {
             success: true,
             exitCode: 0,
-            stdout: truncated ? output.slice(-10000) + '\n...(truncated)' : output,
+            stdout: truncated ? result.stdout.slice(-10000) + '\n...(truncated)' : result.stdout,
             truncated,
           };
-        } catch (error: any) {
-          return {
-            success: false,
-            exitCode: error.status ?? 1,
-            stdout: (error.stdout as string || '').slice(-5000),
-            stderr: (error.stderr as string || '').slice(-5000),
-            error: error.message?.slice(0, 500),
-          };
         }
+
+        return {
+          success: false,
+          exitCode: result.exitCode,
+          stdout: (result.stdout || '').slice(-5000),
+          stderr: (result.stderr || '').slice(-5000),
+          error: result.stderr ? result.stderr.slice(0, 500) : `Process exited with code ${result.exitCode}`,
+        };
       },
     },
 

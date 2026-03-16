@@ -12,8 +12,9 @@
  * - skill: Reusable agent skill packages
  * - model: 3D models for the factory visualization
  * - role: Agent role definitions
+ * - mcp_tool: MCP server tool packages
  */
-export type MarketplaceItemType = 'skill' | 'model' | 'role';
+export type MarketplaceItemType = 'skill' | 'model' | 'role' | 'mcp_tool';
 
 /**
  * Sort options for marketplace listing.
@@ -91,7 +92,7 @@ export interface MarketplaceItemWithStatus extends MarketplaceItem {
 /**
  * Valid marketplace item types list.
  */
-export const MARKETPLACE_ITEM_TYPES: MarketplaceItemType[] = ['skill', 'model', 'role'];
+export const MARKETPLACE_ITEM_TYPES: MarketplaceItemType[] = ['skill', 'model', 'role', 'mcp_tool'];
 
 /**
  * Valid sort options list.
@@ -134,6 +135,7 @@ export function getMarketplaceItemTypeLabel(type: MarketplaceItemType): string {
     skill: 'Skill',
     model: '3D Model',
     role: 'Role',
+    mcp_tool: 'MCP Tool',
   };
   return labels[type] || type;
 }

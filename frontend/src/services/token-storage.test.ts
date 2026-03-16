@@ -1,11 +1,11 @@
 /**
  * Tests for Cloud Auth Client (token helpers)
  *
- * @module services/supabase.test
+ * @module services/token-storage.test
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { getAccessToken, getRefreshToken, storeTokens, clearTokens } from './supabase';
+import { getAccessToken, getRefreshToken, storeTokens, clearTokens } from './token-storage';
 
 describe('Cloud Auth Token Helpers', () => {
   beforeEach(() => {

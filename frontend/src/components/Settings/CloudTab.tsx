@@ -10,7 +10,13 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap } from 'lucide-react';
-import { CLOUD_API_BASE, CLOUD_TOKEN_KEY } from '../../constants/cloud.constants';
+import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/cloud.constants';
+
+/**
+ * Cloud API validation endpoint — proxied through the local OSS backend
+ * to avoid CORS issues when validating tokens against api.crewlyai.com.
+ */
+const CLOUD_VALIDATE_URL = '/api/cloud/validate';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,7 +59,7 @@ export const CloudTab: React.FC = () => {
     }
 
     try {
-      const res = await fetch(`${CLOUD_API_BASE}/cloud/validate`, {
+      const res = await fetch(CLOUD_VALIDATE_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -90,12 +96,12 @@ export const CloudTab: React.FC = () => {
   }, [validateToken]);
 
   /**
-   * Start the OAuth sign-in flow.
+   * Start the OAuth sign-in flow via crewlyai.com/cloud/auth.
+   * After login, the user is redirected back to this OSS instance with a JWT token.
    */
   const handleSignIn = () => {
     const callbackUrl = `${window.location.origin}/auth/callback`;
-    const authorizeUrl = `${CLOUD_API_BASE}/auth/authorize?callback_url=${encodeURIComponent(callbackUrl)}`;
-    window.location.href = authorizeUrl;
+    window.location.href = buildCloudAuthRedirectUrl(callbackUrl);
   };
 
   /**

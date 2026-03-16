@@ -1,6 +1,13 @@
 {
   "name": "Code Review Pipeline",
   "description": "AI team that automatically reviews pull requests for code quality, security vulnerabilities, and test coverage. Built for SaaS teams, dev shops, and any team that wants faster, more consistent code reviews.",
+  "norms": {
+    "enabled": true,
+    "files": [
+      { "file": "pr-review-checklist.md", "trigger": "before_merge", "roles": ["architect", "qa-engineer"] },
+      { "file": "security-scan.md", "trigger": "before_merge", "roles": ["qa-engineer"] }
+    ]
+  },
   "members": [
     {
       "name": "Senior Reviewer",

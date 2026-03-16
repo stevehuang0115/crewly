@@ -490,6 +490,146 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 		});
 	});
 
+	describe('per-agent activity tracking (I3)', () => {
+		describe('recordAgentApiCall', () => {
+			it('should record API call for a new agent', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+
+				const record = service.getAgentActivity('agent-1');
+				expect(record).toBeDefined();
+				expect(record!.role).toBe('developer');
+				expect(record!.suspended).toBe(false);
+				expect(record!.lastApiCallTime).toBeGreaterThan(0);
+			});
+
+			it('should update lastApiCallTime on subsequent calls', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				const first = service.getAgentActivity('agent-1')!.lastApiCallTime;
+
+				jest.advanceTimersByTime(5000);
+				service.recordAgentApiCall('agent-1', 'developer');
+				const second = service.getAgentActivity('agent-1')!.lastApiCallTime;
+
+				expect(second).toBeGreaterThan(first);
+			});
+
+			it('should un-suspend agent on new API call', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				service.getAgentActivity('agent-1')!.suspended = true;
+
+				service.recordAgentApiCall('agent-1', 'developer');
+				expect(service.getAgentActivity('agent-1')!.suspended).toBe(false);
+			});
+		});
+
+		describe('shouldSkipHeartbeat', () => {
+			it('should NOT skip for unknown agents', () => {
+				expect(service.shouldSkipHeartbeat('unknown-agent')).toBe(false);
+			});
+
+			it('should NEVER skip for orchestrator role', () => {
+				service.recordAgentApiCall('crewly-orc', 'orchestrator');
+				expect(service.shouldSkipHeartbeat('crewly-orc')).toBe(false);
+			});
+
+			it('should skip for agents with recent API activity', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				expect(service.shouldSkipHeartbeat('agent-1')).toBe(true);
+			});
+
+			it('should NOT skip for agents with stale API activity', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				jest.advanceTimersByTime(2 * 60 * 1000 + 1);
+				expect(service.shouldSkipHeartbeat('agent-1')).toBe(false);
+			});
+
+			it('should skip for suspended agents', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				jest.advanceTimersByTime(2 * 60 * 1000 + 1);
+				service.getAgentActivity('agent-1')!.suspended = true;
+				expect(service.shouldSkipHeartbeat('agent-1')).toBe(true);
+			});
+		});
+
+		describe('suspendIdleAgents', () => {
+			it('should suspend agents idle beyond threshold', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				jest.advanceTimersByTime(10 * 60 * 1000 + 1);
+
+				const suspended = service.suspendIdleAgents();
+
+				expect(suspended).toBe(1);
+				expect(service.getAgentActivity('agent-1')!.suspended).toBe(true);
+			});
+
+			it('should NOT suspend orchestrator regardless of idle time', () => {
+				service.recordAgentApiCall('crewly-orc', 'orchestrator');
+				jest.advanceTimersByTime(60 * 60 * 1000);
+
+				const suspended = service.suspendIdleAgents();
+
+				expect(suspended).toBe(0);
+				expect(service.getAgentActivity('crewly-orc')!.suspended).toBe(false);
+			});
+
+			it('should not double-suspend', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				jest.advanceTimersByTime(10 * 60 * 1000 + 1);
+
+				service.suspendIdleAgents();
+				const secondRound = service.suspendIdleAgents();
+
+				expect(secondRound).toBe(0);
+			});
+
+			it('should suspend multiple idle agents at once', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				service.recordAgentApiCall('agent-2', 'qa');
+				service.recordAgentApiCall('crewly-orc', 'orchestrator');
+				jest.advanceTimersByTime(10 * 60 * 1000 + 1);
+
+				const suspended = service.suspendIdleAgents();
+
+				expect(suspended).toBe(2);
+				expect(service.getAgentActivity('crewly-orc')!.suspended).toBe(false);
+			});
+		});
+
+		describe('getState includes agentActivity', () => {
+			it('should include agentActivity map in state', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+
+				const state = service.getState();
+
+				expect(state.agentActivity).toBeDefined();
+				expect(state.agentActivity.size).toBe(1);
+			});
+
+			it('should return a copy of agentActivity', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				const state1 = service.getState();
+
+				service.recordAgentApiCall('agent-2', 'qa');
+				const state2 = service.getState();
+
+				expect(state1.agentActivity.size).toBe(1);
+				expect(state2.agentActivity.size).toBe(2);
+			});
+		});
+
+		describe('stop clears agent activity', () => {
+			it('should clear all agent activity on stop', () => {
+				service.recordAgentApiCall('agent-1', 'developer');
+				service.recordAgentApiCall('agent-2', 'qa');
+
+				service.stop();
+
+				expect(service.getAgentActivity('agent-1')).toBeUndefined();
+				expect(service.getAgentActivity('agent-2')).toBeUndefined();
+			});
+		});
+	});
+
 	describe('auditor notification on restart', () => {
 		beforeEach(() => {
 			mockIsAgentActive.mockReset().mockResolvedValue(false);

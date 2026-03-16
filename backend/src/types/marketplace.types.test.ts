@@ -41,6 +41,28 @@ describe('Marketplace Types', () => {
     expect(item.category).toBe('development');
   });
 
+  it('should create a valid MCP tool MarketplaceItem', () => {
+    const item: MarketplaceItem = {
+      id: 'mcp-filesystem',
+      type: 'mcp_tool',
+      name: 'Filesystem Server',
+      description: 'Read and write files via MCP protocol',
+      author: 'Anthropic',
+      version: '1.2.0',
+      category: 'integration',
+      tags: ['mcp', 'filesystem', 'io'],
+      license: 'MIT',
+      downloads: 5000,
+      rating: 4.8,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-03-01T00:00:00Z',
+      assets: {},
+      metadata: { command: 'npx', args: ['-y', '@anthropic/mcp-filesystem'] },
+    };
+    expect(item.type).toBe('mcp_tool');
+    expect(item.metadata?.command).toBe('npx');
+  });
+
   it('should create a valid MarketplaceRegistry', () => {
     const registry: MarketplaceRegistry = {
       schemaVersion: 1,

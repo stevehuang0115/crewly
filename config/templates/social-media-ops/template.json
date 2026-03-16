@@ -6,6 +6,13 @@
   "version": "1.0.0",
   "tags": ["content", "social-media", "visual", "marketing"],
   "icon": "smartphone",
+  "norms": {
+    "enabled": true,
+    "files": [
+      { "file": "posting-schedule.md", "trigger": "always", "roles": ["*"] },
+      { "file": "engagement-rules.md", "trigger": "always", "roles": ["*"] }
+    ]
+  },
   "hierarchical": true,
   "defaultRuntime": "claude-code",
   "roles": [
@@ -81,5 +88,14 @@
     "passPolicy": "critical_only",
     "maxRetries": 2
   },
-  "maxWorkersPerLeader": 3
+  "maxWorkersPerLeader": 3,
+  "mission": "Create engaging social media content with consistent branding across platforms",
+  "budget": {
+    "maxTokensPerDay": 2000000,
+    "alertThreshold": 80
+  },
+  "qualityGate": {
+    "autoApprove": true,
+    "minQualityScore": 70
+  }
 }

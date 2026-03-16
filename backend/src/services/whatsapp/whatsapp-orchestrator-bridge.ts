@@ -206,7 +206,7 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
       // Enqueue with a resolve callback for response routing
       const response = await new Promise<string>((resolve) => {
         const timeoutId = setTimeout(() => {
-          resolve('The orchestrator is taking longer than expected. Please try again.');
+          resolve('The orchestrator is still processing your request. It will reply when ready — no need to resend.');
         }, this.config.responseTimeoutMs);
 
         try {

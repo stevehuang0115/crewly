@@ -20,7 +20,7 @@ import type {
   SlackBlock,
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
-import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS } from '../../constants.js';
+import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 
 /**
@@ -184,6 +184,13 @@ export class SlackService extends EventEmitter {
     messagesReceived: 0,
   };
   private conversationContexts: Map<string, SlackConversationContext> = new Map();
+
+  /**
+   * Message deduplication tracker.
+   * Maps a fingerprint (channelId:threadTs:textHash) to the timestamp it was sent.
+   * Prevents identical messages from being sent to the same thread within a time window.
+   */
+  private recentMessageFingerprints: Map<string, number> = new Map();
 
   /**
    * Initialize the Slack service with configuration
@@ -377,14 +384,32 @@ export class SlackService extends EventEmitter {
   }
 
   /**
-   * Send a message to Slack
+   * Send a message to Slack with content-based deduplication.
+   *
+   * Generates a fingerprint from (channelId, threadTs, text) and suppresses
+   * duplicate sends within a configurable time window (default 30s).
+   * This is the single chokepoint for all Slack message sends — skill delivery,
+   * bridge fallback, and direct API calls all converge here.
    *
    * @param message - Message to send
-   * @returns Promise with message timestamp
+   * @returns Promise with message timestamp (empty string if deduplicated)
    */
   async sendMessage(message: SlackOutgoingMessage): Promise<string> {
     if (!this.client) {
       throw new Error('Slack client not initialized');
+    }
+
+    // Content-based deduplication: suppress identical messages within time window
+    const fingerprint = this.buildMessageFingerprint(message);
+    const now = Date.now();
+    const lastSentAt = this.recentMessageFingerprints.get(fingerprint);
+    if (lastSentAt !== undefined && (now - lastSentAt) < SLACK_DEDUP_CONSTANTS.DEDUP_WINDOW_MS) {
+      this.logger.info('Slack message deduplicated — identical message sent recently', {
+        channelId: message.channelId,
+        threadTs: message.threadTs,
+        ageMs: now - lastSentAt,
+      });
+      return '';
     }
 
     try {
@@ -399,10 +424,58 @@ export class SlackService extends EventEmitter {
       });
 
       this.status.messagesSent++;
+
+      // Track this fingerprint for future dedup
+      this.trackMessageFingerprint(fingerprint, now);
+
       return result.ts || '';
     } catch (error) {
       this.logger.error('Send message error', { error: error instanceof Error ? (error as Error).message : String(error) });
       throw error;
+    }
+  }
+
+  /**
+   * Build a deduplication fingerprint for a Slack message.
+   * Combines channelId, threadTs, and a simple hash of the message text.
+   *
+   * @param message - Outgoing Slack message
+   * @returns Fingerprint string
+   */
+  private buildMessageFingerprint(message: SlackOutgoingMessage): string {
+    // Simple string hash (djb2) — fast and sufficient for dedup
+    let hash = 5381;
+    const text = message.text || '';
+    for (let i = 0; i < text.length; i++) {
+      hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
+    }
+    return `${message.channelId}:${message.threadTs || ''}:${hash}`;
+  }
+
+  /**
+   * Track a message fingerprint and evict stale entries.
+   *
+   * @param fingerprint - Message fingerprint to track
+   * @param timestamp - Current timestamp in ms
+   */
+  private trackMessageFingerprint(fingerprint: string, timestamp: number): void {
+    this.recentMessageFingerprints.set(fingerprint, timestamp);
+
+    // Evict expired entries and enforce size limit
+    if (this.recentMessageFingerprints.size > SLACK_DEDUP_CONSTANTS.MAX_TRACKED_MESSAGES) {
+      const windowMs = SLACK_DEDUP_CONSTANTS.DEDUP_WINDOW_MS;
+      for (const [key, ts] of this.recentMessageFingerprints) {
+        if (timestamp - ts > windowMs) {
+          this.recentMessageFingerprints.delete(key);
+        }
+      }
+      // If still over limit after expiry cleanup, drop oldest
+      if (this.recentMessageFingerprints.size > SLACK_DEDUP_CONSTANTS.MAX_TRACKED_MESSAGES) {
+        const firstKey = this.recentMessageFingerprints.keys().next().value;
+        if (firstKey !== undefined) {
+          this.recentMessageFingerprints.delete(firstKey);
+        }
+      }
     }
   }
 

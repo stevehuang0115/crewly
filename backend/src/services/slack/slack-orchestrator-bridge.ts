@@ -32,7 +32,6 @@ import {
   parseCommandIntent,
 } from '../../types/slack.types.js';
 import { getSlackImageService } from './slack-image.service.js';
-import { parseNotifyContent, type NotifyPayload } from '../../types/chat.types.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
 import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS } from '../../constants.js';
@@ -104,9 +103,6 @@ export class SlackOrchestratorBridge extends EventEmitter {
    * by the reply-slack skill (execute.sh). Used by sendSlackResponse to
    * avoid sending a duplicate fallback message to the same thread.
    */
-  private skillDeliveredThreads: Set<string> = new Set();
-  /** Maximum entries before evicting oldest skill delivery records */
-  private static readonly MAX_SKILL_DELIVERY_RECORDS = 50;
 
   /**
    * Create a new SlackOrchestratorBridge
@@ -530,7 +526,7 @@ Just type naturally to chat with the orchestrator!`;
         const timeoutId = setTimeout(() => {
           if (!resolved) {
             resolved = true;
-            resolve('The orchestrator is taking longer than expected. Please try again.');
+            resolve('The orchestrator is still processing your request. It will reply here when ready — no need to resend.');
           }
         }, this.config.responseTimeoutMs);
 
@@ -993,12 +989,8 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
-   * Send response back to Slack with fallback delivery.
-   *
-   * Waits for the reply-slack skill to deliver via the skill pipeline.
-   * If the skill delivers (detected via markDeliveredBySkill), this method
-   * skips sending to avoid duplicates. If the skill does not deliver within
-   * the wait window, sends the response directly to Slack as a fallback.
+   * Record response to thread store. Slack delivery is handled exclusively
+   * by the reply-slack skill via the API — no terminal output fallback needed.
    *
    * @param originalMessage - Original incoming message
    * @param response - Response content
@@ -1007,43 +999,7 @@ Just type naturally to chat with the orchestrator!`;
     originalMessage: SlackIncomingMessage,
     response: string
   ): Promise<void> {
-    // Record to thread store regardless of delivery path
     await this.recordThreadReply(originalMessage, response);
-
-    // Skip empty responses
-    const trimmed = response?.trim();
-    if (!trimmed) return;
-
-    // Wait for the reply-slack skill to deliver (it runs asynchronously in the PTY)
-    if (this.config.skillDeliveryWaitMs > 0) {
-      await new Promise(resolve => setTimeout(resolve, this.config.skillDeliveryWaitMs));
-    }
-
-    // Check if the reply-slack skill already delivered to this thread
-    const threadTs = originalMessage.threadTs || originalMessage.ts;
-    if (this.wasDeliveredBySkill(originalMessage.channelId, threadTs)) {
-      this.logger.info('Slack reply already delivered by skill, skipping fallback');
-      return;
-    }
-
-    // Fallback: send the response directly to Slack
-    try {
-      this.logger.info('reply-slack skill did not deliver, sending fallback response to Slack');
-      const sanitized = this.sanitizeForSlack(trimmed);
-      if (!sanitized) {
-        this.logger.info('Fallback response empty after sanitization, skipping Slack send');
-        return;
-      }
-      await this.slackService.sendMessage({
-        channelId: originalMessage.channelId,
-        text: sanitized,
-        threadTs,
-      });
-    } catch (err) {
-      this.logger.error('Fallback Slack delivery failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   /**
@@ -1085,126 +1041,6 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
-   * Extract [NOTIFY] payloads from orchestrator output.
-   */
-  private extractNotifyPayloads(text: string): NotifyPayload[] {
-    if (!text) return [];
-
-    const payloads: NotifyPayload[] = [];
-    const notifyPattern = /\[NOTIFY\]([\s\S]*?)\[\/NOTIFY\]/g;
-    let match: RegExpExecArray | null;
-
-    while ((match = notifyPattern.exec(text)) !== null) {
-      const payload = parseNotifyContent(match[1]);
-      if (payload) {
-        payloads.push(payload);
-      }
-    }
-
-    return payloads;
-  }
-
-  /**
-   * Determine whether the response already triggered a Slack delivery via NOTIFY.
-   */
-  private findSlackPayloadForMessage(
-    message: SlackIncomingMessage,
-    payloads: NotifyPayload[]
-  ): NotifyPayload | undefined {
-    const targetChannel = message.channelId;
-    const targetThread = message.threadTs || message.ts;
-
-    return payloads.find((payload) => {
-      if (!payload.channelId || payload.channelId !== targetChannel) {
-        return false;
-      }
-
-      if (payload.threadTs && targetThread && payload.threadTs !== targetThread) {
-        return false;
-      }
-
-      return Boolean(payload.message && payload.message.trim());
-    });
-  }
-
-  /**
-   * Sanitize raw terminal output for Slack delivery.
-   *
-   * Strips NOTIFY markers/headers, Claude Code UI elements (satisfaction survey,
-   * permission prompts, status bar), Gemini CLI TUI elements, box-drawing
-   * decoration, and orphaned ANSI sequences.
-   *
-   * @param raw - Raw terminal text
-   * @returns Cleaned text suitable for Slack, or empty string if nothing meaningful remains
-   */
-  private sanitizeForSlack(raw: string): string {
-    return raw
-      // Strip entire [NOTIFY]...[/NOTIFY] blocks (headers + body)
-      .replace(/\[NOTIFY\][\s\S]*?\[\/NOTIFY\]/g, '')
-      // Strip Claude Code UI elements
-      .replace(/^.*How is Claude doing this session\?.*$/gm, '')
-      .replace(/^.*\d:\s*Bad\s+\d:\s*Fine\s+\d:\s*Good\s+\d:\s*Dismiss.*$/gm, '')
-      .replace(/^.*bypass permissions on.*$/gm, '')
-      .replace(/^.*shift\+tab to cycle.*$/gm, '')
-      .replace(/^.*esc to (?:interrupt|cancel|\.\.\.).*$/gmi, '')
-      .replace(/^.*Use meta\+t to toggle.*$/gmi, '')
-      .replace(/^.*ctrl\+g to edi.*$/gmi, '')
-      .replace(/^.*Osmosing.*$/gm, '')
-      .replace(/^.*✻ Baked for.*$/gm, '')
-      .replace(/^.*✢ Osmosing.*$/gm, '')
-      .replace(/^.*running stop hook.*$/gmi, '')
-      // Strip Claude Code tool indicators and prompt markers
-      .replace(/^[⏺⏵❯✻✢✽●·]\s*$/gm, '')
-      .replace(/^[⏺⏵]\s+.*$/gm, '')
-      // Strip Gemini CLI TUI elements
-      .replace(/^.*(?:Type\s+your\s+message|YOLO\s+mode|no\s+sandbox|context\s+left\)).*$/gmi, '')
-      .replace(/^.*(?:Initiating\s+File\s+Inspection).*$/gmi, '')
-      // Strip TUI box-drawing border characters
-      .replace(/^[\s│┃║|]+|[\s│┃║|]+$/gm, '')
-      // Remove pure decoration lines (corners, horizontal rules, dots)
-      .replace(/^[─━┄┅┈┉╌╍═┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬╭╮╰╯\-+\s▪▫■□●○◆◇•·]+$/gm, '')
-      // Strip orphaned ANSI CSI sequences
-      .replace(/\[\d+(?:;\d+)*[A-BJKHfm]/g, '')
-      // Strip CHAT: session header lines
-      .replace(/^.*\[CHAT:slack-[^\]]+\].*$/gm, '')
-      // Strip thread context file lines
-      .replace(/^\[Thread context file:.*\]$/gm, '')
-      // Collapse multiple blank lines
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-  }
-
-  /**
-   * Build a Slack-friendly fallback response when no NOTIFY payload targeted Slack.
-   */
-  private buildFallbackResponse(raw: string, payloads: NotifyPayload[]): string {
-    const chatMessages = payloads
-      .filter((payload) => payload.message && !payload.channelId)
-      .map((payload) => payload.message!.trim())
-      .filter(Boolean);
-
-    if (chatMessages.length > 0) {
-      return chatMessages.join('\n\n');
-    }
-
-    const cleaned = raw
-      // Strip entire [NOTIFY]...[/NOTIFY] blocks
-      .replace(/\[NOTIFY\][\s\S]*?\[\/NOTIFY\]/g, '')
-      // Strip TUI box-drawing border characters from Gemini CLI output
-      .replace(/^[\s│┃║|]+|[\s│┃║|]+$/gm, '')
-      // Remove pure decoration lines (corners, horizontal rules)
-      .replace(/^[─━┄┅┈┉╌╍═┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬╭╮╰╯\-+\s]+$/gm, '')
-      // Strip orphaned multi-param ANSI CSI sequences (e.g. [38;2;249;226;175m)
-      .replace(/\[\d+(?:;\d+)*[A-BJKHfm]/g, '')
-      // Remove Gemini CLI TUI elements that leak into output
-      .replace(/^.*(?:Type\s+your\s+message|YOLO\s+mode|no\s+sandbox|context\s+left\)).*$/gmi, '')
-      .replace(/^.*(?:esc\s+to\s+cancel|Initiating\s+File\s+Inspection).*$/gmi, '')
-      .trim();
-
-    return cleaned;
-  }
-
-  /**
    * Persist Slack reply content to the thread store when available.
    */
   private async recordThreadReply(
@@ -1223,43 +1059,6 @@ Just type naturally to chat with the orchestrator!`;
     } catch (err) {
       this.logger.warn('Failed to store thread reply', { error: err instanceof Error ? err.message : String(err) });
     }
-  }
-
-  /**
-   * Mark a channel+thread pair as already delivered to Slack by the reply-slack skill.
-   * Called by TerminalGateway.handleNotifyPayload when a slack_reply NOTIFY is processed.
-   *
-   * @param channelId - Slack channel ID
-   * @param threadTs - Thread timestamp (optional)
-   */
-  markDeliveredBySkill(channelId: string, threadTs?: string): void {
-    const key = `${channelId}:${threadTs || ''}`;
-    this.skillDeliveredThreads.add(key);
-
-    // Evict oldest entries if set is too large
-    if (this.skillDeliveredThreads.size > SlackOrchestratorBridge.MAX_SKILL_DELIVERY_RECORDS) {
-      const first = this.skillDeliveredThreads.values().next().value;
-      if (first !== undefined) {
-        this.skillDeliveredThreads.delete(first);
-      }
-    }
-  }
-
-  /**
-   * Check if a channel+thread pair was already delivered by the reply-slack skill.
-   *
-   * @param channelId - Slack channel ID
-   * @param threadTs - Thread timestamp (optional)
-   * @returns true if delivery was already handled by the skill
-   */
-  wasDeliveredBySkill(channelId: string, threadTs?: string): boolean {
-    const key = `${channelId}:${threadTs || ''}`;
-    if (this.skillDeliveredThreads.has(key)) {
-      // Remove after check to avoid permanent blocking of future replies to same thread
-      this.skillDeliveredThreads.delete(key);
-      return true;
-    }
-    return false;
   }
 
   /**

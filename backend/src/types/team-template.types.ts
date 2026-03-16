@@ -180,6 +180,8 @@ export interface TeamTemplate {
   maxWorkersPerLeader?: number;
   /** Auto-assign tasks to idle workers */
   autoAssign?: boolean;
+  /** Minimum cloud tier required to use this template (free if omitted) */
+  requiredTier?: 'free' | 'pro' | 'enterprise';
 }
 
 // =============================================================================

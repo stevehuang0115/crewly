@@ -1,6 +1,13 @@
 {
   "name": "Content Generation Studio",
   "description": "AI team that automatically produces SEO-optimized blog posts, social media content, and accompanying images. Ideal for content agencies, solo creators, and marketing teams.",
+  "norms": {
+    "enabled": true,
+    "files": [
+      { "file": "content-review.md", "trigger": "before_publish", "roles": ["*"] },
+      { "file": "brand-guidelines.md", "trigger": "always", "roles": ["*"] }
+    ]
+  },
   "members": [
     {
       "name": "Content Strategist",

@@ -270,16 +270,13 @@ export const MESSAGE_QUEUE_CONSTANTS = {
 	/** Maximum number of messages allowed in the queue */
 	MAX_QUEUE_SIZE: 100,
 	/** Default timeout for a single message response (ms) */
-	DEFAULT_MESSAGE_TIMEOUT: 120000,
+	DEFAULT_MESSAGE_TIMEOUT: 180000,
 	/** Maximum number of completed/failed messages retained in history */
 	MAX_HISTORY_SIZE: 50,
 	/** Delay between processing consecutive messages (ms) */
 	INTER_MESSAGE_DELAY: 500,
 	/** Maximum number of requeue retries before permanently failing a message */
 	MAX_REQUEUE_RETRIES: 5,
-	/** Early ACK check timeout — if no terminal output within this window after
-	 *  delivery, the orchestrator is likely context-exhausted (ms) */
-	ACK_TIMEOUT: 15000,
 	/** Maximum number of system events to batch into a single delivery */
 	MAX_SYSTEM_EVENT_BATCH: 100,
 	/** Max combined chars when coalescing pending system events in-queue */
@@ -288,10 +285,6 @@ export const MESSAGE_QUEUE_CONSTANTS = {
 	PERSISTENCE_FILE: 'message-queue.json',
 	/** Queue persistence directory name */
 	PERSISTENCE_DIR: 'queue',
-	/** Initial delay before the first progress message in waitForResponse (ms) */
-	PROGRESS_INITIAL_MS: 90_000,
-	/** Interval between subsequent progress messages (ms) */
-	PROGRESS_INTERVAL_MS: 60_000,
 	/** Socket.IO event names for queue status updates */
 	SOCKET_EVENTS: {
 		/** Emitted when a new message is enqueued */
@@ -380,6 +373,18 @@ export const GCHAT_THREAD_CONSTANTS = {
 export const SLACK_BRIDGE_CONSTANTS = {
 	/** Time to wait for the reply-slack skill to deliver before fallback (ms) */
 	SKILL_DELIVERY_WAIT_MS: 10_000,
+} as const;
+
+/**
+ * Constants for Slack message deduplication.
+ * Prevents identical messages from being sent to the same channel+thread
+ * within a short time window.
+ */
+export const SLACK_DEDUP_CONSTANTS = {
+	/** Time window in ms within which duplicate messages are suppressed (30 seconds) */
+	DEDUP_WINDOW_MS: 30_000,
+	/** Maximum number of message fingerprints to track in memory */
+	MAX_TRACKED_MESSAGES: 100,
 } as const;
 
 /**
@@ -1007,6 +1012,8 @@ export const CLOUD_CONSTANTS = {
 		CIPHER_ALGORITHM: 'aes-256-gcm',
 		/** Key length (bytes) */
 		KEY_LENGTH: 32,
+		/** Default WebSocket relay URL for Cloud Relay auto-connect */
+		DEFAULT_WS_URL: 'wss://api.crewlyai.com/relay',
 	},
 } as const;
 
@@ -1156,6 +1163,18 @@ export const AUDITOR_SCHEDULER_CONSTANTS = {
 	AUDIT_COMMAND: 'Run a full audit cycle: check team status, review agent logs for errors, verify task alignment with goals, and write findings to the audit report.',
 	/** Slack auditor prefix regex pattern (used in SlackOrchestratorBridge) */
 	SLACK_PREFIX_PATTERN: /^\/?auditor\s+(.*)/is,
+	/** Maximum session creation retries before entering cooldown */
+	MAX_SESSION_RETRIES: 3,
+	/** Cooldown period after max retries exhausted (5 minutes) */
+	SESSION_RETRY_COOLDOWN_MS: 5 * 60 * 1000,
+	/** Initial backoff between session creation retries (10 seconds) */
+	SESSION_RETRY_INITIAL_BACKOFF_MS: 10_000,
+	/** Backoff multiplier for exponential retry */
+	SESSION_RETRY_BACKOFF_MULTIPLIER: 2,
+	/** Delay before re-triggering after auditor's own session goes inactive (30 seconds).
+	 *  This bridges the gap between the auditor exiting and the next L1 periodic trigger
+	 *  (up to 15 min away), ensuring the auditor recovers quickly after context exhaustion. */
+	SESSION_RECOVERY_DELAY_MS: 30_000,
 } as const;
 
 /** Log rotation service constants for managing session log file sizes */
@@ -1176,6 +1195,36 @@ export const LOG_ROTATION_CONSTANTS = {
 	ARCHIVE_DIR: 'archive',
 	/** Base log directory under ~/.crewly/ */
 	LOGS_DIR: 'logs',
+} as const;
+
+/** OpenTelemetry tracing configuration constants */
+export const TRACING_CONSTANTS = {
+	/** Default OTLP exporter endpoint */
+	DEFAULT_EXPORTER_ENDPOINT: 'http://localhost:4318/v1/traces',
+	/** Default service name reported in traces */
+	DEFAULT_SERVICE_NAME: 'crewly-backend',
+	/** Environment variable names */
+	ENV_VARS: {
+		ENABLED: 'OTEL_ENABLED',
+		ENDPOINT: 'OTEL_EXPORTER_ENDPOINT',
+		SERVICE_NAME: 'OTEL_SERVICE_NAME',
+	},
+	/** Span names for key operations */
+	SPANS: {
+		HTTP_REQUEST: 'http.request',
+		AGENT_CREATE_SESSION: 'agent.createSession',
+		AGENT_SEND_MESSAGE: 'agent.sendMessage',
+		AGENT_REGISTER: 'agent.register',
+		TASK_CREATE: 'task.create',
+		TASK_UPDATE: 'task.update',
+		TASK_ASSIGN: 'task.assign',
+		AUDIT_TRIGGER: 'audit.trigger',
+		SCHEDULER_RUN: 'scheduler.run',
+		MEMORY_RECALL: 'memory.recall',
+		MEMORY_STORE: 'memory.store',
+		TASK_COMPLETE: 'task.complete',
+		AGENT_RUN: 'agent.run',
+	},
 } as const;
 
 /** License status type */

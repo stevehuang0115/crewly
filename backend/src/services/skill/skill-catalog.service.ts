@@ -1,9 +1,9 @@
 /**
  * Skill Catalog Service
  *
- * Scans skill directories (orchestrator and agent), reads skill.json and
- * instructions.md from each, and generates formatted catalog Markdown files
- * at ~/.crewly/skills/.
+ * Scans skill directories (orchestrator and agent), reads SKILL.md
+ * (YAML frontmatter + markdown body) from each, and generates formatted
+ * catalog Markdown files at ~/.crewly/skills/.
  *
  * Generates two catalogs:
  * - SKILLS_CATALOG.md for orchestrator skills
@@ -11,7 +11,7 @@
  *
  * Each catalog provides a human-readable and LLM-readable reference of all
  * available skills grouped by category, including usage examples and parameter
- * documentation extracted from each skill's instructions.md.
+ * documentation extracted from each skill's SKILL.md body.
  *
  * @module services/skill/skill-catalog.service
  */
@@ -22,6 +22,7 @@ import { existsSync, mkdirSync } from 'fs';
 import * as os from 'os';
 import { LoggerService } from '../core/logger.service.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
+import { parseSkillMd } from '../../utils/skill-md-parser.js';
 
 // =============================================================================
 // Constants
@@ -46,10 +47,10 @@ const AGENT_SKILLS_RELATIVE_PATH = 'config/skills/agent';
 const SKIP_DIRECTORIES = ['_common'] as const;
 
 /** Skill definition file name expected in each skill directory */
-const SKILL_DEFINITION_FILE = 'skill.json';
+const SKILL_DEFINITION_FILE = 'SKILL.md';
 
-/** Instructions file name expected in each skill directory */
-const INSTRUCTIONS_FILE = 'instructions.md';
+/** Legacy skill definition file name (for backward compatibility) */
+const LEGACY_SKILL_DEFINITION_FILE = 'skill.json';
 
 /** Markdown heading pattern for detecting section boundaries */
 const HEADING_PATTERN = /^#{1,2}\s/;
@@ -467,9 +468,10 @@ export class SkillCatalogService {
       }
 
       const skillDir = path.join(skillsRootDir, entry.name);
-      const skillJsonPath = path.join(skillDir, SKILL_DEFINITION_FILE);
+      const skillMdPath = path.join(skillDir, SKILL_DEFINITION_FILE);
+      const legacyJsonPath = path.join(skillDir, LEGACY_SKILL_DEFINITION_FILE);
 
-      if (existsSync(skillJsonPath)) {
+      if (existsSync(skillMdPath) || existsSync(legacyJsonPath)) {
         // Direct skill directory
         const skill = await this.loadSkillFromDirectory(skillsRootDir, entry.name);
         if (skill) {
@@ -497,8 +499,9 @@ export class SkillCatalogService {
   }
 
   /**
-   * Load a single skill from a directory by reading its skill.json
-   * and instructions.md files.
+   * Load a single skill from a directory by reading its SKILL.md file
+   * (YAML frontmatter + markdown body). Falls back to legacy skill.json
+   * + instructions.md format for backward compatibility.
    *
    * @param parentDir - Absolute path to the parent skills directory
    * @param dirName - Name of the skill subdirectory
@@ -509,23 +512,89 @@ export class SkillCatalogService {
     dirName: string
   ): Promise<LoadedSkill | null> {
     const skillDir = path.join(parentDir, dirName);
-    const skillJsonPath = path.join(skillDir, SKILL_DEFINITION_FILE);
-    const instructionsPath = path.join(skillDir, INSTRUCTIONS_FILE);
+    const skillMdPath = path.join(skillDir, SKILL_DEFINITION_FILE);
+    const legacyJsonPath = path.join(skillDir, LEGACY_SKILL_DEFINITION_FILE);
 
-    // skill.json is required
-    if (!existsSync(skillJsonPath)) {
-      this.logger.debug('No skill.json found, skipping directory', {
+    // Try SKILL.md first, then fall back to legacy skill.json
+    if (existsSync(skillMdPath)) {
+      return this.loadSkillFromSkillMd(skillDir, skillMdPath, dirName);
+    } else if (existsSync(legacyJsonPath)) {
+      return this.loadSkillFromLegacyJson(skillDir, legacyJsonPath, dirName);
+    }
+
+    this.logger.debug('No SKILL.md or skill.json found, skipping directory', {
+      dirName,
+    });
+    return null;
+  }
+
+  /**
+   * Load a skill from SKILL.md format (YAML frontmatter + markdown body).
+   *
+   * @param skillDir - Absolute path to the skill directory
+   * @param skillMdPath - Path to the SKILL.md file
+   * @param dirName - Name of the skill subdirectory
+   * @returns A LoadedSkill object, or null if loading fails
+   */
+  private async loadSkillFromSkillMd(
+    skillDir: string,
+    skillMdPath: string,
+    dirName: string
+  ): Promise<LoadedSkill | null> {
+    try {
+      const content = await fs.readFile(skillMdPath, 'utf-8');
+      const { frontmatter, body } = parseSkillMd(content);
+
+      const definition: SkillDefinition = {
+        id: (frontmatter.id as string) || `skill-${dirName}`,
+        name: frontmatter.name as string,
+        description: frontmatter.description as string,
+        category: frontmatter.category as string,
+        execution: frontmatter.execution as SkillDefinition['execution'],
+        tags: frontmatter.tags as string[],
+        version: frontmatter.version as string,
+      };
+
+      if (!definition.name || !definition.description || !definition.category) {
+        this.logger.warn('SKILL.md missing required fields', {
+          dirName,
+          path: skillMdPath,
+        });
+        return null;
+      }
+
+      return {
+        definition,
+        instructions: body,
         dirName,
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.warn('Failed to load skill from SKILL.md', {
+        dirName,
+        error: errorMessage,
       });
       return null;
     }
+  }
 
+  /**
+   * Load a skill from legacy skill.json + instructions.md format.
+   *
+   * @param skillDir - Absolute path to the skill directory
+   * @param skillJsonPath - Path to the skill.json file
+   * @param dirName - Name of the skill subdirectory
+   * @returns A LoadedSkill object, or null if loading fails
+   */
+  private async loadSkillFromLegacyJson(
+    skillDir: string,
+    skillJsonPath: string,
+    dirName: string
+  ): Promise<LoadedSkill | null> {
     try {
-      // Read and parse skill.json
       const skillJsonContent = await fs.readFile(skillJsonPath, 'utf-8');
       const definition: SkillDefinition = JSON.parse(skillJsonContent);
 
-      // Validate required fields
       if (!definition.id || !definition.name || !definition.description || !definition.category) {
         this.logger.warn('Skill definition missing required fields', {
           dirName,
@@ -534,8 +603,8 @@ export class SkillCatalogService {
         return null;
       }
 
-      // Read instructions.md (optional - use empty string if missing)
       let instructions = '';
+      const instructionsPath = path.join(skillDir, 'instructions.md');
       if (existsSync(instructionsPath)) {
         instructions = await fs.readFile(instructionsPath, 'utf-8');
       }
@@ -547,7 +616,7 @@ export class SkillCatalogService {
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.logger.warn('Failed to load skill from directory', {
+      this.logger.warn('Failed to load skill from skill.json', {
         dirName,
         error: errorMessage,
       });

@@ -644,4 +644,116 @@ describe('SlackService', () => {
       expect(contextElement.text).toContain('Sent at');
     });
   });
+
+  describe('message deduplication', () => {
+    let service: SlackService;
+    let mockPostMessage: jest.Mock;
+
+    beforeEach(async () => {
+      service = new SlackService();
+      await service.initialize(mockConfig);
+      // Get reference to the mock postMessage
+      mockPostMessage = (service as any).client.chat.postMessage;
+      mockPostMessage.mockResolvedValue({ ok: true, ts: '123.456' });
+    });
+
+    it('should send the first message normally', async () => {
+      const ts = await service.sendMessage({ channelId: 'C123', text: 'Hello world' });
+
+      expect(ts).toBe('123.456');
+      expect(mockPostMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('should suppress duplicate message within dedup window', async () => {
+      await service.sendMessage({ channelId: 'C123', text: 'Hello world', threadTs: '111.222' });
+      const ts2 = await service.sendMessage({ channelId: 'C123', text: 'Hello world', threadTs: '111.222' });
+
+      expect(mockPostMessage).toHaveBeenCalledTimes(1);
+      expect(ts2).toBe(''); // deduplicated, returns empty string
+    });
+
+    it('should allow same text to different channels', async () => {
+      await service.sendMessage({ channelId: 'C123', text: 'Hello world' });
+      await service.sendMessage({ channelId: 'C456', text: 'Hello world' });
+
+      expect(mockPostMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('should allow same text to different threads', async () => {
+      await service.sendMessage({ channelId: 'C123', text: 'Hello world', threadTs: '111.222' });
+      await service.sendMessage({ channelId: 'C123', text: 'Hello world', threadTs: '333.444' });
+
+      expect(mockPostMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('should allow different text to same thread', async () => {
+      await service.sendMessage({ channelId: 'C123', text: 'Message 1', threadTs: '111.222' });
+      await service.sendMessage({ channelId: 'C123', text: 'Message 2', threadTs: '111.222' });
+
+      expect(mockPostMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('should allow same message again after dedup window expires', async () => {
+      await service.sendMessage({ channelId: 'C123', text: 'Hello world', threadTs: '111.222' });
+
+      // Manually expire the fingerprint by backdating it
+      const fingerprints = (service as any).recentMessageFingerprints as Map<string, number>;
+      for (const [key] of fingerprints) {
+        fingerprints.set(key, Date.now() - 31_000); // 31s ago, beyond 30s window
+      }
+
+      await service.sendMessage({ channelId: 'C123', text: 'Hello world', threadTs: '111.222' });
+
+      expect(mockPostMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('should evict old fingerprints when exceeding max tracked messages', async () => {
+      // Send many unique messages to fill the tracker
+      for (let i = 0; i < 105; i++) {
+        mockPostMessage.mockResolvedValueOnce({ ok: true, ts: `${i}.000` });
+        await service.sendMessage({ channelId: 'C123', text: `Message ${i}` });
+      }
+
+      const fingerprints = (service as any).recentMessageFingerprints as Map<string, number>;
+      expect(fingerprints.size).toBeLessThanOrEqual(100);
+    });
+
+    it('should build consistent fingerprints for identical messages', () => {
+      const fp1 = (service as any).buildMessageFingerprint({ channelId: 'C123', text: 'Hello', threadTs: '111.222' });
+      const fp2 = (service as any).buildMessageFingerprint({ channelId: 'C123', text: 'Hello', threadTs: '111.222' });
+
+      expect(fp1).toBe(fp2);
+    });
+
+    it('should build different fingerprints for different text', () => {
+      const fp1 = (service as any).buildMessageFingerprint({ channelId: 'C123', text: 'Hello', threadTs: '111.222' });
+      const fp2 = (service as any).buildMessageFingerprint({ channelId: 'C123', text: 'World', threadTs: '111.222' });
+
+      expect(fp1).not.toBe(fp2);
+    });
+
+    it('should still throw errors from Slack API', async () => {
+      mockPostMessage.mockRejectedValueOnce(new Error('channel_not_found'));
+
+      await expect(
+        service.sendMessage({ channelId: 'C999', text: 'Hello' })
+      ).rejects.toThrow('channel_not_found');
+    });
+
+    it('should not track fingerprint when API call fails', async () => {
+      mockPostMessage.mockRejectedValueOnce(new Error('API error'));
+
+      try {
+        await service.sendMessage({ channelId: 'C123', text: 'Hello' });
+      } catch { /* expected */ }
+
+      const fingerprints = (service as any).recentMessageFingerprints as Map<string, number>;
+      expect(fingerprints.size).toBe(0);
+
+      // Retry should succeed (not deduplicated since first failed)
+      mockPostMessage.mockResolvedValueOnce({ ok: true, ts: '123.456' });
+      const ts = await service.sendMessage({ channelId: 'C123', text: 'Hello' });
+      expect(ts).toBe('123.456');
+    });
+  });
 });

@@ -33,6 +33,18 @@ import { isAgentActive } from './orchestrator-status.service.js';
 import type { ISessionBackend } from '../session/session-backend.interface.js';
 
 /**
+ * Per-agent API activity record for on-demand heartbeat optimization.
+ */
+export interface AgentActivityRecord {
+	/** Last time this agent made an API call (unix ms) */
+	lastApiCallTime: number;
+	/** Agent's role (orchestrator gets unconditional heartbeat) */
+	role: string;
+	/** Whether heartbeat is currently suspended for this agent */
+	suspended: boolean;
+}
+
+/**
  * Internal state for the heartbeat monitor.
  */
 export interface HeartbeatMonitorState {
@@ -48,6 +60,8 @@ export interface HeartbeatMonitorState {
 	startedAt: number | null;
 	/** Timestamp when the orchestrator was first seen in_progress (null if idle) */
 	inProgressSince: number | null;
+	/** Per-agent activity tracking */
+	agentActivity: Map<string, AgentActivityRecord>;
 }
 
 /**
@@ -96,6 +110,15 @@ export class OrchestratorHeartbeatMonitorService {
 	private sessionBackend: ISessionBackend | null = null;
 	/** Optional callback used to suppress idle heartbeats when no work is pending. */
 	private hasPendingWork: (() => boolean) | null = null;
+
+	/** Per-agent API activity tracking for on-demand heartbeat optimization */
+	private agentActivity: Map<string, AgentActivityRecord> = new Map();
+
+	/** Threshold for considering an agent "recently active" (skip heartbeat) — 2 minutes */
+	private static readonly RECENT_ACTIVITY_THRESHOLD_MS = 2 * 60 * 1000;
+
+	/** Threshold for suspending heartbeat for idle agents — 10 minutes */
+	private static readonly IDLE_SUSPEND_THRESHOLD_MS = 10 * 60 * 1000;
 
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('OrchestratorHeartbeatMonitor');
@@ -175,6 +198,7 @@ export class OrchestratorHeartbeatMonitorService {
 		}
 		this.heartbeatRequestSentAt = null;
 		this.inProgressSince = null;
+		this.agentActivity.clear();
 	}
 
 	/**
@@ -199,7 +223,116 @@ export class OrchestratorHeartbeatMonitorService {
 			autoRestartCount: this.autoRestartCount,
 			startedAt: this.startedAt,
 			inProgressSince: this.inProgressSince,
+			agentActivity: new Map(this.agentActivity),
 		};
+	}
+
+	/**
+	 * Record an API call for an agent. Updates lastApiCallTime and
+	 * un-suspends the agent if it was previously suspended.
+	 *
+	 * Called by the heartbeat middleware on every API request with
+	 * an X-Agent-Session header.
+	 *
+	 * @param sessionName - The agent's session name
+	 * @param role - The agent's role
+	 */
+	recordAgentApiCall(sessionName: string, role: string): void {
+		const existing = this.agentActivity.get(sessionName);
+		this.agentActivity.set(sessionName, {
+			lastApiCallTime: Date.now(),
+			role: existing?.role || role,
+			suspended: false,
+		});
+	}
+
+	/**
+	 * Check whether heartbeat should be skipped for a given agent.
+	 *
+	 * Rules:
+	 * - Orchestrator role: NEVER skip (unconditional heartbeat)
+	 * - Agent with recent API activity: skip (already known alive)
+	 * - Agent suspended due to prolonged idle: skip
+	 *
+	 * @param sessionName - The agent's session name
+	 * @returns True if heartbeat should be skipped
+	 */
+	shouldSkipHeartbeat(sessionName: string): boolean {
+		const record = this.agentActivity.get(sessionName);
+
+		// No record → unknown agent, don't skip
+		if (!record) {
+			return false;
+		}
+
+		// Orchestrator always gets heartbeat (never skip)
+		if (record.role === 'orchestrator') {
+			return false;
+		}
+
+		// Suspended agents: skip heartbeat
+		if (record.suspended) {
+			return true;
+		}
+
+		// Recent API activity: skip heartbeat (agent is alive)
+		const timeSinceLastApi = Date.now() - record.lastApiCallTime;
+		if (timeSinceLastApi < OrchestratorHeartbeatMonitorService.RECENT_ACTIVITY_THRESHOLD_MS) {
+			this.logger.debug('Skipping heartbeat for recently active agent', {
+				sessionName,
+				timeSinceLastApiMs: timeSinceLastApi,
+			});
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Suspend heartbeat for agents that have been idle beyond the
+	 * idle suspension threshold. Called periodically to clean up
+	 * agents that are no longer active.
+	 *
+	 * @returns Number of agents newly suspended
+	 */
+	suspendIdleAgents(): number {
+		const now = Date.now();
+		let suspended = 0;
+
+		for (const [sessionName, record] of this.agentActivity) {
+			// Never suspend orchestrator
+			if (record.role === 'orchestrator') {
+				continue;
+			}
+
+			// Already suspended
+			if (record.suspended) {
+				continue;
+			}
+
+			const idleMs = now - record.lastApiCallTime;
+			if (idleMs >= OrchestratorHeartbeatMonitorService.IDLE_SUSPEND_THRESHOLD_MS) {
+				record.suspended = true;
+				suspended++;
+				this.logger.info('Suspended heartbeat for idle agent', {
+					sessionName,
+					idleMs,
+					role: record.role,
+				});
+			}
+		}
+
+		return suspended;
+	}
+
+	/**
+	 * Get the activity record for a specific agent.
+	 *
+	 * @param sessionName - The agent's session name
+	 * @returns The agent's activity record, or undefined
+	 */
+	getAgentActivity(sessionName: string): AgentActivityRecord | undefined {
+		return this.agentActivity.get(sessionName);
 	}
 
 	/**
@@ -254,10 +387,19 @@ export class OrchestratorHeartbeatMonitorService {
 		// to the PTY echo back and reset the general activity timer.
 		const apiIdleTimeMs = activityTracker.getApiIdleTimeMs(ORCHESTRATOR_SESSION_NAME);
 
+		// Adaptive threshold: if the orchestrator's PTY is producing output
+		// (e.g. running a build, tests, long bash commands), use a longer
+		// threshold since the orchestrator is clearly alive — just not making
+		// API calls. When PTY is idle, use the shorter default threshold.
+		const isPtyActive = idleTimeMs < ORCHESTRATOR_HEARTBEAT_CONSTANTS.PTY_ACTIVE_WINDOW_MS;
+		const heartbeatThreshold = isPtyActive
+			? ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_PTY_ACTIVE_MS
+			: ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS;
+
 		// If recent API activity detected, clear any pending heartbeat request.
 		// Only API calls count as proof that the orchestrator is responsive —
 		// PTY output alone may just be echoed heartbeat messages.
-		if (apiIdleTimeMs < ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS) {
+		if (apiIdleTimeMs < heartbeatThreshold) {
 			if (this.heartbeatRequestSentAt !== null) {
 				this.logger.info('Orchestrator responded to heartbeat request (API activity detected), clearing pending state');
 				this.heartbeatRequestSentAt = null;
@@ -333,6 +475,8 @@ export class OrchestratorHeartbeatMonitorService {
 		this.logger.info('Orchestrator idle (no API activity), sending heartbeat request', {
 			idleTimeMs,
 			apiIdleTimeMs,
+			isPtyActive,
+			heartbeatThresholdMs: heartbeatThreshold,
 			heartbeatRequestCount: this.heartbeatRequestCount,
 		});
 

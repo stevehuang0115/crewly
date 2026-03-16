@@ -14,7 +14,7 @@ export const CLOUD_API_BASE = 'https://api.crewlyai.com/api';
 export const CLOUD_TOKEN_KEY = 'crewly_cloud_token';
 
 /** Cloud auth page URL for OSS → Cloud login redirect. */
-export const CLOUD_AUTH_URL = 'https://crewlyai.com/auth';
+export const CLOUD_AUTH_URL = 'https://crewlyai.com/cloud/auth';
 
 /**
  * Build the Cloud auth redirect URL with callback parameter.

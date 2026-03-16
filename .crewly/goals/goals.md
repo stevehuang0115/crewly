@@ -7,25 +7,25 @@
 ### [2026-02-21T21:39:59.824Z] Set by orchestrator
 Crewly Core 全自动运营团队 OKR（分阶段）
 
-## Phase 1: 调研 + 研发（现在启动）
+## Phase 1: 调研 + 研发 [COMPLETED]
 团队：Mia + Sam
 
-O1 [调研]: 摸清差距，制定路线 (Mia)
-- KR1: 完成 Crewly vs OpenClaw/CrewAI/AutoGen 功能差距矩阵
-- KR2: 输出优先级排序 Roadmap
-- KR3: 每两周更新竞品动态，Roadmap 随之迭代
+O1 [调研]: 摸清差距，制定路线 (Mia) [DONE]
+- KR1: 完成 Crewly vs OpenClaw/CrewAI/AutoGen 功能差距矩阵 — **DONE** (v4.3)
+- KR2: 输出优先级排序 Roadmap — **DONE** (v4.3)
+- KR3: 每两周更新竞品动态，Roadmap 随之迭代 — **ONGOING**
 
-O2 [研发]: 快速迭代，关闭差距 (Sam)
-- KR1: 按 Roadmap 优先级，每天出 feature
-- KR2: 代码质量底线（测试80%+，TS strict，关键路径文档）
-- KR3: 开源发布准备（LICENSE, CONTRIBUTING, README, npx crewly init）
+O2 [研发]: 快速迭代，关闭差距 (Sam) [DONE]
+- KR1: 按 Roadmap 优先级，每天出 feature — **DONE** (F13, F27, F9, F6, F7)
+- KR2: 代码质量底线（测试80%+，TS strict，关键路径文档） — **DONE** (7326+ tests passing)
+- KR3: 开源发布准备（LICENSE, CONTRIBUTING, README, npx crewly init） — **DONE**
 
-Phase 1→2 触发：3+ 差异化核心功能 + 完整 demo flow + 用户确认
+Phase 1→2 触发：3+ 差异化核心功能 + 完整 demo flow + 用户确认 — **TRIGGERED** (5+ features, Demo v2.0 ready)
 
-## Phase 2: 加入推广（产品就绪后启动）
-团队：+1 Marketing/Creative
+## Phase 2: 加入推广（现在启动）
+团队：Mia + Sam + Luna + Ella + Mila + Grace
 
-O3 [推广]: 建立市场存在感 (新成员)
+O3 [推广]: 建立市场存在感 (Luna/Ella/Mila/Grace)
 - KR1: 每周1篇技术博客/教程（Nano Banana 配图）
 - KR2: 制作 Demo 视频 + 宣传素材（Veo/Flopost）
 - KR3: 提交 HN / Product Hunt / 开发者目录

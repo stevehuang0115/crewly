@@ -20,7 +20,8 @@ import type { CrewlyAgentConfig, AgentRunResult } from './types.js';
 import { CREWLY_AGENT_DEFAULTS } from './types.js';
 import { SessionCommandHelper } from '../../session/index.js';
 import { InProcessLogBuffer } from './in-process-log-buffer.js';
-import { parseNotifyContent, type NotifyPayload } from '../../../types/chat.types.js';
+import { RateLimiter } from './rate-limiter.js';
+
 
 /**
  * In-process Crewly Agent runtime powered by AI SDK generateText.
@@ -43,10 +44,12 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
   private initialized = false;
   private currentSessionName: string | null = null;
   private logBuffer: InProcessLogBuffer;
+  private rateLimiter: RateLimiter<AgentRunResult>;
 
   constructor(sessionHelper: SessionCommandHelper, projectRoot: string) {
     super(sessionHelper, projectRoot);
     this.logBuffer = InProcessLogBuffer.getInstance();
+    this.rateLimiter = new RateLimiter<AgentRunResult>();
   }
 
   // ===== Abstract method implementations =====
@@ -179,17 +182,50 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       });
     }
 
-    this.logBuffer.append(session, 'info', `← Message received (${cleanMessage.length} chars${conversationId ? `, conv:${conversationId}` : ''})`);
+    const queueLen = this.rateLimiter.getQueueLength();
+    this.logBuffer.append(session, 'info', `← Message received (${cleanMessage.length} chars${conversationId ? `, conv:${conversationId}` : ''}${queueLen > 0 ? `, queue:${queueLen}` : ''})`);
 
-    this.logger.debug('Handling message', {
+    this.logger.debug('Handling message via rate limiter', {
       sessionName: session,
       messageLength: cleanMessage.length,
       historyLength: this.agentRunner.getHistoryLength(),
       conversationId,
+      queueLength: queueLen,
+      requestsInWindow: this.rateLimiter.getRequestCountInWindow(),
     });
 
+    // Route through rate limiter for throttling, coalescing, and 429 retry
+    const result = await this.rateLimiter.enqueue(
+      cleanMessage,
+      metadata,
+      async (msg, meta) => {
+        return this.executeMessage(session, msg, conversationId, meta);
+      },
+    );
+
+    return result;
+  }
+
+  /**
+   * Execute a single message against the AgentRunner.
+   *
+   * Separated from handleMessage to allow the rate limiter to wrap this
+   * with throttling, coalescing, and 429 retry logic.
+   *
+   * @param session - Session name
+   * @param cleanMessage - Message content (prefix already stripped)
+   * @param conversationId - Optional conversation ID
+   * @param metadata - Optional metadata
+   * @returns Agent run result
+   */
+  private async executeMessage(
+    session: string,
+    cleanMessage: string,
+    conversationId?: string,
+    metadata?: Record<string, string>,
+  ): Promise<AgentRunResult> {
     try {
-      const result = await this.agentRunner.run(cleanMessage, conversationId, metadata);
+      const result = await this.agentRunner!.run(cleanMessage, conversationId, metadata);
 
       // Log tool calls to buffer for frontend visibility
       for (const tc of result.toolCalls) {
@@ -197,13 +233,6 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
         this.logBuffer.append(session, 'info', `🔧 ${tc.toolName}(${argsPreview})`);
         const resultPreview = tc.result ? JSON.stringify(tc.result).substring(0, 200) : 'void';
         this.logBuffer.append(session, 'debug', `  → ${resultPreview}`);
-      }
-
-      // Bug 4 fix: Parse [NOTIFY]...[/NOTIFY] blocks from the response text.
-      // PTY agents have terminal output parsers that intercept NOTIFY markers,
-      // but crewly-agent has no terminal — we must parse them from result.text.
-      if (result.text) {
-        result.text = this.extractAndRouteNotifyBlocks(session, result.text, conversationId);
       }
 
       // Log response summary
@@ -224,118 +253,6 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logBuffer.append(session, 'error', `Agent error: ${errMsg}`);
       throw error;
-    }
-  }
-
-  /**
-   * Extract [NOTIFY]...[/NOTIFY] blocks from agent response text and route them.
-   *
-   * For PTY agents, the terminal gateway intercepts NOTIFY markers from terminal output.
-   * crewly-agent has no terminal, so we parse the response text directly and route
-   * each NOTIFY payload to the appropriate destination (Slack, chat UI, or both).
-   *
-   * Returns the response text with NOTIFY blocks removed.
-   *
-   * @param sessionName - Agent session name
-   * @param text - Response text that may contain NOTIFY blocks
-   * @param conversationId - Current conversation ID for fallback routing
-   * @returns Text with NOTIFY blocks removed
-   */
-  private extractAndRouteNotifyBlocks(sessionName: string, text: string, conversationId?: string): string {
-    const notifyRegex = /\[NOTIFY\]([\s\S]*?)\[\/NOTIFY\]/gi;
-    let match: RegExpExecArray | null;
-    const blocks: Array<{ fullMatch: string; content: string }> = [];
-
-    while ((match = notifyRegex.exec(text)) !== null) {
-      blocks.push({ fullMatch: match[0], content: match[1] });
-    }
-
-    if (blocks.length === 0) {
-      return text;
-    }
-
-    this.logBuffer.append(sessionName, 'info', `📨 Extracted ${blocks.length} NOTIFY block(s) from response`);
-
-    // Route each NOTIFY block asynchronously (fire-and-forget)
-    for (const block of blocks) {
-      const payload = parseNotifyContent(block.content);
-      if (!payload) {
-        this.logger.warn('Invalid NOTIFY payload in crewly-agent response', {
-          sessionName,
-          rawContent: block.content.slice(0, 200),
-        });
-        continue;
-      }
-
-      this.routeNotifyPayload(sessionName, payload, conversationId);
-    }
-
-    // Remove NOTIFY blocks from the text
-    let cleanText = text;
-    for (const block of blocks) {
-      cleanText = cleanText.replace(block.fullMatch, '');
-    }
-    return cleanText.trim();
-  }
-
-  /**
-   * Route a parsed NotifyPayload to Slack and/or chat UI.
-   *
-   * @param sessionName - Agent session name
-   * @param payload - Parsed NOTIFY payload
-   * @param fallbackConversationId - Fallback conversation ID if not in payload
-   */
-  private routeNotifyPayload(sessionName: string, payload: NotifyPayload, fallbackConversationId?: string): void {
-    const targetConversationId = payload.conversationId || fallbackConversationId;
-
-    // Route to Slack if channelId is present
-    if (payload.channelId) {
-      import('./api-client.js').then(({ CrewlyApiClient }) => {
-        const client = new CrewlyApiClient(
-          CREWLY_AGENT_DEFAULTS.API_BASE_URL,
-          sessionName,
-        );
-        const body: Record<string, string> = {
-          channelId: payload.channelId!,
-          text: payload.message,
-        };
-        if (payload.threadTs) body.threadTs = payload.threadTs;
-        return client.post('/slack/send', body);
-      }).then((result) => {
-        if (result.success) {
-          this.logBuffer.append(sessionName, 'info', `📤 NOTIFY → Slack (channel: ${payload.channelId})`);
-        } else {
-          this.logger.warn('Failed to route NOTIFY to Slack', {
-            sessionName, channelId: payload.channelId, error: result.error,
-          });
-        }
-      }).catch((err) => {
-        this.logger.error('Error routing NOTIFY to Slack', {
-          sessionName, error: err instanceof Error ? err.message : String(err),
-        });
-      });
-    }
-
-    // Route to chat UI if conversationId is present
-    if (targetConversationId) {
-      import('../../../websocket/chat.gateway.js').then(({ getChatGateway }) => {
-        const chatGateway = getChatGateway();
-        if (!chatGateway) return;
-        return chatGateway.processNotifyMessage(
-          sessionName,
-          payload.message,
-          targetConversationId,
-          { source: 'crewly-agent', notifyType: payload.type },
-        );
-      }).then((chatMessage) => {
-        if (chatMessage) {
-          this.logBuffer.append(sessionName, 'info', `📤 NOTIFY → Chat (conv: ${targetConversationId})`);
-        }
-      }).catch((err) => {
-        this.logger.warn('Failed to route NOTIFY to chat', {
-          sessionName, error: err instanceof Error ? err.message : String(err),
-        });
-      });
     }
   }
 
@@ -378,6 +295,7 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       this.logBuffer.append(this.currentSessionName, 'info', 'Crewly Agent shutting down');
       this.logBuffer.removeSession(this.currentSessionName);
     }
+    this.rateLimiter.reset();
     this.agentRunner = null;
     this.initialized = false;
     this.currentSessionName = null;

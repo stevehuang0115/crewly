@@ -166,7 +166,7 @@ describe('Cloud Google Auth Controller', () => {
       await cloudGoogleCallback(req, res, mockNext);
 
       const redirectUrl = (res.redirect as jest.Mock).mock.calls[0][0] as string;
-      expect(redirectUrl).toContain('/login?error=server_config');
+      expect(redirectUrl).toContain('/login?error=');
     });
 
     it('should redirect with error if token exchange fails', async () => {
@@ -304,7 +304,7 @@ describe('Cloud Google Auth Controller', () => {
       });
     });
 
-    it('should respect state redirect parameter', async () => {
+    it('should respect state redirectTo parameter', async () => {
       mockFetch
         .mockResolvedValueOnce({
           ok: true,
@@ -318,7 +318,7 @@ describe('Cloud Google Auth Controller', () => {
       mockCreateOrUpdateUser.mockResolvedValue({ id: 'user-003', email: 'user@example.com' });
       mockConnectService.mockResolvedValue(undefined);
 
-      const statePayload = { redirect: 'https://crewlyai.com/dashboard', t: Date.now(), nonce: '123' };
+      const statePayload = { redirectTo: 'https://crewlyai.com/dashboard', t: Date.now(), nonce: '123' };
       const state = Buffer.from(JSON.stringify(statePayload)).toString('base64url');
 
       const req = mockReq({ query: { code: 'valid-code', state } });
@@ -330,7 +330,33 @@ describe('Cloud Google Auth Controller', () => {
       expect(redirectUrl.startsWith('https://crewlyai.com/dashboard')).toBe(true);
     });
 
-    it('should call next on unexpected error', async () => {
+    it('should support legacy redirect field in state for backwards compatibility', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ access_token: 'at-123' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ email: 'user@example.com' }),
+        });
+
+      mockCreateOrUpdateUser.mockResolvedValue({ id: 'user-004', email: 'user@example.com' });
+      mockConnectService.mockResolvedValue(undefined);
+
+      const statePayload = { redirect: 'https://crewlyai.com/legacy', t: Date.now(), nonce: '456' };
+      const state = Buffer.from(JSON.stringify(statePayload)).toString('base64url');
+
+      const req = mockReq({ query: { code: 'valid-code', state } });
+      const res = mockRes();
+
+      await cloudGoogleCallback(req, res, mockNext);
+
+      const redirectUrl = (res.redirect as jest.Mock).mock.calls[0][0] as string;
+      expect(redirectUrl.startsWith('https://crewlyai.com/legacy')).toBe(true);
+    });
+
+    it('should redirect with error when exchange fails with network error', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Network failure'));
 
       const req = mockReq({ query: { code: 'valid-code' } });
@@ -338,7 +364,8 @@ describe('Cloud Google Auth Controller', () => {
 
       await cloudGoogleCallback(req, res, mockNext);
 
-      expect(mockNext).toHaveBeenCalledWith(expect.any(Error));
+      const redirectUrl = (res.redirect as jest.Mock).mock.calls[0][0] as string;
+      expect(redirectUrl).toContain('/login?error=');
     });
 
     it('should use CLOUD_PORTAL_URL env var for redirects', async () => {

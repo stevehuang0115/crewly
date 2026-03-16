@@ -154,16 +154,11 @@ describe('Slack Controller', () => {
       expect(response.body.error).toBe('Slack is not connected');
     });
 
-    it('should mark delivery by skill on successful send', async () => {
+    it('should send message successfully when connected', async () => {
       // Mock the slack service as connected with a working sendMessage
       const slackService = getSlackService();
       jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
       jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1707.001');
-
-      // Initialize the bridge so markDeliveredBySkill can be called
-      const bridge = getSlackOrchestratorBridge();
-      await bridge.initialize();
-      const markSpy = jest.spyOn(bridge, 'markDeliveredBySkill');
 
       const response = await request(app).post('/api/slack/send').send({
         channelId: 'C123',
@@ -173,7 +168,6 @@ describe('Slack Controller', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
-      expect(markSpy).toHaveBeenCalledWith('C123', '1707.000');
     });
   });
 

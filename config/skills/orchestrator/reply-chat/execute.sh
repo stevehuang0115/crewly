@@ -121,16 +121,3 @@ BODY=$(jq -n \
    (if $conversationId != "" then {conversationId: $conversationId} else {} end)')
 
 api_call POST "/chat/agent-response" "$BODY"
-
-# Also emit [NOTIFY] block as fallback for terminal gateway chat routing
-{
-  echo "[NOTIFY]"
-  echo "type: chat_reply"
-  echo "title: Chat Reply"
-  if [ -n "$CONVERSATION_ID" ]; then
-    echo "conversationId: $CONVERSATION_ID"
-  fi
-  echo "---"
-  printf '%s\n' "$TEXT"
-  echo "[/NOTIFY]"
-} >&2

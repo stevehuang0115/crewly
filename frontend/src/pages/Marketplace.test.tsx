@@ -25,6 +25,11 @@ vi.mock('lucide-react', () => ({
   Check: () => <svg data-testid="check-icon" />,
   ArrowUp: () => <svg data-testid="arrow-up-icon" />,
   X: () => <svg data-testid="x-icon" />,
+  Upload: () => <svg data-testid="upload-icon" />,
+  Clock: () => <svg data-testid="clock-icon" />,
+  CheckCircle: () => <svg data-testid="check-circle-icon" />,
+  XCircle: () => <svg data-testid="x-circle-icon" />,
+  Plug: () => <svg data-testid="plug-icon" />,
 }));
 
 // Mock marketplace service
@@ -118,6 +123,7 @@ describe('Marketplace Page', () => {
       expect(screen.getByRole('tab', { name: 'Skills' })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: '3D Models' })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: 'Roles' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'MCP Tools' })).toBeInTheDocument();
     });
 
     it('should render search input', async () => {
@@ -672,6 +678,82 @@ describe('Marketplace Page', () => {
 
       await waitFor(() => {
         expect(screen.getByRole('alert')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('MCP Tools', () => {
+    it('should fetch items with mcp_tool type when MCP Tools tab is clicked', async () => {
+      mockFetchItems.mockResolvedValue([]);
+
+      render(
+        <TestWrapper>
+          <Marketplace />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('No items found.')).toBeInTheDocument();
+      });
+
+      mockFetchItems.mockClear();
+
+      fireEvent.click(screen.getByRole('tab', { name: 'MCP Tools' }));
+
+      await waitFor(() => {
+        expect(mockFetchItems).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'mcp_tool' })
+        );
+      });
+    });
+
+    it('should render MCP tool cards with correct type badge', async () => {
+      const mcpItem = createMockItem({
+        id: 'mcp-filesystem',
+        type: 'mcp_tool',
+        name: 'Filesystem Server',
+        description: 'Read and write files via MCP',
+        author: 'Anthropic',
+      });
+      mockFetchItems.mockResolvedValue([mcpItem]);
+
+      render(
+        <TestWrapper>
+          <Marketplace />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Filesystem Server')).toBeInTheDocument();
+        expect(screen.getByText('mcp_tool')).toBeInTheDocument();
+        expect(screen.getByText('by Anthropic')).toBeInTheDocument();
+      });
+    });
+
+    it('should support install/uninstall for MCP tool items', async () => {
+      const mcpItem = createMockItem({
+        id: 'mcp-github',
+        type: 'mcp_tool',
+        name: 'GitHub Server',
+        installStatus: 'not_installed',
+      });
+      mockFetchItems.mockResolvedValue([mcpItem]);
+      mockInstall.mockResolvedValue({ success: true, message: 'Installed GitHub Server' });
+
+      render(
+        <TestWrapper>
+          <Marketplace />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Install')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Install'));
+
+      await waitFor(() => {
+        expect(mockInstall).toHaveBeenCalledWith('mcp-github');
       });
     });
   });

@@ -27,6 +27,9 @@ jest.mock('../core/logger.service.js', () => ({
   },
 }));
 
+// Real SkillTierService — no mock needed, it's pure logic
+import { SkillTierService } from '../skill/skill-tier.service.js';
+
 // =============================================================================
 // Test data helpers
 // =============================================================================
@@ -360,6 +363,74 @@ describe('TemplateService', () => {
       expect(result).not.toBeNull();
       expect(result!.memberCount).toBe(2);
       expect(result!.team.hierarchical).toBe(false);
+    });
+  });
+
+  // =========================================================================
+  // Tier check and skill degradation
+  // =========================================================================
+
+  describe('createTeamFromTemplate() tier check', () => {
+    beforeEach(() => {
+      SkillTierService.resetInstance();
+
+      // Create a premium template with requiredTier
+      const premiumTemplate = {
+        ...createValidTemplateJson(),
+        id: 'premium-dev',
+        name: 'Premium Dev Team',
+        requiredTier: 'pro',
+      };
+
+      const dir = join(tempDir, 'premium-dev');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'template.json'), JSON.stringify(premiumTemplate));
+    });
+
+    it('should throw when user tier is insufficient for template', () => {
+      const service = TemplateService.getInstance(tempDir);
+
+      expect(() => {
+        service.createTeamFromTemplate('premium-dev', 'My Team', undefined, 'free' as any);
+      }).toThrow(/requires pro plan/);
+      expect(() => {
+        service.createTeamFromTemplate('premium-dev', 'My Team', undefined, 'free' as any);
+      }).toThrow(/Upgrade at/);
+    });
+
+    it('should succeed when user tier matches template requirement', () => {
+      const service = TemplateService.getInstance(tempDir);
+
+      const result = service.createTeamFromTemplate('premium-dev', 'My Team', undefined, 'pro' as any);
+      expect(result).not.toBeNull();
+      expect(result!.memberCount).toBe(3);
+    });
+
+    it('should succeed when user tier exceeds template requirement', () => {
+      const service = TemplateService.getInstance(tempDir);
+
+      const result = service.createTeamFromTemplate('premium-dev', 'My Team', undefined, 'enterprise' as any);
+      expect(result).not.toBeNull();
+    });
+
+    it('should default to free tier when userTier not provided', () => {
+      const service = TemplateService.getInstance(tempDir);
+
+      // Premium template requires pro, no tier provided → defaults to free → should throw
+      expect(() => {
+        service.createTeamFromTemplate('premium-dev', 'My Team');
+      }).toThrow(/requires pro plan/);
+    });
+
+    it('should allow free templates without tier argument', () => {
+      // The base test-dev template has no requiredTier
+      const dir = join(tempDir, 'test-dev');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'template.json'), JSON.stringify(createValidTemplateJson()));
+
+      const service = TemplateService.getInstance(tempDir);
+      const result = service.createTeamFromTemplate('test-dev', 'Free Team');
+      expect(result).not.toBeNull();
     });
   });
 });

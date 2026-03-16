@@ -40,6 +40,7 @@ export { ConfigService } from './core/config.service.js';
 export { ErrorTrackingService } from './core/error-tracking.service.js';
 export { LoggerService, ComponentLogger } from './core/logger.service.js';
 export { StorageService } from './core/storage.service.js';
+export { TracingService } from './core/tracing.service.js';
 
 // Autonomous Services
 export { AutoAssignService, AgentWorkload, IAutoAssignService } from './autonomous/index.js';

@@ -28,10 +28,11 @@ describe('Marketplace Types', () => {
       expect(MARKETPLACE_ITEM_TYPES).toContain('skill');
       expect(MARKETPLACE_ITEM_TYPES).toContain('model');
       expect(MARKETPLACE_ITEM_TYPES).toContain('role');
+      expect(MARKETPLACE_ITEM_TYPES).toContain('mcp_tool');
     });
 
-    it('should have exactly 3 item types', () => {
-      expect(MARKETPLACE_ITEM_TYPES).toHaveLength(3);
+    it('should have exactly 4 item types', () => {
+      expect(MARKETPLACE_ITEM_TYPES).toHaveLength(4);
     });
   });
 
@@ -64,6 +65,7 @@ describe('Marketplace Types', () => {
       expect(isValidMarketplaceItemType('skill')).toBe(true);
       expect(isValidMarketplaceItemType('model')).toBe(true);
       expect(isValidMarketplaceItemType('role')).toBe(true);
+      expect(isValidMarketplaceItemType('mcp_tool')).toBe(true);
     });
 
     it('should return false for invalid item types', () => {
@@ -112,6 +114,7 @@ describe('Marketplace Types', () => {
       expect(getMarketplaceItemTypeLabel('skill')).toBe('Skill');
       expect(getMarketplaceItemTypeLabel('model')).toBe('3D Model');
       expect(getMarketplaceItemTypeLabel('role')).toBe('Role');
+      expect(getMarketplaceItemTypeLabel('mcp_tool')).toBe('MCP Tool');
     });
 
     it('should return the type itself as fallback for unknown values', () => {

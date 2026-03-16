@@ -512,6 +512,46 @@ describe('PromptBuilderService', () => {
 
 			expect(result).not.toContain('Your Knowledge Base');
 		});
+
+		it('should include language matching instruction when memory context is present', async () => {
+			mockGetFullContext.mockResolvedValue('## Agent Knowledge\nSome knowledge');
+
+			const result = await service.buildSystemPromptWithMemory(mockConfig);
+
+			expect(result).toContain('Language Matching');
+			expect(result).toContain('Always reply in the same language the user writes in');
+		});
+
+		it('should include anti-deliberation instructions for gemini-cli runtime', async () => {
+			mockGetFullContext.mockResolvedValue('## Agent Knowledge\nSome knowledge');
+			const geminiConfig = { ...mockConfig, runtimeType: 'gemini-cli' as const };
+
+			const result = await service.buildSystemPromptWithMemory(geminiConfig);
+
+			expect(result).toContain('Execution Discipline');
+			expect(result).toContain('Execute tool calls immediately');
+			expect(result).toContain('do not try to batch plan multiple reads');
+			expect(result).toContain('Action over deliberation');
+		});
+
+		it('should NOT include anti-deliberation instructions for claude-code runtime', async () => {
+			mockGetFullContext.mockResolvedValue('## Agent Knowledge\nSome knowledge');
+			const claudeConfig = { ...mockConfig, runtimeType: 'claude-code' as const };
+
+			const result = await service.buildSystemPromptWithMemory(claudeConfig);
+
+			expect(result).not.toContain('Execution Discipline');
+			expect(result).not.toContain('Execute tool calls immediately');
+		});
+
+		it('should NOT include anti-deliberation instructions when runtimeType is undefined', async () => {
+			mockGetFullContext.mockResolvedValue('## Agent Knowledge\nSome knowledge');
+			const noRuntimeConfig = { ...mockConfig, runtimeType: undefined };
+
+			const result = await service.buildSystemPromptWithMemory(noRuntimeConfig);
+
+			expect(result).not.toContain('Execution Discipline');
+		});
 	});
 
 	describe('buildContinuationPrompt', () => {
@@ -739,8 +779,8 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				teamId: 'team-abc',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Leo', sessionName: 'crewly-product-leo', role: 'developer' },
-					{ name: 'Nick', sessionName: 'crewly-product-nick', role: 'frontend-developer' },
+					{ name: 'Leo', sessionName: 'crewly-product-leo', role: 'developer', memberId: 'member-leo' },
+					{ name: 'Nick', sessionName: 'crewly-product-nick', role: 'frontend-developer', memberId: 'member-nick' },
 				],
 			};
 
@@ -773,14 +813,14 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				teamId: 'team-123',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Worker', sessionName: 'worker-session', role: 'developer' },
+					{ name: 'Worker', sessionName: 'worker-session', role: 'developer', memberId: 'member-worker' },
 				],
 			};
 
 			const result = await service.buildTeamLeadSection(config);
 
 			// WORKER_LIST resolved
-			expect(result).toContain('**Worker** (session: `worker-session`) — developer');
+			expect(result).toContain('**Worker** (session: `worker-session`, memberId: `member-worker`) — developer');
 			// TL_SKILLS_PATH resolved
 			expect(result).toContain('/test/project/config/skills/team-leader/');
 			// TEAM_ID resolved
@@ -802,7 +842,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				systemPrompt: '',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Worker', sessionName: 'worker-session', role: 'developer' },
+					{ name: 'Worker', sessionName: 'worker-session', role: 'developer', memberId: 'member-worker' },
 				],
 			};
 
@@ -826,7 +866,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				systemPrompt: '',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Worker', sessionName: 'worker-session', role: 'developer' },
+					{ name: 'Worker', sessionName: 'worker-session', role: 'developer', memberId: 'member-worker' },
 				],
 			};
 
@@ -849,7 +889,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				systemPrompt: '',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Worker', sessionName: 'worker-session', role: 'developer' },
+					{ name: 'Worker', sessionName: 'worker-session', role: 'developer', memberId: 'member-worker' },
 				],
 			};
 
@@ -869,7 +909,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				systemPrompt: '',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Worker', sessionName: 'worker-session', role: 'developer' },
+					{ name: 'Worker', sessionName: 'worker-session', role: 'developer', memberId: 'member-worker' },
 				],
 			};
 
@@ -887,7 +927,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				systemPrompt: '',
 				canDelegate: false,
 				subordinates: [
-					{ name: 'Worker', sessionName: 'worker-session', role: 'developer' },
+					{ name: 'Worker', sessionName: 'worker-session', role: 'developer', memberId: 'member-worker' },
 				],
 			};
 
@@ -948,7 +988,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				memberId: 'm-1',
 				projectPath: '/proj',
 				subordinates: [
-					{ name: 'Solo Worker', sessionName: 'solo-session', role: 'qa' },
+					{ name: 'Solo Worker', sessionName: 'solo-session', role: 'qa', memberId: 'member-solo' },
 				],
 			};
 
@@ -974,7 +1014,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				teamId: 'team-dev',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Junior', sessionName: 'junior-session', role: 'developer' },
+					{ name: 'Junior', sessionName: 'junior-session', role: 'developer', memberId: 'member-junior' },
 				],
 			};
 
@@ -999,7 +1039,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				memberId: 'tl-001',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Worker', sessionName: 'worker-session', role: 'developer' },
+					{ name: 'Worker', sessionName: 'worker-session', role: 'developer', memberId: 'member-worker' },
 				],
 			};
 
@@ -1031,7 +1071,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				memberId: 'tl-001',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Leo', sessionName: 'leo-session', role: 'developer' },
+					{ name: 'Leo', sessionName: 'leo-session', role: 'developer', memberId: 'member-leo-2' },
 				],
 			};
 
@@ -1074,7 +1114,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				memberId: 'tl-001',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Worker', sessionName: 'worker-session', role: 'developer' },
+					{ name: 'Worker', sessionName: 'worker-session', role: 'developer', memberId: 'member-worker' },
 				],
 			};
 
@@ -1096,7 +1136,7 @@ bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"teamId":"{{TEAM_ID}}","tlMem
 				memberId: 'tl-001',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Worker', sessionName: 'worker-session', role: 'developer' },
+					{ name: 'Worker', sessionName: 'worker-session', role: 'developer', memberId: 'member-worker' },
 				],
 			};
 
@@ -1143,7 +1183,7 @@ Decompose and delegate.`;
 				teamId: 'team-xyz',
 				canDelegate: true,
 				subordinates: [
-					{ name: 'Junior', sessionName: 'junior-session', role: 'developer' },
+					{ name: 'Junior', sessionName: 'junior-session', role: 'developer', memberId: 'member-junior' },
 				],
 			};
 
@@ -1152,11 +1192,161 @@ Decompose and delegate.`;
 			// Should have dev fallback prompt + TL addon stacked
 			expect(result).toContain('developer tasks'); // from fallback dev prompt
 			expect(result).toContain('TL Addon'); // from tl-addon.md
-			expect(result).toContain('**Junior** (session: `junior-session`) — developer');
+			expect(result).toContain('**Junior** (session: `junior-session`, memberId: `member-junior`) — developer');
 			expect(result).toContain('team-xyz');
 			expect(result).toContain('MANDATORY');
 			expect(result).toContain('Your Identity');
 			expect(result).toContain('Communication');
+		});
+	});
+
+	describe('buildMemoryRoutingSection', () => {
+		it('should return memory routing rules with table', () => {
+			const result = service.buildMemoryRoutingSection();
+
+			expect(result).toContain('Memory Routing Rules');
+			expect(result).toContain('scope: "project"');
+			expect(result).toContain('scope: "agent"');
+			expect(result).toContain('category: "pattern"');
+			expect(result).toContain('category: "preference"');
+			expect(result).toContain('category: "gotcha"');
+		});
+
+		it('should include rules of thumb guidance', () => {
+			const result = service.buildMemoryRoutingSection();
+
+			expect(result).toContain('Rules of thumb');
+			expect(result).toContain('another agent or a future session');
+			expect(result).toContain('only YOU would benefit');
+			expect(result).toContain('only useful right now');
+		});
+
+		it('should warn against storing secrets', () => {
+			const result = service.buildMemoryRoutingSection();
+
+			expect(result).toContain('Never store secrets, credentials, or tokens');
+		});
+
+		it('should include temporary task notes routing to project files', () => {
+			const result = service.buildMemoryRoutingSection();
+
+			expect(result).toContain('Temporary task notes');
+			expect(result).toContain('Project files or Claude native memory');
+		});
+	});
+
+	describe('buildSystemPromptWithMemory includes memory routing', () => {
+		const mockConfig: TeamMemberSessionConfig = {
+			name: 'test-session',
+			role: 'developer',
+			projectPath: '/test/project',
+			memberId: 'member-123',
+			systemPrompt: 'test prompt',
+			runtimeType: 'claude-code' as any,
+		};
+
+		beforeEach(() => {
+			mockInitializeForSession.mockClear();
+			mockGetFullContext.mockClear();
+			mockGenerateSOPContext.mockClear();
+			mockInitializeForSession.mockResolvedValue(undefined);
+			mockGetFullContext.mockResolvedValue('Some memory context');
+			mockGenerateSOPContext.mockResolvedValue('');
+			mockAccess.mockRejectedValue(new Error('File not found'));
+		});
+
+		it('should include memory routing section in composed prompts', async () => {
+			const result = await service.buildSystemPromptWithMemory(mockConfig);
+
+			expect(result).toContain('Memory Routing Rules');
+			expect(result).toContain('scope: "project"');
+			expect(result).toContain('scope: "agent"');
+		});
+
+		it('should place memory routing before communication section', async () => {
+			const result = await service.buildSystemPromptWithMemory(mockConfig);
+
+			const routingIdx = result.indexOf('Memory Routing Rules');
+			const commIdx = result.indexOf('## Communication');
+
+			expect(routingIdx).toBeGreaterThan(-1);
+			expect(commIdx).toBeGreaterThan(-1);
+			expect(routingIdx).toBeLessThan(commIdx);
+		});
+	});
+
+	describe('buildSessionRecoverySection', () => {
+		it('should generate session recovery section with recall and get-my-context commands', () => {
+			const result = service.buildSessionRecoverySection(
+				'crewly-product-sam',
+				'developer',
+				'/test/project'
+			);
+
+			expect(result).toContain('Session Recovery Protocol (MANDATORY)');
+			expect(result).toContain('recall/execute.sh');
+			expect(result).toContain('get-my-context/execute.sh');
+			expect(result).toContain('"agentId":"crewly-product-sam"');
+			expect(result).toContain('"agentRole":"developer"');
+			expect(result).toContain('"projectPath":"/test/project"');
+		});
+
+		it('should include all three recovery steps', () => {
+			const result = service.buildSessionRecoverySection(
+				'test-agent',
+				'qa',
+				'/projects/app'
+			);
+
+			expect(result).toContain('Step 1: Recall previous knowledge');
+			expect(result).toContain('Step 2: Load your full context');
+			expect(result).toContain('Step 3: Assess and report');
+		});
+
+		it('should include instructions to check for unfinished work', () => {
+			const result = service.buildSessionRecoverySection(
+				'test-agent',
+				'developer',
+				'/projects/app'
+			);
+
+			expect(result).toContain('unfinished work');
+			expect(result).toContain('pending blockers');
+			expect(result).toContain('Do NOT skip these steps');
+		});
+
+		it('should use correct skills path based on project root', () => {
+			const customService = new PromptBuilderService('/custom/root');
+			const result = customService.buildSessionRecoverySection(
+				'agent-1',
+				'developer',
+				'/custom/root'
+			);
+
+			expect(result).toContain('/custom/root/config/skills/agent/core/recall/execute.sh');
+			expect(result).toContain('/custom/root/config/skills/agent/core/get-my-context/execute.sh');
+		});
+
+		it('should include role in the recall context query', () => {
+			const result = service.buildSessionRecoverySection(
+				'agent-1',
+				'backend-developer',
+				'/test/project'
+			);
+
+			expect(result).toContain('backend-developer session startup');
+		});
+
+		it('should work for orchestrator role', () => {
+			const result = service.buildSessionRecoverySection(
+				'crewly-orc',
+				'orchestrator',
+				'/test/project'
+			);
+
+			expect(result).toContain('"agentId":"crewly-orc"');
+			expect(result).toContain('"agentRole":"orchestrator"');
+			expect(result).toContain('orchestrator session startup');
 		});
 	});
 });

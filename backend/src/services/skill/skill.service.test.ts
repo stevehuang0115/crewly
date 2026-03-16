@@ -345,7 +345,7 @@ describe('SkillService', () => {
       expect(skill.isEnabled).toBe(true);
     });
 
-    it('should save skill to disk', async () => {
+    it('should save skill to disk as SKILL.md', async () => {
       const input: CreateSkillInput = {
         name: 'Saved Skill',
         description: 'Will be saved',
@@ -358,13 +358,13 @@ describe('SkillService', () => {
       const files = await fs.readdir(userSkillsDir);
       expect(files.some((f) => f.includes(skill.id))).toBe(true);
 
-      // Verify skill.json exists
-      const skillJson = await fs.readFile(path.join(userSkillsDir, skill.id, 'skill.json'), 'utf-8');
-      const savedData = JSON.parse(skillJson);
-      expect(savedData.name).toBe('Saved Skill');
+      // Verify SKILL.md exists with frontmatter
+      const skillMd = await fs.readFile(path.join(userSkillsDir, skill.id, 'SKILL.md'), 'utf-8');
+      expect(skillMd).toContain('---');
+      expect(skillMd).toContain('name: Saved Skill');
     });
 
-    it('should save prompt content to instructions.md', async () => {
+    it('should save prompt content in SKILL.md body', async () => {
       const input: CreateSkillInput = {
         name: 'Prompt Test',
         description: 'Test prompt saving',
@@ -374,11 +374,11 @@ describe('SkillService', () => {
 
       const skill = await service.createSkill(input);
 
-      const promptContent = await fs.readFile(
-        path.join(userSkillsDir, skill.id, 'instructions.md'),
+      const skillMd = await fs.readFile(
+        path.join(userSkillsDir, skill.id, 'SKILL.md'),
         'utf-8'
       );
-      expect(promptContent).toBe('# Instructions\n\nDo this thing');
+      expect(skillMd).toContain('# Instructions\n\nDo this thing');
     });
 
     it('should throw for invalid input - missing name', async () => {

@@ -28,6 +28,7 @@ vi.mock('../services/api.service', () => ({
   apiService: {
     getProjects: vi.fn(),
     getTeams: vi.fn(),
+    getAllTasks: vi.fn(),
   },
 }));
 
@@ -83,18 +84,19 @@ describe('Dashboard Page', () => {
     vi.clearAllMocks();
     vi.mocked(apiService.getProjects).mockResolvedValue(mockProjects);
     vi.mocked(apiService.getTeams).mockResolvedValue(mockTeams);
+    vi.mocked(apiService.getAllTasks).mockResolvedValue([]);
   });
 
   describe('Layout', () => {
-    it('should render the dashboard container', async () => {
-      const { container } = render(
+    it('should render the dashboard header', async () => {
+      render(
         <TestWrapper>
           <Dashboard />
         </TestWrapper>
       );
 
       await waitFor(() => {
-        expect(container.querySelector('.dashboard')).toBeInTheDocument();
+        expect(screen.getByText('Dashboard')).toBeInTheDocument();
       });
     });
 
@@ -106,7 +108,8 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('Projects')).toBeInTheDocument();
+        const headings = screen.getAllByText('Projects');
+        expect(headings.length).toBeGreaterThanOrEqual(1);
       });
     });
 
@@ -118,7 +121,8 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('Teams')).toBeInTheDocument();
+        const headings = screen.getAllByText('Teams');
+        expect(headings.length).toBeGreaterThanOrEqual(1);
       });
     });
   });
@@ -139,38 +143,6 @@ describe('Dashboard Page', () => {
     });
   });
 
-  describe('Error State', () => {
-    it('should show error message on API failure', async () => {
-      vi.mocked(apiService.getProjects).mockRejectedValue(new Error('API Error'));
-      vi.mocked(apiService.getTeams).mockRejectedValue(new Error('API Error'));
-
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText(/Error:/)).toBeInTheDocument();
-      });
-    });
-
-    it('should show retry button on error', async () => {
-      vi.mocked(apiService.getProjects).mockRejectedValue(new Error('API Error'));
-      vi.mocked(apiService.getTeams).mockRejectedValue(new Error('API Error'));
-
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
-      });
-    });
-  });
-
   describe('Projects Section', () => {
     it('should render project cards', async () => {
       render(
@@ -185,7 +157,7 @@ describe('Dashboard Page', () => {
       });
     });
 
-    it('should render View All button for projects', async () => {
+    it('should render View All link for projects', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -193,12 +165,12 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        const viewAllButtons = screen.getAllByRole('button', { name: /View All/i });
-        expect(viewAllButtons.length).toBeGreaterThan(0);
+        const viewAllLinks = screen.getAllByText('View All');
+        expect(viewAllLinks.length).toBeGreaterThan(0);
       });
     });
 
-    it('should navigate to projects page when View All is clicked', async () => {
+    it('should render Create New Project card', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -206,22 +178,7 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        const viewAllButtons = screen.getAllByRole('button', { name: /View All/i });
-        fireEvent.click(viewAllButtons[0]);
-      });
-
-      expect(mockNavigate).toHaveBeenCalledWith('/projects');
-    });
-
-    it('should render New Project create card', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('New Project')).toBeInTheDocument();
+        expect(screen.getByText('Create New Project')).toBeInTheDocument();
       });
     });
   });
@@ -240,7 +197,7 @@ describe('Dashboard Page', () => {
       });
     });
 
-    it('should render New Team create card', async () => {
+    it('should render Create New Team card', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -248,13 +205,54 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('New Team')).toBeInTheDocument();
+        expect(screen.getByText('Create New Team')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('Stat Cards', () => {
+    it('should display stat cards with correct counts', async () => {
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Active Projects')).toBeInTheDocument();
+        expect(screen.getByText('Running Agents')).toBeInTheDocument();
+      });
+    });
+
+    it('should render Factory button', async () => {
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Factory')).toBeInTheDocument();
+      });
+    });
+
+    it('should not render Connect to Cloud card', async () => {
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Dashboard')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText('Connect to Cloud')).not.toBeInTheDocument();
     });
   });
 
   describe('Navigation', () => {
-    it('should navigate to project detail when project card is clicked', async () => {
+    it('should navigate to factory when Factory button is clicked', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -262,16 +260,16 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        const projectCard = screen.getByText('Test Project 1').closest('[class*="bg-surface-dark"]');
-        if (projectCard) {
-          fireEvent.click(projectCard);
+        const factoryButton = screen.getByText('Factory').closest('button');
+        if (factoryButton) {
+          fireEvent.click(factoryButton);
         }
       });
 
-      expect(mockNavigate).toHaveBeenCalledWith('/projects/project-1');
+      expect(mockNavigate).toHaveBeenCalledWith('/factory');
     });
 
-    it('should navigate to team detail when team card is clicked', async () => {
+    it('should navigate to create project when Create New Project is clicked', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -279,62 +277,15 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        const teamCard = screen.getByText('Test Team 1').closest('[class*="bg-surface-dark"]');
-        if (teamCard) {
-          fireEvent.click(teamCard);
-        }
+        expect(screen.getByText('Create New Project')).toBeInTheDocument();
       });
 
-      expect(mockNavigate).toHaveBeenCalledWith('/teams/team-1');
-    });
-
-    it('should navigate to create project when New Project is clicked', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        const createCard = screen.getByText('New Project').closest('div');
-        if (createCard) {
-          fireEvent.click(createCard);
-        }
-      });
+      const createCard = screen.getByText('Create New Project').closest('div');
+      if (createCard) {
+        fireEvent.click(createCard);
+      }
 
       expect(mockNavigate).toHaveBeenCalledWith('/projects?create=true');
-    });
-  });
-
-  describe('Empty State', () => {
-    it('should show message when no projects exist', async () => {
-      vi.mocked(apiService.getProjects).mockResolvedValue([]);
-      vi.mocked(apiService.getTeams).mockResolvedValue(mockTeams);
-
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText(/No projects yet/)).toBeInTheDocument();
-      });
-    });
-
-    it('should show message when no teams exist', async () => {
-      vi.mocked(apiService.getProjects).mockResolvedValue(mockProjects);
-      vi.mocked(apiService.getTeams).mockResolvedValue([]);
-
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText(/No teams yet/)).toBeInTheDocument();
-      });
     });
   });
 });

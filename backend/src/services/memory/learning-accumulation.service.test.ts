@@ -331,6 +331,92 @@ describe('LearningAccumulationService', () => {
     });
   });
 
+  describe('supersede mechanism', () => {
+    it('should include Supersedes tag when recordSuccess has supersedes param', async () => {
+      await service.recordSuccess(testProjectDir, testAgentId, testRole, 'T1 deploy succeeded', 'completed', 'T1 deploy BLOCKED');
+
+      const filePath = path.join(
+        testProjectDir,
+        CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+        MEMORY_CONSTANTS.PATHS.LEARNING_DIR,
+        MEMORY_CONSTANTS.PATHS.WHAT_WORKED_FILE,
+      );
+
+      const content = await fs.readFile(filePath, 'utf-8');
+      expect(content).toContain('Supersedes: T1 deploy BLOCKED');
+    });
+
+    it('should mark matching failure entries as [SUPERSEDED] when recordSuccess has supersedes', async () => {
+      // First record a failure
+      await service.recordFailure(testProjectDir, testAgentId, testRole, 'T1 deploy BLOCKED: build failed');
+      // Then record success that supersedes it
+      await service.recordSuccess(testProjectDir, testAgentId, testRole, 'T1 deploy succeeded', undefined, 'T1 deploy BLOCKED');
+
+      const failedPath = path.join(
+        testProjectDir,
+        CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+        MEMORY_CONSTANTS.PATHS.LEARNING_DIR,
+        MEMORY_CONSTANTS.PATHS.WHAT_FAILED_FILE,
+      );
+
+      const failedContent = await fs.readFile(failedPath, 'utf-8');
+      expect(failedContent).toContain('[SUPERSEDED]');
+    });
+
+    it('should filter out [SUPERSEDED] entries from getFailures output', async () => {
+      await service.recordFailure(testProjectDir, testAgentId, testRole, 'T1 deploy BLOCKED: build failed');
+      await service.recordFailure(testProjectDir, testAgentId, testRole, 'Unrelated failure keeps showing');
+      // Supersede the T1 failure
+      await service.recordSuccess(testProjectDir, testAgentId, testRole, 'T1 deploy succeeded', undefined, 'T1 deploy BLOCKED');
+
+      const failures = await service.getFailures(testProjectDir);
+      expect(failures).not.toBeNull();
+      expect(failures).not.toContain('T1 deploy BLOCKED');
+      expect(failures).toContain('Unrelated failure keeps showing');
+    });
+
+    it('should filter out [SUPERSEDED] entries from getSuccesses output', async () => {
+      await service.recordSuccess(testProjectDir, testAgentId, testRole, 'Old approach worked');
+      // A later failure supersedes the old success
+      await service.recordFailure(testProjectDir, testAgentId, testRole, 'Old approach actually failed', undefined, 'Old approach worked');
+
+      const successes = await service.getSuccesses(testProjectDir);
+      expect(successes).not.toBeNull();
+      expect(successes).not.toContain('Old approach worked');
+    });
+
+    it('should include Supersedes tag when recordFailure has supersedes param', async () => {
+      await service.recordFailure(testProjectDir, testAgentId, testRole, 'Actually it broke', undefined, 'Initial success');
+
+      const filePath = path.join(
+        testProjectDir,
+        CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+        MEMORY_CONSTANTS.PATHS.LEARNING_DIR,
+        MEMORY_CONSTANTS.PATHS.WHAT_FAILED_FILE,
+      );
+
+      const content = await fs.readFile(filePath, 'utf-8');
+      expect(content).toContain('Supersedes: Initial success');
+    });
+
+    it('should handle supersede when target file does not exist', async () => {
+      // Record success with supersedes but no prior failure file
+      await expect(
+        service.recordSuccess(testProjectDir, testAgentId, testRole, 'No prior failure', undefined, 'nonexistent')
+      ).resolves.not.toThrow();
+    });
+
+    it('should not modify entries that do not match the supersedes keyword', async () => {
+      await service.recordFailure(testProjectDir, testAgentId, testRole, 'Unrelated issue: X');
+      await service.recordFailure(testProjectDir, testAgentId, testRole, 'T2 deploy BLOCKED');
+      await service.recordSuccess(testProjectDir, testAgentId, testRole, 'T2 done', undefined, 'T2 deploy BLOCKED');
+
+      const failures = await service.getFailures(testProjectDir);
+      expect(failures).toContain('Unrelated issue: X');
+      expect(failures).not.toContain('T2 deploy BLOCKED');
+    });
+  });
+
   describe('getCrossProjectInsights', () => {
     it('should return null when file does not exist', async () => {
       homedirOverride = testGlobalHome;

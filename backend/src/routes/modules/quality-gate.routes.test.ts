@@ -12,6 +12,7 @@ import { createQualityGateRouter } from './quality-gate.routes.js';
 // Mock the controller to avoid service initialization
 jest.mock('../../controllers/quality-gate/quality-gate.controller.js', () => ({
   checkQualityGates: jest.fn(),
+  preCommitGate: jest.fn(),
 }));
 
 // Mock LoggerService (required by controller)
@@ -42,6 +43,10 @@ describe('Quality Gate Routes', () => {
 
     expect(routes).toContainEqual({
       path: '/check',
+      methods: ['post'],
+    });
+    expect(routes).toContainEqual({
+      path: '/pre-commit',
       methods: ['post'],
     });
   });

@@ -3,7 +3,7 @@
  * marketplace items (skills, roles, 3D models) from the Crewly registry.
  */
 
-export type MarketplaceItemType = 'skill' | 'model' | 'role';
+export type MarketplaceItemType = 'skill' | 'model' | 'role' | 'mcp_tool';
 
 export type MarketplaceCategory =
   | 'development'

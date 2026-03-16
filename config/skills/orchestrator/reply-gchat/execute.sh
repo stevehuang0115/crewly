@@ -123,21 +123,3 @@ else
 fi
 
 api_call POST "/messengers/google-chat/send" "$BODY"
-
-# Emit a [NOTIFY] block so the chat service/logs capture this reply and
-# unblock any pending Google Chat queue items.
-{
-  echo "[NOTIFY]"
-  echo "type: gchat_reply"
-  echo "title: Google Chat Reply"
-  if [ -n "$CONVERSATION_ID" ]; then
-    echo "conversationId: $CONVERSATION_ID"
-  fi
-  echo "space: $SPACE"
-  if [ -n "$THREAD_NAME" ]; then
-    echo "threadName: $THREAD_NAME"
-  fi
-  echo "---"
-  printf '%s\n' "$TEXT"
-  echo "[/NOTIFY]"
-} >&2

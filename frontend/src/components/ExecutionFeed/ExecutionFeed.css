@@ -1,0 +1,48 @@
+/**
+ * Execution Feed — animations and layout
+ */
+
+/* ---- Entry slide-in animation ---- */
+@keyframes feed-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.feed-entry {
+  animation: feed-slide-in var(--transition-normal, 200ms) ease-out;
+}
+
+/* ---- Pulse dot for active agents ---- */
+@keyframes feed-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.feed-pulse {
+  animation: feed-pulse 1.5s ease-in-out infinite;
+}
+
+/* ---- Scrollable container ---- */
+.feed-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border, #313a48) transparent;
+}
+
+.feed-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.feed-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border, #313a48);
+  border-radius: var(--radius-full, 9999px);
+}
+
+.feed-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -427,7 +427,7 @@ export async function getDailyLog(req: Request, res: Response, next: NextFunctio
  */
 export async function recordSuccess(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { projectPath, teamMemberId, description, context, role } = req.body;
+    const { projectPath, teamMemberId, description, context, role, supersedes } = req.body;
 
     if (!projectPath || !description) {
       res.status(400).json({ success: false, error: 'Missing required parameters: projectPath, description' });
@@ -435,9 +435,9 @@ export async function recordSuccess(req: Request, res: Response, next: NextFunct
     }
 
     const service = LearningAccumulationService.getInstance();
-    await service.recordSuccess(projectPath, teamMemberId || 'unknown', role || 'unknown', description, context);
+    await service.recordSuccess(projectPath, teamMemberId || 'unknown', role || 'unknown', description, context, supersedes);
 
-    logger.info('Success recorded via REST', { projectPath, teamMemberId });
+    logger.info('Success recorded via REST', { projectPath, teamMemberId, supersedes });
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to record success', { error: error instanceof Error ? error.message : String(error) });
@@ -456,7 +456,7 @@ export async function recordSuccess(req: Request, res: Response, next: NextFunct
  */
 export async function recordFailure(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { projectPath, teamMemberId, description, context, role } = req.body;
+    const { projectPath, teamMemberId, description, context, role, supersedes } = req.body;
 
     if (!projectPath || !description) {
       res.status(400).json({ success: false, error: 'Missing required parameters: projectPath, description' });
@@ -464,9 +464,9 @@ export async function recordFailure(req: Request, res: Response, next: NextFunct
     }
 
     const service = LearningAccumulationService.getInstance();
-    await service.recordFailure(projectPath, teamMemberId || 'unknown', role || 'unknown', description, context);
+    await service.recordFailure(projectPath, teamMemberId || 'unknown', role || 'unknown', description, context, supersedes);
 
-    logger.info('Failure recorded via REST', { projectPath, teamMemberId });
+    logger.info('Failure recorded via REST', { projectPath, teamMemberId, supersedes });
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to record failure', { error: error instanceof Error ? error.message : String(error) });

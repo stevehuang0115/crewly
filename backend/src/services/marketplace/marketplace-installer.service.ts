@@ -154,9 +154,8 @@ export async function installItem(item: MarketplaceItem): Promise<MarketplaceOpe
  * in parallel.
  *
  * Public skills in the crewly repo are stored as directories (not archives).
- * This function downloads the essential skill files (skill.json, execute.sh,
- * instructions.md) concurrently from GitHub. skill.json and execute.sh are
- * required; instructions.md is optional.
+ * This function downloads the essential skill files (SKILL.md, execute.sh)
+ * concurrently from GitHub. SKILL.md and execute.sh are required.
  *
  * @param item - The marketplace item to install
  * @param installPath - Local directory to install to
@@ -169,11 +168,11 @@ async function installFromGitHub(
   sourcePath: string,
 ): Promise<MarketplaceOperationResult> {
   const baseUrl = MARKETPLACE_CONSTANTS.PUBLIC_CDN_BASE;
-  // Use custom file list from metadata if available, otherwise default 3 files
+  // Use custom file list from metadata if available, otherwise default files
   const metadataFiles = item.metadata?.files as string[] | undefined;
   const filesToDownload = metadataFiles && Array.isArray(metadataFiles) && metadataFiles.length > 0
     ? metadataFiles
-    : ['skill.json', 'execute.sh', 'instructions.md'];
+    : ['SKILL.md', 'execute.sh'];
 
   await mkdir(installPath, { recursive: true });
 
@@ -190,16 +189,14 @@ async function installFromGitHub(
     })
   );
 
-  // Process results: skill.json and execute.sh are required, instructions.md is optional
+  // Process results: SKILL.md and execute.sh are required by default.
+  // When metadata.files is provided (MCP skills), only SKILL.md is mandatory.
   for (let i = 0; i < filesToDownload.length; i++) {
     const file = filesToDownload[i];
     const result = results[i];
-    // skill.json is always required. execute.sh is required only when using
-    // the default file list (non-MCP skills). When metadata.files is provided
-    // (MCP skills), only skill.json is mandatory — other files are optional.
     const isOptional = metadataFiles
-      ? file !== 'skill.json'
-      : file !== 'skill.json' && file !== 'execute.sh';
+      ? file !== 'SKILL.md' && file !== 'skill.json'
+      : file !== 'SKILL.md' && file !== 'execute.sh';
 
     if (result.status === 'rejected') {
       if (!isOptional) {

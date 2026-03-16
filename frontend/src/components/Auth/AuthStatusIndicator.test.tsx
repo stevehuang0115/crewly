@@ -31,11 +31,6 @@ vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => mockAuthState,
 }));
 
-// Mock CloudAuthModal to avoid testing modal internals here
-vi.mock('./CloudAuthModal', () => ({
-  CloudAuthModal: ({ isOpen }: { isOpen: boolean }) =>
-    isOpen ? <div data-testid="auth-modal">Auth Modal</div> : null,
-}));
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -59,18 +54,10 @@ describe('AuthStatusIndicator', () => {
     expect(screen.getByText('Loading...')).toBeInTheDocument();
   });
 
-  it('should show connect button when not authenticated', () => {
-    render(<AuthStatusIndicator />);
+  it('should render nothing when not authenticated', () => {
+    const { container } = render(<AuthStatusIndicator />);
 
-    expect(screen.getByText('Connect to Cloud')).toBeInTheDocument();
-  });
-
-  it('should open auth modal when connect button clicked', () => {
-    render(<AuthStatusIndicator />);
-
-    fireEvent.click(screen.getByText('Connect to Cloud'));
-
-    expect(screen.getByTestId('auth-modal')).toBeInTheDocument();
+    expect(container.innerHTML).toBe('');
   });
 
   it('should show user info when authenticated', () => {
@@ -121,9 +108,9 @@ describe('AuthStatusIndicator', () => {
     expect(mockLogout).toHaveBeenCalled();
   });
 
-  it('should hide labels when collapsed', () => {
-    render(<AuthStatusIndicator isCollapsed />);
+  it('should render nothing when collapsed and not authenticated', () => {
+    const { container } = render(<AuthStatusIndicator isCollapsed />);
 
-    expect(screen.queryByText('Connect to Cloud')).not.toBeInTheDocument();
+    expect(container.innerHTML).toBe('');
   });
 });

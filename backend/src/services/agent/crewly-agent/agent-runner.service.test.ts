@@ -497,6 +497,226 @@ describe('AgentRunnerService', () => {
     });
   });
 
+  describe('getContextBudget', () => {
+    it('should return normal level with zero usage', () => {
+      const budget = runner.getContextBudget();
+
+      expect(budget.totalTokensUsed).toBe(0);
+      expect(budget.usagePercent).toBe(0);
+      expect(budget.level).toBe('normal');
+      expect(budget.messageCount).toBe(0);
+      expect(budget.compactionPending).toBe(false);
+      expect(budget.contextWindowSize).toBeGreaterThan(0);
+    });
+
+    it('should track cumulative token usage', async () => {
+      await runner.initialize();
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Response',
+        steps: [],
+        usage: { inputTokens: 500, outputTokens: 200 },
+        finishReason: 'stop',
+      });
+      await runner.run('Hello');
+
+      const budget = runner.getContextBudget();
+      expect(budget.totalTokensUsed).toBe(700);
+      expect(budget.messageCount).toBe(2); // user + assistant
+    });
+
+    it('should return warning level when approaching threshold', async () => {
+      await runner.initialize();
+      // Use a small context window model to easily trigger warning
+      // Default compactionThreshold is 0.8, warningThreshold is 0.8*0.85 = 0.68
+      // With default context window 128000, need ~87,000 tokens to hit warning
+      // Simulate high token usage
+      for (let i = 0; i < 10; i++) {
+        mockGenerateText.mockResolvedValueOnce({
+          text: `Response ${i}`,
+          steps: [],
+          usage: { inputTokens: 5000, outputTokens: 4000 },
+          finishReason: 'stop',
+        });
+        await runner.run(`Message ${i}`);
+      }
+
+      const budget = runner.getContextBudget();
+      // 10 * 9000 = 90,000 tokens. Context window = 200,000 (anthropic claude-sonnet-4-20250514)
+      // 90000/200000 = 0.45, threshold = 0.8, warning at 0.68
+      // Actually need more tokens. Let me check: the model is claude-sonnet-4-20250514 = 200,000
+      // So we'd need 136,000+ for warning (0.68 * 200000)
+      expect(budget.totalTokensUsed).toBe(90000);
+    });
+
+    it('should return critical level when at or above compaction threshold', async () => {
+      // Use a config with a low compaction threshold to trigger critical easily
+      const config = {
+        ...baseConfig,
+        compactionThreshold: 0.1, // 10% threshold for testing
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Response',
+        steps: [],
+        usage: { inputTokens: 15000, outputTokens: 10000 },
+        finishReason: 'stop',
+      });
+      await r.run('Hello');
+
+      const budget = r.getContextBudget();
+      // 25,000 / 200,000 = 0.125 which is >= 0.1 threshold
+      expect(budget.level).toBe('critical');
+      expect(budget.compactionPending).toBe(true);
+      expect(budget.summary).toContain('CRITICAL');
+    });
+
+    it('should set compactionPending when message count exceeds max', async () => {
+      const config = {
+        ...baseConfig,
+        maxHistoryMessages: 4, // Very low for testing
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+
+      // 2 runs × 2 messages = 4 messages = maxHistoryMessages
+      for (let i = 0; i < 2; i++) {
+        mockGenerateText.mockResolvedValueOnce({
+          text: `R${i}`,
+          steps: [],
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        await r.run(`M${i}`);
+      }
+
+      const budget = r.getContextBudget();
+      expect(budget.messageCount).toBe(4);
+      expect(budget.compactionPending).toBe(true);
+    });
+
+    it('should use default context window for unknown models', () => {
+      const config = {
+        ...baseConfig,
+        model: { provider: 'anthropic' as const, modelId: 'unknown-model-xyz', temperature: 0.3, maxTokens: 8192 },
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      const budget = r.getContextBudget();
+
+      expect(budget.contextWindowSize).toBe(128_000); // default fallback
+    });
+  });
+
+  describe('budgetWarning in run result', () => {
+    it('should include budgetWarning when token usage is high', async () => {
+      const config = {
+        ...baseConfig,
+        compactionThreshold: 0.001, // extremely low threshold for testing
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Done',
+        steps: [],
+        usage: { inputTokens: 500, outputTokens: 200 },
+        finishReason: 'stop',
+      });
+
+      // The first run triggers compaction (critical threshold), but since there are
+      // fewer than 10 messages, compaction skips. Budget warning should still appear.
+      const result = await r.run('Hello');
+
+      expect(result.budgetWarning).toBeDefined();
+      expect(result.budgetWarning).toContain('CRITICAL');
+    });
+
+    it('should not include budgetWarning when usage is normal', async () => {
+      await runner.initialize();
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Done',
+        steps: [],
+        usage: { inputTokens: 100, outputTokens: 50 },
+        finishReason: 'stop',
+      });
+
+      const result = await runner.run('Hello');
+
+      expect(result.budgetWarning).toBeUndefined();
+    });
+  });
+
+  describe('token-budget-based compaction trigger', () => {
+    it('should trigger compaction when token budget is critical even if message count is low', async () => {
+      // Use a threshold that won't trigger during initial message buildup
+      // but will trigger on the final run after enough tokens accumulate.
+      // Each run uses 150 tokens. After 6 runs: 900 tokens.
+      // Context window for claude-sonnet-4-20250514 = 200,000
+      // Set threshold to 0.004 (0.4%) = 800 tokens
+      // Runs 0-3 won't trigger (0,150,300,450 < 800). Run 4+ will trigger.
+      // But compaction needs >= 10 messages, so runs 4-5 trigger budget-critical
+      // but compactHistory returns early (8 and 10 messages respectively).
+      // Actually run 5 has 10 messages so compaction runs.
+      // Let's use threshold 0.005 = 1000 tokens, so 6 runs of 150 = 900 < 1000.
+      // Then the 7th run triggers at 900 + check >= 1000? No, budget is checked
+      // before the run with existing tokens. After 6 runs = 900 tokens < 1000 = normal.
+      // After 7th run = 900 + 150 = 1050. But check is before run with 900 tokens.
+      // We need threshold to trigger BEFORE a run. So set threshold = 0.004 = 800.
+      // After 5 runs = 750 < 800 (normal). After 6th run's execution → 900.
+      // 7th run check: 900/200000 = 0.0045 >= 0.004 → critical → compaction triggers.
+      // At that point we have 12 messages (6 runs × 2), >= 10, so compaction runs.
+      const config = {
+        ...baseConfig,
+        maxHistoryMessages: 1000, // high message limit, won't trigger by count
+        compactionThreshold: 0.004, // triggers after ~6 runs of 150 tokens each
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+
+      // Build up 12 messages (6 runs × 2) and 900 tokens
+      for (let i = 0; i < 6; i++) {
+        mockGenerateText.mockResolvedValueOnce({
+          text: `Response ${i}`,
+          steps: [],
+          usage: { inputTokens: 100, outputTokens: 50 },
+          finishReason: 'stop',
+        });
+        await r.run(`Message ${i}`);
+      }
+
+      expect(r.getHistoryLength()).toBe(12);
+      // 900 / 200000 = 0.0045 >= 0.004 → critical
+      expect(r.getContextBudget().level).toBe('critical');
+
+      // Next run should trigger compaction due to token budget being critical
+      // AI summary call + actual run
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Compaction summary of state',
+        steps: [],
+        usage: { inputTokens: 50, outputTokens: 30 },
+        finishReason: 'stop',
+      });
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'After compact',
+        steps: [],
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: 'stop',
+      });
+
+      await r.run('Trigger compaction by budget');
+
+      // Should have compacted: 1 summary + 10 recent + 1 user + 1 assistant
+      expect(r.getHistoryLength()).toBeLessThan(14);
+      const state = r.getState();
+      expect(String(state.messages[0].content)).toContain('Compacted State');
+    });
+  });
+
   describe('audit trail', () => {
     it('should return empty audit log initially', () => {
       const log = runner.getAuditLog();

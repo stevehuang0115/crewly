@@ -9,11 +9,14 @@
  */
 
 import { generateText, stepCountIs, type ModelMessage, type LanguageModel } from 'ai';
+import { TracingService } from '../../core/tracing.service.js';
+import { TRACING_CONSTANTS } from '../../../constants.js';
 import { ModelManager } from './model-manager.js';
 import { CrewlyApiClient } from './api-client.js';
 import { createTools } from './tool-registry.js';
 import { McpClientService } from '../../mcp-client.js';
 import { connectAndLoadMcpTools } from './mcp-tool-bridge.js';
+import { ApprovalQueueService, type PendingApproval } from './approval-queue.service.js';
 import type { ToolDefinition } from './types.js';
 import {
   type CrewlyAgentConfig,
@@ -21,6 +24,7 @@ import {
   type AgentRunResult,
   type ToolCallRecord,
   type CompactionResult,
+  type ContextBudgetStatus,
   type AuditEntry,
   type SecurityPolicy,
   type ToolCallbacks,
@@ -29,6 +33,7 @@ import {
   type AuditLogFilters,
   CREWLY_AGENT_DEFAULTS,
   WRITE_TOOLS,
+  MODEL_CONTEXT_WINDOWS,
 } from './types.js';
 
 /**
@@ -71,6 +76,9 @@ export class AgentRunnerService {
   private mcpClient: McpClientService | null = null;
   /** Cached MCP tool definitions loaded during initialization */
   private mcpToolDefs: Record<string, ToolDefinition> = {};
+  /** Approval queue for tools requiring explicit approval */
+  private approvalQueue: ApprovalQueueService = new ApprovalQueueService();
+  private tracing = TracingService.getInstance();
   /** @internal Override for testing — replaces the AI SDK generateText call */
   _generateTextFn: GenerateTextFn | null = null;
 
@@ -218,6 +226,53 @@ export class AgentRunnerService {
   }
 
   /**
+   * Get current context budget status.
+   *
+   * Calculates token usage as a percentage of the model's context window
+   * and determines the budget level (normal/warning/critical).
+   *
+   * @returns ContextBudgetStatus with usage stats and level
+   */
+  getContextBudget(): ContextBudgetStatus {
+    const totalTokensUsed = this.state.totalTokens.input + this.state.totalTokens.output;
+    const contextWindowSize = MODEL_CONTEXT_WINDOWS[this.config.model.modelId]
+      ?? MODEL_CONTEXT_WINDOWS.default;
+    const usagePercent = contextWindowSize > 0
+      ? totalTokensUsed / contextWindowSize
+      : 0;
+
+    const threshold = this.config.compactionThreshold;
+    const warningThreshold = threshold * 0.85; // warn at 85% of compaction threshold
+    let level: ContextBudgetStatus['level'] = 'normal';
+    if (usagePercent >= threshold) {
+      level = 'critical';
+    } else if (usagePercent >= warningThreshold) {
+      level = 'warning';
+    }
+
+    const compactionPending = this.state.messages.length >= this.config.maxHistoryMessages
+      || usagePercent >= threshold;
+
+    const pct = (usagePercent * 100).toFixed(1);
+    let summary = `${pct}% of context budget used (${totalTokensUsed.toLocaleString()}/${contextWindowSize.toLocaleString()} tokens, ${this.state.messages.length} messages)`;
+    if (level === 'critical') {
+      summary += ' — CRITICAL: compaction recommended immediately';
+    } else if (level === 'warning') {
+      summary += ' — WARNING: approaching compaction threshold';
+    }
+
+    return {
+      totalTokensUsed,
+      contextWindowSize,
+      usagePercent,
+      level,
+      messageCount: this.state.messages.length,
+      compactionPending,
+      summary,
+    };
+  }
+
+  /**
    * Process queued messages serially.
    */
   private async processQueue(): Promise<void> {
@@ -245,7 +300,14 @@ export class AgentRunnerService {
             threadTs: item.metadata.threadTs,
           };
         }
-        const result = await this.executeRun(item.message);
+        const result = await this.tracing.withSpan(TRACING_CONSTANTS.SPANS.AGENT_RUN, {
+          attributes: {
+            'agent.session': this.config.sessionName,
+            'agent.role': this.config.role,
+          }
+        }, async () => {
+          return this.executeRun(item.message);
+        });
         item.resolve(result);
       } catch (error) {
         item.reject(error instanceof Error ? error : new Error(String(error)));
@@ -273,7 +335,9 @@ export class AgentRunnerService {
     }
 
     // Check if compaction is needed before adding new message
-    if (this.state.messages.length >= this.config.maxHistoryMessages) {
+    // Trigger on message count OR token budget threshold
+    const budget = this.getContextBudget();
+    if (this.state.messages.length >= this.config.maxHistoryMessages || budget.level === 'critical') {
       await this.compactHistory();
     }
 
@@ -284,9 +348,14 @@ export class AgentRunnerService {
     // Build tools with callbacks for compaction, audit, and security enforcement
     const callbacks: ToolCallbacks = {
       onCompactMemory: () => this.requestCompaction(),
+      onGetContextBudget: () => this.getContextBudget(),
       onAuditLog: (entry: AuditEntry) => this.recordAudit({ ...entry, sessionName: this.config.sessionName }),
       onCheckApproval: (toolName: string, sensitivity: ToolSensitivity) => this.checkApproval(toolName, sensitivity),
       onGetAuditLog: (filters: AuditLogFilters) => this.getFilteredAuditLog(filters),
+      onEnqueueApproval: (toolName: string, sensitivity: ToolSensitivity, args: Record<string, unknown>) => {
+        const approval = this.approvalQueue.enqueue(this.config.sessionName, toolName, sensitivity, args);
+        return { approvalId: approval.id };
+      },
     };
     const mcpTools = Object.keys(this.mcpToolDefs).length > 0 ? this.mcpToolDefs : undefined;
     const tools = createTools(this.apiClient, this.config.sessionName, this.config.projectPath, callbacks, this.currentConversationId, this.currentSlackContext, mcpTools);
@@ -342,12 +411,17 @@ export class AgentRunnerService {
     this.state.totalTokens.input += usage.input;
     this.state.totalTokens.output += usage.output;
 
+    // Check budget after token update and attach warning if approaching limits
+    const postBudget = this.getContextBudget();
+    const budgetWarning = postBudget.level !== 'normal' ? postBudget.summary : undefined;
+
     return {
       text: result.text,
       steps: result.steps.length,
       usage,
       toolCalls,
       finishReason: result.finishReason,
+      budgetWarning,
     };
   }
 
@@ -404,6 +478,16 @@ export class AgentRunnerService {
    */
   updateSecurityPolicy(updates: Partial<SecurityPolicy>): void {
     this.securityPolicy = { ...this.securityPolicy, ...updates };
+  }
+
+  /**
+   * Get the approval queue service instance.
+   * Used by the approvals controller to manage pending approvals.
+   *
+   * @returns The ApprovalQueueService instance
+   */
+  getApprovalQueue(): ApprovalQueueService {
+    return this.approvalQueue;
   }
 
   /**

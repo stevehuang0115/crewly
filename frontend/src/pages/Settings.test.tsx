@@ -26,6 +26,10 @@ vi.mock('../components/Settings/IntegrationsTab', () => ({
   IntegrationsTab: () => <div data-testid="integrations-tab">Integrations Tab Content</div>,
 }));
 
+vi.mock('../components/Settings/CloudTab', () => ({
+  CloudTab: () => <div data-testid="cloud-tab">Cloud Tab Content</div>,
+}));
+
 describe('Settings Page', () => {
   describe('Rendering', () => {
     it('should render settings page with header', () => {
@@ -42,6 +46,7 @@ describe('Settings Page', () => {
       expect(screen.getByText('Roles')).toBeInTheDocument();
       expect(screen.getByText('Skills')).toBeInTheDocument();
       expect(screen.getByText('Integrations')).toBeInTheDocument();
+      expect(screen.getByText('Cloud')).toBeInTheDocument();
     });
   });
 
@@ -53,6 +58,16 @@ describe('Settings Page', () => {
       expect(screen.queryByTestId('roles-tab')).not.toBeInTheDocument();
       expect(screen.queryByTestId('skills-tab')).not.toBeInTheDocument();
       expect(screen.queryByTestId('integrations-tab')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('cloud-tab')).not.toBeInTheDocument();
+    });
+
+    it('should switch to Cloud tab when clicked', () => {
+      render(<Settings />);
+
+      fireEvent.click(screen.getByText('Cloud'));
+
+      expect(screen.getByTestId('cloud-tab')).toBeInTheDocument();
+      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
     });
 
     it('should switch to Integrations tab when clicked', () => {
@@ -98,7 +113,7 @@ describe('Settings Page', () => {
       render(<Settings />);
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs).toHaveLength(4);
+      expect(tabs).toHaveLength(5);
     });
 
     it('should set aria-selected on active tab', () => {

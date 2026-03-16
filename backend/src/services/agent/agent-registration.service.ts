@@ -615,7 +615,7 @@ export class AgentRegistrationService {
 		// exits slash mode. Gemini CLI: skip — Ctrl+C at empty prompt exits CLI,
 		// Escape defocuses TUI, Ctrl+U is ignored. The prompt should be clean.
 
-		const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId);
+		const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
 		const promptDelivered = await this.sendPromptRobustly(sessionName, prompt, runtimeType);
 
 		if (!promptDelivered) {
@@ -673,7 +673,7 @@ export class AgentRegistrationService {
 		let promptFilePath: string | undefined;
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
-				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId);
+				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
 				promptFilePath = await this.writePromptFile(sessionName, prompt);
 			} catch (promptError) {
 				this.logger.warn('Failed to pre-write prompt file (non-fatal, will fall back to direct delivery)', {
@@ -758,17 +758,6 @@ export class AgentRegistrationService {
 			role,
 			runtimeType,
 		});
-
-		// Register Gemini CLI sessions with terminal gateway so NOTIFY
-		// marker processing is skipped (Gemini TUI garbles markers).
-		if (runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
-			import('../../websocket/terminal.gateway.js').then(({ getTerminalGateway }) => {
-				const tg = getTerminalGateway();
-				if (tg) {
-					tg.registerGeminiCliSession(sessionName);
-				}
-			}).catch(() => { /* non-critical */ });
-		}
 
 		// Background: detect and store session ID for resume-on-restart
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
@@ -859,6 +848,63 @@ export class AgentRegistrationService {
 	}
 
 	/**
+	 * Provision the runtime-specific project config file.
+	 *
+	 * Each agent CLI reads a different file for project configuration:
+	 * - Claude Code  → .crewly/CLAUDE.md
+	 * - Gemini CLI   → GEMINI.md (project root)
+	 * - Codex        → AGENTS.md (project root)
+	 *
+	 * Uses 'wx' flag to avoid overwriting existing files.
+	 *
+	 * @param projectPath - Project directory path
+	 * @param runtimeType - Agent runtime type
+	 */
+	private async provisionRuntimeConfigFile(projectPath: string, runtimeType: RuntimeType): Promise<void> {
+		// Map runtime type to template file and output path
+		const configMap: Record<string, { template: string; outputPath: string }> = {
+			[RUNTIME_TYPES.CLAUDE_CODE]: {
+				template: 'agent-claude-md.md',
+				outputPath: path.join(projectPath, '.crewly', 'CLAUDE.md'),
+			},
+			[RUNTIME_TYPES.GEMINI_CLI]: {
+				template: 'agent-gemini-md.md',
+				outputPath: path.join(projectPath, 'GEMINI.md'),
+			},
+			[RUNTIME_TYPES.CODEX_CLI]: {
+				template: 'agent-agents-md.md',
+				outputPath: path.join(projectPath, 'AGENTS.md'),
+			},
+		};
+
+		const config = configMap[runtimeType];
+		if (!config) return; // Unknown runtime — skip
+
+		try {
+			// Ensure parent directory exists
+			const dir = path.dirname(config.outputPath);
+			await mkdir(dir, { recursive: true });
+
+			const templatePath = path.join(this.projectRoot, 'config', 'templates', config.template);
+			let content = this.promptCache.get(templatePath);
+			if (!content) {
+				content = await readFile(templatePath, 'utf8');
+				this.promptCache.set(templatePath, content);
+			}
+
+			await writeFile(config.outputPath, content, { flag: 'wx' }).catch(() => {
+				// File already exists — no action needed
+			});
+		} catch (err) {
+			this.logger.warn('Could not provision runtime config file (non-critical)', {
+				runtimeType,
+				outputPath: config.outputPath,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	/**
 	 * Send registration prompt asynchronously (non-blocking).
 	 * Uses an AbortController so the operation can be cancelled if the
 	 * runtime exits before registration completes.
@@ -877,7 +923,7 @@ export class AgentRegistrationService {
 			this.logger.info('Loading registration prompt', { sessionName, role, runtimeType });
 
 			if (controller.signal.aborted) return;
-			const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId);
+			const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
 
 			this.logger.info('Registration prompt loaded, sending to agent', {
 				sessionName, role, runtimeType, promptLength: prompt.length,
@@ -955,7 +1001,7 @@ export class AgentRegistrationService {
 		let promptFilePath: string | undefined;
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
-				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId);
+				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
 				promptFilePath = await this.writePromptFile(sessionName, prompt);
 			} catch (promptError) {
 				this.logger.warn('Failed to pre-write prompt file in full recreation (non-fatal)', {
@@ -1207,7 +1253,8 @@ export class AgentRegistrationService {
 	private async loadRegistrationPrompt(
 		role: string,
 		sessionName: string,
-		memberId?: string
+		memberId?: string,
+		runtimeType: RuntimeType = RUNTIME_TYPES.CLAUDE_CODE
 	): Promise<string> {
 		try {
 			// Cache key is role only - the template file is the same regardless of memberId
@@ -1265,29 +1312,11 @@ export class AgentRegistrationService {
 				// Non-critical - use default project path
 			}
 
-			// Write .crewly/CLAUDE.md in the project directory so Claude Code
+			// Write runtime-specific project config file so the agent CLI
 			// recognizes Crewly as a legitimate project configuration (fixes #33)
+			// Claude Code → .crewly/CLAUDE.md, Gemini CLI → GEMINI.md, Codex → AGENTS.md
 			if (role !== ORCHESTRATOR_ROLE) {
-				try {
-					const crewlyDir = path.join(projectPath, '.crewly');
-					const claudeMdPath = path.join(crewlyDir, 'CLAUDE.md');
-					await mkdir(crewlyDir, { recursive: true });
-					const templatePath = path.join(this.projectRoot, 'config', 'templates', 'agent-claude-md.md');
-					let claudeMdContent = this.promptCache.get(templatePath);
-					if (!claudeMdContent) {
-						claudeMdContent = await readFile(templatePath, 'utf8');
-						this.promptCache.set(templatePath, claudeMdContent);
-					}
-					await writeFile(claudeMdPath, claudeMdContent, { flag: 'wx' }).catch(() => {
-						// File already exists — no action needed
-					});
-				} catch (claudeMdError) {
-					this.logger.warn('Could not provision .crewly/CLAUDE.md for agent trust (non-critical)', {
-						templatePath: path.join(this.projectRoot, 'config', 'templates', 'agent-claude-md.md'),
-						projectPath,
-						error: claudeMdError instanceof Error ? claudeMdError.message : String(claudeMdError),
-					});
-				}
+				await this.provisionRuntimeConfigFile(projectPath, runtimeType);
 			}
 
 			// Replace project path placeholder (must happen after project path lookup above)
@@ -1313,6 +1342,7 @@ export class AgentRegistrationService {
 								name: subMember.name,
 								sessionName: subMember.sessionName || '',
 								role: subMember.role || 'developer',
+								memberId: subMember.id || subId,
 							} as SubordinateInfo;
 						})
 						.filter((s): s is SubordinateInfo => s !== null);
@@ -1364,6 +1394,19 @@ export class AgentRegistrationService {
 				this.logger.warn('Failed to generate startup briefing (non-critical)', {
 					sessionName,
 					error: briefingError instanceof Error ? briefingError.message : String(briefingError),
+				});
+			}
+
+			// Inject mandatory session recovery protocol (recall + get-my-context)
+			try {
+				const recoveryBuilder = new PromptBuilderService(this.projectRoot);
+				const recoverySection = recoveryBuilder.buildSessionRecoverySection(sessionName, role, projectPath);
+				prompt += `\n\n---\n\n${recoverySection}`;
+				this.logger.info('Session recovery protocol injected into prompt', { sessionName, role });
+			} catch (recoveryError) {
+				this.logger.warn('Failed to inject session recovery protocol (non-critical)', {
+					sessionName,
+					error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
 				});
 			}
 
@@ -1622,7 +1665,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				}
 
 				// Step 3: Send system prompt with robust delivery mechanism
-				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId);
+				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
 				const promptDelivered = await this.sendPromptRobustly(sessionName, prompt, runtimeType);
 
 				if (!promptDelivered) {
@@ -2277,17 +2320,6 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 			// Start OAuth relogin monitoring for newly created session
 			OAuthReloginMonitorService.getInstance().startMonitoring(sessionName, runtimeType);
-
-			// Register Gemini CLI sessions with terminal gateway so NOTIFY
-			// marker processing is skipped (Gemini TUI garbles markers).
-			if (runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
-				import('../../websocket/terminal.gateway.js').then(({ getTerminalGateway }) => {
-					const tg = getTerminalGateway();
-					if (tg) {
-						tg.registerGeminiCliSession(sessionName);
-					}
-				}).catch(() => { /* non-critical */ });
-			}
 
 			return {
 				success: true,

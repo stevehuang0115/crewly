@@ -174,6 +174,20 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
               </div>
             </div>
           )}
+
+          {/* Structured Output */}
+          {task.output && (
+            <div className="mb-6">
+              <h4 className="text-lg font-semibold mb-4">Structured Deliverable</h4>
+              <div className="p-4 bg-black/40 rounded-lg border border-border-dark overflow-x-auto">
+                <pre className="text-xs font-mono text-primary-light">
+                  {typeof task.output === 'string' 
+                    ? task.output 
+                    : JSON.stringify(task.output, null, 2)}
+                </pre>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

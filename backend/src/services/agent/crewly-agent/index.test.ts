@@ -73,4 +73,11 @@ describe('crewly-agent barrel export', () => {
     expect(typeof barrel.isModelProvider).toBe('function');
     expect(typeof barrel.isModelConfig).toBe('function');
   });
+
+  it('should export RateLimiter and RATE_LIMITER_DEFAULTS', () => {
+    expect(barrel.RateLimiter).toBeDefined();
+    expect(typeof barrel.RateLimiter).toBe('function');
+    expect(barrel.RATE_LIMITER_DEFAULTS).toBeDefined();
+    expect(typeof barrel.RATE_LIMITER_DEFAULTS.maxRequestsPerWindow).toBe('number');
+  });
 });

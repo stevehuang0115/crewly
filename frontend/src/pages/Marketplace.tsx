@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { Store, Search, Download, Star, RefreshCw, Package, Check, ArrowUp, Upload, Clock, CheckCircle, XCircle } from 'lucide-react';
+import { Store, Search, Download, Star, RefreshCw, Package, Check, ArrowUp, Upload, Clock, CheckCircle, XCircle, Plug } from 'lucide-react';
 import {
   fetchMarketplaceItems,
   installMarketplaceItem,
@@ -29,6 +29,7 @@ const tabs: { label: string; value: MarketplaceItemType | 'all' }[] = [
   { label: 'Skills', value: 'skill' },
   { label: '3D Models', value: 'model' },
   { label: 'Roles', value: 'role' },
+  { label: 'MCP Tools', value: 'mcp_tool' },
 ];
 
 /** Sort options for the dropdown */
@@ -56,6 +57,7 @@ const typeBadgeColor: Record<MarketplaceItemType, string> = {
   skill: 'bg-blue-500/20 text-blue-400',
   model: 'bg-purple-500/20 text-purple-400',
   role: 'bg-emerald-500/20 text-emerald-400',
+  mcp_tool: 'bg-orange-500/20 text-orange-400',
 };
 
 /**

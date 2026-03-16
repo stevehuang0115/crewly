@@ -569,23 +569,6 @@ describe('NotifyReconciliationService', () => {
 			expect(mockBridge.sendNotification).not.toHaveBeenCalled();
 		});
 
-		it('should skip messages already delivered by skill (not pending)', async () => {
-			const msg = makePendingMessage({
-				metadata: {
-					slackDeliveryStatus: 'delivered_by_skill',
-					slackChannelId: 'C12345',
-					slackDeliveryAttempts: 0,
-				},
-			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
-
-			await service.runReconciliation();
-
-			// Should not attempt delivery — status is not 'pending'
-			expect(mockBridge.sendNotification).not.toHaveBeenCalled();
-			expect(mockChatService.updateMessageMetadata).not.toHaveBeenCalled();
-		});
-
 		it('should skip messages with delivered status', async () => {
 			const msg = makePendingMessage({
 				metadata: {

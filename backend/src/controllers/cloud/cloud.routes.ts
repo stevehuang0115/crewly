@@ -6,10 +6,13 @@
  * Endpoints:
  * - POST /connect              - Connect to CrewlyAI Cloud
  * - POST /disconnect           - Disconnect from CrewlyAI Cloud
+ * - POST /validate             - Validate JWT (local verification + optional proxy)
  * - GET  /status               - Get connection status and subscription tier
  * - GET  /templates            - Fetch premium templates (requires connection)
  * - GET  /google/start         - Redirect to Google OAuth consent screen
  * - GET  /google/callback      - Handle Google OAuth callback, issue JWT, redirect to frontend
+ * - POST /google/url           - Return Google OAuth URL as JSON (SPA client flow)
+ * - POST /google/callback      - Exchange code for JWT, return JSON (SPA client flow)
  *
  * @module controllers/cloud/cloud.routes
  */
@@ -20,10 +23,14 @@ import {
   disconnectFromCloud,
   getCloudStatus,
   getCloudTemplates,
+  validateCloudToken,
+  refreshCloudToken,
 } from './cloud.controller.js';
 import {
   cloudGoogleStart,
   cloudGoogleCallback,
+  cloudGoogleUrl,
+  cloudGoogleCallbackPost,
 } from './cloud-google-auth.controller.js';
 
 /**
@@ -36,12 +43,18 @@ export function createCloudRouter(): Router {
 
   router.post('/connect', connectToCloud);
   router.post('/disconnect', disconnectFromCloud);
+  router.post('/validate', validateCloudToken);
+  router.post('/refresh', refreshCloudToken);
   router.get('/status', getCloudStatus);
   router.get('/templates', getCloudTemplates);
 
-  // Google OAuth login flow for Cloud Portal
+  // Google OAuth login flow — browser-redirect (GET)
   router.get('/google/start', cloudGoogleStart);
   router.get('/google/callback', cloudGoogleCallback);
+
+  // Google OAuth login flow — SPA JSON API (POST)
+  router.post('/google/url', cloudGoogleUrl);
+  router.post('/google/callback', cloudGoogleCallbackPost);
 
   return router;
 }

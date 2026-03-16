@@ -16,6 +16,7 @@ CONTEXT=$(echo "$INPUT" | jq -r '.context // empty')
 PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
 TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // empty')
 TL_MEMBER_ID=$(echo "$INPUT" | jq -r '.tlMemberId // empty')
+FROM_SESSION=$(echo "$INPUT" | jq -r '.fromSession // empty')
 require_param "to" "$TO"
 require_param "task" "$TASK"
 
@@ -99,15 +100,20 @@ MONITOR_FALLBACK_MINUTES=$(echo "$INPUT" | jq -r 'if .monitor.fallbackCheckMinut
 COLLECTED_SCHEDULE_IDS="[]"
 COLLECTED_SUBSCRIPTION_IDS="[]"
 
-if [ "$MONITOR_IDLE" = "true" ]; then
-  if [ -z "${CREWLY_SESSION_NAME:-}" ]; then
-    echo '{"warning":"CREWLY_SESSION_NAME not set, idle event subscription may route to wrong agent"}' >&2
-  fi
-  SUBSCRIBER_SESSION="${CREWLY_SESSION_NAME:?CREWLY_SESSION_NAME must be set for correct event routing}"
+# Resolve the delegating TL's session name for event/schedule routing.
+# Priority: (1) CREWLY_SESSION_NAME env var, (2) fromSession in input JSON.
+# If neither is available, skip monitoring gracefully instead of crashing.
+RESOLVED_SESSION="${CREWLY_SESSION_NAME:-${FROM_SESSION:-}}"
+
+if [ -z "$RESOLVED_SESSION" ]; then
+  echo '{"warning":"CREWLY_SESSION_NAME not set and no fromSession provided — skipping idle event and schedule monitoring. Delegation still proceeds."}' >&2
+fi
+
+if [ "$MONITOR_IDLE" = "true" ] && [ -n "$RESOLVED_SESSION" ]; then
   SUB_BODY=$(jq -n \
     --arg eventType "agent:idle" \
     --arg sessionName "$TO" \
-    --arg subscriber "$SUBSCRIBER_SESSION" \
+    --arg subscriber "$RESOLVED_SESSION" \
     '{eventType: $eventType, filter: {sessionName: $sessionName}, subscriberSession: $subscriber, oneShot: true, ttlMinutes: 120}')
   SUB_RESULT=$(api_call POST "/events/subscribe" "$SUB_BODY" 2>/dev/null || true)
   SUB_ID=$(echo "$SUB_RESULT" | jq -r '.data.id // empty' 2>/dev/null || true)
@@ -116,10 +122,9 @@ if [ "$MONITOR_IDLE" = "true" ]; then
   fi
 fi
 
-if [ "$MONITOR_FALLBACK_MINUTES" != "0" ] && [ -n "$MONITOR_FALLBACK_MINUTES" ]; then
-  SCHEDULE_TARGET="${CREWLY_SESSION_NAME:?CREWLY_SESSION_NAME must be set for correct schedule routing}"
+if [ "$MONITOR_FALLBACK_MINUTES" != "0" ] && [ -n "$MONITOR_FALLBACK_MINUTES" ] && [ -n "$RESOLVED_SESSION" ]; then
   SCHED_BODY=$(jq -n \
-    --arg target "$SCHEDULE_TARGET" \
+    --arg target "$RESOLVED_SESSION" \
     --arg minutes "$MONITOR_FALLBACK_MINUTES" \
     --arg message "TL progress check: review ${TO} status — task: ${TASK:0:100}" \
     --arg taskId "$TASK_ID" \

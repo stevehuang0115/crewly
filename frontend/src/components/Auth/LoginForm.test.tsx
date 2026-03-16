@@ -1,76 +1,74 @@
 /**
- * Tests for LoginForm
+ * Tests for LoginForm (Cloud redirect)
  *
  * @module components/Auth/LoginForm.test
  */
 
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { LoginForm } from './LoginForm';
 
-describe('LoginForm', () => {
-  const mockSubmit = vi.fn();
+// Mock cloud constants
+vi.mock('../../constants/cloud.constants', () => ({
+  buildCloudAuthRedirectUrl: () => 'https://crewlyai.com/auth?callback=http://localhost:3000/auth/callback',
+}));
 
+describe('LoginForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockSubmit.mockResolvedValue(undefined);
   });
 
-  it('should render email and password inputs', () => {
-    render(<LoginForm onSubmit={mockSubmit} />);
+  it('should render the cloud login button', () => {
+    render(<LoginForm />);
 
-    expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Enter your password')).toBeInTheDocument();
+    expect(screen.getByText('Sign in with CrewlyAI Cloud')).toBeInTheDocument();
   });
 
-  it('should render sign in button', () => {
-    render(<LoginForm onSubmit={mockSubmit} />);
+  it('should render description text', () => {
+    render(<LoginForm />);
 
-    expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument();
+    expect(screen.getByText(/Sign in with your CrewlyAI account/)).toBeInTheDocument();
   });
 
-  it('should disable submit button when fields are empty', () => {
-    render(<LoginForm onSubmit={mockSubmit} />);
-
-    const button = screen.getByRole('button', { name: 'Sign In' });
-    expect(button).toBeDisabled();
-  });
-
-  it('should call onSubmit with email and password', async () => {
-    render(<LoginForm onSubmit={mockSubmit} />);
-
-    fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-      target: { value: 'test@test.com' },
-    });
-    fireEvent.change(screen.getByPlaceholderText('Enter your password'), {
-      target: { value: 'password123' },
+  it('should redirect to cloud auth URL on click', () => {
+    const originalHref = window.location.href;
+    Object.defineProperty(window, 'location', {
+      writable: true,
+      value: { ...window.location, href: originalHref },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+    render(<LoginForm />);
 
-    await waitFor(() => {
-      expect(mockSubmit).toHaveBeenCalledWith('test@test.com', 'password123');
+    fireEvent.click(screen.getByText('Sign in with CrewlyAI Cloud'));
+
+    expect(window.location.href).toBe(
+      'https://crewlyai.com/auth?callback=http://localhost:3000/auth/callback',
+    );
+
+    // Restore
+    Object.defineProperty(window, 'location', {
+      writable: true,
+      value: { ...window.location, href: originalHref },
     });
   });
 
   it('should display error message', () => {
-    render(<LoginForm onSubmit={mockSubmit} error="Invalid credentials" />);
+    render(<LoginForm error="Authentication failed" />);
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Invalid credentials');
+    expect(screen.getByRole('alert')).toHaveTextContent('Authentication failed');
   });
 
-  it('should show loading state', () => {
-    render(<LoginForm onSubmit={mockSubmit} isLoading />);
+  it('should disable button when loading', () => {
+    render(<LoginForm isLoading />);
 
-    expect(screen.getByText('Signing in...')).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: /Sign in with CrewlyAI Cloud/i });
+    expect(button).toBeDisabled();
   });
 
-  it('should show switch to register link', () => {
-    const onSwitch = vi.fn();
-    render(<LoginForm onSubmit={mockSubmit} onSwitchToRegister={onSwitch} />);
+  it('should not render error when error is null', () => {
+    render(<LoginForm />);
 
-    fireEvent.click(screen.getByText('Create one'));
-    expect(onSwitch).toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

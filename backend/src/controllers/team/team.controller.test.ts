@@ -3020,4 +3020,97 @@ describe('Teams Handlers', () => {
       expect(teamNames).toContain('Archived Team');
     });
   });
+
+  describe('#173: Org Chart fields (mission, budget, qualityGate)', () => {
+    it('should create team with mission, budget, and qualityGate', async () => {
+      mockStorageService.getTeams.mockResolvedValue([]);
+      mockStorageService.saveTeam.mockResolvedValue(undefined);
+      mockGetSettings.mockResolvedValue({ general: { defaultRuntime: 'claude-code' } });
+
+      mockRequest = {
+        body: {
+          name: 'Org Team',
+          members: [{ name: 'Alice', role: 'developer', systemPrompt: 'test' }],
+          mission: 'Ship features fast',
+          budget: { maxTokensPerDay: 1000000, maxUsdPerMonth: 500, alertThreshold: 80 },
+          qualityGate: { reviewerId: 'reviewer-1', autoApprove: false, minQualityScore: 75 },
+        },
+      };
+
+      await teamsHandlers.createTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true })
+      );
+      const savedTeam = mockStorageService.saveTeam.mock.calls[0][0];
+      expect(savedTeam.mission).toBe('Ship features fast');
+      expect(savedTeam.budget).toEqual({ maxTokensPerDay: 1000000, maxUsdPerMonth: 500, alertThreshold: 80 });
+      expect(savedTeam.qualityGate).toEqual({ reviewerId: 'reviewer-1', autoApprove: false, minQualityScore: 75 });
+    });
+
+    it('should update team mission via updateTeam', async () => {
+      const existingTeam: Team = {
+        id: 'team-1',
+        name: 'Test Team',
+        members: [],
+        projectIds: [],
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockStorageService.getTeams.mockResolvedValue([existingTeam]);
+      mockStorageService.saveTeam.mockResolvedValue(undefined);
+
+      mockRequest = {
+        params: { id: 'team-1' },
+        body: { mission: 'New mission statement' },
+      };
+
+      await teamsHandlers.updateTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true })
+      );
+      const savedTeam = mockStorageService.saveTeam.mock.calls[0][0];
+      expect(savedTeam.mission).toBe('New mission statement');
+    });
+
+    it('should update team budget and qualityGate', async () => {
+      const existingTeam: Team = {
+        id: 'team-2',
+        name: 'Budget Team',
+        members: [],
+        projectIds: [],
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockStorageService.getTeams.mockResolvedValue([existingTeam]);
+      mockStorageService.saveTeam.mockResolvedValue(undefined);
+
+      mockRequest = {
+        params: { id: 'team-2' },
+        body: {
+          budget: { maxUsdPerMonth: 200 },
+          qualityGate: { autoApprove: true, minQualityScore: 90 },
+        },
+      };
+
+      await teamsHandlers.updateTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const savedTeam = mockStorageService.saveTeam.mock.calls[0][0];
+      expect(savedTeam.budget).toEqual({ maxUsdPerMonth: 200 });
+      expect(savedTeam.qualityGate).toEqual({ autoApprove: true, minQualityScore: 90 });
+    });
+  });
 });

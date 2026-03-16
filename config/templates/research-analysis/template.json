@@ -8,6 +8,13 @@
   "icon": "microscope",
   "hierarchical": true,
   "defaultRuntime": "claude-code",
+  "norms": {
+    "enabled": true,
+    "files": [
+      { "file": "research-methodology.md", "trigger": "always", "roles": ["*"] },
+      { "file": "source-citation.md", "trigger": "always", "roles": ["*"] }
+    ]
+  },
   "roles": [
     {
       "role": "team-leader",
@@ -84,5 +91,14 @@
     "passPolicy": "critical_only",
     "maxRetries": 1
   },
-  "maxWorkersPerLeader": 3
+  "maxWorkersPerLeader": 3,
+  "mission": "Conduct rigorous competitive analysis and strategic research with verified sources",
+  "budget": {
+    "maxTokensPerDay": 3000000,
+    "alertThreshold": 80
+  },
+  "qualityGate": {
+    "autoApprove": false,
+    "minQualityScore": 85
+  }
 }

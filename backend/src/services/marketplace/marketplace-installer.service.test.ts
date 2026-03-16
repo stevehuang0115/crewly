@@ -389,7 +389,7 @@ describe('marketplace-installer.service', () => {
   });
 
   describe('installItem — GitHub-sourced skills', () => {
-    it('successfully installs by downloading skill.json, execute.sh, instructions.md individually', async () => {
+    it('successfully installs by downloading SKILL.md and execute.sh individually', async () => {
       const item = makeFakeItem({
         id: 'github-skill',
         name: 'GitHub Skill',
@@ -398,22 +398,16 @@ describe('marketplace-installer.service', () => {
 
       // Mock fetch to return individual files
       global.fetch = jest.fn().mockImplementation((url: string) => {
-        if (url.includes('skill.json')) {
+        if (url.includes('SKILL.md')) {
           return Promise.resolve({
             ok: true,
-            arrayBuffer: () => Promise.resolve(toArrayBuffer('{"id":"github-skill"}')),
+            arrayBuffer: () => Promise.resolve(toArrayBuffer('---\nname: GitHub Skill\n---\n# GitHub Skill')),
           });
         }
         if (url.includes('execute.sh')) {
           return Promise.resolve({
             ok: true,
             arrayBuffer: () => Promise.resolve(toArrayBuffer('#!/bin/bash\necho github')),
-          });
-        }
-        if (url.includes('instructions.md')) {
-          return Promise.resolve({
-            ok: true,
-            arrayBuffer: () => Promise.resolve(toArrayBuffer('# GitHub Skill')),
           });
         }
         return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found' });
@@ -426,42 +420,29 @@ describe('marketplace-installer.service', () => {
       // Verify files were downloaded
       const installDir = path.join(tempDir, 'marketplace', 'skills', 'github-skill');
       const files = await readdir(installDir);
-      expect(files).toContain('skill.json');
+      expect(files).toContain('SKILL.md');
       expect(files).toContain('execute.sh');
-      expect(files).toContain('instructions.md');
 
       // Verify content
-      const skillJson = await readFile(path.join(installDir, 'skill.json'), 'utf-8');
-      expect(skillJson).toBe('{"id":"github-skill"}');
-
       const executeContent = await readFile(path.join(installDir, 'execute.sh'), 'utf-8');
       expect(executeContent).toBe('#!/bin/bash\necho github');
     });
 
-    it('skips instructions.md if it returns 404 (it\'s optional)', async () => {
+    it('installs with only SKILL.md when execute.sh is missing but not required', async () => {
       const item = makeFakeItem({
         id: 'minimal-skill',
         name: 'Minimal Skill',
         assets: { archive: 'config/skills/agent/minimal-skill' },
+        metadata: { skillType: 'mcp', files: ['SKILL.md'] },
       });
 
-      // Mock fetch to return only required files
+      // Mock fetch to return only SKILL.md
       global.fetch = jest.fn().mockImplementation((url: string) => {
-        if (url.includes('skill.json')) {
+        if (url.includes('SKILL.md')) {
           return Promise.resolve({
             ok: true,
-            arrayBuffer: () => Promise.resolve(toArrayBuffer('{"id":"minimal-skill"}')),
+            arrayBuffer: () => Promise.resolve(toArrayBuffer('---\nname: Minimal\n---')),
           });
-        }
-        if (url.includes('execute.sh')) {
-          return Promise.resolve({
-            ok: true,
-            arrayBuffer: () => Promise.resolve(toArrayBuffer('#!/bin/bash\necho minimal')),
-          });
-        }
-        // instructions.md returns 404
-        if (url.includes('instructions.md')) {
-          return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found' });
         }
         return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found' });
       });
@@ -470,24 +451,22 @@ describe('marketplace-installer.service', () => {
       expect(result.success).toBe(true);
       expect(result.message).toContain('Installed Minimal Skill v1.0.0');
 
-      // Verify only required files exist
+      // Verify only SKILL.md exists
       const installDir = path.join(tempDir, 'marketplace', 'skills', 'minimal-skill');
       const files = await readdir(installDir);
-      expect(files).toContain('skill.json');
-      expect(files).toContain('execute.sh');
-      expect(files).not.toContain('instructions.md');
+      expect(files).toContain('SKILL.md');
     });
 
-    it('fails if skill.json returns 404', async () => {
+    it('fails if SKILL.md returns 404', async () => {
       const item = makeFakeItem({
         id: 'broken-skill',
         name: 'Broken Skill',
         assets: { archive: 'config/skills/agent/broken-skill' },
       });
 
-      // Mock fetch to fail on skill.json
+      // Mock fetch to fail on SKILL.md
       global.fetch = jest.fn().mockImplementation((url: string) => {
-        if (url.includes('skill.json')) {
+        if (url.includes('SKILL.md')) {
           return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found' });
         }
         return Promise.resolve({
@@ -498,7 +477,7 @@ describe('marketplace-installer.service', () => {
 
       const result = await installItem(item);
       expect(result.success).toBe(false);
-      expect(result.message).toContain('Failed to download skill.json');
+      expect(result.message).toContain('Failed to download SKILL.md');
     });
 
     it('fails if execute.sh returns 404', async () => {

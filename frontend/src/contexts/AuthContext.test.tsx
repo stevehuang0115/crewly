@@ -1,5 +1,5 @@
 /**
- * Tests for AuthContext (HTTP-based Cloud API)
+ * Tests for AuthContext (Cloud OAuth)
  *
  * @module contexts/AuthContext.test
  */
@@ -13,23 +13,19 @@ import type { UserProfile, AuthTokenResponse, LicenseStatus } from '../types/aut
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockAuthLogin = vi.fn();
-const mockAuthRegister = vi.fn();
 const mockAuthRefresh = vi.fn();
 const mockAuthGetProfile = vi.fn();
 const mockAuthGetLicense = vi.fn();
 
 vi.mock('../services/api.service', () => ({
   apiService: {
-    authLogin: (...args: unknown[]) => mockAuthLogin(...args),
-    authRegister: (...args: unknown[]) => mockAuthRegister(...args),
     authRefresh: (...args: unknown[]) => mockAuthRefresh(...args),
     authGetProfile: (...args: unknown[]) => mockAuthGetProfile(...args),
     authGetLicense: (...args: unknown[]) => mockAuthGetLicense(...args),
   },
 }));
 
-vi.mock('../services/supabase', () => {
+vi.mock('../services/token-storage', () => {
   const store: Record<string, string> = {};
   return {
     getAccessToken: () => store['access'] ?? null,
@@ -87,7 +83,7 @@ function fakeLicense(overrides: Partial<LicenseStatus> = {}): LicenseStatus {
 // ---------------------------------------------------------------------------
 
 import { AuthProvider, useAuth } from './AuthContext';
-import { storeTokens, clearTokens } from '../services/supabase';
+import { storeTokens, clearTokens } from '../services/token-storage';
 
 /** Test consumer component that renders auth state. */
 const TestConsumer: React.FC = () => {
@@ -108,7 +104,7 @@ const TestConsumer: React.FC = () => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('AuthContext (HTTP Cloud API)', () => {
+describe('AuthContext (Cloud OAuth)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearTokens();
@@ -188,85 +184,37 @@ describe('AuthContext (HTTP Cloud API)', () => {
     expect(screen.getByTestId('authenticated').textContent).toBe('false');
   });
 
-  it('should call apiService.authLogin on login', async () => {
-    mockAuthLogin.mockResolvedValue(fakeAuthResponse());
-    mockAuthGetLicense.mockResolvedValue(fakeLicense({ plan: 'free', features: [] }));
+  it('should apply cloud auth response via applyCloudAuth', async () => {
+    mockAuthGetLicense.mockResolvedValue(fakeLicense({ plan: 'pro', features: ['cloud-relay'] }));
 
-    const LoginTester: React.FC = () => {
-      const { login } = useAuth();
-      return <button onClick={() => login('a@b.com', 'pass1234')}>login</button>;
-    };
-
-    render(
-      <AuthProvider>
-        <LoginTester />
-      </AuthProvider>,
-    );
-
-    await waitFor(() => expect(screen.queryByText('login')).toBeTruthy());
-
-    await act(async () => {
-      screen.getByText('login').click();
-    });
-
-    expect(mockAuthLogin).toHaveBeenCalledWith('a@b.com', 'pass1234');
-  });
-
-  it('should set error when login fails', async () => {
-    mockAuthLogin.mockRejectedValue(new Error('Invalid credentials'));
-
-    const LoginTester: React.FC = () => {
-      const { login, error } = useAuth();
-      const handleLogin = async () => {
-        try { await login('a@b.com', 'wrong'); } catch { /* expected */ }
+    const CloudAuthTester: React.FC = () => {
+      const { applyCloudAuth, isAuthenticated } = useAuth();
+      const handleAuth = async () => {
+        await applyCloudAuth(fakeAuthResponse());
       };
       return (
         <>
-          <button onClick={handleLogin}>login</button>
-          <span data-testid="err">{error || 'none'}</span>
+          <span data-testid="auth">{String(isAuthenticated)}</span>
+          <button onClick={handleAuth}>apply</button>
         </>
       );
     };
 
     render(
       <AuthProvider>
-        <LoginTester />
+        <CloudAuthTester />
       </AuthProvider>,
     );
 
-    await waitFor(() => expect(screen.queryByText('login')).toBeTruthy());
+    await waitFor(() => expect(screen.queryByText('apply')).toBeTruthy());
 
     await act(async () => {
-      screen.getByText('login').click();
+      screen.getByText('apply').click();
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId('err').textContent).toBe('Invalid credentials');
+      expect(screen.getByTestId('auth').textContent).toBe('true');
     });
-  });
-
-  it('should call apiService.authRegister on register', async () => {
-    mockAuthRegister.mockResolvedValue(fakeAuthResponse());
-    mockAuthGetLicense.mockResolvedValue(fakeLicense({ plan: 'free', features: [] }));
-
-    const RegisterTester: React.FC = () => {
-      const { register } = useAuth();
-      return <button onClick={() => register('a@b.com', 'pass1234', 'New User')}>register</button>;
-    };
-
-    render(
-      <AuthProvider>
-        <RegisterTester />
-      </AuthProvider>,
-    );
-
-    await waitFor(() => expect(screen.queryByText('register')).toBeTruthy());
-
-    await act(async () => {
-      screen.getByText('register').click();
-    });
-
-    expect(mockAuthRegister).toHaveBeenCalledWith('a@b.com', 'pass1234', 'New User');
   });
 
   it('should clear state and tokens on logout', async () => {

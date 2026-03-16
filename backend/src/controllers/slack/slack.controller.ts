@@ -214,13 +214,6 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       threadTs,
     });
 
-    // Mark this channel+thread as delivered by skill so the bridge's
-    // sendSlackResponse fallback knows not to send a duplicate.
-    const bridge = getSlackOrchestratorBridge();
-    if (bridge.isInitialized()) {
-      bridge.markDeliveredBySkill(channelId, threadTs);
-    }
-
     res.json({
       success: true,
       data: { messageTs },

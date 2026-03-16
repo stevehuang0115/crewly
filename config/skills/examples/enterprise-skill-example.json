@@ -1,0 +1,22 @@
+{
+  "id": "compliance-checker",
+  "name": "Compliance Checker",
+  "description": "Automated compliance verification against SOC 2, HIPAA, GDPR, and custom enterprise policies",
+  "category": "quality",
+  "skillType": "claude-skill",
+  "promptFile": "instructions.md",
+  "execution": {
+    "type": "script",
+    "script": {
+      "file": "execute.sh",
+      "interpreter": "bash",
+      "timeoutMs": 120000
+    }
+  },
+  "assignableRoles": ["team-leader", "qa-engineer"],
+  "triggers": ["compliance", "audit", "SOC 2", "HIPAA", "GDPR"],
+  "tags": ["compliance", "enterprise", "audit", "security"],
+  "version": "1.0.0",
+  "requiredTier": "enterprise",
+  "fallbackSkill": null
+}

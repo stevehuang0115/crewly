@@ -5,7 +5,7 @@
  */
 
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { CloudAuthModal } from './CloudAuthModal';
 
@@ -13,13 +13,9 @@ import { CloudAuthModal } from './CloudAuthModal';
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockLogin = vi.fn();
-const mockRegister = vi.fn();
-
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({
-    login: mockLogin,
-    register: mockRegister,
+    applyCloudAuth: vi.fn(),
     isAuthenticated: false,
     user: null,
     license: null,
@@ -31,6 +27,10 @@ vi.mock('../../contexts/AuthContext', () => ({
   }),
 }));
 
+vi.mock('../../constants/cloud.constants', () => ({
+  buildCloudAuthRedirectUrl: () => 'https://crewlyai.com/auth?callback=http://localhost:3000/auth/callback',
+}));
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -40,74 +40,24 @@ describe('CloudAuthModal', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockLogin.mockResolvedValue(undefined);
-    mockRegister.mockResolvedValue(undefined);
   });
 
   it('should not render when closed', () => {
     render(<CloudAuthModal isOpen={false} onClose={onClose} />);
 
-    expect(screen.queryByText('Sign in to CrewlyAI Cloud')).not.toBeInTheDocument();
+    expect(screen.queryByText('CrewlyAI Cloud')).not.toBeInTheDocument();
   });
 
-  it('should render login form by default', () => {
+  it('should render cloud login button when open', () => {
     render(<CloudAuthModal isOpen={true} onClose={onClose} />);
 
-    expect(screen.getByText('Sign in to CrewlyAI Cloud')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument();
+    expect(screen.getByText('CrewlyAI Cloud')).toBeInTheDocument();
+    expect(screen.getByText('Sign in with CrewlyAI Cloud')).toBeInTheDocument();
   });
 
-  it('should render register form when initialTab is register', () => {
-    render(<CloudAuthModal isOpen={true} onClose={onClose} initialTab="register" />);
-
-    expect(screen.getByText('Create CrewlyAI Cloud Account')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Create Account' })).toBeInTheDocument();
-  });
-
-  it('should switch from login to register', () => {
+  it('should show the cloud redirect description', () => {
     render(<CloudAuthModal isOpen={true} onClose={onClose} />);
 
-    fireEvent.click(screen.getByText('Create one'));
-
-    expect(screen.getByText('Create CrewlyAI Cloud Account')).toBeInTheDocument();
-  });
-
-  it('should call login and close on success', async () => {
-    render(<CloudAuthModal isOpen={true} onClose={onClose} />);
-
-    fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-      target: { value: 'test@test.com' },
-    });
-    fireEvent.change(screen.getByPlaceholderText('Enter your password'), {
-      target: { value: 'password123' },
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
-
-    await waitFor(() => {
-      expect(mockLogin).toHaveBeenCalledWith('test@test.com', 'password123');
-      expect(onClose).toHaveBeenCalled();
-    });
-  });
-
-  it('should show error when login fails', async () => {
-    mockLogin.mockRejectedValue(new Error('Invalid email or password'));
-
-    render(<CloudAuthModal isOpen={true} onClose={onClose} />);
-
-    fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-      target: { value: 'test@test.com' },
-    });
-    fireEvent.change(screen.getByPlaceholderText('Enter your password'), {
-      target: { value: 'wrong' },
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('Invalid email or password');
-    });
-
-    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText(/Sign in with your CrewlyAI account/)).toBeInTheDocument();
   });
 });

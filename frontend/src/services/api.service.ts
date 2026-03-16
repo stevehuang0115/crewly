@@ -695,46 +695,6 @@ class ApiService {
   // ============ Auth Methods ============
 
   /**
-   * Register a new user account.
-   *
-   * @param email - User email
-   * @param password - User password (min 8 chars)
-   * @param displayName - Display name
-   * @returns Promise resolving to auth tokens and user profile
-   * @throws Error if registration fails (e.g., email already taken)
-   */
-  async authRegister(email: string, password: string, displayName: string): Promise<AuthTokenResponse> {
-    const response = await axios.post<ApiResponse<AuthTokenResponse>>(`${API_BASE}/auth/register`, {
-      email,
-      password,
-      displayName,
-    });
-    if (!response.data.success || !response.data.data) {
-      throw new Error(response.data.error || 'Registration failed');
-    }
-    return response.data.data;
-  }
-
-  /**
-   * Log in with email and password.
-   *
-   * @param email - User email
-   * @param password - User password
-   * @returns Promise resolving to auth tokens and user profile
-   * @throws Error if credentials are invalid
-   */
-  async authLogin(email: string, password: string): Promise<AuthTokenResponse> {
-    const response = await axios.post<ApiResponse<AuthTokenResponse>>(`${API_BASE}/auth/login`, {
-      email,
-      password,
-    });
-    if (!response.data.success || !response.data.data) {
-      throw new Error(response.data.error || 'Login failed');
-    }
-    return response.data.data;
-  }
-
-  /**
    * Refresh access token using a refresh token.
    *
    * @param refreshToken - Valid refresh token
@@ -801,6 +761,22 @@ class ApiService {
       throw new Error(response.data.error || 'Failed to get license status');
     }
     return response.data.data;
+  }
+
+  // ============ Relay Methods ============
+
+  /**
+   * Get the current relay client status (state and session info).
+   *
+   * @returns Promise resolving to relay status with client state
+   * @throws Error if the request fails
+   */
+  async getRelayStatus(): Promise<{ state: string; sessionId: string | null }> {
+    const response = await axios.get<ApiResponse<{ client: { state: string; sessionId: string | null } }>>(`${API_BASE}/relay/devices`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to get relay status');
+    }
+    return response.data.data.client;
   }
 }
 

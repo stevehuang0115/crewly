@@ -67,6 +67,8 @@ export interface CrewlyAgentConfig {
   maxSteps: number;
   /** Session name for this agent instance */
   sessionName: string;
+  /** Agent role (e.g. developer, product-manager) */
+  role?: string;
   /** Base URL for the Crewly REST API */
   apiBaseUrl: string;
   /** System prompt content (loaded from prompt.md) */
@@ -97,6 +99,8 @@ export interface AgentRunResult {
   toolCalls: ToolCallRecord[];
   /** Reason the generation finished */
   finishReason: string;
+  /** Budget warning message when token usage is approaching limits */
+  budgetWarning?: string;
 }
 
 /**
@@ -216,6 +220,48 @@ export const WRITE_TOOLS: readonly string[] = [
 ] as const;
 
 /**
+ * Context budget status for the current conversation.
+ * Tracks token usage against the model's context window limit.
+ */
+export interface ContextBudgetStatus {
+  /** Total tokens used so far (input + output) */
+  totalTokensUsed: number;
+  /** Estimated context window size for the current model */
+  contextWindowSize: number;
+  /** Usage as a fraction (0.0 - 1.0) */
+  usagePercent: number;
+  /** Current threshold level based on compactionThreshold */
+  level: 'normal' | 'warning' | 'critical';
+  /** Number of messages in conversation history */
+  messageCount: number;
+  /** Whether auto-compaction will trigger on next message */
+  compactionPending: boolean;
+  /** Human-readable summary */
+  summary: string;
+}
+
+/**
+ * Estimated context window sizes (in tokens) for known models.
+ * Used for budget tracking when the model doesn't report its own limit.
+ */
+export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  // Anthropic
+  'claude-opus-4-20250514': 200_000,
+  'claude-sonnet-4-20250514': 200_000,
+  'claude-haiku-4-20250506': 200_000,
+  // Google
+  'gemini-2.0-flash': 1_000_000,
+  'gemini-2.5-flash-preview-05-20': 1_000_000,
+  'gemini-3-flash-preview': 1_000_000,
+  // OpenAI
+  'gpt-4o': 128_000,
+  'gpt-4o-mini': 128_000,
+  'gpt-4-turbo': 128_000,
+  // Fallback
+  default: 128_000,
+} as const;
+
+/**
  * Result of an autonomous context compaction operation.
  * Returned by the compact_memory tool and requestCompaction().
  */
@@ -250,12 +296,16 @@ export interface ApprovalCheckResult {
 export interface ToolCallbacks {
   /** Trigger intelligent context compaction */
   onCompactMemory?: () => Promise<CompactionResult>;
+  /** Get current context budget status */
+  onGetContextBudget?: () => ContextBudgetStatus;
   /** Record an audit entry for a tool call */
   onAuditLog?: (entry: AuditEntry) => void;
   /** Check if a tool is allowed to execute given current security policy */
   onCheckApproval?: (toolName: string, sensitivity: ToolSensitivity) => ApprovalCheckResult;
   /** Retrieve audit log entries with optional filters */
   onGetAuditLog?: (filters: AuditLogFilters) => AuditEntry[];
+  /** Enqueue a tool call for approval when it requires explicit approval */
+  onEnqueueApproval?: (toolName: string, sensitivity: ToolSensitivity, args: Record<string, unknown>) => { approvalId: string };
 }
 
 /**

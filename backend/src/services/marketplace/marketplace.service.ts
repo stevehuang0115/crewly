@@ -374,6 +374,7 @@ const TYPE_DIR_MAP: Record<MarketplaceItemType, string> = {
   skill: 'skills',
   model: 'models',
   role: 'roles',
+  mcp_tool: 'mcp-tools',
 };
 
 export function getInstallPath(type: MarketplaceItemType, id: string): string {

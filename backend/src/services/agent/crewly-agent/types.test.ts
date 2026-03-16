@@ -5,6 +5,7 @@ import {
   MODEL_PROVIDERS,
   CREWLY_AGENT_DEFAULTS,
   WRITE_TOOLS,
+  MODEL_CONTEXT_WINDOWS,
 } from './types.js';
 import type {
   ToolDefinition,
@@ -12,9 +13,11 @@ import type {
   AuditEntry,
   SecurityPolicy,
   CompactionResult,
+  ContextBudgetStatus,
   ToolCallbacks,
   ApprovalCheckResult,
   AuditLogFilters,
+  AgentRunResult,
 } from './types.js';
 
 describe('Crewly Agent Types', () => {
@@ -310,6 +313,100 @@ describe('Crewly Agent Types', () => {
       expect(WRITE_TOOLS).not.toContain('read_file');
       expect(WRITE_TOOLS).not.toContain('get_team_status');
       expect(WRITE_TOOLS).not.toContain('recall_memory');
+    });
+  });
+
+  describe('MODEL_CONTEXT_WINDOWS', () => {
+    it('should have a default entry', () => {
+      expect(MODEL_CONTEXT_WINDOWS.default).toBeDefined();
+      expect(MODEL_CONTEXT_WINDOWS.default).toBeGreaterThan(0);
+    });
+
+    it('should include known Anthropic models', () => {
+      expect(MODEL_CONTEXT_WINDOWS['claude-opus-4-20250514']).toBe(200_000);
+      expect(MODEL_CONTEXT_WINDOWS['claude-sonnet-4-20250514']).toBe(200_000);
+    });
+
+    it('should include known Google models', () => {
+      expect(MODEL_CONTEXT_WINDOWS['gemini-2.0-flash']).toBe(1_000_000);
+    });
+
+    it('should include known OpenAI models', () => {
+      expect(MODEL_CONTEXT_WINDOWS['gpt-4o']).toBe(128_000);
+    });
+  });
+
+  describe('ContextBudgetStatus type', () => {
+    it('should accept valid normal status', () => {
+      const status: ContextBudgetStatus = {
+        totalTokensUsed: 5000,
+        contextWindowSize: 200000,
+        usagePercent: 0.025,
+        level: 'normal',
+        messageCount: 10,
+        compactionPending: false,
+        summary: '2.5% of context budget used',
+      };
+      expect(status.level).toBe('normal');
+      expect(status.compactionPending).toBe(false);
+    });
+
+    it('should accept valid critical status', () => {
+      const status: ContextBudgetStatus = {
+        totalTokensUsed: 180000,
+        contextWindowSize: 200000,
+        usagePercent: 0.9,
+        level: 'critical',
+        messageCount: 95,
+        compactionPending: true,
+        summary: '90.0% — CRITICAL',
+      };
+      expect(status.level).toBe('critical');
+      expect(status.compactionPending).toBe(true);
+    });
+  });
+
+  describe('AgentRunResult budgetWarning', () => {
+    it('should accept result with budgetWarning', () => {
+      const result: AgentRunResult = {
+        text: 'Done',
+        steps: 1,
+        usage: { input: 100, output: 50 },
+        toolCalls: [],
+        finishReason: 'stop',
+        budgetWarning: 'WARNING: approaching compaction threshold',
+      };
+      expect(result.budgetWarning).toContain('WARNING');
+    });
+
+    it('should accept result without budgetWarning', () => {
+      const result: AgentRunResult = {
+        text: 'Done',
+        steps: 1,
+        usage: { input: 100, output: 50 },
+        toolCalls: [],
+        finishReason: 'stop',
+      };
+      expect(result.budgetWarning).toBeUndefined();
+    });
+  });
+
+  describe('ToolCallbacks onGetContextBudget', () => {
+    it('should accept callbacks with onGetContextBudget', () => {
+      const callbacks: ToolCallbacks = {
+        onGetContextBudget: () => ({
+          totalTokensUsed: 0,
+          contextWindowSize: 200000,
+          usagePercent: 0,
+          level: 'normal',
+          messageCount: 0,
+          compactionPending: false,
+          summary: '0%',
+        }),
+      };
+      expect(callbacks.onGetContextBudget).toBeDefined();
+      const result = callbacks.onGetContextBudget!();
+      expect(result.level).toBe('normal');
     });
   });
 });
