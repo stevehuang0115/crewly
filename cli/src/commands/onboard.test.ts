@@ -133,15 +133,26 @@ function mockTmuxNotFound(): void {
   mockExecSync.mockImplementationOnce(() => { throw new Error('not found'); });
 }
 
+/** Helper: make tmux appear as found (consumes 2 mockExecSync calls) */
+function mockTmuxFound(): void {
+  mockExecSync
+    .mockReturnValueOnce(Buffer.from('/usr/bin/tmux'))   // which tmux
+    .mockReturnValueOnce(Buffer.from('tmux 3.4'));        // tmux -V
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe('onboard command', () => {
   let logSpy: jest.SpyInstance;
+  let exitSpy: jest.SpyInstance;
 
   beforeEach(() => {
     logSpy = jest.spyOn(console, 'log').mockImplementation();
+    exitSpy = jest.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit called');
+    }) as never);
     mockExecSync.mockReset();
     mockCheckSkillsInstalled.mockReset();
     mockInstallAllSkills.mockReset();
@@ -159,6 +170,7 @@ describe('onboard command', () => {
 
   afterEach(() => {
     logSpy.mockRestore();
+    exitSpy.mockRestore();
   });
 
   // -----------------------------------------------------------------------
@@ -280,19 +292,23 @@ describe('onboard command', () => {
       expect(output).toContain('tmux detected');
     });
 
-    it('warns when tmux is not found', async () => {
+    it('warns when tmux is not found and exits', async () => {
       mockTmuxNotFound();
 
       const rl = createMockReadline([]);
-      await ensureTools(rl, 'skip');
+      await expect(ensureTools(rl, 'skip')).rejects.toThrow('process.exit called');
 
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
       expect(output).toContain('tmux not found');
       expect(output).toContain('brew install tmux');
+      expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
-    it('skips tool installation when provider is skip', async () => {
-      mockTmuxNotFound();
+    it('skips tool installation when provider is skip and tmux present', async () => {
+      // tmux found
+      mockExecSync
+        .mockReturnValueOnce(Buffer.from('/usr/bin/tmux'))
+        .mockReturnValueOnce(Buffer.from('tmux 3.4'));
 
       const rl = createMockReadline([]);
       await ensureTools(rl, 'skip');
@@ -301,9 +317,10 @@ describe('onboard command', () => {
     });
 
     it('detects an already-installed tool', async () => {
-      // tmux → not found; which claude → found; claude --version
-      mockTmuxNotFound();
+      // tmux → found; which claude → found; claude --version
       mockExecSync
+        .mockReturnValueOnce(Buffer.from('/usr/bin/tmux'))   // which tmux
+        .mockReturnValueOnce(Buffer.from('tmux 3.4'))         // tmux -V
         .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
         .mockReturnValueOnce(Buffer.from('1.0.17'));
 
@@ -315,9 +332,10 @@ describe('onboard command', () => {
     });
 
     it('prompts to install a missing tool and installs on Y', async () => {
-      // tmux → not found; which claude → not found; npm install → succeeds
-      mockTmuxNotFound();
+      // tmux → found; which claude → not found; npm install → succeeds
       mockExecSync
+        .mockReturnValueOnce(Buffer.from('/usr/bin/tmux'))   // which tmux
+        .mockReturnValueOnce(Buffer.from('tmux 3.4'))         // tmux -V
         .mockImplementationOnce(() => { throw new Error('not found'); })  // which claude
         .mockReturnValueOnce(Buffer.from(''))  // npm install
         ;
@@ -331,7 +349,11 @@ describe('onboard command', () => {
     });
 
     it('skips installation when user declines', async () => {
-      mockExecSync.mockImplementation(() => { throw new Error('not found'); });
+      // tmux → found; which claude → not found
+      mockExecSync
+        .mockReturnValueOnce(Buffer.from('/usr/bin/tmux'))   // which tmux
+        .mockReturnValueOnce(Buffer.from('tmux 3.4'))         // tmux -V
+        .mockImplementationOnce(() => { throw new Error('not found'); });  // which claude
 
       const rl = createMockReadline(['n']);
       await ensureTools(rl, 'claude');
@@ -341,9 +363,10 @@ describe('onboard command', () => {
     });
 
     it('auto-installs missing tools when autoYes is true', async () => {
-      // tmux → not found; which claude → not found; npm install → succeeds
-      mockTmuxNotFound();
+      // tmux → found; which claude → not found; npm install → succeeds
       mockExecSync
+        .mockReturnValueOnce(Buffer.from('/usr/bin/tmux'))   // which tmux
+        .mockReturnValueOnce(Buffer.from('tmux 3.4'))         // tmux -V
         .mockImplementationOnce(() => { throw new Error('not found'); }) // which claude
         .mockReturnValueOnce(Buffer.from('')) // npm install
         ;
@@ -770,8 +793,8 @@ describe('onboard command', () => {
       mockReadlineAnswers = ['1']; // claude provider; template auto-skips (no templates)
       mockReadlineAnswerIndex = 0;
 
-      // tmux → not found; which claude → found; claude --version
-      mockTmuxNotFound();
+      // tmux → found; which claude → found; claude --version
+      mockTmuxFound();
       mockExecSync
         .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
         .mockReturnValueOnce(Buffer.from('1.0.17'));
@@ -810,8 +833,8 @@ describe('onboard command', () => {
 
     it('runs non-interactive with defaults', async () => {
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
-      // tmux → not found; which claude → found; claude --version
-      mockTmuxNotFound();
+      // tmux → found; which claude → found; claude --version
+      mockTmuxFound();
       mockExecSync
         .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
         .mockReturnValueOnce(Buffer.from('1.0.17'));
@@ -826,8 +849,8 @@ describe('onboard command', () => {
 
     it('auto-installs missing tools in --yes mode', async () => {
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
-      // tmux → not found; which claude → not found; npm install succeeds
-      mockTmuxNotFound();
+      // tmux → found; which claude → not found; npm install succeeds
+      mockTmuxFound();
       mockExecSync
         .mockImplementationOnce(() => { throw new Error('not found'); })
         .mockReturnValueOnce(Buffer.from(''));
@@ -842,7 +865,7 @@ describe('onboard command', () => {
     it('uses first available template when no --template specified', async () => {
       mockListTemplates.mockReturnValue([sampleTemplate]);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
-      mockTmuxNotFound();
+      mockTmuxFound();
       mockExecSync
         .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
         .mockReturnValueOnce(Buffer.from('1.0.17'));
@@ -855,7 +878,7 @@ describe('onboard command', () => {
 
     it('scaffolds .crewly/ directory in --yes mode', async () => {
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
-      mockTmuxNotFound();
+      mockTmuxFound();
       mockExecSync
         .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
         .mockReturnValueOnce(Buffer.from('1.0.17'));
@@ -896,7 +919,7 @@ describe('onboard command', () => {
     it('uses specified template in --yes mode', async () => {
       mockGetTemplate.mockReturnValue(sampleTemplate);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
-      mockTmuxNotFound();
+      mockTmuxFound();
       mockExecSync
         .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
         .mockReturnValueOnce(Buffer.from('1.0.17'));

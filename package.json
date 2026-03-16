@@ -97,6 +97,7 @@
     "open": "^9.1.0",
     "pdf-parse": "^2.4.5",
     "socket.io": "^4.7.2",
+    "sqlite-vec": "^0.1.7-alpha.2",
     "stripe": "^20.4.1",
     "tar": "^7.5.9",
     "uuid": "^9.0.0",

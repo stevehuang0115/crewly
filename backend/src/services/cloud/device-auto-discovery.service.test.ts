@@ -1,5 +1,11 @@
 /**
  * Tests for DeviceAutoDiscoveryService
+ *
+ * Covers: singleton, start/stop, device events, exponential backoff on
+ * poll and heartbeat failures, max retry limits, and backoff reset on
+ * recovery. Uses fake timers + mock fetch.
+ *
+ * @module services/cloud/device-auto-discovery.service.test
  */
 
 import {
@@ -46,6 +52,20 @@ const mockDevice: DiscoveredDevice = {
 	lastHeartbeatAt: new Date().toISOString(),
 };
 
+/** Helper: create mock responses for register + initial poll */
+function mockSuccessfulStart(devices: DiscoveredDevice[] = []) {
+	mockFetch
+		.mockResolvedValueOnce({ ok: true, json: async () => ({}) }) // register
+		.mockResolvedValueOnce({ ok: true, json: async () => ({ devices }) }); // initial poll
+}
+
+/** Helper: flush microtask queue (for async callbacks in setTimeout) */
+async function flushPromises() {
+	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
 describe('DeviceAutoDiscoveryService', () => {
 	beforeEach(() => {
 		jest.useFakeTimers();
@@ -75,10 +95,7 @@ describe('DeviceAutoDiscoveryService', () => {
 
 	describe('start', () => {
 		it('should register device and start polling', async () => {
-			// Mock register + initial poll
-			mockFetch
-				.mockResolvedValueOnce({ ok: true, json: async () => ({}) }) // register
-				.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [] }) }); // poll
+			mockSuccessfulStart();
 
 			const service = DeviceAutoDiscoveryService.getInstance();
 			await service.start(mockConfig);
@@ -105,13 +122,21 @@ describe('DeviceAutoDiscoveryService', () => {
 			await expect(service.start(mockConfig)).rejects.toThrow('Device registration failed');
 			expect(service.getState()).toBe('error');
 		});
+
+		it('should reset failure counters on start', async () => {
+			mockSuccessfulStart();
+
+			const service = DeviceAutoDiscoveryService.getInstance();
+			await service.start(mockConfig);
+
+			expect(service.getConsecutivePollFailures()).toBe(0);
+			expect(service.getConsecutiveHeartbeatFailures()).toBe(0);
+		});
 	});
 
 	describe('stop', () => {
 		it('should clear state and timers', async () => {
-			mockFetch
-				.mockResolvedValueOnce({ ok: true, json: async () => ({}) })
-				.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [mockDevice] }) });
+			mockSuccessfulStart([mockDevice]);
 
 			const service = DeviceAutoDiscoveryService.getInstance();
 			await service.start(mockConfig);
@@ -120,6 +145,17 @@ describe('DeviceAutoDiscoveryService', () => {
 			service.stop();
 			expect(service.getState()).toBe('stopped');
 			expect(service.getDevices()).toEqual([]);
+		});
+
+		it('should reset failure counters on stop', async () => {
+			mockSuccessfulStart();
+
+			const service = DeviceAutoDiscoveryService.getInstance();
+			await service.start(mockConfig);
+
+			service.stop();
+			expect(service.getConsecutivePollFailures()).toBe(0);
+			expect(service.getConsecutiveHeartbeatFailures()).toBe(0);
 		});
 	});
 
@@ -150,9 +186,7 @@ describe('DeviceAutoDiscoveryService', () => {
 
 	describe('device events', () => {
 		it('should emit deviceFound when new device appears', async () => {
-			mockFetch
-				.mockResolvedValueOnce({ ok: true, json: async () => ({}) })
-				.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [mockDevice] }) });
+			mockSuccessfulStart([mockDevice]);
 
 			const service = DeviceAutoDiscoveryService.getInstance();
 			const foundHandler = jest.fn();
@@ -168,9 +202,7 @@ describe('DeviceAutoDiscoveryService', () => {
 
 		it('should emit deviceLost when device disappears', async () => {
 			// First poll: device present
-			mockFetch
-				.mockResolvedValueOnce({ ok: true, json: async () => ({}) }) // register
-				.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [mockDevice] }) }); // poll 1
+			mockSuccessfulStart([mockDevice]);
 
 			const service = DeviceAutoDiscoveryService.getInstance();
 			const lostHandler = jest.fn();
@@ -181,20 +213,14 @@ describe('DeviceAutoDiscoveryService', () => {
 			// Second poll: device gone
 			mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [] }) });
 
-			// Trigger poll interval
 			jest.advanceTimersByTime(200);
-			// Need to flush promises
-			await Promise.resolve();
-			await Promise.resolve();
+			await flushPromises();
 
-			// Poll may not have completed due to timer complexity, but the handler setup is correct
 			expect(service.getState()).toBe('polling');
 		});
 
 		it('should emit devicesUpdated on each poll', async () => {
-			mockFetch
-				.mockResolvedValueOnce({ ok: true, json: async () => ({}) })
-				.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [mockDevice] }) });
+			mockSuccessfulStart([mockDevice]);
 
 			const service = DeviceAutoDiscoveryService.getInstance();
 			const updatedHandler = jest.fn();
@@ -206,6 +232,179 @@ describe('DeviceAutoDiscoveryService', () => {
 		});
 	});
 
+	describe('calculateBackoff', () => {
+		it('should return 0 for 0 failures', () => {
+			expect(DeviceAutoDiscoveryService.calculateBackoff(0)).toBe(0);
+		});
+
+		it('should return base delay for 1 failure', () => {
+			expect(DeviceAutoDiscoveryService.calculateBackoff(1)).toBe(DISCOVERY_CONSTANTS.BACKOFF_BASE_MS);
+		});
+
+		it('should double on each subsequent failure', () => {
+			const base = DISCOVERY_CONSTANTS.BACKOFF_BASE_MS;
+			expect(DeviceAutoDiscoveryService.calculateBackoff(1)).toBe(base); // 1s
+			expect(DeviceAutoDiscoveryService.calculateBackoff(2)).toBe(base * 2); // 2s
+			expect(DeviceAutoDiscoveryService.calculateBackoff(3)).toBe(base * 4); // 4s
+			expect(DeviceAutoDiscoveryService.calculateBackoff(4)).toBe(base * 8); // 8s
+		});
+
+		it('should cap at BACKOFF_MAX_MS', () => {
+			expect(DeviceAutoDiscoveryService.calculateBackoff(100)).toBe(
+				DISCOVERY_CONSTANTS.BACKOFF_MAX_MS,
+			);
+		});
+
+		it('should return 0 for negative failures', () => {
+			expect(DeviceAutoDiscoveryService.calculateBackoff(-1)).toBe(0);
+		});
+	});
+
+	describe('poll backoff', () => {
+		it('should increment consecutive failures on poll error', async () => {
+			mockSuccessfulStart();
+
+			const service = DeviceAutoDiscoveryService.getInstance();
+			await service.start(mockConfig);
+			expect(service.getConsecutivePollFailures()).toBe(0);
+
+			// Next poll fails (HTTP error)
+			mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+
+			jest.advanceTimersByTime(200);
+			await flushPromises();
+
+			expect(service.getConsecutivePollFailures()).toBe(1);
+		});
+
+		it('should increment failures on network error', async () => {
+			mockSuccessfulStart();
+
+			const service = DeviceAutoDiscoveryService.getInstance();
+			await service.start(mockConfig);
+
+			// Next poll throws (network error)
+			mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+			jest.advanceTimersByTime(200);
+			await flushPromises();
+
+			expect(service.getConsecutivePollFailures()).toBe(1);
+		});
+
+		it('should reset failures on successful poll', async () => {
+			mockSuccessfulStart();
+
+			const service = DeviceAutoDiscoveryService.getInstance();
+			await service.start(mockConfig);
+
+			// Poll fails
+			mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+			jest.advanceTimersByTime(200);
+			await flushPromises();
+			expect(service.getConsecutivePollFailures()).toBe(1);
+
+			// Next poll succeeds — now wait for the backoff delay (1s for 1 failure)
+			mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [] }) });
+			jest.advanceTimersByTime(DISCOVERY_CONSTANTS.BACKOFF_BASE_MS + 100);
+			await flushPromises();
+
+			expect(service.getConsecutivePollFailures()).toBe(0);
+		});
+
+		it('should emit backoffActive event on poll failure', async () => {
+			mockSuccessfulStart();
+
+			const service = DeviceAutoDiscoveryService.getInstance();
+			const backoffHandler = jest.fn();
+			service.on('backoffActive', backoffHandler);
+
+			await service.start(mockConfig);
+
+			mockFetch.mockResolvedValueOnce({ ok: false, status: 503 });
+			jest.advanceTimersByTime(200);
+			await flushPromises();
+
+			expect(backoffHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: 'poll',
+					failures: 1,
+					delay: DISCOVERY_CONSTANTS.BACKOFF_BASE_MS,
+				}),
+			);
+		});
+
+		it('should enter error state after MAX_CONSECUTIVE_POLL_FAILURES', async () => {
+			mockSuccessfulStart();
+
+			const service = DeviceAutoDiscoveryService.getInstance();
+			const maxRetriesHandler = jest.fn();
+			service.on('maxRetriesExceeded', maxRetriesHandler);
+
+			await service.start(mockConfig);
+
+			// Simulate MAX failures by repeatedly failing and advancing timers
+			for (let i = 0; i < DISCOVERY_CONSTANTS.MAX_CONSECUTIVE_POLL_FAILURES; i++) {
+				mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+				const backoffDelay = DeviceAutoDiscoveryService.calculateBackoff(i);
+				jest.advanceTimersByTime(Math.max(backoffDelay, 200) + 50);
+				await flushPromises();
+			}
+
+			expect(service.getState()).toBe('error');
+			expect(service.getConsecutivePollFailures()).toBe(
+				DISCOVERY_CONSTANTS.MAX_CONSECUTIVE_POLL_FAILURES,
+			);
+			expect(maxRetriesHandler).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: 'poll',
+					failures: DISCOVERY_CONSTANTS.MAX_CONSECUTIVE_POLL_FAILURES,
+				}),
+			);
+		});
+	});
+
+	describe('heartbeat backoff', () => {
+		it('should increment consecutive heartbeat failures', async () => {
+			mockSuccessfulStart();
+
+			const service = DeviceAutoDiscoveryService.getInstance();
+			await service.start(mockConfig);
+
+			// First scheduled callback is a poll, then heartbeat
+			// Make poll succeed, heartbeat fail
+			mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [] }) }); // poll
+			mockFetch.mockResolvedValueOnce({ ok: false, status: 500 }); // heartbeat
+
+			jest.advanceTimersByTime(200);
+			await flushPromises();
+
+			expect(service.getConsecutiveHeartbeatFailures()).toBe(1);
+		});
+
+		it('should reset heartbeat failures on success', async () => {
+			mockSuccessfulStart();
+
+			const service = DeviceAutoDiscoveryService.getInstance();
+			await service.start(mockConfig);
+
+			// Heartbeat fails
+			mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [] }) }); // poll
+			mockFetch.mockRejectedValueOnce(new Error('timeout')); // heartbeat fails
+			jest.advanceTimersByTime(200);
+			await flushPromises();
+			expect(service.getConsecutiveHeartbeatFailures()).toBe(1);
+
+			// Heartbeat succeeds
+			mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [] }) }); // poll
+			mockFetch.mockResolvedValueOnce({ ok: true }); // heartbeat succeeds
+			jest.advanceTimersByTime(DISCOVERY_CONSTANTS.BACKOFF_BASE_MS + 200);
+			await flushPromises();
+
+			expect(service.getConsecutiveHeartbeatFailures()).toBe(0);
+		});
+	});
+
 	describe('DISCOVERY_CONSTANTS', () => {
 		it('should have correct defaults', () => {
 			expect(DISCOVERY_CONSTANTS.POLL_INTERVAL_MS).toBe(30_000);
@@ -213,6 +412,14 @@ describe('DeviceAutoDiscoveryService', () => {
 			expect(DISCOVERY_CONSTANTS.OFFLINE_THRESHOLD_MS).toBe(300_000);
 			expect(DISCOVERY_CONSTANTS.MAX_DEVICES_PER_USER).toBe(10);
 			expect(DISCOVERY_CONSTANTS.DEVICES_PATH).toBe('/v1/devices');
+		});
+
+		it('should have correct backoff defaults', () => {
+			expect(DISCOVERY_CONSTANTS.BACKOFF_BASE_MS).toBe(1_000);
+			expect(DISCOVERY_CONSTANTS.BACKOFF_MAX_MS).toBe(300_000);
+			expect(DISCOVERY_CONSTANTS.BACKOFF_MULTIPLIER).toBe(2);
+			expect(DISCOVERY_CONSTANTS.MAX_CONSECUTIVE_POLL_FAILURES).toBe(20);
+			expect(DISCOVERY_CONSTANTS.MAX_CONSECUTIVE_HEARTBEAT_FAILURES).toBe(10);
 		});
 	});
 });

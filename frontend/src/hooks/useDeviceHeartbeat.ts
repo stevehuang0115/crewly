@@ -47,8 +47,12 @@ export interface UseDeviceHeartbeatResult {
   refresh: () => Promise<void>;
 }
 
-/** Heartbeat interval in milliseconds. */
+/** Base heartbeat interval in milliseconds. */
 const HEARTBEAT_INTERVAL_MS = 30_000;
+/** Maximum backoff interval (5 minutes). */
+const MAX_BACKOFF_MS = 300_000;
+/** Backoff multiplier on consecutive failures. */
+const BACKOFF_MULTIPLIER = 2;
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -75,23 +79,51 @@ export function useDeviceHeartbeat(
   const [devices, setDevices] = useState<OnlineDevice[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMountedRef = useRef(true);
-  // Store latest values in refs so interval callback always has fresh data
+  /** Consecutive failure count for exponential backoff */
+  const failCountRef = useRef(0);
+  // Store latest values in refs so timer callback always has fresh data
   const tokenRef = useRef(accessToken);
   const teamsRef = useRef(localTeams);
   const nameRef = useRef(deviceName);
+  const enabledRef = useRef(enabled);
 
   tokenRef.current = accessToken;
   teamsRef.current = localTeams;
   nameRef.current = deviceName;
+  enabledRef.current = enabled;
+
+  /**
+   * Compute the next interval based on consecutive failures.
+   * Uses exponential backoff capped at MAX_BACKOFF_MS.
+   */
+  const getNextInterval = useCallback((): number => {
+    if (failCountRef.current === 0) return HEARTBEAT_INTERVAL_MS;
+    return Math.min(
+      HEARTBEAT_INTERVAL_MS * Math.pow(BACKOFF_MULTIPLIER, failCountRef.current),
+      MAX_BACKOFF_MS,
+    );
+  }, []);
+
+  /**
+   * Schedule the next tick with backoff-aware delay.
+   */
+  const scheduleNext = useCallback(() => {
+    if (!isMountedRef.current || !enabledRef.current) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    const delay = getNextInterval();
+    timerRef.current = setTimeout(() => {
+      tick();
+    }, delay);
+  }, [getNextInterval]);
 
   /**
    * Send a heartbeat and fetch device list.
    */
   const tick = useCallback(async () => {
     const token = tokenRef.current;
-    if (!token) return;
+    if (!token || !isMountedRef.current) return;
 
     const headers = {
       'Content-Type': 'application/json',
@@ -116,19 +148,25 @@ export function useDeviceHeartbeat(
       if (isMountedRef.current && data.success) {
         setDevices(data.data || []);
         setError(null);
+        failCountRef.current = 0; // Reset backoff on success
       }
     } catch (err) {
       if (isMountedRef.current) {
+        failCountRef.current = Math.min(failCountRef.current + 1, 10); // Cap at 10
         setError(err instanceof Error ? err.message : 'Heartbeat failed');
       }
     }
-  }, []);
+
+    // Schedule next tick with backoff
+    scheduleNext();
+  }, [scheduleNext]);
 
   /**
    * Manually refresh the device list.
    */
   const refresh = useCallback(async () => {
     setIsLoading(true);
+    failCountRef.current = 0; // Reset backoff on manual refresh
     await tick();
     if (isMountedRef.current) setIsLoading(false);
   }, [tick]);
@@ -138,6 +176,7 @@ export function useDeviceHeartbeat(
 
     if (!enabled || !accessToken) {
       setDevices([]);
+      failCountRef.current = 0;
       return;
     }
 
@@ -147,14 +186,11 @@ export function useDeviceHeartbeat(
       if (isMountedRef.current) setIsLoading(false);
     });
 
-    // Periodic heartbeat + refresh
-    intervalRef.current = setInterval(tick, HEARTBEAT_INTERVAL_MS);
-
     return () => {
       isMountedRef.current = false;
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
       }
     };
   }, [enabled, accessToken, tick]);

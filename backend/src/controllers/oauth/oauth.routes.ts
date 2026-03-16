@@ -39,6 +39,15 @@ export function createOAuthRouter(): Router {
       }
 
       const slackUserId = req.query.slackUserId ? String(req.query.slackUserId) : undefined;
+      
+      // Determine scopes: prefer query param, fallback to default
+      let requestedScopes = GOOGLE_OAUTH_CONSTANTS.DEFAULT_SCOPES;
+      if (req.query.scopes) {
+        const scopesStr = String(req.query.scopes);
+        // Handle both comma-separated and space-separated input
+        requestedScopes = scopesStr.split(/[ ,]+/).filter(Boolean) as any;
+      }
+
       const statePayload = {
         slackUserId,
         t: Date.now(),
@@ -52,7 +61,7 @@ export function createOAuthRouter(): Router {
       url.searchParams.set('response_type', 'code');
       url.searchParams.set('access_type', 'offline');
       url.searchParams.set('prompt', 'consent');
-      url.searchParams.set('scope', GOOGLE_OAUTH_CONSTANTS.DEFAULT_SCOPES.join(' '));
+      url.searchParams.set('scope', requestedScopes.join(' '));
       url.searchParams.set('state', state);
 
       res.json({ success: true, data: { authUrl: url.toString(), state } });

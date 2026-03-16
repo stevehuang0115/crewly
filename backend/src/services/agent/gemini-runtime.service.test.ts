@@ -34,6 +34,7 @@ jest.mock('../settings/settings.service.js', () => ({
 		getSettings: jest.fn().mockResolvedValue({
 			...require('../../types/settings.types.js').getDefaultSettings(),
 		}),
+		getApiKey: jest.fn().mockResolvedValue('test-api-key-123'),
 	}),
 }));
 
@@ -733,7 +734,14 @@ describe('GeminiRuntimeService', () => {
 		let originalEnv: string | undefined;
 
 		beforeEach(() => {
+			// ensureGeminiEnvFile uses async/await — need real timers
+			jest.useRealTimers();
 			jest.clearAllMocks();
+			// Re-setup settingsService mock after clearAllMocks (clearAllMocks resets mockReturnValue)
+			(getSettingsService as jest.Mock).mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(getDefaultSettings()),
+				getApiKey: jest.fn().mockResolvedValue('test-api-key-123'),
+			});
 			originalEnv = process.env.GEMINI_API_KEY;
 			// Default: set the env var so most tests can focus on file behavior
 			process.env.GEMINI_API_KEY = 'test-api-key-123';
@@ -745,6 +753,8 @@ describe('GeminiRuntimeService', () => {
 		});
 
 		afterEach(() => {
+			// Restore fake timers for other test groups
+			jest.useFakeTimers();
 			// Restore original env
 			if (originalEnv !== undefined) {
 				process.env.GEMINI_API_KEY = originalEnv;
@@ -753,8 +763,13 @@ describe('GeminiRuntimeService', () => {
 			}
 		});
 
-		it('should skip when GEMINI_API_KEY is not in process.env', async () => {
+		it('should skip when API key is not available', async () => {
 			delete process.env.GEMINI_API_KEY;
+			// Mock getApiKey returning null (no key found in settings or env)
+			(getSettingsService as jest.Mock).mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(getDefaultSettings()),
+				getApiKey: jest.fn().mockResolvedValue(null),
+			});
 
 			await service['ensureGeminiEnvFile'](projectPath);
 
@@ -764,15 +779,15 @@ describe('GeminiRuntimeService', () => {
 			expect(mockAppendFile).not.toHaveBeenCalled();
 		});
 
-		it('should skip when .env already contains the key', async () => {
+		it('should skip when .env already contains the matching key', async () => {
 			mockReadFile.mockImplementation(async (p) => {
-				if (p === envPath) return 'SOME_VAR=abc\nGEMINI_API_KEY=existing-key\n';
+				if (p === envPath) return 'SOME_VAR=abc\nGEMINI_API_KEY="test-api-key-123"\n';
 				throw new Error('ENOENT');
 			});
 
 			await service['ensureGeminiEnvFile'](projectPath);
 
-			// Should read the file but not write
+			// Should read the file but not write — key already matches settings value
 			expect(mockReadFile).toHaveBeenCalledWith(envPath, 'utf8');
 			expect(mockWriteFile).not.toHaveBeenCalled();
 			expect(mockAppendFile).not.toHaveBeenCalled();

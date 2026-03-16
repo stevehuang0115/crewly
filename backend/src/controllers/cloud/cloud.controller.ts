@@ -88,9 +88,24 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
 
     const resolvedUrl = cloudUrl || CLOUD_CONSTANTS.DEFAULT_CLOUD_URL;
     const client = CloudClientService.getInstance();
-    const result = await client.connect(resolvedUrl, token);
 
-    logger.info('Connected to CrewlyAI Cloud', { tier: result.tier });
+    // Try local JWT verification first — this works when OSS and Cloud share
+    // the same JWT secret (CREWLY_JWT_SECRET), or when the token was issued
+    // by this same instance (e.g. local Google OAuth flow).
+    const localPayload = verifyJwt(token);
+    let result: { success: boolean; tier: string };
+
+    if (localPayload) {
+      // JWT verified locally — connect without calling cloud API
+      const tier = (localPayload.plan as string) || 'free';
+      client.connectLocal(resolvedUrl, token, tier as import('../../constants.js').CloudTier);
+      result = { success: true, tier };
+      logger.info('Connected to CrewlyAI Cloud (local JWT verification)', { tier });
+    } else {
+      // Local verification failed (different JWT secret) — call cloud API
+      result = await client.connect(resolvedUrl, token);
+      logger.info('Connected to CrewlyAI Cloud (remote verification)', { tier: result.tier });
+    }
 
     // Auto-initiate relay connection (best-effort, non-blocking)
     autoConnectRelay(token);

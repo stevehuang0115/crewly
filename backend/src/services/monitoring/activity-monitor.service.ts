@@ -186,8 +186,12 @@ export class ActivityMonitorService {
         this.busyTransitionTimestamps.delete(key);
         this.busyEventEmitted.delete(key);
       }
-    } else if (newStatus === 'in_progress' && this.busyTransitionTimestamps.has(key) && !this.busyEventEmitted.has(key)) {
-      // Still in_progress across polls — check if deferred busy event can now be emitted
+    } else if (newStatus === 'in_progress' && !this.busyEventEmitted.has(key)) {
+      // Still in_progress across polls — seed timestamp if missing (service restart)
+      // and check if deferred busy event can now be emitted
+      if (!this.busyTransitionTimestamps.has(key)) {
+        this.busyTransitionTimestamps.set(key, Date.now());
+      }
       const busyStart = this.busyTransitionTimestamps.get(key)!;
       if (Date.now() - busyStart >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.eventBusService) {
         this.busyEventEmitted.add(key);
@@ -365,9 +369,32 @@ export class ActivityMonitorService {
           PtyActivityTrackerService.getInstance().recordActivity(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
         }
 
-        const newWorkingStatus: WorkingStatus = outputChanged ? 'in_progress' : 'idle';
+        let newWorkingStatus: WorkingStatus = outputChanged ? 'in_progress' : 'idle';
         const orchKey = 'orchestrator';
         const previousStatus = workingStatusData.orchestrator.workingStatus;
+
+        // Auto-reset: if in_progress for longer than MAX_IN_PROGRESS_MS, force idle.
+        // Prevents workingStatus from getting stuck due to continuous terminal output
+        // (spinners, TUI re-renders, long-running tool calls).
+        if (newWorkingStatus === 'in_progress') {
+          let busySince = this.busyTransitionTimestamps.get(orchKey);
+          if (!busySince) {
+            // Seed timestamp when status is already in_progress but no transition was
+            // observed (e.g. service restart with pre-existing in_progress in the file).
+            // Use updatedAt from the file if available, otherwise fall back to now.
+            const fileUpdatedAt = Date.parse(workingStatusData.orchestrator.updatedAt);
+            busySince = (previousStatus === 'in_progress' && !isNaN(fileUpdatedAt)) ? fileUpdatedAt : Date.now();
+            this.busyTransitionTimestamps.set(orchKey, busySince);
+          }
+          if ((Date.now() - busySince) > ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS) {
+            this.logger.info('Auto-resetting orchestrator workingStatus from in_progress to idle (exceeded max duration)', {
+              durationMs: Date.now() - busySince,
+              maxMs: ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS,
+            });
+            newWorkingStatus = 'idle';
+          }
+        }
+
         const statusChanged = previousStatus !== newWorkingStatus;
 
         if (statusChanged) {
@@ -458,10 +485,32 @@ export class ActivityMonitorService {
                 }
               }
 
-              const newWorkingStatus: WorkingStatus = outputChanged ? 'in_progress' : 'idle';
+              let newWorkingStatus: WorkingStatus = outputChanged ? 'in_progress' : 'idle';
+
+              // Auto-reset: if in_progress for longer than MAX_IN_PROGRESS_MS, force idle
+              const memberKey = member.sessionName;
+              if (newWorkingStatus === 'in_progress') {
+                let busySince = this.busyTransitionTimestamps.get(memberKey);
+                if (!busySince) {
+                  // Seed timestamp when status is already in_progress but no transition was
+                  // observed (e.g. service restart with pre-existing in_progress in the file).
+                  const existingEntry = workingStatusData.teamMembers[memberKey];
+                  const fileUpdatedAt = existingEntry ? Date.parse(existingEntry.updatedAt) : NaN;
+                  const previousMemberStatus = existingEntry?.workingStatus;
+                  busySince = (previousMemberStatus === 'in_progress' && !isNaN(fileUpdatedAt)) ? fileUpdatedAt : Date.now();
+                  this.busyTransitionTimestamps.set(memberKey, busySince);
+                }
+                if ((Date.now() - busySince) > ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS) {
+                  this.logger.info('Auto-resetting member workingStatus from in_progress to idle (exceeded max duration)', {
+                    sessionName: member.sessionName,
+                    durationMs: Date.now() - busySince,
+                    maxMs: ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS,
+                  });
+                  newWorkingStatus = 'idle';
+                }
+              }
 
               // Update working status if changed
-              const memberKey = member.sessionName;
               if (!workingStatusData.teamMembers[memberKey]) {
                 workingStatusData.teamMembers[memberKey] = {
                   sessionName: member.sessionName,

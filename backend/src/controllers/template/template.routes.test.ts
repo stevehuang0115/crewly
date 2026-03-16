@@ -18,6 +18,7 @@ jest.mock('./template.controller.js', () => ({
   handleListTemplates: jest.fn((_req, res) => res.status(200).json({ success: true })),
   handleGetTemplate: jest.fn((_req, res) => res.status(200).json({ success: true })),
   handleCreateTeamFromTemplate: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  handleDeployTemplate: jest.fn((_req, res) => res.status(200).json({ success: true })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -71,8 +72,12 @@ describe('Template Routes', () => {
     expect(routes).toContainEqual({ method: 'POST', path: '/:id/create-team' });
   });
 
-  it('should register exactly 3 routes', () => {
-    expect(routes).toHaveLength(3);
+  it('should register POST /:id/deploy route for deploying a template', () => {
+    expect(routes).toContainEqual({ method: 'POST', path: '/:id/deploy' });
+  });
+
+  it('should register exactly 4 routes', () => {
+    expect(routes).toHaveLength(4);
   });
 
   it('should place static routes before parameterized routes', () => {

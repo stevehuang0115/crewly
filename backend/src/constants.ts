@@ -313,6 +313,10 @@ export const ACTIVITY_MONITOR_CONSTANTS = {
 	 *  Reduced from 120s to 30s (#124) to detect agent idle state faster,
 	 *  cutting notification delay from 2min to 30s worst-case. */
 	POLLING_INTERVAL_MS: 30000,
+	/** Maximum time an agent can stay in_progress before auto-reset to idle (ms).
+	 *  Prevents workingStatus from getting stuck due to continuous terminal output
+	 *  (spinners, TUI re-renders). Default: 15 minutes. */
+	MAX_IN_PROGRESS_MS: 900_000,
 } as const;
 
 /**

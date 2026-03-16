@@ -33,6 +33,7 @@ jest.mock('../../services/core/logger.service.js', () => ({
 }));
 
 const mockConnect = jest.fn();
+const mockConnectLocal = jest.fn();
 const mockDisconnect = jest.fn();
 const mockGetStatus = jest.fn();
 const mockGetTemplates = jest.fn();
@@ -42,6 +43,7 @@ jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
     getInstance: () => ({
       connect: mockConnect,
+      connectLocal: mockConnectLocal,
       disconnect: mockDisconnect,
       getStatus: mockGetStatus,
       getTemplates: mockGetTemplates,
@@ -101,9 +103,26 @@ describe('Cloud Controller', () => {
   // ----- connectToCloud ---------------------------------------------------
 
   describe('connectToCloud()', () => {
-    it('should connect and return tier on success', async () => {
+    it('should connect locally when JWT verifies locally', async () => {
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1', plan: 'pro' });
+
+      const req = mockReq({ body: { token: 'test-token', cloudUrl: 'https://cloud.test.com' } });
+      const res = mockRes();
+
+      await connectToCloud(req, res, mockNext);
+
+      // Local verification → connectLocal instead of connect
+      expect(mockConnectLocal).toHaveBeenCalledWith('https://cloud.test.com', 'test-token', 'pro');
+      expect(mockConnect).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: { tier: 'pro' },
+      });
+    });
+
+    it('should fall back to remote connect when local JWT verification fails', async () => {
+      mockVerifyJwt.mockReturnValue(null);
       mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
-      mockVerifyJwt.mockReturnValue({ sub: 'user-1' });
 
       const req = mockReq({ body: { token: 'test-token', cloudUrl: 'https://cloud.test.com' } });
       const res = mockRes();
@@ -111,6 +130,7 @@ describe('Cloud Controller', () => {
       await connectToCloud(req, res, mockNext);
 
       expect(mockConnect).toHaveBeenCalledWith('https://cloud.test.com', 'test-token');
+      expect(mockConnectLocal).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         data: { tier: 'pro' },
@@ -118,8 +138,7 @@ describe('Cloud Controller', () => {
     });
 
     it('should auto-connect relay after successful cloud connect', async () => {
-      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
-      mockVerifyJwt.mockReturnValue({ sub: 'user-1', email: 'test@test.com' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1', email: 'test@test.com', plan: 'pro' });
       mockRelayGetState.mockReturnValue('disconnected');
 
       const req = mockReq({ body: { token: 'test-token', cloudUrl: 'https://cloud.test.com' } });
@@ -139,8 +158,7 @@ describe('Cloud Controller', () => {
     });
 
     it('should skip relay auto-connect if relay already connected', async () => {
-      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
-      mockVerifyJwt.mockReturnValue({ sub: 'user-1' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1', plan: 'pro' });
       mockRelayGetState.mockReturnValue('registered');
 
       const req = mockReq({ body: { token: 'test-token' } });
@@ -152,8 +170,10 @@ describe('Cloud Controller', () => {
     });
 
     it('should skip relay auto-connect if JWT has no sub claim', async () => {
-      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
+      // First call in connectToCloud: verifyJwt returns null (local fails, fall through to remote)
+      // Second call in autoConnectRelay: verifyJwt also returns null (no sub → skip relay)
       mockVerifyJwt.mockReturnValue(null);
+      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
       mockRelayGetState.mockReturnValue('disconnected');
 
       const req = mockReq({ body: { token: 'bad-token' } });
@@ -162,13 +182,12 @@ describe('Cloud Controller', () => {
       await connectToCloud(req, res, mockNext);
 
       expect(mockRelayConnect).not.toHaveBeenCalled();
-      // Cloud connect still succeeds
+      // Cloud connect still succeeds via remote
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
 
     it('should not fail cloud connect if relay auto-connect throws', async () => {
-      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
-      mockVerifyJwt.mockReturnValue({ sub: 'user-1' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1', plan: 'pro' });
       mockRelayGetState.mockReturnValue('disconnected');
       mockRelayConnect.mockImplementation(() => { throw new Error('WS failed'); });
 
@@ -182,8 +201,7 @@ describe('Cloud Controller', () => {
     });
 
     it('should generate deterministic pairing code for same user', async () => {
-      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
-      mockVerifyJwt.mockReturnValue({ sub: 'user-123' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-123', plan: 'pro' });
       mockRelayGetState.mockReturnValue('disconnected');
 
       const req = mockReq({ body: { token: 'test-token' } });
@@ -193,8 +211,7 @@ describe('Cloud Controller', () => {
       const firstCall = mockRelayConnect.mock.calls[0][0];
 
       jest.clearAllMocks();
-      mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
-      mockVerifyJwt.mockReturnValue({ sub: 'user-123' });
+      mockVerifyJwt.mockReturnValue({ sub: 'user-123', plan: 'pro' });
       mockRelayGetState.mockReturnValue('disconnected');
 
       await connectToCloud(req, res, mockNext);
@@ -206,6 +223,7 @@ describe('Cloud Controller', () => {
     });
 
     it('should use default cloud URL when not provided', async () => {
+      mockVerifyJwt.mockReturnValue(null);
       mockConnect.mockResolvedValue({ success: true, tier: 'free' });
 
       const req = mockReq({ body: { token: 'test-token' } });
@@ -235,6 +253,7 @@ describe('Cloud Controller', () => {
     });
 
     it('should return 401 on authentication failure', async () => {
+      mockVerifyJwt.mockReturnValue(null);
       mockConnect.mockRejectedValue(new Error('Cloud authentication failed: 401 Unauthorized'));
 
       const req = mockReq({ body: { token: 'bad-token' } });
@@ -246,6 +265,7 @@ describe('Cloud Controller', () => {
     });
 
     it('should call next on unexpected error', async () => {
+      mockVerifyJwt.mockReturnValue(null);
       const error = new Error('Network error');
       mockConnect.mockRejectedValue(error);
 

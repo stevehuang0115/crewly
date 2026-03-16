@@ -2515,7 +2515,10 @@ describe('AgentRegistrationService', () => {
 			);
 
 			expect(result.success).toBe(true);
-			expect(mockCrewlyRuntime.handleMessage).toHaveBeenCalledWith('Check team status');
+			// handleMessage is called twice: once with system prompt (from createAgentSession),
+			// once with the actual message (from sendMessageToAgent)
+			const lastCall = mockCrewlyRuntime.handleMessage.mock.calls.at(-1);
+			expect(lastCall?.[0]).toBe('Check team status');
 			// Should NOT write to PTY
 			expect(mockSessionHelper.sendMessage).not.toHaveBeenCalled();
 		});
@@ -2649,7 +2652,9 @@ describe('AgentRegistrationService', () => {
 			);
 
 			expect(result.success).toBe(true);
-			expect(mockCrewlyRuntime.handleMessage).toHaveBeenCalledWith('Check status');
+			// handleMessage is called twice: system prompt (createAgentSession) + actual message
+			const lastCall = mockCrewlyRuntime.handleMessage.mock.calls.at(-1);
+			expect(lastCall?.[0]).toBe('Check status');
 			// Should NOT attempt PTY delivery
 			expect(mockSessionHelper.sendMessage).not.toHaveBeenCalled();
 		});
@@ -2680,12 +2685,113 @@ describe('AgentRegistrationService', () => {
 			);
 
 			expect(result.success).toBe(true);
-			expect(mockCrewlyRuntime.handleMessage).toHaveBeenCalledWith('[CHAT:conv-123] Process this task');
+			// handleMessage is called twice: system prompt (createAgentSession) + actual message
+			const lastCall = mockCrewlyRuntime.handleMessage.mock.calls.at(-1);
+			expect(lastCall?.[0]).toBe('[CHAT:conv-123] Process this task');
 
 			// Wait for fire-and-forget async callback to complete
 			await new Promise(r => setTimeout(r, 50));
 			// Note: routeInProcessResponseToChat uses lazy import — the actual
 			// chat gateway call is tested via integration tests
+		});
+	});
+
+	describe('provisionRuntimeConfigFile', () => {
+		let mockMkdir: jest.Mock;
+		let mockWriteFileFs: jest.Mock;
+
+		beforeEach(() => {
+			mockMkdir = require('fs/promises').mkdir;
+			mockWriteFileFs = require('fs/promises').writeFile;
+			mockMkdir.mockResolvedValue(undefined);
+			mockWriteFileFs.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue('# Agent Config Template Content');
+			mockAccess.mockRejectedValue(new Error('ENOENT'));
+		});
+
+		it('should write CLAUDE.md for claude-code runtime', async () => {
+			await (service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.CLAUDE_CODE);
+
+			expect(mockMkdir).toHaveBeenCalledWith(
+				expect.stringContaining('.crewly'),
+				{ recursive: true },
+			);
+			expect(mockReadFile).toHaveBeenCalledWith(
+				expect.stringContaining('agent-claude-md.md'),
+				'utf8',
+			);
+			expect(mockWriteFileFs).toHaveBeenCalledWith(
+				expect.stringContaining('.crewly/CLAUDE.md'),
+				'# Agent Config Template Content',
+				{ flag: 'wx' },
+			);
+		});
+
+		it('should write GEMINI.md for gemini-cli runtime', async () => {
+			await (service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.GEMINI_CLI);
+
+			expect(mockReadFile).toHaveBeenCalledWith(
+				expect.stringContaining('agent-gemini-md.md'),
+				'utf8',
+			);
+			expect(mockWriteFileFs).toHaveBeenCalledWith(
+				expect.stringContaining('GEMINI.md'),
+				'# Agent Config Template Content',
+				{ flag: 'wx' },
+			);
+		});
+
+		it('should write AGENTS.md for codex-cli runtime', async () => {
+			await (service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.CODEX_CLI);
+
+			expect(mockReadFile).toHaveBeenCalledWith(
+				expect.stringContaining('agent-agents-md.md'),
+				'utf8',
+			);
+			expect(mockWriteFileFs).toHaveBeenCalledWith(
+				expect.stringContaining('AGENTS.md'),
+				'# Agent Config Template Content',
+				{ flag: 'wx' },
+			);
+		});
+
+		it('should skip unknown runtime types', async () => {
+			await (service as any).provisionRuntimeConfigFile('/test/project', 'unknown-runtime');
+
+			expect(mockMkdir).not.toHaveBeenCalled();
+			expect(mockReadFile).not.toHaveBeenCalled();
+			expect(mockWriteFileFs).not.toHaveBeenCalled();
+		});
+
+		it('should cache template content on second call', async () => {
+			await (service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.CLAUDE_CODE);
+			mockReadFile.mockClear();
+
+			await (service as any).provisionRuntimeConfigFile('/test/project2', RUNTIME_TYPES.CLAUDE_CODE);
+
+			// Should not read again — content is cached
+			expect(mockReadFile).not.toHaveBeenCalledWith(
+				expect.stringContaining('agent-claude-md.md'),
+				'utf8',
+			);
+		});
+
+		it('should not throw when file already exists (wx flag)', async () => {
+			mockWriteFileFs.mockRejectedValueOnce(new Error('EEXIST: file already exists'));
+
+			// Should not throw — caught by .catch()
+			await expect(
+				(service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.CLAUDE_CODE),
+			).resolves.not.toThrow();
+		});
+
+		it('should handle template read errors gracefully', async () => {
+			mockReadFile.mockRejectedValue(new Error('ENOENT: template not found'));
+
+			// Should not throw — errors are caught and logged as warnings
+			await expect(
+				(service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.CLAUDE_CODE),
+			).resolves.not.toThrow();
 		});
 	});
 });

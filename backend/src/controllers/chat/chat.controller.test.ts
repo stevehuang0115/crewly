@@ -609,7 +609,7 @@ describe('Chat Controller', () => {
   // ===========================================================================
 
   describe('POST /api/chat/agent-response', () => {
-    it('should store agent response message', async () => {
+    it('should route agent response and return 201', async () => {
       const response = await request(app)
         .post('/api/chat/agent-response')
         .send({
@@ -620,7 +620,8 @@ describe('Chat Controller', () => {
 
       expect(response.status).toBe(201);
       expect(response.body.success).toBe(true);
-      expect(response.body.data.messageId).toBeDefined();
+      // Agent messages are routed to orchestrator (not saved to chat),
+      // so messageId is undefined
       expect(response.body.data.conversationId).toBeDefined();
     });
 
@@ -711,7 +712,7 @@ describe('Chat Controller', () => {
       setMessageQueueService(null as any);
     });
 
-    it('should not enqueue non-status agent messages', async () => {
+    it('should enqueue all agent messages as system events', async () => {
       const mockEnqueue = jest.fn().mockReturnValue({ id: 'q4' });
       setMessageQueueService({ enqueue: mockEnqueue } as any);
 
@@ -724,7 +725,12 @@ describe('Chat Controller', () => {
         });
 
       expect(response.status).toBe(201);
-      expect(mockEnqueue).not.toHaveBeenCalled();
+      // All agent messages are now forwarded to orchestrator queue
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'system_event',
+        })
+      );
 
       setMessageQueueService(null as any);
     });

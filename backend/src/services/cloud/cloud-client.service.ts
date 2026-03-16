@@ -171,6 +171,27 @@ export class CloudClientService {
   }
 
   /**
+   * Connect using a locally verified JWT (no remote API call needed).
+   *
+   * Used when the JWT was issued by this same instance or the JWT secret
+   * is shared between OSS and Cloud. Avoids the round-trip to the cloud
+   * auth endpoint.
+   *
+   * @param cloudUrl - Base URL of the CrewlyAI Cloud API
+   * @param token - JWT access token (already verified locally)
+   * @param tier - Subscription tier extracted from the JWT payload
+   */
+  connectLocal(cloudUrl: string, token: string, tier: CloudTier): void {
+    this.cloudUrl = cloudUrl;
+    this.token = token;
+    this.tier = tier || CLOUD_CONSTANTS.TIERS.FREE;
+    this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.CONNECTED;
+    this.lastSyncAt = new Date().toISOString();
+
+    this.logger.info('Connected to CrewlyAI Cloud (local verification)', { tier: this.tier });
+  }
+
+  /**
    * Disconnect from CrewlyAI Cloud.
    *
    * Clears stored credentials and resets the connection state.

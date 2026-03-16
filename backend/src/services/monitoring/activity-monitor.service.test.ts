@@ -896,4 +896,205 @@ describe('ActivityMonitorService', () => {
       expect(idleEvents).toHaveLength(1);
     });
   });
+
+  describe('workingStatus stuck in_progress auto-reset', () => {
+    const mockTeam = {
+      id: 'test-team',
+      name: 'Test Team',
+      projectIds: [],
+      createdAt: '2023-01-01T00:00:00.000Z',
+      updatedAt: '2023-01-01T00:00:00.000Z',
+      members: [
+        {
+          id: 'member-1',
+          name: 'Test Member 1',
+          role: 'developer' as const,
+          runtimeType: 'claude-code' as const,
+          systemPrompt: 'Test prompt',
+          agentStatus: 'active' as const,
+          workingStatus: 'idle' as const,
+          sessionName: 'test-session-1',
+          createdAt: '2023-01-01T00:00:00.000Z',
+          updatedAt: '2023-01-01T00:00:00.000Z'
+        }
+      ]
+    };
+
+    beforeEach(() => {
+      mockStorageService.getTeams.mockResolvedValue([mockTeam]);
+      mockSessionBackend.sessionExists.mockReturnValue(true);
+      mockAgentHeartbeatService.detectStaleAgents.mockResolvedValue([]);
+      (writeFile as jest.Mock).mockResolvedValue(undefined);
+      (existsSync as jest.Mock).mockReturnValue(true);
+      (stripAnsiCodes as unknown as jest.Mock).mockImplementation((s: string) => s);
+    });
+
+    it('should auto-reset orchestrator in_progress loaded from file after MAX_IN_PROGRESS_MS', async () => {
+      // File already has orchestrator as in_progress with old updatedAt
+      const staleUpdatedAt = new Date(Date.now() - ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS - 60_000).toISOString();
+      const stuckData: TeamWorkingStatusFile = {
+        orchestrator: {
+          sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+          workingStatus: 'in_progress',
+          lastActivityCheck: staleUpdatedAt,
+          updatedAt: staleUpdatedAt,
+        },
+        teamMembers: {},
+        metadata: { lastUpdated: staleUpdatedAt, version: '1.0.0' },
+      };
+      (readFile as jest.Mock).mockResolvedValue(JSON.stringify(stuckData));
+
+      // Terminal output changes (so raw detection says in_progress)
+      mockSessionBackend.captureOutput.mockReturnValue('new output');
+      mockStorageService.getTeams.mockResolvedValue([]);
+
+      await (service as any).performActivityCheck();
+
+      // Should auto-reset to idle because updatedAt is older than MAX_IN_PROGRESS_MS
+      expect(writeFile).toHaveBeenCalled();
+      const savedCalls = (writeFile as jest.Mock).mock.calls;
+      const lastSaved = JSON.parse(savedCalls[savedCalls.length - 1][1]);
+      expect(lastSaved.orchestrator.workingStatus).toBe('idle');
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        'Auto-resetting orchestrator workingStatus from in_progress to idle (exceeded max duration)',
+        expect.objectContaining({ maxMs: ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS })
+      );
+    });
+
+    it('should auto-reset member in_progress loaded from file after MAX_IN_PROGRESS_MS', async () => {
+      const staleUpdatedAt = new Date(Date.now() - ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS - 60_000).toISOString();
+      const stuckData: TeamWorkingStatusFile = {
+        orchestrator: {
+          sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+          workingStatus: 'idle',
+          lastActivityCheck: staleUpdatedAt,
+          updatedAt: staleUpdatedAt,
+        },
+        teamMembers: {
+          'test-session-1': {
+            sessionName: 'test-session-1',
+            teamMemberId: 'member-1',
+            workingStatus: 'in_progress',
+            lastActivityCheck: staleUpdatedAt,
+            updatedAt: staleUpdatedAt,
+          },
+        },
+        metadata: { lastUpdated: staleUpdatedAt, version: '1.0.0' },
+      };
+      (readFile as jest.Mock).mockResolvedValue(JSON.stringify(stuckData));
+
+      // Orchestrator session not running (simplify test)
+      mockSessionBackend.sessionExists
+        .mockReturnValueOnce(false)   // orchestrator
+        .mockReturnValueOnce(true);   // member
+
+      // Terminal output changes (raw detection says in_progress)
+      (service as any).lastTerminalOutputs.set('test-session-1', 'old output');
+      mockSessionBackend.captureOutput.mockReturnValue('new output');
+
+      await (service as any).performActivityCheck();
+
+      expect(writeFile).toHaveBeenCalled();
+      const savedCalls = (writeFile as jest.Mock).mock.calls;
+      const lastSaved = JSON.parse(savedCalls[savedCalls.length - 1][1]);
+      expect(lastSaved.teamMembers['test-session-1'].workingStatus).toBe('idle');
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        'Auto-resetting member workingStatus from in_progress to idle (exceeded max duration)',
+        expect.objectContaining({
+          sessionName: 'test-session-1',
+          maxMs: ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS,
+        })
+      );
+    });
+
+    it('should NOT auto-reset when in_progress is fresh (within MAX_IN_PROGRESS_MS)', async () => {
+      const freshUpdatedAt = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
+      const freshData: TeamWorkingStatusFile = {
+        orchestrator: {
+          sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+          workingStatus: 'in_progress',
+          lastActivityCheck: freshUpdatedAt,
+          updatedAt: freshUpdatedAt,
+        },
+        teamMembers: {},
+        metadata: { lastUpdated: freshUpdatedAt, version: '1.0.0' },
+      };
+      (readFile as jest.Mock).mockResolvedValue(JSON.stringify(freshData));
+
+      // Terminal output changes
+      mockSessionBackend.captureOutput.mockReturnValue('new output');
+      mockStorageService.getTeams.mockResolvedValue([]);
+
+      await (service as any).performActivityCheck();
+
+      // Should NOT auto-reset (still within timeout)
+      expect(mockLogger.info).not.toHaveBeenCalledWith(
+        'Auto-resetting orchestrator workingStatus from in_progress to idle (exceeded max duration)',
+        expect.anything()
+      );
+    });
+
+    it('should seed busyTransitionTimestamps for members with no prior transition observed', async () => {
+      // Status file has member as in_progress, but busyTransitionTimestamps is empty (service restart scenario)
+      const recentUpdatedAt = new Date(Date.now() - 30_000).toISOString();
+      const stuckData: TeamWorkingStatusFile = {
+        orchestrator: {
+          sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+          workingStatus: 'idle',
+          lastActivityCheck: recentUpdatedAt,
+          updatedAt: recentUpdatedAt,
+        },
+        teamMembers: {
+          'test-session-1': {
+            sessionName: 'test-session-1',
+            teamMemberId: 'member-1',
+            workingStatus: 'in_progress',
+            lastActivityCheck: recentUpdatedAt,
+            updatedAt: recentUpdatedAt,
+          },
+        },
+        metadata: { lastUpdated: recentUpdatedAt, version: '1.0.0' },
+      };
+      (readFile as jest.Mock).mockResolvedValue(JSON.stringify(stuckData));
+
+      mockSessionBackend.sessionExists
+        .mockReturnValueOnce(false)   // orchestrator
+        .mockReturnValueOnce(true);   // member
+
+      (service as any).lastTerminalOutputs.set('test-session-1', 'old output');
+      mockSessionBackend.captureOutput.mockReturnValue('new output');
+
+      // Verify busyTransitionTimestamps is empty before
+      expect((service as any).busyTransitionTimestamps.has('test-session-1')).toBe(false);
+
+      await (service as any).performActivityCheck();
+
+      // Should have seeded the timestamp
+      expect((service as any).busyTransitionTimestamps.has('test-session-1')).toBe(true);
+    });
+
+    it('should seed busyTransitionTimestamps in handleDurationGatedEmission when status is already in_progress', async () => {
+      // Simulate: status is in_progress in file, no transition, no busyTransitionTimestamp
+      const identity = {
+        teamId: 'test-team',
+        teamName: 'Test Team',
+        memberId: 'member-1',
+        memberName: 'Test Member 1',
+        sessionName: 'test-session-1',
+      };
+
+      // Call handleDurationGatedEmission with no status change and in_progress
+      (service as any).handleDurationGatedEmission(
+        'test-session-1',
+        'in_progress',
+        'in_progress',
+        false,
+        identity,
+        new Date().toISOString()
+      );
+
+      // Should have seeded busyTransitionTimestamps
+      expect((service as any).busyTransitionTimestamps.has('test-session-1')).toBe(true);
+    });
+  });
 });

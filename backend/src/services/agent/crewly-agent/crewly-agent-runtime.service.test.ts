@@ -3,6 +3,22 @@ import { CrewlyAgentRuntimeService } from './crewly-agent-runtime.service.js';
 import type { SessionCommandHelper } from '../../session/index.js';
 import { RUNTIME_TYPES } from '../../../constants.js';
 
+// Mock LoggerService to prevent test log entries from polluting production logs.
+// Without this, logger.warn() calls (e.g. ENOENT fallback in loadSystemPrompt)
+// write to real log files with test paths like /test/project/.
+jest.mock('../../core/logger.service.js', () => ({
+  LoggerService: {
+    getInstance: () => ({
+      createComponentLogger: () => ({
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+      }),
+    }),
+  },
+}));
+
 // Mock fs/promises to avoid real file I/O while keeping sync fs functions
 jest.mock('fs', () => {
   const actual = jest.requireActual('fs') as Record<string, unknown>;
@@ -12,6 +28,7 @@ jest.mock('fs', () => {
       readFile: jest.fn(),
       writeFile: jest.fn(),
       mkdir: jest.fn(),
+      appendFile: jest.fn(),
     },
   };
 });
@@ -29,6 +46,20 @@ jest.mock('./agent-runner.service.js', () => ({
     getHistoryLength: mockGetHistoryLength,
     _generateTextFn: null,
     getState: jest.fn(() => ({ messages: [], systemPrompt: '', totalTokens: { input: 0, output: 0 }, createdAt: new Date(), lastActivityAt: new Date() })),
+  })),
+}));
+
+// Mock the RateLimiter to pass through directly (no delays/retries in tests)
+jest.mock('./rate-limiter.js', () => ({
+  RateLimiter: jest.fn().mockImplementation(() => ({
+    enqueue: jest.fn<any>().mockImplementation(
+      async (message: string, metadata: unknown, handler: (msg: string, meta: unknown) => Promise<unknown>) => {
+        return handler(message, metadata);
+      }
+    ),
+    getQueueLength: jest.fn().mockReturnValue(0),
+    getRequestCountInWindow: jest.fn().mockReturnValue(0),
+    reset: jest.fn(),
   })),
 }));
 

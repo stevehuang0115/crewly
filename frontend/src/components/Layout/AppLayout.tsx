@@ -62,9 +62,10 @@ export const AppLayout: React.FC = () => {
         <header className="md:hidden h-16 flex items-center justify-between px-4 bg-surface-dark/80 backdrop-blur-sm border-b border-border-dark sticky top-0 z-30">
           <IconButton
             variant="ghost"
-            icon={Menu}
-            onClick={() => setMobileMenuOpen(true)}
-            aria-label="Open menu"
+            icon={isMobileMenuOpen ? X : Menu}
+            onClick={() => setMobileMenuOpen(!isMobileMenuOpen)}
+            aria-label={isMobileMenuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={isMobileMenuOpen}
           />
           <h1 className="text-lg font-bold">Crewly</h1>
           <div className="w-10 h-10" /> {/* Spacer to center title */}

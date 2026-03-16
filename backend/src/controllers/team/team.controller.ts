@@ -55,6 +55,104 @@ export function setTeamControllerEventBusService(service: EventBusService): void
   eventBusService = service;
 }
 
+/** Maximum number of lines to push from Slack thread history */
+const SLACK_HISTORY_MAX_LINES = 30;
+
+/**
+ * Push recent Slack thread messages to an agent after registration.
+ * Reads the most recent Slack thread file and sends the tail as a system event
+ * so the agent has conversation context after a restart.
+ *
+ * @param agentRegistrationService - Service to send messages
+ * @param sessionName - Target agent session
+ */
+async function pushRecentSlackHistory(
+  agentRegistrationService: { sendMessageToAgent(session: string, content: string, runtimeType: RuntimeType): Promise<{ success: boolean }> },
+  sessionName: string,
+): Promise<void> {
+  const { getSlackThreadStore } = await import('../../services/slack/slack-thread-store.service.js');
+  const { promises: fs } = await import('fs');
+  const threadStore = getSlackThreadStore();
+  if (!threadStore) return;
+
+  // Find threads for the orchestrator
+  const threads = threadStore.findThreadsForAgent(sessionName);
+
+  // If no agent-indexed threads, scan for the most recent thread file
+  let threadContent: string | null = null;
+  if (threads.length > 0) {
+    // Read the most recent thread
+    try {
+      threadContent = await fs.readFile(threads[threads.length - 1].filePath, 'utf-8');
+    } catch {
+      // Thread file doesn't exist
+    }
+  }
+
+  if (!threadContent) {
+    // Scan slack-threads directory for the most recently modified file
+    const path = await import('path');
+    const os = await import('os');
+    const { SLACK_THREAD_CONSTANTS } = await import('../../constants.js');
+    const baseDir = path.join(os.homedir(), '.crewly', SLACK_THREAD_CONSTANTS.STORAGE_DIR);
+    try {
+      const channels = await fs.readdir(baseDir).catch(() => [] as string[]);
+      let latestPath: string | null = null;
+      let latestMtime = 0;
+      for (const channel of channels) {
+        if (channel.endsWith('.json')) continue; // Skip index files
+        const channelDir = path.join(baseDir, channel);
+        const files = await fs.readdir(channelDir).catch(() => [] as string[]);
+        for (const file of files) {
+          if (!file.endsWith('.md')) continue;
+          const filePath = path.join(channelDir, file);
+          const stat = await fs.stat(filePath).catch(() => null);
+          if (stat && stat.mtimeMs > latestMtime) {
+            latestMtime = stat.mtimeMs;
+            latestPath = filePath;
+          }
+        }
+      }
+      if (latestPath) {
+        threadContent = await fs.readFile(latestPath, 'utf-8');
+      }
+    } catch {
+      // Non-critical — just skip if we can't scan
+    }
+  }
+
+  if (!threadContent || threadContent.trim().length === 0) return;
+
+  // Extract last N lines (skip frontmatter)
+  const lines = threadContent.split('\n');
+  const frontmatterEnd = threadContent.indexOf('---', threadContent.indexOf('---') + 3);
+  const bodyLines = frontmatterEnd > 0
+    ? threadContent.slice(frontmatterEnd + 3).trim().split('\n')
+    : lines;
+
+  const recentLines = bodyLines.slice(-SLACK_HISTORY_MAX_LINES);
+  if (recentLines.length === 0) return;
+
+  const historyMessage = `[SLACK_HISTORY] Recent Slack conversation (last ${recentLines.length} lines):\n${recentLines.join('\n')}`;
+
+  try {
+    await agentRegistrationService.sendMessageToAgent(
+      sessionName,
+      historyMessage,
+      RUNTIME_TYPES.CLAUDE_CODE as RuntimeType,
+    );
+    logger.info('Pushed Slack history to agent on registration', {
+      sessionName,
+      lineCount: recentLines.length,
+    });
+  } catch (err) {
+    logger.warn('Failed to send Slack history message', {
+      sessionName,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 /**
  * Get the default runtime type from user settings, falling back to CLAUDE_CODE.
  *
@@ -1718,6 +1816,16 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
     }
 
     res.json({ success: true, message: `Agent ${sessionName} registered as active with role ${role}`, data: { sessionName, role, status: CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE, registeredAt: registeredAt || new Date().toISOString() } } as ApiResponse);
+
+    // Push recent Slack thread history to orchestrator on re-registration (fire-and-forget).
+    // This ensures the orchestrator has conversation context after a restart.
+    if (sessionName === ORCHESTRATOR_SESSION_NAME) {
+      pushRecentSlackHistory(this.agentRegistrationService, sessionName).catch(err => {
+        logger.warn('Failed to push Slack history on orchestrator registration', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
 
     // Flush any queued messages for this sub-agent (fire-and-forget after response)
     const subAgentQueue = SubAgentMessageQueue.getInstance();
