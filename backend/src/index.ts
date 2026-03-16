@@ -341,7 +341,7 @@ export class CrewlyServer {
 			})
 		);
 
-		// CORS — allow Cloud Portal frontend and localhost OSS instances
+		// CORS — allow Cloud Console frontend and localhost OSS instances
 		const CORS_ALLOWED_ORIGINS = process.env['CORS_ALLOWED_ORIGINS']
 			? process.env['CORS_ALLOWED_ORIGINS'].split(',')
 			: ['https://crewlyai.com', 'https://www.crewlyai.com', 'http://localhost:8787', 'http://localhost:3000'];

@@ -7,6 +7,7 @@ import { StartTeamModal } from '../components/StartTeamModal';
 import { TeamModal } from '../components/Modals/TeamModal';
 import { TeamHeader, TeamOverview, TeamStatus, AgentDetailModal } from '../components/TeamDetail';
 import { HierarchyDashboard } from '../components/Hierarchy';
+import { ExecutionFeed } from '../components/ExecutionFeed';
 import { useAlert, useConfirm } from '../components/UI/Dialog';
 import { webSocketService } from '../services/websocket.service';
 import { apiService } from '../services/api.service';
@@ -664,6 +665,11 @@ export const TeamDetail: React.FC = () => {
         onViewAgent={handleViewAgent}
         isStartingTeam={startTeamLoading}
       />
+
+      {/* Execution Feed — real-time agent activity for this team */}
+      <div className="mt-6">
+        <ExecutionFeed teamId={id} maxEvents={100} />
+      </div>
 
       {/* Sub-teams section */}
       {subTeams.length > 0 && (

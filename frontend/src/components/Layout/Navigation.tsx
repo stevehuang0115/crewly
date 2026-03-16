@@ -4,15 +4,12 @@ import {
 	Home,
 	FolderOpen,
 	Users,
-	Clock,
 	MessageSquare,
 	Settings,
 	ChevronLeft,
 	ChevronRight,
 	X,
-	Factory,
 	Store,
-	BookOpen,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
@@ -25,8 +22,6 @@ const navigationItems = [
 	{ name: 'Chat', href: '/chat', icon: MessageSquare },
 	{ name: 'Teams', href: '/teams', icon: Users },
 	{ name: 'Projects', href: '/projects', icon: FolderOpen },
-	{ name: 'Knowledge', href: '/knowledge', icon: BookOpen },
-	{ name: 'Schedules', href: '/scheduled-checkins', icon: Clock },
 	{ name: 'Marketplace', href: '/marketplace', icon: Store },
 ];
 
