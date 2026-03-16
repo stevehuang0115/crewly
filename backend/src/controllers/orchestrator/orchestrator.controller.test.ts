@@ -38,8 +38,11 @@ jest.mock('../../services/session/index.js', () => ({
   }),
 }));
 
+import { getOrchestratorStatus as mockGetOrchestratorStatusFn } from '../../services/orchestrator/index.js';
 import type { ApiContext } from '../types.js';
 import { CREWLY_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+
+const mockGetOrchestratorStatus = mockGetOrchestratorStatusFn as jest.MockedFunction<typeof mockGetOrchestratorStatusFn>;
 
 describe('Orchestrator Handlers', () => {
   let mockApiContext: Partial<ApiContext>;
@@ -480,7 +483,83 @@ describe('Orchestrator Handlers', () => {
       orchestratorHandlers._resetSetupInFlightState();
     });
 
+    it('should skip setup when orchestrator is already healthy and running', async () => {
+      // Default mock returns isActive: true
+      mockGetOrchestratorStatus.mockResolvedValue({
+        isActive: true,
+        agentStatus: 'active',
+        message: 'Orchestrator is active and ready.',
+      });
+
+      await orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // Should NOT call createAgentSession since orchestrator is already healthy
+      expect(mockAgentRegistrationService.createAgentSession).not.toHaveBeenCalled();
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        message: 'Orchestrator is already running (setup skipped)',
+        sessionName: ORCHESTRATOR_SESSION_NAME,
+      });
+    });
+
+    it('should proceed with setup when orchestrator is not active', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({
+        isActive: false,
+        agentStatus: 'inactive',
+        message: 'Orchestrator is not running.',
+      });
+      mockAgentRegistrationService.createAgentSession.mockResolvedValue({
+        success: true,
+        sessionName: ORCHESTRATOR_SESSION_NAME,
+        message: 'Orchestrator created and registered successfully',
+      });
+
+      await orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalled();
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        message: 'Orchestrator created and registered successfully',
+        sessionName: ORCHESTRATOR_SESSION_NAME,
+      });
+    });
+
+    it('should proceed with setup when health check fails', async () => {
+      mockGetOrchestratorStatus.mockRejectedValue(new Error('Health check failed'));
+      mockAgentRegistrationService.createAgentSession.mockResolvedValue({
+        success: true,
+        sessionName: ORCHESTRATOR_SESSION_NAME,
+        message: 'Orchestrator created',
+      });
+
+      await orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // Should still create session when health check fails
+      expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalled();
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true })
+      );
+    });
+
     it('should setup orchestrator successfully via agentRegistrationService', async () => {
+      // Orchestrator not active — triggers full setup
+      mockGetOrchestratorStatus.mockResolvedValue({
+        isActive: false,
+        agentStatus: 'inactive',
+        message: 'Orchestrator is not running.',
+      });
       mockAgentRegistrationService.createAgentSession.mockResolvedValue({
         success: true,
         sessionName: ORCHESTRATOR_SESSION_NAME,
@@ -510,6 +589,7 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('should handle createAgentSession failure', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: '' });
       mockAgentRegistrationService.createAgentSession.mockResolvedValue({
         success: false,
         error: 'Session creation failed',
@@ -529,6 +609,7 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('should handle unexpected setup errors', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: '' });
       mockAgentRegistrationService.createAgentSession.mockRejectedValue(new Error('Unexpected error'));
 
       await orchestratorHandlers.setupOrchestrator.call(
@@ -545,6 +626,7 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('should fall back to default runtime type when getOrchestratorStatus fails', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: '' });
       mockStorageService.getOrchestratorStatus.mockRejectedValue(new Error('Storage unavailable'));
       mockAgentRegistrationService.createAgentSession.mockResolvedValue({
         success: true,
@@ -570,6 +652,7 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('should use runtime type from storage when available', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: '' });
       mockStorageService.getOrchestratorStatus.mockResolvedValue({ runtimeType: 'gemini-cli' });
       mockAgentRegistrationService.createAgentSession.mockResolvedValue({
         success: true,
@@ -593,6 +676,7 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('should deduplicate concurrent setup calls — createAgentSession called only once', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: '' });
       // Use a deferred promise to control when createAgentSession resolves
       let resolveSetup: (value: any) => void;
       const setupPromise = new Promise((resolve) => { resolveSetup = resolve; });
@@ -632,6 +716,7 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('should allow new setup after previous one completes', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: '' });
       mockAgentRegistrationService.createAgentSession.mockResolvedValue({
         success: true,
         sessionName: ORCHESTRATOR_SESSION_NAME,
@@ -663,6 +748,7 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('should propagate failure to deduplicated callers', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: '' });
       let resolveSetup: (value: any) => void;
       const setupPromise = new Promise((resolve) => { resolveSetup = resolve; });
       mockAgentRegistrationService.createAgentSession.mockReturnValue(setupPromise);
@@ -1019,6 +1105,7 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('should initialize orchestrator memory during setup', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: '' });
       // Re-setup mock since clearAllMocks resets the return value
       (MemoryService.getInstance as jest.Mock).mockReturnValue({
         initializeForSession: jest.fn<any>().mockResolvedValue(undefined),
@@ -1060,6 +1147,7 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('should not fail setup if memory initialization fails', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: '' });
       // Make memory initialization throw
       (MemoryService.getInstance as jest.Mock).mockReturnValue({
         initializeForSession: jest.fn<any>().mockRejectedValue(new Error('Memory init failed')),

@@ -20,7 +20,10 @@ import type { RuntimeType } from '../../constants.js';
 import { RUNTIME_TYPES } from '../../constants.js';
 
 /** Maximum number of lines the summary may contain */
-const MAX_SUMMARY_LINES = 50;
+const MAX_SUMMARY_LINES = 80;
+
+/** Maximum number of pending tasks to include in the summary */
+const MAX_PENDING_TASKS = 10;
 
 /** Maximum age in ms for a thread to be considered for resume notification (24 hours) */
 const RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -68,6 +71,22 @@ export interface ActiveAgentInfo {
 }
 
 /**
+ * Information about a pending (non-completed) task from .crewly/tasks/.
+ */
+export interface PendingTaskInfo {
+  /** Task title (first heading line from the MD file) */
+  title: string;
+  /** Agent session name the task is assigned to */
+  assignedTo: string;
+  /** Current task status (e.g., 'In Progress', 'open') */
+  status: string;
+  /** Task priority if specified */
+  priority: string;
+  /** Absolute path to the task file */
+  filePath: string;
+}
+
+/**
  * Full session handoff summary data.
  */
 export interface HandoffSummary {
@@ -77,6 +96,8 @@ export interface HandoffSummary {
   activeThreads: ActiveThread[];
   /** Active agents and their status */
   activeAgents: ActiveAgentInfo[];
+  /** Pending tasks that have not been completed */
+  pendingTasks: PendingTaskInfo[];
 }
 
 /**
@@ -402,19 +423,122 @@ export class SessionHandoffService {
   }
 
   /**
+   * Scans .crewly/tasks/delegated/ for non-completed tasks (open + in_progress).
+   * Parses each task MD file to extract title, assignee, status, and priority.
+   *
+   * @param tasksBaseDir - Override for the tasks base directory (for testing)
+   * @returns Array of PendingTaskInfo sorted by priority (high first)
+   */
+  async scanPendingTasks(tasksBaseDir?: string): Promise<PendingTaskInfo[]> {
+    const baseDir = tasksBaseDir || path.join(
+      os.homedir(),
+      CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+      'tasks',
+      'delegated',
+    );
+    const pendingTasks: PendingTaskInfo[] = [];
+
+    const statusDirs = ['in_progress', 'open'];
+
+    for (const statusDir of statusDirs) {
+      const dirPath = path.join(baseDir, statusDir);
+      try {
+        const files = await fs.readdir(dirPath).catch(() => [] as string[]);
+        for (const file of files) {
+          if (!file.endsWith('.md')) continue;
+          const filePath = path.join(dirPath, file);
+          const task = await this.parseTaskFile(filePath, statusDir);
+          if (task) {
+            pendingTasks.push(task);
+          }
+        }
+      } catch (error) {
+        this.logger.debug('Failed to scan tasks directory', {
+          dirPath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // Sort: in_progress first, then high priority first
+    const priorityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
+    const statusOrder: Record<string, number> = { in_progress: 0, open: 1 };
+    pendingTasks.sort((a, b) => {
+      const statusDiff = (statusOrder[a.status] ?? 1) - (statusOrder[b.status] ?? 1);
+      if (statusDiff !== 0) return statusDiff;
+      return (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1);
+    });
+
+    return pendingTasks.slice(0, MAX_PENDING_TASKS);
+  }
+
+  /**
+   * Parses a single task MD file to extract structured info.
+   *
+   * @param filePath - Absolute path to the task .md file
+   * @param statusDir - Directory name indicating status ('open', 'in_progress')
+   * @returns PendingTaskInfo or null if parsing fails
+   */
+  async parseTaskFile(filePath: string, statusDir: string): Promise<PendingTaskInfo | null> {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+
+      // Extract title from first heading
+      let title = path.basename(filePath, '.md');
+      for (const line of lines) {
+        if (line.startsWith('# ')) {
+          title = line.replace(/^#\s+/, '').trim();
+          // Strip [TASK] prefix if present
+          title = title.replace(/^\[TASK\]\s*/i, '');
+          break;
+        }
+      }
+      // Truncate long titles
+      if (title.length > 100) {
+        title = title.slice(0, 97) + '...';
+      }
+
+      // Extract assigned agent
+      let assignedTo = 'unassigned';
+      const assignedMatch = content.match(/\*\*Assigned to\*\*:\s*(.+)/i)
+        || content.match(/Assignee:\s*(.+)/i);
+      if (assignedMatch) {
+        assignedTo = assignedMatch[1].trim();
+      }
+
+      // Extract priority
+      let priority = 'medium';
+      const priorityMatch = content.match(/\*\*Priority\*\*:\s*(.+)/i)
+        || content.match(/Priority:\s*(.+)/i);
+      if (priorityMatch) {
+        priority = priorityMatch[1].trim().toLowerCase();
+      }
+
+      // Status from directory name
+      const status = statusDir === 'in_progress' ? 'in_progress' : 'open';
+
+      return { title, assignedTo, status, priority, filePath };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Generates a full session handoff summary by scanning all thread stores
    * and collecting active agent status. Saves to ~/.crewly/session-summaries/latest.md.
    *
    * @param teamReader - Service to read team data for agent status
+   * @param tasksBaseDir - Override for the tasks base directory (for testing)
    * @returns The generated summary data
    */
-  async generateSummary(teamReader: TeamDataReader): Promise<HandoffSummary> {
+  async generateSummary(teamReader: TeamDataReader, tasksBaseDir?: string): Promise<HandoffSummary> {
     this.logger.info('Generating session handoff summary...');
 
     const crewlyHome = path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME);
 
-    // Scan all thread stores in parallel
-    const [slackThreads, gchatThreads, chatUiThreads, activeAgents] = await Promise.all([
+    // Scan all thread stores and pending tasks in parallel
+    const [slackThreads, gchatThreads, chatUiThreads, activeAgents, pendingTasks] = await Promise.all([
       this.scanThreadDirectory(
         path.join(crewlyHome, SLACK_THREAD_CONSTANTS.STORAGE_DIR),
         'slack',
@@ -427,6 +551,7 @@ export class SessionHandoffService {
       ),
       this.scanChatUiConversations(undefined, 2),
       this.collectActiveAgents(teamReader),
+      this.scanPendingTasks(tasksBaseDir),
     ]);
 
     const allThreads = [...slackThreads, ...gchatThreads, ...chatUiThreads]
@@ -437,6 +562,7 @@ export class SessionHandoffService {
       generatedAt: new Date().toISOString(),
       activeThreads: allThreads,
       activeAgents,
+      pendingTasks,
     };
 
     // Format and save
@@ -448,6 +574,7 @@ export class SessionHandoffService {
     this.logger.info('Session handoff summary saved', {
       threadCount: allThreads.length,
       agentCount: activeAgents.length,
+      pendingTaskCount: pendingTasks.length,
       path: this.getLatestSummaryPath(),
     });
 
@@ -494,6 +621,20 @@ export class SessionHandoffService {
       for (const agent of summary.activeAgents) {
         const taskInfo = agent.currentTask ? ` — task: ${agent.currentTask}` : '';
         lines.push(`- **${agent.sessionName}** (${agent.role}): ${agent.workingStatus}${taskInfo}`);
+      }
+      lines.push('');
+    }
+
+    // Pending tasks section
+    if (summary.pendingTasks && summary.pendingTasks.length > 0) {
+      lines.push('## Pending Tasks');
+      lines.push(`${summary.pendingTasks.length} task(s) require attention after restart:`);
+      lines.push('');
+      for (const task of summary.pendingTasks) {
+        const statusLabel = task.status === 'in_progress' ? '🔄 IN PROGRESS' : '📋 OPEN';
+        lines.push(`- ${statusLabel} [${task.priority}] **${task.title}**`);
+        lines.push(`  - Assigned to: ${task.assignedTo}`);
+        lines.push(`  - File: \`${task.filePath}\``);
       }
       lines.push('');
     }

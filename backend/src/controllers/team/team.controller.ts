@@ -1594,6 +1594,27 @@ export async function reportMemberReady(this: ApiContext, req: Request, res: Res
   }
 }
 
+/**
+ * Fire-and-forget session handoff: pushes session summary and resume notification
+ * to the orchestrator after registration. Used by both the orchestrator's own
+ * registration path and the virtual-team-member path to avoid duplication.
+ */
+function fireSessionHandoff(agentRegistrationService: ApiContext['agentRegistrationService'], sessionName: string): void {
+  import('../../services/session/session-handoff.service.js').then(({ SessionHandoffService }) => {
+    const handoff = SessionHandoffService.getInstance();
+    handoff.pushSessionSummary(agentRegistrationService, sessionName).catch(err => {
+      logger.warn('Failed to push session summary on registration', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    handoff.pushResumeNotification(agentRegistrationService, sessionName).catch(err => {
+      logger.warn('Failed to push resume notification on registration', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }).catch(() => { /* non-fatal */ });
+}
+
 export async function registerMemberStatus(this: ApiContext, req: Request, res: Response): Promise<void> {
   try {
     const { sessionName, role, status, registeredAt, memberId, claudeSessionId } = req.body as RegisterMemberStatusRequestBody;
@@ -1630,6 +1651,9 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
         // instead of receiving push notifications, which become spam with many agents.
 
         res.json({ success: true, message: `Orchestrator ${sessionName} registered as active`, sessionName } as ApiResponse);
+
+        // Fire session handoff (summary + resume notification) after responding
+        fireSessionHandoff(this.agentRegistrationService, sessionName);
         return;
       } catch (error) {
         logger.error('Error updating orchestrator status', { error: error instanceof Error ? error.message : String(error) });
@@ -1683,6 +1707,9 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
           }
 
           res.json({ success: true, message: `Agent ${sessionName} registered as active with role ${role}`, data: { sessionName, role, status: CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE, registeredAt: registeredAt || new Date().toISOString() } } as ApiResponse);
+
+          // Fire session handoff for orchestrator virtual team members
+          fireSessionHandoff(this.agentRegistrationService, sessionName);
           return;
         }
       }
@@ -1723,25 +1750,9 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
 
     res.json({ success: true, message: `Agent ${sessionName} registered as active with role ${role}`, data: { sessionName, role, status: CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE, registeredAt: registeredAt || new Date().toISOString() } } as ApiResponse);
 
-    // Push session handoff summary to orchestrator on re-registration (fire-and-forget).
-    // Delivers a structured summary of all active threads (Slack/GChat/Chat UI) and agent status.
-    // Replaces the old pushRecentSlackHistory which only covered Slack and sent raw lines.
+    // Push session handoff (summary + resume notification) for orchestrator re-registration
     if (sessionName === ORCHESTRATOR_SESSION_NAME) {
-      import('../../services/session/session-handoff.service.js').then(({ SessionHandoffService }) => {
-        const handoff = SessionHandoffService.getInstance();
-        // Push session context summary first
-        handoff.pushSessionSummary(this.agentRegistrationService, sessionName).catch(err => {
-          logger.warn('Failed to push session summary on orchestrator registration', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-        // Push chat resume notification so orchestrator proactively greets on active threads
-        handoff.pushResumeNotification(this.agentRegistrationService, sessionName).catch(err => {
-          logger.warn('Failed to push resume notification on orchestrator registration', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      }).catch(() => { /* non-fatal */ });
+      fireSessionHandoff(this.agentRegistrationService, sessionName);
     }
 
     // Flush any queued messages for this sub-agent (fire-and-forget after response)

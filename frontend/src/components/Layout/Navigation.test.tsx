@@ -10,6 +10,11 @@ vi.mock('./QRCodeDisplay', () => ({
   QRCodeDisplay: () => <div data-testid="qr-code">QR Code</div>
 }));
 
+// Mock the AuthStatusIndicator component
+vi.mock('../Auth/AuthStatusIndicator', () => ({
+  AuthStatusIndicator: () => <div data-testid="auth-status">Auth Status</div>
+}));
+
 const renderWithProviders = (component: React.ReactElement) => {
   return render(
     <BrowserRouter>
@@ -34,7 +39,7 @@ describe('Navigation', () => {
   it('shows logo text when expanded', () => {
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByText('Crewly')).toBeInTheDocument();
+    expect(screen.getByText('CREWLY')).toBeInTheDocument();
   });
 
   it('shows collapse toggle button in footer', () => {
@@ -104,5 +109,33 @@ describe('Navigation', () => {
 
     const settingsLink = screen.getByRole('link', { name: /settings/i });
     expect(settingsLink).toHaveAttribute('href', '/settings');
+  });
+
+  it('renders Schedules link in bottom section', () => {
+    renderWithProviders(<Navigation />);
+
+    expect(screen.getByText('Schedules')).toBeInTheDocument();
+  });
+
+  it('Schedules link has correct href', () => {
+    renderWithProviders(<Navigation />);
+
+    const schedulesLink = screen.getByRole('link', { name: /schedules/i });
+    expect(schedulesLink).toHaveAttribute('href', '/scheduled-checkins');
+  });
+
+  it('has exactly 5 main navigation items', () => {
+    renderWithProviders(<Navigation />);
+
+    const mainNavItems = ['Dashboard', 'Chat', 'Teams', 'Projects', 'Marketplace'];
+    mainNavItems.forEach((item) => {
+      expect(screen.getByText(item)).toBeInTheDocument();
+    });
+
+    // Schedules and Settings should be in bottom section, not main nav
+    const schedulesLink = screen.getByRole('link', { name: /schedules/i });
+    const settingsLink = screen.getByRole('link', { name: /settings/i });
+    expect(schedulesLink).toBeInTheDocument();
+    expect(settingsLink).toBeInTheDocument();
   });
 });

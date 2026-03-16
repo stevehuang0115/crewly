@@ -18,6 +18,17 @@ jest.mock('fs/promises');
 jest.mock('fs');
 jest.mock('path');
 
+const mockPushSessionSummary = jest.fn<any>().mockResolvedValue(undefined);
+const mockPushResumeNotification = jest.fn<any>().mockResolvedValue(undefined);
+jest.mock('../../services/session/session-handoff.service.js', () => ({
+  SessionHandoffService: {
+    getInstance: jest.fn(() => ({
+      pushSessionSummary: mockPushSessionSummary,
+      pushResumeNotification: mockPushResumeNotification,
+    })),
+  },
+}));
+
 const mockUpdateSessionId = jest.fn<any>();
 jest.mock('../../services/session/index.js', () => ({
   getSessionBackendSync: jest.fn(),
@@ -60,6 +71,15 @@ describe('Teams Handlers', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+
+    // Re-setup SessionHandoffService mock after clearAllMocks
+    const { SessionHandoffService } = require('../../services/session/session-handoff.service.js');
+    (SessionHandoffService.getInstance as jest.Mock).mockReturnValue({
+      pushSessionSummary: mockPushSessionSummary,
+      pushResumeNotification: mockPushResumeNotification,
+    });
+    mockPushSessionSummary.mockResolvedValue(undefined);
+    mockPushResumeNotification.mockResolvedValue(undefined);
 
     // Re-setup the session mock implementation after clearAllMocks
     const { getSessionStatePersistence } = require('../../services/session/index.js');
@@ -1741,6 +1761,35 @@ describe('Teams Handlers', () => {
         message: `Orchestrator ${CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME} registered as active`,
         sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME
       });
+    });
+
+    it('should fire pushResumeNotification when orchestrator registers', async () => {
+      mockRequest.body = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        role: 'orchestrator',
+        status: 'active',
+        registeredAt: new Date().toISOString()
+      };
+
+      mockStorageService.updateOrchestratorStatus.mockResolvedValue(undefined);
+
+      await teamsHandlers.registerMemberStatus.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // Allow dynamic import() to resolve
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(mockPushSessionSummary).toHaveBeenCalledWith(
+        mockApiContext.agentRegistrationService,
+        CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME
+      );
+      expect(mockPushResumeNotification).toHaveBeenCalledWith(
+        mockApiContext.agentRegistrationService,
+        CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME
+      );
     });
 
     it('should find member by memberId when provided', async () => {

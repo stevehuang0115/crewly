@@ -10,7 +10,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { SessionHandoffService, type TeamDataReader, type AgentMessageSender, type ResumeThread } from './session-handoff.service.js';
+import { SessionHandoffService, type TeamDataReader, type AgentMessageSender, type ResumeThread, type PendingTaskInfo } from './session-handoff.service.js';
 
 describe('SessionHandoffService', () => {
   let service: SessionHandoffService;
@@ -261,6 +261,7 @@ describe('SessionHandoffService', () => {
         activeAgents: [
           { sessionName: 'sam-001', role: 'developer', workingStatus: 'in_progress', currentTask: 'Build API' },
         ],
+        pendingTasks: [],
       };
 
       const markdown = service.formatSummaryMarkdown(summary);
@@ -278,6 +279,7 @@ describe('SessionHandoffService', () => {
         generatedAt: '2025-03-16T12:00:00.000Z',
         activeThreads: [],
         activeAgents: [],
+        pendingTasks: [],
       };
 
       const markdown = service.formatSummaryMarkdown(summary);
@@ -297,10 +299,11 @@ describe('SessionHandoffService', () => {
         generatedAt: new Date().toISOString(),
         activeThreads: manyThreads,
         activeAgents: [],
+        pendingTasks: [],
       });
 
       const lineCount = markdown.split('\n').length;
-      expect(lineCount).toBeLessThanOrEqual(50);
+      expect(lineCount).toBeLessThanOrEqual(80);
     });
   });
 
@@ -694,6 +697,237 @@ describe('SessionHandoffService', () => {
       await service.pushSlackResumeNotification(mockSender, 'crewly-orc');
 
       expect(spy).toHaveBeenCalledWith(mockSender, 'crewly-orc');
+    });
+  });
+
+  describe('parseTaskFile', () => {
+    it('should extract title, assignee, priority, and status from task file', async () => {
+      const taskContent = [
+        '# [TASK] Implement login feature',
+        '',
+        'Priority: high',
+        'Assignee: sam-dev-001',
+        '',
+        '## Task Information',
+        '- **Priority**: high',
+        '- **Status**: In Progress',
+        '',
+        '## Assignment Information',
+        '- **Assigned to**: crewly-product-sam-217bfbbf',
+        '- **Assigned at**: 2026-03-16T12:00:00.000Z',
+      ].join('\n');
+
+      const filePath = path.join(testDir, 'task-login.md');
+      await fs.writeFile(filePath, taskContent);
+
+      const result = await service.parseTaskFile(filePath, 'in_progress');
+
+      expect(result).not.toBeNull();
+      expect(result!.title).toBe('Implement login feature');
+      expect(result!.assignedTo).toBe('crewly-product-sam-217bfbbf');
+      expect(result!.priority).toBe('high');
+      expect(result!.status).toBe('in_progress');
+    });
+
+    it('should truncate long titles to 100 characters', async () => {
+      const longTitle = 'A'.repeat(150);
+      const taskContent = `# ${longTitle}\n\nPriority: low\n`;
+      const filePath = path.join(testDir, 'task-long.md');
+      await fs.writeFile(filePath, taskContent);
+
+      const result = await service.parseTaskFile(filePath, 'open');
+
+      expect(result).not.toBeNull();
+      expect(result!.title.length).toBe(100);
+      expect(result!.title).toMatch(/\.\.\.$/);
+    });
+
+    it('should use defaults when fields are missing', async () => {
+      const taskContent = '# Simple task\n\nNo metadata here.\n';
+      const filePath = path.join(testDir, 'task-simple.md');
+      await fs.writeFile(filePath, taskContent);
+
+      const result = await service.parseTaskFile(filePath, 'open');
+
+      expect(result).not.toBeNull();
+      expect(result!.title).toBe('Simple task');
+      expect(result!.assignedTo).toBe('unassigned');
+      expect(result!.priority).toBe('medium');
+      expect(result!.status).toBe('open');
+    });
+
+    it('should return null for non-existent file', async () => {
+      const result = await service.parseTaskFile('/non/existent/task.md', 'open');
+      expect(result).toBeNull();
+    });
+
+    it('should strip [TASK] prefix from title', async () => {
+      const taskContent = '# [TASK] Fix the bug\n';
+      const filePath = path.join(testDir, 'task-prefix.md');
+      await fs.writeFile(filePath, taskContent);
+
+      const result = await service.parseTaskFile(filePath, 'in_progress');
+      expect(result!.title).toBe('Fix the bug');
+    });
+  });
+
+  describe('scanPendingTasks', () => {
+    let tasksBaseDir: string;
+
+    beforeEach(async () => {
+      tasksBaseDir = path.join(testDir, 'tasks-delegated');
+      await fs.mkdir(path.join(tasksBaseDir, 'in_progress'), { recursive: true });
+      await fs.mkdir(path.join(tasksBaseDir, 'open'), { recursive: true });
+      await fs.mkdir(path.join(tasksBaseDir, 'done'), { recursive: true });
+    });
+
+    it('should find tasks in in_progress and open directories', async () => {
+      await fs.writeFile(
+        path.join(tasksBaseDir, 'in_progress', 'task1.md'),
+        '# Build API\n\n## Assignment Information\n- **Assigned to**: sam-001\n- **Priority**: high\n',
+      );
+      await fs.writeFile(
+        path.join(tasksBaseDir, 'open', 'task2.md'),
+        '# Fix bug\n\n## Assignment Information\n- **Assigned to**: leo-002\n- **Priority**: low\n',
+      );
+      // done should be ignored
+      await fs.writeFile(
+        path.join(tasksBaseDir, 'done', 'task3.md'),
+        '# Done task\n\nAssignee: max-003\nPriority: high\n',
+      );
+
+      const result = await service.scanPendingTasks(tasksBaseDir);
+
+      expect(result).toHaveLength(2);
+      expect(result[0].title).toBe('Build API');
+      expect(result[0].status).toBe('in_progress');
+      expect(result[1].title).toBe('Fix bug');
+      expect(result[1].status).toBe('open');
+    });
+
+    it('should sort in_progress before open, then by priority', async () => {
+      await fs.writeFile(
+        path.join(tasksBaseDir, 'open', 'task-high.md'),
+        '# High priority open\n\n- **Priority**: high\n- **Assigned to**: agent-1\n',
+      );
+      await fs.writeFile(
+        path.join(tasksBaseDir, 'in_progress', 'task-low.md'),
+        '# Low priority active\n\n- **Priority**: low\n- **Assigned to**: agent-2\n',
+      );
+
+      const result = await service.scanPendingTasks(tasksBaseDir);
+
+      expect(result).toHaveLength(2);
+      expect(result[0].status).toBe('in_progress');
+      expect(result[1].status).toBe('open');
+    });
+
+    it('should skip non-.md files', async () => {
+      await fs.writeFile(path.join(tasksBaseDir, 'in_progress', 'notes.txt'), 'not a task');
+      await fs.writeFile(path.join(tasksBaseDir, 'in_progress', 'data.json'), '{}');
+
+      const result = await service.scanPendingTasks(tasksBaseDir);
+      expect(result).toHaveLength(0);
+    });
+
+    it('should return empty array for non-existent directory', async () => {
+      const result = await service.scanPendingTasks('/non/existent/tasks');
+      expect(result).toHaveLength(0);
+    });
+
+    it('should limit to MAX_PENDING_TASKS', async () => {
+      for (let i = 0; i < 15; i++) {
+        await fs.writeFile(
+          path.join(tasksBaseDir, 'open', `task-${i}.md`),
+          `# Task ${i}\n\n- **Assigned to**: agent-${i}\n- **Priority**: medium\n`,
+        );
+      }
+
+      const result = await service.scanPendingTasks(tasksBaseDir);
+      expect(result.length).toBeLessThanOrEqual(10);
+    });
+  });
+
+  describe('formatSummaryMarkdown with pending tasks', () => {
+    it('should include Pending Tasks section when tasks exist', () => {
+      const summary = {
+        generatedAt: '2026-03-16T12:00:00.000Z',
+        activeThreads: [],
+        activeAgents: [],
+        pendingTasks: [
+          {
+            title: 'Build login API',
+            assignedTo: 'sam-dev-001',
+            status: 'in_progress',
+            priority: 'high',
+            filePath: '/path/to/task.md',
+          },
+          {
+            title: 'Fix CSS layout',
+            assignedTo: 'leo-dev-002',
+            status: 'open',
+            priority: 'low',
+            filePath: '/path/to/task2.md',
+          },
+        ],
+      };
+
+      const markdown = service.formatSummaryMarkdown(summary);
+
+      expect(markdown).toContain('## Pending Tasks');
+      expect(markdown).toContain('2 task(s) require attention');
+      expect(markdown).toContain('IN PROGRESS');
+      expect(markdown).toContain('Build login API');
+      expect(markdown).toContain('sam-dev-001');
+      expect(markdown).toContain('OPEN');
+      expect(markdown).toContain('Fix CSS layout');
+      expect(markdown).toContain('leo-dev-002');
+    });
+
+    it('should not include Pending Tasks section when no tasks', () => {
+      const summary = {
+        generatedAt: '2026-03-16T12:00:00.000Z',
+        activeThreads: [],
+        activeAgents: [],
+        pendingTasks: [],
+      };
+
+      const markdown = service.formatSummaryMarkdown(summary);
+      expect(markdown).not.toContain('## Pending Tasks');
+    });
+  });
+
+  describe('generateSummary with pending tasks', () => {
+    it('should include pending tasks in generated summary', async () => {
+      const summariesDir = path.join(testDir, 'session-summaries');
+      jest.spyOn(service, 'getSummariesDir').mockReturnValue(summariesDir);
+      jest.spyOn(service, 'getLatestSummaryPath').mockReturnValue(path.join(summariesDir, 'latest.md'));
+      jest.spyOn(service, 'scanThreadDirectory').mockResolvedValue([]);
+      jest.spyOn(service, 'scanChatUiConversations').mockResolvedValue([]);
+
+      // Create task files
+      const tasksDir = path.join(testDir, 'tasks-gen');
+      await fs.mkdir(path.join(tasksDir, 'in_progress'), { recursive: true });
+      await fs.mkdir(path.join(tasksDir, 'open'), { recursive: true });
+      await fs.writeFile(
+        path.join(tasksDir, 'in_progress', 'active-task.md'),
+        '# Deploy v2.0\n\n- **Assigned to**: sam-001\n- **Priority**: high\n',
+      );
+
+      const mockReader: TeamDataReader = {
+        getTeams: async () => [{ members: [] }],
+      };
+
+      const result = await service.generateSummary(mockReader, tasksDir);
+
+      expect(result.pendingTasks).toHaveLength(1);
+      expect(result.pendingTasks[0].title).toBe('Deploy v2.0');
+      expect(result.pendingTasks[0].status).toBe('in_progress');
+
+      // Verify the saved file contains pending tasks
+      const content = await fs.readFile(path.join(summariesDir, 'latest.md'), 'utf-8');
+      expect(content).toContain('Pending Tasks');
+      expect(content).toContain('Deploy v2.0');
     });
   });
 });

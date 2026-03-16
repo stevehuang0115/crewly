@@ -312,6 +312,31 @@ async function _performOrchestratorSetup(
 	context: ApiContext
 ): Promise<{ success: boolean; message?: string; sessionName?: string; error?: string }> {
 	try {
+		// Check if the orchestrator is already running and healthy.
+		// If so, skip recreation to avoid killing a healthy orchestrator on every page load.
+		try {
+			const currentStatus = await getOrchestratorStatusFromService();
+			if (currentStatus.isActive) {
+				logger.info('Orchestrator is already running and healthy, skipping setup', {
+					agentStatus: currentStatus.agentStatus,
+					message: currentStatus.message,
+				});
+				return {
+					success: true,
+					message: 'Orchestrator is already running (setup skipped)',
+					sessionName: ORCHESTRATOR_SESSION_NAME,
+				};
+			}
+			logger.info('Orchestrator is not healthy, proceeding with setup', {
+				isActive: currentStatus.isActive,
+				agentStatus: currentStatus.agentStatus,
+			});
+		} catch (healthCheckError) {
+			logger.warn('Failed to check orchestrator health, proceeding with setup', {
+				error: healthCheckError instanceof Error ? healthCheckError.message : String(healthCheckError),
+			});
+		}
+
 		// Get orchestrator's runtime type from storage
 		let runtimeType: string = RUNTIME_TYPES.CLAUDE_CODE; // Default fallback
 		try {

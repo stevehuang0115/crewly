@@ -52,6 +52,14 @@ function autoConnectRelay(token: string): void {
     const jwtSecret = AUTH_CONSTANTS.JWT.DEFAULT_SECRET;
     const sharedSecret = crypto.createHash('sha256').update(`crewly-e2ee-${userId}-${jwtSecret}`).digest('hex');
 
+    // Defensive: attach error listener to prevent uncaught exception
+    // if any code path still emits 'error' on the EventEmitter
+    if (relay.listenerCount('error') === 0) {
+      relay.on('error', (err: Error) => {
+        logger.warn('Relay error (caught by autoConnectRelay fallback)', { error: err.message });
+      });
+    }
+
     relay.connect({
       wsUrl: RELAY_WS_URL(),
       pairingCode,

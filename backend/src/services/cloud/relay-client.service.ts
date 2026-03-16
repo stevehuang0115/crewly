@@ -267,7 +267,8 @@ export class RelayClientService extends EventEmitter {
 
     this.ws.on('error', (err: Error) => {
       this.logger.error('WebSocket error', { error: err.message });
-      this.emit('error', err);
+      this.setState('error');
+      this.scheduleReconnect();
     });
   }
 
@@ -339,7 +340,8 @@ export class RelayClientService extends EventEmitter {
 
       case 'error':
         this.logger.error('Relay server error', { code: msg.code, message: msg.message });
-        this.emit('error', new Error(`Relay error [${msg.code}]: ${msg.message}`));
+        this.setState('error');
+        this.scheduleReconnect();
         break;
 
       default:
@@ -366,7 +368,7 @@ export class RelayClientService extends EventEmitter {
       this.logger.error('Failed to decrypt relay message', {
         error: err instanceof Error ? err.message : String(err),
       });
-      this.emit('error', new Error('Failed to decrypt relay message'));
+      // Log only — do not re-emit error to avoid uncaught exception crash
     }
   }
 

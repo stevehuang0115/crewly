@@ -10,6 +10,7 @@ import {
 	ChevronRight,
 	X,
 	Store,
+	Clock,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
@@ -181,6 +182,25 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 			<div className="p-2 border-t border-border-dark space-y-1">
 				{/* Cloud Auth Status */}
 				<AuthStatusIndicator isCollapsed={isCollapsed && !isMobileOpen} />
+
+				{/* Schedules Link */}
+				<NavLink
+					to="/scheduled-checkins"
+					onClick={handleLinkClick}
+					className={({ isActive }) =>
+						clsx(
+							'group flex items-center px-4 py-2 rounded-lg text-sm transition-colors',
+							isCollapsed && !isMobileOpen ? 'md:justify-center' : '',
+							isActive
+								? 'bg-primary/10 text-primary font-semibold'
+								: 'text-text-secondary-dark hover:bg-background-dark hover:text-text-primary-dark'
+						)
+					}
+					title={isCollapsed && !isMobileOpen ? 'Schedules' : undefined}
+				>
+					<Clock className="h-5 w-5 flex-shrink-0" />
+					<span className={clsx('ml-3', isCollapsed && !isMobileOpen ? 'md:hidden' : '')}>Schedules</span>
+				</NavLink>
 
 				{/* Settings Link */}
 				<NavLink
