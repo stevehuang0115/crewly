@@ -475,6 +475,11 @@ describe('Orchestrator Handlers', () => {
   });
 
   describe('setupOrchestrator', () => {
+    afterEach(() => {
+      // Reset in-flight state between tests
+      orchestratorHandlers._resetSetupInFlightState();
+    });
+
     it('should setup orchestrator successfully via agentRegistrationService', async () => {
       mockAgentRegistrationService.createAgentSession.mockResolvedValue({
         success: true,
@@ -585,6 +590,105 @@ describe('Orchestrator Handlers', () => {
           runtimeType: 'gemini-cli',
         })
       );
+    });
+
+    it('should deduplicate concurrent setup calls — createAgentSession called only once', async () => {
+      // Use a deferred promise to control when createAgentSession resolves
+      let resolveSetup: (value: any) => void;
+      const setupPromise = new Promise((resolve) => { resolveSetup = resolve; });
+      mockAgentRegistrationService.createAgentSession.mockReturnValue(setupPromise);
+
+      const res1 = { json: jest.fn(), status: jest.fn().mockReturnThis() };
+      const res2 = { json: jest.fn(), status: jest.fn().mockReturnThis() };
+      const res3 = { json: jest.fn(), status: jest.fn().mockReturnThis() };
+
+      // Fire 3 concurrent calls
+      const call1 = orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext, mockRequest as Request, res1 as any
+      );
+      const call2 = orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext, mockRequest as Request, res2 as any
+      );
+      const call3 = orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext, mockRequest as Request, res3 as any
+      );
+
+      // Resolve the setup
+      resolveSetup!({
+        success: true,
+        sessionName: ORCHESTRATOR_SESSION_NAME,
+        message: 'Orchestrator created',
+      });
+
+      await Promise.all([call1, call2, call3]);
+
+      // createAgentSession must be called exactly once (not 3 times)
+      expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalledTimes(1);
+
+      // All 3 responses should get the success result
+      expect(res1.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+      expect(res2.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+      expect(res3.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('should allow new setup after previous one completes', async () => {
+      mockAgentRegistrationService.createAgentSession.mockResolvedValue({
+        success: true,
+        sessionName: ORCHESTRATOR_SESSION_NAME,
+        message: 'Orchestrator created',
+      });
+
+      // First call
+      await orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext, mockRequest as Request, mockResponse as Response
+      );
+
+      // Reset mock to track new calls
+      mockAgentRegistrationService.createAgentSession.mockClear();
+      mockAgentRegistrationService.createAgentSession.mockResolvedValue({
+        success: true,
+        sessionName: ORCHESTRATOR_SESSION_NAME,
+        message: 'Orchestrator created again',
+      });
+
+      const res2 = { json: jest.fn(), status: jest.fn().mockReturnThis() };
+
+      // Second call after first completed — should trigger a new setup
+      await orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext, mockRequest as Request, res2 as any
+      );
+
+      expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalledTimes(1);
+      expect(res2.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('should propagate failure to deduplicated callers', async () => {
+      let resolveSetup: (value: any) => void;
+      const setupPromise = new Promise((resolve) => { resolveSetup = resolve; });
+      mockAgentRegistrationService.createAgentSession.mockReturnValue(setupPromise);
+
+      const res1 = { json: jest.fn(), status: jest.fn().mockReturnThis() };
+      const res2 = { json: jest.fn(), status: jest.fn().mockReturnThis() };
+
+      const call1 = orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext, mockRequest as Request, res1 as any
+      );
+      const call2 = orchestratorHandlers.setupOrchestrator.call(
+        mockApiContext as ApiContext, mockRequest as Request, res2 as any
+      );
+
+      resolveSetup!({
+        success: false,
+        error: 'Session creation failed',
+      });
+
+      await Promise.all([call1, call2]);
+
+      // Both should get 500 error
+      expect(res1.status).toHaveBeenCalledWith(500);
+      expect(res2.status).toHaveBeenCalledWith(500);
+      expect(res1.json).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+      expect(res2.json).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
     });
   });
 
@@ -910,6 +1014,10 @@ describe('Orchestrator Handlers', () => {
   });
 
   describe('setupOrchestrator memory initialization', () => {
+    afterEach(() => {
+      orchestratorHandlers._resetSetupInFlightState();
+    });
+
     it('should initialize orchestrator memory during setup', async () => {
       // Re-setup mock since clearAllMocks resets the return value
       (MemoryService.getInstance as jest.Mock).mockReturnValue({

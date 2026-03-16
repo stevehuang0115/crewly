@@ -37,6 +37,8 @@ class ApiService {
   private teamsCache: CacheEntry<Team[]> | null = null;
   /** In-flight promise for request deduplication */
   private teamsCachePromise: Promise<Team[]> | null = null;
+  /** In-flight promise for orchestrator setup deduplication */
+  private setupOrchestratorPromise: Promise<{ success: boolean; message?: string; error?: string }> | null = null;
 
   // ============ Project Methods ============
 
@@ -273,6 +275,50 @@ class ApiService {
    */
   async startTeam(teamId: string): Promise<void> {
     await axios.post(`${API_BASE}/teams/${teamId}/start`, {});
+  }
+
+  // ============ Orchestrator Methods ============
+
+  /**
+   * Setup the orchestrator with deduplication.
+   *
+   * If a setup request is already in flight, returns the same promise
+   * instead of firing a duplicate POST. Prevents the 5-7x concurrent
+   * calls observed on page load.
+   *
+   * @returns Object with success flag, optional message, and optional error
+   */
+  async setupOrchestrator(): Promise<{ success: boolean; message?: string; error?: string }> {
+    // Return in-flight promise if setup is already running
+    if (this.setupOrchestratorPromise) {
+      return this.setupOrchestratorPromise;
+    }
+
+    this.setupOrchestratorPromise = (async () => {
+      try {
+        const response = await fetch(`${API_BASE}/orchestrator/setup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const result = await response.json();
+        return {
+          success: response.ok && result.success,
+          message: result.message,
+          error: result.error,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to setup orchestrator',
+        };
+      }
+    })();
+
+    try {
+      return await this.setupOrchestratorPromise;
+    } finally {
+      this.setupOrchestratorPromise = null;
+    }
   }
 
   // ============ Ticket Methods ============

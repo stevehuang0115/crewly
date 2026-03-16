@@ -193,16 +193,9 @@ export const TeamDetail: React.FC = () => {
     if (isOrchestrator) {
       setStartTeamLoading(true);
       try {
-        const response = await fetch('/api/orchestrator/setup', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        });
+        const result = await apiService.setupOrchestrator();
 
-        const result = await response.json();
-
-        if (response.ok) {
+        if (result.success) {
           fetchTeamData();
           showSuccess(result.message || 'Orchestrator started successfully!');
         } else {
@@ -489,16 +482,9 @@ export const TeamDetail: React.FC = () => {
     try {
       // Special handling for orchestrator team
       if (team?.id === 'orchestrator' || team?.name === 'Orchestrator Team') {
-        const response = await fetch('/api/orchestrator/setup', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        });
+        const result = await apiService.setupOrchestrator();
 
-        const result = await response.json();
-
-        if (response.ok) {
+        if (result.success) {
           // Refresh team data and orchestrator session status
           fetchTeamData();
           checkOrchestratorSession();
