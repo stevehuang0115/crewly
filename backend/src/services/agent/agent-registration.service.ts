@@ -695,8 +695,7 @@ export class AgentRegistrationService {
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
 				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
-				promptFilePath = await this.writePromptFile(sessionName, prompt, { projectPath, runtimeType, role });
-				agentName = sessionName; // #207: pass agent name for --agent flag
+				promptFilePath = await this.writePromptFile(sessionName, prompt);
 			} catch (promptError) {
 				this.logger.warn('Failed to pre-write prompt file (non-fatal, will fall back to direct delivery)', {
 					sessionName,
@@ -912,11 +911,7 @@ export class AgentRegistrationService {
 				this.promptCache.set(templatePath, content);
 			}
 
-			// Replace template variables with actual paths (#209)
-			const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
-			const rendered = content.replace(/\{\{AGENT_SKILLS_PATH\}\}/g, agentSkillsPath);
-
-			await writeFile(config.outputPath, rendered, { flag: 'wx' }).catch(() => {
+			await writeFile(config.outputPath, content, { flag: 'wx' }).catch(() => {
 				// File already exists — no action needed
 			});
 		} catch (err) {
@@ -1027,8 +1022,7 @@ export class AgentRegistrationService {
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
 				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
-				promptFilePath = await this.writePromptFile(sessionName, prompt, { projectPath, runtimeType, role });
-				agentName = sessionName;
+				promptFilePath = await this.writePromptFile(sessionName, prompt);
 			} catch (promptError) {
 				this.logger.warn('Failed to pre-write prompt file in full recreation (non-fatal)', {
 					sessionName,
