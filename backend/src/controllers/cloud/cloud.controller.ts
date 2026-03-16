@@ -18,9 +18,23 @@ import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudController');
 
-/** Relay server URL — env var overrides the default from constants. */
-const RELAY_WS_URL = (): string =>
-  process.env['CREWLY_RELAY_WS_URL'] || CLOUD_CONSTANTS.RELAY.DEFAULT_WS_URL;
+/**
+ * Relay server URL.
+ *
+ * Priority:
+ * 1. CREWLY_RELAY_WS_URL env var (explicit external relay)
+ * 2. Embedded local relay at ws://localhost:PORT/ws/relay
+ *
+ * The embedded relay runs inside the OSS backend process, so it's always
+ * available without deploying a separate relay service.
+ */
+const RELAY_WS_URL = (): string => {
+  if (process.env['CREWLY_RELAY_WS_URL']) {
+    return process.env['CREWLY_RELAY_WS_URL'];
+  }
+  const port = process.env['DEFAULT_WEB_PORT'] || '8787';
+  return `ws://localhost:${port}/ws/relay`;
+};
 
 /**
  * Auto-connect to the Cloud Relay after a successful cloud login.

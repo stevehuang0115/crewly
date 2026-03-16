@@ -788,6 +788,17 @@ export class CrewlyServer {
 			// Start HTTP server with enhanced error handling
 			await this.startHttpServer();
 
+			// Start embedded relay server on /ws/relay path
+			try {
+				const { RelayServerService } = await import('./services/cloud/relay-server.service.js');
+				const relayServer = RelayServerService.getInstance();
+				relayServer.start({ httpServer: this.httpServer, path: '/ws/relay' });
+				this.logger.info('Embedded relay server started', { path: '/ws/relay' });
+			} catch (err) {
+				this.logger.warn('Failed to start embedded relay server (non-fatal)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
 
 			// Register cleanup handlers
 			this.registerSignalHandlers();
