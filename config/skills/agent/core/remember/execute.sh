@@ -16,6 +16,12 @@ require_param "content" "$CONTENT"
 require_param "category" "$CATEGORY"
 require_param "scope" "$SCOPE"
 
+# #187: Auto-inject projectPath from CREWLY_PROJECT_PATH env var when not provided
+PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+if [ -z "$PROJECT_PATH" ] && [ -n "${CREWLY_PROJECT_PATH:-}" ]; then
+  INPUT=$(echo "$INPUT" | jq --arg pp "$CREWLY_PROJECT_PATH" '. + {projectPath: $pp}')
+fi
+
 # Build body with required and optional fields
 BODY=$(echo "$INPUT" | jq '{
   agentId: .agentId,

@@ -98,6 +98,13 @@ export function createIncomingCallback(
       textSnippet: msg.text.slice(0, 80),
     });
 
+    // Add 👀 reaction to acknowledge message receipt
+    if (msg.messageName) {
+      adapter.addReaction(msg.messageName, '👀').catch((err) => {
+        logger.debug('Could not add eyes reaction', { error: formatError(err) });
+      });
+    }
+
     const enqueueStartMs = Date.now();
 
     const replyPromise = new Promise<string>((resolve) => {
@@ -105,6 +112,7 @@ export function createIncomingCallback(
         channelId: msg.channelId,
         userId: msg.userId,
         threadId: msg.threadId,
+        messageName: msg.messageName,
         googleChatResolve: resolve,
         enqueueStartMs,
       };
@@ -131,6 +139,13 @@ export function createIncomingCallback(
         const cleaned = cleanGoogleChatResponse(response);
         if (cleaned) {
           await adapter.sendMessage(msg.channelId, cleaned, { threadId: msg.threadId });
+
+          // Add ✅ reaction after successful reply delivery
+          if (msg.messageName) {
+            adapter.addReaction(msg.messageName, '✅').catch((err) => {
+              logger.debug('Could not add completion reaction', { error: formatError(err) });
+            });
+          }
 
           // Store bot reply in thread file
           if (msg.channelId && msg.threadId) {

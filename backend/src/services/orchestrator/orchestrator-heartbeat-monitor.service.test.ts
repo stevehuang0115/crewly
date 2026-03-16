@@ -409,6 +409,49 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 			restartSpy.mockRestore();
 		});
 
+		it('should skip heartbeat request when child process is alive and PTY is active (#194)', async () => {
+			service.start();
+			service.stop();
+
+			// Advance past startup grace period
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+
+			// Child process is alive
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(true);
+
+			// Make API idle past the PTY-active threshold (15 min)
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_PTY_ACTIVE_MS + 1);
+
+			// Record PTY activity so it appears active (idle time < PTY_ACTIVE_WINDOW)
+			PtyActivityTrackerService.getInstance().recordActivity(ORCHESTRATOR_SESSION_NAME);
+
+			await service.performCheck();
+
+			// Should NOT have sent heartbeat — child alive + PTY active means orchestrator is running a command
+			expect(mockSession.write).not.toHaveBeenCalled();
+			expect(service.getState().heartbeatRequestSentAt).toBeNull();
+		});
+
+		it('should send heartbeat request when child process is alive but PTY is idle (#194)', async () => {
+			service.start();
+			service.stop();
+
+			// Advance past startup grace period
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+
+			// Child process is alive
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(true);
+
+			// Make idle past heartbeat threshold (both API and PTY)
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+
+			// PTY is NOT active (no recent activity) — so the child-alive check should not suppress
+			await performCheckAndFlush(service);
+
+			// Should have sent heartbeat — child alive but PTY idle suggests orchestrator may be stuck
+			expect(mockSession.write).toHaveBeenCalled();
+		});
+
 		it('should set inProgressSince when orchestrator has recent activity', async () => {
 			service.start();
 			service.stop();

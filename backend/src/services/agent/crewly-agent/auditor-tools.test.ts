@@ -33,9 +33,9 @@ describe('Auditor Tools', () => {
   });
 
   describe('getAuditorToolNames', () => {
-    it('should return all 10 tool names', () => {
+    it('should return all 11 tool names', () => {
       const names = getAuditorToolNames();
-      expect(names).toHaveLength(10);
+      expect(names).toHaveLength(11);
       expect(names).toContain('get_team_status');
       expect(names).toContain('get_agent_logs');
       expect(names).toContain('get_tasks');
@@ -50,8 +50,8 @@ describe('Auditor Tools', () => {
   });
 
   describe('tool definitions', () => {
-    it('should create all 10 tools', () => {
-      expect(Object.keys(tools)).toHaveLength(10);
+    it('should create all 11 tools', () => {
+      expect(Object.keys(tools)).toHaveLength(11);
     });
 
     it('should have description and inputSchema on every tool', () => {

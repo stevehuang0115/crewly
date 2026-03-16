@@ -31,6 +31,8 @@ import {
 	RUNTIME_TYPES,
 	GEMINI_FAILURE_PATTERNS,
 	GEMINI_FORCE_RESTART_PATTERNS,
+	GEMINI_DELIBERATION_PATTERN,
+	GEMINI_DELIBERATION_THRESHOLD,
 	CLAUDE_FATAL_PATTERNS,
 	GEMINI_FAILURE_RETRY_CONSTANTS,
 	GEMINI_READY_PATTERNS,
@@ -344,7 +346,24 @@ export class RuntimeExitMonitorService {
 		}
 
 		// Test buffer against exit patterns
-		const matched = exitPatterns.some((pattern) => pattern.test(monitored.buffer));
+		let matched = exitPatterns.some((pattern) => pattern.test(monitored.buffer));
+
+		// #188: Deliberation loop detection for Gemini CLI agents.
+		// Count occurrences of "Wait, I'll..." / "Actually, I'll..." in the buffer.
+		// A single occurrence is normal; 5+ in the visible buffer means the agent
+		// is stuck planning without executing tool calls and needs a restart.
+		if (!matched && monitored.runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+			const deliberationCount = monitored.buffer.split(GEMINI_DELIBERATION_PATTERN).length - 1;
+			if (deliberationCount >= GEMINI_DELIBERATION_THRESHOLD) {
+				this.logger.warn('Gemini deliberation loop detected, triggering recovery', {
+					sessionName,
+					deliberationCount,
+					threshold: GEMINI_DELIBERATION_THRESHOLD,
+				});
+				matched = true;
+			}
+		}
+
 		if (!matched) {
 			return;
 		}

@@ -147,4 +147,78 @@ describe('GoogleChatMessengerAdapter', () => {
       expect(adapter.getStatus().connected).toBe(false);
     });
   });
+
+  describe('addReaction', () => {
+    it('should silently skip in webhook mode', async () => {
+      await adapter.initialize({
+        webhookUrl: 'https://chat.googleapis.com/v1/spaces/AAA/messages?key=xxx',
+      });
+
+      // Should not throw or make fetch calls
+      await adapter.addReaction('spaces/AAA/messages/BBB', '👀');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should skip when messageName is empty', async () => {
+      await adapter.initialize({
+        serviceAccountKey: JSON.stringify({ client_email: 'test@test.iam.gserviceaccount.com', private_key: 'pk' }),
+      });
+
+      await adapter.addReaction('', '👀');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should skip when messageName has no /messages/ segment', async () => {
+      await adapter.initialize({
+        serviceAccountKey: JSON.stringify({ client_email: 'test@test.iam.gserviceaccount.com', private_key: 'pk' }),
+      });
+
+      await adapter.addReaction('spaces/AAA', '👀');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should call reactions API with correct emoji in service account mode', async () => {
+      await adapter.initialize({
+        serviceAccountKey: JSON.stringify({ client_email: 'test@test.iam.gserviceaccount.com', private_key: 'pk' }),
+      });
+
+      // Pre-populate the token cache to bypass JWT signing (which requires a real key)
+      (adapter as any).accessToken = 'test-token';
+      (adapter as any).tokenExpiresAt = Date.now() + 3600_000;
+
+      // Mock reaction create
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ name: 'spaces/AAA/messages/BBB/reactions/CCC' }),
+      } as Response);
+
+      await adapter.addReaction('spaces/AAA/messages/BBB', '✅');
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const reactionCall = mockFetch.mock.calls[0];
+      expect(reactionCall[0]).toBe('https://chat.googleapis.com/v1/spaces/AAA/messages/BBB/reactions');
+      expect(JSON.parse(reactionCall[1]!.body as string)).toEqual({
+        emoji: { unicode: '✅' },
+      });
+    });
+
+    it('should silently ignore ALREADY_EXISTS errors', async () => {
+      await adapter.initialize({
+        serviceAccountKey: JSON.stringify({ client_email: 'test@test.iam.gserviceaccount.com', private_key: 'pk' }),
+      });
+
+      // Pre-populate token cache
+      (adapter as any).accessToken = 'test-token';
+      (adapter as any).tokenExpiresAt = Date.now() + 3600_000;
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        text: async () => 'ALREADY_EXISTS: reaction already exists',
+      } as Response);
+
+      // Should not throw for ALREADY_EXISTS
+      await expect(adapter.addReaction('spaces/AAA/messages/BBB', '👀')).resolves.toBeUndefined();
+    });
+  });
 });

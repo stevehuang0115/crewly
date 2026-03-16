@@ -271,17 +271,19 @@ describe('AgentHeartbeatMonitorService', () => {
 			expect(mockStorageService.getTeams).not.toHaveBeenCalled();
 		});
 
-		it('should skip orchestrator agents', async () => {
+		it('should monitor orchestrator agents unconditionally (#191)', async () => {
 			setStartedAtInPast(service);
+			// Record activity for orchestrator so the tracker has a baseline
+			PtyActivityTrackerService.getInstance().recordActivity('crewly-orc');
 
 			// Make agent idle
 			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
 			await service.performCheck();
 
-			// Should only have state for the developer, not the orchestrator
+			// #191: Orchestrator should now be tracked (unconditional heartbeat)
 			const states = service.getAgentStates();
 			expect(states.has('dev-agent-1')).toBe(true);
-			expect(states.has('crewly-orc')).toBe(false);
+			expect(states.has('crewly-orc')).toBe(true);
 		});
 
 		it('should skip inactive agents', async () => {
@@ -596,6 +598,137 @@ describe('AgentHeartbeatMonitorService', () => {
 			await service.performCheck();
 			await service.performCheck();
 			await expect(service.performCheck()).resolves.toBeUndefined();
+		});
+	});
+
+	describe('on-demand optimization (#191)', () => {
+		it('should skip non-orchestrator agents with recent API activity', async () => {
+			setStartedAtInPast(service);
+
+			// Make PTY idle
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+
+			// But API heartbeat is recent
+			const heartbeatService = AgentHeartbeatService.getInstance();
+			(heartbeatService.getAgentHeartbeat as jest.Mock).mockResolvedValue({
+				lastActiveTime: new Date().toISOString(),
+				agentStatus: 'active',
+			});
+
+			await service.performCheck();
+
+			// Should not check process liveness (agent is alive via API)
+			expect(mockSessionBackend.isChildProcessAlive).not.toHaveBeenCalled();
+			// Should have state with reset counters
+			const state = service.getAgentStates().get('dev-agent-1');
+			expect(state?.consecutiveDeadChecks).toBe(0);
+			expect(state?.heartbeatSuspended).toBe(false);
+		});
+
+		it('should suspend heartbeat for idle agents after threshold', async () => {
+			setStartedAtInPast(service);
+
+			// Make truly idle
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+
+			// Process is alive but idle
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(true);
+
+			// Run 5 checks (IDLE_CHECKS_BEFORE_SUSPEND = 5)
+			for (let i = 0; i < 5; i++) {
+				await service.performCheck();
+			}
+
+			const state = service.getAgentStates().get('dev-agent-1');
+			expect(state?.heartbeatSuspended).toBe(true);
+			expect(state?.consecutiveIdleChecks).toBe(5);
+		});
+
+		it('should skip suspended agents on subsequent checks', async () => {
+			setStartedAtInPast(service);
+
+			// Make truly idle
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(true);
+
+			// Suspend via 5 idle checks
+			for (let i = 0; i < 5; i++) {
+				await service.performCheck();
+			}
+
+			// Clear mock call count
+			mockSessionBackend.isChildProcessAlive.mockClear();
+
+			// Next check should skip the suspended agent
+			await service.performCheck();
+			expect(mockSessionBackend.isChildProcessAlive).not.toHaveBeenCalledWith('dev-agent-1');
+		});
+
+		it('should unsuspend agent when API activity resumes', async () => {
+			setStartedAtInPast(service);
+
+			// Make truly idle and suspend
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(true);
+
+			for (let i = 0; i < 5; i++) {
+				await service.performCheck();
+			}
+
+			expect(service.getAgentStates().get('dev-agent-1')?.heartbeatSuspended).toBe(true);
+
+			// API activity resumes
+			const heartbeatService = AgentHeartbeatService.getInstance();
+			(heartbeatService.getAgentHeartbeat as jest.Mock).mockResolvedValue({
+				lastActiveTime: new Date().toISOString(),
+				agentStatus: 'active',
+			});
+
+			await service.performCheck();
+
+			const state = service.getAgentStates().get('dev-agent-1');
+			expect(state?.heartbeatSuspended).toBe(false);
+			expect(state?.consecutiveIdleChecks).toBe(0);
+		});
+
+		it('should never suspend orchestrator heartbeat', async () => {
+			// Only keep orchestrator in team
+			mockTeams[0].members = [mockTeams[0].members[1]]; // orchestrator only
+			PtyActivityTrackerService.getInstance().recordActivity('crewly-orc');
+			setStartedAtInPast(service);
+
+			// Make truly idle
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(true);
+
+			// Run many checks — orchestrator should never be suspended
+			for (let i = 0; i < 10; i++) {
+				await service.performCheck();
+			}
+
+			const state = service.getAgentStates().get('crewly-orc');
+			expect(state?.heartbeatSuspended).toBe(false);
+		});
+
+		it('should resume heartbeat via resumeHeartbeat method', async () => {
+			setStartedAtInPast(service);
+
+			// Make truly idle and suspend
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(true);
+
+			for (let i = 0; i < 5; i++) {
+				await service.performCheck();
+			}
+
+			expect(service.getAgentStates().get('dev-agent-1')?.heartbeatSuspended).toBe(true);
+
+			// Manually resume
+			service.resumeHeartbeat('dev-agent-1');
+
+			const state = service.getAgentStates().get('dev-agent-1');
+			expect(state?.heartbeatSuspended).toBe(false);
+			expect(state?.consecutiveIdleChecks).toBe(0);
 		});
 	});
 

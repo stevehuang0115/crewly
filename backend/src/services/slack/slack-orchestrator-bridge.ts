@@ -99,6 +99,13 @@ export class SlackOrchestratorBridge extends EventEmitter {
   private loggedMissingScope = false;
 
   /**
+   * Pending completion reactions keyed by "channelId:threadTs".
+   * Stores the original message ts so that the ✅ reaction is added to the
+   * correct message when the reply-slack skill delivers a response.
+   */
+  private pendingReactions = new Map<string, string>();
+
+  /**
    * Track channel+thread pairs where Slack delivery was already handled
    * by the reply-slack skill (execute.sh). Used by sendSlackResponse to
    * avoid sending a duplicate fallback message to the same thread.
@@ -293,6 +300,7 @@ export class SlackOrchestratorBridge extends EventEmitter {
 
       // Handle based on intent
       let response: string;
+      let isOrchestratorRoute = false;
       switch (command.intent) {
         case 'help':
           response = this.getHelpMessage();
@@ -312,13 +320,21 @@ export class SlackOrchestratorBridge extends EventEmitter {
         default:
           // Send to orchestrator for processing
           response = await this.sendToOrchestrator(message.text, context);
+          isOrchestratorRoute = true;
       }
 
       // Send response back to Slack
       await this.sendSlackResponse(message, response);
 
-      // Replace typing indicator with checkmark
-      if (this.config.showTypingIndicator) {
+      // For orchestrator-routed messages, defer ✅ until reply-slack delivers
+      // the actual response. Store pending reaction keyed by channel+thread
+      // so addCompletionReaction() can find it when the reply arrives.
+      if (isOrchestratorRoute && this.config.showTypingIndicator) {
+        const threadTs = message.threadTs || message.ts;
+        const key = `${message.channelId}:${threadTs}`;
+        this.pendingReactions.set(key, message.ts);
+      } else if (this.config.showTypingIndicator) {
+        // Non-orchestrator commands complete immediately
         await this.markComplete(message);
       }
 
@@ -985,6 +1001,36 @@ Just type naturally to chat with the orchestrator!`;
         this.logger.warn('Could not add completion indicator', { error: errorMessage });
       }
       // Silent fail for missing_scope since we already logged about it
+    }
+  }
+
+  /**
+   * Add ✅ completion reaction to a pending message.
+   *
+   * Called by the reply-slack API endpoint after successfully delivering
+   * the agent's response. Looks up the original user message ts from
+   * the pending reactions map (keyed by channelId:threadTs) and adds
+   * a white_check_mark reaction.
+   *
+   * @param channelId - Slack channel ID
+   * @param threadTs - Thread timestamp used in the reply
+   */
+  async addCompletionReaction(channelId: string, threadTs: string): Promise<void> {
+    const key = `${channelId}:${threadTs}`;
+    const originalMessageTs = this.pendingReactions.get(key);
+    if (!originalMessageTs) {
+      return;
+    }
+
+    this.pendingReactions.delete(key);
+
+    try {
+      await this.slackService.addReaction(channelId, originalMessageTs, 'white_check_mark');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (!errorMessage.includes('missing_scope') && !errorMessage.includes('already_reacted')) {
+        this.logger.warn('Could not add deferred completion reaction', { error: errorMessage });
+      }
     }
   }
 

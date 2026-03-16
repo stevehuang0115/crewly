@@ -471,6 +471,21 @@ export class OrchestratorHeartbeatMonitorService {
 			return;
 		}
 
+		// #194: If the orchestrator's child process is alive and running,
+		// skip the heartbeat request. This prevents false restarts when
+		// the orchestrator is executing bash skills or non-API commands
+		// (git, grep, file reads) that don't generate API activity.
+		if (this.sessionBackend?.isChildProcessAlive) {
+			const childAlive = this.sessionBackend.isChildProcessAlive(ORCHESTRATOR_SESSION_NAME);
+			if (childAlive && isPtyActive) {
+				this.logger.debug('Skipping heartbeat request: child process alive with active PTY (likely running skill/command)', {
+					idleTimeMs,
+					apiIdleTimeMs,
+				});
+				return;
+			}
+		}
+
 		// Otherwise, send a heartbeat request.
 		this.logger.info('Orchestrator idle (no API activity), sending heartbeat request', {
 			idleTimeMs,

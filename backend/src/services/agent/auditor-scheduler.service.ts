@@ -598,11 +598,17 @@ export class AuditorSchedulerService {
       // the next audit. Without this, the auditor would stay inactive until the L1
       // periodic timer fires (up to 15 min away).
       if (payload.sessionName === AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME) {
-        this.logger.info('Auditor session went inactive, scheduling recovery', {
+        this.logger.info('Auditor session went inactive, scheduling recovery (#185)', {
           eventType: payload.eventType,
           recoveryDelayMs: AUDITOR_SCHEDULER_CONSTANTS.SESSION_RECOVERY_DELAY_MS,
         });
         this.sessionReady = false;
+
+        // #185: Reset retry state so recovery is not blocked by previous failures.
+        // Without this, a session that failed earlier could exhaust retries and
+        // enter cooldown, preventing recovery after the audit completes normally.
+        this.sessionRetryCount = 0;
+        this.sessionCooldownUntil = 0;
 
         // Cancel any existing recovery timer to avoid stacking
         if (this.sessionRecoveryTimer) {
@@ -612,8 +618,18 @@ export class AuditorSchedulerService {
         this.sessionRecoveryTimer = setTimeout(() => {
           this.sessionRecoveryTimer = null;
           if (this.status !== 'stopped') {
-            this.logger.info('Auditor session recovery: triggering session recreation');
-            void this.trigger('event');
+            this.logger.info('Auditor session recovery: recreating session (#185)');
+            // #185: Recreate session first, then trigger audit. Using
+            // ensureAuditorSession() directly avoids the running_audit guard
+            // in trigger() which would reject if status is still 'running_audit'.
+            void this.ensureAuditorSession().then(() => {
+              if (this.sessionReady) {
+                this.logger.info('Auditor session recovered, triggering audit');
+                void this.trigger('event');
+              }
+            }).catch((err) => {
+              this.logger.error('Auditor session recovery failed', { error: formatError(err) });
+            });
           }
         }, AUDITOR_SCHEDULER_CONSTANTS.SESSION_RECOVERY_DELAY_MS);
 

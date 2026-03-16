@@ -2257,6 +2257,12 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				ENV_CONSTANTS.CREWLY_API_URL,
 				`http://localhost:${WEB_CONSTANTS.PORTS.BACKEND}`
 			);
+			// #187: Set project path so memory skills can auto-inject it
+			await sessionHelper.setEnvironmentVariable(
+				sessionName,
+				ENV_CONSTANTS.CREWLY_PROJECT_PATH,
+				cwdToUse
+			);
 
 			// Inject API keys from settings (with override chain) for all runtimes
 			const settingsService = getSettingsService();

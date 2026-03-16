@@ -1375,4 +1375,115 @@ describe('SlackOrchestratorBridge', () => {
       expect('@Auditor show report'.match(pattern)).not.toBeNull();
     });
   });
+
+  describe('addCompletionReaction (deferred ✅)', () => {
+    it('should add ✅ reaction when pending reaction exists', async () => {
+      const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true });
+      await bridge.initialize();
+
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+
+      // Simulate storing a pending reaction
+      (bridge as any).pendingReactions.set('C123:1707.001', '1707.002');
+
+      await bridge.addCompletionReaction('C123', '1707.001');
+
+      expect(slackService.addReaction).toHaveBeenCalledWith('C123', '1707.002', 'white_check_mark');
+      // Pending reaction should be consumed
+      expect((bridge as any).pendingReactions.has('C123:1707.001')).toBe(false);
+    });
+
+    it('should not react when no pending reaction exists', async () => {
+      const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true });
+      await bridge.initialize();
+
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+
+      await bridge.addCompletionReaction('C123', '1707.001');
+
+      expect(slackService.addReaction).not.toHaveBeenCalled();
+    });
+
+    it('should handle addReaction errors gracefully', async () => {
+      const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true });
+      await bridge.initialize();
+
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'addReaction').mockRejectedValue(new Error('network error'));
+
+      (bridge as any).pendingReactions.set('C123:1707.001', '1707.002');
+
+      // Should not throw
+      await expect(bridge.addCompletionReaction('C123', '1707.001')).resolves.toBeUndefined();
+      // Pending reaction still consumed
+      expect((bridge as any).pendingReactions.has('C123:1707.001')).toBe(false);
+    });
+
+    it('should suppress already_reacted errors silently', async () => {
+      const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true });
+      await bridge.initialize();
+
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'addReaction').mockRejectedValue(new Error('already_reacted'));
+
+      (bridge as any).pendingReactions.set('C123:1707.001', '1707.002');
+
+      await expect(bridge.addCompletionReaction('C123', '1707.001')).resolves.toBeUndefined();
+    });
+
+    it('should store pending reaction for orchestrator-routed messages', async () => {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
+      const chatService = getChatService();
+      jest.spyOn(chatService, 'sendMessage').mockResolvedValue({
+        message: { id: 'msg-1', conversationId: 'conv-123', from: { type: 'user', name: 'User' }, content: 'test', contentType: 'text', timestamp: new Date().toISOString() } as any,
+        conversation: { id: 'conv-123', title: 'test', messages: [], createdAt: '', updatedAt: '' } as any,
+      });
+
+      const mockQS = {
+        enqueue: jest.fn().mockImplementation((input: any) => {
+          // Immediately resolve slackResolve to unblock
+          setTimeout(() => input.sourceMetadata.slackResolve('done'), 5);
+          return { id: 'q-1' };
+        }),
+      };
+
+      const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true, responseTimeoutMs: 5000 });
+      bridge.setMessageQueueService(mockQS as any);
+      await bridge.initialize();
+
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'getConversationContext').mockReturnValue({
+        conversationId: 'conv-123',
+        channelId: 'C123',
+        userId: 'U123',
+        threadTs: '1707.001',
+      });
+
+      const handledPromise = new Promise<void>((resolve) => {
+        bridge.on('message_handled', () => resolve());
+      });
+
+      slackService.emit('message', {
+        text: 'hello orchestrator',
+        channelId: 'C123',
+        userId: 'U123',
+        ts: '1707.002',
+        threadTs: '1707.001',
+      });
+
+      await handledPromise;
+
+      // Should have added 👀 (eyes) typing indicator
+      expect(slackService.addReaction).toHaveBeenCalledWith('C123', '1707.002', 'eyes');
+      // Should NOT have immediately added ✅ (that's deferred)
+      expect(slackService.addReaction).not.toHaveBeenCalledWith('C123', '1707.002', 'white_check_mark');
+      // Should have a pending reaction stored
+      expect((bridge as any).pendingReactions.has('C123:1707.001')).toBe(true);
+      expect((bridge as any).pendingReactions.get('C123:1707.001')).toBe('1707.002');
+    }, 15000);
+  });
 });

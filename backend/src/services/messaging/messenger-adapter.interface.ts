@@ -19,6 +19,8 @@ export interface IncomingMessage {
   text: string;
   /** Platform-specific thread/reply identifier (e.g. Slack threadTs, Telegram replyToId) */
   threadId?: string;
+  /** Platform-specific message resource name (e.g., Google Chat "spaces/xxx/messages/yyy") */
+  messageName?: string;
   /** ISO-8601 timestamp */
   timestamp: string;
 }

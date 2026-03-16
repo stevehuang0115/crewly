@@ -42,12 +42,14 @@ const mockAdapterGetStatus = jest.fn<any>().mockReturnValue({
   details: { mode: 'pubsub', authMode: 'service_account', pullActive: true },
 });
 const mockAdapterSendMessage = jest.fn<any>();
+const mockAdapterAddReaction = jest.fn<any>().mockResolvedValue(undefined);
 
 jest.mock('./adapters/google-chat-messenger.adapter.js', () => ({
   GoogleChatMessengerAdapter: jest.fn().mockImplementation(() => ({
     initialize: mockAdapterInitialize,
     getStatus: mockAdapterGetStatus,
     sendMessage: mockAdapterSendMessage,
+    addReaction: mockAdapterAddReaction,
   })),
 }));
 
@@ -242,6 +244,59 @@ describe('GoogleChatInitializer', () => {
           }),
         }),
       );
+    });
+
+    it('callback should add 👀 reaction when messageName is present', async () => {
+      mockAdapterAddReaction.mockClear();
+
+      await initializeGoogleChatIfConfigured({
+        messageQueueService: mockQueueService,
+      });
+
+      const initArg = mockAdapterInitialize.mock.calls[0][0] as any;
+      const callback = initArg.onIncomingMessage;
+
+      callback({
+        text: 'Hello',
+        channelId: 'spaces/abc',
+        userId: 'users/123',
+        threadId: 'threads/456',
+        conversationId: 'conv-1',
+        messageName: 'spaces/abc/messages/xyz',
+        source: 'google-chat',
+      });
+
+      // addReaction should have been called with 👀 via the adapter in the closure
+      expect(mockAdapterAddReaction).toHaveBeenCalledWith('spaces/abc/messages/xyz', '👀');
+
+      // Also verify messageName in sourceMetadata for deferred ✅
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceMetadata: expect.objectContaining({
+            messageName: 'spaces/abc/messages/xyz',
+          }),
+        }),
+      );
+    });
+
+    it('callback should include messageName in sourceMetadata for deferred ✅', async () => {
+      await initializeGoogleChatIfConfigured({
+        messageQueueService: mockQueueService,
+      });
+
+      const initArg = mockAdapterInitialize.mock.calls[0][0] as any;
+      const callback = initArg.onIncomingMessage;
+
+      callback({
+        text: 'Test',
+        channelId: 'spaces/abc',
+        conversationId: 'conv-2',
+        messageName: 'spaces/abc/messages/msg123',
+        source: 'google-chat',
+      });
+
+      const enqueueArg = mockEnqueue.mock.calls[0][0] as any;
+      expect(enqueueArg.sourceMetadata.messageName).toBe('spaces/abc/messages/msg123');
     });
   });
 

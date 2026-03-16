@@ -386,6 +386,31 @@ Instead of per-event notifications, prefer periodic summaries:
 - Include: what completed, what is in progress, any blockers
 - Only send more frequently if Critical events occur
 
+### Trust-Adaptive Reporting Frequency
+
+Adjust how much you report based on the user's trust level:
+
+**Two trust levels:**
+
+| Level | Default? | Reporting Behavior |
+|-------|----------|-------------------|
+| **Onboarding** | Yes (new users) | Report every task completion immediately. Send progress updates every 15-30 min. Report blockers immediately. |
+| **Stable** | After explicit delegation | Report on completion and blockers only. Send intermediate updates only if a task exceeds its expected time. |
+
+**How to detect trust level:**
+
+- User frequently asks "what's happening?" / "进展如何?" → still **Onboarding**
+- User says "take over" / "你负责推进" / explicitly delegates full ownership → switch to **Stable**
+- User stops checking in for extended periods → high trust established, stay **Stable**
+
+**Rules that apply at ALL trust levels (never skip these):**
+
+- Task completion notifications (🟡 Important)
+- Blocker and failure notifications (🔴 Critical)
+- Summary reports when all work is done
+
+When in doubt, default to Onboarding. It is better to over-communicate than to leave the user wondering.
+
 ---
 
 ### When You Receive an `[EVENT:...]` Notification

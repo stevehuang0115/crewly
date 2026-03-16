@@ -49,6 +49,13 @@ import type { ISessionBackend } from '../session/session-backend.interface.js';
 const MAX_DEAD_CHECKS_BEFORE_RESTART = 3;
 
 /**
+ * Number of consecutive idle-but-alive checks before suspending heartbeat
+ * monitoring for an agent. Once suspended, heartbeat is only resumed when
+ * new API activity is detected. (#191)
+ */
+const IDLE_CHECKS_BEFORE_SUSPEND = 5;
+
+/**
  * Per-agent monitoring state tracked by the heartbeat monitor.
  */
 export interface AgentMonitorState {
@@ -66,6 +73,12 @@ export interface AgentMonitorState {
 	restartTimestamps: number[];
 	/** Total restart count */
 	restartCount: number;
+	/** Cached timestamp of last API activity (ms since epoch) for on-demand skip (#191) */
+	lastApiCallTime: number;
+	/** Number of consecutive checks where agent was idle but alive (#191) */
+	consecutiveIdleChecks: number;
+	/** Whether heartbeat monitoring is suspended for this idle agent (#191) */
+	heartbeatSuspended: boolean;
 }
 
 /**
@@ -208,6 +221,21 @@ export class AgentHeartbeatMonitorService {
 	}
 
 	/**
+	 * Resume heartbeat monitoring for a suspended agent.
+	 * Called when an agent transitions from idle back to active work. (#191)
+	 *
+	 * @param sessionName - Session name of the agent to resume
+	 */
+	resumeHeartbeat(sessionName: string): void {
+		const state = this.agentStates.get(sessionName);
+		if (state && state.heartbeatSuspended) {
+			state.heartbeatSuspended = false;
+			state.consecutiveIdleChecks = 0;
+			this.logger.info('Heartbeat monitoring resumed for agent', { sessionName });
+		}
+	}
+
+	/**
 	 * Perform a single heartbeat check cycle across all active agents.
 	 *
 	 * For each active non-orchestrator agent:
@@ -237,11 +265,6 @@ export class AgentHeartbeatMonitorService {
 
 		for (const team of teams) {
 			for (const member of team.members || []) {
-				// Skip orchestrator
-				if (member.role === ORCHESTRATOR_ROLE) {
-					continue;
-				}
-
 				// Skip inactive agents
 				if (member.agentStatus !== 'active') {
 					continue;
@@ -269,21 +292,55 @@ export class AgentHeartbeatMonitorService {
 						consecutiveDeadChecks: 0,
 						restartTimestamps: [],
 						restartCount: 0,
+						lastApiCallTime: Date.now(),
+						consecutiveIdleChecks: 0,
+						heartbeatSuspended: false,
 					});
 				}
 
 				const state = this.agentStates.get(member.sessionName)!;
 
+				// #191: Orchestrator gets unconditional liveness checks (no skip/suspend)
+				// Non-orchestrator agents can be skipped or suspended based on activity.
+				const isOrchestrator = member.role === ORCHESTRATOR_ROLE;
+
+				// #191: Check API activity and update cached lastApiCallTime
+				const apiIdleMs = await this.getApiIdleTimeMs(member.id);
+				if (apiIdleMs < AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS) {
+					state.lastApiCallTime = Date.now() - apiIdleMs;
+				}
+
+				// #191: For non-orchestrator agents, skip if recently active via API
+				if (!isOrchestrator && apiIdleMs < AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS) {
+					// Recent API activity — agent is alive, reset all counters and unsuspend
+					if (state.consecutiveDeadChecks > 0 || state.heartbeatSuspended) {
+						this.logger.info('Agent API activity detected, resetting counters', {
+							sessionName: member.sessionName,
+							apiIdleMs,
+							wasSuspended: state.heartbeatSuspended,
+						});
+					}
+					state.consecutiveDeadChecks = 0;
+					state.consecutiveIdleChecks = 0;
+					state.heartbeatSuspended = false;
+					continue;
+				}
+
+				// #191: Skip suspended agents (non-orchestrator only).
+				// Agents are unsuspended above when API activity resumes.
+				if (!isOrchestrator && state.heartbeatSuspended) {
+					continue;
+				}
+
 				// Check dual idle signals: PTY activity AND API heartbeat
 				const ptyIdleMs = activityTracker.getIdleTimeMs(member.sessionName);
-				const apiIdleMs = await this.getApiIdleTimeMs(member.id);
 
 				// If either signal shows recent activity, the agent is alive
 				const trulyIdle = ptyIdleMs >= AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS
 					&& apiIdleMs >= AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS;
 
 				if (!trulyIdle) {
-					// Agent has recent activity — reset dead checks
+					// Agent has recent activity — reset dead checks and idle checks
 					if (state.consecutiveDeadChecks > 0) {
 						this.logger.info('Agent activity detected, resetting dead check counter', {
 							sessionName: member.sessionName,
@@ -293,6 +350,7 @@ export class AgentHeartbeatMonitorService {
 						});
 						state.consecutiveDeadChecks = 0;
 					}
+					state.consecutiveIdleChecks = 0;
 					continue;
 				}
 
@@ -306,6 +364,19 @@ export class AgentHeartbeatMonitorService {
 							sessionName: member.sessionName,
 						});
 						state.consecutiveDeadChecks = 0;
+					}
+
+					// #191: Track consecutive idle checks for non-orchestrator agents.
+					// After IDLE_CHECKS_BEFORE_SUSPEND, suspend heartbeat monitoring.
+					if (!isOrchestrator) {
+						state.consecutiveIdleChecks++;
+						if (state.consecutiveIdleChecks >= IDLE_CHECKS_BEFORE_SUSPEND) {
+							state.heartbeatSuspended = true;
+							this.logger.info('Suspending heartbeat for idle agent', {
+								sessionName: member.sessionName,
+								consecutiveIdleChecks: state.consecutiveIdleChecks,
+							});
+						}
 					}
 					continue;
 				}

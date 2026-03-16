@@ -79,8 +79,14 @@ auto_remember() {
   local category="${3:-pattern}" scope="${4:-project}"
   local project_path="${5:-}"
 
-  # #187: If scope is "project" but projectPath is empty, fall back to "agent" scope
-  # to avoid 400 errors from the memory API.
+  # #187: Auto-inject projectPath from CREWLY_PROJECT_PATH env var if not provided.
+  # This env var is set by the agent session runtime context.
+  if [ -z "$project_path" ] && [ -n "${CREWLY_PROJECT_PATH:-}" ]; then
+    project_path="$CREWLY_PROJECT_PATH"
+  fi
+
+  # #187: If scope is "project" but projectPath is still empty after env fallback,
+  # fall back to "agent" scope to avoid 400 errors from the memory API.
   if [ "$scope" = "project" ] && [ -z "$project_path" ]; then
     scope="agent"
   fi
@@ -107,3 +113,23 @@ auto_remember() {
     echo "[auto_remember] Warning: failed to persist knowledge (non-fatal): $result" >&2
   fi
 }
+
+# -----------------------------------------------------------------------------
+# _skill_heartbeat
+#
+# Fire-and-forget lightweight API heartbeat at the start of every skill
+# execution. This ensures the orchestrator heartbeat monitor recognizes that
+# a skill is running, preventing false-positive timeout restarts (#194).
+# The background curl is non-blocking (~5ms) and errors are silently ignored.
+# -----------------------------------------------------------------------------
+_skill_heartbeat() {
+  curl -s -X POST "${CREWLY_API_URL}/api/heartbeat" \
+    -H "X-Agent-Session: ${CREWLY_SESSION_NAME:-}" \
+    -H "Content-Type: application/json" \
+    -d '{"source":"skill-start"}' >/dev/null 2>&1 &
+}
+
+# Auto-heartbeat on skill entry when running inside a Crewly agent session
+# Use if/fi instead of && to avoid returning exit code 1 when CREWLY_SESSION_NAME
+# is empty — that would kill callers running under set -e (pipefail).
+if [ -n "${CREWLY_SESSION_NAME:-}" ]; then _skill_heartbeat; fi

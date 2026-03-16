@@ -137,6 +137,51 @@ export class GoogleChatMessengerAdapter implements MessengerAdapter {
   }
 
   /**
+   * Add an emoji reaction to a Google Chat message.
+   *
+   * Only works in service account mode — webhook mode does not support the
+   * reactions API. Calls `spaces.messages.reactions.create`.
+   *
+   * @param messageName - Full message resource name (e.g., "spaces/xxx/messages/yyy")
+   * @param emoji - Unicode emoji character (e.g., "👀", "✅")
+   */
+  async addReaction(messageName: string, emoji: string): Promise<void> {
+    if (!this.serviceAccountKey) {
+      // Reactions require service account mode — silently skip in webhook mode
+      return;
+    }
+
+    if (!messageName || !messageName.includes('/messages/')) {
+      return;
+    }
+
+    const token = await this.getAccessToken();
+
+    const resp = await fetch(
+      `https://chat.googleapis.com/v1/${messageName}/reactions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          emoji: { unicode: emoji },
+        }),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      }
+    );
+
+    if (!resp.ok) {
+      const details = await resp.text();
+      // Non-critical — don't throw, just log
+      if (!details.includes('ALREADY_EXISTS')) {
+        throw new Error(`Google Chat reaction failed (${resp.status}): ${details}`);
+      }
+    }
+  }
+
+  /**
    * Send a message via incoming webhook URL.
    *
    * @param text - Message text

@@ -59,6 +59,8 @@ export const ENV_CONSTANTS = {
 	CREWLY_API_URL: 'CREWLY_API_URL',
 	/** Gemini API key for embedding-based knowledge search */
 	GEMINI_API_KEY: 'GEMINI_API_KEY',
+	/** Project path for auto-injecting into memory skill calls (#187) */
+	CREWLY_PROJECT_PATH: 'CREWLY_PROJECT_PATH',
 } as const;
 
 // Agent-specific timeout values (in milliseconds)
@@ -488,6 +490,20 @@ export const GEMINI_FAILURE_PATTERNS: RegExp[] = [
 	/Authentication expired/i,
 	GEMINI_STUCK_CONNECTIVITY_PATTERN,
 ];
+
+/**
+ * Gemini CLI deliberation loop detection pattern (#188).
+ * Matches repeated "Wait, I'll..." / "Actually, I'll..." planning text
+ * that indicates the agent is stuck in an infinite deliberation cycle
+ * without executing tool calls. A single occurrence is not a loop —
+ * the RuntimeExitMonitorService counts occurrences in the output buffer
+ * and only triggers recovery when the threshold is exceeded.
+ */
+export const GEMINI_DELIBERATION_PATTERN = /(?:Wait,\s+I['''\u2019]ll|Actually,\s+I['''\u2019]ll)/i;
+
+/** Number of deliberation pattern matches in the terminal buffer before
+ *  declaring the agent stuck in a deliberation loop (#188). */
+export const GEMINI_DELIBERATION_THRESHOLD = 5;
 
 /**
  * Gemini update/upgrade markers that should trigger forced recovery.

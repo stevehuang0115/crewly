@@ -28,9 +28,9 @@ import type {
 describe('Messaging Types', () => {
   describe('Constants', () => {
     it('should have correct message sources', () => {
-      expect(MESSAGE_SOURCES).toEqual({ SLACK: 'slack', WEB_CHAT: 'web_chat', SYSTEM_EVENT: 'system_event', WHATSAPP: 'whatsapp' });
-      expect(MESSAGE_SOURCE_VALUES).toEqual(expect.arrayContaining(['web_chat', 'slack', 'system_event', 'whatsapp']));
-      expect(MESSAGE_SOURCE_VALUES).toHaveLength(4);
+      expect(MESSAGE_SOURCES).toEqual({ SLACK: 'slack', WEB_CHAT: 'web_chat', SYSTEM_EVENT: 'system_event', WHATSAPP: 'whatsapp', GOOGLE_CHAT: 'google_chat' });
+      expect(MESSAGE_SOURCE_VALUES).toEqual(expect.arrayContaining(['web_chat', 'slack', 'system_event', 'whatsapp', 'google_chat']));
+      expect(MESSAGE_SOURCE_VALUES).toHaveLength(5);
     });
 
     it('should have correct queue message statuses', () => {
