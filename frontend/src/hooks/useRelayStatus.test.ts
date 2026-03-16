@@ -22,6 +22,7 @@ describe('useRelayStatus', () => {
   });
 
   it('should start in loading state', () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
     vi.mocked(apiService.getRelayStatus).mockReturnValue(new Promise(() => {}));
     const { result } = renderHook(() => useRelayStatus());
     expect(result.current.isLoading).toBe(true);
@@ -29,6 +30,7 @@ describe('useRelayStatus', () => {
   });
 
   it('should map "registered" to "connected" state', async () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
     vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'registered', sessionId: 'sess-1' });
     const { result } = renderHook(() => useRelayStatus());
 
@@ -42,6 +44,7 @@ describe('useRelayStatus', () => {
   });
 
   it('should map "paired" to "paired" state', async () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
     vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'paired', sessionId: 'sess-2' });
     const { result } = renderHook(() => useRelayStatus());
 
@@ -54,6 +57,7 @@ describe('useRelayStatus', () => {
   });
 
   it('should map "connecting" to "connecting" state', async () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
     vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'connecting', sessionId: null });
     const { result } = renderHook(() => useRelayStatus());
 
@@ -66,6 +70,7 @@ describe('useRelayStatus', () => {
   });
 
   it('should map "error" to "error" state', async () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
     vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'error', sessionId: null });
     const { result } = renderHook(() => useRelayStatus());
 
@@ -77,63 +82,7 @@ describe('useRelayStatus', () => {
     expect(result.current.label).toBe('Relay Error');
   });
 
-  it('should map "disconnected" to "offline" state', async () => {
-    vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'disconnected', sessionId: null });
-    const { result } = renderHook(() => useRelayStatus());
-
-    await waitFor(() => {
-      expect(result.current.isLoading).toBe(false);
-    });
-
-    expect(result.current.state).toBe('offline');
-    expect(result.current.label).toBe('Cloud Offline');
-  });
-
-  it('should fall back to offline on API error', async () => {
-    vi.mocked(apiService.getRelayStatus).mockRejectedValue(new Error('Network error'));
-    const { result } = renderHook(() => useRelayStatus());
-
-    await waitFor(() => {
-      expect(result.current.isLoading).toBe(false);
-    });
-
-    expect(result.current.state).toBe('offline');
-    expect(result.current.sessionId).toBeNull();
-  });
-
-  it('should set up polling interval on mount', () => {
-    const setIntervalSpy = vi.spyOn(global, 'setInterval');
-    vi.mocked(apiService.getRelayStatus).mockReturnValue(new Promise(() => {}));
-
-    renderHook(() => useRelayStatus());
-
-    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 5000);
-    setIntervalSpy.mockRestore();
-  });
-
-  it('should clear polling interval on unmount', () => {
-    const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
-    vi.mocked(apiService.getRelayStatus).mockReturnValue(new Promise(() => {}));
-
-    const { unmount } = renderHook(() => useRelayStatus());
-    unmount();
-
-    expect(clearIntervalSpy).toHaveBeenCalled();
-    clearIntervalSpy.mockRestore();
-  });
-
-  it('should map unknown states to offline', async () => {
-    vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'unknown-state', sessionId: null });
-    const { result } = renderHook(() => useRelayStatus());
-
-    await waitFor(() => {
-      expect(result.current.isLoading).toBe(false);
-    });
-
-    expect(result.current.state).toBe('offline');
-  });
-
-  it('should show connected when relay is offline but cloud token exists', async () => {
+  it('should map "disconnected" to "connected" when cloud token exists', async () => {
     localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
     vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'disconnected', sessionId: null });
     const { result } = renderHook(() => useRelayStatus());
@@ -156,16 +105,67 @@ describe('useRelayStatus', () => {
     });
 
     expect(result.current.state).toBe('connected');
+    expect(result.current.sessionId).toBeNull();
   });
 
-  it('should still show offline when relay is offline and no cloud token', async () => {
-    vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'disconnected', sessionId: null });
+  it('should set up polling interval on mount', () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
+    const setIntervalSpy = vi.spyOn(global, 'setInterval');
+    vi.mocked(apiService.getRelayStatus).mockReturnValue(new Promise(() => {}));
+
+    renderHook(() => useRelayStatus());
+
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 5000);
+    setIntervalSpy.mockRestore();
+  });
+
+  it('should clear polling interval on unmount', () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
+    const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
+    vi.mocked(apiService.getRelayStatus).mockReturnValue(new Promise(() => {}));
+
+    const { unmount } = renderHook(() => useRelayStatus());
+    unmount();
+
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    clearIntervalSpy.mockRestore();
+  });
+
+  it('should map unknown states to connected when cloud token exists', async () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
+    vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'unknown-state', sessionId: null });
     const { result } = renderHook(() => useRelayStatus());
 
     await waitFor(() => {
       expect(result.current.isLoading).toBe(false);
     });
 
+    expect(result.current.state).toBe('connected');
+  });
+
+  it('should skip API call and show offline when no cloud token', async () => {
+    const { result } = renderHook(() => useRelayStatus());
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    expect(result.current.state).toBe('offline');
+    expect(result.current.label).toBe('Cloud Offline');
+    expect(apiService.getRelayStatus).not.toHaveBeenCalled();
+  });
+
+  it('should not call API after multiple renders when no cloud token', async () => {
+    const { result, rerender } = renderHook(() => useRelayStatus());
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    // Re-render to simulate component update
+    rerender();
+
+    expect(apiService.getRelayStatus).not.toHaveBeenCalled();
     expect(result.current.state).toBe('offline');
   });
 });

@@ -78,12 +78,24 @@ export function useRelayStatus(): UseRelayStatusResult {
   const isMountedRef = useRef(true);
 
   const fetchStatus = useCallback(async () => {
+    const hasCloudToken = !!localStorage.getItem(CLOUD_TOKEN_KEY);
+
+    // Skip the API call if no cloud token — the endpoint requires cloud
+    // connection and will return 403, spamming server logs.
+    if (!hasCloudToken) {
+      if (isMountedRef.current) {
+        setState('offline');
+        setSessionId(null);
+      }
+      return;
+    }
+
     try {
       const status = await apiService.getRelayStatus();
       if (isMountedRef.current) {
         let mappedState = STATE_MAP[status.state] ?? 'offline';
         // If relay is offline but user has a cloud token, show connected
-        if (mappedState === 'offline' && localStorage.getItem(CLOUD_TOKEN_KEY)) {
+        if (mappedState === 'offline') {
           mappedState = 'connected';
         }
         setState(mappedState);
@@ -91,12 +103,8 @@ export function useRelayStatus(): UseRelayStatusResult {
       }
     } catch {
       if (isMountedRef.current) {
-        // If relay fetch fails but user has a cloud token, show connected
-        if (localStorage.getItem(CLOUD_TOKEN_KEY)) {
-          setState('connected');
-        } else {
-          setState('offline');
-        }
+        // Fetch failed but user has cloud token — show connected
+        setState('connected');
         setSessionId(null);
       }
     }

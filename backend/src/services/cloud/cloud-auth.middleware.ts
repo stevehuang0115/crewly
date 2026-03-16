@@ -47,7 +47,7 @@ export function isCloudConnected(): boolean {
  */
 export function requireCloudConnection(req: Request, res: Response, next: NextFunction): void {
   if (!isCloudConnected()) {
-    logger.warn('Cloud connection required but not connected', { path: req.path });
+    logger.debug('Cloud connection required but not connected', { path: req.path });
     res.status(403).json({
       success: false,
       error: 'CrewlyAI Cloud connection required. Connect via POST /api/cloud/connect.',
