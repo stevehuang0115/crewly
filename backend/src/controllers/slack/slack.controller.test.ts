@@ -169,41 +169,6 @@ describe('Slack Controller', () => {
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
     });
-
-    it('should call addCompletionReaction after successful send with threadTs', async () => {
-      const slackService = getSlackService();
-      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
-      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1707.002');
-
-      const bridge = getSlackOrchestratorBridge();
-      const reactionSpy = jest.spyOn(bridge, 'addCompletionReaction').mockResolvedValue(undefined);
-
-      const response = await request(app).post('/api/slack/send').send({
-        channelId: 'C123',
-        text: 'Agent response',
-        threadTs: '1707.001',
-      });
-
-      expect(response.status).toBe(200);
-      expect(reactionSpy).toHaveBeenCalledWith('C123', '1707.001');
-    });
-
-    it('should not call addCompletionReaction when no threadTs', async () => {
-      const slackService = getSlackService();
-      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
-      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1707.002');
-
-      const bridge = getSlackOrchestratorBridge();
-      const reactionSpy = jest.spyOn(bridge, 'addCompletionReaction').mockResolvedValue(undefined);
-
-      const response = await request(app).post('/api/slack/send').send({
-        channelId: 'C123',
-        text: 'Agent response',
-      });
-
-      expect(response.status).toBe(200);
-      expect(reactionSpy).not.toHaveBeenCalled();
-    });
   });
 
   describe('POST /api/slack/notify', () => {

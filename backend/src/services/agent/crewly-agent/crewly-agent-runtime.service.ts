@@ -24,7 +24,7 @@ import type { ParentMessage, WorkerMessage } from './agent-worker.js';
 import { SessionCommandHelper } from '../../session/index.js';
 import { InProcessLogBuffer } from './in-process-log-buffer.js';
 import { RateLimiter } from './rate-limiter.js';
-import { parseNotifyContent, type NotifyPayload } from '../../../types/chat.types.js';
+
 
 /**
  * Crewly Agent runtime with optional worker process isolation.
@@ -282,26 +282,6 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
         );
       }
 
-      // Flush any remaining buffered text after the run completes
-      if (textChunkBuffer.trim().length > 0) {
-        const text = textChunkBuffer.trim();
-        const preview = text.length > 500 ? text.substring(0, 500) + '...' : text;
-        this.logBuffer.append(session, 'info', `💬 ${preview}`);
-        textChunkBuffer = '';
-      }
-
-      // Tool calls already logged via streaming callbacks (onToolCallStart/Finish).
-      // Only log tool calls retroactively if generateText path was used (test mock).
-      if (this.agentRunner!._generateTextFn) {
-        for (const tc of result.toolCalls) {
-          executionTracker.toolCallsCompleted.push(tc.toolName);
-          const argsPreview = JSON.stringify(tc.args).substring(0, 120);
-          this.logBuffer.append(session, 'info', `🔧 ${tc.toolName}(${argsPreview})`);
-          const resultPreview = tc.result ? JSON.stringify(tc.result).substring(0, 200) : 'void';
-          this.logBuffer.append(session, 'debug', `  → ${resultPreview}`);
-        }
-      }
-
       // Log response summary
       executionTracker.phase = 'complete';
       const textPreview = result.text ? result.text.substring(0, 150) : '(no text)';
@@ -350,25 +330,6 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       this.logBuffer.append(session, 'error', `Agent error: ${errMsg}`);
       throw error;
     }
-  }
-
-  /**
-   * Record token usage to the TokenUsageService if tracking is enabled in settings.
-   *
-   * @param session - Session name
-   * @param result - Agent run result containing usage data
-   */
-  private async recordTokenUsageIfEnabled(session: string, result: AgentRunResult): Promise<void> {
-    const settings = await getSettingsService().getSettings();
-    if (!settings.general.tokenTracking) return;
-
-    TokenUsageService.getInstance().recordUsage(
-      session,
-      session,
-      result.usage.input,
-      result.usage.output,
-      this.currentModelString,
-    );
   }
 
   /**

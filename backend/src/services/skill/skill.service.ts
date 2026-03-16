@@ -545,12 +545,6 @@ export class SkillService {
       const dirName = path.basename(skillDir);
       const fm = frontmatter as Record<string, unknown>;
 
-      // Validate required fields
-      if (!fm.name || !fm.description) {
-        this.logger.warn('SKILL.md missing required fields (name/description)', { skillDir });
-        return null;
-      }
-
       const skill: Skill = {
         id: (fm.id as string) || `skill-${dirName}`,
         name: fm.name as string,

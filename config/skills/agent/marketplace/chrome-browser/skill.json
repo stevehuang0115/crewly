@@ -1,8 +1,0 @@
-{
-  "name": "chrome-browser",
-  "description": "Claude in Chrome - control real Chrome browser via MCP",
-  "runtime": {
-    "runtime": "claude-code",
-    "flags": ["--chrome"]
-  }
-}
