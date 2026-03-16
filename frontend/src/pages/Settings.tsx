@@ -7,6 +7,7 @@
  */
 
 import React, { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Settings as SettingsIcon, User, Wrench, Link2, Cloud, LucideIcon } from 'lucide-react';
 import { GeneralTab } from '../components/Settings/GeneralTab';
 import { RolesTab } from '../components/Settings/RolesTab';
@@ -28,13 +29,19 @@ interface TabConfig {
   icon: LucideIcon;
 }
 
+/** Valid tab IDs for URL parameter validation */
+const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'roles', 'skills', 'integrations', 'cloud']);
+
 /**
  * Settings page with tabbed navigation for managing Crewly configuration
  *
  * @returns Settings page component
  */
 export const Settings: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  const initialTab: SettingsTab = tabParam && VALID_TABS.has(tabParam) ? (tabParam as SettingsTab) : 'general';
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
 
   const tabs: TabConfig[] = [
     { id: 'general', label: 'General', icon: SettingsIcon },

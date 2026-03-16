@@ -6,8 +6,14 @@
 
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { vi, describe, it, expect } from 'vitest';
+import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { Settings } from './Settings';
+
+let mockSearchParams = new URLSearchParams('');
+
+vi.mock('react-router-dom', () => ({
+  useSearchParams: () => [mockSearchParams],
+}));
 
 // Mock the tab components
 vi.mock('../components/Settings/GeneralTab', () => ({
@@ -31,6 +37,10 @@ vi.mock('../components/Settings/CloudTab', () => ({
 }));
 
 describe('Settings Page', () => {
+  beforeEach(() => {
+    mockSearchParams = new URLSearchParams('');
+  });
+
   describe('Rendering', () => {
     it('should render settings page with header', () => {
       render(<Settings />);
@@ -136,6 +146,38 @@ describe('Settings Page', () => {
 
       const tabpanel = screen.getByRole('tabpanel');
       expect(tabpanel).toBeInTheDocument();
+    });
+  });
+
+  describe('URL tab parameter', () => {
+    it('should open Cloud tab when tab=cloud is in URL', () => {
+      mockSearchParams = new URLSearchParams('?tab=cloud');
+      render(<Settings />);
+
+      expect(screen.getByTestId('cloud-tab')).toBeInTheDocument();
+      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
+    });
+
+    it('should open Integrations tab when tab=integrations is in URL', () => {
+      mockSearchParams = new URLSearchParams('?tab=integrations');
+      render(<Settings />);
+
+      expect(screen.getByTestId('integrations-tab')).toBeInTheDocument();
+      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
+    });
+
+    it('should default to General tab for invalid tab param', () => {
+      mockSearchParams = new URLSearchParams('?tab=invalid');
+      render(<Settings />);
+
+      expect(screen.getByTestId('general-tab')).toBeInTheDocument();
+    });
+
+    it('should default to General tab when no tab param', () => {
+      mockSearchParams = new URLSearchParams('');
+      render(<Settings />);
+
+      expect(screen.getByTestId('general-tab')).toBeInTheDocument();
     });
   });
 });

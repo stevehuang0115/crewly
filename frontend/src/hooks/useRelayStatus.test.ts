@@ -18,6 +18,7 @@ vi.mock('../services/api.service', () => ({
 describe('useRelayStatus', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
   });
 
   it('should start in loading state', () => {
@@ -123,6 +124,42 @@ describe('useRelayStatus', () => {
 
   it('should map unknown states to offline', async () => {
     vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'unknown-state', sessionId: null });
+    const { result } = renderHook(() => useRelayStatus());
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    expect(result.current.state).toBe('offline');
+  });
+
+  it('should show connected when relay is offline but cloud token exists', async () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
+    vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'disconnected', sessionId: null });
+    const { result } = renderHook(() => useRelayStatus());
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    expect(result.current.state).toBe('connected');
+    expect(result.current.label).toBe('Cloud Active');
+  });
+
+  it('should show connected when relay fetch fails but cloud token exists', async () => {
+    localStorage.setItem('crewly_cloud_token', 'test-jwt-token');
+    vi.mocked(apiService.getRelayStatus).mockRejectedValue(new Error('Network error'));
+    const { result } = renderHook(() => useRelayStatus());
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    expect(result.current.state).toBe('connected');
+  });
+
+  it('should still show offline when relay is offline and no cloud token', async () => {
+    vi.mocked(apiService.getRelayStatus).mockResolvedValue({ state: 'disconnected', sessionId: null });
     const { result } = renderHook(() => useRelayStatus());
 
     await waitFor(() => {

@@ -10,6 +10,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { apiService } from '../services/api.service';
+import { CLOUD_TOKEN_KEY } from '../constants/cloud.constants';
 
 // ========================= Types =========================
 
@@ -80,13 +81,22 @@ export function useRelayStatus(): UseRelayStatusResult {
     try {
       const status = await apiService.getRelayStatus();
       if (isMountedRef.current) {
-        const mappedState = STATE_MAP[status.state] ?? 'offline';
+        let mappedState = STATE_MAP[status.state] ?? 'offline';
+        // If relay is offline but user has a cloud token, show connected
+        if (mappedState === 'offline' && localStorage.getItem(CLOUD_TOKEN_KEY)) {
+          mappedState = 'connected';
+        }
         setState(mappedState);
         setSessionId(status.sessionId);
       }
     } catch {
       if (isMountedRef.current) {
-        setState('offline');
+        // If relay fetch fails but user has a cloud token, show connected
+        if (localStorage.getItem(CLOUD_TOKEN_KEY)) {
+          setState('connected');
+        } else {
+          setState('offline');
+        }
         setSessionId(null);
       }
     }
