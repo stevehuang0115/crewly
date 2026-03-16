@@ -115,11 +115,11 @@ fi
 
 # Build JSON body
 if [ -n "$THREAD_NAME" ]; then
-  BODY=$(jq -n --arg space "$SPACE" --arg text "$TEXT" --arg threadName "$THREAD_NAME" \
-    '{space: $space, text: $text, threadName: $threadName}')
+  BODY=$(jq -n --arg channel "$SPACE" --arg text "$TEXT" --arg threadId "$THREAD_NAME" \
+    '{channel: $channel, text: $text, threadId: $threadId}')
 else
-  BODY=$(jq -n --arg space "$SPACE" --arg text "$TEXT" \
-    '{space: $space, text: $text}')
+  BODY=$(jq -n --arg channel "$SPACE" --arg text "$TEXT" \
+    '{channel: $channel, text: $text}')
 fi
 
 api_call POST "/messengers/google-chat/send" "$BODY"

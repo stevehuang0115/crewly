@@ -95,4 +95,85 @@ describe('Messenger Routes', () => {
       ])
     );
   });
+
+  describe('send route field aliasing', () => {
+    /** Invoke the send route handler directly from the router stack */
+    function getSendHandler(): (req: Request, res: Response, next: NextFunction) => void {
+      const sendLayer = (router as any).stack.find(
+        (layer: any) => layer.route?.path === '/:platform/send'
+      );
+      return sendLayer.route.stack[0].handle;
+    }
+
+    it('should accept space as alias for channel', async () => {
+      const mockAdapter = { sendMessage: jest.fn().mockResolvedValue(undefined as never) };
+      mockGet.mockReturnValue(mockAdapter);
+
+      const req = mockReq({
+        params: { platform: 'google-chat' },
+        body: { space: 'spaces/AAAA', text: 'hello' },
+      });
+      const res = mockRes();
+      const next = jest.fn() as unknown as NextFunction;
+
+      await getSendHandler()(req, res, next);
+
+      expect(mockAdapter.sendMessage).toHaveBeenCalledWith('spaces/AAAA', 'hello', { threadId: undefined });
+      expect(res.json).toHaveBeenCalledWith({ success: true, message: 'Message sent' });
+    });
+
+    it('should accept threadName as alias for threadId', async () => {
+      const mockAdapter = { sendMessage: jest.fn().mockResolvedValue(undefined as never) };
+      mockGet.mockReturnValue(mockAdapter);
+
+      const req = mockReq({
+        params: { platform: 'google-chat' },
+        body: { space: 'spaces/AAAA', text: 'hello', threadName: 'spaces/AAAA/threads/BBB' },
+      });
+      const res = mockRes();
+      const next = jest.fn() as unknown as NextFunction;
+
+      await getSendHandler()(req, res, next);
+
+      expect(mockAdapter.sendMessage).toHaveBeenCalledWith(
+        'spaces/AAAA',
+        'hello',
+        { threadId: 'spaces/AAAA/threads/BBB' },
+      );
+    });
+
+    it('should prefer channel over space when both provided', async () => {
+      const mockAdapter = { sendMessage: jest.fn().mockResolvedValue(undefined as never) };
+      mockGet.mockReturnValue(mockAdapter);
+
+      const req = mockReq({
+        params: { platform: 'google-chat' },
+        body: { channel: 'spaces/XXXX', space: 'spaces/AAAA', text: 'hello' },
+      });
+      const res = mockRes();
+      const next = jest.fn() as unknown as NextFunction;
+
+      await getSendHandler()(req, res, next);
+
+      expect(mockAdapter.sendMessage).toHaveBeenCalledWith('spaces/XXXX', 'hello', { threadId: undefined });
+    });
+
+    it('should prefer threadId over threadName when both provided', async () => {
+      const mockAdapter = { sendMessage: jest.fn().mockResolvedValue(undefined as never) };
+      mockGet.mockReturnValue(mockAdapter);
+
+      const req = mockReq({
+        params: { platform: 'google-chat' },
+        body: { channel: 'spaces/AAAA', text: 'hello', threadId: 'tid-1', threadName: 'tname-2' },
+      });
+      const res = mockRes();
+      const next = jest.fn() as unknown as NextFunction;
+
+      await getSendHandler()(req, res, next);
+
+      expect(mockAdapter.sendMessage).toHaveBeenCalledWith(
+        'spaces/AAAA', 'hello', { threadId: 'tid-1' },
+      );
+    });
+  });
 });

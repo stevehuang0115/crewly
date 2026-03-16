@@ -119,14 +119,15 @@ export function createMessengerRouter(): Router {
         return;
       }
 
-      const channel = String(req.body?.channel || '');
+      const channel = String(req.body?.channel || req.body?.space || '');
       const text = String(req.body?.text || '');
       if (!channel || !text) {
-        res.status(400).json({ success: false, error: 'channel and text are required' });
+        res.status(400).json({ success: false, error: 'channel (or space) and text are required' });
         return;
       }
 
-      await adapter.sendMessage(channel, text, { threadId: req.body?.threadId });
+      const threadId = req.body?.threadId || req.body?.threadName || undefined;
+      await adapter.sendMessage(channel, text, { threadId });
       res.json({ success: true, message: 'Message sent' });
     } catch (error) {
       next(error);
