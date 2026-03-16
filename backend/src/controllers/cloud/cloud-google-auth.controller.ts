@@ -1,7 +1,7 @@
 /**
  * Cloud Google OAuth Controller
  *
- * Handles Google OAuth login flow for the CrewlyAI Cloud Portal.
+ * Handles Google OAuth login flow for the CrewlyAI Cloud Console.
  * Provides both browser-redirect (GET) and API (POST) flows.
  *
  * Routes:
@@ -21,8 +21,8 @@ import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudGoogleAuth');
 
-/** Env var for the Cloud Portal frontend URL (where to redirect after login). */
-const CLOUD_PORTAL_FRONTEND_URL = (): string =>
+/** Env var for the Cloud Console frontend URL (where to redirect after login). */
+const CLOUD_CONSOLE_FRONTEND_URL = (): string =>
   process.env['CLOUD_PORTAL_URL'] || 'https://crewlyai.com';
 
 /** Env var for the Google OAuth redirect URI (must match GCP console). */
@@ -30,7 +30,7 @@ const CLOUD_GOOGLE_REDIRECT_URI = (req: Request): string =>
   process.env['CLOUD_GOOGLE_REDIRECT_URI'] ||
   `${req.protocol}://${req.get('host')}/api/cloud/google/callback`;
 
-/** Scopes for Cloud Portal login -- only need email and profile. */
+/** Scopes for Cloud Console login -- only need email and profile. */
 const LOGIN_SCOPES = ['openid', 'email', 'profile'];
 
 /** Default user plan assigned to new users. */
@@ -261,7 +261,7 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
     const state = req.query['state'] ? String(req.query['state']) : '';
     const errorParam = req.query['error'] ? String(req.query['error']) : '';
 
-    const portalUrl = CLOUD_PORTAL_FRONTEND_URL();
+    const portalUrl = CLOUD_CONSOLE_FRONTEND_URL();
 
     if (errorParam) {
       logger.warn('Google OAuth returned error', { error: errorParam });

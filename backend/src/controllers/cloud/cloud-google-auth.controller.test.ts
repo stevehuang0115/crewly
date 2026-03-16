@@ -1,7 +1,7 @@
 /**
  * Tests for Cloud Google Auth Controller
  *
- * Tests the Google OAuth login flow for CrewlyAI Cloud Portal.
+ * Tests the Google OAuth login flow for CrewlyAI Cloud Console.
  *
  * @module controllers/cloud/cloud-google-auth.controller.test
  */

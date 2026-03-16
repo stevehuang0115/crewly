@@ -1728,8 +1728,16 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
     // Replaces the old pushRecentSlackHistory which only covered Slack and sent raw lines.
     if (sessionName === ORCHESTRATOR_SESSION_NAME) {
       import('../../services/session/session-handoff.service.js').then(({ SessionHandoffService }) => {
-        SessionHandoffService.getInstance().pushSessionSummary(this.agentRegistrationService, sessionName).catch(err => {
+        const handoff = SessionHandoffService.getInstance();
+        // Push session context summary first
+        handoff.pushSessionSummary(this.agentRegistrationService, sessionName).catch(err => {
           logger.warn('Failed to push session summary on orchestrator registration', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+        // Push chat resume notification so orchestrator proactively greets on active threads
+        handoff.pushResumeNotification(this.agentRegistrationService, sessionName).catch(err => {
+          logger.warn('Failed to push resume notification on orchestrator registration', {
             error: err instanceof Error ? err.message : String(err),
           });
         });

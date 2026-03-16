@@ -25,9 +25,10 @@ describe('Navigation', () => {
     renderWithProviders(<Navigation />);
 
     expect(screen.getByText('Dashboard')).toBeInTheDocument();
-    expect(screen.getByText('Projects')).toBeInTheDocument();
+    expect(screen.getByText('Chat')).toBeInTheDocument();
     expect(screen.getByText('Teams')).toBeInTheDocument();
-    expect(screen.getByText('Schedules')).toBeInTheDocument();
+    expect(screen.getByText('Projects')).toBeInTheDocument();
+    expect(screen.getByText('Marketplace')).toBeInTheDocument();
   });
 
   it('shows logo text when expanded', () => {
@@ -63,14 +64,16 @@ describe('Navigation', () => {
 
     // Check that all navigation links are present and have correct href attributes
     const dashboardLink = screen.getByRole('link', { name: /dashboard/i });
-    const projectsLink = screen.getByRole('link', { name: /projects/i });
+    const chatLink = screen.getByRole('link', { name: /chat/i });
     const teamsLink = screen.getByRole('link', { name: /teams/i });
-    const schedulesLink = screen.getByRole('link', { name: /schedules/i });
+    const projectsLink = screen.getByRole('link', { name: /projects/i });
+    const marketplaceLink = screen.getByRole('link', { name: /marketplace/i });
 
     expect(dashboardLink).toHaveAttribute('href', '/');
-    expect(projectsLink).toHaveAttribute('href', '/projects');
+    expect(chatLink).toHaveAttribute('href', '/chat');
     expect(teamsLink).toHaveAttribute('href', '/teams');
-    expect(schedulesLink).toHaveAttribute('href', '/scheduled-checkins');
+    expect(projectsLink).toHaveAttribute('href', '/projects');
+    expect(marketplaceLink).toHaveAttribute('href', '/marketplace');
   });
 
   it('shows QR code display', () => {

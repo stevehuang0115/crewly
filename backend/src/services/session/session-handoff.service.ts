@@ -22,6 +22,9 @@ import { RUNTIME_TYPES } from '../../constants.js';
 /** Maximum number of lines the summary may contain */
 const MAX_SUMMARY_LINES = 50;
 
+/** Maximum age in ms for a thread to be considered for resume notification (24 hours) */
+const RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 /** Maximum number of recent user messages to include per thread */
 const MAX_MESSAGES_PER_THREAD = 3;
 
@@ -75,6 +78,30 @@ export interface HandoffSummary {
   /** Active agents and their status */
   activeAgents: ActiveAgentInfo[];
 }
+
+/**
+ * Thread info for the resume notification sent after orchestrator restart.
+ * Covers Slack, Google Chat, and Chat UI channels.
+ */
+export interface ResumeThread {
+  /** Channel type: 'slack', 'gchat', or 'chat-ui' */
+  channelType: 'slack' | 'gchat' | 'chat-ui';
+  /** Channel or space identifier */
+  channelId: string;
+  /** Thread identifier (threadTs for Slack, threadName for GChat, conversationId for Chat UI) */
+  threadId: string;
+  /** Absolute path to the thread file */
+  filePath: string;
+  /** ISO timestamp of last modification */
+  lastActiveAt: string;
+  /** Recent message previews */
+  recentMessages: string[];
+}
+
+/**
+ * @deprecated Use ResumeThread instead. Kept for backward compatibility.
+ */
+export type SlackResumeThread = ResumeThread;
 
 /**
  * Service to send messages to agents.
@@ -517,5 +544,225 @@ export class SessionHandoffService {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Scans a thread directory (Slack or GChat format) for threads modified within maxAge.
+   * Filters by file modification time and returns ResumeThread objects.
+   *
+   * @param baseDir - Directory to scan (e.g., ~/.crewly/slack-threads/)
+   * @param channelType - Channel type ('slack' or 'gchat')
+   * @param cutoffMs - Cutoff timestamp in ms (threads older than this are excluded)
+   * @returns Array of ResumeThread for qualifying threads
+   */
+  private async scanRecentMdThreads(
+    baseDir: string,
+    channelType: 'slack' | 'gchat',
+    cutoffMs: number,
+  ): Promise<ResumeThread[]> {
+    const threads: ResumeThread[] = [];
+
+    try {
+      const entries = await fs.readdir(baseDir).catch(() => [] as string[]);
+
+      for (const entry of entries) {
+        if (entry.endsWith('.json')) continue;
+        const channelDir = path.join(baseDir, entry);
+        const stat = await fs.stat(channelDir).catch(() => null);
+        if (!stat?.isDirectory()) continue;
+
+        const files = await fs.readdir(channelDir).catch(() => [] as string[]);
+        for (const file of files) {
+          if (!file.endsWith('.md')) continue;
+          const filePath = path.join(channelDir, file);
+          const fileStat = await fs.stat(filePath).catch(() => null);
+          if (!fileStat || fileStat.mtimeMs < cutoffMs) continue;
+
+          const threadId = file.replace('.md', '');
+          const recentMessages = await this.extractRecentMessages(filePath);
+          threads.push({
+            channelType,
+            channelId: entry,
+            threadId,
+            filePath,
+            lastActiveAt: new Date(fileStat.mtimeMs).toISOString(),
+            recentMessages,
+          });
+        }
+      }
+    } catch (error) {
+      this.logger.debug('Failed to scan recent threads', {
+        baseDir,
+        channelType,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return threads;
+  }
+
+  /**
+   * Scans Chat UI conversations for those modified within maxAge.
+   *
+   * @param chatDir - Chat UI directory path
+   * @param cutoffMs - Cutoff timestamp in ms
+   * @returns Array of ResumeThread for qualifying conversations
+   */
+  private async scanRecentChatUiThreads(
+    chatDir: string,
+    cutoffMs: number,
+  ): Promise<ResumeThread[]> {
+    const threads: ResumeThread[] = [];
+
+    try {
+      const files = await fs.readdir(chatDir).catch(() => [] as string[]);
+
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        const filePath = path.join(chatDir, file);
+        const fileStat = await fs.stat(filePath).catch(() => null);
+        if (!fileStat || fileStat.mtimeMs < cutoffMs) continue;
+
+        const conversationId = file.replace('.json', '');
+        const recentMessages = await this.extractChatUiMessages(filePath);
+        threads.push({
+          channelType: 'chat-ui',
+          channelId: conversationId,
+          threadId: conversationId,
+          filePath,
+          lastActiveAt: new Date(fileStat.mtimeMs).toISOString(),
+          recentMessages,
+        });
+      }
+    } catch (error) {
+      this.logger.debug('Failed to scan recent Chat UI conversations', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return threads;
+  }
+
+  /**
+   * Finds threads across all chat channels (Slack, GChat, Chat UI) that were
+   * active within the specified time window.
+   *
+   * @param maxAge - Maximum age in ms for a thread to qualify (default: 24h)
+   * @param dirOverrides - Optional directory overrides for testing
+   * @returns Array of ResumeThread sorted by most recent first
+   */
+  async findRecentThreads(
+    maxAge: number = RESUME_MAX_AGE_MS,
+    dirOverrides?: { slackDir?: string; gchatDir?: string; chatDir?: string },
+  ): Promise<ResumeThread[]> {
+    const crewlyHome = path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME);
+    const slackDir = dirOverrides?.slackDir || path.join(crewlyHome, SLACK_THREAD_CONSTANTS.STORAGE_DIR);
+    const gchatDir = dirOverrides?.gchatDir || path.join(crewlyHome, GCHAT_THREAD_CONSTANTS.STORAGE_DIR);
+    const chatDir = dirOverrides?.chatDir || path.join(crewlyHome, 'chat');
+    const cutoff = Date.now() - maxAge;
+
+    const [slackThreads, gchatThreads, chatUiThreads] = await Promise.all([
+      this.scanRecentMdThreads(slackDir, 'slack', cutoff),
+      this.scanRecentMdThreads(gchatDir, 'gchat', cutoff),
+      this.scanRecentChatUiThreads(chatDir, cutoff),
+    ]);
+
+    const all = [...slackThreads, ...gchatThreads, ...chatUiThreads];
+    return all.sort((a, b) =>
+      new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime(),
+    );
+  }
+
+  /**
+   * @deprecated Use findRecentThreads() instead. Kept for backward compatibility.
+   * Finds Slack threads that were active within the last 24 hours.
+   *
+   * @param maxAge - Maximum age in ms for a thread to qualify (default: 24h)
+   * @param slackDirOverride - Optional directory override (for testing)
+   * @returns Array of ResumeThread sorted by most recent first (Slack only)
+   */
+  async findRecentSlackThreads(
+    maxAge: number = RESUME_MAX_AGE_MS,
+    slackDirOverride?: string,
+  ): Promise<ResumeThread[]> {
+    return this.findRecentThreads(maxAge, {
+      slackDir: slackDirOverride,
+      gchatDir: '/nonexistent',
+      chatDir: '/nonexistent',
+    });
+  }
+
+  /**
+   * Pushes a [CHAT_RESUME] notification to the orchestrator after registration,
+   * containing info about recently active threads across all channels (Slack,
+   * GChat, Chat UI) so it can proactively send a greeting message.
+   *
+   * @param agentService - Service to send messages to agents
+   * @param sessionName - Target agent session name (typically the orchestrator)
+   */
+  async pushResumeNotification(
+    agentService: AgentMessageSender,
+    sessionName: string,
+  ): Promise<void> {
+    try {
+      const threads = await this.findRecentThreads();
+
+      if (threads.length === 0) {
+        this.logger.debug('No recent threads for resume notification', { sessionName });
+        return;
+      }
+
+      const lines: string[] = [
+        '[CHAT_RESUME] You just restarted. The following chat threads were active in the last 24 hours.',
+        'You MUST read the most recent thread and send a greeting message to prove you have recovered context.',
+        '',
+      ];
+
+      for (const thread of threads) {
+        const label = thread.channelType.toUpperCase();
+        lines.push(`## ${label} Thread: ${thread.channelId} / ${thread.threadId}`);
+        lines.push(`- Source: ${thread.channelType}`);
+        lines.push(`- File: \`${thread.filePath}\``);
+        lines.push(`- Channel: ${thread.channelId}`);
+        lines.push(`- Thread ID: ${thread.threadId}`);
+        lines.push(`- Last active: ${thread.lastActiveAt}`);
+        if (thread.recentMessages.length > 0) {
+          lines.push('- Recent messages:');
+          for (const msg of thread.recentMessages) {
+            lines.push(`  - ${msg}`);
+          }
+        }
+        lines.push('');
+      }
+
+      const message = lines.join('\n');
+
+      await agentService.sendMessageToAgent(
+        sessionName,
+        message,
+        RUNTIME_TYPES.CLAUDE_CODE as RuntimeType,
+      );
+
+      this.logger.info('Pushed resume notification', {
+        sessionName,
+        threadCount: threads.length,
+        channels: [...new Set(threads.map(t => t.channelType))],
+      });
+    } catch (error) {
+      this.logger.warn('Failed to push resume notification', {
+        sessionName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * @deprecated Use pushResumeNotification() instead.
+   */
+  async pushSlackResumeNotification(
+    agentService: AgentMessageSender,
+    sessionName: string,
+  ): Promise<void> {
+    return this.pushResumeNotification(agentService, sessionName);
   }
 }

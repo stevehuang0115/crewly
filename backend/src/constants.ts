@@ -1140,7 +1140,7 @@ export const DEVICE_CONSTANTS = {
  * CREWLY_SUPABASE_ANON_KEY) with dev-project defaults as fallback.
  */
 export const CLOUD_AUTH_CONSTANTS = {
-	/** Google OAuth configuration for Cloud Portal login */
+	/** Google OAuth configuration for Cloud Console login */
 	GOOGLE: {
 		/** Google OAuth Client ID (env: GOOGLE_CLIENT_ID) */
 		get CLIENT_ID(): string {
