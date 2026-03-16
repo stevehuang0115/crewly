@@ -29,7 +29,6 @@ import {
 } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { StorageService } from '../core/storage.service.js';
-import { getGchatThreadStore } from './gchat-thread-store.service.js';
 
 /**
  * QueueProcessorService dequeues messages one-at-a-time and delivers them
@@ -239,7 +238,7 @@ export class QueueProcessorService extends EventEmitter {
       // User messages and system events get shorter timeouts and force-delivery
       // to reduce delay. System events are fire-and-forget so force-delivery is
       // lower risk — prevents the 5×120s=10min retry loop that blocks notifications.
-      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT || message.source === MESSAGE_SOURCES.WHATSAPP || message.source === MESSAGE_SOURCES.GOOGLE_CHAT || message.source === MESSAGE_SOURCES.TELEGRAM;
+      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT || message.source === MESSAGE_SOURCES.WHATSAPP || message.source === MESSAGE_SOURCES.GOOGLE_CHAT;
       const readyTimeout = isUserMessage
         ? EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_TIMEOUT
         : isSystemEvent
@@ -368,28 +367,6 @@ export class QueueProcessorService extends EventEmitter {
         const threadId = message.sourceMetadata?.threadId as string | undefined;
         const threadSuffix = threadId ? ` thread=${threadId}` : '';
         deliveryContent = `[${prefix}:${message.conversationId}${threadSuffix}] ${message.content}`;
-
-        // #195: Inject thread history so the agent has conversation context
-        if (threadId && message.conversationId) {
-          try {
-            const threadStore = getGchatThreadStore();
-            if (threadStore) {
-              const history = await threadStore.getRecentMessages(
-                message.conversationId,
-                threadId,
-                GCHAT_THREAD_CONSTANTS.MAX_CONTEXT_MESSAGES,
-              );
-              if (history) {
-                deliveryContent += `\n\n[THREAD_CONTEXT]\n${history}\n[/THREAD_CONTEXT]`;
-              }
-            }
-          } catch (err) {
-            this.logger.debug('Failed to load GChat thread context (non-fatal)', {
-              threadId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        }
       } else {
         deliveryContent = `[${CHAT_ROUTING_CONSTANTS.MESSAGE_PREFIX}:${message.conversationId}] ${message.content}`;
       }
@@ -513,9 +490,6 @@ export class QueueProcessorService extends EventEmitter {
         return;
       }
 
-      // Track successful delivery for deduplication before marking complete.
-      this.deliveredMessageIds.set(message.id, Date.now());
-
       // Fire-and-forget: mark as completed immediately after delivery.
       // Responses are handled asynchronously by the orchestrator through
       // reply-* skills (reply-slack, reply-chat, reply-gchat).
@@ -535,7 +509,7 @@ export class QueueProcessorService extends EventEmitter {
         batchSize: isSystemEvent ? 1 + batchedMessages.length : 1,
       });
 
-      // Wait for target agent to finish post-delivery work before next message.
+      // Wait for orchestrator to finish post-delivery work before next message.
       // Skip for system events: they're fire-and-forget notifications.
       // The next processNext() iteration already calls waitForAgentReady before
       // delivery, so we don't need to block here for system events.
@@ -564,94 +538,6 @@ export class QueueProcessorService extends EventEmitter {
         this.scheduleNextIfPending();
       }
     }
-  }
-
-  /**
-   * Wait for an orchestrator response on a given conversation.
-   * Listens to ChatService 'message' events for matching orchestrator messages.
-   *
-   * Includes an early ACK check: if the orchestrator terminal produces zero
-   * output within ACK_TIMEOUT (15s) of delivery, the context is likely
-   * exhausted and we resolve immediately with an actionable error message
-   * instead of waiting the full timeout.
-   *
-   * NOTE: This method intentionally resolves (not rejects) with error messages
-   * for timeout/unresponsive cases. The caller marks the message as "completed"
-   * with the error text as the response, so the user sees the error in their
-   * conversation rather than having it silently swallowed by a catch block.
-   *
-   * @param conversationId - Conversation to monitor
-   * @param timeoutMs - Timeout in milliseconds
-   * @returns Response content
-   */
-  private waitForResponse(conversationId: string, timeoutMs: number): Promise<string> {
-    return new Promise((resolve) => {
-      const chatService = getChatService();
-
-      const onMessage = (chatMessage: ChatMessage): void => {
-        if (
-          chatMessage.conversationId === conversationId &&
-          chatMessage.from.type === 'orchestrator'
-        ) {
-          cleanup();
-          resolve(chatMessage.content);
-        }
-      };
-
-      const timeoutId = setTimeout(() => {
-        cleanup();
-        resolve('The orchestrator is still processing your request. It will reply when ready — no need to resend.');
-      }, timeoutMs);
-
-      // Early ACK check: if no terminal output within ACK_TIMEOUT after
-      // delivery, the orchestrator is likely context-exhausted.
-      const ackTimeoutId = setTimeout(() => {
-        const tracker = PtyActivityTrackerService.getInstance();
-        const idleMs = tracker.getIdleTimeMs(ORCHESTRATOR_SESSION_NAME);
-        if (idleMs >= MESSAGE_QUEUE_CONSTANTS.ACK_TIMEOUT) {
-          this.logger.warn('No orchestrator output within ACK window, likely context exhausted', {
-            conversationId,
-            idleMs,
-            ackTimeout: MESSAGE_QUEUE_CONSTANTS.ACK_TIMEOUT,
-          });
-          cleanup();
-          resolve(
-            'The orchestrator appears to be unresponsive (no output detected). ' +
-            'Its context may be exhausted. Please restart the orchestrator and try again.'
-          );
-        }
-      }, MESSAGE_QUEUE_CONSTANTS.ACK_TIMEOUT);
-
-      // Progress timer: emit "still working" updates during long operations.
-      // First fires at 90s, then every 60s thereafter.
-      let progressIntervalId: ReturnType<typeof setInterval> | undefined;
-      let cleaned = false;
-
-      const startProgressInterval = (): void => {
-        if (cleaned) return;
-        progressIntervalId = setInterval(() => {
-          const tracker = PtyActivityTrackerService.getInstance();
-          const idleMs = tracker.getIdleTimeMs(ORCHESTRATOR_SESSION_NAME);
-          // Only emit progress if the orchestrator is still producing output
-          if (idleMs < MESSAGE_QUEUE_CONSTANTS.PROGRESS_INTERVAL_MS) {
-            chatService.emitProgress(conversationId, 'Processing... (still working)');
-          }
-        }, MESSAGE_QUEUE_CONSTANTS.PROGRESS_INTERVAL_MS);
-      };
-
-      const progressStartId = setTimeout(startProgressInterval, MESSAGE_QUEUE_CONSTANTS.PROGRESS_INITIAL_MS);
-
-      const cleanup = (): void => {
-        cleaned = true;
-        clearTimeout(timeoutId);
-        clearTimeout(ackTimeoutId);
-        clearTimeout(progressStartId);
-        if (progressIntervalId) clearInterval(progressIntervalId);
-        chatService.removeListener('message', onMessage);
-      };
-
-      chatService.on('message', onMessage);
-    });
   }
 
   /**
