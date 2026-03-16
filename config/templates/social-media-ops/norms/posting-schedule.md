@@ -6,38 +6,47 @@
 
 ## Overview
 
-Guidelines for content publishing frequency, timing, and platform-specific rules. Ensures consistent presence without audience fatigue.
+Defines posting frequency, optimal timing per platform, content calendar management, and cross-platform coordination rules for the social media operations team.
 
 ## Steps
 
-1. **Check content calendar** — Before creating content, review the current week's posting schedule to avoid duplicate topics or over-posting.
-2. **Select optimal posting time** — Use platform-specific peak engagement windows (see table below).
-3. **Respect cooldown periods** — Maintain minimum intervals between posts on the same platform.
-4. **Adapt to time zones** — Target primary audience time zones. Default: US Pacific (PT) for tech audiences.
-5. **Queue, don't rush** — If content is ready outside posting windows, queue it for the next optimal slot rather than posting immediately.
-6. **Track post performance** — After posting, monitor engagement for 24 hours and note patterns for future optimization.
+1. **Check the content calendar** — Before creating or scheduling any post, review the shared content calendar to avoid conflicts, duplicate topics, or gaps in the schedule.
 
-### Platform Timing Guidelines
+2. **Determine platform and timing** — Select the target platform(s) and schedule posts during peak engagement windows:
+   - **Twitter/X**: 3–5 posts per day. Best times: 8–10 AM, 12–1 PM, 5–6 PM (audience local time).
+   - **LinkedIn**: 1–2 posts per day. Best times: 7–8 AM, 12 PM, 5–6 PM (business hours, Tue–Thu strongest).
+   - **Instagram**: 1 post per day + 3–5 stories. Best times: 11 AM–1 PM, 7–9 PM.
+   - **YouTube**: 1–2 videos per week. Best times: Thu–Sat, 2–4 PM.
+   - **Blog/Website**: 1–2 articles per week. Publish early in the week (Mon–Wed).
 
-| Platform | Posts/Week | Best Times (PT) | Cooldown |
-|----------|-----------|-----------------|----------|
-| Twitter/X | 5-7 | 9-11 AM, 1-3 PM | 3 hours |
-| LinkedIn | 2-3 | Tue-Thu 8-10 AM | 24 hours |
-| Reddit | 1-2 | Mon/Wed 10 AM-12 PM | 48 hours |
-| Blog | 1 | Tuesday 10 AM | 7 days |
-| Product Hunt | As needed | Tuesday 12:01 AM PT | N/A |
+3. **Plan content mix** — Maintain a balanced content ratio across the week:
+   - 40% educational/value content (tutorials, tips, insights).
+   - 30% engagement content (polls, questions, discussions).
+   - 20% promotional content (product updates, features, launches).
+   - 10% community content (user stories, shoutouts, behind-the-scenes).
+
+4. **Coordinate cross-platform launches** — For major announcements or campaigns:
+   - Lead with the primary platform, then stagger secondary platforms by 1–2 hours.
+   - Adapt format and copy for each platform (no identical cross-posts).
+   - Assign one team member as the campaign coordinator to track all platforms.
+
+5. **Update the calendar** — After scheduling, update the content calendar with: post title, platform, scheduled time, assigned creator, and status (draft / scheduled / published).
 
 ## Checklist
 
-- [ ] Content calendar reviewed before posting
-- [ ] Posting time falls within platform's peak window
-- [ ] Cooldown period respected since last post on same platform
-- [ ] Content adapted for target platform format and tone
-- [ ] No more than 2 posts per platform per day
-- [ ] Hashtags/tags relevant and not excessive (max 5 per post)
+- [ ] Content calendar reviewed before scheduling
+- [ ] Post scheduled within platform-specific peak engagement windows
+- [ ] No more than the recommended daily post limit per platform
+- [ ] Content mix follows the 40/30/20/10 ratio over the week
+- [ ] Cross-platform posts are adapted (not copied verbatim)
+- [ ] Major campaigns have a designated coordinator
+- [ ] Campaign posts are staggered across platforms (not simultaneous)
+- [ ] Content calendar updated with post details and status
+- [ ] No scheduling conflicts with other team members' planned posts
+- [ ] Weekend and holiday posts are pre-scheduled by Friday
 
 ## Exceptions
 
-- **Breaking news or announcements** may be posted outside normal windows.
-- **Community responses** (replies, comments) are exempt from cooldown rules.
-- **Event-driven content** (product launches, conference live-tweets) follows event timing.
+- **Breaking news or trending topics**: May bypass normal scheduling to post immediately. Must still update the calendar retroactively within 2 hours.
+- **Crisis communications**: Follow the crisis management protocol in engagement-rules.md instead of normal scheduling. Pause all pre-scheduled content until the crisis is resolved.
+- **Platform outages**: If a platform is down during a scheduled window, reschedule for the next available peak time. Do not force-post during off-peak hours.

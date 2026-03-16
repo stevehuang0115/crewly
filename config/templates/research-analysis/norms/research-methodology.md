@@ -1,4 +1,4 @@
-# Research Methodology Standards
+# Research Methodology
 
 **Trigger**: always
 **Applies to**: *
@@ -6,72 +6,86 @@
 
 ## Overview
 
-All research output from this team must follow rigorous methodology standards.
-These norms are always active — they govern how we collect, analyze, and present
-information. Adherence to these standards is what distinguishes our analysis from
-generic content.
+Defines the research methods, data collection standards, and analysis framework that all research output must follow. Ensures rigor, reproducibility, and defensibility of research findings produced by the team.
 
-## Research Framework
+## Steps
 
-### Phase 1: Scope Definition
-- Define the research question precisely (what, why, for whom)
-- Set clear boundaries (time period, geography, industry scope)
-- Identify key metrics and success criteria
-- Document assumptions and known biases upfront
+### Step 1: Define Research Scope
 
-### Phase 2: Data Collection
-- **Primary sources first**: Official documentation, changelogs, GitHub repos,
-  API docs, SEC filings, press releases
-- **Secondary sources**: Reputable tech publications (minimum 2 independent sources
-  for any claim), analyst reports, conference talks
-- **Tertiary sources**: Social media, forums, blog posts (corroborate with primary
-  or secondary before citing)
-- **Never cite**: Anonymous Reddit posts, unverified tweets, or AI-generated
-  summaries as primary evidence
+Before starting any research task:
 
-### Phase 3: Analysis
-- **Quantitative**: Use specific numbers, percentages, and dates — not vague qualifiers
-- **Comparative**: Always benchmark against at least 2 competitors or alternatives
-- **Temporal**: Note when data was collected; flag anything older than 3 months
-- **Contradictory evidence**: Actively seek and document contradicting data points.
-  Acknowledge limitations rather than ignoring inconvenient evidence
+- State the research question clearly in one sentence
+- Define the scope boundaries — what is included and what is explicitly excluded
+- Identify the target audience for the findings
+- Set a time boundary for data relevance (e.g., "last 12 months" for competitive analysis)
+- Document assumptions upfront
 
-### Phase 4: Synthesis
-- Lead with conclusions, then support with evidence (inverted pyramid)
-- Separate facts from opinions — clearly label recommendations
-- Provide confidence levels: High (3+ independent sources), Medium (2 sources),
-  Low (single source or inference)
-- Include "So what?" — every finding must connect to an actionable recommendation
+### Step 2: Select Research Methods
 
-## Quality Standards
+Choose the appropriate method(s) based on the research question:
 
-| Standard | Requirement |
-|----------|-------------|
-| Source minimum | 3+ independent sources per major claim |
-| Recency | Data from within last 6 months (flag older data) |
-| Cross-reference | Every quantitative claim verified by 2+ sources |
-| Contradictions | Must be acknowledged and discussed |
-| Confidence labeling | High/Medium/Low for each major finding |
-| Actionability | Every section ends with recommendation(s) |
+| Method | When to Use | Output |
+|--------|-------------|--------|
+| **Competitive Analysis** | Comparing products, features, or market positions | Feature matrix, gap analysis |
+| **Literature Review** | Synthesizing existing knowledge on a topic | Summary with key themes and gaps |
+| **Data Analysis** | Quantitative questions about trends, usage, or performance | Charts, statistical summaries |
+| **Expert Interviews** | Qualitative insight from domain experts | Structured notes, key quotes |
+| **Survey/Polling** | Gauging sentiment or preferences at scale | Aggregated results with methodology notes |
+| **Case Study** | Deep-dive into a specific example or implementation | Narrative with lessons learned |
+
+Document the selected method(s) and rationale before proceeding.
+
+### Step 3: Collect Data
+
+- Use at least 3 independent sources for every key claim
+- Prefer primary sources over secondary sources
+- Record the source URL, author, date, and credibility assessment for each source
+- For quantitative data, note the sample size, methodology, and confidence interval where available
+- Store raw data/notes in a structured format for reproducibility
+
+### Step 4: Analyze and Synthesize
+
+- Identify patterns, trends, and outliers in the collected data
+- Cross-reference findings across multiple sources to validate
+- Flag contradictions explicitly — do not silently choose one source over another
+- Quantify findings where possible (percentages, counts, comparisons)
+- Separate facts from interpretations clearly
+
+### Step 5: Structure the Output
+
+Every research deliverable must include:
+
+1. **Executive Summary** (2-3 sentences answering the research question)
+2. **Methodology** (methods used, sources consulted, time period)
+3. **Key Findings** (numbered, with supporting evidence)
+4. **Analysis** (interpretation, implications, recommendations)
+5. **Limitations** (scope gaps, data quality issues, biases)
+6. **Sources** (full citations per the Source Citation norm)
+
+### Step 6: Peer Review
+
+- Another team member must review the research before delivery
+- Reviewer checks: methodology soundness, source credibility, logical consistency
+- Reviewer flags: unsupported claims, missing perspectives, logical leaps
+- Author addresses all reviewer feedback before finalizing
 
 ## Checklist
 
-- [ ] Research question clearly defined
-- [ ] Scope and boundaries documented
-- [ ] Assumptions and biases acknowledged
-- [ ] 3+ independent sources for major claims
-- [ ] Primary sources prioritized
-- [ ] All data within 6 months (older data flagged)
-- [ ] Quantitative claims cross-referenced
-- [ ] Contradictory evidence addressed
-- [ ] Confidence levels assigned
-- [ ] Findings connected to actionable recommendations
-- [ ] Analysis distinguishes facts from opinions
+- [ ] Research question clearly stated
+- [ ] Scope boundaries defined (inclusions and exclusions)
+- [ ] Research method selected and documented with rationale
+- [ ] At least 3 independent sources per key claim
+- [ ] Primary sources preferred over secondary
+- [ ] Source metadata recorded (URL, author, date, credibility)
+- [ ] Data cross-referenced across multiple sources
+- [ ] Contradictions flagged explicitly
+- [ ] Output follows the required structure (6 sections)
+- [ ] Limitations section included
+- [ ] Peer review completed
+- [ ] All reviewer feedback addressed
 
 ## Exceptions
 
-- **Rapid-response analysis** (e.g., breaking security incident): May proceed
-  with fewer sources but must be clearly labeled "Preliminary Analysis" and
-  updated within 48 hours with full sourcing.
-- **Internal brainstorming documents**: May relax sourcing requirements but
-  must still distinguish speculation from fact.
+- **Quick lookups**: Simple factual questions (e.g., "What version is X?") do not require the full methodology. A single credible source and direct answer suffice.
+- **Follow-up research**: Research that extends a previous study may reference the original methodology rather than repeating all steps, but must document any methodology changes.
+- **Time-constrained research**: When a deadline requires it, Steps 5-6 (structured output and peer review) may be abbreviated, but the abbreviated format and reason must be noted in the deliverable.

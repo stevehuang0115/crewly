@@ -1,4 +1,4 @@
-# Content Review Standards
+# Content Review
 
 **Trigger**: before_publish
 **Applies to**: *
@@ -6,69 +6,74 @@
 
 ## Overview
 
-All content produced by the team must pass this review before publication.
-The Editor is the primary reviewer, but all team members should self-check
-against these standards before submitting content for review.
+Quality assurance process for all content before publication. Ensures accuracy, proper grammar, correct formatting, and adequate source citations. Every piece of content — blog posts, social media copy, marketing materials — must pass this review before going live.
 
 ## Steps
 
-1. **Accuracy Check**
-   - Verify all factual claims against authoritative sources
-   - Check statistics and data points are current (within 6 months)
-   - Confirm product names, company names, and technical terms are correct
-   - Flag any claims that cannot be independently verified
+### Step 1: Accuracy Check
 
-2. **Grammar & Style**
-   - Run spellcheck — zero typos
-   - Check sentence structure for clarity and readability
-   - Target Flesch reading score: 60-70 (accessible to general audience)
-   - Eliminate jargon unless the target audience is technical
-   - Vary sentence length (mix of short punchy + longer explanatory)
+- Verify all factual claims against primary sources
+- Cross-reference statistics, dates, and numerical data with at least 2 independent sources
+- Confirm that product names, versions, and feature descriptions are current
+- Flag any unverified claims for removal or attribution
 
-3. **SEO Compliance**
-   - Primary keyword appears in: title, first paragraph, 1+ H2, meta description
-   - Keyword density: 1-2% (not stuffed)
-   - Title length: 50-60 characters
-   - Meta description: 150-160 characters
-   - At least 2 internal links and 1 external authoritative link
-   - All images have descriptive alt text
+### Step 2: Grammar & Language Review
 
-4. **Structure & Formatting**
-   - Clear H1 → H2 → H3 hierarchy (no skipping levels)
-   - Paragraphs: 2-4 sentences max
-   - Use bullet points and numbered lists for scanability
-   - Include at least one visual element (image, chart, table) per 500 words
-   - Strong opening hook in first 2 sentences
-   - Clear CTA in conclusion
+- Run grammar check (Grammarly or equivalent)
+- Verify spelling consistency (US English unless specified otherwise)
+- Check sentence structure for clarity and readability
+- Ensure reading level is appropriate for the target audience (aim for Grade 8-10)
+- Eliminate jargon unless writing for a technical audience
 
-5. **Tone & Voice Consistency**
-   - Matches the brand guidelines (see brand-guidelines.md)
-   - Consistent perspective (first person plural "we" or third person)
-   - Professional but approachable
-   - No passive aggressive or overly sales-y language
+### Step 3: Formatting Verification
+
+- Headings follow proper hierarchy (H1 > H2 > H3, no skipped levels)
+- Paragraphs are concise (max 3-4 sentences each)
+- Lists are used for 3+ related items
+- Code blocks use proper syntax highlighting
+- Images have alt text and proper sizing
+- Links are valid and open in the correct target
+
+### Step 4: Source Citation Review
+
+- Every factual claim must cite its source
+- Citation format: `[Source Name](URL)` inline or numbered references at the end
+- Sources must be from credible, authoritative origins (see Source Citation norms)
+- No broken or expired links
+- Include access date for web sources that may change
+
+### Step 5: SEO Compliance (Blog Posts Only)
+
+- Target keyword appears in title, first paragraph, and at least 2 headings
+- Meta description is 150-160 characters
+- URL slug is descriptive and keyword-rich
+- Internal links to at least 2 related pages
+- External links to at least 1 authoritative source
+
+### Step 6: Final Approval
+
+- Editor reviews the complete piece against the original content brief
+- Verify the piece meets the stated goal and audience requirements
+- Confirm tone matches brand guidelines
+- Sign off with approval or return with specific revision notes
 
 ## Checklist
 
-- [ ] All facts verified with sources
-- [ ] Statistics are current (< 6 months old)
-- [ ] Zero spelling/grammar errors
-- [ ] Flesch reading score 60-70
-- [ ] Primary keyword in title, first paragraph, H2, meta
-- [ ] Keyword density 1-2%
-- [ ] Title 50-60 characters
-- [ ] Meta description 150-160 characters
-- [ ] 2+ internal links, 1+ external link
+- [ ] All factual claims verified against primary sources
+- [ ] Statistics and data cross-referenced with 2+ independent sources
+- [ ] Grammar and spelling checked
+- [ ] Reading level appropriate for target audience
+- [ ] Headings follow proper hierarchy
+- [ ] Paragraphs are concise
+- [ ] All links are valid
 - [ ] All images have alt text
-- [ ] Proper heading hierarchy (H1 → H2 → H3)
-- [ ] Paragraphs 2-4 sentences
-- [ ] At least 1 visual per 500 words
-- [ ] Matches brand voice guidelines
-- [ ] Clear CTA in conclusion
+- [ ] Every claim cites its source
+- [ ] No broken or expired source links
+- [ ] SEO requirements met (blog posts)
+- [ ] Editor has reviewed and approved
 
 ## Exceptions
 
-- **Social media posts**: Skip SEO compliance (Steps 3) — platform-specific
-  character limits apply instead.
-- **Internal team documents**: Skip SEO and brand voice checks.
-- **Urgent news/response posts**: May skip full accuracy check if clearly
-  labeled as "developing story" with commitment to update.
+- **Internal communications**: Team-only memos and internal updates may skip Steps 4-5 (citation and SEO) but must still pass accuracy and grammar checks.
+- **Social media posts**: Short-form posts (< 280 characters) may use abbreviated citations (source name without URL) but must still be factually accurate.
+- **Time-sensitive announcements**: Breaking news or urgent updates may proceed with Editor verbal approval, but must be updated with full review within 24 hours.

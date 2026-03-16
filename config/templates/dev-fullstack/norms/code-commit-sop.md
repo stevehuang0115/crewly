@@ -1,4 +1,4 @@
-# Code Commit Standard Operating Procedure
+# Code Commit SOP
 
 **Trigger**: before_commit
 **Applies to**: developer, team-leader
@@ -6,109 +6,127 @@
 
 ## Overview
 
-Every code commit to a feature branch must follow this 9-step process with 3 review
-rounds. This ensures code quality, consistency, and maintainability. The process is
-mandatory for all developers and team leaders on the dev-fullstack team.
+9-step code commit process with 3 review rounds ensuring code quality, consistency, and maintainability. Every commit that introduces or modifies functionality MUST follow this process.
 
 ## Steps
 
-### Phase A: Preparation
+### Step 1: Create Feature Branch
 
-1. **Create Feature Branch**
-   - Branch from `main` using naming convention: `feat/`, `fix/`, `refactor/`, `chore/`
-   - One branch = one feature or fix
-   - Example: `git checkout -b feat/user-auth-flow`
+```bash
+git checkout -b feat/{descriptive-name}
+```
 
-2. **Write Unit Tests**
-   - Place test files next to source files: `service.ts` → `service.test.ts`
-   - Cover: core business logic, conditionals, data transforms, error paths, edge cases
-   - Target: 80%+ coverage (100% for critical paths)
-   - Run: `npx jest --no-coverage` — all must pass
+- Branch from the current working branch
+- Naming convention: `feat/`, `fix/`, `refactor/`, `chore/`
+- One branch per feature or fix
 
-3. **Create PR + Review Round 1 (Refactor & Consistency)**
-   - Open PR from feature branch → main
-   - Self-review focusing on:
+### Step 2: Write Unit Tests
 
-   | Dimension | Check |
-   |-----------|-------|
-   | Reusability | Can similar logic be extracted into shared utils? |
-   | Structure | Is any file too large or mixing responsibilities? |
-   | Modularity | Are module boundaries clean? Dependencies reasonable? |
-   | Consistency | Coding patterns consistent? (enums, naming, error handling) |
-   | Standards | Does code follow CLAUDE.md conventions? |
+- Place test files next to source files (`*.test.ts` beside `*.ts`)
+- Cover:
+  - Core business logic
+  - Non-trivial conditionals
+  - Data transformations
+  - Error paths
+  - Edge cases
+- Target coverage: 80%+ (100% for critical paths)
+- Run: `npx jest --no-coverage` — all must pass
 
-   - Document findings as "Review Round 1 — Refactor & Consistency"
+### Step 3: Create PR + Review Round 1 (Refactor & Consistency)
 
-### Phase B: Iterative Refinement
+Open a PR from the feature branch to main. Round 1 focuses on:
 
-4. **Apply Round 1 Changes**
-   - Refactor only — no new features
-   - Run tests to confirm passing
-   - Commit: `refactor: apply review round 1 feedback`
+| Dimension | Checkpoint |
+|-----------|------------|
+| **Reusability** | Can similar logic be extracted into shared utils/functions/components? |
+| **Structure** | Is any file too large? Does it mix multiple responsibilities? |
+| **Modularity** | Are module boundaries clear? Are dependencies reasonable? |
+| **Consistency** | Are coding patterns consistent? (enums, naming, error handling) |
+| **Standards** | Does the code follow CLAUDE.md coding conventions? |
 
-5. **Review Round 2 (Efficiency & Reliability)**
+Output: "Review Round 1 — Refactor & Consistency" document listing action items.
 
-   | Dimension | Check |
-   |-----------|-------|
-   | Efficiency | Unnecessary computation? Duplicate processing? N+1 queries? |
-   | Null Safety | Are null/undefined checks sufficient? |
-   | Error Handling | Errors caught and logged properly? |
-   | Resource Cleanup | Timers, listeners, connections cleaned up? |
-   | Logging | Critical operations have adequate logs? |
+### Step 4: Execute Round 1 Changes
 
-   - Document as "Review Round 2 — Efficiency & Reliability"
+- Refactor per Round 1 suggestions
+- No new features — pure refactoring only
+- Run tests to confirm they pass
+- Commit: `refactor: apply review round 1 feedback`
 
-6. **Apply Round 2 Changes**
-   - Implement efficiency and reliability improvements
-   - Run tests
-   - Commit: `chore: apply review round 2 feedback`
+### Step 5: Review Round 2 (Efficiency & Reliability)
 
-7. **Review Round 3 (Overall Quality)**
+| Dimension | Checkpoint |
+|-----------|------------|
+| **Efficiency** | Any unnecessary computation? Repeated processing? N+1 queries? |
+| **Null Safety** | Are null/undefined checks sufficient? |
+| **Error Handling** | Are errors properly caught and logged? |
+| **Resource Cleanup** | Are timers, listeners, and connections properly cleaned up? |
+| **Logging** | Do critical operations have adequate logging? |
 
-   | Dimension | Check |
-   |-----------|-------|
-   | Readability | Clear naming? Functions < 40 lines? |
-   | Dead Code | Unused code, commented blocks, stale TODOs? |
-   | Formatting | Consistent indentation, spacing, line length? |
-   | Documentation | JSDoc complete? Complex logic commented? |
-   | Types | TypeScript strict? No `any` types? |
+Output: "Review Round 2 — Efficiency & Reliability" document.
 
-   - Document as "Review Round 3 — Overall Quality"
+### Step 6: Execute Round 2 Changes
 
-8. **Apply Round 3 Changes**
-   - Final polish
-   - Run tests
-   - Commit: `chore: apply review round 3 feedback`
+- Implement efficiency and reliability improvements
+- Run tests to confirm they pass
+- Commit: `chore: apply review round 2 feedback`
 
-### Phase C: Finalize
+### Step 7: Review Round 3 (Overall Quality)
 
-9. **Build, Verify, Merge**
-   - `npm run build` — must pass
-   - `npm test` — must pass
-   - Update PR description with 3-round review summary
-   - Squash merge to main
-   - Delete feature branch
+| Dimension | Checkpoint |
+|-----------|------------|
+| **Readability** | Are names clear? Are functions reasonably short (< 40 lines)? |
+| **Dead Code** | Any unused code, commented-out code, or irrelevant TODOs? |
+| **Formatting** | Are indentation, spacing, and line length consistent? |
+| **Documentation** | Are JSDoc comments complete? Is complex logic commented? |
+| **Types** | Are TypeScript types strict? Any `any` types? |
+
+Output: "Review Round 3 — Overall Quality" document.
+
+### Step 8: Execute Round 3 Changes
+
+- Apply final polish
+- Run tests to confirm they pass
+- Commit: `chore: apply review round 3 feedback`
+
+### Step 9: Finalize & Merge
+
+```bash
+# 1. Ensure build passes
+npm run build
+
+# 2. Ensure tests pass
+npm test
+
+# 3. Update PR description summarizing all 3 review rounds
+gh pr edit --body "..."
+
+# 4. Merge
+gh pr merge --squash
+
+# 5. (Optional) Delete feature branch
+git branch -d feat/{name}
+```
 
 ## Checklist
 
 - [ ] Feature branch created with correct naming convention
-- [ ] Unit tests written next to source files (1:1 ratio)
-- [ ] All tests passing before PR creation
-- [ ] Review Round 1 completed (Refactor & Consistency)
-- [ ] Round 1 changes applied and committed
-- [ ] Review Round 2 completed (Efficiency & Reliability)
-- [ ] Round 2 changes applied and committed
-- [ ] Review Round 3 completed (Overall Quality)
-- [ ] Round 3 changes applied and committed
+- [ ] Unit tests written and placed next to source files
+- [ ] Test coverage >= 80%
+- [ ] PR created from feature branch to main
+- [ ] Review Round 1 (Refactor & Consistency) completed
+- [ ] Round 1 changes committed: `refactor: apply review round 1 feedback`
+- [ ] Review Round 2 (Efficiency & Reliability) completed
+- [ ] Round 2 changes committed: `chore: apply review round 2 feedback`
+- [ ] Review Round 3 (Overall Quality) completed
+- [ ] Round 3 changes committed: `chore: apply review round 3 feedback`
 - [ ] Build passes (`npm run build`)
-- [ ] Full test suite passes (`npm test`)
-- [ ] PR description updated with review summaries
-- [ ] Squash merged to main
+- [ ] All tests pass (`npm test`)
+- [ ] PR description updated with review summary
+- [ ] PR merged
 
 ## Exceptions
 
-- **Hotfixes**: Critical production fixes may skip Rounds 2-3 but must still have
-  Round 1 review and tests. Use `hotfix/` branch prefix.
-- **Documentation-only changes**: Pure .md file changes can skip all review rounds.
-- **Config/dependency updates**: Can skip Rounds 2-3 if change is mechanical
-  (e.g., version bump). Still needs Round 1 review.
+- **Hotfixes**: Critical production bugs may skip Review Rounds 2 and 3, but Round 1 is mandatory. Tag the commit with `hotfix:` prefix.
+- **Documentation-only changes**: Pure documentation updates (README, comments, specs) may skip all review rounds but must still create a PR.
+- **Config changes**: Environment variable or configuration-only changes may use a single review round.

@@ -6,80 +6,108 @@
 
 ## Overview
 
-Proper citation is non-negotiable for research integrity. Every factual claim,
-statistic, and direct quote must be attributed to its source using the format
-below. These standards apply to all research output — reports, briefings,
-competitive analyses, and strategy documents.
+Defines the citation format, credibility verification process, and source quality standards for all research output. Every claim, statistic, or factual statement must be traceable to a credible, verifiable source.
 
-## Citation Format
+## Steps
 
-### Inline Citations
-Use numbered references in square brackets within the text:
+### Step 1: Assess Source Credibility
+
+Before citing any source, evaluate it against this credibility tier system:
+
+| Tier | Source Type | Examples | Trust Level |
+|------|-----------|----------|-------------|
+| **Tier 1** | Official/Primary | Company docs, official blogs, SEC filings, peer-reviewed papers | High — cite directly |
+| **Tier 2** | Reputable Secondary | Major tech publications, established analysts, government data | High — cite with attribution |
+| **Tier 3** | Community/Expert | Developer blogs, conference talks, Stack Overflow (high-rep answers) | Medium — cross-reference required |
+| **Tier 4** | User-Generated | Reddit, forums, tweets, personal blogs | Low — use only for sentiment, not facts |
+| **Tier 5** | AI-Generated | ChatGPT, Gemini, Claude outputs | Not citable — verify claim via Tier 1-3 source |
+
+Rules:
+- Key claims must cite at least one Tier 1 or Tier 2 source
+- Tier 3 sources require cross-referencing with at least one other independent source
+- Tier 4 sources may only be used to illustrate community sentiment, not as factual evidence
+- Tier 5 sources are never citable — always find the original source
+
+### Step 2: Format Citations
+
+**Inline citation format:**
 
 ```
-Crewly's PTY isolation model prevents lateral movement between agents [1],
-unlike OpenClaw's shared-process architecture which exposed 135,000+ instances
-to the ClawHavoc attack [2][3].
+According to [Source Name](URL), {claim}. [Accessed: YYYY-MM-DD]
 ```
 
-### Reference List
-At the end of every document, include a numbered reference list:
+**Numbered reference format (for longer documents):**
 
+In the body text:
 ```
-## References
-
-[1] Crewly Architecture Docs, "PTY Isolation Model", v1.3.34, March 2026.
-    Source: specs/project.md (Primary — project documentation)
-
-[2] SecurityWeek, "OpenClaw Vulnerability Exposes Thousands of AI Agents",
-    March 5, 2026. URL: [link] (Secondary — tech publication)
-
-[3] CVE-2026-0104, NIST National Vulnerability Database.
-    URL: [link] (Primary — official vulnerability record)
+{claim} [1].
 ```
 
-### Citation Components
-Each reference must include:
-1. **Author/Organization** — Who published it
-2. **Title** — What was published
-3. **Date** — When (month + year minimum)
-4. **Source type** — Primary, Secondary, or Tertiary
-5. **URL or location** — Where to verify
+In the Sources section:
+```
+[1] Author/Organization. "Title." Source Name, Date. URL. Accessed: YYYY-MM-DD.
+```
 
-## Source Credibility Tiers
+**Required metadata for every citation:**
+- Author or organization name
+- Title of the specific page or document
+- Publication name or website
+- Publication date (or "n.d." if not available)
+- URL (full, not shortened)
+- Access date
 
-| Tier | Source Type | Reliability | Use For |
-|------|-----------|-------------|---------|
-| **Tier 1 (Primary)** | Official docs, GitHub repos, CVE records, SEC filings, press releases | Highest | Core claims, architecture facts, vulnerability data |
-| **Tier 2 (Secondary)** | Major tech publications (Ars Technica, SecurityWeek, The Verge), analyst reports, peer-reviewed papers | High | Market data, trend analysis, expert opinions |
-| **Tier 3 (Tertiary)** | Blog posts, conference talks, podcast transcripts, social media from verified accounts | Medium | Supporting evidence, community sentiment, anecdotes |
-| **Tier 4 (Unreliable)** | Anonymous posts, unverified social media, AI-generated content, SEO spam sites | Do Not Use | Never cite as evidence |
+### Step 3: Verify Source Freshness
 
-## Verification Process
+- For technology topics: sources older than 12 months require verification that the information is still current
+- For market data: sources older than 6 months should be flagged as potentially outdated
+- For API/product documentation: always verify against the latest official docs
+- Date the source with `[as of YYYY-MM]` when freshness matters
 
-1. **Can you access the source directly?** If not, find an accessible alternative
-2. **Is the source independent?** Avoid circular citations (A cites B cites A)
-3. **Is the date current?** Flag sources older than 6 months
-4. **Does the claim match the source?** Re-read the actual text — don't paraphrase beyond what it says
-5. **Is there a counter-source?** Seek at least one opposing viewpoint for controversial claims
+### Step 4: Handle Missing or Conflicting Sources
+
+**When sources conflict:**
+- Present both perspectives with citations
+- Note the contradiction explicitly: "Source A states X [1], while Source B reports Y [2]."
+- If possible, identify the more authoritative source and explain why
+- Never silently choose one interpretation over another
+
+**When no source exists:**
+- Clearly label the statement as the team's analysis or opinion
+- Use phrasing like: "Based on our analysis..." or "We observe that..."
+- Do not present unsourced analysis as established fact
+
+### Step 5: Compile the Sources Section
+
+At the end of every research deliverable, include a Sources section:
+
+```markdown
+## Sources
+
+[1] Author. "Title." Publication, Date. URL. Accessed: YYYY-MM-DD.
+[2] Organization. "Title." Date. URL. Accessed: YYYY-MM-DD.
+...
+```
+
+- Order sources by first appearance in the document
+- Include all sources referenced in the text
+- Do not include sources that were consulted but not cited
+- Separate primary sources from secondary sources if the list exceeds 10 items
 
 ## Checklist
 
-- [ ] Every factual claim has an inline citation [N]
-- [ ] Reference list included at document end
-- [ ] Each reference has: author, title, date, source type, URL
-- [ ] No Tier 4 sources used as evidence
-- [ ] All URLs/locations are accessible and correct
-- [ ] No circular citations
-- [ ] Sources older than 6 months are flagged
-- [ ] Claims accurately reflect source content
-- [ ] Counter-sources acknowledged for controversial claims
+- [ ] Every factual claim has at least one citation
+- [ ] Key claims cite Tier 1 or Tier 2 sources
+- [ ] Tier 3 sources are cross-referenced with an independent source
+- [ ] No Tier 5 (AI-generated) sources cited
+- [ ] Citations include all required metadata (author, title, date, URL, access date)
+- [ ] Source freshness verified (< 12 months for tech, < 6 months for market data)
+- [ ] Conflicting sources presented with both perspectives
+- [ ] Unsourced analysis clearly labeled as team opinion
+- [ ] Sources section compiled at the end of the deliverable
+- [ ] All URLs are valid and accessible
 
 ## Exceptions
 
-- **Common knowledge** (e.g., "TypeScript is a superset of JavaScript") does not
-  need citation.
-- **Internal team decisions** cited by meeting date and participants do not need
-  external verification.
-- **Preliminary analysis** may use fewer citations but must be clearly labeled
-  and updated within 48 hours.
+- **Internal knowledge base references**: When citing internal Crewly documentation or team decisions, a document title and date suffice — no URL required.
+- **Common knowledge**: Universally accepted facts (e.g., "JavaScript runs in web browsers") do not require citation.
+- **Social media monitoring**: When reporting on community sentiment, aggregate observations may replace individual citations (e.g., "Multiple Reddit threads in r/programming discussed...") but must note the search terms and date range used.

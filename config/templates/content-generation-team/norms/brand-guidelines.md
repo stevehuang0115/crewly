@@ -6,70 +6,85 @@
 
 ## Overview
 
-These guidelines ensure consistent brand voice and messaging across all content.
-All team members must internalize these standards — they are always active, not
-just at publish time.
+Defines the brand voice, terminology standards, and style guide that all content must follow. These guidelines ensure consistency across every piece of content produced by the team — from blog posts to social media to marketing materials.
 
-## Brand Voice
+## Steps
 
-### Personality Traits
-- **Knowledgeable** — We know our subject deeply, backed by data
-- **Approachable** — We explain complex topics simply, without condescension
-- **Action-oriented** — Every piece of content includes practical takeaways
-- **Trustworthy** — We cite sources, acknowledge limitations, never exaggerate
+### Step 1: Apply Brand Voice
 
-### Tone Spectrum
+Write in a voice that is:
 
-| Context | Tone |
-|---------|------|
-| Blog posts | Conversational expert — like a smart friend explaining over coffee |
-| Social media | Punchy, opinionated, engaging — spark discussion |
-| Documentation | Clear, precise, structured — get to the point |
-| Case studies | Data-driven, professional, results-focused |
-| Email newsletters | Warm, personal, value-first |
+- **Confident but not arrogant** — State facts directly; avoid hedging ("we think", "maybe", "sort of"). Use "We recommend" instead of "You might want to consider".
+- **Technical but accessible** — Explain complex concepts clearly without dumbing them down. Use analogies for difficult ideas.
+- **Helpful and action-oriented** — Every piece of content should give the reader something they can do. Lead with value, not hype.
+- **Concise** — Prefer short sentences. Cut filler words. Get to the point.
 
-### Language Rules
+Avoid:
+- Buzzwords without substance ("revolutionary", "game-changing", "synergy")
+- Passive voice (use active voice by default)
+- Exclamation marks in body text (one per article maximum, if any)
+- First person singular ("I") — use "we" for the team/company
 
-**Do:**
-- Use active voice ("We built X" not "X was built")
-- Lead with the benefit, not the feature
-- Use concrete numbers over vague qualifiers ("40% faster" not "much faster")
-- Write short sentences for key points
-- Address the reader directly ("you" / "your")
+### Step 2: Follow Terminology Standards
 
-**Don't:**
-- Use buzzwords without substance ("revolutionary", "game-changing", "synergy")
-- Write walls of text without formatting
-- Use first person singular "I" in company content (use "we")
-- Make unsubstantiated claims
-- Use ALL CAPS for emphasis (use **bold** instead)
+| Use This | Not This |
+|----------|----------|
+| team template | team blueprint, team config |
+| agent | bot, AI worker, assistant |
+| orchestrator | coordinator, manager bot |
+| norms | rules, policies, guidelines |
+| skill | tool, action, command |
+| runtime | engine, executor, backend |
+| deploy | ship, launch, push live |
 
-## Terminology Standards
+- Product name: **Crewly** (capital C, no "the" before it)
+- Always spell out acronyms on first use: "Standard Operating Procedure (SOP)"
+- Technical terms: use the exact casing from official docs (TypeScript, GitHub, Node.js)
 
-| Use This | Not This | Reason |
-|----------|----------|--------|
-| AI agent | AI bot, AI assistant | "Agent" implies autonomy and capability |
-| team | crew, squad, group | Consistency with product naming |
-| orchestrator | coordinator, manager | Technical term aligned with product |
-| workflow | pipeline, process | User-friendly term |
-| skill | plugin, extension, tool | Crewly-specific terminology |
+### Step 3: Apply Style Rules
 
-## Visual Identity
+**Formatting:**
+- Title case for headings: "How to Deploy Your First Team"
+- Sentence case for subheadings: "Setting up the environment"
+- Oxford comma: "agents, skills, and norms"
+- Em dash with no spaces: "Crewly—the orchestration platform"
+- Numbers: spell out one through nine, use digits for 10+
 
-### Image Guidelines
-- Use Nano Banana for generated illustrations
-- Prefer clean, minimal compositions
-- Brand colors: primary blue (#2563EB), accent green (#10B981)
-- Text on images: use sans-serif fonts, high contrast
-- No stock photos of people — use illustrations or abstract visuals
+**Structure:**
+- Blog posts: 800-1500 words unless the topic demands more
+- Lead with the key takeaway in the first paragraph
+- Use subheadings every 200-300 words
+- End with a clear call-to-action
 
-### Social Media Formatting
-- X/Twitter: Lead with a hook, use thread format for long content
-- LinkedIn: Open with a personal insight or data point
-- Reddit: Match the subreddit's tone, provide genuine value, no overt self-promotion
+**Code examples:**
+- Always include the language identifier in fenced code blocks
+- Keep examples minimal — show only what's necessary
+- Add brief comments for non-obvious lines
+- Test all code examples before publishing
+
+### Step 4: Visual Standards
+
+- Use the Nano Banana image generation skill for custom illustrations
+- Prefer diagrams over lengthy explanations for architecture or workflows
+- Screenshots must be current (from the latest version)
+- Alt text is mandatory for all images
+
+## Checklist
+
+- [ ] Voice is confident, accessible, helpful, and concise
+- [ ] No buzzwords, passive voice, or excessive exclamation marks
+- [ ] Correct terminology used throughout (see terminology table)
+- [ ] Product name "Crewly" capitalized correctly
+- [ ] Acronyms spelled out on first use
+- [ ] Headings follow title/sentence case rules
+- [ ] Oxford comma used
+- [ ] Numbers follow spelling convention
+- [ ] Code examples include language identifiers
+- [ ] All images have alt text
+- [ ] Content ends with a clear call-to-action
 
 ## Exceptions
 
-- **Guest posts / collaborations**: May adapt tone to match the host platform's
-  voice while maintaining terminology standards.
-- **Community responses**: May be more casual and personal.
+- **Direct quotes**: When quoting external sources, preserve their original wording even if it conflicts with brand terminology.
+- **Technical documentation**: API reference docs may use shorthand terminology and skip the accessible-voice requirement when precision is more important.
+- **Community responses**: Replies on forums or social media may use a more casual tone, but must still follow terminology standards.
