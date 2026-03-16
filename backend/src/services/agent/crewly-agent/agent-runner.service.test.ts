@@ -419,6 +419,115 @@ describe('AgentRunnerService', () => {
       expect(String(state.messages[0].content)).toContain('summary');
     });
 
+    it('should include ContextFlushService extracted items in AI summary prompt', async () => {
+      const config: CrewlyAgentConfig = {
+        ...baseConfig,
+        maxHistoryMessages: 12,
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+
+      // 6 runs with messages containing extractable context patterns
+      const contextMessages = [
+        'Currently working on fixing the login endpoint',
+        'Decided to use JWT instead of session cookies',
+        'Port is 8787 for the API server',
+        'User wants concise error messages',
+        'Blocked on database migration failing',
+        'Completed the auth middleware refactor',
+      ];
+      for (let i = 0; i < 6; i++) {
+        mockGenerateText.mockResolvedValueOnce({
+          text: `Response ${i}`,
+          steps: [],
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        await r.run(contextMessages[i]);
+      }
+
+      expect(r.getHistoryLength()).toBe(12);
+
+      // Capture the AI summarization prompt to verify extracted items are included
+      let capturedSummaryPrompt = '';
+      mockGenerateText
+        .mockImplementationOnce(async (opts: Record<string, unknown>) => {
+          const msgs = opts.messages as Array<{ content: string }>;
+          capturedSummaryPrompt = msgs[0]?.content || '';
+          return {
+            text: 'Compacted state with critical items',
+            steps: [],
+            usage: { inputTokens: 50, outputTokens: 30 },
+            finishReason: 'stop',
+          };
+        })
+        .mockResolvedValueOnce({
+          text: 'After compact',
+          steps: [],
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+
+      await r.run('Trigger compaction');
+
+      // ContextFlushService should have extracted items from old messages
+      // and they should appear in the AI summary prompt
+      expect(capturedSummaryPrompt).toContain('critical items were auto-extracted');
+      // At minimum, the task_progress and decision patterns should match
+      expect(capturedSummaryPrompt).toContain('task_progress');
+    });
+
+    it('should include extracted items in fallback summary when AI fails', async () => {
+      const config: CrewlyAgentConfig = {
+        ...baseConfig,
+        maxHistoryMessages: 12,
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+
+      // 6 runs — early messages contain extractable patterns so they end up
+      // in oldMessages (not keepRecent=10). With 12 messages total, the first
+      // 2 messages are old and the rest (10) are recent. So the extractable
+      // content must be in messages 0-1 (runs 0's user+assistant).
+      const userMessages = [
+        'Currently working on fixing the login endpoint',
+        'Message 1',
+        'Message 2',
+        'Message 3',
+        'Message 4',
+        'Message 5',
+      ];
+      for (let i = 0; i < 6; i++) {
+        mockGenerateText.mockResolvedValueOnce({
+          text: i === 0 ? 'Decided to use Redis for caching instead of Memcached' : `Response ${i}`,
+          steps: [],
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        await r.run(userMessages[i]);
+      }
+
+      // AI fails, fallback used
+      mockGenerateText.mockRejectedValueOnce(new Error('Model error'));
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'After fallback',
+        steps: [],
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: 'stop',
+      });
+      await r.run('After compact');
+
+      const state = r.getState();
+      const summaryContent = String(state.messages[0].content);
+      // Fallback summary should contain extracted critical context section
+      // Old messages include "Currently working on fixing the login endpoint" (task_progress)
+      // and "Decided to use Redis..." (decision)
+      expect(summaryContent).toContain('Extracted critical context');
+      expect(summaryContent).toContain('task_progress');
+    });
+
     it('should skip compaction when history is small', async () => {
       const config: CrewlyAgentConfig = {
         ...baseConfig,
@@ -726,15 +835,15 @@ describe('AgentRunnerService', () => {
     it('should return default security policy', () => {
       const policy = runner.getSecurityPolicy();
       expect(policy.auditEnabled).toBe(true);
-      expect(policy.requireApproval).toEqual([]);
+      expect(policy.requireApproval).toEqual(['destructive']);
       expect(policy.blockedTools).toEqual([]);
       expect(policy.maxAuditEntries).toBe(500);
     });
 
     it('should update security policy', () => {
-      runner.updateSecurityPolicy({ requireApproval: ['destructive'] });
+      runner.updateSecurityPolicy({ requireApproval: ['destructive', 'sensitive'] });
       const policy = runner.getSecurityPolicy();
-      expect(policy.requireApproval).toEqual(['destructive']);
+      expect(policy.requireApproval).toEqual(['destructive', 'sensitive']);
       expect(policy.auditEnabled).toBe(true); // unchanged
     });
 

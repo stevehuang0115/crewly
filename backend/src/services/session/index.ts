@@ -80,6 +80,16 @@ export {
 
 export type { PersistedSessionInfo, PersistedState } from './session-state-persistence.js';
 
+// Re-export session handoff service
+export { SessionHandoffService } from './session-handoff.service.js';
+export type {
+	ActiveThread,
+	ActiveAgentInfo,
+	HandoffSummary,
+	AgentMessageSender,
+	TeamDataReader,
+} from './session-handoff.service.js';
+
 // Re-export log rotation service
 export { LogRotationService } from './log-rotation.service.js';
 export type {

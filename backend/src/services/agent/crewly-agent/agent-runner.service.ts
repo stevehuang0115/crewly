@@ -10,6 +10,7 @@
 
 import { generateText, stepCountIs, type ModelMessage, type LanguageModel } from 'ai';
 import { TracingService } from '../../core/tracing.service.js';
+import { ContextFlushService } from '../../memory/context-flush.service.js';
 import { TRACING_CONSTANTS } from '../../../constants.js';
 import { ModelManager } from './model-manager.js';
 import { CrewlyApiClient } from './api-client.js';
@@ -76,8 +77,8 @@ export class AgentRunnerService {
   private mcpClient: McpClientService | null = null;
   /** Cached MCP tool definitions loaded during initialization */
   private mcpToolDefs: Record<string, ToolDefinition> = {};
-  /** Approval queue for tools requiring explicit approval */
-  private approvalQueue: ApprovalQueueService = new ApprovalQueueService();
+  /** Approval queue for tools requiring explicit approval (shared singleton) */
+  private approvalQueue: ApprovalQueueService = ApprovalQueueService.getInstance();
   private tracing = TracingService.getInstance();
   /** @internal Override for testing — replaces the AI SDK generateText call */
   _generateTextFn: GenerateTextFn | null = null;
@@ -593,13 +594,26 @@ export class AgentRunnerService {
     const oldMessages = this.state.messages.slice(0, -keepRecent);
     const recentMessages = this.state.messages.slice(-keepRecent);
 
+    // Pre-compaction context flush (#153): extract critical items from old
+    // messages so they can be explicitly included in the AI summary prompt.
+    // This ensures task progress, decisions, technical details, and blockers
+    // survive compaction even if the AI summary would otherwise miss them.
+    const flushService = ContextFlushService.getInstance();
+    const oldText = oldMessages.map(msg => {
+      const content = typeof msg.content === 'string'
+        ? msg.content
+        : JSON.stringify(msg.content);
+      return content;
+    }).join('\n');
+    const extractedItems = flushService.extract(oldText);
+
     // Attempt AI-powered summarization
     let summaryText: string;
     try {
-      summaryText = await this.generateAISummary(oldMessages);
+      summaryText = await this.generateAISummary(oldMessages, extractedItems);
     } catch {
       // Fallback to truncation-based summary
-      summaryText = this.generateFallbackSummary(oldMessages);
+      summaryText = this.generateFallbackSummary(oldMessages, extractedItems);
     }
 
     this.state.messages = [
@@ -618,18 +632,33 @@ export class AgentRunnerService {
    * Generate an AI-powered structured summary of conversation messages.
    *
    * Asks the model to extract and preserve critical state from the
-   * conversation history in a structured format.
+   * conversation history in a structured format. Pre-extracted critical
+   * items from ContextFlushService are included in the prompt to ensure
+   * they are preserved even if the AI would otherwise miss them.
    *
    * @param messages - Messages to summarize
+   * @param extractedItems - Critical items extracted by ContextFlushService
    * @returns Structured summary string
    */
-  private async generateAISummary(messages: ModelMessage[]): Promise<string> {
+  private async generateAISummary(
+    messages: ModelMessage[],
+    extractedItems: import('../../memory/context-flush.service.js').ExtractedContextItem[] = [],
+  ): Promise<string> {
     const conversationText = messages.map(msg => {
       const content = typeof msg.content === 'string'
         ? msg.content.substring(0, 2000)
         : JSON.stringify(msg.content).substring(0, 2000);
       return `[${msg.role}]: ${content}`;
     }).join('\n');
+
+    // Build critical items section if any were extracted
+    let criticalItemsSection = '';
+    if (extractedItems.length > 0) {
+      const itemLines = extractedItems.map(
+        item => `- [${item.category}] ${item.content} (confidence: ${item.confidence})`,
+      ).join('\n');
+      criticalItemsSection = `\n\nIMPORTANT — The following critical items were auto-extracted and MUST appear in your summary:\n${itemLines}\n`;
+    }
 
     const summarizationPrompt = `Summarize this conversation history into a structured state snapshot. Preserve ALL of the following if present:
 
@@ -638,7 +667,7 @@ export class AgentRunnerService {
 3. **Key Findings**: Important discoveries, patterns, or blockers found
 4. **Current Context**: What the agent is currently working on
 5. **Pending Items**: Anything awaiting response or follow-up
-
+${criticalItemsSection}
 Be concise but complete. This summary replaces the original messages.
 
 Conversation (${messages.length} messages):
@@ -662,11 +691,16 @@ ${conversationText}`;
 
   /**
    * Generate a truncation-based fallback summary when AI summarization fails.
+   * Includes pre-extracted critical items so they survive compaction.
    *
    * @param messages - Messages to summarize
+   * @param extractedItems - Critical items extracted by ContextFlushService
    * @returns Simple concatenated summary string
    */
-  private generateFallbackSummary(messages: ModelMessage[]): string {
+  private generateFallbackSummary(
+    messages: ModelMessage[],
+    extractedItems: import('../../memory/context-flush.service.js').ExtractedContextItem[] = [],
+  ): string {
     const summaryParts: string[] = [];
     for (const msg of messages) {
       const content = typeof msg.content === 'string'
@@ -674,6 +708,16 @@ ${conversationText}`;
         : JSON.stringify(msg.content).substring(0, 1000);
       summaryParts.push(`[${msg.role}]: ${content}`);
     }
-    return `Previous conversation summary (${messages.length} messages compressed):\n${summaryParts.join('\n')}`;
+
+    let result = `Previous conversation summary (${messages.length} messages compressed):\n${summaryParts.join('\n')}`;
+
+    if (extractedItems.length > 0) {
+      const itemLines = extractedItems.map(
+        item => `- [${item.category}] ${item.content}`,
+      ).join('\n');
+      result += `\n\nExtracted critical context:\n${itemLines}`;
+    }
+
+    return result;
   }
 }

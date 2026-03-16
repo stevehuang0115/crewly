@@ -76,9 +76,30 @@ export interface ApprovalResolution {
  * ```
  */
 export class ApprovalQueueService {
+  private static instance: ApprovalQueueService | null = null;
   private approvals: Map<string, PendingApproval> = new Map();
   private idCounter = 0;
   private ttlMs: number;
+
+  /**
+   * Get the shared singleton instance.
+   * All agent-runners and API controllers share the same queue.
+   *
+   * @returns The shared ApprovalQueueService instance
+   */
+  static getInstance(): ApprovalQueueService {
+    if (!ApprovalQueueService.instance) {
+      ApprovalQueueService.instance = new ApprovalQueueService();
+    }
+    return ApprovalQueueService.instance;
+  }
+
+  /**
+   * Reset the singleton instance (for testing only).
+   */
+  static resetInstance(): void {
+    ApprovalQueueService.instance = null;
+  }
 
   /**
    * Create a new ApprovalQueueService.

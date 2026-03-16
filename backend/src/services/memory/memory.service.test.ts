@@ -498,4 +498,57 @@ describe('MemoryService', () => {
       expect(recalled.projectMemories.some(m => m.includes('Dependency Injection'))).toBe(true);
     });
   });
+
+  describe('semantic recall integration', () => {
+    beforeEach(async () => {
+      await service.initializeForSession(testAgentId, testRole, testProjectPath);
+    });
+
+    it('should call embedMemory on remember without throwing', async () => {
+      // embedMemory is fire-and-forget; verify remember still works when no provider
+      const id = await service.remember({
+        agentId: testAgentId,
+        content: 'Semantic test content for embedding',
+        category: 'fact',
+        scope: 'agent',
+      });
+
+      expect(id).toBeDefined();
+    });
+
+    it('should include semantic search in recall without error when no provider', async () => {
+      // Without an embedding API key, semantic search returns empty — should not fail
+      const result = await service.recall({
+        agentId: testAgentId,
+        projectPath: testProjectPath,
+        context: 'semantic search test query',
+        scope: 'both',
+      });
+
+      expect(result).toBeDefined();
+      expect(result.agentMemories).toBeInstanceOf(Array);
+      expect(result.projectMemories).toBeInstanceOf(Array);
+    });
+
+    it('should gracefully handle recall with project-only semantic search', async () => {
+      await service.remember({
+        agentId: testAgentId,
+        projectPath: testProjectPath,
+        content: 'Project-level semantic memory',
+        category: 'pattern',
+        scope: 'project',
+        metadata: { title: 'Semantic Pattern' },
+      });
+
+      const result = await service.recall({
+        agentId: testAgentId,
+        projectPath: testProjectPath,
+        context: 'semantic memory',
+        scope: 'project',
+      });
+
+      expect(result).toBeDefined();
+      expect(result.agentMemories).toHaveLength(0);
+    });
+  });
 });

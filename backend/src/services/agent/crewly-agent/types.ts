@@ -348,7 +348,7 @@ export const CREWLY_AGENT_DEFAULTS = {
   /** Default security policy */
   SECURITY_POLICY: {
     auditEnabled: true,
-    requireApproval: [] as ToolSensitivity[],
+    requireApproval: ['destructive'] as ToolSensitivity[],
     blockedTools: [] as string[],
     maxAuditEntries: 500,
     readOnlyMode: false,

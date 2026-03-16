@@ -26,6 +26,8 @@ import { createPaymentRouter } from '../controllers/payment/payment.routes.js';
 import { createCloudRouter, createRelayRouter } from '../controllers/cloud/index.js';
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
+import { setApprovalQueueService } from '../controllers/approvals/approvals.controller.js';
+import { ApprovalQueueService } from '../services/agent/crewly-agent/approval-queue.service.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -105,6 +107,8 @@ export function createApiRoutes(apiController: ApiController): Router {
   router.use('/pr-review', createPrReviewRouter());
 
   // Tool approval management routes for granular tool execution control
+  // Wire the shared approval queue singleton to the API controller
+  setApprovalQueueService(ApprovalQueueService.getInstance());
   router.use('/approvals', createApprovalsRouter());
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)

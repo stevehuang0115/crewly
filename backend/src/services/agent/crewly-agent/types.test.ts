@@ -50,7 +50,7 @@ describe('Crewly Agent Types', () => {
     it('should have a valid default security policy', () => {
       const policy = CREWLY_AGENT_DEFAULTS.SECURITY_POLICY;
       expect(policy.auditEnabled).toBe(true);
-      expect(policy.requireApproval).toEqual([]);
+      expect(policy.requireApproval).toEqual(['destructive']);
       expect(policy.blockedTools).toEqual([]);
       expect(policy.maxAuditEntries).toBe(500);
       expect(policy.readOnlyMode).toBe(false);

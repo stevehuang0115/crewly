@@ -1371,6 +1371,17 @@ export class CrewlyServer {
 				this.healthMonitoringInterval = null;
 			}
 
+			// Generate session handoff summary before killing processes
+			// This captures active thread state and agent status for restart recovery
+			try {
+				const { SessionHandoffService } = await import('./services/session/session-handoff.service.js');
+				await SessionHandoffService.getInstance().generateSummary(this.storageService);
+			} catch (error) {
+				this.logger.warn('Failed to generate session handoff summary', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Save PTY session state and force-kill all child processes
 			this.logger.info('Saving PTY session state and force-killing child processes...');
 			try {

@@ -12,6 +12,8 @@ import { AgentMemoryService, IAgentMemoryService } from './agent-memory.service.
 import { ProjectMemoryService, IProjectMemoryService, SearchResults } from './project-memory.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { KnowledgeSearchService } from '../knowledge/knowledge-search.service.js';
+import { VectorStoreService, type VectorSearchResult } from '../knowledge/vector-store.service.js';
+import { createEmbeddingProvider, type EmbeddingProvider } from '../knowledge/embedding-provider.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
 import { CREWLY_CONSTANTS, MEMORY_CONSTANTS } from '../../constants.js';
 import type { KnowledgeDocumentSummary } from '../../types/knowledge.types.js';
@@ -178,6 +180,8 @@ export class MemoryService implements IMemoryService {
   private readonly agentMemory: AgentMemoryService;
   private readonly projectMemory: ProjectMemoryService;
   private readonly logger = LoggerService.getInstance().createComponentLogger('MemoryService');
+  private embeddingProvider: EmbeddingProvider | null = null;
+  private embeddingProviderInitialized = false;
 
   /**
    * Creates a new MemoryService instance
@@ -185,6 +189,32 @@ export class MemoryService implements IMemoryService {
   private constructor() {
     this.agentMemory = AgentMemoryService.getInstance();
     this.projectMemory = ProjectMemoryService.getInstance();
+  }
+
+  /**
+   * Lazily initializes the embedding provider on first use.
+   * Returns null if no embedding API key is configured.
+   *
+   * @returns EmbeddingProvider instance or null
+   */
+  private getEmbeddingProvider(): EmbeddingProvider | null {
+    if (!this.embeddingProviderInitialized) {
+      this.embeddingProviderInitialized = true;
+      this.embeddingProvider = createEmbeddingProvider();
+      if (this.embeddingProvider) {
+        this.logger.info('Semantic recall enabled', { provider: this.embeddingProvider.name });
+      }
+    }
+    return this.embeddingProvider;
+  }
+
+  /**
+   * Gets the VectorStoreService singleton for embedding storage.
+   *
+   * @returns VectorStoreService instance
+   */
+  private getVectorStore(): VectorStoreService {
+    return VectorStoreService.getInstance();
   }
 
   /**
@@ -362,6 +392,85 @@ export class MemoryService implements IMemoryService {
     return sections.join('\n\n');
   }
 
+  /**
+   * Embeds content and stores it in the vector store for semantic recall.
+   * No-ops silently if no embedding provider is configured.
+   *
+   * @param id - Unique identifier for the memory entry
+   * @param content - Text content to embed
+   * @param metadata - Metadata to store alongside the embedding
+   * @param scope - Storage scope ('global' or 'project')
+   * @param projectPath - Required when scope is 'project'
+   */
+  private async embedMemory(
+    id: string,
+    content: string,
+    metadata: Record<string, unknown>,
+    scope: 'global' | 'project',
+    projectPath?: string,
+  ): Promise<void> {
+    const provider = this.getEmbeddingProvider();
+    if (!provider) return;
+
+    try {
+      const embedding = await provider.embed(content);
+      if (embedding) {
+        this.getVectorStore().upsert(id, embedding, metadata, scope, projectPath);
+        this.logger.debug('Embedded memory for semantic recall', { id, scope });
+      }
+    } catch (error) {
+      this.logger.debug('Failed to embed memory (non-fatal)', {
+        id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Performs semantic search against the vector store for memory entries.
+   * Returns formatted memory strings matching the query semantically.
+   * Falls back gracefully to empty results if no provider is available.
+   *
+   * @param context - Search query text
+   * @param scope - Storage scope ('global' or 'project')
+   * @param projectPath - Required when scope is 'project'
+   * @param limit - Maximum number of results
+   * @returns Formatted memory strings from semantic search
+   */
+  private async semanticSearch(
+    context: string,
+    scope: 'global' | 'project',
+    projectPath?: string,
+    limit: number = 5,
+  ): Promise<string[]> {
+    const provider = this.getEmbeddingProvider();
+    if (!provider) return [];
+
+    try {
+      const queryEmbedding = await provider.embed(context);
+      if (!queryEmbedding) return [];
+
+      const results = this.getVectorStore().search(
+        queryEmbedding,
+        scope,
+        projectPath,
+        limit,
+        0.3, // Higher threshold for memories — only return strong matches
+      );
+
+      return results.map((r: VectorSearchResult) => {
+        const category = (r.metadata.category as string) || 'memory';
+        const content = (r.metadata.content as string) || r.id;
+        return `[${category}] ${content} (relevance: ${(r.score * 100).toFixed(0)}%)`;
+      });
+    } catch (error) {
+      this.logger.debug('Semantic search failed (non-fatal)', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+  }
+
   // ========================= PUBLIC INTERFACE =========================
 
   /**
@@ -394,11 +503,29 @@ export class MemoryService implements IMemoryService {
       category: params.category,
     });
 
+    let id: string;
     if (params.scope === 'agent') {
-      return this.rememberForAgent(params);
+      id = await this.rememberForAgent(params);
     } else {
-      return this.rememberForProject(params);
+      id = await this.rememberForProject(params);
     }
+
+    // Embed for semantic recall (fire-and-forget, non-blocking)
+    const vectorScope = params.scope === 'agent' ? 'global' as const : 'project' as const;
+    this.embedMemory(
+      `mem:${params.scope}:${id}`,
+      params.content,
+      {
+        category: params.category,
+        content: params.content.slice(0, 500),
+        agentId: params.agentId,
+        title: params.metadata?.title,
+      },
+      vectorScope,
+      params.projectPath,
+    ).catch(() => { /* non-fatal */ });
+
+    return id;
   }
 
   /**
@@ -552,6 +679,31 @@ export class MemoryService implements IMemoryService {
         }
       }),
     );
+
+    // Semantic vector search across stored memory embeddings
+    const semanticLimit = Math.max(3, Math.ceil((params.limit || 10) / 3));
+    if (params.scope === 'agent' || params.scope === 'both') {
+      promises.push(
+        this.semanticSearch(params.context, 'global', undefined, semanticLimit).then((hits) => {
+          for (const hit of hits) {
+            if (!result.agentMemories.includes(hit)) {
+              result.agentMemories.push(hit);
+            }
+          }
+        }),
+      );
+    }
+    if ((params.scope === 'project' || params.scope === 'both') && params.projectPath) {
+      promises.push(
+        this.semanticSearch(params.context, 'project', params.projectPath, semanticLimit).then((hits) => {
+          for (const hit of hits) {
+            if (!result.projectMemories.includes(hit)) {
+              result.projectMemories.push(hit);
+            }
+          }
+        }),
+      );
+    }
 
     await Promise.all(promises);
 

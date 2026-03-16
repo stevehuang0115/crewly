@@ -40,6 +40,24 @@ const BLOCKED_COMMAND_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Bash commands that require explicit approval before execution.
+ * These are dangerous but not catastrophic — they modify remote state,
+ * delete files, or interact with container/network infrastructure.
+ *
+ * Matched against the raw command string (case-insensitive, word-boundary).
+ */
+export const APPROVAL_REQUIRED_BASH_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bgit\s+push\b/i, label: 'git push (modifies remote repository)' },
+  { pattern: /\bgit\s+push\s+.*--force\b/i, label: 'git push --force (destructive remote rewrite)' },
+  { pattern: /\brm\s+/i, label: 'rm (file deletion)' },
+  { pattern: /\bdocker\s+(rm|rmi|stop|kill|exec|run|build|push|pull)\b/i, label: 'docker operation (container/image management)' },
+  { pattern: /\bcurl\b/i, label: 'curl (network request)' },
+  { pattern: /\bwget\b/i, label: 'wget (network download)' },
+  { pattern: /\bnpm\s+publish\b/i, label: 'npm publish (package registry push)' },
+  { pattern: /\bgit\s+reset\s+--hard\b/i, label: 'git reset --hard (destructive history rewrite)' },
+];
+
+/**
  * Validate a shell command against the blocklist.
  *
  * @param command - Raw shell command string
@@ -49,6 +67,21 @@ export function validateBashCommand(command: string): string | null {
   for (const pattern of BLOCKED_COMMAND_PATTERNS) {
     if (pattern.test(command)) {
       return `Command blocked by security policy: matches forbidden pattern ${pattern}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Check if a bash command matches any approval-required pattern.
+ *
+ * @param command - Raw shell command string
+ * @returns Matching label if approval is required, or null if safe to proceed
+ */
+export function checkBashApprovalRequired(command: string): string | null {
+  for (const { pattern, label } of APPROVAL_REQUIRED_BASH_PATTERNS) {
+    if (pattern.test(command)) {
+      return label;
     }
   }
   return null;
@@ -1237,6 +1270,20 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
             stdout: '',
             stderr: blockReason,
             error: blockReason,
+          };
+        }
+
+        // Check if command requires explicit approval (git push, rm, docker, network, etc.)
+        const approvalLabel = checkBashApprovalRequired(cmd);
+        if (approvalLabel && callbacks?.onEnqueueApproval) {
+          const sanitizedArgs = sanitizeArgs({ command: cmd, cwd, timeout });
+          const enqueued = callbacks.onEnqueueApproval('bash_exec', 'destructive', sanitizedArgs);
+          return {
+            success: false,
+            requiresApproval: true,
+            approvalId: enqueued.approvalId,
+            reason: `Command requires approval: ${approvalLabel}`,
+            error: `Approval required for: ${approvalLabel}. Approval ID: ${enqueued.approvalId}`,
           };
         }
 

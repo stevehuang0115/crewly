@@ -7,10 +7,10 @@
  */
 
 import { Router } from 'express';
-import { getPendingApprovals, approveRequest, rejectRequest } from './approvals.controller.js';
+import { getPendingApprovals, approveRequest, rejectRequest, getAuditTrail } from './approvals.controller.js';
 
 /**
- * Create the approvals router with pending, approve, and reject endpoints.
+ * Create the approvals router with pending, approve, reject, and audit endpoints.
  *
  * @returns Express router for /api/approvals routes
  */
@@ -19,6 +19,9 @@ export function createApprovalsRouter(): Router {
 
   // GET /api/approvals/pending — list pending approval requests
   router.get('/pending', getPendingApprovals);
+
+  // GET /api/approvals/audit — retrieve the approval audit trail
+  router.get('/audit', getAuditTrail);
 
   // POST /api/approvals/:id/approve — approve a pending request
   router.post('/:id/approve', approveRequest);
