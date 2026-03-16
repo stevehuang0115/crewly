@@ -134,5 +134,94 @@ export function createMessengerRouter(): Router {
     }
   });
 
+  // ===========================================================================
+  // Google Chat–specific routes
+  // ===========================================================================
+
+  /**
+   * POST /google-chat/reaction
+   * Add an emoji reaction to a Google Chat message.
+   */
+  router.post('/google-chat/reaction', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const adapter = registry.get('google-chat') as GoogleChatMessengerAdapter | undefined;
+      if (!adapter) {
+        res.status(404).json({ success: false, error: 'Google Chat adapter not registered' });
+        return;
+      }
+
+      const messageName = String(req.body?.messageName || '');
+      const emoji = String(req.body?.emoji || '');
+      if (!messageName || !emoji) {
+        res.status(400).json({ success: false, error: 'messageName and emoji are required' });
+        return;
+      }
+
+      await adapter.addReaction(messageName, emoji);
+      res.json({ success: true, message: 'Reaction added' });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * GET /google-chat/status
+   * Get live Google Chat adapter status (Pub/Sub pull details).
+   */
+  router.get('/google-chat/status', (_req: Request, res: Response) => {
+    const adapter = registry.get('google-chat');
+    if (!adapter) {
+      res.status(404).json({ success: false, error: 'Google Chat adapter not registered' });
+      return;
+    }
+    const status = adapter.getStatus();
+    res.json({ success: true, data: status.details || {} });
+  });
+
+  /**
+   * POST /google-chat/pull
+   * Manually trigger a Pub/Sub pull (for debugging / UI).
+   */
+  router.post('/google-chat/pull', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const adapter = registry.get('google-chat') as GoogleChatMessengerAdapter | undefined;
+      if (!adapter) {
+        res.status(404).json({ success: false, error: 'Google Chat adapter not registered' });
+        return;
+      }
+
+      const count = await adapter.pullMessages();
+      res.json({ success: true, messagesReceived: count });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * POST /google-chat/test-send
+   * Send a test message to a Google Chat space (for connection verification).
+   */
+  router.post('/google-chat/test-send', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const adapter = registry.get('google-chat');
+      if (!adapter) {
+        res.status(404).json({ success: false, error: 'Google Chat adapter not registered' });
+        return;
+      }
+
+      const space = String(req.body?.space || '');
+      const text = String(req.body?.text || 'Test message from Crewly');
+      if (!space) {
+        res.status(400).json({ success: false, error: 'space is required' });
+        return;
+      }
+
+      await adapter.sendMessage(space, text);
+      res.json({ success: true, message: 'Test message sent' });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   return router;
 }
