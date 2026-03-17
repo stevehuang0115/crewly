@@ -66,33 +66,43 @@ export class ModelManager {
 
     let providerFn: (modelId: string) => LanguageModel;
 
-    switch (provider) {
-      case 'anthropic': {
-        const { anthropic } = await import('@ai-sdk/anthropic');
-        providerFn = (modelId: string) => anthropic(modelId);
-        break;
+    try {
+      switch (provider) {
+        case 'anthropic': {
+          const { anthropic } = await import('@ai-sdk/anthropic');
+          providerFn = (modelId: string) => anthropic(modelId);
+          break;
+        }
+        case 'openai': {
+          const { openai } = await import('@ai-sdk/openai');
+          providerFn = (modelId: string) => openai(modelId);
+          break;
+        }
+        case 'google': {
+          const { google } = await import('@ai-sdk/google');
+          providerFn = (modelId: string) => google(modelId);
+          break;
+        }
+        case 'ollama': {
+          const { createOllama } = await import('ollama-ai-provider');
+          const baseURL = process.env.OLLAMA_BASE_URL || CREWLY_AGENT_DEFAULTS.OLLAMA_BASE_URL;
+          const ollamaProvider = createOllama({ baseURL });
+          // ollama-ai-provider exports LanguageModelV1 which is compatible but
+          // doesn't extend the newer LanguageModel union — safe to cast.
+          providerFn = (modelId: string) => ollamaProvider(modelId) as unknown as LanguageModel;
+          break;
+        }
+        default:
+          throw new Error(`Unknown model provider: ${provider}`);
       }
-      case 'openai': {
-        const { openai } = await import('@ai-sdk/openai');
-        providerFn = (modelId: string) => openai(modelId);
-        break;
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Unknown model provider:')) {
+        throw error;
       }
-      case 'google': {
-        const { google } = await import('@ai-sdk/google');
-        providerFn = (modelId: string) => google(modelId);
-        break;
-      }
-      case 'ollama': {
-        const { createOllama } = await import('ollama-ai-provider');
-        const baseURL = process.env.OLLAMA_BASE_URL || CREWLY_AGENT_DEFAULTS.OLLAMA_BASE_URL;
-        const ollamaProvider = createOllama({ baseURL });
-        // ollama-ai-provider exports LanguageModelV1 which is compatible but
-        // doesn't extend the newer LanguageModel union — safe to cast.
-        providerFn = (modelId: string) => ollamaProvider(modelId) as unknown as LanguageModel;
-        break;
-      }
-      default:
-        throw new Error(`Unknown model provider: ${provider}`);
+      throw new Error(
+        `Failed to load provider SDK for '${provider}'. Is the package installed? ` +
+        `Original error: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
 
     this.providerCache.set(provider, providerFn);

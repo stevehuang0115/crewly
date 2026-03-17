@@ -22,28 +22,34 @@ export const AuthCallback: React.FC = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const token = searchParams.get('token');
-    const error = searchParams.get('error');
+    const processCallback = async () => {
+      const token = searchParams.get('token');
+      const error = searchParams.get('error');
 
-    if (token) {
-      localStorage.setItem(CLOUD_TOKEN_KEY, token);
+      if (token) {
+        localStorage.setItem(CLOUD_TOKEN_KEY, token);
 
-      // Also notify the backend
-      fetch('/api/cloud/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
-      }).catch(() => {
-        // Best-effort
-      });
-    }
+        // Notify backend and wait for cloud connect + relay auto-connect to initiate
+        try {
+          await fetch('/api/cloud/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token }),
+          });
+        } catch {
+          // Non-fatal — settings page will validate independently
+        }
+      }
 
-    // Redirect to settings with cloud tab active
-    if (error) {
-      navigate('/settings?tab=cloud&error=' + encodeURIComponent(error), { replace: true });
-    } else {
-      navigate('/settings?tab=cloud', { replace: true });
-    }
+      // Redirect to settings with cloud tab active
+      if (error) {
+        navigate('/settings?tab=cloud&error=' + encodeURIComponent(error), { replace: true });
+      } else {
+        navigate('/settings?tab=cloud', { replace: true });
+      }
+    };
+
+    processCallback();
   }, [searchParams, navigate]);
 
   return (

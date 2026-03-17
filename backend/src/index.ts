@@ -56,6 +56,7 @@ import { getImprovementStartupService } from './services/orchestrator/improvemen
 import { initializeSlackIfConfigured, shutdownSlack } from './services/slack/index.js';
 import { initializeWhatsAppIfConfigured, shutdownWhatsApp } from './services/whatsapp/index.js';
 import { initializeGoogleChatIfConfigured } from './services/messaging/google-chat-initializer.js';
+import { initializeTelegramIfConfigured, shutdownTelegram } from './services/telegram/index.js';
 import { MessageQueueService, QueueProcessorService, ResponseRouterService } from './services/messaging/index.js';
 import { EventBusService } from './services/event-bus/index.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
@@ -770,6 +771,9 @@ export class CrewlyServer {
 			// Initialize Google Chat if saved credentials exist
 			await this.initializeGoogleChatIfConfigured();
 
+			// Initialize Telegram if configured
+			await this.initializeTelegramIfConfigured();
+
 			// Start NOTIFY reconciliation service (retries failed Slack deliveries)
 			this.notifyReconciliationService = new NotifyReconciliationService();
 			this.notifyReconciliationService.start();
@@ -958,6 +962,32 @@ export class CrewlyServer {
 				error: error instanceof Error ? error.message : String(error),
 			});
 			// Don't fail startup if Google Chat fails
+		}
+	}
+
+	/**
+	 * Initialize Telegram bot from environment variables or saved credentials.
+	 * Starts long-polling for incoming messages automatically on backend restart.
+	 */
+	private async initializeTelegramIfConfigured(): Promise<void> {
+		try {
+			this.logger.info('Checking Telegram configuration...');
+			const result = await initializeTelegramIfConfigured({
+				messageQueueService: this.messageQueueService,
+			});
+
+			if (result.success) {
+				this.logger.info('Telegram bot connected and polling started');
+			} else if (result.attempted) {
+				this.logger.warn('Telegram initialization failed', { error: result.error });
+			} else {
+				this.logger.info('Telegram not configured, skipping initialization');
+			}
+		} catch (error) {
+			this.logger.error('Error initializing Telegram integration', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			// Don't fail startup if Telegram fails
 		}
 	}
 
@@ -1506,6 +1536,10 @@ export class CrewlyServer {
 			// Shutdown WhatsApp integration
 			this.logger.info('Shutting down WhatsApp integration...');
 			await shutdownWhatsApp();
+
+			// Shutdown Telegram integration
+			this.logger.info('Shutting down Telegram integration...');
+			await shutdownTelegram();
 
 			// Note: Cloud Task Processor has been migrated to services/tasks/
 

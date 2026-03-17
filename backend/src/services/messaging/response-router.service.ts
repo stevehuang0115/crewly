@@ -46,6 +46,9 @@ export class ResponseRouterService {
       case 'google_chat':
         this.routeToGoogleChat(message, response);
         break;
+      case 'telegram':
+        this.routeToTelegram(message, response);
+        break;
       case 'system_event':
         this.logger.debug('System event response routed (no-op)', {
           messageId: message.id,
@@ -95,6 +98,17 @@ export class ResponseRouterService {
    */
   private routeToGoogleChat(message: QueuedMessage, response: string): void {
     this.resolveCallback(message, response, 'googleChatResolve', 'Google Chat');
+  }
+
+  /**
+   * Route response to Telegram by calling the telegramResolve callback.
+   * This unblocks the promise that sends the reply back to the Telegram chat.
+   *
+   * @param message - The completed QueuedMessage
+   * @param response - The response content
+   */
+  private routeToTelegram(message: QueuedMessage, response: string): void {
+    this.resolveCallback(message, response, 'telegramResolve', 'Telegram');
   }
 
   /**
@@ -151,6 +165,9 @@ export class ResponseRouterService {
         break;
       case 'google_chat':
         this.resolveCallback(message, `Error: ${error}`, 'googleChatResolve', 'Google Chat');
+        break;
+      case 'telegram':
+        this.resolveCallback(message, `Error: ${error}`, 'telegramResolve', 'Telegram');
         break;
       case 'system_event':
         this.logger.debug('System event error routed (no-op)', {

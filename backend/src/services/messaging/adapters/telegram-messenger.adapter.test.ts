@@ -1,112 +1,78 @@
-/**
- * TelegramMessengerAdapter Tests
- *
- * Tests for the Telegram messenger adapter including initialization,
- * message sending, status reporting, and disconnect behaviour.
- *
- * @module telegram-messenger-adapter.test
- */
+import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+const mockTelegramService = {
+	initialize: jest.fn<(config: unknown) => Promise<void>>().mockResolvedValue(undefined),
+	startPolling: jest.fn(),
+	isConnected: jest.fn<() => boolean>().mockReturnValue(true),
+	sendMessage: jest.fn<(chatId: string, text: string, replyTo?: number) => Promise<number>>().mockResolvedValue(1),
+	disconnect: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
+	getStatus: jest.fn<() => Record<string, unknown>>().mockReturnValue({ connected: true, botUsername: 'testbot' }),
+};
+
+jest.mock('../../telegram/telegram.service.js', () => ({
+	getTelegramService: () => mockTelegramService,
+}));
+
 import { TelegramMessengerAdapter } from './telegram-messenger.adapter.js';
 
-const mockFetch = jest.fn() as jest.MockedFunction<typeof fetch>;
-global.fetch = mockFetch;
-
 describe('TelegramMessengerAdapter', () => {
-  let adapter: TelegramMessengerAdapter;
+	let adapter: TelegramMessengerAdapter;
 
-  beforeEach(() => {
-    adapter = new TelegramMessengerAdapter();
-    mockFetch.mockReset();
-  });
+	beforeEach(() => {
+		jest.clearAllMocks();
+		adapter = new TelegramMessengerAdapter();
+	});
 
-  it('should have platform set to telegram', () => {
-    expect(adapter.platform).toBe('telegram');
-  });
+	describe('platform', () => {
+		it('should be telegram', () => {
+			expect(adapter.platform).toBe('telegram');
+		});
+	});
 
-  describe('initialize', () => {
-    it('should throw when token is missing', async () => {
-      await expect(adapter.initialize({})).rejects.toThrow('Telegram token is required');
-    });
+	describe('initialize', () => {
+		it('should delegate to TelegramService with mapped config', async () => {
+			await adapter.initialize({ token: 'test-token' });
+			expect(mockTelegramService.initialize).toHaveBeenCalledWith({ botToken: 'test-token' });
+			expect(mockTelegramService.startPolling).toHaveBeenCalled();
+		});
 
-    it('should throw when API response is not ok', async () => {
-      mockFetch.mockResolvedValueOnce({ ok: false, status: 401 } as Response);
-      await expect(adapter.initialize({ token: 'bad' })).rejects.toThrow('Telegram validation failed (401)');
-    });
+		it('should throw when token is missing', async () => {
+			await expect(adapter.initialize({})).rejects.toThrow('token is required');
+		});
+	});
 
-    it('should throw when API returns ok=false in body', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ok: false, description: 'Bot token invalid' }),
-      } as unknown as Response);
-      await expect(adapter.initialize({ token: 'bad' })).rejects.toThrow('Bot token invalid');
-    });
+	describe('sendMessage', () => {
+		it('should delegate to TelegramService', async () => {
+			await adapter.sendMessage('12345', 'Hello!');
+			expect(mockTelegramService.sendMessage).toHaveBeenCalledWith('12345', 'Hello!', undefined);
+		});
 
-    it('should initialize successfully with valid token', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ok: true, result: { id: 123 } }),
-      } as unknown as Response);
-      await adapter.initialize({ token: 'good-token' });
-      expect(adapter.getStatus().connected).toBe(true);
-    });
-  });
+		it('should pass threadId as replyToMessageId', async () => {
+			await adapter.sendMessage('12345', 'Reply', { threadId: '55' });
+			expect(mockTelegramService.sendMessage).toHaveBeenCalledWith('12345', 'Reply', 55);
+		});
 
-  describe('sendMessage', () => {
-    it('should throw when not initialized', async () => {
-      await expect(adapter.sendMessage('123', 'hi')).rejects.toThrow(
-        'Telegram adapter is not initialized'
-      );
-    });
+		it('should throw when not connected', async () => {
+			mockTelegramService.isConnected.mockReturnValueOnce(false);
+			await expect(adapter.sendMessage('12345', 'hi')).rejects.toThrow('not connected');
+		});
+	});
 
-    it('should send message when initialized', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ok: true }),
-      } as unknown as Response);
-      await adapter.initialize({ token: 'tok' });
+	describe('getStatus', () => {
+		it('should return status from TelegramService', () => {
+			const status = adapter.getStatus();
+			expect(status).toEqual({
+				connected: true,
+				platform: 'telegram',
+				details: { connected: true, botUsername: 'testbot' },
+			});
+		});
+	});
 
-      mockFetch.mockResolvedValueOnce({ ok: true } as Response);
-      await adapter.sendMessage('chat-1', 'hello');
-
-      const sendCall = mockFetch.mock.calls[1];
-      expect(sendCall[0]).toContain('/sendMessage');
-      const body = JSON.parse(sendCall[1]?.body as string);
-      expect(body.chat_id).toBe('chat-1');
-      expect(body.text).toBe('hello');
-    });
-
-    it('should throw when send fails', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ok: true }),
-      } as unknown as Response);
-      await adapter.initialize({ token: 'tok' });
-
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        text: async () => 'Chat not found',
-      } as Response);
-      await expect(adapter.sendMessage('bad', 'msg')).rejects.toThrow('Telegram send failed: Chat not found');
-    });
-  });
-
-  describe('getStatus', () => {
-    it('should report not connected before init', () => {
-      expect(adapter.getStatus()).toEqual({ connected: false, platform: 'telegram' });
-    });
-  });
-
-  describe('disconnect', () => {
-    it('should clear token', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ok: true }),
-      } as unknown as Response);
-      await adapter.initialize({ token: 'tok' });
-      await adapter.disconnect();
-      expect(adapter.getStatus().connected).toBe(false);
-    });
-  });
+	describe('disconnect', () => {
+		it('should delegate to TelegramService', async () => {
+			await adapter.disconnect();
+			expect(mockTelegramService.disconnect).toHaveBeenCalled();
+		});
+	});
 });

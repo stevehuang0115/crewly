@@ -1,37 +1,28 @@
-import { MessengerAdapter, MessengerPlatform } from '../messenger-adapter.interface.js';
-
-/** Timeout for external Telegram API calls (ms). */
-const FETCH_TIMEOUT_MS = 15_000;
+import { getTelegramService } from '../../telegram/telegram.service.js';
+import { MessengerAdapter, MessengerPlatform, SendOptions } from '../messenger-adapter.interface.js';
 
 /**
  * Messenger adapter for Telegram using the Bot API.
+ * Delegates to TelegramService for actual operations.
  */
 export class TelegramMessengerAdapter implements MessengerAdapter {
   readonly platform: MessengerPlatform = 'telegram';
-  private token: string | null = null;
 
   /**
-   * Initialize the adapter by validating the bot token against Telegram API.
+   * Initialize the adapter by delegating to TelegramService.
    *
-   * @param config - Must contain a `token` string property
+   * @param config - Must contain a `token` string property (mapped to botToken)
    * @throws Error if token is missing or validation fails
    */
   async initialize(config: Record<string, unknown>): Promise<void> {
-    if (typeof config.token !== 'string' || !config.token) {
+    const token = config.token as string | undefined;
+    if (!token) {
       throw new Error('Telegram token is required');
     }
 
-    const resp = await fetch(`https://api.telegram.org/bot${config.token}/getMe`, {
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!resp.ok) {
-      throw new Error(`Telegram validation failed (${resp.status})`);
-    }
-    const data = await resp.json() as { ok?: boolean; description?: string };
-    if (!data.ok) {
-      throw new Error(data.description || 'Telegram validation failed');
-    }
-    this.token = config.token;
+    const telegramService = getTelegramService();
+    await telegramService.initialize({ botToken: token });
+    telegramService.startPolling();
   }
 
   /**
@@ -39,36 +30,37 @@ export class TelegramMessengerAdapter implements MessengerAdapter {
    *
    * @param channel - Telegram chat ID
    * @param text - Message content
-   * @throws Error if adapter is not initialized or send fails
+   * @param options - Optional send options (threadId for reply)
+   * @throws Error if service is not connected or send fails
    */
-  async sendMessage(channel: string, text: string): Promise<void> {
-    if (!this.token) {
-      throw new Error('Telegram adapter is not initialized');
+  async sendMessage(channel: string, text: string, options?: SendOptions): Promise<void> {
+    const telegramService = getTelegramService();
+    if (!telegramService.isConnected()) {
+      throw new Error('Telegram is not connected');
     }
-
-    const resp = await fetch(`https://api.telegram.org/bot${this.token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: channel, text }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-
-    if (!resp.ok) {
-      const details = await resp.text();
-      throw new Error(`Telegram send failed: ${details}`);
-    }
+    const replyToId = options?.threadId ? parseInt(options.threadId, 10) : undefined;
+    await telegramService.sendMessage(channel, text, replyToId);
   }
 
-  /** Get the current connection status. */
-  getStatus(): { connected: boolean; platform: MessengerPlatform } {
+  /**
+   * Get the current connection status.
+   *
+   * @returns Status object with connection state and bot details
+   */
+  getStatus(): { connected: boolean; platform: MessengerPlatform; details?: Record<string, unknown> } {
+    const telegramService = getTelegramService();
     return {
-      connected: Boolean(this.token),
+      connected: telegramService.isConnected(),
       platform: this.platform,
+      details: telegramService.getStatus(),
     };
   }
 
-  /** Disconnect by clearing the stored token. */
+  /**
+   * Disconnect the Telegram service.
+   */
   async disconnect(): Promise<void> {
-    this.token = null;
+    const telegramService = getTelegramService();
+    await telegramService.disconnect();
   }
 }

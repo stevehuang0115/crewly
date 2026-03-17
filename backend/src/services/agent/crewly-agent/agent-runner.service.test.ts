@@ -1236,4 +1236,58 @@ describe('AgentRunnerService', () => {
       expect((replySlackResult as Record<string, unknown>).error).toContain('No channelId');
     });
   });
+
+  describe('compaction guard (concurrent compaction prevention)', () => {
+    it('should skip compaction when already compacting', async () => {
+      const config: CrewlyAgentConfig = {
+        ...baseConfig,
+        maxHistoryMessages: 12,
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+
+      // Fill history to 12 messages (6 runs × 2 messages)
+      for (let i = 0; i < 6; i++) {
+        mockGenerateText.mockResolvedValueOnce({
+          text: `Response ${i}`,
+          steps: [],
+          usage: { inputTokens: 10, outputTokens: 5 },
+          finishReason: 'stop',
+        });
+        await r.run(`Message ${i}`);
+      }
+
+      expect(r.getHistoryLength()).toBe(12);
+
+      // requestCompaction should succeed
+      // AI summarization + the compaction
+      mockGenerateText.mockResolvedValueOnce({
+        text: '[Summary] Compacted state',
+        steps: [],
+        usage: { inputTokens: 30, outputTokens: 20 },
+        finishReason: 'stop',
+      });
+
+      const result = await r.requestCompaction();
+      expect(result.compacted).toBe(true);
+      expect(result.messagesBefore).toBe(12);
+      expect(result.messagesAfter).toBeLessThan(12);
+    });
+
+    it('should skip compaction when history is too small', async () => {
+      await runner.initialize();
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Response',
+        steps: [],
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: 'stop',
+      });
+      await runner.run('Short history');
+
+      const result = await runner.requestCompaction();
+      expect(result.compacted).toBe(false);
+      expect(result.reason).toContain('Too few messages');
+    });
+  });
 });

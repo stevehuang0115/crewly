@@ -86,6 +86,27 @@ describe('ResponseRouterService', () => {
       expect(slackResolve).toHaveBeenCalled();
     });
 
+    it('should call telegramResolve for telegram source', () => {
+      const telegramResolve = jest.fn();
+      const message = createMessage({
+        source: 'telegram',
+        sourceMetadata: { telegramResolve },
+      });
+
+      router.routeResponse(message, 'Telegram response');
+
+      expect(telegramResolve).toHaveBeenCalledWith('Telegram response');
+    });
+
+    it('should handle telegram source without telegramResolve callback', () => {
+      const message = createMessage({
+        source: 'telegram',
+        sourceMetadata: {},
+      });
+
+      expect(() => router.routeResponse(message, 'Response')).not.toThrow();
+    });
+
     it('should handle unknown source without error', () => {
       const message = createMessage({ source: 'unknown' as any });
 
@@ -119,6 +140,18 @@ describe('ResponseRouterService', () => {
       });
 
       expect(() => router.routeError(message, 'Timeout')).not.toThrow();
+    });
+
+    it('should call telegramResolve with error prefix for telegram', () => {
+      const telegramResolve = jest.fn();
+      const message = createMessage({
+        source: 'telegram',
+        sourceMetadata: { telegramResolve },
+      });
+
+      router.routeError(message, 'Timeout');
+
+      expect(telegramResolve).toHaveBeenCalledWith('Error: Timeout');
     });
 
     it('should handle unknown source error without error', () => {

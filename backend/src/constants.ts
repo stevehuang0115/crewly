@@ -866,6 +866,7 @@ export const MESSAGE_SOURCES = {
 	WEB_CHAT: 'web_chat',
 	SYSTEM_EVENT: 'system_event',
 	GOOGLE_CHAT: 'google_chat',
+	TELEGRAM: 'telegram',
 } as const;
 
 /**
@@ -892,6 +893,29 @@ export const GOOGLE_CHAT_PUBSUB_CONSTANTS = {
 	MAX_CONSECUTIVE_FAILURES: 5,
 	/** Maximum message length for the Google Chat API (characters) */
 	MAX_MESSAGE_LENGTH: 4096,
+} as const;
+
+/**
+ * Constants for Telegram Bot API integration.
+ * Used by TelegramService for polling incoming messages and sending replies.
+ */
+export const TELEGRAM_CONSTANTS = {
+	/** Interval between getUpdates polling requests (ms) */
+	POLL_INTERVAL_MS: 3_000,
+	/** Timeout for long-polling requests (seconds, sent to Telegram API) */
+	LONG_POLL_TIMEOUT_S: 30,
+	/** Timeout for fetch requests (ms) */
+	FETCH_TIMEOUT_MS: 35_000,
+	/** Telegram Bot API base URL */
+	API_BASE: 'https://api.telegram.org/bot',
+	/** Maximum message length for Telegram API (characters) */
+	MAX_MESSAGE_LENGTH: 4096,
+	/** Max consecutive poll failures before pausing */
+	MAX_CONSECUTIVE_FAILURES: 5,
+	/** Credentials file name */
+	CREDENTIALS_FILE: 'telegram-credentials.json',
+	/** Chat routing prefix for incoming Telegram messages */
+	CHAT_PREFIX: 'TELEGRAM',
 } as const;
 
 // Re-export marketplace constants from shared config

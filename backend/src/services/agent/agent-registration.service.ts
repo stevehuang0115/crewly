@@ -2528,8 +2528,8 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 					};
 				}
 
-				// Extract conversationId from [CHAT:xxx] prefix for response routing
-				const chatPrefixMatch = message.match(/^\[CHAT:([^\]]+)\]\s*/);
+				// Extract conversationId from [CHAT:xxx] or [GCHAT:xxx ...] prefix for response routing
+				const chatPrefixMatch = message.match(/^\[(?:G?CHAT):([^\]\s]+)[^\]]*\]\s*/);
 				const incomingConversationId = chatPrefixMatch?.[1];
 
 				// Extract Slack context from [SLACK:channelId:threadTs] marker if present (Bug 5).

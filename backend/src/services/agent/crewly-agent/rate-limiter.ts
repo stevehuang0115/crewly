@@ -49,6 +49,8 @@ interface QueuedMessage<T> {
   message: string;
   /** Optional metadata passed through to the handler */
   metadata?: Record<string, string>;
+  /** The handler function for this specific message */
+  handler: (message: string, metadata?: Record<string, string>) => Promise<T>;
   /** Promise resolve callback */
   resolve: (value: T) => void;
   /** Promise reject callback */
@@ -109,6 +111,7 @@ export class RateLimiter<T> {
       this.queue.push({
         message,
         metadata,
+        handler,
         resolve,
         reject,
         enqueuedAt: Date.now(),
@@ -122,7 +125,7 @@ export class RateLimiter<T> {
       this.coalesceTimer = setTimeout(() => {
         this.coalesceTimer = null;
         if (!this.processing) {
-          this.processQueue(handler).catch(() => {
+          this.processQueue().catch(() => {
             // Errors are already routed to individual promise reject callbacks
           });
         }
@@ -183,11 +186,11 @@ export class RateLimiter<T> {
   /**
    * Process the queue: coalesce messages, enforce rate limit, execute with retry.
    *
-   * @param handler - The actual API call handler
+   * Each queued message stores its own handler so the correct closure is used
+   * even when messages arrive during an in-flight processQueue cycle. The most
+   * recent message's handler is used for coalesced batches.
    */
-  private async processQueue(
-    handler: (message: string, metadata?: Record<string, string>) => Promise<T>,
-  ): Promise<void> {
+  private async processQueue(): Promise<void> {
     this.processing = true;
 
     try {
@@ -198,6 +201,9 @@ export class RateLimiter<T> {
         // Coalesce all pending messages into one
         const batch = this.queue.splice(0, this.queue.length);
         const coalesced = this.coalesceMessages(batch);
+
+        // Use the most recent message's handler (matches metadata selection)
+        const handler = batch[batch.length - 1].handler;
 
         // Record this request timestamp
         this.requestTimestamps.push(Date.now());
@@ -225,9 +231,12 @@ export class RateLimiter<T> {
     } finally {
       this.processing = false;
 
-      // Check if more messages arrived while processing
+      // Re-check: messages may have arrived while processing. Without this,
+      // messages enqueued after the while-loop's last check but before
+      // processing=false would be stranded — their coalesce timer saw
+      // processing=true and skipped processQueue.
       if (this.queue.length > 0) {
-        this.processQueue(handler).catch(() => {
+        this.processQueue().catch(() => {
           // Errors are already routed to individual promise reject callbacks
         });
       }
@@ -303,6 +312,9 @@ export class RateLimiter<T> {
     handler: (message: string, metadata?: Record<string, string>) => Promise<T>,
   ): Promise<T> {
     let lastError: Error | null = null;
+    const startTime = Date.now();
+    // Total retry budget: sum of all possible backoff sleeps + buffer
+    const maxTotalMs = this.config.maxBackoffMs * (this.config.maxRetries + 1);
 
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
       try {
@@ -319,6 +331,11 @@ export class RateLimiter<T> {
           break;
         }
 
+        // Check total time budget before sleeping
+        if (Date.now() - startTime >= maxTotalMs) {
+          break;
+        }
+
         // Exponential backoff
         const backoffMs = Math.min(
           this.config.initialBackoffMs * Math.pow(this.config.backoffMultiplier, attempt),
@@ -330,7 +347,7 @@ export class RateLimiter<T> {
     }
 
     throw new Error(
-      `Rate limit retries exhausted (${this.config.maxRetries} attempts). Last error: ${lastError?.message}`,
+      `Rate limit retries exhausted (${this.config.maxRetries} attempts, ${Date.now() - startTime}ms elapsed). Last error: ${lastError?.message}`,
     );
   }
 

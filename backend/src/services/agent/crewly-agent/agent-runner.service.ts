@@ -80,6 +80,8 @@ export class AgentRunnerService {
   /** Approval queue for tools requiring explicit approval (shared singleton) */
   private approvalQueue: ApprovalQueueService = ApprovalQueueService.getInstance();
   private tracing = TracingService.getInstance();
+  /** Guards against concurrent compaction — only one compaction at a time */
+  private compacting = false;
   /** @internal Override for testing — replaces the AI SDK generateText call */
   _generateTextFn: GenerateTextFn | null = null;
 
@@ -580,6 +582,16 @@ export class AgentRunnerService {
    * @returns CompactionResult with before/after statistics
    */
   private async compactHistory(): Promise<CompactionResult> {
+    // Guard against concurrent compaction — if already compacting, skip
+    if (this.compacting) {
+      return {
+        compacted: false,
+        messagesBefore: this.state.messages.length,
+        messagesAfter: this.state.messages.length,
+        reason: 'Compaction already in progress',
+      };
+    }
+
     if (!this.model || this.state.messages.length < 10) {
       return {
         compacted: false,
@@ -588,6 +600,9 @@ export class AgentRunnerService {
         reason: 'History too small to compact',
       };
     }
+
+    this.compacting = true;
+    try {
 
     const messagesBefore = this.state.messages.length;
     const keepRecent = 10;
@@ -626,6 +641,9 @@ export class AgentRunnerService {
       messagesBefore,
       messagesAfter: this.state.messages.length,
     };
+    } finally {
+      this.compacting = false;
+    }
   }
 
   /**

@@ -455,15 +455,15 @@ export class QueueProcessorService extends EventEmitter {
         batchSize: isSystemEvent ? 1 + batchedMessages.length : 1,
       });
 
-      // Wait for orchestrator to finish post-delivery work before next message.
+      // Wait for target agent to finish post-delivery work before next message.
       // Skip for system events: they're fire-and-forget notifications.
       // The next processNext() iteration already calls waitForAgentReady before
       // delivery, so we don't need to block here for system events.
       if (!isSystemEvent) {
         await this.agentRegistrationService.waitForAgentReady(
-          ORCHESTRATOR_SESSION_NAME,
+          targetSession,
           EVENT_DELIVERY_CONSTANTS.AGENT_READY_TIMEOUT,
-          runtimeType
+          deliveryRuntimeType
         );
       }
     } catch (error) {

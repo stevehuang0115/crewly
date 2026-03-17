@@ -137,7 +137,14 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     };
 
     this.agentRunner = new AgentRunnerService(fullConfig);
-    await this.agentRunner.initialize();
+    try {
+      await this.agentRunner.initialize();
+    } catch (error) {
+      // Clean up on initialization failure to prevent partial state
+      this.agentRunner = null;
+      this.currentSessionName = null;
+      throw error;
+    }
     this.initialized = true;
 
     // Register in-process session for frontend terminal visibility
@@ -291,13 +298,16 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     this.logger.info('Shutting down Crewly Agent runtime', {
       sessionName: this.currentSessionName,
     });
+
+    // Mark as not initialized first to reject new messages immediately
+    this.initialized = false;
+
     if (this.currentSessionName) {
       this.logBuffer.append(this.currentSessionName, 'info', 'Crewly Agent shutting down');
       this.logBuffer.removeSession(this.currentSessionName);
     }
     this.rateLimiter.reset();
     this.agentRunner = null;
-    this.initialized = false;
     this.currentSessionName = null;
   }
 
