@@ -11,6 +11,7 @@ import {
   connectToRelay,
   disconnectFromRelay,
   getRelayDevices,
+  getCloudDevices,
   sendRelayMessage,
 } from './relay.controller.js';
 
@@ -32,6 +33,16 @@ jest.mock('../../services/cloud/relay-client.service.js', () => ({
       send: mockClientSend,
       getState: mockClientGetState,
       getSessionId: mockClientGetSessionId,
+    }),
+  },
+}));
+
+const mockFetchCloudDevices = jest.fn();
+
+jest.mock('../../services/cloud/cloud-client.service.js', () => ({
+  CloudClientService: {
+    getInstance: () => ({
+      fetchCloudDevices: mockFetchCloudDevices,
     }),
   },
 }));
@@ -349,6 +360,80 @@ describe('Relay Controller', () => {
       });
 
       await sendRelayMessage(req, res, next);
+      expect(next).toHaveBeenCalledWith(expect.any(Error));
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // GET /relay/cloud-devices
+  // -----------------------------------------------------------------------
+
+  describe('getCloudDevices', () => {
+    it('should return device list from cloud', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      const devices = [
+        { sessionId: 'dev-1', role: 'orchestrator', state: 'paired', pairedWith: 'dev-2', registeredAt: '2026-01-01', lastHeartbeatAt: '2026-01-01', name: 'MacBook' },
+        { sessionId: 'dev-2', role: 'agent', state: 'paired', pairedWith: 'dev-1', registeredAt: '2026-01-01', lastHeartbeatAt: '2026-01-01', name: 'Server' },
+      ];
+      mockFetchCloudDevices.mockResolvedValue(devices);
+      mockClientGetSessionId.mockReturnValue('dev-1');
+
+      await getCloudDevices(req, res, next);
+
+      expect(mockFetchCloudDevices).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          devices: [
+            { ...devices[0], isLocal: true },
+            { ...devices[1], isLocal: false },
+          ],
+          localSessionId: 'dev-1',
+        },
+      });
+    });
+
+    it('should mark no device as local when relay client has no session', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      const devices = [
+        { sessionId: 'dev-1', role: 'agent', state: 'waiting', pairedWith: null, registeredAt: '2026-01-01', lastHeartbeatAt: '2026-01-01' },
+      ];
+      mockFetchCloudDevices.mockResolvedValue(devices);
+      mockClientGetSessionId.mockReturnValue(null);
+
+      await getCloudDevices(req, res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          devices: [{ ...devices[0], isLocal: false }],
+          localSessionId: null,
+        },
+      });
+    });
+
+    it('should return empty list when no devices', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      mockFetchCloudDevices.mockResolvedValue([]);
+      mockClientGetSessionId.mockReturnValue(null);
+
+      await getCloudDevices(req, res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: { devices: [], localSessionId: null },
+      });
+    });
+
+    it('should call next on cloud fetch error', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      mockFetchCloudDevices.mockRejectedValue(new Error('Not connected'));
+
+      await getCloudDevices(req, res, next);
       expect(next).toHaveBeenCalledWith(expect.any(Error));
     });
   });

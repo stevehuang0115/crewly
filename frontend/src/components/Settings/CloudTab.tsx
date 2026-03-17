@@ -4,12 +4,13 @@
  * CrewlyAI Cloud connection management in Settings.
  * Allows users to sign in to CrewlyAI Cloud via OAuth to access
  * Pro features like device sync and relay connections.
+ * Shows connected devices when authenticated.
  *
  * @module components/Settings/CloudTab
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap } from 'lucide-react';
+import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap, Monitor, Cpu, Wifi } from 'lucide-react';
 import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/cloud.constants';
 
 /**
@@ -17,6 +18,9 @@ import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/clou
  * to avoid CORS issues when validating tokens against api.crewlyai.com.
  */
 const CLOUD_VALIDATE_URL = '/api/cloud/validate';
+
+/** Cloud devices proxy endpoint — fetches device list from crewlyai.com. */
+const CLOUD_DEVICES_URL = '/api/relay/cloud-devices';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,15 +35,200 @@ interface CloudUser {
   avatar?: string;
 }
 
+/** A relay device returned by the Cloud devices API. */
+interface CloudDevice {
+  sessionId: string;
+  role: 'orchestrator' | 'agent';
+  state: 'waiting' | 'paired' | 'disconnected';
+  pairedWith: string | null;
+  registeredAt: string;
+  lastHeartbeatAt: string;
+  name?: string;
+  isLocal?: boolean;
+}
+
 // ---------------------------------------------------------------------------
-// Component
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Format an ISO timestamp to a human-readable relative time string.
+ *
+ * @param iso - ISO timestamp string
+ * @returns Relative time string (e.g., "2 分钟前")
+ */
+function formatRelativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+
+  if (diffSec < 5) return 'Just now';
+  if (diffSec < 60) return `${diffSec}s ago`;
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  return `${Math.floor(diffSec / 86400)}d ago`;
+}
+
+/** Map device state to status label. */
+const DEVICE_STATE_LABELS: Record<string, string> = {
+  waiting: 'Connecting',
+  paired: 'Connected',
+  disconnected: 'Offline',
+};
+
+/** Map device state to dot color CSS class. */
+const DEVICE_STATE_COLORS: Record<string, string> = {
+  waiting: 'bg-yellow-400',
+  paired: 'bg-emerald-400',
+  disconnected: 'bg-gray-500',
+};
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+/**
+ * Individual device card in the device list.
+ *
+ * @param props - Device and isLocal flag
+ * @returns DeviceCard component
+ */
+const DeviceCard: React.FC<{ device: CloudDevice }> = ({ device }) => {
+  const Icon = device.role === 'orchestrator' ? Monitor : Cpu;
+  const stateColor = DEVICE_STATE_COLORS[device.state] ?? 'bg-gray-500';
+  const stateLabel = DEVICE_STATE_LABELS[device.state] ?? device.state;
+  const displayName = device.name ?? `${device.role} (${device.sessionId.slice(0, 8)}...)`;
+
+  return (
+    <div
+      data-testid={`cloud-device-${device.sessionId}`}
+      className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${
+        device.isLocal
+          ? 'border-primary/30 bg-primary/5'
+          : 'border-border-dark bg-background-dark hover:border-border-dark/80'
+      }`}
+    >
+      <div className="flex items-center gap-3 min-w-0">
+        <div className={`p-1.5 rounded-md ${device.isLocal ? 'bg-primary/10' : 'bg-surface-dark'}`}>
+          <Icon className={`w-4 h-4 ${device.isLocal ? 'text-primary' : 'text-text-secondary-dark'}`} />
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-text-primary-dark truncate">
+              {displayName}
+            </span>
+            {device.isLocal && (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-primary/10 text-primary whitespace-nowrap">
+                This machine
+              </span>
+            )}
+          </div>
+          <span className="text-xs text-text-secondary-dark">
+            Last seen: {formatRelativeTime(device.lastHeartbeatAt)}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1.5 ml-3 whitespace-nowrap">
+        <span className={`h-2 w-2 rounded-full ${stateColor}`} />
+        <span className="text-xs text-text-secondary-dark">{stateLabel}</span>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Device list section shown when the user is connected to Cloud.
+ *
+ * @param props - Component props
+ * @returns DeviceListSection component
+ */
+const DeviceListSection: React.FC = () => {
+  const [devices, setDevices] = useState<CloudDevice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  /** Fetch devices from the backend proxy. */
+  const fetchDevices = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const res = await fetch(CLOUD_DEVICES_URL);
+      const data = await res.json();
+
+      if (res.ok && data.success && data.data?.devices) {
+        setDevices(data.data.devices);
+      } else {
+        setError(data.error || 'Failed to load devices');
+      }
+    } catch {
+      setError('Could not reach the server');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  /** Fetch on mount. */
+  useEffect(() => {
+    fetchDevices();
+  }, [fetchDevices]);
+
+  return (
+    <div className="bg-surface-dark border border-border-dark rounded-lg p-5 space-y-3" data-testid="cloud-device-list-section">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Wifi className="w-4 h-4 text-text-secondary-dark" />
+          <h3 className="text-sm font-semibold text-text-primary-dark">Connected Devices</h3>
+          <span className="text-xs text-text-secondary-dark">
+            ({devices.length})
+          </span>
+        </div>
+        <button
+          onClick={fetchDevices}
+          disabled={loading}
+          className="p-1.5 text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors disabled:opacity-50"
+          aria-label="Refresh devices"
+          data-testid="refresh-devices-button"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && devices.length === 0 && (
+        <div className="text-center py-6">
+          <Monitor className="w-8 h-8 text-text-secondary-dark/30 mx-auto mb-2" />
+          <p className="text-xs text-text-secondary-dark">No devices connected yet</p>
+          <p className="text-[11px] text-text-secondary-dark/60 mt-0.5">
+            Connect from another machine using <code className="text-primary/80">crewly cloud connect</code>
+          </p>
+        </div>
+      )}
+
+      {devices.length > 0 && (
+        <div className="space-y-2">
+          {devices.map((device) => (
+            <DeviceCard key={device.sessionId} device={device} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Main Component
 // ---------------------------------------------------------------------------
 
 /**
  * Cloud connection tab for Settings page.
  *
  * Shows "Sign in with CrewlyAI" when disconnected, or connection
- * status with user info when connected.
+ * status with user info and device list when connected.
  *
  * @returns CloudTab component
  */
@@ -176,53 +365,58 @@ export const CloudTab: React.FC = () => {
 
       {/* Connected State */}
       {user ? (
-        <div className="bg-surface-dark border border-border-dark rounded-lg p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
-                {user.avatar ? (
-                  <img
-                    src={user.avatar}
-                    alt={user.name || user.email}
-                    className="w-10 h-10 rounded-full"
-                  />
-                ) : (
-                  <Cloud className="w-5 h-5 text-primary" />
-                )}
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-text-primary-dark">
-                    {user.name || user.email}
-                  </span>
-                  <Check className="w-4 h-4 text-emerald-400" />
+        <>
+          <div className="bg-surface-dark border border-border-dark rounded-lg p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
+                  {user.avatar ? (
+                    <img
+                      src={user.avatar}
+                      alt={user.name || user.email}
+                      className="w-10 h-10 rounded-full"
+                    />
+                  ) : (
+                    <Cloud className="w-5 h-5 text-primary" />
+                  )}
                 </div>
-                <span className="text-xs text-text-secondary-dark">{user.email}</span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-text-primary-dark">
+                      {user.name || user.email}
+                    </span>
+                    <Check className="w-4 h-4 text-emerald-400" />
+                  </div>
+                  <span className="text-xs text-text-secondary-dark">{user.email}</span>
+                </div>
               </div>
+
+              <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getPlanBadgeClass(user.plan)}`}>
+                {user.plan.charAt(0).toUpperCase() + user.plan.slice(1)}
+              </span>
             </div>
 
-            <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getPlanBadgeClass(user.plan)}`}>
-              {user.plan.charAt(0).toUpperCase() + user.plan.slice(1)}
-            </span>
+            <div className="flex items-center gap-2 pt-2 border-t border-border-dark">
+              <button
+                onClick={validateToken}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Refresh
+              </button>
+              <button
+                onClick={handleDisconnect}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-rose-400 rounded-md hover:bg-background-dark transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Disconnect
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 pt-2 border-t border-border-dark">
-            <button
-              onClick={validateToken}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Refresh
-            </button>
-            <button
-              onClick={handleDisconnect}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-rose-400 rounded-md hover:bg-background-dark transition-colors"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              Disconnect
-            </button>
-          </div>
-        </div>
+          {/* Device Discovery List */}
+          <DeviceListSection />
+        </>
       ) : (
         /* Disconnected State */
         <div className="bg-surface-dark border border-border-dark rounded-lg p-6 text-center space-y-4">

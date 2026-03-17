@@ -18,6 +18,7 @@ import {
   connectToRelay,
   disconnectFromRelay,
   getRelayDevices,
+  getCloudDevices,
   sendRelayMessage,
 } from './relay.controller.js';
 import { requireCloudConnection, requireTier } from '../../services/cloud/cloud-auth.middleware.js';
@@ -37,6 +38,7 @@ export function createRelayRouter(): Router {
   router.post('/disconnect', requireCloudConnection, requireTier('pro'), disconnectFromRelay);
   router.get('/devices', requireCloudConnection, requireTier('pro'), getRelayDevices);
   router.post('/send', requireCloudConnection, requireTier('pro'), sendRelayMessage);
+  router.get('/cloud-devices', requireCloudConnection, getCloudDevices);
 
   return router;
 }

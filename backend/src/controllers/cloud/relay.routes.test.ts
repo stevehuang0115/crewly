@@ -18,6 +18,7 @@ jest.mock('./relay.controller.js', () => ({
   connectToRelay: jest.fn((_req: unknown, res: { status: (s: number) => { json: (d: unknown) => void } }) => res.status(200).json({ success: true })),
   disconnectFromRelay: jest.fn((_req: unknown, res: { status: (s: number) => { json: (d: unknown) => void } }) => res.status(200).json({ success: true })),
   getRelayDevices: jest.fn((_req: unknown, res: { status: (s: number) => { json: (d: unknown) => void } }) => res.status(200).json({ success: true })),
+  getCloudDevices: jest.fn((_req: unknown, res: { status: (s: number) => { json: (d: unknown) => void } }) => res.status(200).json({ success: true })),
   sendRelayMessage: jest.fn((_req: unknown, res: { status: (s: number) => { json: (d: unknown) => void } }) => res.status(200).json({ success: true })),
 }));
 
@@ -96,8 +97,14 @@ describe('Relay Routes', () => {
     expect(route!.middlewareCount).toBe(3);
   });
 
-  it('should register exactly 4 client-side routes', () => {
-    expect(routes).toHaveLength(4);
+  it('should register GET /cloud-devices with cloud connection middleware', () => {
+    const route = routes.find(r => r.method === 'GET' && r.path === '/cloud-devices');
+    expect(route).toBeDefined();
+    expect(route!.middlewareCount).toBe(2); // requireCloudConnection + handler (no tier check)
+  });
+
+  it('should register exactly 5 routes', () => {
+    expect(routes).toHaveLength(5);
   });
 
   it('should call requireTier with "pro" for client-side routes', () => {

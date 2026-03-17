@@ -54,6 +54,24 @@ export interface CloudTemplateDetail {
   orchestration: Record<string, unknown>;
 }
 
+/** A relay device returned by the Cloud devices API. */
+export interface CloudRelayDevice {
+  /** Device/session ID */
+  sessionId: string;
+  /** Device role */
+  role: 'orchestrator' | 'agent';
+  /** Device state */
+  state: 'waiting' | 'paired' | 'disconnected';
+  /** Paired peer device ID */
+  pairedWith: string | null;
+  /** ISO registration timestamp */
+  registeredAt: string;
+  /** ISO last heartbeat timestamp */
+  lastHeartbeatAt: string;
+  /** Human-readable device name */
+  name?: string;
+}
+
 /** Current cloud connection state exposed by getStatus(). */
 export interface CloudStatus {
   /** Whether the client is currently connected */
@@ -310,6 +328,41 @@ export class CloudClientService {
    */
   getTier(): CloudTier {
     return this.tier;
+  }
+
+  /**
+   * Fetch the list of devices registered to this user from Cloud.
+   *
+   * Proxies GET /api/v1/relay/devices on crewlyai.com and returns
+   * the device list for the authenticated user.
+   *
+   * @returns Array of cloud relay devices
+   * @throws Error when not connected or fetch fails
+   */
+  async fetchCloudDevices(): Promise<CloudRelayDevice[]> {
+    this.ensureConnected();
+
+    const url = `${this.cloudUrl}${CLOUD_CONSTANTS.RELAY_ENDPOINTS.DEVICES}`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: this.authHeaders(),
+      signal: AbortSignal.timeout(CLOUD_CONSTANTS.TIMEOUTS.FETCH_TEMPLATES),
+    });
+
+    if (!response.ok) {
+      this.logger.error('Failed to fetch cloud devices', { status: response.status });
+      throw new Error(`Failed to fetch cloud devices: ${response.status}`);
+    }
+
+    const data = (await response.json()) as { success: boolean; devices?: CloudRelayDevice[] };
+
+    if (!data.success) {
+      throw new Error('Cloud devices API returned unsuccessful response');
+    }
+
+    this.lastSyncAt = new Date().toISOString();
+    return data.devices ?? [];
   }
 
   // -------------------------------------------------------------------------

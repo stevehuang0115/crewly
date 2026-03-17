@@ -32,6 +32,10 @@ vi.mock('../components/Settings/IntegrationsTab', () => ({
   IntegrationsTab: () => <div data-testid="integrations-tab">Integrations Tab Content</div>,
 }));
 
+vi.mock('../components/Settings/ApiKeysTab', () => ({
+  ApiKeysTab: () => <div data-testid="api-keys-tab">API Keys Tab Content</div>,
+}));
+
 vi.mock('../components/Settings/CloudTab', () => ({
   CloudTab: () => <div data-testid="cloud-tab">Cloud Tab Content</div>,
 }));
@@ -56,6 +60,7 @@ describe('Settings Page', () => {
       expect(screen.getByText('Roles')).toBeInTheDocument();
       expect(screen.getByText('Skills')).toBeInTheDocument();
       expect(screen.getByText('Integrations')).toBeInTheDocument();
+      expect(screen.getByText('API Keys')).toBeInTheDocument();
       expect(screen.getByText('Cloud')).toBeInTheDocument();
     });
   });
@@ -107,6 +112,15 @@ describe('Settings Page', () => {
       expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
     });
 
+    it('should switch to API Keys tab when clicked', () => {
+      render(<Settings />);
+
+      fireEvent.click(screen.getByText('API Keys'));
+
+      expect(screen.getByTestId('api-keys-tab')).toBeInTheDocument();
+      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
+    });
+
     it('should switch back to General tab from another tab', () => {
       render(<Settings />);
 
@@ -123,7 +137,7 @@ describe('Settings Page', () => {
       render(<Settings />);
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs).toHaveLength(5);
+      expect(tabs).toHaveLength(6);
     });
 
     it('should set aria-selected on active tab', () => {

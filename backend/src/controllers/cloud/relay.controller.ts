@@ -16,6 +16,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { RelayClientService } from '../../services/cloud/relay-client.service.js';
+import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import type {
   RelayClientConfig,
@@ -214,6 +215,46 @@ export async function sendRelayMessage(req: Request, res: Response, next: NextFu
     });
   } catch (error) {
     logger.error('Failed to send relay message', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    next(error);
+  }
+}
+
+/**
+ * GET /relay/cloud-devices
+ *
+ * Proxy endpoint that fetches the authenticated user's device list
+ * from CrewlyAI Cloud (/api/v1/relay/devices). Used by the Settings
+ * Cloud tab to display device discovery information.
+ *
+ * @param req - Express request (no params required)
+ * @param res - Response with cloud device list
+ * @param next - Next function for error propagation
+ */
+export async function getCloudDevices(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const cloudClient = CloudClientService.getInstance();
+    const devices = await cloudClient.fetchCloudDevices();
+
+    // Mark the current device (this OSS instance)
+    const relayClient = RelayClientService.getInstance();
+    const localSessionId = relayClient.getSessionId();
+
+    const devicesWithLocal = devices.map((device) => ({
+      ...device,
+      isLocal: localSessionId ? device.sessionId === localSessionId : false,
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        devices: devicesWithLocal,
+        localSessionId,
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to fetch cloud devices', {
       error: error instanceof Error ? error.message : String(error),
     });
     next(error);

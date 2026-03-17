@@ -8,17 +8,18 @@
 
 import React, { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Settings as SettingsIcon, User, Wrench, Link2, Cloud, LucideIcon } from 'lucide-react';
+import { Settings as SettingsIcon, User, Wrench, Link2, Key, Cloud, LucideIcon } from 'lucide-react';
 import { GeneralTab } from '../components/Settings/GeneralTab';
 import { RolesTab } from '../components/Settings/RolesTab';
 import { SkillsTab } from '../components/Settings/SkillsTab';
 import { IntegrationsTab } from '../components/Settings/IntegrationsTab';
+import { ApiKeysTab } from '../components/Settings/ApiKeysTab';
 import { CloudTab } from '../components/Settings/CloudTab';
 
 /**
  * Available settings tabs
  */
-type SettingsTab = 'general' | 'roles' | 'skills' | 'integrations' | 'cloud';
+type SettingsTab = 'general' | 'roles' | 'skills' | 'integrations' | 'api-keys' | 'cloud';
 
 /**
  * Tab configuration
@@ -30,7 +31,7 @@ interface TabConfig {
 }
 
 /** Valid tab IDs for URL parameter validation */
-const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'roles', 'skills', 'integrations', 'cloud']);
+const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'roles', 'skills', 'integrations', 'api-keys', 'cloud']);
 
 /**
  * Settings page with tabbed navigation for managing Crewly configuration
@@ -48,6 +49,7 @@ export const Settings: React.FC = () => {
     { id: 'roles', label: 'Roles', icon: User },
     { id: 'skills', label: 'Skills', icon: Wrench },
     { id: 'integrations', label: 'Integrations', icon: Link2 },
+    { id: 'api-keys', label: 'API Keys', icon: Key },
     { id: 'cloud', label: 'Cloud', icon: Cloud },
   ];
 
@@ -64,6 +66,8 @@ export const Settings: React.FC = () => {
         return <SkillsTab />;
       case 'integrations':
         return <IntegrationsTab />;
+      case 'api-keys':
+        return <ApiKeysTab />;
       case 'cloud':
         return <CloudTab />;
       default:
