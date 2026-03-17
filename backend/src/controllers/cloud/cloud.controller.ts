@@ -19,21 +19,17 @@ import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
 const logger = LoggerService.getInstance().createComponentLogger('CloudController');
 
 /**
- * Relay server URL.
+ * Cloud Message Queue API URL.
  *
  * Priority:
- * 1. CREWLY_RELAY_WS_URL env var (explicit external relay)
- * 2. Embedded local relay at ws://localhost:PORT/ws/relay
- *
- * The embedded relay runs inside the OSS backend process, so it's always
- * available without deploying a separate relay service.
+ * 1. CREWLY_RELAY_API_URL env var (explicit override, e.g. http://localhost:3000 for local dev)
+ * 2. Default Cloud backend at https://crewlyai.com
  */
-const RELAY_WS_URL = (): string => {
-  if (process.env['CREWLY_RELAY_WS_URL']) {
-    return process.env['CREWLY_RELAY_WS_URL'];
+const RELAY_API_URL = (): string => {
+  if (process.env['CREWLY_RELAY_API_URL']) {
+    return process.env['CREWLY_RELAY_API_URL'];
   }
-  const port = process.env['DEFAULT_WEB_PORT'] || '8787';
-  return `ws://localhost:${port}/ws/relay`;
+  return 'https://crewlyai.com';
 };
 
 /**
@@ -75,7 +71,7 @@ function autoConnectRelay(token: string): void {
     }
 
     relay.connect({
-      wsUrl: RELAY_WS_URL(),
+      apiUrl: RELAY_API_URL(),
       pairingCode,
       role: 'orchestrator',
       token,

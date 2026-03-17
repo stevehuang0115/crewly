@@ -86,21 +86,21 @@ describe('Relay Controller', () => {
 
   describe('connectToRelay', () => {
     const validBody = {
-      wsUrl: 'ws://relay.example.com:8787/relay',
+      apiUrl: 'https://relay.example.com',
       pairingCode: 'test-pair',
       role: 'agent',
       token: 'tok-123',
       sharedSecret: 'my-secret',
     };
 
-    it('should return 400 when wsUrl is missing', async () => {
-      const req = mockReq({ ...validBody, wsUrl: undefined });
+    it('should return 400 when apiUrl is missing', async () => {
+      const req = mockReq({ ...validBody, apiUrl: undefined });
       const res = mockRes();
 
       await connectToRelay(req, res, next);
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({ success: false, error: expect.stringContaining('wsUrl') }),
+        expect.objectContaining({ success: false, error: expect.stringContaining('apiUrl') }),
       );
     });
 
@@ -167,7 +167,7 @@ describe('Relay Controller', () => {
 
       await connectToRelay(req, res, next);
       expect(mockClientConnect).toHaveBeenCalledWith({
-        wsUrl: validBody.wsUrl,
+        apiUrl: validBody.apiUrl,
         pairingCode: validBody.pairingCode,
         role: validBody.role,
         token: validBody.token,

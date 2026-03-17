@@ -170,8 +170,38 @@ export interface RelayRegisterResponse {
   success: boolean;
   /** Assigned session ID */
   sessionId: RelaySessionId;
-  /** WebSocket URL to connect to */
-  wsUrl: string;
+  /** API URL for relay communication */
+  apiUrl: string;
+}
+
+// ---------------------------------------------------------------------------
+// Relay Queue Types (HTTP polling)
+// ---------------------------------------------------------------------------
+
+/** A single message returned from the queue poll endpoint. */
+export interface RelayQueueMessage {
+  /** Unique message ID for acknowledgement */
+  id: string;
+  /** Encrypted payload (base64 envelope) */
+  payload: string;
+  /** ISO timestamp of when the message was enqueued */
+  createdAt: string;
+}
+
+/** Response from GET /api/v1/relay/queue/poll. */
+export interface RelayQueuePollResponse {
+  /** Array of unread messages */
+  messages: RelayQueueMessage[];
+}
+
+/** Response from POST /api/v1/relay/queue/register. */
+export interface RelayQueueRegisterResponse {
+  /** Whether registration succeeded */
+  success: boolean;
+  /** Assigned queue ID for this client */
+  queueId: string;
+  /** Peer's queue ID if already paired, null otherwise */
+  peerQueueId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,8 +210,8 @@ export interface RelayRegisterResponse {
 
 /** Configuration for the RelayClientService. */
 export interface RelayClientConfig {
-  /** WebSocket URL of the relay server */
-  wsUrl: string;
+  /** API URL of the relay server */
+  apiUrl: string;
   /** Pairing code shared between the two nodes */
   pairingCode: string;
   /** This node's role */

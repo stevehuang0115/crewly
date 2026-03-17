@@ -1,33 +1,29 @@
 /**
  * Relay Client Service
  *
- * WebSocket client that connects to a Relay Server for inter-node
- * communication when direct connections are unavailable (NAT/firewall).
+ * HTTP polling-based client that connects to a Cloud Message Queue for
+ * inter-node communication when direct connections are unavailable (NAT/firewall).
  *
- * Flow: Node A (Agent) <-> Cloud (Relay) <-> Node B (Orchestrator)
+ * Flow: Node A (Agent) <-> Cloud (Queue) <-> Node B (Orchestrator)
  *
  * Features:
- * - Automatic fallback from direct connection to relay mode
+ * - HTTP-based registration and message polling (replaces WebSocket)
  * - End-to-end encryption (E2EE) — relay never sees plaintext
- * - Heartbeat keep-alive with auto-reconnection
- * - Exponential backoff on reconnection failures
+ * - Exponential backoff on registration failures
+ * - Automatic message acknowledgement after processing
  *
  * @module services/cloud/relay-client.service
  */
 
-import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { CLOUD_CONSTANTS } from '../../constants.js';
-import {
-  isRelayMessage,
-  type RelayClientConfig,
-  type RelayClientState,
-  type RelaySessionId,
-  type RelayRegisterMessage,
-  type RelayDataMessage,
-  type RelayHeartbeatMessage,
-  type RelayMessage,
+import type {
+  RelayClientConfig,
+  RelayClientState,
+  RelaySessionId,
+  RelayQueueRegisterResponse,
+  RelayQueuePollResponse,
 } from './relay.types.js';
 import {
   deriveKey,
@@ -64,23 +60,23 @@ export interface RelayClientEvents {
 /**
  * RelayClientService singleton.
  *
- * Manages a WebSocket connection to a relay server, handles registration,
- * heartbeats, reconnection, and encrypts/decrypts messages for E2EE.
+ * Manages HTTP-based registration, polling, and message exchange with
+ * a Cloud Message Queue. Encrypts/decrypts messages for E2EE.
  */
 export class RelayClientService extends EventEmitter {
   private static instance: RelayClientService | null = null;
   private readonly logger: ComponentLogger;
 
-  /** Current WebSocket connection */
-  private ws: WebSocket | null = null;
   /** Client configuration (set via connect()) */
   private config: RelayClientConfig | null = null;
   /** Current connection state */
   private state: RelayClientState = 'disconnected';
-  /** Assigned session ID after registration */
+  /** Assigned queue ID after registration (used as sessionId) */
   private sessionId: RelaySessionId | null = null;
-  /** Heartbeat interval timer */
-  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  /** Peer's queue ID for sending messages */
+  private peerQueueId: string | null = null;
+  /** Polling interval timer */
+  private pollInterval: ReturnType<typeof setInterval> | null = null;
   /** Reconnection attempt counter */
   private reconnectAttempts = 0;
   /** Reconnection timer */
@@ -91,6 +87,8 @@ export class RelayClientService extends EventEmitter {
   private salt: Buffer | null = null;
   /** Whether disconnect was intentional (skip reconnect) */
   private intentionalDisconnect = false;
+  /** Timestamp of last seen message for pagination */
+  private lastSeenTimestamp: string | null = null;
 
   private constructor() {
     super();
@@ -125,10 +123,10 @@ export class RelayClientService extends EventEmitter {
   // -------------------------------------------------------------------------
 
   /**
-   * Connect to a relay server.
+   * Connect to the Cloud Message Queue.
    *
-   * Establishes the WebSocket connection, sends a register message,
-   * and derives the E2EE encryption key from the shared secret.
+   * Registers via HTTP POST, derives the E2EE encryption key,
+   * and starts polling for messages if not immediately paired.
    *
    * @param config - Relay client configuration
    *
@@ -136,7 +134,7 @@ export class RelayClientService extends EventEmitter {
    * ```ts
    * const client = RelayClientService.getInstance();
    * client.connect({
-   *   wsUrl: 'ws://cloud.crewly.dev:8787/relay',
+   *   apiUrl: 'https://api.crewlyai.com',
    *   pairingCode: 'abc-123',
    *   role: 'agent',
    *   token: 'sk-xxx',
@@ -154,18 +152,19 @@ export class RelayClientService extends EventEmitter {
     this.config = config;
     this.intentionalDisconnect = false;
     this.reconnectAttempts = 0;
+    this.lastSeenTimestamp = null;
 
     // Derive encryption key from shared secret
     this.salt = generateSalt();
     this.encryptionKey = deriveKey(config.sharedSecret, this.salt);
 
-    this.doConnect();
+    this.doRegister();
   }
 
   /**
-   * Disconnect from the relay server.
+   * Disconnect from the Cloud Message Queue.
    *
-   * Closes the WebSocket cleanly and stops heartbeats and reconnection.
+   * Stops polling and cleans up all timers.
    */
   disconnect(): void {
     this.intentionalDisconnect = true;
@@ -174,7 +173,7 @@ export class RelayClientService extends EventEmitter {
   }
 
   /**
-   * Send an encrypted message to the paired peer via the relay.
+   * Send an encrypted message to the paired peer via the Cloud Queue.
    *
    * The message is encrypted locally before being sent — the relay
    * server only forwards the opaque ciphertext.
@@ -194,12 +193,14 @@ export class RelayClientService extends EventEmitter {
     if (!this.encryptionKey) {
       throw new Error('Encryption key not derived — cannot send');
     }
+    if (!this.peerQueueId) {
+      throw new Error('No peer queue ID — cannot send');
+    }
 
     const envelope = encrypt(plaintext, this.encryptionKey);
     const payload = serializeEnvelope(envelope);
 
-    const msg: RelayDataMessage = { type: 'relay', payload };
-    this.sendRaw(msg);
+    this.sendViaHttp(payload);
   }
 
   /**
@@ -212,7 +213,7 @@ export class RelayClientService extends EventEmitter {
   }
 
   /**
-   * Get the assigned session ID (available after registration).
+   * Get the assigned session ID (queue ID, available after registration).
    *
    * @returns Session ID or null if not registered
    */
@@ -221,179 +222,223 @@ export class RelayClientService extends EventEmitter {
   }
 
   // -------------------------------------------------------------------------
-  // Connection lifecycle
+  // Registration (replaces WebSocket connect)
   // -------------------------------------------------------------------------
 
   /**
-   * Establish the WebSocket connection and set up handlers.
+   * Register with the Cloud Message Queue via HTTP POST.
    */
-  private doConnect(): void {
+  private async doRegister(): Promise<void> {
     if (!this.config) return;
 
     this.setState('connecting');
-    this.logger.info('Connecting to relay server', { wsUrl: this.config.wsUrl });
+    this.logger.info('Registering with Cloud Message Queue', { apiUrl: this.config.apiUrl });
 
     try {
-      this.ws = new WebSocket(this.config.wsUrl, {
-        handshakeTimeout: RELAY.HANDSHAKE_TIMEOUT_MS,
+      const response = await fetch(`${this.config.apiUrl}/api/v1/relay/queue/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.token}`,
+        },
+        body: JSON.stringify({
+          role: this.config.role,
+          pairingCode: this.config.pairingCode,
+        }),
       });
+
+      if (!response.ok) {
+        throw new Error(`Registration failed with HTTP ${response.status}`);
+      }
+
+      const data = await response.json() as RelayQueueRegisterResponse;
+
+      if (!data.success || !data.queueId) {
+        throw new Error('Registration response missing required fields');
+      }
+
+      this.sessionId = data.queueId;
+      this.reconnectAttempts = 0;
+      this.logger.info('Registered with Cloud Queue', { queueId: data.queueId });
+
+      if (data.peerQueueId) {
+        // Already paired
+        this.peerQueueId = data.peerQueueId;
+        this.setState('paired');
+        this.emit('paired', data.peerQueueId, 'peer');
+        this.startPolling();
+      } else {
+        // Waiting for peer — start polling for pairing + messages
+        this.setState('registered');
+        this.startPolling();
+      }
     } catch (err) {
-      this.logger.error('Failed to create WebSocket', {
+      this.logger.error('Failed to register with Cloud Queue', {
         error: err instanceof Error ? err.message : String(err),
       });
       this.setState('error');
       this.scheduleReconnect();
-      return;
     }
+  }
 
-    this.ws.on('open', () => {
-      this.logger.info('WebSocket connected, sending registration');
-      this.reconnectAttempts = 0;
-      this.sendRegister();
-    });
+  // -------------------------------------------------------------------------
+  // Polling (replaces WebSocket onMessage)
+  // -------------------------------------------------------------------------
 
-    this.ws.on('message', (data: Buffer | string) => {
-      this.handleMessage(data);
-    });
-
-    this.ws.on('close', (code: number, reason: Buffer) => {
-      this.logger.info('WebSocket closed', { code, reason: reason.toString('utf8') });
-      this.cleanup();
-      if (!this.intentionalDisconnect) {
-        this.setState('disconnected');
-        this.scheduleReconnect();
-      }
-    });
-
-    this.ws.on('error', (err: Error) => {
-      this.logger.error('WebSocket error', { error: err.message });
-      this.setState('error');
-      this.scheduleReconnect();
-    });
+  /**
+   * Start the polling interval to fetch new messages from the queue.
+   */
+  private startPolling(): void {
+    this.stopPolling();
+    this.pollInterval = setInterval(() => {
+      this.poll();
+    }, RELAY.POLL_INTERVAL_MS);
   }
 
   /**
-   * Send the registration message to the relay server.
+   * Stop the polling interval.
    */
-  private sendRegister(): void {
-    if (!this.config) return;
-
-    const msg: RelayRegisterMessage = {
-      type: 'register',
-      role: this.config.role,
-      pairingCode: this.config.pairingCode,
-      token: this.config.token,
-    };
-    this.sendRaw(msg);
+  private stopPolling(): void {
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
   }
 
   /**
-   * Handle an incoming WebSocket message.
-   *
-   * @param data - Raw message data
+   * Poll the queue for new messages and process them.
    */
-  private handleMessage(data: Buffer | string): void {
-    const raw = typeof data === 'string' ? data : data.toString('utf8');
+  private async poll(): Promise<void> {
+    if (!this.config || !this.sessionId) return;
 
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
-    } catch {
-      this.logger.error('Received invalid JSON from relay');
-      return;
-    }
+      let url = `${this.config.apiUrl}/api/v1/relay/queue/poll?queueId=${this.sessionId}`;
+      if (this.lastSeenTimestamp) {
+        url += `&since=${encodeURIComponent(this.lastSeenTimestamp)}`;
+      }
 
-    if (!isRelayMessage(parsed)) {
-      this.logger.warn('Received unknown message type from relay');
-      return;
-    }
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.config.token}`,
+        },
+      });
 
-    const msg: RelayMessage = parsed;
+      if (!response.ok) {
+        this.logger.error('Poll request failed', { status: response.status });
+        return;
+      }
 
-    switch (msg.type) {
-      case 'registered':
-        this.sessionId = msg.sessionId;
-        this.setState('registered');
-        this.startHeartbeat();
-        this.logger.info('Registered with relay', { sessionId: msg.sessionId });
-        break;
+      const data = await response.json() as RelayQueuePollResponse;
 
-      case 'paired':
-        this.setState('paired');
-        this.logger.info('Paired with peer', { peerSessionId: msg.peerSessionId, peerRole: msg.peerRole });
-        this.emit('paired', msg.peerSessionId, msg.peerRole);
-        break;
+      if (!data.messages || data.messages.length === 0) return;
 
-      case 'relay':
-        this.handleRelayData(msg);
-        break;
+      const messageIds: string[] = [];
 
-      case 'heartbeat_ack':
-        // Heartbeat acknowledged — no action needed
-        break;
+      for (const msg of data.messages) {
+        messageIds.push(msg.id);
 
-      case 'peer_disconnected':
-        this.setState('registered');
-        this.logger.info('Peer disconnected', { peerSessionId: msg.peerSessionId });
-        this.emit('peerDisconnected', msg.peerSessionId);
-        break;
+        // Update last seen timestamp for pagination
+        if (!this.lastSeenTimestamp || msg.createdAt > this.lastSeenTimestamp) {
+          this.lastSeenTimestamp = msg.createdAt;
+        }
 
-      case 'error':
-        this.logger.error('Relay server error', { code: msg.code, message: msg.message });
-        this.setState('error');
-        this.scheduleReconnect();
-        break;
+        // Decrypt and emit the message
+        this.handleQueueMessage(msg.payload);
+      }
 
-      default:
-        this.logger.warn('Unhandled relay message type', { type: (msg as RelayMessage).type });
+      // Acknowledge processed messages
+      if (messageIds.length > 0) {
+        await this.ackMessages(messageIds);
+      }
+    } catch (err) {
+      this.logger.error('Poll cycle failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
   /**
-   * Handle an incoming relay data message by decrypting the payload.
+   * Handle a single queue message payload by decrypting it.
    *
-   * @param msg - Relay data message with encrypted payload
+   * @param payload - Encrypted payload string
    */
-  private handleRelayData(msg: RelayDataMessage): void {
+  private handleQueueMessage(payload: string): void {
     if (!this.encryptionKey) {
       this.logger.error('Cannot decrypt — no encryption key');
       return;
     }
 
     try {
-      const envelope = deserializeEnvelope(msg.payload);
+      const envelope = deserializeEnvelope(payload);
       const plaintext = decrypt(envelope, this.encryptionKey);
       this.emit('message', plaintext);
     } catch (err) {
-      this.logger.error('Failed to decrypt relay message', {
+      this.logger.error('Failed to decrypt queue message', {
         error: err instanceof Error ? err.message : String(err),
       });
-      // Log only — do not re-emit error to avoid uncaught exception crash
+    }
+  }
+
+  /**
+   * Acknowledge processed messages so they are not re-delivered.
+   *
+   * @param messageIds - Array of message IDs to acknowledge
+   */
+  private async ackMessages(messageIds: string[]): Promise<void> {
+    if (!this.config || !this.sessionId) return;
+
+    try {
+      await fetch(`${this.config.apiUrl}/api/v1/relay/queue/ack`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.token}`,
+        },
+        body: JSON.stringify({
+          queueId: this.sessionId,
+          messageIds,
+        }),
+      });
+    } catch (err) {
+      this.logger.error('Failed to acknowledge messages', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
   // -------------------------------------------------------------------------
-  // Heartbeat
+  // Send via HTTP (replaces WebSocket send)
   // -------------------------------------------------------------------------
 
   /**
-   * Start the heartbeat interval to keep the connection alive.
+   * Send an encrypted payload to the peer via HTTP POST.
+   *
+   * @param payload - Serialized encrypted envelope
    */
-  private startHeartbeat(): void {
-    this.stopHeartbeat();
-    this.heartbeatInterval = setInterval(() => {
-      const msg: RelayHeartbeatMessage = { type: 'heartbeat' };
-      this.sendRaw(msg);
-    }, RELAY.HEARTBEAT_INTERVAL_MS);
-  }
+  private async sendViaHttp(payload: string): Promise<void> {
+    if (!this.config || !this.peerQueueId) return;
 
-  /**
-   * Stop the heartbeat interval.
-   */
-  private stopHeartbeat(): void {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
+    try {
+      const response = await fetch(`${this.config.apiUrl}/api/v1/relay/queue/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.token}`,
+        },
+        body: JSON.stringify({
+          peerQueueId: this.peerQueueId,
+          payload,
+        }),
+      });
+
+      if (!response.ok) {
+        this.logger.error('Failed to send message', { status: response.status });
+      }
+    } catch (err) {
+      this.logger.error('Send request failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -403,6 +448,7 @@ export class RelayClientService extends EventEmitter {
 
   /**
    * Schedule a reconnection attempt with exponential backoff.
+   * Applied to HTTP register failures.
    */
   private scheduleReconnect(): void {
     if (this.intentionalDisconnect) return;
@@ -425,24 +471,13 @@ export class RelayClientService extends EventEmitter {
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.doConnect();
+      this.doRegister();
     }, delay);
   }
 
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
-
-  /**
-   * Send a raw relay message over the WebSocket.
-   *
-   * @param message - Relay message to send
-   */
-  private sendRaw(message: RelayMessage): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
-    }
-  }
 
   /**
    * Update the client state and emit a stateChange event.
@@ -457,24 +492,17 @@ export class RelayClientService extends EventEmitter {
   }
 
   /**
-   * Clean up timers and close the WebSocket connection.
+   * Clean up timers and reset connection state.
    */
   private cleanup(): void {
-    this.stopHeartbeat();
+    this.stopPolling();
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
 
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-        this.ws.close(1000, 'Client disconnecting');
-      }
-      this.ws = null;
-    }
-
     this.sessionId = null;
+    this.peerQueueId = null;
   }
 }

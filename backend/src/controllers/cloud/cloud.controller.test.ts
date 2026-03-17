@@ -62,6 +62,8 @@ jest.mock('../../services/cloud/relay-client.service.js', () => ({
       connect: mockRelayConnect,
       disconnect: mockRelayDisconnect,
       getState: mockRelayGetState,
+      listenerCount: jest.fn().mockReturnValue(0),
+      on: jest.fn(),
     }),
   },
 }));
@@ -148,7 +150,7 @@ describe('Cloud Controller', () => {
 
       expect(mockRelayConnect).toHaveBeenCalledWith(
         expect.objectContaining({
-          wsUrl: expect.stringContaining('relay'),
+          apiUrl: expect.any(String),
           pairingCode: expect.any(String),
           role: 'orchestrator',
           token: 'test-token',
@@ -232,7 +234,7 @@ describe('Cloud Controller', () => {
       await connectToCloud(req, res, mockNext);
 
       expect(mockConnect).toHaveBeenCalledWith(
-        expect.stringContaining('cloud.crewly'),
+        expect.stringContaining('crewly'),
         'test-token',
       );
     });

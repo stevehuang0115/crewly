@@ -32,7 +32,7 @@ const VALID_ROLES: ReadonlySet<string> = new Set(['orchestrator', 'agent']);
 
 /** Request body for POST /relay/connect. */
 interface ConnectRelayRequestBody {
-  wsUrl: string;
+  apiUrl: string;
   pairingCode: string;
   role: 'orchestrator' | 'agent';
   token: string;
@@ -42,21 +42,21 @@ interface ConnectRelayRequestBody {
 /**
  * POST /relay/connect
  *
- * Connect the local Crewly instance to a remote relay server as a client.
- * Initiates WebSocket connection, registration, and waits for pairing.
+ * Connect the local Crewly instance to the Cloud Message Queue.
+ * Initiates HTTP-based connection, registration, and waits for pairing.
  *
- * @param req - Request with body: { wsUrl, pairingCode, role, token, sharedSecret }
+ * @param req - Request with body: { apiUrl, pairingCode, role, token, sharedSecret }
  * @param res - Response with connection status
  * @param next - Next function for error propagation
  */
 export async function connectToRelay(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { wsUrl, pairingCode, role, token, sharedSecret } = req.body as Partial<ConnectRelayRequestBody>;
+    const { apiUrl, pairingCode, role, token, sharedSecret } = req.body as Partial<ConnectRelayRequestBody>;
 
-    if (!wsUrl || !pairingCode || !role || !token || !sharedSecret) {
+    if (!apiUrl || !pairingCode || !role || !token || !sharedSecret) {
       res.status(400).json({
         success: false,
-        error: 'Missing required parameters: wsUrl, pairingCode, role, token, sharedSecret',
+        error: 'Missing required parameters: apiUrl, pairingCode, role, token, sharedSecret',
       });
       return;
     }
@@ -80,10 +80,10 @@ export async function connectToRelay(req: Request, res: Response, next: NextFunc
       return;
     }
 
-    const config: RelayClientConfig = { wsUrl, pairingCode, role, token, sharedSecret };
+    const config: RelayClientConfig = { apiUrl, pairingCode, role, token, sharedSecret };
     client.connect(config);
 
-    logger.info('Relay client connecting', { wsUrl, pairingCode, role });
+    logger.info('Relay client connecting', { apiUrl, pairingCode, role });
 
     res.json({
       success: true,

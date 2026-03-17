@@ -1,8 +1,8 @@
 /**
- * Tests for Relay Client Service
+ * Tests for Relay Client Service (HTTP polling-based)
  *
  * Unit tests for the relay client singleton, state management,
- * connection lifecycle, error handling, and send validation.
+ * HTTP registration, polling, ack, send, and E2EE integration.
  *
  * @module services/cloud/relay-client.service.test
  */
@@ -27,45 +27,19 @@ jest.mock('../core/logger.service.js', () => ({
   },
 }));
 
-// Mock ws to avoid real WebSocket connections
-jest.mock('ws', () => {
-  const EventEmitter = require('events');
-  class MockWS extends EventEmitter {
-    constructor() {
-      super();
-      const mod = require('ws');
-      mod.__mockInstance = this;
-    }
-  }
-  MockWS.OPEN = 1;
-  MockWS.CONNECTING = 0;
-  MockWS.CLOSED = 3;
-  MockWS.prototype.readyState = 3;
-  MockWS.prototype.send = jest.fn();
-  MockWS.prototype.close = jest.fn(function() {
-    this.readyState = 3;
-  });
-  return { __esModule: true, default: MockWS, WebSocket: MockWS, __mockInstance: null };
-});
-
 // Mock crypto service
 jest.mock('./relay-crypto.service.js', () => ({
   generateSalt: () => Buffer.from('test-salt'),
   deriveKey: () => Buffer.from('test-key-32-bytes-long-enough!!!'),
-  encrypt: jest.fn(() => ({ iv: Buffer.alloc(12), ciphertext: Buffer.alloc(16), tag: Buffer.alloc(16) })),
+  encrypt: jest.fn(() => ({ iv: 'aXY=', ciphertext: 'Y2lwaGVy', authTag: 'dGFn' })),
   decrypt: jest.fn(() => 'decrypted-plaintext'),
   serializeEnvelope: jest.fn(() => 'serialized-envelope'),
-  deserializeEnvelope: jest.fn(() => ({ iv: Buffer.alloc(12), ciphertext: Buffer.alloc(16), tag: Buffer.alloc(16) })),
+  deserializeEnvelope: jest.fn(() => ({ iv: 'aXY=', ciphertext: 'Y2lwaGVy', authTag: 'dGFn' })),
 }));
 
-/**
- * Get the most recently created mock WebSocket instance.
- *
- * @returns The mock WS instance or null
- */
-function getMockWs() {
-  return require('ws').__mockInstance;
-}
+/** Captured fetch calls for assertion. */
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
 
 /**
  * Helper to create a valid relay client config for testing.
@@ -74,7 +48,7 @@ function getMockWs() {
  */
 function makeConfig(): RelayClientConfig {
   return {
-    wsUrl: 'ws://localhost:8787/relay',
+    apiUrl: 'https://api.crewly.test',
     pairingCode: 'test-pair-123',
     role: 'agent',
     token: 'test-token',
@@ -82,17 +56,51 @@ function makeConfig(): RelayClientConfig {
   };
 }
 
+/**
+ * Create a mock Response object for fetch.
+ *
+ * @param data - JSON body
+ * @param ok - Whether response is ok
+ * @param status - HTTP status code
+ * @returns Mock Response
+ */
+function mockResponse(data: unknown, ok = true, status = 200): Response {
+  return {
+    ok,
+    status,
+    json: jest.fn().mockResolvedValue(data),
+  } as unknown as Response;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
+/**
+ * Helper to flush pending microtasks without advancing fake timers.
+ * Allows async operations (fetch → json() → process → ack) to resolve
+ * without triggering the polling interval.
+ *
+ * Uses enough rounds to cover multi-step promise chains (register, poll, ack).
+ */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+}
+
 describe('RelayClientService', () => {
   beforeEach(() => {
     jest.useFakeTimers();
+    jest.clearAllMocks();
     RelayClientService.resetInstance();
+    mockFetch.mockReset();
   });
 
   afterEach(() => {
+    // Clean up: disconnect to stop polling before restoring real timers
+    try { RelayClientService.getInstance().disconnect(); } catch { /* ignore */ }
+    RelayClientService.resetInstance();
     jest.useRealTimers();
   });
 
@@ -143,111 +151,480 @@ describe('RelayClientService', () => {
   });
 
   // -----------------------------------------------------------------------
-  // WebSocket error handling (crash prevention)
+  // Connect → Register → Poll cycle
   // -----------------------------------------------------------------------
 
-  describe('WebSocket error handling', () => {
-    it('should not crash when ws emits error with no error listener', () => {
+  describe('connect and register', () => {
+    it('should POST to register endpoint with correct headers and body', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
       const client = RelayClientService.getInstance();
       client.connect(makeConfig());
 
-      const ws = getMockWs();
-      expect(ws).not.toBeNull();
+      // Allow the async doRegister to run
+      await flushMicrotasks();
 
-      // Simulate WebSocket error — should NOT throw uncaught exception
-      expect(() => {
-        ws.emit('error', new Error('Connection refused'));
-      }).not.toThrow();
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.crewly.test/api/v1/relay/queue/register',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer test-token',
+          }),
+          body: JSON.stringify({ role: 'agent', pairingCode: 'test-pair-123' }),
+        }),
+      );
     });
 
-    it('should transition to error state on WebSocket error', () => {
+    it('should set state to registered when no peerQueueId', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
       const client = RelayClientService.getInstance();
       const stateChanges: string[] = [];
       client.on('stateChange', (s) => stateChanges.push(s));
 
       client.connect(makeConfig());
-      const ws = getMockWs();
+      await flushMicrotasks();
 
-      ws.emit('error', new Error('502 Bad Gateway'));
-
-      expect(client.getState()).toBe('error');
-      expect(stateChanges).toContain('error');
+      expect(client.getState()).toBe('registered');
+      expect(client.getSessionId()).toBe('q-1');
+      expect(stateChanges).toContain('connecting');
+      expect(stateChanges).toContain('registered');
     });
 
-    it('should schedule reconnect after WebSocket error', () => {
+    it('should set state to paired and emit paired event when peerQueueId returned', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: 'q-peer' }),
+      );
+
       const client = RelayClientService.getInstance();
+      const pairedSpy = jest.fn();
+      client.on('paired', pairedSpy);
+
       client.connect(makeConfig());
-      const ws = getMockWs();
+      await flushMicrotasks();
 
-      ws.emit('error', new Error('ECONNREFUSED'));
-
-      // Advance timers — should attempt reconnect without crashing
-      expect(() => {
-        jest.advanceTimersByTime(10000);
-      }).not.toThrow();
+      expect(client.getState()).toBe('paired');
+      expect(pairedSpy).toHaveBeenCalledWith('q-peer', 'peer');
     });
 
-    it('should not emit error event on relay server error message', () => {
+    it('should not connect when already in connecting state', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
       const client = RelayClientService.getInstance();
       client.connect(makeConfig());
-      const ws = getMockWs();
+      await flushMicrotasks();
 
-      // Simulate open + registration
-      ws.readyState = 1; // OPEN
-      ws.emit('open');
+      // Now in registered state — calling connect again should be ignored
+      client.connect(makeConfig());
+      // Only one fetch call for the first register
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
 
-      const errorSpy = jest.fn();
-      client.on('error', errorSpy);
+  // -----------------------------------------------------------------------
+  // Polling
+  // -----------------------------------------------------------------------
 
-      // Simulate relay server error message
-      const errorMsg = JSON.stringify({ type: 'error', code: 'AUTH_FAILED', message: 'Invalid token' });
-      ws.emit('message', Buffer.from(errorMsg));
+  describe('polling', () => {
+    it('should poll for messages after registration', async () => {
+      // Register response
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
 
-      // Should NOT have emitted error event — instead transitions state
-      expect(errorSpy).not.toHaveBeenCalled();
-      expect(client.getState()).toBe('error');
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Set up poll response with no messages
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ messages: [] }),
+      );
+
+      // Advance by poll interval
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      // Should have made a GET poll request
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const pollCall = mockFetch.mock.calls[1];
+      expect(pollCall[0]).toContain('/api/v1/relay/queue/poll?queueId=q-1');
+      expect(pollCall[1]).toEqual(expect.objectContaining({ method: 'GET' }));
     });
 
-    it('should not emit error event on decryption failure', () => {
+    it('should decrypt and emit messages from poll response', async () => {
+      // Register
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: 'q-peer' }),
+      );
+
       const client = RelayClientService.getInstance();
+      const messageSpy = jest.fn();
+      client.on('message', messageSpy);
+
       client.connect(makeConfig());
-      const ws = getMockWs();
+      await flushMicrotasks();
 
-      ws.readyState = 1;
-      ws.emit('open');
+      // Poll response with messages
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          messages: [
+            { id: 'msg-1', payload: 'encrypted-data-1', createdAt: '2026-01-01T00:00:01Z' },
+            { id: 'msg-2', payload: 'encrypted-data-2', createdAt: '2026-01-01T00:00:02Z' },
+          ],
+        }),
+      );
+      // Ack response
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true }));
 
-      // Simulate registered + paired state
-      const regMsg = JSON.stringify({ type: 'registered', sessionId: 'sess-1' });
-      ws.emit('message', Buffer.from(regMsg));
-      const pairMsg = JSON.stringify({ type: 'paired', peerSessionId: 'peer-1', peerRole: 'orchestrator' });
-      ws.emit('message', Buffer.from(pairMsg));
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
 
-      // Make decrypt throw
-      const cryptoMod = require('./relay-crypto.service.js');
-      cryptoMod.deserializeEnvelope.mockImplementationOnce(() => { throw new Error('bad ciphertext'); });
-
-      const errorSpy = jest.fn();
-      client.on('error', errorSpy);
-
-      const relayMsg = JSON.stringify({ type: 'relay', payload: 'corrupted-data' });
-      expect(() => {
-        ws.emit('message', Buffer.from(relayMsg));
-      }).not.toThrow();
-
-      // Should NOT have emitted error event
-      expect(errorSpy).not.toHaveBeenCalled();
+      expect(messageSpy).toHaveBeenCalledTimes(2);
+      expect(messageSpy).toHaveBeenCalledWith('decrypted-plaintext');
     });
 
-    it('should handle close event without crashing', () => {
+    it('should acknowledge messages after processing', async () => {
+      // Register
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: 'q-peer' }),
+      );
+
       const client = RelayClientService.getInstance();
       client.connect(makeConfig());
-      const ws = getMockWs();
+      await flushMicrotasks();
 
-      expect(() => {
-        ws.emit('close', 1006, Buffer.from('abnormal closure'));
-      }).not.toThrow();
+      // Poll with messages
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          messages: [
+            { id: 'msg-1', payload: 'data', createdAt: '2026-01-01T00:00:01Z' },
+          ],
+        }),
+      );
+      // Ack response
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true }));
 
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      // Check ack call
+      const ackCall = mockFetch.mock.calls[2];
+      expect(ackCall[0]).toBe('https://api.crewly.test/api/v1/relay/queue/ack');
+      expect(JSON.parse(ackCall[1].body)).toEqual({
+        queueId: 'q-1',
+        messageIds: ['msg-1'],
+      });
+    });
+
+    it('should include since parameter after first batch', async () => {
+      // Register
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // First poll with messages
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          messages: [
+            { id: 'msg-1', payload: 'data', createdAt: '2026-01-01T00:00:05Z' },
+          ],
+        }),
+      );
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true })); // ack
+
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      // Second poll should include since parameter
+      mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
+
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      const secondPoll = mockFetch.mock.calls[3];
+      expect(secondPoll[0]).toContain('since=2026-01-01T00%3A00%3A05Z');
+    });
+
+    it('should stop polling on disconnect', async () => {
+      // Register
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      const callCountAfterRegister = mockFetch.mock.calls.length;
+
+      client.disconnect();
       expect(client.getState()).toBe('disconnected');
+
+      // Advance by multiple poll intervals — no new fetch calls
+      jest.advanceTimersByTime(20000);
+      await flushMicrotasks();
+
+      expect(mockFetch.mock.calls.length).toBe(callCountAfterRegister);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Send via HTTP
+  // -----------------------------------------------------------------------
+
+  describe('send', () => {
+    it('should POST encrypted payload to queue send endpoint', async () => {
+      // Register with peer
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: 'q-peer' }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Send message
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true }));
+
+      client.send('hello relay!');
+      await flushMicrotasks();
+
+      const sendCall = mockFetch.mock.calls[1];
+      expect(sendCall[0]).toBe('https://api.crewly.test/api/v1/relay/queue/send');
+      expect(sendCall[1]).toEqual(expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'Authorization': 'Bearer test-token',
+        }),
+      }));
+      expect(JSON.parse(sendCall[1].body)).toEqual({
+        peerQueueId: 'q-peer',
+        payload: 'serialized-envelope',
+      });
+    });
+
+    it('should throw when sending while not paired', () => {
+      const client = RelayClientService.getInstance();
+      expect(() => client.send('hello')).toThrow('Cannot send');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Exponential backoff on register failure
+  // -----------------------------------------------------------------------
+
+  describe('exponential backoff', () => {
+    it('should retry registration with increasing delay on failure', async () => {
+      // First register fails
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+      const client = RelayClientService.getInstance();
+      const stateChanges: string[] = [];
+      client.on('stateChange', (s) => stateChanges.push(s));
+
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      expect(client.getState()).toBe('error');
+
+      // Second attempt after base delay (1000ms)
+      mockFetch.mockRejectedValueOnce(new Error('Still down'));
+      jest.advanceTimersByTime(1000);
+      await flushMicrotasks();
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+
+      // Third attempt after 2000ms (2^1 * 1000)
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+      jest.advanceTimersByTime(2000);
+      await flushMicrotasks();
+
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(client.getState()).toBe('registered');
+    });
+
+    it('should give up after max reconnection attempts', async () => {
+      const client = RelayClientService.getInstance();
+
+      // Fail MAX_RECONNECT_ATTEMPTS + 1 times (initial + retries)
+      for (let i = 0; i <= 10; i++) {
+        mockFetch.mockRejectedValueOnce(new Error('down'));
+      }
+
+      client.connect(makeConfig());
+
+      // Run through all 10 retry attempts
+      for (let i = 0; i < 12; i++) {
+        jest.advanceTimersByTime(30000);
+        await flushMicrotasks();
+      }
+
+      expect(client.getState()).toBe('error');
+    });
+
+    it('should not reconnect after intentional disconnect', async () => {
+      // First register fails
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      client.disconnect();
+
+      // Advance past reconnect delay — no new fetch calls
+      const callCount = mockFetch.mock.calls.length;
+      jest.advanceTimersByTime(30000);
+      await flushMicrotasks();
+
+      expect(mockFetch.mock.calls.length).toBe(callCount);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // E2EE integration
+  // -----------------------------------------------------------------------
+
+  describe('E2EE', () => {
+    it('should use encrypt/serializeEnvelope when sending', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: 'q-peer' }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true }));
+      client.send('secret message');
+      await flushMicrotasks();
+
+      const cryptoMod = require('./relay-crypto.service.js');
+      expect(cryptoMod.encrypt).toHaveBeenCalledWith(
+        'secret message',
+        Buffer.from('test-key-32-bytes-long-enough!!!'),
+      );
+      expect(cryptoMod.serializeEnvelope).toHaveBeenCalled();
+    });
+
+    it('should use deserializeEnvelope/decrypt when receiving', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: 'q-peer' }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          messages: [{ id: 'm-1', payload: 'enc-payload', createdAt: '2026-01-01T00:00:00Z' }],
+        }),
+      );
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true })); // ack
+
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      const cryptoMod = require('./relay-crypto.service.js');
+      expect(cryptoMod.deserializeEnvelope).toHaveBeenCalledWith('enc-payload');
+      expect(cryptoMod.decrypt).toHaveBeenCalled();
+    });
+
+    it('should not crash on decryption failure', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: 'q-peer' }),
+      );
+
+      const client = RelayClientService.getInstance();
+      const errorSpy = jest.fn();
+      client.on('error', errorSpy);
+
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      const cryptoMod = require('./relay-crypto.service.js');
+      cryptoMod.deserializeEnvelope.mockImplementationOnce(() => {
+        throw new Error('bad ciphertext');
+      });
+
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          messages: [{ id: 'm-1', payload: 'corrupted', createdAt: '2026-01-01T00:00:00Z' }],
+        }),
+      );
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true })); // ack
+
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      // Should NOT have emitted error event — logged only
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // HTTP error handling
+  // -----------------------------------------------------------------------
+
+  describe('HTTP error handling', () => {
+    it('should handle non-ok register response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ error: 'Unauthorized' }, false, 401),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      expect(client.getState()).toBe('error');
+    });
+
+    it('should handle poll failure gracefully', async () => {
+      // Register ok
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Poll fails
+      mockFetch.mockRejectedValueOnce(new Error('timeout'));
+
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      // Client should still be in registered state (poll failure doesn't change state)
+      expect(client.getState()).toBe('registered');
+    });
+
+    it('should handle register response with missing fields', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true }), // missing queueId
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      expect(client.getState()).toBe('error');
     });
   });
 });

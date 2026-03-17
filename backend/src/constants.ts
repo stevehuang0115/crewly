@@ -997,29 +997,37 @@ export const CLOUD_CONSTANTS = {
 		CONNECTED: 'connected',
 		ERROR: 'error',
 	},
-	/** Relay-specific endpoints */
+	/** Relay-specific endpoints (Cloud Message Queue) */
 	RELAY_ENDPOINTS: {
-		/** Register a local instance as a relay node */
+		/** Register a local instance as a relay node (legacy) */
 		REGISTER: '/v1/relay/register',
-		/** Get relay status */
+		/** Get relay status (legacy) */
 		STATUS: '/v1/relay/status',
+		/** Queue: register and pair with peer */
+		QUEUE_REGISTER: '/api/v1/relay/queue/register',
+		/** Queue: send encrypted message to peer */
+		QUEUE_SEND: '/api/v1/relay/queue/send',
+		/** Queue: poll for incoming messages */
+		QUEUE_POLL: '/api/v1/relay/queue/poll',
+		/** Queue: acknowledge (delete) processed messages */
+		QUEUE_ACK: '/api/v1/relay/queue/ack',
+		/** Device discovery */
+		DEVICES: '/api/v1/relay/devices',
 	},
-	/** Relay WebSocket configuration */
+	/** Relay configuration (Cloud Message Queue — HTTP polling) */
 	RELAY: {
-		/** Default WebSocket relay port */
+		/** Default backend port (legacy, kept for local dev) */
 		DEFAULT_PORT: 8787,
-		/** Heartbeat interval sent by client (ms) */
-		HEARTBEAT_INTERVAL_MS: 30_000,
-		/** Server considers client dead after this many missed heartbeats */
-		HEARTBEAT_TIMEOUT_MS: 90_000,
-		/** Delay before attempting reconnection after disconnect (ms) */
+		/** Polling interval for queue messages (ms) */
+		POLL_INTERVAL_MS: 5_000,
+		/** Delay before attempting reconnection after register failure (ms) */
 		RECONNECT_BASE_DELAY_MS: 1_000,
 		/** Maximum reconnection delay with exponential backoff (ms) */
 		RECONNECT_MAX_DELAY_MS: 30_000,
 		/** Maximum number of reconnection attempts before giving up */
 		MAX_RECONNECT_ATTEMPTS: 10,
-		/** Timeout for the initial WebSocket handshake (ms) */
-		HANDSHAKE_TIMEOUT_MS: 10_000,
+		/** HTTP request timeout for queue operations (ms) */
+		REQUEST_TIMEOUT_MS: 10_000,
 		/** Maximum message payload size (1 MB) */
 		MAX_PAYLOAD_BYTES: 1_048_576,
 		/** E2EE key derivation iterations (PBKDF2) */
@@ -1032,8 +1040,8 @@ export const CLOUD_CONSTANTS = {
 		CIPHER_ALGORITHM: 'aes-256-gcm',
 		/** Key length (bytes) */
 		KEY_LENGTH: 32,
-		/** Default WebSocket relay URL for Cloud Relay auto-connect */
-		DEFAULT_WS_URL: 'wss://api.crewlyai.com/relay',
+		/** Default Cloud API URL for relay queue auto-connect */
+		DEFAULT_API_URL: 'https://crewlyai.com',
 	},
 } as const;
 

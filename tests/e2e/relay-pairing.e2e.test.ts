@@ -94,7 +94,7 @@ function createTestApp(): express.Application {
 
 /** Valid connect payload for an orchestrator node */
 const ORCHESTRATOR_CONNECT_PAYLOAD = {
-  wsUrl: 'wss://relay.crewlyai.com/ws',
+  apiUrl: 'https://crewlyai.com',
   pairingCode: 'ABC123',
   role: 'orchestrator',
   token: 'cloud-auth-token-123',
@@ -103,7 +103,7 @@ const ORCHESTRATOR_CONNECT_PAYLOAD = {
 
 /** Valid connect payload for an agent node */
 const AGENT_CONNECT_PAYLOAD = {
-  wsUrl: 'wss://relay.crewlyai.com/ws',
+  apiUrl: 'https://crewlyai.com',
   pairingCode: 'ABC123',
   role: 'agent',
   token: 'cloud-auth-token-789',
@@ -145,7 +145,7 @@ describe('Cloud Relay E2E Pairing Flow', () => {
       expect(connectRes.body.data.message).toBe('Relay client connection initiated');
       expect(mockRelayClient.connect).toHaveBeenCalledWith(
         expect.objectContaining({
-          wsUrl: ORCHESTRATOR_CONNECT_PAYLOAD.wsUrl,
+          apiUrl: ORCHESTRATOR_CONNECT_PAYLOAD.apiUrl,
           pairingCode: ORCHESTRATOR_CONNECT_PAYLOAD.pairingCode,
           role: 'orchestrator',
         }),
@@ -192,7 +192,7 @@ describe('Cloud Relay E2E Pairing Flow', () => {
     it('should reject connection with missing parameters', async () => {
       const res = await request(app)
         .post('/api/relay/connect')
-        .send({ wsUrl: 'wss://relay.test/ws' })
+        .send({ apiUrl: 'https://relay.test' })
         .expect(400);
 
       expect(res.body.success).toBe(false);
