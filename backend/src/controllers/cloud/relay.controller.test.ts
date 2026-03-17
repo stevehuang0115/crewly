@@ -38,11 +38,13 @@ jest.mock('../../services/cloud/relay-client.service.js', () => ({
 }));
 
 const mockFetchCloudDevices = jest.fn();
+const mockIsConnected = jest.fn();
 
 jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
     getInstance: () => ({
       fetchCloudDevices: mockFetchCloudDevices,
+      isConnected: mockIsConnected,
     }),
   },
 }));
@@ -376,6 +378,7 @@ describe('Relay Controller', () => {
         { sessionId: 'dev-1', role: 'orchestrator', state: 'paired', pairedWith: 'dev-2', registeredAt: '2026-01-01', lastHeartbeatAt: '2026-01-01', name: 'MacBook' },
         { sessionId: 'dev-2', role: 'agent', state: 'paired', pairedWith: 'dev-1', registeredAt: '2026-01-01', lastHeartbeatAt: '2026-01-01', name: 'Server' },
       ];
+      mockIsConnected.mockReturnValue(true);
       mockFetchCloudDevices.mockResolvedValue(devices);
       mockClientGetSessionId.mockReturnValue('dev-1');
 
@@ -400,6 +403,7 @@ describe('Relay Controller', () => {
       const devices = [
         { sessionId: 'dev-1', role: 'agent', state: 'waiting', pairedWith: null, registeredAt: '2026-01-01', lastHeartbeatAt: '2026-01-01' },
       ];
+      mockIsConnected.mockReturnValue(true);
       mockFetchCloudDevices.mockResolvedValue(devices);
       mockClientGetSessionId.mockReturnValue(null);
 
@@ -414,9 +418,24 @@ describe('Relay Controller', () => {
       });
     });
 
+    it('should return empty list when not connected to cloud', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      mockIsConnected.mockReturnValue(false);
+
+      await getCloudDevices(req, res, next);
+
+      expect(mockFetchCloudDevices).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: { devices: [], localSessionId: null },
+      });
+    });
+
     it('should return empty list when no devices', async () => {
       const req = mockReq();
       const res = mockRes();
+      mockIsConnected.mockReturnValue(true);
       mockFetchCloudDevices.mockResolvedValue([]);
       mockClientGetSessionId.mockReturnValue(null);
 
@@ -428,13 +447,20 @@ describe('Relay Controller', () => {
       });
     });
 
-    it('should call next on cloud fetch error', async () => {
+    it('should return 502 on cloud fetch error', async () => {
       const req = mockReq();
       const res = mockRes();
-      mockFetchCloudDevices.mockRejectedValue(new Error('Not connected'));
+      mockIsConnected.mockReturnValue(true);
+      mockFetchCloudDevices.mockRejectedValue(new Error('Cloud unreachable'));
 
       await getCloudDevices(req, res, next);
-      expect(next).toHaveBeenCalledWith(expect.any(Error));
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: expect.stringContaining('Cloud unreachable'),
+      });
+      expect(next).not.toHaveBeenCalled();
     });
   });
 });

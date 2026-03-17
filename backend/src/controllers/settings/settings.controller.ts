@@ -262,8 +262,12 @@ async function testApiKey(
           { method: 'GET', signal: AbortSignal.timeout(API_KEY_TEST_TIMEOUT_MS) }
         );
         if (response.ok) return { valid: true };
-        const body = await response.json().catch(() => ({}));
-        return { valid: false, error: (body as Record<string, unknown>)?.error?.toString() || `HTTP ${response.status}` };
+        const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+        const geminiError = body?.error;
+        const errorMsg = typeof geminiError === 'object' && geminiError !== null
+          ? (geminiError as Record<string, unknown>).message as string || `HTTP ${response.status}`
+          : typeof geminiError === 'string' ? geminiError : `HTTP ${response.status}`;
+        return { valid: false, error: errorMsg };
       }
       case 'anthropic': {
         const response = await fetch('https://api.anthropic.com/v1/messages', {

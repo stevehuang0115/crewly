@@ -232,9 +232,19 @@ export async function sendRelayMessage(req: Request, res: Response, next: NextFu
  * @param res - Response with cloud device list
  * @param next - Next function for error propagation
  */
-export async function getCloudDevices(req: Request, res: Response, next: NextFunction): Promise<void> {
+export async function getCloudDevices(req: Request, res: Response, _next: NextFunction): Promise<void> {
   try {
     const cloudClient = CloudClientService.getInstance();
+
+    // Check connection before attempting fetch
+    if (!cloudClient.isConnected()) {
+      res.json({
+        success: true,
+        data: { devices: [], localSessionId: null },
+      });
+      return;
+    }
+
     const devices = await cloudClient.fetchCloudDevices();
 
     // Mark the current device (this OSS instance)
@@ -254,9 +264,11 @@ export async function getCloudDevices(req: Request, res: Response, next: NextFun
       },
     });
   } catch (error) {
-    logger.error('Failed to fetch cloud devices', {
-      error: error instanceof Error ? error.message : String(error),
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error('Failed to fetch cloud devices', { error: message });
+    res.status(502).json({
+      success: false,
+      error: `Cloud device fetch failed: ${message}`,
     });
-    next(error);
   }
 }
