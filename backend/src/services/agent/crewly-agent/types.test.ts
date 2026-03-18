@@ -33,7 +33,7 @@ describe('Crewly Agent Types', () => {
 
   describe('CREWLY_AGENT_DEFAULTS', () => {
     it('should have sensible default values', () => {
-      expect(CREWLY_AGENT_DEFAULTS.MAX_STEPS).toBe(30);
+      expect(CREWLY_AGENT_DEFAULTS.MAX_STEPS).toBe(500);
       expect(CREWLY_AGENT_DEFAULTS.API_BASE_URL).toBe('http://localhost:8787');
       expect(CREWLY_AGENT_DEFAULTS.MAX_HISTORY_MESSAGES).toBe(100);
       expect(CREWLY_AGENT_DEFAULTS.COMPACTION_THRESHOLD).toBe(0.8);
@@ -50,7 +50,7 @@ describe('Crewly Agent Types', () => {
     it('should have a valid default security policy', () => {
       const policy = CREWLY_AGENT_DEFAULTS.SECURITY_POLICY;
       expect(policy.auditEnabled).toBe(true);
-      expect(policy.requireApproval).toEqual(['destructive']);
+      expect(policy.requireApproval).toEqual([]);
       expect(policy.blockedTools).toEqual([]);
       expect(policy.maxAuditEntries).toBe(500);
       expect(policy.readOnlyMode).toBe(false);

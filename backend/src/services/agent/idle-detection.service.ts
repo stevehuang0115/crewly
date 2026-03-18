@@ -15,6 +15,7 @@ import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
 import { ActivityMonitorService } from '../monitoring/activity-monitor.service.js';
 import { getSettingsService } from '../settings/index.js';
+import { getSessionBackendSync } from '../session/index.js';
 
 /**
  * Periodically scans active agents and suspends those that have been
@@ -177,25 +178,58 @@ export class IdleDetectionService {
 						// If we can't check workingStatus, proceed with normal idle check
 					}
 
-					this.logger.info('Agent idle timeout reached, suspending', {
-						sessionName: member.sessionName,
-						role: member.role,
-						idleMinutes: effectiveTimeoutMs / 60000,
-						agentStatus: member.agentStatus,
-					});
-
-					try {
-						await suspendService.suspendAgent(
-							member.sessionName,
-							team.id,
-							member.id,
-							member.role
-						);
-					} catch (err) {
-						this.logger.error('Failed to suspend idle agent', {
+					// #201: Agents stuck in 'started' state should be marked inactive,
+					// not suspended, since they never completed initialization
+					// and have no session to rehydrate.
+					if (isStarted) {
+						this.logger.warn('Agent stuck in started state, marking inactive', {
 							sessionName: member.sessionName,
-							error: err instanceof Error ? err.message : String(err),
+							role: member.role,
+							idleMinutes: effectiveTimeoutMs / 60000,
 						});
+
+						try {
+							// Kill PTY session if it exists
+							const backend = getSessionBackendSync();
+							if (backend && backend.sessionExists(member.sessionName)) {
+								await backend.killSession(member.sessionName);
+							}
+
+							// Clear activity tracker
+							PtyActivityTrackerService.getInstance().clearSession(member.sessionName);
+
+							// Mark as inactive
+							await StorageService.getInstance().updateAgentStatus(
+								member.sessionName,
+								CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as any
+							);
+						} catch (err) {
+							this.logger.error('Failed to mark stuck started agent as inactive', {
+								sessionName: member.sessionName,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
+					} else {
+						this.logger.info('Agent idle timeout reached, suspending', {
+							sessionName: member.sessionName,
+							role: member.role,
+							idleMinutes: effectiveTimeoutMs / 60000,
+							agentStatus: member.agentStatus,
+						});
+
+						try {
+							await suspendService.suspendAgent(
+								member.sessionName,
+								team.id,
+								member.id,
+								member.role
+							);
+						} catch (err) {
+							this.logger.error('Failed to suspend idle agent', {
+								sessionName: member.sessionName,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
 					}
 				}
 			}

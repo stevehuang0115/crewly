@@ -7,7 +7,7 @@ import { useProjects } from '../../hooks/useProjects';
 import { useTeams } from '../../hooks/useTeams';
 import { useSkills } from '../../hooks/useSkills';
 import { rolesService } from '../../services/roles.service';
-import type { Project, TeamMember as AppTeamMember } from '../../types';
+import { SUPPORTED_MODELS, type Project, type TeamMember as AppTeamMember } from '../../types';
 import type { RoleWithPrompt } from '../../types/role.types';
 import type { SkillSummary } from '../../types/skill.types';
 import { HierarchyModeConfig } from '../Hierarchy';
@@ -29,6 +29,7 @@ interface TeamMember {
   role: string;
   systemPrompt: string;
   runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'crewly-agent';
+  modelId?: string; // AI model override for crewly-agent runtime
   avatar?: string;
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
   excludedRoleSkills?: string[]; // Role skills to exclude for this specific member
@@ -485,6 +486,23 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
                           <option value="crewly-agent">Crewly Agent</option>
                         </FormSelect>
                       </div>
+
+                      {/* AI Model Selection — only for crewly-agent runtime */}
+                      {member.runtimeType === 'crewly-agent' && (
+                        <div>
+                          <FormLabel htmlFor={`model-id-${index}`}>AI Model</FormLabel>
+                          <FormSelect
+                            id={`model-id-${index}`}
+                            value={member.modelId || ''}
+                            onChange={(e) => handleMemberChange(member.id, 'modelId', e.target.value)}
+                          >
+                            <option value="">Default</option>
+                            {SUPPORTED_MODELS.map(m => (
+                              <option key={m.id} value={m.id}>{m.label}</option>
+                            ))}
+                          </FormSelect>
+                        </div>
+                      )}
 
                       {/* Skills Section */}
                       {member.role && (

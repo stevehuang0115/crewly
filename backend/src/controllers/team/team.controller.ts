@@ -1595,11 +1595,35 @@ export async function reportMemberReady(this: ApiContext, req: Request, res: Res
 }
 
 /**
+ * Tracks sessions that already received a handoff push this server lifecycle.
+ * Prevents duplicate pushes when register_self is called multiple times
+ * (e.g. on every heartbeat re-registration or conversation replay).
+ */
+const handoffPushedSessions = new Set<string>();
+
+/**
  * Fire-and-forget session handoff: pushes session summary and resume notification
  * to the orchestrator after registration. Used by both the orchestrator's own
  * registration path and the virtual-team-member path to avoid duplication.
+ *
+ * Only fires ONCE per session per server lifecycle. Subsequent register_self
+ * calls for the same session are skipped.
  */
+/**
+ * Clear the handoff guard for a session (call on session destroy/restart
+ * so the next registration triggers a fresh handoff push).
+ */
+export function clearHandoffGuard(sessionName: string): void {
+  handoffPushedSessions.delete(sessionName);
+}
+
 function fireSessionHandoff(agentRegistrationService: ApiContext['agentRegistrationService'], sessionName: string): void {
+  if (handoffPushedSessions.has(sessionName)) {
+    logger.debug('Skipping duplicate session handoff (already pushed this lifecycle)', { sessionName });
+    return;
+  }
+  handoffPushedSessions.add(sessionName);
+
   import('../../services/session/session-handoff.service.js').then(({ SessionHandoffService }) => {
     const handoff = SessionHandoffService.getInstance();
     handoff.pushSessionSummary(agentRegistrationService, sessionName).catch(err => {

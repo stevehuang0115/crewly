@@ -561,6 +561,7 @@ Just type naturally to chat with the orchestrator!`;
               },
               userId: context?.userId,
               channelId: context?.channelId,
+              threadTs: context?.threadTs,
             },
           });
         } catch (enqueueErr) {

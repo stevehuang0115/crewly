@@ -322,7 +322,25 @@ export class SkillCatalogService {
         { absolute: true, setBasePath: true },
       );
 
-      const skills = [...bundledSkills, ...marketplaceSkills];
+      // Scan addon-installed skills at ~/.crewly/skills/agent/ (e.g. from crewly-pro)
+      const addonSkillsPath = path.join(os.homedir(), '.crewly', 'skills', 'agent');
+      const addonSkills = await this.scanSkillDirectoriesAt(
+        addonSkillsPath,
+        { absolute: true, setBasePath: true },
+      );
+
+      // Merge: addon skills take precedence over bundled on name conflict
+      const skillsByName = new Map<string, typeof bundledSkills[number]>();
+      for (const s of bundledSkills) {
+        skillsByName.set(s.definition.name, s);
+      }
+      for (const s of marketplaceSkills) {
+        skillsByName.set(s.definition.name, s);
+      }
+      for (const s of addonSkills) {
+        skillsByName.set(s.definition.name, s);
+      }
+      const skills = Array.from(skillsByName.values());
 
       if (skills.length === 0) {
         this.logger.warn('No agent skills found during catalog generation');
@@ -353,6 +371,7 @@ export class SkillCatalogService {
         categoryCount,
         catalogPath,
         marketplaceSkillCount: marketplaceSkills.length,
+        addonSkillCount: addonSkills.length,
       });
 
       return {

@@ -20,7 +20,7 @@ import type {
   SlackBlock,
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
-import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS } from '../../constants.js';
+import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 
 /**
@@ -192,6 +192,17 @@ export class SlackService extends EventEmitter {
    */
   private recentMessageFingerprints: Map<string, number> = new Map();
 
+  /** Whether a reconnection attempt is currently in progress */
+  private reconnecting = false;
+  /** Timer handle for the reconnection grace period */
+  private reconnectGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Timer handle for the periodic health check */
+  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+  /** Current consecutive reconnection attempt count */
+  private reconnectAttempts = 0;
+  /** Whether the service has been intentionally shut down (skip auto-reconnect) */
+  private intentionalDisconnect = false;
+
   /**
    * Initialize the Slack service with configuration
    *
@@ -200,6 +211,8 @@ export class SlackService extends EventEmitter {
    */
   async initialize(config: SlackConfig): Promise<void> {
     this.config = config;
+    this.intentionalDisconnect = false;
+    this.reconnectAttempts = 0;
 
     try {
       // Dynamic import of @slack/bolt (CJS module requires default import handling)
@@ -356,15 +369,18 @@ export class SlackService extends EventEmitter {
         this.status.lastErrorAt = new Date().toISOString();
         this.logger.warn('Socket Mode disconnected');
         this.emit('disconnected');
+        this.scheduleReconnect();
       });
 
       socketClient.on('reconnecting', () => {
         this.status.connected = false;
-        this.logger.info('Socket Mode reconnecting...');
+        this.logger.info('Socket Mode reconnecting (Bolt built-in)...');
       });
 
       socketClient.on('connected', () => {
         this.status.connected = true;
+        this.reconnectAttempts = 0;
+        this.cancelReconnectGrace();
         this.logger.info('Socket Mode reconnected');
         this.emit('connected');
       });
@@ -374,12 +390,166 @@ export class SlackService extends EventEmitter {
         if (this.status.connected) {
           this.status.connected = false;
           this.logger.warn('Socket Mode WebSocket closed, awaiting reconnect...');
+          this.scheduleReconnect();
         }
       });
     } catch (err) {
       this.logger.warn('Failed to set up connection monitoring', {
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+
+    // Start periodic health check
+    this.startHealthCheck();
+  }
+
+  /**
+   * Start a periodic health check that verifies the Socket Mode connection
+   * is alive and triggers reconnection if it has silently died.
+   */
+  private startHealthCheck(): void {
+    this.stopHealthCheck();
+    this.healthCheckTimer = setInterval(() => {
+      if (this.intentionalDisconnect) return;
+      if (!this.status.connected && !this.reconnecting) {
+        this.logger.warn('Health check: Socket Mode not connected and no reconnect in progress — triggering reconnect');
+        this.attemptReconnect();
+      }
+    }, SLACK_RECONNECT_CONSTANTS.HEALTH_CHECK_INTERVAL_MS);
+    // Allow Node to exit even if health check timer is still active
+    if (this.healthCheckTimer && typeof this.healthCheckTimer === 'object' && 'unref' in this.healthCheckTimer) {
+      this.healthCheckTimer.unref();
+    }
+  }
+
+  /**
+   * Stop the periodic health check timer.
+   */
+  private stopHealthCheck(): void {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+  }
+
+  /**
+   * Schedule a reconnection attempt after a grace period.
+   * The grace period gives Bolt's built-in reconnect a chance to recover first.
+   * If the connection comes back within the grace period, the reconnect is cancelled.
+   */
+  private scheduleReconnect(): void {
+    if (this.intentionalDisconnect || this.reconnecting || this.reconnectGraceTimer) return;
+
+    this.logger.info('Scheduling reconnect after grace period', {
+      gracePeriodMs: SLACK_RECONNECT_CONSTANTS.GRACE_PERIOD_MS,
+    });
+
+    this.reconnectGraceTimer = setTimeout(() => {
+      this.reconnectGraceTimer = null;
+      if (!this.status.connected && !this.intentionalDisconnect) {
+        this.logger.warn('Grace period expired, Bolt reconnect did not recover — starting manual reconnect');
+        this.attemptReconnect();
+      }
+    }, SLACK_RECONNECT_CONSTANTS.GRACE_PERIOD_MS);
+  }
+
+  /**
+   * Cancel the reconnection grace period timer.
+   */
+  private cancelReconnectGrace(): void {
+    if (this.reconnectGraceTimer) {
+      clearTimeout(this.reconnectGraceTimer);
+      this.reconnectGraceTimer = null;
+    }
+  }
+
+  /**
+   * Attempt to reconnect by tearing down the current Bolt app and
+   * re-initializing from scratch with the saved config.
+   * Uses exponential backoff between attempts.
+   */
+  private async attemptReconnect(): Promise<void> {
+    if (this.reconnecting || this.intentionalDisconnect || !this.config) return;
+
+    const maxAttempts = SLACK_RECONNECT_CONSTANTS.MAX_ATTEMPTS;
+    if (maxAttempts > 0 && this.reconnectAttempts >= maxAttempts) {
+      this.logger.error('Max reconnection attempts reached, giving up', {
+        attempts: this.reconnectAttempts,
+        maxAttempts,
+      });
+      return;
+    }
+
+    this.reconnecting = true;
+    this.reconnectAttempts++;
+
+    const delay = Math.min(
+      SLACK_RECONNECT_CONSTANTS.INITIAL_DELAY_MS * Math.pow(SLACK_RECONNECT_CONSTANTS.BACKOFF_MULTIPLIER, this.reconnectAttempts - 1),
+      SLACK_RECONNECT_CONSTANTS.MAX_DELAY_MS,
+    );
+
+    this.logger.info('Reconnecting to Slack Socket Mode', {
+      attempt: this.reconnectAttempts,
+      delayMs: delay,
+    });
+
+    await new Promise(resolve => setTimeout(resolve, delay));
+
+    // Bail out if we reconnected or intentionally disconnected while waiting
+    if (this.status.connected || this.intentionalDisconnect) {
+      this.reconnecting = false;
+      return;
+    }
+
+    try {
+      // Tear down existing app
+      if (this.app) {
+        try {
+          await this.app.stop();
+        } catch {
+          // Ignore teardown errors
+        }
+        this.app = null;
+        this.client = null;
+      }
+
+      // Re-initialize
+      const boltModule = await import('@slack/bolt') as any;
+      const App = boltModule.App ?? boltModule.default?.App;
+      const LogLevel = boltModule.LogLevel ?? boltModule.default?.LogLevel;
+
+      this.app = new App({
+        token: this.config.botToken,
+        appToken: this.config.appToken,
+        signingSecret: this.config.signingSecret,
+        socketMode: this.config.socketMode,
+        logLevel: LogLevel.INFO,
+      }) as unknown as SlackApp;
+
+      this.client = this.app.client;
+      this.setupEventHandlers();
+
+      await this.app.start();
+      this.status.connected = true;
+      this.status.socketMode = true;
+      this.reconnectAttempts = 0;
+      this.reconnecting = false;
+
+      this.setupConnectionMonitoring();
+      this.emit('connected');
+      this.logger.info('Successfully reconnected to Slack Socket Mode');
+    } catch (error) {
+      this.reconnecting = false;
+      this.status.lastError = `Reconnect failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.status.lastErrorAt = new Date().toISOString();
+      this.logger.error('Reconnection attempt failed', {
+        attempt: this.reconnectAttempts,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Schedule next attempt — the health check will also retry if this doesn't fire
+      if (!this.intentionalDisconnect) {
+        this.scheduleReconnect();
+      }
     }
   }
 
@@ -790,6 +960,9 @@ export class SlackService extends EventEmitter {
    * Disconnect from Slack
    */
   async disconnect(): Promise<void> {
+    this.intentionalDisconnect = true;
+    this.cancelReconnectGrace();
+    this.stopHealthCheck();
     if (this.app) {
       await this.app.stop();
       this.status.connected = false;

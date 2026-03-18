@@ -1,0 +1,192 @@
+/**
+ * Crewly Remote Browser — Content Script
+ *
+ * Injected into all pages. Provides DOM access helpers
+ * that can be invoked from the background service worker
+ * via chrome.scripting.executeScript or message passing.
+ *
+ * Features:
+ * - Console message capture (buffers last 50 log/warn/error messages)
+ * - Visual indicators when AI is controlling the tab
+ */
+
+// ── Console Message Capture ──────────────────────────────────────────────────
+
+const _crewlyConsoleBuffer = [];
+const _CONSOLE_BUFFER_MAX = 50;
+
+/**
+ * Hook a console method to capture messages into the buffer.
+ * @param {string} level - Console level (log, warn, error)
+ */
+function _hookConsole(level) {
+  const original = console[level].bind(console);
+  console[level] = (...args) => {
+    _crewlyConsoleBuffer.push({
+      level,
+      message: args.map(a => {
+        try { return typeof a === 'string' ? a : JSON.stringify(a); }
+        catch { return String(a); }
+      }).join(' '),
+      timestamp: Date.now(),
+    });
+    // Keep buffer bounded
+    while (_crewlyConsoleBuffer.length > _CONSOLE_BUFFER_MAX) {
+      _crewlyConsoleBuffer.shift();
+    }
+    original(...args);
+  };
+}
+
+_hookConsole('log');
+_hookConsole('warn');
+_hookConsole('error');
+
+// ── Visual Control Indicators ────────────────────────────────────────────────
+
+const CREWLY_PURPLE = '#7c3aed';
+const INDICATOR_ID = '__crewly-ai-indicator';
+const BORDER_ID = '__crewly-ai-border';
+
+/** Action labels for the floating panel */
+const ACTION_LABELS = {
+  navigate: 'Navigating...',
+  screenshot: 'Taking screenshot...',
+  readText: 'Reading page...',
+  click: 'Clicking...',
+  fill: 'Filling input...',
+  type: 'Typing...',
+  scroll: 'Scrolling...',
+  hover: 'Hovering...',
+  pressKey: 'Pressing key...',
+  executeScript: 'Running script...',
+  getElement: 'Inspecting element...',
+  waitForSelector: 'Waiting for element...',
+  getCookies: 'Reading cookies...',
+  getLocalStorage: 'Reading storage...',
+  getConsoleMessages: 'Reading console...',
+  fullPageScreenshot: 'Full page capture...',
+  getTabs: 'Listing tabs...',
+};
+
+/**
+ * Show the AI control indicator — glowing border + floating panel.
+ * @param {string} action - Tool name being executed
+ */
+function showControlIndicator(action) {
+  hideControlIndicator(); // Remove any existing indicator first
+
+  // ── Glowing border overlay with pulsing animation ──
+  const border = document.createElement('div');
+  border.id = BORDER_ID;
+  Object.assign(border.style, {
+    position: 'fixed',
+    top: '0',
+    left: '0',
+    right: '0',
+    bottom: '0',
+    pointerEvents: 'none',
+    zIndex: '2147483646',
+    border: `3px solid ${CREWLY_PURPLE}`,
+    boxShadow: `inset 0 0 30px rgba(124, 58, 237, 0.25), 0 0 30px rgba(124, 58, 237, 0.2)`,
+    animation: '__crewlyBorderPulse 2s ease-in-out infinite',
+  });
+  document.documentElement.appendChild(border);
+
+  // ── Floating panel ──
+  const panel = document.createElement('div');
+  panel.id = INDICATOR_ID;
+
+  const label = ACTION_LABELS[action] || `${action}...`;
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div style="
+        width:8px;height:8px;border-radius:50%;
+        background:${CREWLY_PURPLE};
+        animation:__crewlyPulse 1.5s ease-in-out infinite;
+      "></div>
+      <span style="font-weight:600;color:#e2e8f0;font-size:12px;">Crewly is controlling this page</span>
+      <span style="color:#94a3b8;font-size:11px;">· ${label}</span>
+    </div>
+  `;
+
+  Object.assign(panel.style, {
+    position: 'fixed',
+    bottom: '16px',
+    right: '16px',
+    zIndex: '2147483647',
+    background: 'rgba(15, 23, 42, 0.92)',
+    backdropFilter: 'blur(8px)',
+    border: `1px solid rgba(124, 58, 237, 0.4)`,
+    borderRadius: '10px',
+    padding: '8px 14px',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    boxShadow: '0 4px 24px rgba(0,0,0,0.3), 0 0 12px rgba(124, 58, 237, 0.15)',
+    pointerEvents: 'none',
+    transition: 'opacity 0.3s ease',
+  });
+
+  // Inject keyframe animation if not already present
+  if (!document.getElementById('__crewlyStyles')) {
+    const style = document.createElement('style');
+    style.id = '__crewlyStyles';
+    style.textContent = `
+      @keyframes __crewlyPulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.5; transform: scale(0.85); }
+      }
+      @keyframes __crewlyBorderPulse {
+        0%, 100% {
+          border-color: rgba(124, 58, 237, 1);
+          box-shadow: inset 0 0 30px rgba(124, 58, 237, 0.25), 0 0 30px rgba(124, 58, 237, 0.2);
+        }
+        50% {
+          border-color: rgba(124, 58, 237, 0.5);
+          box-shadow: inset 0 0 15px rgba(124, 58, 237, 0.1), 0 0 15px rgba(124, 58, 237, 0.08);
+        }
+      }
+    `;
+    document.documentElement.appendChild(style);
+  }
+
+  document.documentElement.appendChild(panel);
+}
+
+/**
+ * Hide the AI control indicator.
+ */
+function hideControlIndicator() {
+  const border = document.getElementById(BORDER_ID);
+  const panel = document.getElementById(INDICATOR_ID);
+  if (border) border.remove();
+  if (panel) panel.remove();
+}
+
+// ── Message handler (from background script) ────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'getConsoleMessages') {
+    const messages = [..._crewlyConsoleBuffer];
+    if (msg.clear) {
+      _crewlyConsoleBuffer.length = 0;
+    }
+    sendResponse({ messages });
+    return false;
+  }
+
+  if (msg.type === 'showIndicator') {
+    showControlIndicator(msg.action || 'unknown');
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (msg.type === 'hideIndicator') {
+    hideControlIndicator();
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  return false;
+});
+
+console.log('[crewly] Content script loaded on', window.location.href);

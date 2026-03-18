@@ -12,6 +12,8 @@ import {
   TIMING_CONSTANTS,
   MESSAGE_CONSTANTS,
   ENV_CONSTANTS,
+  SERVER_CONSTANTS,
+  AUDITOR_CONSTANTS,
   type AgentStatus,
   type WorkingStatus,
   type AgentRole,
@@ -461,9 +463,31 @@ describe('Crewly Cross-Domain Constants', () => {
     test('timeout values should be reasonable', () => {
       // Agent setup timeout should be longer than Claude init timeout
       expect(TIMING_CONSTANTS.TIMEOUTS.AGENT_SETUP).toBeGreaterThan(TIMING_CONSTANTS.TIMEOUTS.CLAUDE_INIT);
-      
+
       // Task completion timeout should be longest
       expect(TIMING_CONSTANTS.TIMEOUTS.TASK_COMPLETION).toBeGreaterThan(TIMING_CONSTANTS.TIMEOUTS.AGENT_SETUP);
+    });
+  });
+
+  describe('SERVER_CONSTANTS', () => {
+    test('heap size bounds are valid', () => {
+      expect(SERVER_CONSTANTS.MIN_HEAP_SIZE_MB).toBeGreaterThan(0);
+      expect(SERVER_CONSTANTS.MAX_HEAP_SIZE_MB).toBeGreaterThan(SERVER_CONSTANTS.MIN_HEAP_SIZE_MB);
+    });
+
+    test('heap memory ratio is between 0 and 1', () => {
+      expect(SERVER_CONSTANTS.HEAP_MEMORY_RATIO).toBeGreaterThan(0);
+      expect(SERVER_CONSTANTS.HEAP_MEMORY_RATIO).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe('AUDITOR_CONSTANTS', () => {
+    test('ENABLED_BY_DEFAULT is false', () => {
+      expect(AUDITOR_CONSTANTS.ENABLED_BY_DEFAULT).toBe(false);
+    });
+
+    test('ENV_VAR is defined', () => {
+      expect(AUDITOR_CONSTANTS.ENV_VAR).toBe('CREWLY_ENABLE_AUDITOR');
     });
   });
 });

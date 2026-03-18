@@ -68,6 +68,10 @@ export const CREWLY_CONSTANTS = {
 		SESSION_LOGS_DIR: 'sessions',
 		/** Bug reports directory */
 		BUG_REPORTS_DIR: 'bug-reports',
+		/** Skills directory (under CREWLY_HOME) */
+		SKILLS_DIR: 'skills',
+		/** Agent skills catalog file (under SKILLS_DIR) */
+		SKILLS_CATALOG_FILE: 'AGENT_SKILLS_CATALOG.md',
 	},
 
 	/**
@@ -871,6 +875,35 @@ export const AGENT_SUSPEND_CONSTANTS = {
 	STARTED_AGENT_IDLE_TIMEOUT_MINUTES: 15,
 } as const;
 
+// ========================= SERVER PROCESS CONSTANTS =========================
+
+/**
+ * Server process configuration for Node.js heap sizing and resource management.
+ * Used by CLI start command to dynamically allocate memory based on system RAM.
+ */
+export const SERVER_CONSTANTS = {
+	/** Minimum heap size in MB (floor for very low-RAM machines) */
+	MIN_HEAP_SIZE_MB: 256,
+	/** Maximum heap size in MB (cap for high-RAM machines) */
+	MAX_HEAP_SIZE_MB: 2048,
+	/** Fraction of total system RAM to allocate to Node.js heap */
+	HEAP_MEMORY_RATIO: 0.4,
+} as const;
+
+// ========================= AUDITOR SYSTEM =========================
+
+/**
+ * Auditor feature-flag configuration.
+ * Controls whether the autonomous auditor agent (Claude Code PTY session)
+ * is started at boot. Disabled by default to save memory on small machines.
+ */
+export const AUDITOR_CONSTANTS = {
+	/** Whether the auditor is enabled by default (can be overridden by CREWLY_ENABLE_AUDITOR env) */
+	ENABLED_BY_DEFAULT: false,
+	/** Environment variable name to enable/disable the auditor */
+	ENV_VAR: 'CREWLY_ENABLE_AUDITOR',
+} as const;
+
 // ========================= VERSION CHECK SYSTEM =========================
 
 /**
@@ -972,6 +1005,63 @@ export const TEMPLATE_MARKETPLACE_CONSTANTS = {
 	MAX_TAGS: 20,
 	/** Maximum tag length */
 	MAX_TAG_LENGTH: 50,
+} as const;
+
+// ========================= ADDON SYSTEM CONSTANTS =========================
+
+/**
+ * Addon system configuration for loading and managing Crewly addons.
+ * Addons are installed to ~/.crewly/addons/ and loaded on server startup.
+ * Each addon has a manifest.json and a dist/ directory with compiled code.
+ */
+export const ADDON_CONSTANTS = {
+	/**
+	 * File system paths for addon management
+	 */
+	PATHS: {
+		/** Directory name under ~/.crewly/ for installed addons */
+		ADDONS_DIR: 'addons',
+		/** Directory name for addon downloads/tarballs */
+		DOWNLOADS_DIR: 'downloads',
+	},
+
+	/**
+	 * Addon manifest configuration
+	 */
+	MANIFEST_FILE: 'manifest.json',
+
+	/**
+	 * Default entrypoint file within an addon's directory
+	 */
+	DEFAULT_ENTRYPOINT: 'dist/index.js',
+
+	/**
+	 * Cloud API configuration for downloading Pro addons
+	 */
+	CLOUD_API: {
+		/** Base URL for the Crewly Cloud API */
+		BASE_URL: 'https://api.crewlyai.com/v1',
+		/** Endpoint path for addon downloads */
+		DOWNLOAD_ENDPOINT: '/addons',
+	},
+
+	/**
+	 * Crewly Pro addon identifiers
+	 */
+	PRO_ADDON: {
+		/** Pro addon package name */
+		NAME: 'crewly-pro',
+		/** Default tarball filename */
+		DEFAULT_TARBALL: 'crewly-pro.tar.gz',
+	},
+
+	/**
+	 * Addon loading timeouts
+	 */
+	TIMEOUTS: {
+		/** Maximum time to load a single addon (10 seconds) */
+		LOAD_TIMEOUT_MS: 10_000,
+	},
 } as const;
 
 /** Shorthand for debounce value */

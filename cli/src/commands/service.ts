@@ -17,7 +17,7 @@
  *   The service sources the user's shell profile for NVM/PATH consistency.
  */
 
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -111,6 +111,10 @@ fi`;
 
 interface ServiceOptions {
 	force?: boolean;
+	session?: string;
+	app?: boolean;
+	lines?: string;
+	follow?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,10 +144,19 @@ export async function serviceCommand(
 		case 'status':
 			await serviceStatus();
 			break;
+		case 'restart':
+			await restartService();
+			break;
+		case 'stop':
+			await stopService();
+			break;
+		case 'logs':
+			await serviceLogs(options);
+			break;
 		default:
 			console.log(chalk.red(`Unknown action: ${action}`));
 			console.log(
-				chalk.gray('Usage: crewly service <install|uninstall|status>'),
+				chalk.gray('Usage: crewly service <install|uninstall|status|restart|stop|logs>'),
 			);
 			process.exit(1);
 	}
@@ -749,6 +762,264 @@ async function migrateLegacyLaunchAgent(): Promise<void> {
 		} catch {
 			// Non-critical
 		}
+	}
+}
+
+// ===========================================================================
+// Restart
+// ===========================================================================
+
+/**
+ * Restarts the Crewly service by killing the node process.
+ *
+ * On macOS, the wrapper's `while true` loop detects the exit and
+ * automatically restarts the node process after 5 seconds.
+ * On Linux, uses `systemctl --user restart`.
+ */
+async function restartService(): Promise<void> {
+	assertSupportedPlatform();
+
+	if (process.platform === 'linux') {
+		try {
+			await execAsync(`systemctl --user restart ${SYSTEMD_UNIT_NAME}`);
+			console.log(chalk.green('Crewly service restarted.'));
+		} catch {
+			console.log(chalk.red('Failed to restart service via systemctl.'));
+			console.log(chalk.gray(`  Try: systemctl --user restart ${SYSTEMD_UNIT_NAME}`));
+		}
+		return;
+	}
+
+	// macOS: kill the node process; the wrapper loop auto-restarts in 5s
+	const pid = getRunningPid();
+	if (!pid) {
+		console.log(chalk.yellow('Crewly service is not running.'));
+		return;
+	}
+
+	try {
+		process.kill(pid, 'SIGTERM');
+		console.log(chalk.green(`Sent SIGTERM to node process (PID ${pid}).`));
+		console.log(chalk.gray('The service wrapper will auto-restart in ~5 seconds.'));
+	} catch {
+		console.log(chalk.red('Failed to send signal to the process.'));
+	}
+}
+
+// ===========================================================================
+// Stop
+// ===========================================================================
+
+/**
+ * Stops the Crewly service completely, including the restart wrapper.
+ *
+ * On macOS, kills both the node process and its parent bash wrapper
+ * (the `while true` loop) to prevent automatic restart.
+ * On Linux, uses `systemctl --user stop`.
+ */
+async function stopService(): Promise<void> {
+	assertSupportedPlatform();
+
+	if (process.platform === 'linux') {
+		try {
+			await execAsync(`systemctl --user stop ${SYSTEMD_UNIT_NAME}`);
+			console.log(chalk.green('Crewly service stopped.'));
+		} catch {
+			console.log(chalk.red('Failed to stop service via systemctl.'));
+			console.log(chalk.gray(`  Try: systemctl --user stop ${SYSTEMD_UNIT_NAME}`));
+		}
+		if (fs.existsSync(PID_FILE)) {
+			fs.unlinkSync(PID_FILE);
+		}
+		return;
+	}
+
+	// macOS: kill node process, then kill parent wrapper
+	const pid = getRunningPid();
+	if (!pid) {
+		console.log(chalk.yellow('Crewly service is not running.'));
+		return;
+	}
+
+	// Find the parent PID (the bash while-true wrapper)
+	let parentPid: number | null = null;
+	try {
+		const { stdout } = await execAsync(`ps -o ppid= -p ${pid}`);
+		const ppid = parseInt(stdout.trim(), 10);
+		if (!isNaN(ppid) && ppid > 1) {
+			parentPid = ppid;
+		}
+	} catch {
+		// Could not determine parent — will just kill node process
+	}
+
+	// Kill the node process first
+	try {
+		process.kill(pid, 'SIGTERM');
+		console.log(chalk.green(`  Stopped node process (PID ${pid})`));
+	} catch {
+		console.log(chalk.gray('  Node process was already stopped'));
+	}
+
+	// Kill the parent wrapper to prevent restart
+	if (parentPid) {
+		try {
+			process.kill(parentPid, 'SIGTERM');
+			console.log(chalk.green(`  Stopped wrapper process (PID ${parentPid})`));
+		} catch {
+			console.log(chalk.gray('  Wrapper process was already stopped'));
+		}
+	} else {
+		console.log(chalk.yellow('  Could not find wrapper process. The service may auto-restart.'));
+		console.log(chalk.gray('  To fully stop, close the Terminal.app tab running crewly-start.command'));
+	}
+
+	// Clean up PID file
+	if (fs.existsSync(PID_FILE)) {
+		fs.unlinkSync(PID_FILE);
+	}
+
+	console.log(chalk.green('Crewly service stopped.'));
+}
+
+// ===========================================================================
+// Logs
+// ===========================================================================
+
+/**
+ * Displays or follows Crewly service logs.
+ *
+ * By default shows the last N lines of the main service log.
+ * Use --session <name> for agent session logs, --app for today's app log,
+ * and --follow for real-time tailing.
+ *
+ * @param options - Log viewing options (session, app, follow, lines)
+ */
+async function serviceLogs(options: ServiceOptions): Promise<void> {
+	const numLines = parseInt(options.lines || '50', 10);
+
+	let logFile: string;
+
+	if (options.session) {
+		logFile = resolveSessionLogFile(options.session);
+	} else if (options.app) {
+		const today = new Date().toISOString().split('T')[0];
+		logFile = path.join(LOG_DIR, `crewly-${today}.log`);
+		if (!fs.existsSync(logFile)) {
+			console.log(chalk.red(`Today's app log not found: crewly-${today}.log`));
+			listAvailableAppLogs();
+			return;
+		}
+	} else {
+		logFile = path.join(LOG_DIR, 'service.log');
+		if (!fs.existsSync(logFile)) {
+			console.log(chalk.red('Service log not found.'));
+			console.log(chalk.gray('Is the service installed? Run: crewly service status'));
+			return;
+		}
+	}
+
+	console.log(chalk.blue(`Crewly Logs: ${path.basename(logFile)}`));
+	console.log(chalk.gray('='.repeat(50)));
+
+	if (options.follow) {
+		const tailProc = spawn('tail', ['-n', numLines.toString(), '-f', logFile], {
+			stdio: 'inherit',
+		});
+
+		process.on('SIGINT', () => {
+			tailProc.kill('SIGTERM');
+			process.exit(0);
+		});
+
+		await new Promise<void>((resolve) => {
+			tailProc.on('close', () => resolve());
+		});
+	} else {
+		try {
+			const { stdout } = await execAsync(`tail -n ${numLines} "${logFile}"`);
+			if (stdout.trim()) {
+				console.log(stdout.trimEnd());
+			} else {
+				console.log(chalk.gray('(log file is empty)'));
+			}
+		} catch {
+			console.log(chalk.red('Failed to read log file.'));
+		}
+	}
+}
+
+/**
+ * Resolve the log file path for a session name, supporting partial matching.
+ *
+ * @param sessionName - Exact or partial session name
+ * @returns Absolute path to the session log file
+ */
+function resolveSessionLogFile(sessionName: string): string {
+	const sessionLogDir = path.join(LOG_DIR, 'sessions');
+	const exactPath = path.join(sessionLogDir, `${sessionName}.log`);
+
+	if (fs.existsSync(exactPath)) {
+		return exactPath;
+	}
+
+	// Fuzzy match: find files containing the session name
+	if (fs.existsSync(sessionLogDir)) {
+		const candidates = fs.readdirSync(sessionLogDir)
+			.filter(f => f.endsWith('.log') && f.includes(sessionName));
+
+		if (candidates.length === 1) {
+			console.log(chalk.gray(`Matched session: ${candidates[0].replace('.log', '')}`));
+			return path.join(sessionLogDir, candidates[0]);
+		}
+
+		if (candidates.length > 1) {
+			console.log(chalk.yellow(`Multiple sessions match "${sessionName}":`));
+			candidates.forEach(c => console.log(chalk.gray(`  ${c.replace('.log', '')}`)));
+			console.log(chalk.gray('Please specify a more exact name.'));
+			process.exit(1);
+		}
+	}
+
+	// No match found
+	console.log(chalk.red(`Session log not found: ${sessionName}`));
+	listAvailableSessionLogs();
+	process.exit(1);
+}
+
+/**
+ * List available session log files.
+ */
+function listAvailableSessionLogs(): void {
+	const sessionLogDir = path.join(LOG_DIR, 'sessions');
+	if (!fs.existsSync(sessionLogDir)) return;
+
+	const sessions = fs.readdirSync(sessionLogDir)
+		.filter(f => f.endsWith('.log'))
+		.map(f => f.replace('.log', ''));
+
+	if (sessions.length === 0) {
+		console.log(chalk.gray('No session logs available.'));
+		return;
+	}
+
+	console.log(chalk.gray('Available sessions:'));
+	sessions.forEach(s => console.log(chalk.gray(`  ${s}`)));
+}
+
+/**
+ * List available daily app log files.
+ */
+function listAvailableAppLogs(): void {
+	if (!fs.existsSync(LOG_DIR)) return;
+
+	const appLogs = fs.readdirSync(LOG_DIR)
+		.filter(f => f.startsWith('crewly-') && f.endsWith('.log'))
+		.slice(-5);
+
+	if (appLogs.length > 0) {
+		console.log(chalk.gray('Available app logs:'));
+		appLogs.forEach(l => console.log(chalk.gray(`  ${l}`)));
 	}
 }
 

@@ -1137,6 +1137,49 @@ describe('Task Management Handlers', () => {
       setEventBusServiceForTaskCleanup(null as any);
     });
 
+    it('moves task file from in_progress/ to done/ when completing', async () => {
+      const tasks = [
+        {
+          id: 'task-move',
+          taskName: 'Move me',
+          assignedSessionName: 'dev-agent-1',
+          status: 'assigned',
+          assignedAt: '2026-02-27T00:00:00Z',
+          taskFilePath: '/project/.crewly/tasks/sprint-1/in_progress/task-1.md',
+        },
+      ];
+
+      mockReq = { body: { sessionName: 'dev-agent-1' } };
+      mockTaskTrackingService.getTasksBySessionName.mockResolvedValue(tasks);
+      mockTaskTrackingService.removeTask.mockResolvedValue(undefined);
+      (existsSync as jest.Mock<any>).mockReturnValue(true);
+      (readFile as jest.Mock<any>).mockResolvedValue('# Task 1\nSome content');
+      (writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+
+      await completeTasksBySession.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+      // Should write to done/ path
+      expect(writeFile).toHaveBeenCalledWith(
+        '/project/.crewly/tasks/sprint-1/done/task-1.md',
+        expect.any(String),
+        'utf-8'
+      );
+
+      // Should delete from in_progress/
+      const { unlink } = await import('fs/promises');
+      expect(unlink).toHaveBeenCalledWith(
+        '/project/.crewly/tasks/sprint-1/in_progress/task-1.md'
+      );
+
+      expect(jsonSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          completedCount: 1,
+        })
+      );
+    });
+
     it('continues completing other tasks when one fails', async () => {
       const tasks = [
         {

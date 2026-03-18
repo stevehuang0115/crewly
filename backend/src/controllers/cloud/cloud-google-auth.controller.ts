@@ -23,7 +23,7 @@ const logger = LoggerService.getInstance().createComponentLogger('CloudGoogleAut
 
 /** Env var for the Cloud Console frontend URL (where to redirect after login). */
 const CLOUD_CONSOLE_FRONTEND_URL = (): string =>
-  process.env['CLOUD_PORTAL_URL'] || 'https://crewlyai.com';
+  process.env['CLOUD_CONSOLE_URL'] || process.env['CLOUD_PORTAL_URL'] || 'https://crewlyai.com';
 
 /** Env var for the Google OAuth redirect URI (must match GCP console). */
 const CLOUD_GOOGLE_REDIRECT_URI = (req: Request): string =>
@@ -261,17 +261,17 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
     const state = req.query['state'] ? String(req.query['state']) : '';
     const errorParam = req.query['error'] ? String(req.query['error']) : '';
 
-    const portalUrl = CLOUD_CONSOLE_FRONTEND_URL();
+    const consoleUrl = CLOUD_CONSOLE_FRONTEND_URL();
 
     if (errorParam) {
       logger.warn('Google OAuth returned error', { error: errorParam });
-      res.redirect(`${portalUrl}/login?error=${encodeURIComponent(errorParam)}`);
+      res.redirect(`${consoleUrl}/login?error=${encodeURIComponent(errorParam)}`);
       return;
     }
 
     if (!code) {
       logger.warn('Google OAuth callback missing code');
-      res.redirect(`${portalUrl}/login?error=missing_code`);
+      res.redirect(`${consoleUrl}/login?error=missing_code`);
       return;
     }
 
@@ -282,7 +282,7 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.error('Google OAuth exchange failed', { error: errMsg });
       const errorCode = errMsg.split(':')[0] || 'exchange_failed';
-      res.redirect(`${portalUrl}/login?error=${encodeURIComponent(errorCode)}`);
+      res.redirect(`${consoleUrl}/login?error=${encodeURIComponent(errorCode)}`);
       return;
     }
 
@@ -310,7 +310,7 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
       }
     }
 
-    const finalRedirect = postLoginRedirect || portalUrl;
+    const finalRedirect = postLoginRedirect || consoleUrl;
     const separator = finalRedirect.includes('?') ? '&' : '?';
 
     logger.info('Cloud Google OAuth login successful', { email: result.profile.email, userId: result.user.id });

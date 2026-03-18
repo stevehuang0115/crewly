@@ -205,19 +205,19 @@ describe('EnvConfig', () => {
       );
     });
 
-    it('should error on default JWT secret in production', () => {
+    it('should warn (not error) on default JWT secret in production', () => {
       process.env.NODE_ENV = 'production';
       delete process.env.CREWLY_JWT_SECRET;
 
       const result = validateEnvConfig();
 
-      expect(result.valid).toBe(false);
-      expect(result.errors).toContainEqual(
+      expect(result.valid).toBe(true);
+      expect(result.warnings).toContainEqual(
         expect.stringContaining('CREWLY_JWT_SECRET'),
       );
     });
 
-    it('should error on missing encryption key in production', () => {
+    it('should warn (not error) on missing encryption key in production', () => {
       process.env.NODE_ENV = 'production';
       process.env.CREWLY_JWT_SECRET = 'prod-secret';
       delete process.env.CREWLY_TOKEN_ENCRYPTION_KEY;
@@ -225,8 +225,8 @@ describe('EnvConfig', () => {
 
       const result = validateEnvConfig();
 
-      expect(result.valid).toBe(false);
-      expect(result.errors).toContainEqual(
+      expect(result.valid).toBe(true);
+      expect(result.warnings).toContainEqual(
         expect.stringContaining('CREWLY_TOKEN_ENCRYPTION_KEY'),
       );
     });

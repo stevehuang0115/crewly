@@ -468,7 +468,7 @@ describe('Teams Page', () => {
       },
     ];
 
-    it('should display all teams as flat grid cards', async () => {
+    it('should hide sub-teams and only show top-level teams in grid', async () => {
       mockGetTeams.mockResolvedValue(orgTeams);
 
       render(
@@ -478,12 +478,14 @@ describe('Teams Page', () => {
       );
 
       await waitFor(() => {
-        // All teams should appear as regular grid cards
+        // Top-level teams should appear
         expect(screen.getByTestId('grid-card-org-crewly')).toBeInTheDocument();
-        expect(screen.getByTestId('grid-card-child-core')).toBeInTheDocument();
-        expect(screen.getByTestId('grid-card-child-marketing')).toBeInTheDocument();
         expect(screen.getByTestId('grid-card-standalone-steamfun')).toBeInTheDocument();
       });
+
+      // Sub-teams (with parentTeamId) should NOT appear in top-level grid
+      expect(screen.queryByTestId('grid-card-child-core')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('grid-card-child-marketing')).not.toBeInTheDocument();
     });
 
     it('should not show organization group headers or Independent Teams label', async () => {
@@ -503,7 +505,7 @@ describe('Teams Page', () => {
       expect(screen.queryByText('Independent Teams')).not.toBeInTheDocument();
     });
 
-    it('should render parent teams with their members as regular cards', async () => {
+    it('should render parent teams with their members, hiding sub-teams', async () => {
       const orgTeamsWithParentMembers = [
         {
           id: 'org-crewly',
@@ -543,9 +545,10 @@ describe('Teams Page', () => {
       await waitFor(() => {
         // Parent team rendered as a regular grid card
         expect(screen.getByTestId('grid-card-org-crewly')).toBeInTheDocument();
-        // Child team also rendered as a regular grid card
-        expect(screen.getByTestId('grid-card-child-core')).toBeInTheDocument();
       });
+
+      // Sub-team should NOT appear in top-level grid
+      expect(screen.queryByTestId('grid-card-child-core')).not.toBeInTheDocument();
 
       // Parent team members visible in the card
       expect(screen.getByText('Coordinator - coordinator')).toBeInTheDocument();
@@ -553,7 +556,7 @@ describe('Teams Page', () => {
       expect(screen.getByText('Auditor - auditor')).toBeInTheDocument();
     });
 
-    it('should render parent team even when it has no members', async () => {
+    it('should render parent team even when it has no members, hiding sub-teams', async () => {
       mockGetTeams.mockResolvedValue(orgTeams);
 
       render(
@@ -565,12 +568,14 @@ describe('Teams Page', () => {
       await waitFor(() => {
         // Parent team with no members should still appear as a card
         expect(screen.getByTestId('grid-card-org-crewly')).toBeInTheDocument();
-        expect(screen.getByTestId('grid-card-child-core')).toBeInTheDocument();
-        expect(screen.getByTestId('grid-card-child-marketing')).toBeInTheDocument();
       });
+
+      // Sub-teams should NOT appear in top-level grid
+      expect(screen.queryByTestId('grid-card-child-core')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('grid-card-child-marketing')).not.toBeInTheDocument();
     });
 
-    it('should render all teams in list view', async () => {
+    it('should hide sub-teams in list view too', async () => {
       const orgTeamsWithParentMembers = [
         {
           id: 'org-crewly',
@@ -615,8 +620,10 @@ describe('Teams Page', () => {
 
       await waitFor(() => {
         expect(screen.getByTestId('list-item-org-crewly')).toBeInTheDocument();
-        expect(screen.getByTestId('list-item-child-core')).toBeInTheDocument();
       });
+
+      // Sub-team should NOT appear in list view either
+      expect(screen.queryByTestId('list-item-child-core')).not.toBeInTheDocument();
     });
   });
 });

@@ -48,6 +48,8 @@ import {
 	ORCHESTRATOR_WINDOW_NAME,
 	MESSAGE_QUEUE_CONSTANTS,
 	RUNTIME_TYPES,
+	AUDITOR_CONSTANTS,
+	AUDITOR_SCHEDULER_CONSTANTS,
 	type RuntimeType,
 } from './constants.js';
 import { getSettingsService } from './services/settings/index.js';
@@ -86,6 +88,7 @@ import { VersionCheckService } from './services/system/version-check.service.js'
 import { LogRotationService } from './services/session/log-rotation.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
+import { AddonLoaderService } from './services/addon/addon-loader.service.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -390,11 +393,21 @@ export class CrewlyServer {
 				// Session backend may not be initialized yet
 			}
 
+			// #199: Safely resolve version — findPackageRoot may fail from global install paths
+			let version = cachedCheck?.currentVersion ?? null;
+			if (!version) {
+				try {
+					version = versionService.getLocalVersion();
+				} catch {
+					version = process.env.npm_package_version || 'unknown';
+				}
+			}
+
 			res.json({
 				status: 'healthy',
 				timestamp: new Date().toISOString(),
 				uptime: process.uptime(),
-				version: cachedCheck?.currentVersion ?? versionService.getLocalVersion(),
+				version,
 				latestVersion: cachedCheck?.latestVersion ?? null,
 				updateAvailable: cachedCheck?.updateAvailable ?? false,
 				mode: this.config.headless ? 'headless' : 'standard',
@@ -421,7 +434,11 @@ export class CrewlyServer {
 			this.app.use(express.static(frontendPath));
 
 			// Serve frontend for all other routes (SPA)
-			this.app.get('*', (req, res) => {
+			// Skip /api/ and /health paths so addon-registered API routes are reachable
+			this.app.get('*', (req, res, next) => {
+				if (req.path.startsWith('/api/') || req.path === '/health') {
+					return next();
+				}
 				const frontendIndexPath = path.join(projectRoot, 'frontend/dist/index.html');
 				res.sendFile(frontendIndexPath);
 			});
@@ -792,6 +809,19 @@ export class CrewlyServer {
 			// Start HTTP server with enhanced error handling
 			await this.startHttpServer();
 
+			// Load addons from ~/.crewly/addons/ (Pro features, extensions, etc.)
+			try {
+				const addonLoader = AddonLoaderService.getInstance();
+				const loadedAddons = await addonLoader.loadAddons(this.app, this.httpServer);
+				if (loadedAddons.length > 0) {
+					this.logger.info('Addons loaded successfully', { addons: loadedAddons });
+				}
+			} catch (addonErr) {
+				this.logger.warn('Addon loading encountered an error (non-fatal)', {
+					error: addonErr instanceof Error ? addonErr.message : String(addonErr),
+				});
+			}
+
 			// Register cleanup handlers
 			this.registerSignalHandlers();
 
@@ -805,11 +835,25 @@ export class CrewlyServer {
 			await this.autoRestoreAgentSessionsIfEnabled();
 
 			// #166: Auto-recover in-progress tasks after restart
+			// #196: Skip tasks older than 1 hour to avoid re-sending stale work
 			try {
+				const TASK_RECOVERY_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 				const inProgressTasks = await this.taskTrackingService.getAllInProgressTasks();
-				const activeTasks = inProgressTasks.filter(
-					t => t.status === 'assigned' || t.status === 'active' || t.status === 'working'
-				);
+				const now = Date.now();
+				const activeTasks = inProgressTasks.filter(t => {
+					if (t.status !== 'assigned' && t.status !== 'active' && t.status !== 'working') return false;
+					// Skip stale tasks — assignedAt older than threshold
+					const taskTime = new Date(t.assignedAt || 0).getTime();
+					if (now - taskTime > TASK_RECOVERY_MAX_AGE_MS) {
+						this.logger.info('Skipping stale task recovery (older than 1 hour)', {
+							taskId: t.id,
+							taskName: t.taskName,
+							age: `${Math.round((now - taskTime) / 60000)} minutes`,
+						});
+						return false;
+					}
+					return true;
+				});
 				if (activeTasks.length > 0) {
 					this.logger.info('Found in-progress tasks to recover after restart', {
 						count: activeTasks.length,
@@ -857,17 +901,24 @@ export class CrewlyServer {
 			}
 
 			// Start AuditorSchedulerService (non-critical — audit scheduling)
-			try {
-				const auditorScheduler = AuditorSchedulerService.getInstance();
-				auditorScheduler.setAgentRegistrationService(this.apiController.agentRegistrationService);
-				auditorScheduler.setEventBusService(this.eventBusService);
-				setAuditorSchedulerService(auditorScheduler);
-				auditorScheduler.start();
-				this.logger.info('AuditorSchedulerService started (Claude Code PTY mode)');
-			} catch (error) {
-				this.logger.warn('Failed to start AuditorSchedulerService (non-critical)', {
-					error: error instanceof Error ? error.message : String(error),
-				});
+			// Skip if auditor is disabled via env var or default config
+			const auditorEnabled = process.env[AUDITOR_CONSTANTS.ENV_VAR]?.toLowerCase() === 'true'
+				|| (process.env[AUDITOR_CONSTANTS.ENV_VAR] === undefined && AUDITOR_CONSTANTS.ENABLED_BY_DEFAULT);
+			if (auditorEnabled) {
+				try {
+					const auditorScheduler = AuditorSchedulerService.getInstance();
+					auditorScheduler.setAgentRegistrationService(this.apiController.agentRegistrationService);
+					auditorScheduler.setEventBusService(this.eventBusService);
+					setAuditorSchedulerService(auditorScheduler);
+					auditorScheduler.start();
+					this.logger.info('AuditorSchedulerService started (Claude Code PTY mode)');
+				} catch (error) {
+					this.logger.warn('Failed to start AuditorSchedulerService (non-critical)', {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			} else {
+				this.logger.info('Auditor disabled (set CREWLY_ENABLE_AUDITOR=true to enable)');
 			}
 
 		} catch (error) {
@@ -1112,8 +1163,15 @@ export class CrewlyServer {
 			}
 
 			// Filter out orchestrator sessions (already auto-started separately)
+			// and auditor sessions when auditor is disabled
+			const isAuditorEnabled = process.env[AUDITOR_CONSTANTS.ENV_VAR]?.toLowerCase() === 'true'
+				|| (process.env[AUDITOR_CONSTANTS.ENV_VAR] === undefined && AUDITOR_CONSTANTS.ENABLED_BY_DEFAULT);
 			const agentSessions = state.sessions.filter(
-				(s) => s.role !== ORCHESTRATOR_ROLE
+				(s) => {
+					if (s.role === ORCHESTRATOR_ROLE) return false;
+					if (!isAuditorEnabled && s.name === AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME) return false;
+					return true;
+				}
 			);
 
 			if (agentSessions.length === 0) {
@@ -1398,6 +1456,15 @@ export class CrewlyServer {
 			if (this.healthMonitoringInterval) {
 				clearInterval(this.healthMonitoringInterval);
 				this.healthMonitoringInterval = null;
+			}
+
+			// Unload addons (call their unregister hooks)
+			try {
+				await AddonLoaderService.getInstance().unloadAddons();
+			} catch (addonErr) {
+				this.logger.warn('Error unloading addons during shutdown', {
+					error: addonErr instanceof Error ? addonErr.message : String(addonErr),
+				});
 			}
 
 			// Generate session handoff summary before killing processes

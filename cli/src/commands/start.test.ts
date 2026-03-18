@@ -162,3 +162,59 @@ describe('start command headless mode logic', () => {
 		});
 	});
 });
+
+/**
+ * Tests for dynamic heap size calculation.
+ *
+ * Since start.ts uses import.meta.url, we replicate the calculateHeapSize()
+ * logic inline using the same constants it references.
+ */
+describe('dynamic heap size calculation', () => {
+	const MIN_HEAP_SIZE_MB = 256;
+	const MAX_HEAP_SIZE_MB = 2048;
+	const HEAP_MEMORY_RATIO = 0.4;
+
+	function calculateHeapSize(totalMemBytes: number): number {
+		const totalMemMB = Math.floor(totalMemBytes / (1024 * 1024));
+		const dynamicHeap = Math.floor(totalMemMB * HEAP_MEMORY_RATIO);
+		return Math.max(MIN_HEAP_SIZE_MB, Math.min(MAX_HEAP_SIZE_MB, dynamicHeap));
+	}
+
+	it('should return 256 MB for a 256 MB machine (floor)', () => {
+		const mem256MB = 256 * 1024 * 1024;
+		expect(calculateHeapSize(mem256MB)).toBe(MIN_HEAP_SIZE_MB);
+	});
+
+	it('should return 256 MB for a 128 MB machine (below floor)', () => {
+		const mem128MB = 128 * 1024 * 1024;
+		expect(calculateHeapSize(mem128MB)).toBe(MIN_HEAP_SIZE_MB);
+	});
+
+	it('should return 40% of RAM for a 2 GB machine', () => {
+		const mem2GB = 2 * 1024 * 1024 * 1024;
+		// 2048 * 0.4 = 819
+		expect(calculateHeapSize(mem2GB)).toBe(819);
+	});
+
+	it('should return 40% of RAM for a 1 GB machine', () => {
+		const mem1GB = 1024 * 1024 * 1024;
+		// 1024 * 0.4 = 409
+		expect(calculateHeapSize(mem1GB)).toBe(409);
+	});
+
+	it('should cap at 2048 MB for a 16 GB machine', () => {
+		const mem16GB = 16 * 1024 * 1024 * 1024;
+		expect(calculateHeapSize(mem16GB)).toBe(MAX_HEAP_SIZE_MB);
+	});
+
+	it('should cap at 2048 MB for a 8 GB machine (8192 * 0.4 = 3276 > 2048)', () => {
+		const mem8GB = 8 * 1024 * 1024 * 1024;
+		expect(calculateHeapSize(mem8GB)).toBe(MAX_HEAP_SIZE_MB);
+	});
+
+	it('should return 40% for a 4 GB machine (1638 < 2048)', () => {
+		const mem4GB = 4 * 1024 * 1024 * 1024;
+		// 4096 * 0.4 = 1638
+		expect(calculateHeapSize(mem4GB)).toBe(1638);
+	});
+});

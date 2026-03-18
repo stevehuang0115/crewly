@@ -9,7 +9,7 @@
  */
 
 import { promises as fsPromises } from 'fs';
-import { execSync, spawnSync } from 'child_process';
+import * as childProcess from 'child_process';
 import { homedir } from 'os';
 import { z } from 'zod';
 import type { CrewlyApiClient } from './api-client.js';
@@ -88,42 +88,119 @@ export function checkBashApprovalRequired(command: string): string | null {
 }
 
 /**
- * Execute a shell command in an isolated process group so that signals
- * (SIGTERM, SIGINT) from the child cannot propagate to the Crewly server.
+ * Execute a shell command asynchronously in an isolated process group so that
+ * signals (SIGTERM, SIGINT) from the child cannot propagate to the Crewly server.
  *
- * Uses spawnSync with setsid (macOS/Linux) to create a new session,
- * preventing the child's process group signals from reaching the parent.
+ * Uses spawn (async) to avoid blocking the Node.js event loop. The child
+ * process runs in a detached process group so its signals don't reach the parent.
  *
  * @param cmd - Shell command to run
  * @param workDir - Working directory
  * @param timeoutMs - Timeout in milliseconds
  * @returns Object with stdout, stderr, exitCode
  */
-function execIsolated(cmd: string, workDir: string, timeoutMs: number): {
+function execIsolatedAsync(cmd: string, workDir: string, timeoutMs: number): Promise<{
   stdout: string;
   stderr: string;
   exitCode: number;
-} {
-  const result = spawnSync('/bin/sh', ['-c', cmd], {
-    cwd: workDir,
-    encoding: 'utf-8',
-    timeout: timeoutMs,
-    maxBuffer: 1024 * 1024,
-    env: { ...process.env, FORCE_COLOR: '0' },
-    // Run in a new process group — signals sent to the child group
-    // will NOT propagate to the Crewly server's process group.
-    stdio: ['ignore', 'pipe', 'pipe'],
+}> {
+  return new Promise((resolve) => {
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutLen = 0;
+    let stderrLen = 0;
+    const maxBuffer = 1024 * 1024;
+    let finished = false;
+
+    const child = childProcess.spawn('/bin/sh', ['-c', cmd], {
+      cwd: workDir,
+      env: { ...process.env, FORCE_COLOR: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+
+    const timer = setTimeout(() => {
+      if (!finished) {
+        finished = true;
+        // Kill the entire process group
+        try { process.kill(-child.pid!, 'SIGTERM'); } catch { /* ignore */ }
+        try { child.kill('SIGTERM'); } catch { /* ignore */ }
+        resolve({
+          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf-8')
+            + `\n[crewly] Process killed by signal: SIGTERM (timeout: ${timeoutMs}ms)`,
+          exitCode: 128,
+        });
+      }
+    }, timeoutMs);
+
+    child.stdout!.on('data', (chunk: Buffer) => {
+      if (stdoutLen < maxBuffer) {
+        stdoutChunks.push(chunk);
+        stdoutLen += chunk.length;
+      }
+    });
+
+    child.stderr!.on('data', (chunk: Buffer) => {
+      if (stderrLen < maxBuffer) {
+        stderrChunks.push(chunk);
+        stderrLen += chunk.length;
+      }
+    });
+
+    child.on('close', (code, signal) => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        const exitCode = code ?? (signal ? 128 : 1);
+        const stderr = Buffer.concat(stderrChunks).toString('utf-8');
+        const signalInfo = signal
+          ? `\n[crewly] Process killed by signal: ${signal} (timeout: ${timeoutMs}ms)`
+          : '';
+        resolve({
+          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+          stderr: stderr + signalInfo,
+          exitCode,
+        });
+      }
+    });
+
+    child.on('error', (err) => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        resolve({
+          stdout: '',
+          stderr: err.message,
+          exitCode: 1,
+        });
+      }
+    });
+
+    // Unref so the child doesn't keep the process alive
+    child.unref();
   });
+}
 
-  // If the process was killed by a signal (e.g. timeout → SIGTERM),
-  // reflect it in the exit code.
-  const exitCode = result.status ?? (result.signal ? 128 : 1);
-
-  return {
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-    exitCode,
-  };
+/**
+ * Execute a git command asynchronously without blocking the event loop.
+ *
+ * @param cmd - Git command to run
+ * @param cwd - Working directory
+ * @returns stdout string trimmed
+ * @throws Error if the command fails
+ */
+async function execGitAsync(cmd: string, cwd: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    childProcess.exec(cmd, {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+    }, (error, stdout) => {
+      if (error) { reject(error); return; }
+      resolve(stdout as string);
+    });
+  });
 }
 
 /**
@@ -590,13 +667,14 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
     },
 
     reply_slack: {
-      description: 'Send a reply to a Slack channel or thread. If channelId is omitted, uses the current Slack thread context. Messages sent within 3 seconds are batched to avoid spam.',
+      description: 'Send a text reply or upload an image to a Slack channel or thread. If channelId is omitted, uses the current Slack thread context. For images, provide imagePath (absolute path on disk) — the image is uploaded via Slack file upload API. Messages sent within 3 seconds are batched to avoid spam.',
       inputSchema: z.object({
         channelId: z.string().optional().describe('Slack channel ID (auto-filled from current thread context if omitted)'),
-        text: z.string().describe('Message text'),
+        text: z.string().describe('Message text (used as comment when uploading an image)'),
         threadTs: z.string().optional().describe('Thread timestamp for replies (auto-filled from current thread context if omitted)'),
+        imagePath: z.string().optional().describe('Absolute path to an image file to upload (png, jpg, gif, webp). When provided, uploads the image instead of sending a text message.'),
       }),
-      execute: async ({ channelId, text, threadTs }) => {
+      execute: async ({ channelId, text, threadTs, imagePath }) => {
         let cleanText = stripNotifyMarkers(text as string);
         // #181: Convert markdown to Slack mrkdwn format
         cleanText = convertMarkdownToSlackMrkdwn(cleanText);
@@ -618,6 +696,24 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
           return { success: false, error: 'No channelId provided and no Slack thread context available. Use reply_slack with an explicit channelId.' };
         }
 
+        // ── Image upload path ──
+        if (imagePath) {
+          const uploadBody: Record<string, string> = {
+            channelId: resolvedChannelId,
+            filePath: imagePath as string,
+            initialComment: cleanText,
+          };
+          if (resolvedThreadTs) uploadBody.threadTs = resolvedThreadTs;
+          const result = await client.post('/slack/upload-image', uploadBody);
+          if (result.success) {
+            lastSlackSendMs = Date.now();
+          }
+          return result.success
+            ? { success: true, sent: true, uploaded: true, filePath: imagePath }
+            : { success: false, error: result.error };
+        }
+
+        // ── Text message path ──
         // Dedup: skip if this exact message was recently sent
         if (recentSlackMessages.includes(cleanText)) {
           return { success: true, sent: false, deduplicated: true, reason: 'Message already sent recently' };
@@ -1251,11 +1347,11 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
     // ===================================================================
 
     bash_exec: {
-      description: 'Execute a shell command and return stdout/stderr. Commands run with a timeout (default 30s, max 120s). Use for build, test, lint, and system operations. Some commands (kill, reboot, rm -rf /, etc.) are blocked by security policy.',
+      description: 'Execute a shell command and return stdout/stderr. Commands run with a timeout (default 60s, max 300s). Use for build, test, lint, system operations, and skill scripts. Some commands (kill, reboot, rm -rf /, etc.) are blocked by security policy.',
       inputSchema: z.object({
         command: z.string().describe('Shell command to execute'),
         cwd: z.string().optional().describe('Working directory (defaults to project path)'),
-        timeout: z.number().optional().describe('Timeout in milliseconds (default: 30000, max: 120000)'),
+        timeout: z.number().optional().describe('Timeout in milliseconds (default: 60000, max: 300000)'),
       }),
       sensitivity: 'destructive' as ToolSensitivity,
       execute: async ({ command, cwd, timeout }) => {
@@ -1274,24 +1370,28 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         }
 
         // Check if command requires explicit approval (git push, rm, docker, network, etc.)
+        // Only enforce if the security policy's requireApproval includes 'destructive'.
         const approvalLabel = checkBashApprovalRequired(cmd);
-        if (approvalLabel && callbacks?.onEnqueueApproval) {
-          const sanitizedArgs = sanitizeArgs({ command: cmd, cwd, timeout });
-          const enqueued = callbacks.onEnqueueApproval('bash_exec', 'destructive', sanitizedArgs);
-          return {
-            success: false,
-            requiresApproval: true,
-            approvalId: enqueued.approvalId,
-            reason: `Command requires approval: ${approvalLabel}`,
-            error: `Approval required for: ${approvalLabel}. Approval ID: ${enqueued.approvalId}`,
-          };
+        if (approvalLabel && callbacks?.onEnqueueApproval && callbacks?.onCheckApproval) {
+          const policyCheck = callbacks.onCheckApproval('bash_exec', 'destructive');
+          if (!policyCheck.allowed && !policyCheck.blocked) {
+            const sanitizedArgs = sanitizeArgs({ command: cmd, cwd, timeout });
+            const enqueued = callbacks.onEnqueueApproval('bash_exec', 'destructive', sanitizedArgs);
+            return {
+              success: false,
+              requiresApproval: true,
+              approvalId: enqueued.approvalId,
+              reason: `Command requires approval: ${approvalLabel}`,
+              error: `Approval required for: ${approvalLabel}. Approval ID: ${enqueued.approvalId}`,
+            };
+          }
         }
 
         const workDir = expandPath((cwd as string | undefined) || projectPath || process.cwd());
-        const timeoutMs = Math.min((timeout as number | undefined) || 30000, 120000);
+        const timeoutMs = Math.min((timeout as number | undefined) || 60000, 300000);
 
-        // Run in isolated process group to prevent signal propagation
-        const result = execIsolated(cmd, workDir, timeoutMs);
+        // Run in isolated process group to prevent signal propagation (async, non-blocking)
+        const result = await execIsolatedAsync(cmd, workDir, timeoutMs);
 
         if (result.exitCode === 0) {
           const truncated = result.stdout.length > 10000;
@@ -1325,8 +1425,8 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
       execute: async ({ projectPath }) => {
         const cwd = expandPath(projectPath as string);
         try {
-          const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf8' }).trim();
-          const statusOutput = execSync('git status --porcelain', { cwd, encoding: 'utf8' });
+          const branch = (await execGitAsync('git rev-parse --abbrev-ref HEAD', cwd)).trim();
+          const statusOutput = await execGitAsync('git status --porcelain', cwd);
 
           const staged: string[] = [];
           const unstaged: string[] = [];
@@ -1362,7 +1462,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         const cwd = expandPath(projectPath as string);
         try {
           const cmd = staged ? 'git diff --cached' : 'git diff';
-          const diff = execSync(cmd, { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+          const diff = await execGitAsync(cmd, cwd);
 
           const truncated = diff.length > GIT_DIFF_MAX_CHARS;
           const output = truncated ? diff.slice(0, GIT_DIFF_MAX_CHARS) + '\n... (truncated)' : diff;
@@ -1388,17 +1488,17 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
           // Stage files
           if (files && (files as string[]).length > 0) {
             for (const file of files as string[]) {
-              execSync(`git add -- ${JSON.stringify(file)}`, { cwd, encoding: 'utf8' });
+              await execGitAsync(`git add -- ${JSON.stringify(file)}`, cwd);
             }
           } else {
-            execSync('git add -A', { cwd, encoding: 'utf8' });
+            await execGitAsync('git add -A', cwd);
           }
 
           // Commit
-          execSync(`git commit -m ${JSON.stringify(message as string)}`, { cwd, encoding: 'utf8' });
+          await execGitAsync(`git commit -m ${JSON.stringify(message as string)}`, cwd);
 
           // Get the commit hash
-          const hash = execSync('git rev-parse HEAD', { cwd, encoding: 'utf8' }).trim();
+          const hash = (await execGitAsync('git rev-parse HEAD', cwd)).trim();
 
           return { success: true, commitHash: hash, message: message as string };
         } catch (error) {

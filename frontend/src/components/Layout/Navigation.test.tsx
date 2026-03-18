@@ -132,10 +132,25 @@ describe('Navigation', () => {
       expect(screen.getByText(item)).toBeInTheDocument();
     });
 
-    // Schedules and Settings should be in bottom section, not main nav
+    // Security, Schedules, and Settings should be in bottom section, not main nav
+    const securityLink = screen.getByRole('link', { name: /security/i });
     const schedulesLink = screen.getByRole('link', { name: /schedules/i });
     const settingsLink = screen.getByRole('link', { name: /settings/i });
+    expect(securityLink).toBeInTheDocument();
     expect(schedulesLink).toBeInTheDocument();
     expect(settingsLink).toBeInTheDocument();
+  });
+
+  it('renders Security link in bottom section', () => {
+    renderWithProviders(<Navigation />);
+
+    expect(screen.getByText('Security')).toBeInTheDocument();
+  });
+
+  it('Security link has correct href', () => {
+    renderWithProviders(<Navigation />);
+
+    const securityLink = screen.getByRole('link', { name: /security/i });
+    expect(securityLink).toHaveAttribute('href', '/security');
   });
 });

@@ -26,6 +26,8 @@ export interface RateLimiterConfig {
   maxBackoffMs: number;
   /** Coalescing window — how long to wait for additional messages before processing (ms) */
   coalesceWindowMs: number;
+  /** Cooldown period in milliseconds after rate limit retries are exhausted */
+  cooldownMs: number;
 }
 
 /**
@@ -34,11 +36,12 @@ export interface RateLimiterConfig {
 export const RATE_LIMITER_DEFAULTS: RateLimiterConfig = {
   maxRequestsPerWindow: 10,
   windowMs: 60_000,
-  maxRetries: 3,
+  maxRetries: 2,
   initialBackoffMs: 5_000,
   backoffMultiplier: 2,
-  maxBackoffMs: 60_000,
+  maxBackoffMs: 30_000,
   coalesceWindowMs: 2_000,
+  cooldownMs: 300_000,
 };
 
 /**
@@ -81,6 +84,8 @@ export class RateLimiter<T> {
   private queue: QueuedMessage<T>[] = [];
   private processing = false;
   private coalesceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Timestamp when cooldown started (0 = not cooling down) */
+  private cooldownStartedAt = 0;
 
   /**
    * Create a new RateLimiter instance.
@@ -92,10 +97,40 @@ export class RateLimiter<T> {
   }
 
   /**
+   * Check if the rate limiter is in a cooldown period after exhausting retries.
+   *
+   * @returns True if currently cooling down
+   */
+  isCoolingDown(): boolean {
+    if (this.cooldownStartedAt === 0) return false;
+    if (Date.now() - this.cooldownStartedAt >= this.config.cooldownMs) {
+      this.cooldownStartedAt = 0;
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Get the remaining cooldown time in milliseconds.
+   *
+   * @returns Remaining cooldown time, or 0 if not cooling down
+   */
+  getCooldownRemainingMs(): number {
+    if (this.cooldownStartedAt === 0) return 0;
+    const remaining = this.config.cooldownMs - (Date.now() - this.cooldownStartedAt);
+    if (remaining <= 0) {
+      this.cooldownStartedAt = 0;
+      return 0;
+    }
+    return remaining;
+  }
+
+  /**
    * Enqueue a message for rate-limited processing.
    *
    * If multiple messages arrive within the coalescing window, they are
    * merged into a single request to reduce API call count.
+   * Rejects immediately if the rate limiter is in cooldown.
    *
    * @param message - Message to process
    * @param metadata - Optional metadata
@@ -107,6 +142,14 @@ export class RateLimiter<T> {
     metadata: Record<string, string> | undefined,
     handler: (message: string, metadata?: Record<string, string>) => Promise<T>,
   ): Promise<T> {
+    // Reject immediately during cooldown to avoid triggering more rate limits
+    if (this.isCoolingDown()) {
+      const remainingMs = this.getCooldownRemainingMs();
+      return Promise.reject(
+        new Error(`Rate limiter is in cooldown (${Math.ceil(remainingMs / 1000)}s remaining). Try again later.`),
+      );
+    }
+
     return new Promise<T>((resolve, reject) => {
       this.queue.push({
         message,
@@ -177,6 +220,7 @@ export class RateLimiter<T> {
     this.requestTimestamps = [];
     this.queue = [];
     this.processing = false;
+    this.cooldownStartedAt = 0;
     if (this.coalesceTimer) {
       clearTimeout(this.coalesceTimer);
       this.coalesceTimer = null;
@@ -346,8 +390,11 @@ export class RateLimiter<T> {
       }
     }
 
+    // Enter cooldown to prevent immediate re-triggering of rate limits
+    this.cooldownStartedAt = Date.now();
+
     throw new Error(
-      `Rate limit retries exhausted (${this.config.maxRetries} attempts, ${Date.now() - startTime}ms elapsed). Last error: ${lastError?.message}`,
+      `Rate limit retries exhausted (${this.config.maxRetries} attempts, ${Date.now() - startTime}ms elapsed, cooldown ${this.config.cooldownMs / 1000}s). Last error: ${lastError?.message}`,
     );
   }
 

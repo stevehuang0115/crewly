@@ -411,5 +411,128 @@ describe('RateLimiter', () => {
       expect(limiter.isProcessing()).toBe(false);
       expect(limiter.getRequestCountInWindow()).toBe(0);
     });
+
+    it('should clear cooldown state', async () => {
+      const cooldownLimiter = new RateLimiter<string>({
+        maxRetries: 0,
+        initialBackoffMs: 10,
+        maxBackoffMs: 10,
+        coalesceWindowMs: 10,
+        cooldownMs: 60_000,
+      });
+
+      const handler = jest.fn<(msg: string) => Promise<string>>()
+        .mockRejectedValue(new Error('429 too many requests'));
+
+      const p = cooldownLimiter.enqueue('test', undefined, handler).catch(() => {});
+      await jest.advanceTimersByTimeAsync(100);
+      await p;
+
+      expect(cooldownLimiter.isCoolingDown()).toBe(true);
+
+      cooldownLimiter.reset();
+      expect(cooldownLimiter.isCoolingDown()).toBe(false);
+      expect(cooldownLimiter.getCooldownRemainingMs()).toBe(0);
+    });
+  });
+
+  describe('cooldown', () => {
+    let cooldownLimiter: RateLimiter<string>;
+
+    beforeEach(() => {
+      cooldownLimiter = new RateLimiter<string>({
+        maxRetries: 1,
+        initialBackoffMs: 10,
+        backoffMultiplier: 2,
+        maxBackoffMs: 20,
+        coalesceWindowMs: 10,
+        cooldownMs: 5_000,
+      });
+    });
+
+    afterEach(() => {
+      cooldownLimiter.reset();
+    });
+
+    it('should enter cooldown after rate limit retries are exhausted', async () => {
+      const handler = jest.fn<(msg: string) => Promise<string>>()
+        .mockRejectedValue(new Error('429 too many requests'));
+
+      let caughtError: Error | null = null;
+      const p = cooldownLimiter.enqueue('test', undefined, handler).catch(e => { caughtError = e; });
+      await jest.advanceTimersByTimeAsync(200);
+      await p;
+
+      expect(caughtError).toBeTruthy();
+      expect(caughtError!.message).toContain('Rate limit retries exhausted');
+      expect(cooldownLimiter.isCoolingDown()).toBe(true);
+      expect(cooldownLimiter.getCooldownRemainingMs()).toBeGreaterThan(0);
+      expect(cooldownLimiter.getCooldownRemainingMs()).toBeLessThanOrEqual(5_000);
+    });
+
+    it('should reject new messages during cooldown', async () => {
+      const handler = jest.fn<(msg: string) => Promise<string>>()
+        .mockRejectedValue(new Error('429 too many requests'));
+
+      const p = cooldownLimiter.enqueue('trigger', undefined, handler).catch(() => {});
+      await jest.advanceTimersByTimeAsync(200);
+      await p;
+
+      // New message during cooldown should be rejected immediately
+      const goodHandler = jest.fn<(msg: string) => Promise<string>>().mockResolvedValue('ok');
+      await expect(cooldownLimiter.enqueue('new-msg', undefined, goodHandler))
+        .rejects.toThrow('Rate limiter is in cooldown');
+      expect(goodHandler).not.toHaveBeenCalled();
+    });
+
+    it('should exit cooldown after cooldownMs expires', async () => {
+      const handler = jest.fn<(msg: string) => Promise<string>>()
+        .mockRejectedValue(new Error('429 too many requests'));
+
+      const p = cooldownLimiter.enqueue('trigger', undefined, handler).catch(() => {});
+      await jest.advanceTimersByTimeAsync(200);
+      await p;
+
+      expect(cooldownLimiter.isCoolingDown()).toBe(true);
+
+      // Advance past cooldown period
+      jest.advanceTimersByTime(5_001);
+
+      expect(cooldownLimiter.isCoolingDown()).toBe(false);
+      expect(cooldownLimiter.getCooldownRemainingMs()).toBe(0);
+    });
+
+    it('should accept new messages after cooldown expires', async () => {
+      const handler = jest.fn<(msg: string) => Promise<string>>()
+        .mockRejectedValue(new Error('429 too many requests'));
+
+      const p = cooldownLimiter.enqueue('trigger', undefined, handler).catch(() => {});
+      await jest.advanceTimersByTimeAsync(200);
+      await p;
+
+      // Advance past cooldown
+      jest.advanceTimersByTime(5_001);
+
+      // Should accept new message
+      const goodHandler = jest.fn<(msg: string) => Promise<string>>().mockResolvedValue('ok');
+      const p2 = cooldownLimiter.enqueue('after-cooldown', undefined, goodHandler);
+      await jest.advanceTimersByTimeAsync(100);
+      await expect(p2).resolves.toBe('ok');
+    });
+
+    it('should not enter cooldown on non-retryable errors', async () => {
+      const handler = jest.fn<(msg: string) => Promise<string>>()
+        .mockRejectedValue(new Error('Invalid API key'));
+
+      let caughtError: Error | null = null;
+      const p = cooldownLimiter.enqueue('test', undefined, handler).catch(e => { caughtError = e; });
+      await jest.advanceTimersByTimeAsync(100);
+      await p;
+
+      expect(caughtError).toBeTruthy();
+      expect(caughtError!.message).toBe('Invalid API key');
+      // Non-retryable errors should not trigger cooldown
+      expect(cooldownLimiter.isCoolingDown()).toBe(false);
+    });
   });
 });

@@ -1,0 +1,276 @@
+/**
+ * Security Architecture Diagram — Interactive 3-state diagram
+ *
+ * Displays one of three security architecture visualizations based on
+ * the active pillar: PTY Isolation (A), Local Vector Storage (B),
+ * or Granular Tool Approval (C). Per spec section 2.3.
+ *
+ * @module components/Security/SecurityArchDiagram
+ */
+
+import React, { useState } from 'react';
+import type { PillarId } from './SecurityPillarCard';
+
+/** Props for SecurityArchDiagram */
+export interface SecurityArchDiagramProps {
+  /** Currently active pillar state */
+  activePillar: PillarId;
+}
+
+// ========================= State A: PTY Isolation =========================
+
+/** Agent data for PTY isolation visualization */
+const PTY_AGENTS = [
+  { name: 'Sam', role: 'TL', fs: '/sam', pid: 201, color: 'border-blue-500 bg-blue-500/5' },
+  { name: 'Leo', role: 'Dev', fs: '/leo', pid: 202, color: 'border-purple-500 bg-purple-500/5' },
+  { name: 'Ava', role: 'UX', fs: '/ava', pid: 203, color: 'border-pink-500 bg-pink-500/5' },
+] as const;
+
+/**
+ * State A — PTY Isolation diagram showing isolated agent sandboxes
+ * with blocked attack paths between them.
+ */
+const PtyIsolationDiagram: React.FC = () => (
+  <div className="space-y-4">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {PTY_AGENTS.map((agent) => (
+        <div
+          key={agent.name}
+          className={`rounded-lg border-2 p-4 ${agent.color}`}
+          data-testid={`pty-agent-${agent.name.toLowerCase()}`}
+        >
+          <div className="font-mono text-sm text-zinc-300 mb-2">
+            PTY #{agent.pid}
+          </div>
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center text-xs font-bold text-zinc-200">
+              {agent.name[0]}
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-zinc-200">{agent.name}</div>
+              <div className="text-xs text-zinc-500">({agent.role})</div>
+            </div>
+          </div>
+          <div className="space-y-1 font-mono text-xs text-zinc-500">
+            <div>fs: {agent.fs}</div>
+            <div>pid: {agent.pid}</div>
+          </div>
+          <div className="mt-3 text-xs text-red-400 font-medium flex items-center gap-1">
+            <span aria-hidden="true">&#10007;</span> blocked
+          </div>
+        </div>
+      ))}
+    </div>
+    <div className="flex items-center justify-center gap-2 py-2 px-4 rounded bg-red-500/10 border border-red-500/20">
+      <span className="text-red-400 text-sm font-mono" aria-hidden="true">&#9632;</span>
+      <span className="text-sm text-red-300">
+        Attack path: Sam &rarr; Leo&ensp;
+        <span className="font-bold">&#9580; BLOCKED</span>
+      </span>
+    </div>
+  </div>
+);
+
+// ========================= State B: Local Vector Storage =========================
+
+/** Data categories stored locally */
+const STORAGE_CATEGORIES = [
+  { label: 'Agent Memory', color: 'bg-emerald-500/10 border-emerald-500/30' },
+  { label: 'Conversations', color: 'bg-blue-500/10 border-blue-500/30' },
+  { label: 'Project Knowl.', color: 'bg-purple-500/10 border-purple-500/30' },
+] as const;
+
+/**
+ * State B — Local Vector Storage diagram showing data staying on-machine
+ * with no cloud connection.
+ */
+const LocalStorageDiagram: React.FC = () => (
+  <div className="space-y-4">
+    <div className="rounded-lg border-2 border-emerald-500/30 bg-emerald-500/5 p-6">
+      <div className="text-sm font-semibold text-emerald-300 mb-4">
+        Local SQLite + Vectors
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        {STORAGE_CATEGORIES.map((cat) => (
+          <div
+            key={cat.label}
+            className={`rounded border p-3 text-center text-sm text-zinc-300 ${cat.color}`}
+          >
+            {cat.label}
+          </div>
+        ))}
+      </div>
+      <div className="space-y-1 text-xs text-zinc-400">
+        <div>All data encrypted at rest</div>
+        <div>Zero cloud dependencies</div>
+      </div>
+    </div>
+    <div className="flex items-center justify-center gap-3 py-2 px-4 rounded bg-zinc-800 border border-zinc-700">
+      <span className="text-zinc-500 text-lg" aria-hidden="true">&#9729;</span>
+      <span className="text-sm text-zinc-400">Cloud</span>
+      <span className="text-xs text-zinc-600 font-mono">&larr; NO CONNECTION &rarr;</span>
+      <span className="text-red-400" aria-hidden="true">&#10007;</span>
+    </div>
+    <p className="text-sm text-zinc-400 text-center italic">
+      &ldquo;Your conversations, agent memory, and project knowledge never leave this machine.&rdquo;
+    </p>
+  </div>
+);
+
+// ========================= State C: Granular Tool Approval =========================
+
+/** Permission matrix rows from spec section 2.3 State C */
+const PERMISSION_ROWS = [
+  { tool: 'read files', level: 'auto', label: 'Auto-approved', color: 'text-emerald-400', icon: '\u2705' },
+  { tool: 'write files', level: 'auto', label: 'Auto-approved', color: 'text-emerald-400', icon: '\u2705' },
+  { tool: 'npm install', level: 'ask-once', label: 'Ask once', color: 'text-yellow-400', icon: '\u26A0\uFE0F' },
+  { tool: 'git push --force', level: 'always-ask', label: 'Always ask', color: 'text-red-400', icon: '\uD83D\uDD34' },
+  { tool: 'rm -rf', level: 'always-ask', label: 'Always ask', color: 'text-red-400', icon: '\uD83D\uDD34' },
+] as const;
+
+/**
+ * State C — Granular Tool Approval diagram showing the approval prompt
+ * and permission matrix.
+ */
+const ToolApprovalDiagram: React.FC = () => {
+  const [decision, setDecision] = useState<'pending' | 'denied' | 'approved'>('pending');
+
+  return (
+    <div className="space-y-4">
+      {/* Approval prompt */}
+      <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-5">
+        <div className="text-sm text-zinc-400 mb-3">
+          Agent &ldquo;Sam&rdquo; wants to execute:
+        </div>
+        <div className="font-mono text-sm text-zinc-200 bg-zinc-800 rounded px-3 py-2 mb-3">
+          $ git push --force origin main
+        </div>
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-xs font-medium uppercase tracking-wide text-red-400">
+            Risk Level:
+          </span>
+          <div className="flex-1 h-2 rounded-full bg-zinc-700 overflow-hidden">
+            <div className="h-full w-full bg-red-500 rounded-full" />
+          </div>
+          <span className="text-xs font-bold text-red-400">HIGH</span>
+        </div>
+        <div className="text-xs text-zinc-400 mb-4 space-y-1">
+          <div className="font-medium text-zinc-300">Why flagged:</div>
+          <div>&bull; Destructive operation (--force)</div>
+          <div>&bull; Targets protected branch (main)</div>
+          <div>&bull; Cannot be undone</div>
+        </div>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => setDecision('denied')}
+            className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+              decision === 'denied'
+                ? 'bg-red-500 text-white'
+                : 'bg-zinc-800 text-zinc-300 hover:bg-red-500/20 hover:text-red-300 border border-zinc-600'
+            }`}
+            aria-label="Deny this tool execution"
+          >
+            Deny
+          </button>
+          <button
+            type="button"
+            onClick={() => setDecision('approved')}
+            className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+              decision === 'approved'
+                ? 'bg-emerald-500 text-white'
+                : 'bg-zinc-800 text-zinc-300 hover:bg-emerald-500/20 hover:text-emerald-300 border border-zinc-600'
+            }`}
+            aria-label="Approve this tool execution"
+          >
+            Approve
+          </button>
+        </div>
+        {decision !== 'pending' && (
+          <div
+            className={`mt-3 text-xs font-medium ${
+              decision === 'denied' ? 'text-red-400' : 'text-emerald-400'
+            }`}
+            role="status"
+            aria-live="polite"
+          >
+            {decision === 'denied' ? 'Execution denied — agent notified.' : 'Execution approved — proceeding.'}
+          </div>
+        )}
+      </div>
+
+      {/* Permission matrix */}
+      <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
+        <div className="text-sm font-semibold text-zinc-300 mb-3">Permission Matrix:</div>
+        <div className="space-y-2" role="list" aria-label="Permission matrix">
+          {PERMISSION_ROWS.map((row) => (
+            <div
+              key={row.tool}
+              className="flex items-center justify-between text-sm py-1 px-2 rounded hover:bg-zinc-800 transition-colors"
+              role="listitem"
+            >
+              <span className="font-mono text-zinc-400">{row.tool}</span>
+              <span className="flex items-center gap-2 text-xs">
+                <span className="text-zinc-600" aria-hidden="true">
+                  {'·'.repeat(12)}
+                </span>
+                <span className={row.color}>
+                  <span aria-hidden="true">{row.icon} </span>
+                  {row.label}
+                </span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ========================= Main Component =========================
+
+/** Maps pillar ID to descriptive label for screen readers */
+const PILLAR_LABELS: Record<PillarId, string> = {
+  pty: 'PTY Isolation: Each agent runs in its own isolated pseudo-terminal with separate filesystem and process boundaries, preventing lateral movement between agents.',
+  storage: 'Local Vector Storage: All data including agent memory, conversations, and project knowledge is stored locally with zero cloud dependencies.',
+  approval: 'Granular Tool Approval: Every tool execution is classified by risk level and requires appropriate approval before proceeding.',
+};
+
+/**
+ * Interactive 3-state architecture diagram that visualizes the active
+ * security pillar. Switches between PTY isolation, local storage, and
+ * tool approval views.
+ *
+ * @param props - SecurityArchDiagramProps
+ * @returns Architecture diagram element
+ */
+export const SecurityArchDiagram: React.FC<SecurityArchDiagramProps> = ({ activePillar }) => {
+  return (
+    <div
+      id="security-arch-diagram"
+      className="rounded-xl border border-zinc-700 bg-zinc-950 p-6"
+      role="img"
+      aria-label={PILLAR_LABELS[activePillar]}
+      data-testid="security-arch-diagram"
+    >
+      {/* Machine boundary header */}
+      <div className="text-xs font-mono text-zinc-500 mb-4 uppercase tracking-wider">
+        Your Machine
+      </div>
+
+      {/* Render active state */}
+      <div className="motion-safe:animate-fade-in">
+        {activePillar === 'pty' && <PtyIsolationDiagram />}
+        {activePillar === 'storage' && <LocalStorageDiagram />}
+        {activePillar === 'approval' && <ToolApprovalDiagram />}
+      </div>
+
+      {/* Screen reader text alternative */}
+      <div className="sr-only">
+        {PILLAR_LABELS[activePillar]}
+      </div>
+    </div>
+  );
+};
+
+SecurityArchDiagram.displayName = 'SecurityArchDiagram';

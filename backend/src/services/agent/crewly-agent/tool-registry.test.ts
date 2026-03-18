@@ -279,6 +279,112 @@ describe('Tool Registry', () => {
         text: '[Sam] Already prefixed message',
       });
     });
+
+    it('should upload image when imagePath is provided', async () => {
+      mockClient.post.mockResolvedValue({ success: true, data: { fileId: 'F123' }, status: 200 });
+
+      const result = await (tools.reply_slack as any).execute({
+        channelId: 'C123',
+        text: 'Here is the screenshot',
+        imagePath: '/tmp/screenshot.png',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.uploaded).toBe(true);
+      expect(result.filePath).toBe('/tmp/screenshot.png');
+      expect(mockClient.post).toHaveBeenCalledWith('/slack/upload-image', {
+        channelId: 'C123',
+        filePath: '/tmp/screenshot.png',
+        initialComment: '[Orc] Here is the screenshot',
+      });
+    });
+
+    it('should upload image with threadTs', async () => {
+      mockClient.post.mockResolvedValue({ success: true, data: { fileId: 'F123' }, status: 200 });
+
+      await (tools.reply_slack as any).execute({
+        channelId: 'C123',
+        text: 'Screenshot',
+        threadTs: '123.456',
+        imagePath: '/tmp/shot.png',
+      });
+
+      expect(mockClient.post).toHaveBeenCalledWith('/slack/upload-image', {
+        channelId: 'C123',
+        filePath: '/tmp/shot.png',
+        initialComment: '[Orc] Screenshot',
+        threadTs: '123.456',
+      });
+    });
+
+    it('should return error when image upload fails', async () => {
+      mockClient.post.mockResolvedValue({ success: false, data: null, status: 404, error: 'File not found: /tmp/missing.png' });
+
+      const result = await (tools.reply_slack as any).execute({
+        channelId: 'C123',
+        text: 'Missing image',
+        imagePath: '/tmp/missing.png',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('File not found: /tmp/missing.png');
+    });
+
+    it('should use Slack context channelId for image upload when channelId omitted', async () => {
+      mockClient.post.mockResolvedValue({ success: true, data: { fileId: 'F456' }, status: 200 });
+
+      const toolsWithContext = createTools(mockClient, 'crewly-orc', '/test/project', undefined, undefined, { channelId: 'C-FROM-CONTEXT', threadTs: '999.888' });
+
+      const result = await (toolsWithContext.reply_slack as any).execute({
+        text: 'Image from context',
+        imagePath: '/tmp/ctx.png',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.uploaded).toBe(true);
+      expect(mockClient.post).toHaveBeenCalledWith('/slack/upload-image', {
+        channelId: 'C-FROM-CONTEXT',
+        filePath: '/tmp/ctx.png',
+        initialComment: '[Orc] Image from context',
+        threadTs: '999.888',
+      });
+    });
+
+    it('should return error when no channelId for image upload', async () => {
+      const toolsNoContext = createTools(mockClient, 'crewly-orc', '/test/project');
+
+      const result = await (toolsNoContext.reply_slack as any).execute({
+        text: 'Image without channel',
+        imagePath: '/tmp/no-channel.png',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('No channelId');
+    });
+
+    it('should skip dedup and throttle for image uploads', async () => {
+      mockClient.post.mockResolvedValue({ success: true, data: {}, status: 200 });
+
+      // Send a text message first to populate dedup and throttle state
+      await (tools.reply_slack as any).execute({
+        channelId: 'C123',
+        text: 'Duplicate text',
+      });
+
+      // Image upload with same text should NOT be deduped or throttled
+      const result = await (tools.reply_slack as any).execute({
+        channelId: 'C123',
+        text: 'Duplicate text',
+        imagePath: '/tmp/image.png',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.uploaded).toBe(true);
+      // Should have called upload-image, not been throttled/deduped
+      expect(mockClient.post).toHaveBeenCalledWith('/slack/upload-image', expect.objectContaining({
+        filePath: '/tmp/image.png',
+      }));
+    });
   });
 
   describe('stripNotifyMarkers', () => {
@@ -1677,11 +1783,12 @@ describe('Tool Registry', () => {
 
   describe('git_status', () => {
     it('should parse git status output correctly', async () => {
-      jest.spyOn(require('child_process'), 'execSync').mockImplementation((...args: unknown[]) => {
+      jest.spyOn(require('child_process'), 'exec').mockImplementation((...args: unknown[]) => {
         const cmd = String(args[0]);
-        if (cmd.includes('rev-parse')) return 'main\n';
-        if (cmd.includes('status --porcelain')) return 'M  staged.ts\n M unstaged.ts\n?? new.ts\n';
-        return '';
+        const callback = args[args.length - 1] as Function;
+        if (cmd.includes('rev-parse')) { callback(null, 'main\n', ''); return; }
+        if (cmd.includes('status --porcelain')) { callback(null, 'M  staged.ts\n M unstaged.ts\n?? new.ts\n', ''); return; }
+        callback(null, '', '');
       });
 
       const result = await (tools.git_status as any).execute({ projectPath: '/test/project' });
@@ -1696,8 +1803,9 @@ describe('Tool Registry', () => {
     });
 
     it('should handle errors gracefully', async () => {
-      jest.spyOn(require('child_process'), 'execSync').mockImplementation(() => {
-        throw new Error('not a git repository');
+      jest.spyOn(require('child_process'), 'exec').mockImplementation((...args: unknown[]) => {
+        const callback = args[args.length - 1] as Function;
+        callback(new Error('not a git repository'));
       });
 
       const result = await (tools.git_status as any).execute({ projectPath: '/not/a/repo' });
@@ -1711,10 +1819,11 @@ describe('Tool Registry', () => {
 
   describe('git_diff', () => {
     it('should return unstaged diff by default', async () => {
-      jest.spyOn(require('child_process'), 'execSync').mockImplementation((...args: unknown[]) => {
+      jest.spyOn(require('child_process'), 'exec').mockImplementation((...args: unknown[]) => {
         const cmd = String(args[0]);
-        if (cmd === 'git diff') return 'diff --git a/file.ts\n+added line\n';
-        return '';
+        const callback = args[args.length - 1] as Function;
+        if (cmd === 'git diff') { callback(null, 'diff --git a/file.ts\n+added line\n', ''); return; }
+        callback(null, '', '');
       });
 
       const result = await (tools.git_diff as any).execute({ projectPath: '/test/project', staged: false });
@@ -1727,10 +1836,11 @@ describe('Tool Registry', () => {
     });
 
     it('should return staged diff when staged=true', async () => {
-      jest.spyOn(require('child_process'), 'execSync').mockImplementation((...args: unknown[]) => {
+      jest.spyOn(require('child_process'), 'exec').mockImplementation((...args: unknown[]) => {
         const cmd = String(args[0]);
-        if (cmd === 'git diff --cached') return 'staged diff output\n';
-        return '';
+        const callback = args[args.length - 1] as Function;
+        if (cmd === 'git diff --cached') { callback(null, 'staged diff output\n', ''); return; }
+        callback(null, '', '');
       });
 
       const result = await (tools.git_diff as any).execute({ projectPath: '/test/project', staged: true });
@@ -1743,7 +1853,10 @@ describe('Tool Registry', () => {
 
     it('should truncate long diffs to 5000 chars', async () => {
       const longDiff = 'x'.repeat(6000);
-      jest.spyOn(require('child_process'), 'execSync').mockReturnValue(longDiff);
+      jest.spyOn(require('child_process'), 'exec').mockImplementation((...args: unknown[]) => {
+        const callback = args[args.length - 1] as Function;
+        callback(null, longDiff, '');
+      });
 
       const result = await (tools.git_diff as any).execute({ projectPath: '/test/project', staged: false });
 
@@ -1759,11 +1872,12 @@ describe('Tool Registry', () => {
   describe('git_commit', () => {
     it('should stage all and commit when no files specified', async () => {
       const calls: string[] = [];
-      jest.spyOn(require('child_process'), 'execSync').mockImplementation((...args: unknown[]) => {
+      jest.spyOn(require('child_process'), 'exec').mockImplementation((...args: unknown[]) => {
         const cmd = String(args[0]);
         calls.push(cmd);
-        if (cmd.includes('rev-parse HEAD')) return 'abc123def\n';
-        return '';
+        const callback = args[args.length - 1] as Function;
+        if (cmd.includes('rev-parse HEAD')) { callback(null, 'abc123def\n', ''); return; }
+        callback(null, '', '');
       });
 
       const result = await (tools.git_commit as any).execute({
@@ -1781,11 +1895,12 @@ describe('Tool Registry', () => {
 
     it('should stage specific files when provided', async () => {
       const calls: string[] = [];
-      jest.spyOn(require('child_process'), 'execSync').mockImplementation((...args: unknown[]) => {
+      jest.spyOn(require('child_process'), 'exec').mockImplementation((...args: unknown[]) => {
         const cmd = String(args[0]);
         calls.push(cmd);
-        if (cmd.includes('rev-parse HEAD')) return 'def456\n';
-        return '';
+        const callback = args[args.length - 1] as Function;
+        if (cmd.includes('rev-parse HEAD')) { callback(null, 'def456\n', ''); return; }
+        callback(null, '', '');
       });
 
       const result = await (tools.git_commit as any).execute({
@@ -1804,10 +1919,11 @@ describe('Tool Registry', () => {
     });
 
     it('should handle commit errors gracefully', async () => {
-      jest.spyOn(require('child_process'), 'execSync').mockImplementation((...args: unknown[]) => {
+      jest.spyOn(require('child_process'), 'exec').mockImplementation((...args: unknown[]) => {
         const cmd = String(args[0]);
-        if (cmd.includes('git commit')) throw new Error('nothing to commit');
-        return '';
+        const callback = args[args.length - 1] as Function;
+        if (cmd.includes('git commit')) { callback(new Error('nothing to commit')); return; }
+        callback(null, '', '');
       });
 
       const result = await (tools.git_commit as any).execute({
@@ -1924,11 +2040,34 @@ describe('Tool Registry', () => {
       expect(result.success).toBe(false);
     }, 10000);
 
-    it('should use process isolation (spawnSync, not execSync)', async () => {
+    it('should use process isolation (async spawn, not execSync)', async () => {
       const result = await bashTools.bash_exec.execute({ command: 'echo $$' }) as any;
       expect(result.success).toBe(true);
       const childPid = parseInt(result.stdout.trim(), 10);
       expect(childPid).not.toBe(process.pid);
     });
+
+    it('should not block the event loop during execution', async () => {
+      // Start a bash command that takes ~1s
+      const bashPromise = bashTools.bash_exec.execute({ command: 'sleep 1 && echo done', timeout: 5000 });
+
+      // While bash is running, check that event loop is NOT blocked
+      // by running a setImmediate callback (which requires event loop to be free)
+      const eventLoopFree = await new Promise<boolean>((resolve) => {
+        const start = Date.now();
+        setImmediate(() => {
+          // If event loop was blocked, this would only fire after bash finishes (~1s)
+          // If non-blocking, it fires almost immediately (<100ms)
+          resolve(Date.now() - start < 500);
+        });
+      });
+
+      expect(eventLoopFree).toBe(true);
+
+      // Wait for bash to complete
+      const result = await bashPromise as any;
+      expect(result.success).toBe(true);
+      expect(result.stdout).toContain('done');
+    }, 10000);
   });
 });

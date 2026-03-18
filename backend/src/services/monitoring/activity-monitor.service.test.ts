@@ -330,7 +330,7 @@ describe('ActivityMonitorService', () => {
       }));
     });
 
-    it('should mark stale orchestrator as inactive when session is dead', async () => {
+    it('should skip orchestrator in stale check (managed by OrchestratorHeartbeatMonitor)', async () => {
       mockAgentHeartbeatService.detectStaleAgents.mockResolvedValue(['orchestrator']);
       mockAgentHeartbeatService.getAllAgentHeartbeats.mockResolvedValue({
         orchestrator: {
@@ -344,18 +344,17 @@ describe('ActivityMonitorService', () => {
         teamMembers: {},
         metadata: { lastUpdated: new Date().toISOString(), version: '1.0.0' },
       });
-      // Orchestrator session is dead
       mockSessionBackend.sessionExists.mockReturnValue(false);
 
       await (service as any).performActivityCheck();
 
-      // Heartbeat file should be updated for dead orchestrator
-      expect(mockAgentHeartbeatService.updateAgentHeartbeat).toHaveBeenCalledWith(
+      // Orchestrator should NOT be marked inactive — managed by its own monitor
+      expect(mockAgentHeartbeatService.updateAgentHeartbeat).not.toHaveBeenCalledWith(
         CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
         undefined,
         'inactive'
       );
-      expect(mockStorageService.updateAgentStatus).toHaveBeenCalledWith(
+      expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalledWith(
         CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
         'inactive'
       );

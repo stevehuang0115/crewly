@@ -73,6 +73,7 @@ describe('Settings Types', () => {
         agentIdleTimeoutMinutes: 10,
         enableProactiveCompact: true,
         enableSelfEvolution: false,
+        tokenTracking: false,
       };
 
       expect(settings.defaultRuntime).toBe('claude-code');
@@ -102,6 +103,7 @@ describe('Settings Types', () => {
         agentIdleTimeoutMinutes: 15,
         enableProactiveCompact: true,
         enableSelfEvolution: false,
+        tokenTracking: false,
       };
 
       expect(settings.runtimeCommands['claude-code']).toContain('/custom/path');
@@ -163,6 +165,7 @@ describe('Settings Types', () => {
           agentIdleTimeoutMinutes: 10,
           enableProactiveCompact: true,
           enableSelfEvolution: false,
+          tokenTracking: false,
         },
         chat: {
           showRawTerminalOutput: false,

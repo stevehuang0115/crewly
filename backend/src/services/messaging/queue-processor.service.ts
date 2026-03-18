@@ -44,6 +44,9 @@ import { StorageService } from '../core/storage.service.js';
  * processor.start();
  * ```
  */
+/** Time in milliseconds before a delivered message ID is purged from the dedup set */
+const DEDUP_TTL_MS = 300_000; // 5 minutes
+
 export class QueueProcessorService extends EventEmitter {
   private logger: ComponentLogger;
   private queueService: MessageQueueService;
@@ -54,6 +57,17 @@ export class QueueProcessorService extends EventEmitter {
   private processNextTimeout: ReturnType<typeof setTimeout> | null = null;
   /** Set to true when an early-return path has already scheduled the next run. */
   private nextAlreadyScheduled = false;
+
+  /**
+   * Tracks message IDs that were successfully delivered to an agent.
+   * Prevents duplicate delivery when the queue requeues a message that
+   * the agent has already received and started processing.
+   * Entries are purged after DEDUP_TTL_MS to prevent memory leaks.
+   */
+  private deliveredMessageIds: Map<string, number> = new Map();
+
+  /** Timer for periodic cleanup of stale dedup entries */
+  private dedupCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     queueService: MessageQueueService,
@@ -76,6 +90,7 @@ export class QueueProcessorService extends EventEmitter {
 
     this.running = true;
     this.queueService.on('enqueued', this.onMessageEnqueued);
+    this.startDedupCleanup();
     this.logger.info('Queue processor started');
 
     // Process any messages already in the queue
@@ -97,6 +112,9 @@ export class QueueProcessorService extends EventEmitter {
       clearTimeout(this.processNextTimeout);
       this.processNextTimeout = null;
     }
+
+    this.stopDedupCleanup();
+    this.deliveredMessageIds.clear();
 
     this.logger.info('Queue processor stopped');
   }
@@ -219,7 +237,7 @@ export class QueueProcessorService extends EventEmitter {
       // User messages and system events get shorter timeouts and force-delivery
       // to reduce delay. System events are fire-and-forget so force-delivery is
       // lower risk — prevents the 5×120s=10min retry loop that blocks notifications.
-      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT || message.source === MESSAGE_SOURCES.WHATSAPP || message.source === MESSAGE_SOURCES.GOOGLE_CHAT;
+      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT || message.source === MESSAGE_SOURCES.WHATSAPP || message.source === MESSAGE_SOURCES.GOOGLE_CHAT || message.source === MESSAGE_SOURCES.TELEGRAM;
       const readyTimeout = isUserMessage
         ? EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_TIMEOUT
         : isSystemEvent
@@ -352,6 +370,19 @@ export class QueueProcessorService extends EventEmitter {
         deliveryContent = `[${CHAT_ROUTING_CONSTANTS.MESSAGE_PREFIX}:${message.conversationId}] ${message.content}`;
       }
 
+      // Inject [SLACK:channelId:threadTs] marker for Slack-sourced messages so
+      // crewly-agent runtimes can auto-fill reply_slack with the correct thread.
+      // Without this, in-process agents have no way to discover the originating
+      // Slack channel/thread — they only see the [CHAT:conversationId] prefix.
+      if (message.source === MESSAGE_SOURCES.SLACK && message.sourceMetadata?.channelId) {
+        const channelId = message.sourceMetadata.channelId as string;
+        const threadTs = message.sourceMetadata.threadTs as string | undefined;
+        const slackMarker = threadTs
+          ? `[SLACK:${channelId}:${threadTs}]`
+          : `[SLACK:${channelId}]`;
+        deliveryContent = `${deliveryContent} ${slackMarker}`;
+      }
+
       // Route to the correct target session. System events may target
       // non-orchestrator agents (e.g. crewly-agent subscribers).
       const targetSession = message.targetSession || ORCHESTRATOR_SESSION_NAME;
@@ -369,6 +400,24 @@ export class QueueProcessorService extends EventEmitter {
         }
       }
 
+      // Deduplication: skip delivery if this message was already successfully
+      // delivered to the agent. This prevents duplicate responses when a message
+      // is requeued after AGENT_BUSY — the agent received it but is still processing.
+      if (this.deliveredMessageIds.has(message.id)) {
+        this.logger.info('Skipping duplicate delivery for already-delivered message', {
+          messageId: message.id,
+          source: message.source,
+          retryCount: message.retryCount || 0,
+        });
+
+        this.queueService.markCompleted(message.id, '');
+        if (batchedMessages.length > 0) {
+          this.queueService.markBatchCompleted(batchedMessages);
+        }
+        clearInterval(keepaliveInterval);
+        return;
+      }
+
       const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
         targetSession,
         deliveryContent,
@@ -381,9 +430,13 @@ export class QueueProcessorService extends EventEmitter {
       if (!deliveryResult.success) {
         const errorMsg = deliveryResult.error || 'Failed to deliver message to orchestrator';
 
-        // If agent is busy (actively processing), re-queue instead of permanently failing.
-        // This allows the message to be retried once the agent returns to prompt.
+        // If agent is busy, the message was actually received by the agent process
+        // (it just can't accept new messages right now). Mark it as delivered to
+        // prevent duplicate processing if it gets requeued.
         const isAgentBusy = errorMsg.includes('[AGENT_BUSY]');
+        if (isAgentBusy) {
+          this.deliveredMessageIds.set(message.id, Date.now());
+        }
         const currentRetries = message.retryCount || 0;
 
         if (isAgentBusy && currentRetries < MESSAGE_QUEUE_CONSTANTS.MAX_REQUEUE_RETRIES) {
@@ -435,6 +488,9 @@ export class QueueProcessorService extends EventEmitter {
 
         return;
       }
+
+      // Track successful delivery for deduplication before marking complete.
+      this.deliveredMessageIds.set(message.id, Date.now());
 
       // Fire-and-forget: mark as completed immediately after delivery.
       // Responses are handled asynchronously by the orchestrator through
@@ -494,5 +550,55 @@ export class QueueProcessorService extends EventEmitter {
     if (this.running && this.queueService.hasPending()) {
       this.scheduleProcessNext(MESSAGE_QUEUE_CONSTANTS.INTER_MESSAGE_DELAY);
     }
+  }
+
+  /**
+   * Start periodic cleanup of stale entries in the delivered message dedup set.
+   * Runs every DEDUP_TTL_MS and removes entries older than DEDUP_TTL_MS.
+   */
+  private startDedupCleanup(): void {
+    if (this.dedupCleanupTimer) return;
+    this.dedupCleanupTimer = setInterval(() => {
+      this.purgeStaleDedup();
+    }, DEDUP_TTL_MS);
+    if (this.dedupCleanupTimer.unref) {
+      this.dedupCleanupTimer.unref();
+    }
+  }
+
+  /**
+   * Stop the periodic dedup cleanup timer.
+   */
+  private stopDedupCleanup(): void {
+    if (this.dedupCleanupTimer) {
+      clearInterval(this.dedupCleanupTimer);
+      this.dedupCleanupTimer = null;
+    }
+  }
+
+  /**
+   * Remove entries from the dedup set that are older than DEDUP_TTL_MS.
+   */
+  private purgeStaleDedup(): void {
+    const cutoff = Date.now() - DEDUP_TTL_MS;
+    let purged = 0;
+    for (const [id, timestamp] of this.deliveredMessageIds) {
+      if (timestamp < cutoff) {
+        this.deliveredMessageIds.delete(id);
+        purged++;
+      }
+    }
+    if (purged > 0) {
+      this.logger.debug('Purged stale dedup entries', { purged, remaining: this.deliveredMessageIds.size });
+    }
+  }
+
+  /**
+   * Get the number of tracked delivered message IDs (for testing).
+   *
+   * @returns Number of entries in the dedup set
+   */
+  getDeliveredMessageCount(): number {
+    return this.deliveredMessageIds.size;
   }
 }

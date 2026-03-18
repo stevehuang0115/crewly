@@ -78,6 +78,9 @@ export const Teams: React.FC = () => {
       filtered = filtered.filter(team => team.projectIds?.includes(projectFilter));
     }
 
+    // Hide sub-teams from top-level grid — they appear under their parent team
+    filtered = filtered.filter(team => !team.parentTeamId);
+
     return filtered;
   }, [teams, searchQuery, statusFilter, projectFilter]);
 
@@ -87,13 +90,13 @@ export const Teams: React.FC = () => {
    */
   const subTeamCountMap = useMemo(() => {
     const childCountMap = new Map<string, number>();
-    for (const t of filteredTeams) {
+    for (const t of teams) {
       if (t.parentTeamId) {
         childCountMap.set(t.parentTeamId, (childCountMap.get(t.parentTeamId) || 0) + 1);
       }
     }
     return childCountMap;
-  }, [filteredTeams]);
+  }, [teams]);
 
   /**
    * Handle team member status change event from WebSocket.

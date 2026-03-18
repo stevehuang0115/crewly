@@ -17,6 +17,8 @@ import {
   ORCHESTRATOR_HEARTBEAT_CONSTANTS as CONFIG_ORCHESTRATOR_HEARTBEAT_CONSTANTS,
   MARKETPLACE_CONSTANTS as CONFIG_MARKETPLACE_CONSTANTS,
   TEMPLATE_MARKETPLACE_CONSTANTS as CONFIG_TEMPLATE_MARKETPLACE_CONSTANTS,
+  ADDON_CONSTANTS as CONFIG_ADDON_CONSTANTS,
+  AUDITOR_CONSTANTS as CONFIG_AUDITOR_CONSTANTS,
   PROCESS_EXIT_CODES as CONFIG_PROCESS_EXIT_CODES,
   WEB_CONSTANTS as CONFIG_WEB_CONSTANTS,
 } from '../../config/constants.js';
@@ -33,6 +35,8 @@ export const VERSION_CHECK_CONSTANTS = CONFIG_VERSION_CHECK_CONSTANTS;
 export const AGENT_HEARTBEAT_MONITOR_CONSTANTS = CONFIG_AGENT_HEARTBEAT_MONITOR_CONSTANTS;
 export const ORCHESTRATOR_HEARTBEAT_CONSTANTS = CONFIG_ORCHESTRATOR_HEARTBEAT_CONSTANTS;
 export const WEB_CONSTANTS = CONFIG_WEB_CONSTANTS;
+export const ADDON_CONSTANTS = CONFIG_ADDON_CONSTANTS;
+export const AUDITOR_CONSTANTS = CONFIG_AUDITOR_CONSTANTS;
 
 // Re-export specific constants that the backend needs from the main config
 export const ORCHESTRATOR_SESSION_NAME = CONFIG_CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
@@ -61,6 +65,8 @@ export const ENV_CONSTANTS = {
 	GEMINI_API_KEY: 'GEMINI_API_KEY',
 	/** Project path for auto-injecting into memory skill calls (#187) */
 	CREWLY_PROJECT_PATH: 'CREWLY_PROJECT_PATH',
+	/** Enable Claude Code telemetry for token tracking */
+	CLAUDE_CODE_ENABLE_TELEMETRY: 'CLAUDE_CODE_ENABLE_TELEMETRY',
 } as const;
 
 // Agent-specific timeout values (in milliseconds)
@@ -822,6 +828,27 @@ export const SLACK_FILE_UPLOAD_CONSTANTS = {
  * Used by SlackOrchestratorBridge to download generic files (PDFs, docs, etc.)
  * sent by users so agents can access them via file-reading tools.
  */
+/**
+ * Slack Socket Mode reconnection constants.
+ * Controls automatic reconnection when network drops cause the WebSocket
+ * to die and Bolt's built-in reconnect fails to recover.
+ */
+export const SLACK_RECONNECT_CONSTANTS = {
+	/** Initial delay before first reconnection attempt (ms) */
+	INITIAL_DELAY_MS: 2_000,
+	/** Maximum delay between reconnection attempts (ms) */
+	MAX_DELAY_MS: 60_000,
+	/** Backoff multiplier applied after each failed attempt */
+	BACKOFF_MULTIPLIER: 2,
+	/** Maximum number of consecutive reconnection attempts before giving up (0 = unlimited) */
+	MAX_ATTEMPTS: 0,
+	/** Grace period after a disconnect before starting reconnection (ms).
+	 *  Gives Bolt's built-in reconnect a chance to recover first. */
+	GRACE_PERIOD_MS: 10_000,
+	/** Interval for periodic connection health checks (ms) */
+	HEALTH_CHECK_INTERVAL_MS: 30_000,
+} as const;
+
 export const SLACK_FILE_DOWNLOAD_CONSTANTS = {
 	/** Temp directory for downloaded files (relative to ~/.crewly/) */
 	TEMP_DIR: 'tmp/slack-files',
@@ -1133,7 +1160,7 @@ export const AUTH_CONSTANTS = {
 /** User plan type */
 export type UserPlan = (typeof AUTH_CONSTANTS.PLANS)[keyof typeof AUTH_CONSTANTS.PLANS];
 
-/** Admin portal constants */
+/** Admin console constants */
 export const ADMIN_CONSTANTS = {
 	/** Default admin credentials (overridable via env) */
 	CREDENTIALS: {

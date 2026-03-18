@@ -55,6 +55,9 @@ export interface GeneralSettings {
 
   /** Enable Self Evolution mode — orchestrator monitors for errors and self-triages */
   enableSelfEvolution: boolean;
+
+  /** Enable token usage tracking for agent sessions */
+  tokenTracking: boolean;
 }
 
 /**
@@ -288,6 +291,7 @@ export function getDefaultSettings(): CrewlySettings {
       agentIdleTimeoutMinutes: 10,
       enableProactiveCompact: true,
       enableSelfEvolution: false,
+      tokenTracking: false,
     },
     chat: {
       showRawTerminalOutput: false,

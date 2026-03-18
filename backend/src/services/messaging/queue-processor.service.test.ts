@@ -1298,4 +1298,197 @@ describe('QueueProcessorService', () => {
       );
     });
   });
+
+  describe('Slack metadata marker injection', () => {
+    it('should append [SLACK:channelId:threadTs] marker for Slack messages with full metadata', async () => {
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Hello from Slack',
+        conversationId: 'slack-C123-ts456',
+        source: 'slack',
+        sourceMetadata: {
+          slackResolve: jest.fn(),
+          channelId: 'C123',
+          threadTs: '1234567890.123456',
+        },
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc',
+        '[CHAT:slack-C123-ts456] Hello from Slack [SLACK:C123:1234567890.123456]',
+        'claude-code'
+      );
+    });
+
+    it('should append [SLACK:channelId] marker when threadTs is missing', async () => {
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Hello from Slack DM',
+        conversationId: 'slack-D999-ts111',
+        source: 'slack',
+        sourceMetadata: {
+          slackResolve: jest.fn(),
+          channelId: 'D999',
+        },
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc',
+        '[CHAT:slack-D999-ts111] Hello from Slack DM [SLACK:D999]',
+        'claude-code'
+      );
+    });
+
+    it('should NOT append SLACK marker for web_chat messages', async () => {
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Hello from web',
+        conversationId: 'conv-web',
+        source: 'web_chat',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc',
+        '[CHAT:conv-web] Hello from web',
+        'claude-code'
+      );
+    });
+
+    it('should NOT append SLACK marker for Slack messages without channelId', async () => {
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Slack no channel',
+        conversationId: 'conv-slack',
+        source: 'slack',
+        sourceMetadata: { slackResolve: jest.fn() },
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+
+      const deliveredContent = mockAgentRegistrationService.sendMessageToAgent.mock.calls[0][1] as string;
+      expect(deliveredContent).not.toContain('[SLACK:');
+    });
+  });
+
+  describe('message deduplication', () => {
+    it('should track delivered message IDs after successful delivery', async () => {
+      mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true });
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Deliver once',
+        conversationId: 'conv-1',
+        source: 'web_chat',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+      expect(processor.getDeliveredMessageCount()).toBe(1);
+    });
+
+    it('should skip delivery when AGENT_BUSY requeued message is retried', async () => {
+      // First delivery returns AGENT_BUSY (message was received but agent is processing)
+      mockAgentRegistrationService.sendMessageToAgent
+        .mockResolvedValueOnce({ success: false, error: '[AGENT_BUSY] Agent is processing' })
+        .mockResolvedValue({ success: true });
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Busy message',
+        conversationId: 'conv-busy',
+        source: 'slack',
+        sourceMetadata: { slackResolve: jest.fn() },
+      });
+
+      // First attempt: AGENT_BUSY → requeued with dedup marker
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+      expect(processor.getDeliveredMessageCount()).toBe(1);
+
+      // Retry after AGENT_READY_POLL_INTERVAL — should be skipped by dedup
+      jest.advanceTimersByTime(600);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      // sendMessageToAgent should NOT have been called again
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('should still deliver genuinely failed messages on retry', async () => {
+      // First delivery fails with a non-AGENT_BUSY error
+      mockAgentRegistrationService.sendMessageToAgent
+        .mockResolvedValueOnce({ success: false, error: 'Network error' });
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Will fail',
+        conversationId: 'conv-fail',
+        source: 'web_chat',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      // Delivery failed (not AGENT_BUSY), so message ID is NOT in dedup set
+      expect(processor.getDeliveredMessageCount()).toBe(0);
+    });
+
+    it('should clean up dedup entries on stop', async () => {
+      mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true });
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Track me',
+        conversationId: 'conv-1',
+        source: 'web_chat',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(processor.getDeliveredMessageCount()).toBe(1);
+
+      processor.stop();
+      expect(processor.getDeliveredMessageCount()).toBe(0);
+    });
+  });
 });

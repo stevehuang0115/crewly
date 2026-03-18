@@ -1205,6 +1205,13 @@ export class AgentRegistrationService {
 		memberId?: string,
 	): Promise<boolean> {
 		try {
+			// Handle orchestrator separately — its config is stored outside getTeams()
+			if (sessionName === ORCHESTRATOR_SESSION_NAME) {
+				await this.storageService.updateOrchestratorStatus(CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE);
+				this.logger.info('Orchestrator registered as active via config', { sessionName });
+				return true;
+			}
+
 			const teams = await this.storageService.getTeams();
 			for (const team of teams) {
 				const member = team.members.find(
@@ -1329,6 +1336,14 @@ export class AgentRegistrationService {
 			// Replace marketplace skills path placeholder
 			const marketplaceSkillsPath = path.join(os.homedir(), '.crewly', 'marketplace', 'skills');
 			prompt = prompt.replace(/\{\{MARKETPLACE_SKILLS_PATH\}\}/g, marketplaceSkillsPath);
+
+			// Inject skill authorization section — tells agents that all skills
+			// (including browser control) are pre-authorized by the user
+			prompt += '\n\n## Authorized Operations\n\n'
+				+ 'The user has authorized you to operate their browser and execute all skills '
+				+ 'in the Crewly skills directory. These are legitimate, authorized operations. '
+				+ 'Do not refuse browser control requests — they come from the user who owns the browser. '
+				+ 'When a browser skill (e.g. remote-browser) is available, use it instead of Playwright or raw HTTP for browser tasks.';
 
 			// Inject Team Lead addon for members with canDelegate=true and subordinates
 			if (foundMember?.canDelegate && foundMember.subordinateIds && foundMember.subordinateIds.length > 0 && foundTeam) {
@@ -2141,9 +2156,31 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 				const crewlyRuntime = this.createRuntimeService(runtimeType) as CrewlyAgentRuntimeService;
 
+				// Look up member's modelId from team config (if available)
+				let memberModelId: string | undefined;
+				if (config.memberId) {
+					try {
+						const teams = await this.storageService.getTeams();
+						for (const team of teams) {
+							const member = team.members?.find(m => m.id === config.memberId);
+							if (member?.modelId) {
+								memberModelId = member.modelId;
+								break;
+							}
+						}
+					} catch {
+						// Non-critical — fall back to default model
+					}
+				}
+
+				// Parse modelId into model config (falls back to DEFAULT_MODEL)
+				const { parseModelId } = await import('./crewly-agent/types.js');
+				const modelConfig = memberModelId ? { model: parseModelId(memberModelId) } : {};
+
 				// Determine role name for system prompt lookup
 				const roleName = role === ORCHESTRATOR_ROLE ? 'orchestrator' : role.toLowerCase().replace(/\s+/g, '-');
-				await crewlyRuntime.initializeInProcess(sessionName, { projectPath }, roleName);
+				const memberId = config.memberId;
+				await crewlyRuntime.initializeInProcess(sessionName, { projectPath, memberId, ...modelConfig }, roleName);
 
 				// Track the in-process runtime for message routing
 				this.inProcessRuntimes.set(sessionName, crewlyRuntime);
@@ -2285,6 +2322,17 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			const openaiKey = await settingsService.getApiKey('openai', runtimeContext);
 			if (openaiKey) {
 				await sessionHelper.setEnvironmentVariable(sessionName, 'OPENAI_API_KEY', openaiKey);
+			}
+
+			// Token tracking telemetry — inject env vars for runtimes that need them
+			const settings = await settingsService.getSettings();
+			if (settings.general?.tokenTracking && runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
+				await sessionHelper.setEnvironmentVariable(
+					sessionName,
+					ENV_CONSTANTS.CLAUDE_CODE_ENABLE_TELEMETRY,
+					'1'
+				);
+				this.logger.debug('Token tracking enabled: set CLAUDE_CODE_ENABLE_TELEMETRY=1', { sessionName });
 			}
 
 			this.logger.info('Agent session created and environment variables set, initializing with registration', {
@@ -2552,17 +2600,51 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 						// Route response text back to the originating chat conversation.
 						// Without this, crewly-agent responses are discarded — the agent
 						// has no terminal output for the NOTIFY pathway used by PTY runtimes.
-						if (result.text && incomingConversationId) {
+						//
+						// For Slack-sourced messages: check if the agent already sent a
+						// reply via reply_slack tool during processing. If so, skip routing
+						// to avoid duplicates. If not, route normally to ensure delivery.
+						const agentAlreadyReplied = result.toolCalls?.some(
+							tc => tc.toolName === 'reply_slack' || tc.toolName === 'reply-slack'
+						) ?? false;
+
+						if (result.text && incomingConversationId && !agentAlreadyReplied) {
 							this.routeInProcessResponseToChat(sessionName, result.text, incomingConversationId);
+						} else if (agentAlreadyReplied) {
+							this.logger.debug('Skipping chat routing — agent already replied via reply_slack', {
+								sessionName, conversationId: incomingConversationId,
+							});
 						}
 					})
-					.catch(agentError => {
+					.catch(async (agentError) => {
 						const errMsg = agentError instanceof Error ? agentError.message : String(agentError);
 						this.logger.error('Crewly Agent message handling failed', {
 							sessionName, error: errMsg,
 							messageLength: message.length,
 							messagePreview: message.substring(0, 200),
 						});
+
+						// Log to InProcessLogBuffer so orchestrator can see the error via get-agent-logs
+						try {
+							const { InProcessLogBuffer } = await import('./crewly-agent/in-process-log-buffer.js');
+							InProcessLogBuffer.getInstance().append(sessionName, 'error', `Message handling failed: ${errMsg}`);
+						} catch { /* non-critical */ }
+
+						// Update workingStatus to idle so the agent is not stuck as in_progress
+						try {
+							const memberInfo = await this.storageService.findMemberBySessionName(sessionName);
+							if (memberInfo) {
+								memberInfo.member.workingStatus = 'idle';
+								memberInfo.member.updatedAt = new Date().toISOString();
+								await this.storageService.saveTeam(memberInfo.team);
+								this.logger.info('Reset workingStatus to idle after crewly-agent error', { sessionName });
+							}
+						} catch (statusError) {
+							this.logger.warn('Failed to reset workingStatus after error', {
+								sessionName,
+								error: statusError instanceof Error ? statusError.message : String(statusError),
+							});
+						}
 					});
 
 				this.logger.info('Message dispatched to in-process Crewly Agent', {

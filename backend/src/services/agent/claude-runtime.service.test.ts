@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import { ClaudeRuntimeService } from './claude-runtime.service.js';
 import { SessionCommandHelper } from '../session/index.js';
 import { RUNTIME_TYPES } from '../../constants.js';
@@ -9,6 +9,7 @@ import { getDefaultSettings } from '../../types/settings.types.js';
 
 jest.mock('fs', () => ({
 	...jest.requireActual('fs'),
+	existsSync: jest.fn().mockReturnValue(false),
 	promises: {
 		...jest.requireActual('fs').promises,
 		mkdir: jest.fn().mockResolvedValue(undefined),
@@ -155,12 +156,14 @@ describe('ClaudeRuntimeService', () => {
 		const mockAtomicWriteJson = atomicWriteJson as jest.MockedFunction<typeof atomicWriteJson>;
 		const mockMkdir = fs.mkdir as jest.MockedFunction<typeof fs.mkdir>;
 		const mockGetSettingsService = getSettingsService as jest.MockedFunction<typeof getSettingsService>;
+		const mockExistsSync = existsSync as jest.MockedFunction<typeof existsSync>;
 
 		beforeEach(() => {
 			jest.clearAllMocks();
 			mockSafeReadJson.mockResolvedValue({});
 			mockAtomicWriteJson.mockResolvedValue(undefined);
 			mockMkdir.mockResolvedValue(undefined);
+			mockExistsSync.mockReturnValue(false); // Default: no pro addon installed
 			mockGetSettingsService.mockReturnValue({
 				getSettings: jest.fn().mockResolvedValue(getDefaultSettings()),
 			} as any);
@@ -289,6 +292,29 @@ describe('ClaudeRuntimeService', () => {
 
 			expect(result.success).toBe(false);
 			expect(result.error).toBe('Permission denied');
+		});
+
+		it('should skip playwright injection when crewly-pro addon is installed', async () => {
+			mockExistsSync.mockReturnValue(true);
+			mockSafeReadJson.mockResolvedValue({});
+
+			const result = await service.ensureClaudeMcpConfig('/test/project');
+
+			expect(result.success).toBe(true);
+			expect(result.totalServers).toBe(0);
+			expect(result.serverNames).toEqual([]);
+			expect(mockAtomicWriteJson).not.toHaveBeenCalled();
+		});
+
+		it('should inject playwright when crewly-pro addon is NOT installed', async () => {
+			mockExistsSync.mockReturnValue(false);
+			mockSafeReadJson.mockResolvedValue({});
+
+			const result = await service.ensureClaudeMcpConfig('/test/project');
+
+			expect(result.success).toBe(true);
+			expect(result.addedServers).toBe(1);
+			expect(result.serverNames).toContain('playwright');
 		});
 	});
 

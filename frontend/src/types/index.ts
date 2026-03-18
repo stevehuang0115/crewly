@@ -9,6 +9,7 @@ export interface TeamMember {
   agentStatus: 'inactive' | 'starting' | 'started' | 'active' | 'suspended' | 'activating'; // Connection/registration status (activating is deprecated)
   workingStatus: 'idle' | 'in_progress'; // Activity level status
   runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'crewly-agent'; // AI runtime to use
+  modelId?: string; // AI model override for crewly-agent runtime (format: provider/modelId)
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
   excludedRoleSkills?: string[]; // Role skills to exclude for this specific member
   currentTickets?: string[];
@@ -38,6 +39,17 @@ export interface TeamMember {
   /** Maximum number of concurrent tasks this member can handle. */
   maxConcurrentTasks?: number;
 }
+
+/** Supported AI models for crewly-agent runtime dropdown */
+export const SUPPORTED_MODELS = [
+  { id: 'google/gemini-3-flash-preview', label: 'Gemini 3 Flash (Preview)' },
+  { id: 'google/gemini-2.5-flash-preview-05-20', label: 'Gemini 2.5 Flash' },
+  { id: 'anthropic/claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+  { id: 'anthropic/claude-haiku-4-20250514', label: 'Claude Haiku 4' },
+  { id: 'openai/gpt-4o', label: 'GPT-4o' },
+  { id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini' },
+  { id: 'ollama/llama3', label: 'Llama 3 (Ollama)' },
+] as const;
 
 export interface Team {
   id: string;

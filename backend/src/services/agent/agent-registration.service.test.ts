@@ -377,6 +377,101 @@ describe('AgentRegistrationService', () => {
 			);
 		});
 
+		it('should set CLAUDE_CODE_ENABLE_TELEMETRY when tokenTracking is enabled for claude-code runtime', async () => {
+			// Override settings mock to enable tokenTracking
+			const { getSettingsService } = require('../settings/settings.service.js');
+			(getSettingsService as jest.Mock).mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue({
+					general: { autoResumeOnRestart: true, tokenTracking: true },
+				}),
+				getApiKey: jest.fn().mockResolvedValue(undefined),
+			});
+
+			mockSessionHelper.sessionExists
+				.mockReturnValueOnce(false)
+				.mockReturnValueOnce(true);
+			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+			mockReadFile
+				.mockResolvedValueOnce('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}')
+				.mockResolvedValueOnce('Register {{SESSION_ID}}');
+
+			const result = await service.createAgentSession({
+				sessionName: 'test-session',
+				role: 'developer',
+				runtimeType: 'claude-code',
+			});
+
+			expect(result.success).toBe(true);
+			expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith(
+				'test-session',
+				'CLAUDE_CODE_ENABLE_TELEMETRY',
+				'1'
+			);
+		});
+
+		it('should NOT set CLAUDE_CODE_ENABLE_TELEMETRY when tokenTracking is disabled', async () => {
+			// Explicitly reset settings mock to have tokenTracking disabled
+			const { getSettingsService } = require('../settings/settings.service.js');
+			(getSettingsService as jest.Mock).mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue({
+					general: { autoResumeOnRestart: true, tokenTracking: false },
+				}),
+				getApiKey: jest.fn().mockResolvedValue(undefined),
+			});
+
+			mockSessionHelper.sessionExists
+				.mockReturnValueOnce(false)
+				.mockReturnValueOnce(true);
+			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+			mockReadFile
+				.mockResolvedValueOnce('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}')
+				.mockResolvedValueOnce('Register {{SESSION_ID}}');
+
+			const result = await service.createAgentSession({
+				sessionName: 'test-session',
+				role: 'developer',
+				runtimeType: 'claude-code',
+			});
+
+			expect(result.success).toBe(true);
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith(
+				'test-session',
+				'CLAUDE_CODE_ENABLE_TELEMETRY',
+				'1'
+			);
+		});
+
+		it('should NOT set CLAUDE_CODE_ENABLE_TELEMETRY for non-claude-code runtimes even when tokenTracking is enabled', async () => {
+			const { getSettingsService } = require('../settings/settings.service.js');
+			(getSettingsService as jest.Mock).mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue({
+					general: { autoResumeOnRestart: true, tokenTracking: true },
+				}),
+				getApiKey: jest.fn().mockResolvedValue(undefined),
+			});
+
+			mockSessionHelper.sessionExists
+				.mockReturnValueOnce(false)
+				.mockReturnValueOnce(true);
+			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+			mockReadFile
+				.mockResolvedValueOnce('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}')
+				.mockResolvedValueOnce('Register {{SESSION_ID}}');
+
+			const result = await service.createAgentSession({
+				sessionName: 'test-session',
+				role: 'developer',
+				runtimeType: 'gemini-cli',
+			});
+
+			expect(result.success).toBe(true);
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith(
+				'test-session',
+				'CLAUDE_CODE_ENABLE_TELEMETRY',
+				'1'
+			);
+		});
+
 		it('should attempt recovery when session already exists', async () => {
 			mockSessionHelper.sessionExists.mockReturnValue(true);
 			mockRuntimeService.detectRuntimeWithCommand.mockResolvedValue(true);
@@ -2678,6 +2773,8 @@ describe('AgentRegistrationService', () => {
 				finishReason: 'stop',
 			});
 
+			const routeSpy = jest.spyOn(service as any, 'routeInProcessResponseToChat');
+
 			const result = await service.sendMessageToAgent(
 				'crewly-chat',
 				'[CHAT:conv-123] Process this task',
@@ -2685,14 +2782,51 @@ describe('AgentRegistrationService', () => {
 			);
 
 			expect(result.success).toBe(true);
-			// handleMessage is called twice: system prompt (createAgentSession) + actual message
-			const lastCall = mockCrewlyRuntime.handleMessage.mock.calls.at(-1);
-			expect(lastCall?.[0]).toBe('[CHAT:conv-123] Process this task');
 
 			// Wait for fire-and-forget async callback to complete
 			await new Promise(r => setTimeout(r, 50));
-			// Note: routeInProcessResponseToChat uses lazy import — the actual
-			// chat gateway call is tested via integration tests
+
+			// Web chat messages should be routed to chat gateway
+			expect(routeSpy).toHaveBeenCalledWith('crewly-chat', 'Task completed successfully', 'conv-123');
+			routeSpy.mockRestore();
+		});
+
+		it('should NOT route response to chat for Slack-sourced messages (dedup fix)', async () => {
+			// Setup: create the in-process runtime
+			mockReadFile.mockResolvedValue('System prompt');
+			mockAccess.mockRejectedValue(new Error('ENOENT'));
+
+			await service.createAgentSession({
+				sessionName: 'crewly-slack',
+				role: 'developer',
+				runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+			});
+
+			mockCrewlyRuntime.handleMessage.mockResolvedValueOnce({
+				text: 'Response via reply_slack',
+				steps: 2,
+				usage: { input: 100, output: 50 },
+				toolCalls: [],
+				finishReason: 'stop',
+			});
+
+			const routeSpy = jest.spyOn(service as any, 'routeInProcessResponseToChat');
+
+			const result = await service.sendMessageToAgent(
+				'crewly-slack',
+				'[CHAT:slack-C123-ts456] Hello from Slack [SLACK:C123:1234567890.123]',
+				RUNTIME_TYPES.CREWLY_AGENT as any
+			);
+
+			expect(result.success).toBe(true);
+
+			// Wait for fire-and-forget async callback to complete
+			await new Promise(r => setTimeout(r, 50));
+
+			// Slack messages should NOT be routed to chat gateway — the agent
+			// already sends responses via reply_slack tool to avoid duplicates.
+			expect(routeSpy).not.toHaveBeenCalled();
+			routeSpy.mockRestore();
 		});
 	});
 
@@ -2792,6 +2926,75 @@ describe('AgentRegistrationService', () => {
 			await expect(
 				(service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.CLAUDE_CODE),
 			).resolves.not.toThrow();
+		});
+	});
+
+	describe('registerMemberActive', () => {
+		it('should use updateOrchestratorStatus for orchestrator session', async () => {
+			const result = await (service as any).registerMemberActive(
+				'crewly-orc',
+				'orchestrator',
+			);
+
+			expect(result).toBe(true);
+			expect(mockStorageService.updateOrchestratorStatus).toHaveBeenCalledWith('active');
+		});
+
+		it('should find team member by sessionName', async () => {
+			const mockTeam = {
+				id: 'team-1',
+				members: [
+					{ id: 'member-1', sessionName: 'dev-session', agentStatus: 'inactive', workingStatus: 'idle' },
+				],
+			} as any;
+			mockStorageService.getTeams.mockResolvedValue([mockTeam]);
+			mockStorageService.saveTeam = jest.fn().mockResolvedValue(undefined);
+
+			const result = await (service as any).registerMemberActive(
+				'dev-session',
+				'developer',
+			);
+
+			expect(result).toBe(true);
+			expect(mockTeam.members[0].agentStatus).toBe('active');
+			expect(mockStorageService.saveTeam).toHaveBeenCalledWith(mockTeam);
+		});
+
+		it('should find team member by memberId when sessionName does not match', async () => {
+			const mockTeam = {
+				id: 'team-1',
+				members: [
+					{ id: 'member-abc', sessionName: '', agentStatus: 'inactive', workingStatus: 'idle' },
+				],
+			} as any;
+			mockStorageService.getTeams.mockResolvedValue([mockTeam]);
+			mockStorageService.saveTeam = jest.fn().mockResolvedValue(undefined);
+
+			const result = await (service as any).registerMemberActive(
+				'new-session',
+				'developer',
+				'member-abc',
+			);
+
+			expect(result).toBe(true);
+			expect(mockTeam.members[0].agentStatus).toBe('active');
+			expect(mockTeam.members[0].sessionName).toBe('new-session');
+		});
+
+		it('should return false when member not found in any team', async () => {
+			mockStorageService.getTeams.mockResolvedValue([{
+				id: 'team-1',
+				members: [
+					{ id: 'other-member', sessionName: 'other-session', agentStatus: 'inactive' },
+				],
+			} as any]);
+
+			const result = await (service as any).registerMemberActive(
+				'unknown-session',
+				'developer',
+			);
+
+			expect(result).toBe(false);
 		});
 	});
 });

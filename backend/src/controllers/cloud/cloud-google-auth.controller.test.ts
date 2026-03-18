@@ -368,8 +368,8 @@ describe('Cloud Google Auth Controller', () => {
       expect(redirectUrl).toContain('/login?error=');
     });
 
-    it('should use CLOUD_PORTAL_URL env var for redirects', async () => {
-      process.env['CLOUD_PORTAL_URL'] = 'https://portal.example.com';
+    it('should use CLOUD_CONSOLE_URL env var for redirects', async () => {
+      process.env['CLOUD_CONSOLE_URL'] = 'https://console.example.com';
 
       const req = mockReq({ query: { error: 'access_denied' } });
       const res = mockRes();
@@ -377,7 +377,7 @@ describe('Cloud Google Auth Controller', () => {
       await cloudGoogleCallback(req, res, mockNext);
 
       const redirectUrl = (res.redirect as jest.Mock).mock.calls[0][0] as string;
-      expect(redirectUrl).toContain('portal.example.com');
+      expect(redirectUrl).toContain('console.example.com');
     });
   });
 });

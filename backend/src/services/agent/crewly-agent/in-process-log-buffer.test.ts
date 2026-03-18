@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { InProcessLogBuffer } from './in-process-log-buffer.js';
+import { CREWLY_CONSTANTS, LOG_ROTATION_CONSTANTS } from '../../../constants.js';
 
 describe('InProcessLogBuffer', () => {
   let buffer: InProcessLogBuffer;
@@ -165,6 +169,97 @@ describe('InProcessLogBuffer', () => {
 
       // Old handler should NOT be called since instance was reset
       expect(handler).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('file persistence', () => {
+    const sessionLogsDir = path.join(
+      os.homedir(),
+      CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+      CREWLY_CONSTANTS.PATHS.LOGS_DIR,
+      LOG_ROTATION_CONSTANTS.SESSIONS_LOG_DIR,
+    );
+
+    const testSessionName = `__test-inprocess-${Date.now()}`;
+
+    afterEach(() => {
+      // Clean up test log file
+      const logPath = path.join(sessionLogsDir, `${testSessionName}.log`);
+      try { fs.unlinkSync(logPath); } catch { /* may not exist */ }
+    });
+
+    it('should create a log file on registerSession', (done) => {
+      buffer.registerSession(testSessionName);
+      const logPath = path.join(sessionLogsDir, `${testSessionName}.log`);
+      // WriteStream opens the file lazily — give it a tick to flush the header
+      setTimeout(() => {
+        expect(fs.existsSync(logPath)).toBe(true);
+        done();
+      }, 100);
+    });
+
+    it('should write log entries to disk on append', (done) => {
+      buffer.registerSession(testSessionName);
+      buffer.append(testSessionName, 'info', 'disk test message');
+      buffer.append(testSessionName, 'error', 'disk error message');
+
+      // WriteStream is async — give it a tick to flush
+      setTimeout(() => {
+        const logPath = path.join(sessionLogsDir, `${testSessionName}.log`);
+        const content = fs.readFileSync(logPath, 'utf8');
+        expect(content).toContain('SESSION STARTED');
+        expect(content).toContain('disk test message');
+        expect(content).toContain('ERROR: disk error message');
+        done();
+      }, 100);
+    });
+
+    it('should write SESSION ENDED marker on removeSession', (done) => {
+      buffer.registerSession(testSessionName);
+      buffer.append(testSessionName, 'info', 'before shutdown');
+      buffer.removeSession(testSessionName);
+
+      setTimeout(() => {
+        const logPath = path.join(sessionLogsDir, `${testSessionName}.log`);
+        const content = fs.readFileSync(logPath, 'utf8');
+        expect(content).toContain('SESSION ENDED');
+        done();
+      }, 100);
+    });
+
+    it('should write RESTARTED marker when session is re-registered', (done) => {
+      buffer.registerSession(testSessionName);
+      buffer.append(testSessionName, 'info', 'first run');
+      buffer.removeSession(testSessionName);
+
+      // Re-register same session (simulates restart)
+      setTimeout(() => {
+        buffer.registerSession(testSessionName);
+        buffer.append(testSessionName, 'info', 'second run');
+
+        setTimeout(() => {
+          const logPath = path.join(sessionLogsDir, `${testSessionName}.log`);
+          const content = fs.readFileSync(logPath, 'utf8');
+          expect(content).toContain('SESSION STARTED');
+          expect(content).toContain('first run');
+          expect(content).toContain('SESSION RESTARTED');
+          expect(content).toContain('second run');
+          done();
+        }, 100);
+      }, 100);
+    });
+
+    it('should include full ISO timestamp in file entries', (done) => {
+      buffer.registerSession(testSessionName);
+      buffer.append(testSessionName, 'info', 'timestamp check');
+
+      setTimeout(() => {
+        const logPath = path.join(sessionLogsDir, `${testSessionName}.log`);
+        const content = fs.readFileSync(logPath, 'utf8');
+        // File entries should have full ISO timestamp like "2026-03-18T16:01:00.000Z"
+        expect(content).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z.*timestamp check/);
+        done();
+      }, 100);
     });
   });
 });

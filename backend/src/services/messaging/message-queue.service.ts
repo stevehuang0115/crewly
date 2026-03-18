@@ -130,10 +130,13 @@ export class MessageQueueService extends EventEmitter {
 
     if (data.currentMessage) {
       const msg = data.currentMessage as QueuedMessage;
-      msg.status = 'pending';
-      msg.processingStartedAt = undefined;
-      if (msg.source !== 'system_event') {
-        restoredQueue.push(msg);
+      // Only restore if not already completed — prevents re-processing after restart
+      if (msg.status !== 'completed') {
+        msg.status = 'pending';
+        msg.processingStartedAt = undefined;
+        if (msg.source !== 'system_event') {
+          restoredQueue.push(msg);
+        }
       }
     }
 

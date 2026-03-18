@@ -8,7 +8,7 @@
  * @module services/agent/crewly-agent/agent-runner.service
  */
 
-import { generateText, stepCountIs, type ModelMessage, type LanguageModel } from 'ai';
+import { streamText, generateText, stepCountIs, type ModelMessage, type LanguageModel } from 'ai';
 import { TracingService } from '../../core/tracing.service.js';
 import { ContextFlushService } from '../../memory/context-flush.service.js';
 import { TRACING_CONSTANTS } from '../../../constants.js';
@@ -32,6 +32,7 @@ import {
   type ApprovalCheckResult,
   type ToolSensitivity,
   type AuditLogFilters,
+  type StreamingEventCallbacks,
   CREWLY_AGENT_DEFAULTS,
   WRITE_TOOLS,
   MODEL_CONTEXT_WINDOWS,
@@ -64,7 +65,7 @@ export class AgentRunnerService {
   private model: LanguageModel | null = null;
   private state: ConversationState;
   private processing = false;
-  private messageQueue: Array<{ message: string; conversationId?: string; metadata?: Record<string, string>; resolve: (result: AgentRunResult) => void; reject: (error: Error) => void }> = [];
+  private messageQueue: Array<{ message: string; conversationId?: string; metadata?: Record<string, string>; resolve: (result: AgentRunResult) => void; reject: (error: Error) => void; options?: { abortSignal?: AbortSignal; streaming?: StreamingEventCallbacks } }> = [];
   private auditLog: AuditEntry[] = [];
   private securityPolicy: SecurityPolicy;
   /** Current conversationId extracted from [CHAT:xxx] prefix */
@@ -82,6 +83,10 @@ export class AgentRunnerService {
   private tracing = TracingService.getInstance();
   /** Guards against concurrent compaction — only one compaction at a time */
   private compacting = false;
+  /** AbortController for the current run — allows external cancellation */
+  private currentRunAbort: AbortController | null = null;
+  /** Streaming event callbacks — set per run by the runtime service */
+  private streamingCallbacks: StreamingEventCallbacks = {};
   /** @internal Override for testing — replaces the AI SDK generateText call */
   _generateTextFn: GenerateTextFn | null = null;
 
@@ -148,15 +153,46 @@ export class AgentRunnerService {
    * generateText calls which would corrupt conversation state.
    *
    * @param message - User/system message to process
+   * @param conversationId - Optional conversation ID for routing
+   * @param metadata - Optional metadata (Slack context, etc.)
+   * @param options - Optional abort signal and streaming callbacks
    * @returns Result of the agent run including text, tool calls, and usage
    */
-  async run(message: string, conversationId?: string, metadata?: Record<string, string>): Promise<AgentRunResult> {
+  async run(
+    message: string,
+    conversationId?: string,
+    metadata?: Record<string, string>,
+    options?: { abortSignal?: AbortSignal; streaming?: StreamingEventCallbacks },
+  ): Promise<AgentRunResult> {
     return new Promise<AgentRunResult>((resolve, reject) => {
-      this.messageQueue.push({ message, conversationId, metadata, resolve, reject });
+      this.messageQueue.push({ message, conversationId, metadata, resolve, reject, options });
       if (!this.processing) {
         this.processQueue();
       }
     });
+  }
+
+  /**
+   * Abort the current in-progress run.
+   * Signals the active streamText/generateText call to cancel.
+   *
+   * @returns True if an active run was aborted, false if no run was in progress
+   */
+  abortCurrentRun(): boolean {
+    if (this.currentRunAbort) {
+      this.currentRunAbort.abort();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Check if the agent is currently processing a message.
+   *
+   * @returns True if processing is in progress
+   */
+  isProcessing(): boolean {
+    return this.processing;
   }
 
   /**
@@ -303,13 +339,15 @@ export class AgentRunnerService {
             threadTs: item.metadata.threadTs,
           };
         }
+        // Set streaming callbacks for this run
+        this.streamingCallbacks = item.options?.streaming ?? {};
         const result = await this.tracing.withSpan(TRACING_CONSTANTS.SPANS.AGENT_RUN, {
           attributes: {
             'agent.session': this.config.sessionName,
             'agent.role': this.config.role,
           }
         }, async () => {
-          return this.executeRun(item.message);
+          return this.executeRun(item.message, item.options?.abortSignal);
         });
         item.resolve(result);
       } catch (error) {
@@ -327,12 +365,16 @@ export class AgentRunnerService {
   }
 
   /**
-   * Execute a single generateText run with the current conversation context.
+   * Execute a single streamText run with the current conversation context.
+   *
+   * Uses streamText for real-time token emission and tool call feedback.
+   * Falls back to generateText when _generateTextFn is set (testing).
    *
    * @param message - New message to add to the conversation
+   * @param externalAbortSignal - Optional external abort signal for cancellation
    * @returns Agent run result
    */
-  private async executeRun(message: string): Promise<AgentRunResult> {
+  private async executeRun(message: string, externalAbortSignal?: AbortSignal): Promise<AgentRunResult> {
     if (!this.model) {
       throw new Error('AgentRunner not initialized. Call initialize() first.');
     }
@@ -363,7 +405,285 @@ export class AgentRunnerService {
     const mcpTools = Object.keys(this.mcpToolDefs).length > 0 ? this.mcpToolDefs : undefined;
     const tools = createTools(this.apiClient, this.config.sessionName, this.config.projectPath, callbacks, this.currentConversationId, this.currentSlackContext, mcpTools);
 
-    // Execute generateText with agentic loop
+    // Create abort controller that merges external signal with internal control
+    const runAbort = new AbortController();
+    this.currentRunAbort = runAbort;
+
+    // If external signal is already aborted, abort immediately
+    if (externalAbortSignal?.aborted) {
+      runAbort.abort();
+    } else if (externalAbortSignal) {
+      externalAbortSignal.addEventListener('abort', () => runAbort.abort(), { once: true });
+    }
+
+    try {
+      // If a test override is set, use generateText path (backward compatible)
+      if (this._generateTextFn) {
+        return await this.executeRunWithGenerateText(tools, runAbort.signal);
+      }
+
+      // Production path: streamText for real-time feedback
+      return await this.executeRunWithStreamText(tools, runAbort.signal);
+    } finally {
+      this.currentRunAbort = null;
+    }
+  }
+
+  /**
+   * Check if an error is recoverable and eligible for automatic retry.
+   *
+   * Recoverable errors include:
+   * - HTTP 429 (rate limit)
+   * - HTTP 5xx (server errors)
+   * - Network timeouts and connection errors
+   *
+   * @param error - The error to classify
+   * @returns True if the error is recoverable
+   */
+  private isRecoverableError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message.toLowerCase();
+    const statusMatch = msg.match(/\b(429|5\d{2})\b/);
+    if (statusMatch) return true;
+    if (msg.includes('rate limit') || msg.includes('too many requests')) return true;
+    if (msg.includes('timeout') || msg.includes('econnreset') || msg.includes('econnrefused')) return true;
+    if (msg.includes('network') || msg.includes('fetch failed') || msg.includes('socket hang up')) return true;
+    if (msg.includes('service unavailable') || msg.includes('internal server error')) return true;
+    return false;
+  }
+
+  /**
+   * Check if an error indicates the context length was exceeded.
+   *
+   * @param error - The error to classify
+   * @returns True if the error is a context length exceeded error
+   */
+  private isContextLengthError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message.toLowerCase();
+    return msg.includes('context length') || msg.includes('token limit')
+      || msg.includes('max_tokens') || msg.includes('context window')
+      || msg.includes('too long') || msg.includes('maximum context');
+  }
+
+  /**
+   * Sleep for a specified duration.
+   *
+   * @param ms - Milliseconds to sleep
+   * @returns Promise that resolves after the delay
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Execute run using streamText for real-time streaming output.
+   * This is the production path — emits events as tokens arrive.
+   *
+   * Includes automatic retry with exponential backoff for recoverable errors
+   * (429, 5xx, network) and progressive context trimming for context length errors.
+   */
+  private async executeRunWithStreamText(
+    tools: Record<string, unknown>,
+    abortSignal: AbortSignal,
+  ): Promise<AgentRunResult> {
+    const maxRetries = CREWLY_AGENT_DEFAULTS.MAX_RETRIES;
+    const baseDelay = CREWLY_AGENT_DEFAULTS.RETRY_BASE_DELAY_MS;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.executeStreamTextAttempt(tools, abortSignal);
+      } catch (error) {
+        // Context length exceeded — try compaction then retry once
+        if (this.isContextLengthError(error)) {
+          this.streamingCallbacks.onTextChunk?.('[retry] Context length exceeded, compacting history...\n');
+          const compactionResult = await this.requestCompaction();
+          if (compactionResult.compacted) {
+            try {
+              return await this.executeStreamTextAttempt(tools, abortSignal);
+            } catch (retryError) {
+              // If still too long, remove earliest non-system messages and try once more
+              if (this.isContextLengthError(retryError) && this.state.messages.length > 2) {
+                this.streamingCallbacks.onTextChunk?.('[retry] Still too long, trimming oldest messages...\n');
+                this.trimOldestNonSystemMessages();
+                return await this.executeStreamTextAttempt(tools, abortSignal);
+              }
+              throw retryError;
+            }
+          }
+        }
+
+        // Recoverable error — retry with backoff
+        if (this.isRecoverableError(error) && attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt);
+          this.streamingCallbacks.onTextChunk?.(`[retry] Recoverable error (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms...\n`);
+          await this.sleep(delay);
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    // Unreachable — the loop always returns or throws
+    throw new Error('Retry loop exhausted without result');
+  }
+
+  /**
+   * Single attempt of streamText execution (no retry logic).
+   */
+  private async executeStreamTextAttempt(
+    tools: Record<string, unknown>,
+    abortSignal: AbortSignal,
+  ): Promise<AgentRunResult> {
+    const toolCalls: ToolCallRecord[] = [];
+    let stepCount = 0;
+
+    const streamResult = streamText({
+      model: this.model!,
+      system: this.state.systemPrompt,
+      messages: this.state.messages,
+      tools: tools as any,
+      stopWhen: stepCountIs(this.config.maxSteps),
+      temperature: this.config.model.temperature,
+      maxOutputTokens: this.config.model.maxTokens,
+      abortSignal,
+      onChunk: ({ chunk }: { chunk: { type: string; text?: string } }) => {
+        // Emit text chunks in real-time
+        if (chunk.type === 'text-delta' && chunk.text) {
+          this.streamingCallbacks.onTextChunk?.(chunk.text);
+        }
+      },
+      experimental_onToolCallStart: (event: any) => {
+        const tc = event.toolCall;
+        const args = tc?.args ?? tc?.input ?? {};
+        this.streamingCallbacks.onToolCallStart?.(tc?.toolName ?? 'unknown', (typeof args === 'string' ? JSON.parse(args) : args) as Record<string, unknown>);
+      },
+      experimental_onToolCallFinish: (event: any) => {
+        const tc = event.toolCall;
+        const args = tc?.args ?? tc?.input ?? {};
+        this.streamingCallbacks.onToolCallFinish?.(tc?.toolName ?? 'unknown', (typeof args === 'string' ? JSON.parse(args) : args) as Record<string, unknown>, event.toolResult, event.durationMs ?? 0);
+      },
+      onStepFinish: ({ toolCalls: stepToolCalls, toolResults }: { stepNumber: number; toolCalls?: Array<{ toolName: string; toolCallId: string }>; toolResults?: Array<{ toolCallId: string; output?: unknown }> }) => {
+        stepCount++;
+        const hasTools = (stepToolCalls?.length ?? 0) > 0;
+
+        // Collect tool calls from this step
+        if (stepToolCalls) {
+          for (const tc of stepToolCalls) {
+            toolCalls.push({
+              toolName: tc.toolName,
+              args: (tc as Record<string, unknown>).input as Record<string, unknown> ?? {},
+              result: toolResults?.find(
+                (tr: { toolCallId: string }) => tr.toolCallId === tc.toolCallId,
+              )?.output,
+            });
+          }
+        }
+
+        this.streamingCallbacks.onStepFinish?.(stepCount, hasTools);
+      },
+    });
+
+    // Await the full result (stream completes when all steps are done)
+    const result = await streamResult;
+
+    // Warn if tool call count is excessive (polling dead-loop protection)
+    const maxToolCalls = CREWLY_AGENT_DEFAULTS.MAX_TOOL_CALLS_PER_RESPONSE;
+    if (toolCalls.length > maxToolCalls) {
+      console.warn('[AgentRunner] Excessive tool calls in single response:', {
+        count: toolCalls.length,
+        limit: maxToolCalls,
+        topTools: toolCalls.slice(0, 5).map(tc => tc.toolName),
+      });
+    }
+
+    // Add assistant response to history
+    const text = await result.text;
+    if (text) {
+      this.state.messages.push({ role: 'assistant', content: text });
+    }
+
+    // Update token tracking
+    const resultUsage = await result.usage;
+    const usage = {
+      input: resultUsage?.inputTokens ?? 0,
+      output: resultUsage?.outputTokens ?? 0,
+    };
+    this.state.totalTokens.input += usage.input;
+    this.state.totalTokens.output += usage.output;
+
+    // Check budget after token update
+    const postBudget = this.getContextBudget();
+    const budgetWarning = postBudget.level !== 'normal' ? postBudget.summary : undefined;
+
+    const finishReason = await result.finishReason;
+
+    return {
+      text,
+      steps: stepCount,
+      usage,
+      toolCalls,
+      finishReason,
+      budgetWarning,
+    };
+  }
+
+  /**
+   * Execute run using generateText (batch mode).
+   * Used when _generateTextFn is set for testing, or as fallback.
+   *
+   * Includes automatic retry with exponential backoff for recoverable errors
+   * and progressive context trimming for context length errors.
+   */
+  private async executeRunWithGenerateText(
+    tools: Record<string, unknown>,
+    abortSignal: AbortSignal,
+  ): Promise<AgentRunResult> {
+    const maxRetries = CREWLY_AGENT_DEFAULTS.MAX_RETRIES;
+    const baseDelay = CREWLY_AGENT_DEFAULTS.RETRY_BASE_DELAY_MS;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.executeGenerateTextAttempt(tools, abortSignal);
+      } catch (error) {
+        // Context length exceeded — try compaction then retry once
+        if (this.isContextLengthError(error)) {
+          const compactionResult = await this.requestCompaction();
+          if (compactionResult.compacted) {
+            try {
+              return await this.executeGenerateTextAttempt(tools, abortSignal);
+            } catch (retryError) {
+              if (this.isContextLengthError(retryError) && this.state.messages.length > 2) {
+                this.trimOldestNonSystemMessages();
+                return await this.executeGenerateTextAttempt(tools, abortSignal);
+              }
+              throw retryError;
+            }
+          }
+        }
+
+        // Recoverable error — retry with backoff
+        if (this.isRecoverableError(error) && attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt);
+          await this.sleep(delay);
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    throw new Error('Retry loop exhausted without result');
+  }
+
+  /**
+   * Single attempt of generateText execution (no retry logic).
+   */
+  private async executeGenerateTextAttempt(
+    tools: Record<string, unknown>,
+    abortSignal: AbortSignal,
+  ): Promise<AgentRunResult> {
     const generateFn = this._generateTextFn || (generateText as Function);
     const result = await generateFn({
       model: this.model,
@@ -373,6 +693,7 @@ export class AgentRunnerService {
       stopWhen: stepCountIs(this.config.maxSteps),
       temperature: this.config.model.temperature,
       maxOutputTokens: this.config.model.maxTokens,
+      abortSignal,
     });
 
     // Track tool calls across all steps
@@ -391,7 +712,7 @@ export class AgentRunnerService {
       }
     }
 
-    // Warn if tool call count is excessive (polling dead-loop protection)
+    // Warn if tool call count is excessive
     const maxToolCalls = CREWLY_AGENT_DEFAULTS.MAX_TOOL_CALLS_PER_RESPONSE;
     if (toolCalls.length > maxToolCalls) {
       console.warn('[AgentRunner] Excessive tool calls in single response:', {
@@ -426,6 +747,22 @@ export class AgentRunnerService {
       finishReason: result.finishReason,
       budgetWarning,
     };
+  }
+
+  /**
+   * Remove the oldest non-system messages to reduce context size.
+   * Preserves the most recent messages and any system-role messages.
+   */
+  private trimOldestNonSystemMessages(): void {
+    // Remove up to 5 of the oldest non-system messages
+    let removed = 0;
+    const maxRemove = 5;
+    this.state.messages = this.state.messages.filter((msg) => {
+      if (removed >= maxRemove) return true;
+      if (msg.role === 'system') return true;
+      removed++;
+      return false;
+    });
   }
 
   /**

@@ -65,6 +65,9 @@ program
   .command('upgrade')
   .description('Upgrade Crewly to the latest version')
   .option('--check', 'Check for updates without installing')
+  .option('--pro', 'Install the Pro addon')
+  .option('--token <token>', 'Cloud API token for downloading Pro addon')
+  .option('--source <path>', 'Local path to a .tar.gz addon file')
   .action(upgradeCommand);
 
 program
@@ -110,8 +113,12 @@ program
 
 program
   .command('service <action>')
-  .description('Manage Crewly as a macOS background service (install|uninstall|status)')
+  .description('Manage Crewly background service (install|uninstall|status|restart|stop|logs)')
   .option('--force', 'Overwrite existing installation')
+  .option('--session <name>', 'Tail a specific agent session log (logs action)')
+  .option('--app', 'Tail today\'s app log (logs action)')
+  .option('-n, --lines <number>', 'Number of log lines to show (default: 50)')
+  .option('-f, --follow', 'Follow log output in real-time (logs action)')
   .action(serviceCommand);
 
 program

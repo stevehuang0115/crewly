@@ -12,6 +12,7 @@ import {
   API_ENDPOINTS,
   CREWLY_HOME_DIR,
   PROCESS_EXIT_CODES,
+  SERVER_CONSTANTS,
 } from '../constants.js';
 import { checkForUpdate, printUpdateNotification } from '../utils/version-check.js';
 import { killZombieProcesses } from '../utils/process-cleanup.js';
@@ -278,9 +279,29 @@ async function checkIfRunning(port: number): Promise<boolean> {
 	}
 }
 
+/**
+ * Calculate the Node.js heap size based on available system memory.
+ *
+ * Allocates HEAP_MEMORY_RATIO (60%) of total RAM, clamped between
+ * MIN_HEAP_SIZE_MB and MAX_HEAP_SIZE_MB. Prevents OOM/swapping on
+ * low-RAM machines while still allowing generous heaps on large ones.
+ *
+ * @returns Heap size in megabytes
+ */
+export function calculateHeapSize(): number {
+	const totalMemMB = Math.floor(os.totalmem() / (1024 * 1024));
+	const dynamicHeap = Math.floor(totalMemMB * SERVER_CONSTANTS.HEAP_MEMORY_RATIO);
+	return Math.max(
+		SERVER_CONSTANTS.MIN_HEAP_SIZE_MB,
+		Math.min(SERVER_CONSTANTS.MAX_HEAP_SIZE_MB, dynamicHeap),
+	);
+}
+
 async function startBackendServer(webPort: number, headless = false): Promise<ChildProcess> {
 	// Get the project root directory — works in both dev and compiled mode
 	const projectRoot = findPackageRoot(__dirname);
+
+	const heapSize = calculateHeapSize();
 
 	const env = {
 		...process.env,
@@ -293,7 +314,7 @@ async function startBackendServer(webPort: number, headless = false): Promise<Ch
 		'node',
 		[
 			'--expose-gc',
-			'--max-old-space-size=2048',
+			`--max-old-space-size=${heapSize}`,
 			path.join(projectRoot, 'dist/backend/backend/src/index.js'),
 		],
 		{

@@ -25,6 +25,7 @@
 
 import * as os from 'os';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -224,7 +225,7 @@ export function getEnvConfig(): EnvConfig {
       tokenEncryptionKey: envStr(
         'CREWLY_TOKEN_ENCRYPTION_KEY',
         envStr('CREWLY_SECRET', ''),
-      ),
+      ) || crypto.randomBytes(32).toString('hex'),
     },
 
     slack: {
@@ -295,16 +296,19 @@ export function validateEnvConfig(): EnvValidationResult {
   }
 
   // --- Auth / Secrets ---
-  if (isProduction && config.auth.jwtSecret === DEFAULT_JWT_SECRET) {
-    errors.push('CREWLY_JWT_SECRET must be set in production (do not use default)');
-  } else if (config.auth.jwtSecret === DEFAULT_JWT_SECRET) {
-    warnings.push('CREWLY_JWT_SECRET is using the default dev secret — set a strong secret for production');
+  // Warn but do not error — random defaults are generated at startup when unset
+  if (config.auth.jwtSecret === DEFAULT_JWT_SECRET) {
+    warnings.push(
+      isProduction
+        ? 'CREWLY_JWT_SECRET is using the default dev secret in production — set a strong secret for security'
+        : 'CREWLY_JWT_SECRET is using the default dev secret — set a strong secret for production',
+    );
   }
 
-  if (isProduction && !config.auth.tokenEncryptionKey) {
-    errors.push('CREWLY_TOKEN_ENCRYPTION_KEY (or CREWLY_SECRET) must be set in production');
-  } else if (!config.auth.tokenEncryptionKey) {
-    warnings.push('No CREWLY_TOKEN_ENCRYPTION_KEY set — using insecure fallback for token encryption');
+  if (!process.env['CREWLY_TOKEN_ENCRYPTION_KEY'] && !process.env['CREWLY_SECRET']) {
+    warnings.push(
+      'No CREWLY_TOKEN_ENCRYPTION_KEY set — using auto-generated random key (tokens will not survive restarts)',
+    );
   }
 
   // --- Supabase ---

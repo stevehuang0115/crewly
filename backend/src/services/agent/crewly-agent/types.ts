@@ -79,6 +79,8 @@ export interface CrewlyAgentConfig {
   compactionThreshold: number;
   /** Project path for memory and task tools (auto-injected) */
   projectPath?: string;
+  /** Team member ID for heartbeat tracking (used as key in teamAgentStatus.json) */
+  memberId?: string;
   /** MCP server configurations for external tool integration */
   mcpServers?: Record<string, McpServerConfig>;
   /** Sensitivity overrides for MCP tools (key: 'serverName:toolName' or 'toolName') */
@@ -151,6 +153,21 @@ export interface ToolDefinition {
   execute: (args: Record<string, unknown>) => Promise<unknown>;
   /** Security sensitivity classification for audit purposes */
   sensitivity?: ToolSensitivity;
+}
+
+/**
+ * Callbacks for streaming events during agent execution.
+ * Emitted in real-time as the model generates text and calls tools.
+ */
+export interface StreamingEventCallbacks {
+  /** Called when a text chunk arrives from the model */
+  onTextChunk?: (chunk: string) => void;
+  /** Called when a tool call starts executing */
+  onToolCallStart?: (toolName: string, args: Record<string, unknown>) => void;
+  /** Called when a tool call completes */
+  onToolCallFinish?: (toolName: string, args: Record<string, unknown>, result: unknown, durationMs: number) => void;
+  /** Called when a reasoning step completes */
+  onStepFinish?: (stepIndex: number, hasToolCalls: boolean) => void;
 }
 
 /**
@@ -324,8 +341,8 @@ export interface AuditLogFilters {
  * Default configuration values for Crewly Agent
  */
 export const CREWLY_AGENT_DEFAULTS = {
-  /** Default max reasoning steps per generateText call */
-  MAX_STEPS: 30,
+  /** Default max reasoning steps per generateText call (high to mimic unlimited like Claude Code) */
+  MAX_STEPS: 500,
   /** Maximum tool calls allowed per single response to prevent polling dead-loops */
   MAX_TOOL_CALLS_PER_RESPONSE: 15,
   /** Default API base URL */
@@ -343,12 +360,26 @@ export const CREWLY_AGENT_DEFAULTS = {
   } satisfies ModelConfig,
   /** HTTP request timeout in milliseconds */
   API_TIMEOUT_MS: 30_000,
+  /** Heartbeat interval in milliseconds for keeping in-process agent active between messages */
+  HEARTBEAT_INTERVAL_MS: 30_000,
+  /** Maximum time in milliseconds for a single message processing (generateText call) — hard abort.
+   *  Override via CREWLY_AGENT_MESSAGE_TIMEOUT_MS env var. */
+  MESSAGE_TIMEOUT_MS: Number(process.env.CREWLY_AGENT_MESSAGE_TIMEOUT_MS) || 300_000,
+  /** Soft warning threshold in milliseconds — logs a warning but does not kill the request.
+   *  Override via CREWLY_AGENT_MESSAGE_SOFT_WARNING_MS env var. */
+  MESSAGE_SOFT_WARNING_MS: Number(process.env.CREWLY_AGENT_MESSAGE_SOFT_WARNING_MS) || 240_000,
+  /** Cooldown period in milliseconds after rate limit retries are exhausted */
+  RATE_LIMIT_COOLDOWN_MS: 300_000,
+  /** Maximum number of automatic retries for recoverable errors (429, 5xx, network) */
+  MAX_RETRIES: 3,
+  /** Base delay in milliseconds for exponential backoff between retries */
+  RETRY_BASE_DELAY_MS: 1_000,
   /** Default Ollama API base URL for local LLM provider */
   OLLAMA_BASE_URL: 'http://localhost:11434/api',
   /** Default security policy */
   SECURITY_POLICY: {
     auditEnabled: true,
-    requireApproval: ['destructive'] as ToolSensitivity[],
+    requireApproval: [] as ToolSensitivity[],
     blockedTools: [] as string[],
     maxAuditEntries: 500,
     readOnlyMode: false,
@@ -363,6 +394,48 @@ export const CREWLY_AGENT_DEFAULTS = {
  */
 export function isModelProvider(value: string): value is ModelProvider {
   return MODEL_PROVIDERS.includes(value as ModelProvider);
+}
+
+/**
+ * Supported models for the UI dropdown.
+ * Format: provider/modelId → display label
+ */
+export const SUPPORTED_MODELS: Array<{ id: string; label: string; provider: ModelProvider }> = [
+  { id: 'google/gemini-3-flash-preview', label: 'Gemini 3 Flash (Preview)', provider: 'google' },
+  { id: 'google/gemini-2.5-flash-preview-05-20', label: 'Gemini 2.5 Flash', provider: 'google' },
+  { id: 'anthropic/claude-sonnet-4-20250514', label: 'Claude Sonnet 4', provider: 'anthropic' },
+  { id: 'anthropic/claude-haiku-4-20250514', label: 'Claude Haiku 4', provider: 'anthropic' },
+  { id: 'openai/gpt-4o', label: 'GPT-4o', provider: 'openai' },
+  { id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini', provider: 'openai' },
+  { id: 'ollama/llama3', label: 'Llama 3 (Ollama)', provider: 'ollama' },
+];
+
+/**
+ * Parse a modelId string (provider/modelId) into a ModelConfig.
+ * Falls back to DEFAULT_MODEL if the input is invalid.
+ *
+ * @param modelId - Format: "provider/modelId" (e.g. "google/gemini-3-flash-preview")
+ * @returns Parsed ModelConfig
+ */
+export function parseModelId(modelId: string | undefined): ModelConfig {
+  if (!modelId || !modelId.includes('/')) {
+    return CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL;
+  }
+
+  const slashIdx = modelId.indexOf('/');
+  const provider = modelId.substring(0, slashIdx);
+  const model = modelId.substring(slashIdx + 1);
+
+  if (!isModelProvider(provider) || !model) {
+    return CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL;
+  }
+
+  return {
+    provider,
+    modelId: model,
+    temperature: CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.temperature,
+    maxTokens: CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.maxTokens,
+  };
 }
 
 /**

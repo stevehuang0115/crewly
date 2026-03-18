@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, User, Briefcase, Wrench, Check } from 'lucide-react';
-import { TeamMember } from '../../types';
+import { TeamMember, SUPPORTED_MODELS } from '../../types';
 import { rolesService } from '../../services/roles.service';
 import { RoleWithPrompt, ROLE_CATEGORY_DISPLAY_NAMES } from '../../types/role.types';
 import { useSkills } from '../../hooks/useSkills';
@@ -43,6 +43,7 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
   const [loadingRole, setLoadingRole] = useState(true);
   const [skillDisplayInfos, setSkillDisplayInfos] = useState<SkillDisplayInfo[]>([]);
   const [editedRuntime, setEditedRuntime] = useState<string>(member.runtimeType || 'claude-code');
+  const [editedModelId, setEditedModelId] = useState<string>(member.modelId || '');
   const { skills: allSkills } = useSkills();
 
   useEffect(() => {
@@ -279,6 +280,35 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
               </div>
             )}
           </div>
+
+          {/* AI Model — only for crewly-agent runtime */}
+          {editedRuntime === 'crewly-agent' && (
+            <div className="mt-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
+                AI Model
+              </div>
+              {isEditable ? (
+                <select
+                  value={editedModelId}
+                  onChange={(e) => setEditedModelId(e.target.value)}
+                  className="w-full bg-background-dark border border-border-dark rounded-lg px-4 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-primary"
+                >
+                  <option value="">Default</option>
+                  {SUPPORTED_MODELS.map(m => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <div className="bg-background-dark/50 rounded-lg px-4 py-2">
+                  <span className="text-sm text-text-primary-dark">
+                    {member.modelId
+                      ? SUPPORTED_MODELS.find(m => m.id === member.modelId)?.label || member.modelId
+                      : 'Default'}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -294,7 +324,13 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
               <button
                 onClick={() => {
                   if (onSave) {
-                    onSave(member.id, { runtimeType: editedRuntime as TeamMember['runtimeType'] });
+                    const updates: Partial<TeamMember> = {
+                      runtimeType: editedRuntime as TeamMember['runtimeType'],
+                    };
+                    if (editedRuntime === 'crewly-agent') {
+                      updates.modelId = editedModelId || undefined;
+                    }
+                    onSave(member.id, updates);
                   }
                   onClose();
                 }}

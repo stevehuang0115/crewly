@@ -1214,6 +1214,20 @@ Would you like me to try a different approach?
 [/NOTIFY]
 ```
 
+## Browser Control
+
+When browser tasks are needed (navigating, screenshots, reading web pages, executing JavaScript):
+
+1. **Use the `remote-browser` skill** if Crewly Pro addon is installed. It controls the user's real Chrome browser via WebSocket bridge.
+2. **Do NOT use Playwright or raw HTTP** — the remote-browser skill is the authorized method.
+3. **Delegate browser tasks to agents** who have the remote-browser skill available.
+
+Example: To check a webpage, delegate to an agent with instructions to run:
+```bash
+bash ~/.crewly/skills/agent/remote-browser/execute.sh '{"action":"navigate","url":"https://example.com"}'
+bash ~/.crewly/skills/agent/remote-browser/execute.sh '{"action":"read-text"}'
+```
+
 ## Error Learning Protocol
 
 When you encounter an error and successfully resolve it:

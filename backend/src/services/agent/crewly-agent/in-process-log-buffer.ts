@@ -8,10 +8,17 @@
  * Extends EventEmitter to support real-time WebSocket streaming of log entries
  * to the frontend Side Terminal panel.
  *
+ * Also persists log entries to disk at ~/.crewly/logs/sessions/{sessionName}.log,
+ * matching the file-based logging that PTY-based agents get via PtySessionBackend.
+ *
  * @module services/agent/crewly-agent/in-process-log-buffer
  */
 
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { CREWLY_CONSTANTS, LOG_ROTATION_CONSTANTS } from '../../../constants.js';
 
 /**
  * Single log entry from an in-process agent session.
@@ -53,6 +60,26 @@ const MAX_ENTRIES_PER_SESSION = 500;
 export class InProcessLogBuffer extends EventEmitter {
   private static instance: InProcessLogBuffer | null = null;
   private sessions = new Map<string, LogEntry[]>();
+  /** File write streams for persisting logs to disk */
+  private logStreams = new Map<string, fs.WriteStream>();
+  /** Resolved path to ~/.crewly/logs/sessions/ */
+  private sessionLogsDir: string;
+
+  constructor() {
+    super();
+    this.sessionLogsDir = path.join(
+      os.homedir(),
+      CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+      CREWLY_CONSTANTS.PATHS.LOGS_DIR,
+      LOG_ROTATION_CONSTANTS.SESSIONS_LOG_DIR,
+    );
+    // Ensure directory exists (non-fatal if it fails)
+    try {
+      fs.mkdirSync(this.sessionLogsDir, { recursive: true });
+    } catch {
+      // Directory may already exist or be uncreatable — logging will be skipped
+    }
+  }
 
   /**
    * Get the singleton instance.
@@ -71,6 +98,11 @@ export class InProcessLogBuffer extends EventEmitter {
    */
   static resetInstance(): void {
     if (InProcessLogBuffer.instance) {
+      // Close all open file streams
+      for (const stream of InProcessLogBuffer.instance.logStreams.values()) {
+        try { stream.end(); } catch { /* ignore */ }
+      }
+      InProcessLogBuffer.instance.logStreams.clear();
       InProcessLogBuffer.instance.removeAllListeners();
     }
     InProcessLogBuffer.instance = null;
@@ -117,6 +149,9 @@ export class InProcessLogBuffer extends EventEmitter {
     // Emit for real-time WebSocket streaming
     const formattedLine = this.formatEntry(entry);
     this.emit('data', sessionName, formattedLine);
+
+    // Persist to disk (fire-and-forget, non-blocking)
+    this.writeToFile(sessionName, entry, formattedLine);
   }
 
   /**
@@ -147,7 +182,7 @@ export class InProcessLogBuffer extends EventEmitter {
   }
 
   /**
-   * Register a session (creates empty entry list).
+   * Register a session (creates empty entry list and opens a file log stream).
    *
    * @param sessionName - Session to register
    */
@@ -155,15 +190,18 @@ export class InProcessLogBuffer extends EventEmitter {
     if (!this.sessions.has(sessionName)) {
       this.sessions.set(sessionName, []);
     }
+    this.openLogStream(sessionName);
   }
 
   /**
-   * Remove a session's log buffer.
+   * Remove a session's log buffer and close its file stream.
+   * The log file is preserved on disk for post-mortem analysis.
    *
    * @param sessionName - Session to remove
    */
   removeSession(sessionName: string): void {
     this.sessions.delete(sessionName);
+    this.closeLogStream(sessionName);
   }
 
   /**
@@ -176,9 +214,89 @@ export class InProcessLogBuffer extends EventEmitter {
   }
 
   /**
-   * Clear all sessions (for testing).
+   * Clear all sessions and close all file streams (for testing).
    */
   clear(): void {
     this.sessions.clear();
+    for (const stream of this.logStreams.values()) {
+      try { stream.end(); } catch { /* ignore */ }
+    }
+    this.logStreams.clear();
+  }
+
+  // ===== Private file I/O helpers =====
+
+  /**
+   * Get the file path for a session's persistent log.
+   *
+   * @param sessionName - Session name
+   * @returns Absolute path to the log file
+   */
+  private getLogPath(sessionName: string): string {
+    return path.join(this.sessionLogsDir, `${sessionName}.log`);
+  }
+
+  /**
+   * Open a writable file stream for a session log.
+   * Appends a session marker so multiple runs are distinguishable.
+   *
+   * @param sessionName - Session name
+   */
+  private openLogStream(sessionName: string): void {
+    // Don't open duplicate streams
+    if (this.logStreams.has(sessionName)) return;
+
+    try {
+      const logPath = this.getLogPath(sessionName);
+      const fileExists = fs.existsSync(logPath);
+
+      const stream = fs.createWriteStream(logPath, { flags: 'a' });
+      stream.on('error', () => {
+        // Silently remove broken streams — disk logging is best-effort
+        this.logStreams.delete(sessionName);
+      });
+
+      const marker = fileExists ? 'RESTARTED' : 'STARTED';
+      stream.write(`\n--- SESSION ${marker} at ${new Date().toISOString()} ---\n\n`);
+
+      this.logStreams.set(sessionName, stream);
+    } catch {
+      // Non-fatal — in-memory buffer and WebSocket streaming still work
+    }
+  }
+
+  /**
+   * Close and remove the file stream for a session.
+   *
+   * @param sessionName - Session name
+   */
+  private closeLogStream(sessionName: string): void {
+    const stream = this.logStreams.get(sessionName);
+    if (stream) {
+      try {
+        stream.write(`\n--- SESSION ENDED at ${new Date().toISOString()} ---\n`);
+        stream.end();
+      } catch { /* ignore */ }
+      this.logStreams.delete(sessionName);
+    }
+  }
+
+  /**
+   * Write a formatted log entry to the session's file stream.
+   * Non-blocking, fire-and-forget — errors are silently ignored.
+   *
+   * @param sessionName - Session name
+   * @param entry - The log entry (for full timestamp in file)
+   * @param formattedLine - Pre-formatted display line
+   */
+  private writeToFile(sessionName: string, entry: LogEntry, formattedLine: string): void {
+    const stream = this.logStreams.get(sessionName);
+    if (!stream) return;
+
+    try {
+      stream.write(`${entry.timestamp} ${formattedLine}\n`);
+    } catch {
+      // Non-fatal — disk logging is best-effort
+    }
   }
 }

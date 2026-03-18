@@ -1,9 +1,10 @@
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RuntimeType } from '../../constants.js';
+import { RuntimeType, ADDON_CONSTANTS } from '../../constants.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { safeReadJson, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { delay } from '../../utils/async.utils.js';
@@ -446,7 +447,14 @@ export abstract class RuntimeAgentService {
 			// Build required MCP servers
 			const requiredServers: Record<string, { command: string; args: string[] }> = {};
 
-			if (enableBrowserAutomation) {
+			// Skip Playwright injection when Crewly Pro addon is installed
+			// (Pro addon provides its own WS Browser Bridge for browser control)
+			const proAddonInstalled = this.isProAddonInstalled();
+			if (proAddonInstalled) {
+				this.logger.info('Crewly Pro addon detected — skipping Playwright MCP injection', { projectPath });
+			}
+
+			if (enableBrowserAutomation && !proAddonInstalled) {
 				const mcpPackage = browserProfile.stealth
 					? '@mcp-world/playwright-mcp-world@latest'
 					: '@playwright/mcp@latest';
@@ -561,6 +569,24 @@ export abstract class RuntimeAgentService {
 				configFilePath,
 				error: error instanceof Error ? error.message : String(error),
 			});
+			return false;
+		}
+	}
+
+	/**
+	 * Check if the Crewly Pro addon is installed.
+	 *
+	 * Pro addon provides its own WS Browser Bridge, so Playwright MCP
+	 * should not be injected when it is present.
+	 *
+	 * @returns True if crewly-pro addon manifest exists
+	 */
+	protected isProAddonInstalled(): boolean {
+		try {
+			const addonsDir = path.join(os.homedir(), '.crewly', ADDON_CONSTANTS.PATHS.ADDONS_DIR);
+			const manifestPath = path.join(addonsDir, ADDON_CONSTANTS.PRO_ADDON.NAME, ADDON_CONSTANTS.MANIFEST_FILE);
+			return existsSync(manifestPath);
+		} catch {
 			return false;
 		}
 	}

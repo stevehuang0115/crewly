@@ -287,6 +287,16 @@ export class ActivityMonitorService {
             }
             if (!sessionName) continue;
 
+            // Skip orchestrator — its lifecycle is managed by OrchestratorHeartbeatMonitor,
+            // not the activity monitor. In-process runtimes (crewly-agent) have no PTY
+            // session, so sessionExists() would falsely return false.
+            if (agentId === AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID) {
+              this.logger.debug('Skipping orchestrator stale check (managed by OrchestratorHeartbeatMonitor)', {
+                sessionName,
+              });
+              continue;
+            }
+
             const sessionAlive = backend.sessionExists(sessionName);
             if (!sessionAlive) {
               this.logger.debug('Marking stale agent as inactive (session dead)', {
@@ -297,23 +307,10 @@ export class ActivityMonitorService {
               // Update heartbeat file so detectStaleAgents stops re-detecting this agent
               await this.agentHeartbeatService.updateAgentHeartbeat(
                 sessionName,
-                agentId === AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID ? undefined : agentId,
+                agentId,
                 CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
               );
-            } else if (agentId === AGENT_IDENTITY_CONSTANTS.ORCHESTRATOR.ID) {
-              this.logger.debug('Orchestrator is stale but auto-restart is disabled', {
-                sessionName,
-              });
             }
-          }
-
-          // Update orchestrator if dead
-          if (deadSessions.has(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME)) {
-            await this.storageService.updateAgentStatus(
-              CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
-              CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
-            );
-            deadSessions.delete(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
           }
 
           // Batch-update team members: read teams once, save each modified team once

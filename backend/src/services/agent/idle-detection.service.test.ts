@@ -34,10 +34,12 @@ jest.mock('../settings/index.js', () => ({
 
 // Mock storage service
 const mockGetTeams = jest.fn();
+const mockUpdateAgentStatus = jest.fn().mockResolvedValue(undefined);
 jest.mock('../core/storage.service.js', () => ({
 	StorageService: {
 		getInstance: () => ({
 			getTeams: mockGetTeams,
+			updateAgentStatus: mockUpdateAgentStatus,
 		}),
 	},
 }));
@@ -60,14 +62,26 @@ jest.mock('./agent-suspend.service.js', () => ({
 
 // Mock PtyActivityTrackerService
 const mockIsIdleFor = jest.fn();
+const mockClearSession = jest.fn();
 
 jest.mock('./pty-activity-tracker.service.js', () => ({
 	PtyActivityTrackerService: {
 		getInstance: () => ({
 			isIdleFor: mockIsIdleFor,
+			clearSession: mockClearSession,
 		}),
 		resetInstance: jest.fn(),
 	},
+}));
+
+// Mock session backend
+const mockKillSession = jest.fn().mockResolvedValue(undefined);
+const mockSessionExists = jest.fn().mockReturnValue(true);
+jest.mock('../session/index.js', () => ({
+	getSessionBackendSync: () => ({
+		killSession: mockKillSession,
+		sessionExists: mockSessionExists,
+	}),
 }));
 
 describe('IdleDetectionService', () => {
@@ -246,7 +260,7 @@ describe('IdleDetectionService', () => {
 			await expect(service.performCheck()).resolves.not.toThrow();
 		});
 
-		it('should check agents with started status', async () => {
+		it('should mark stuck started agents as inactive instead of suspended', async () => {
 			mockGetTeams.mockResolvedValue([
 				{
 					id: 'team1',
@@ -270,7 +284,14 @@ describe('IdleDetectionService', () => {
 				'agent-dev',
 				AGENT_SUSPEND_CONSTANTS.STARTED_AGENT_IDLE_TIMEOUT_MINUTES * 60 * 1000
 			);
-			expect(mockSuspendAgent).toHaveBeenCalledWith('agent-dev', 'team1', 'dev1', 'developer');
+
+			// Should NOT suspend — started agents have no session to rehydrate
+			expect(mockSuspendAgent).not.toHaveBeenCalled();
+
+			// Should kill PTY, clear tracker, and mark inactive
+			expect(mockKillSession).toHaveBeenCalledWith('agent-dev');
+			expect(mockClearSession).toHaveBeenCalledWith('agent-dev');
+			expect(mockUpdateAgentStatus).toHaveBeenCalledWith('agent-dev', 'inactive');
 		});
 
 		it('should not check agents with activating status', async () => {

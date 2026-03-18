@@ -15,12 +15,17 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { RuntimeAgentService } from '../runtime-agent.service.abstract.js';
 import { AgentRunnerService } from './agent-runner.service.js';
-import { RUNTIME_TYPES, type RuntimeType } from '../../../constants.js';
-import type { CrewlyAgentConfig, AgentRunResult } from './types.js';
+import { RUNTIME_TYPES, CREWLY_CONSTANTS, ADDON_CONSTANTS, type RuntimeType } from '../../../constants.js';
+import { homedir } from 'os';
+import type { CrewlyAgentConfig, AgentRunResult, StreamingEventCallbacks } from './types.js';
 import { CREWLY_AGENT_DEFAULTS } from './types.js';
 import { SessionCommandHelper } from '../../session/index.js';
 import { InProcessLogBuffer } from './in-process-log-buffer.js';
 import { RateLimiter } from './rate-limiter.js';
+import { updateAgentHeartbeat } from '../agent-heartbeat.service.js';
+import { PtyActivityTrackerService } from '../pty-activity-tracker.service.js';
+import { TokenUsageService } from '../../monitoring/token-usage.service.js';
+import { getSettingsService } from '../../settings/settings.service.js';
 
 
 /**
@@ -43,8 +48,13 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
   private agentRunner: AgentRunnerService | null = null;
   private initialized = false;
   private currentSessionName: string | null = null;
+  private currentMemberId: string | undefined;
+  private currentModelString: string = 'unknown';
   private logBuffer: InProcessLogBuffer;
   private rateLimiter: RateLimiter<AgentRunResult>;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** AbortController for the currently executing message — enables external abort */
+  private messageAbortController: AbortController | null = null;
 
   constructor(sessionHelper: SessionCommandHelper, projectRoot: string) {
     super(sessionHelper, projectRoot);
@@ -120,9 +130,10 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     roleName?: string,
   ): Promise<void> {
     this.currentSessionName = sessionName;
+    this.currentMemberId = config?.memberId;
 
-    // Load system prompt from file (role-specific)
-    const systemPrompt = await this.loadSystemPrompt(roleName || 'orchestrator');
+    // Build enhanced system prompt with skills and addon awareness
+    const systemPrompt = await this.buildEnhancedSystemPrompt(roleName || 'orchestrator');
 
     // Build full config with defaults
     const fullConfig: CrewlyAgentConfig = {
@@ -146,10 +157,14 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       throw error;
     }
     this.initialized = true;
+    this.currentModelString = `${fullConfig.model.provider}/${fullConfig.model.modelId}`;
+
+    // Start periodic heartbeat to keep in-process agent marked active
+    this.startHeartbeat(sessionName);
 
     // Register in-process session for frontend terminal visibility
     this.logBuffer.registerSession(sessionName);
-    this.logBuffer.append(sessionName, 'info', `Crewly Agent initialized (${fullConfig.model.provider}/${fullConfig.model.modelId})`);
+    this.logBuffer.append(sessionName, 'info', `Crewly Agent initialized (${this.currentModelString})`);
 
     this.logger.info('Crewly Agent runtime initialized', {
       sessionName,
@@ -190,7 +205,10 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     }
 
     const queueLen = this.rateLimiter.getQueueLength();
-    this.logBuffer.append(session, 'info', `← Message received (${cleanMessage.length} chars${conversationId ? `, conv:${conversationId}` : ''}${queueLen > 0 ? `, queue:${queueLen}` : ''})`);
+    const msgPreview = cleanMessage.length <= 120
+      ? `"${cleanMessage}"`
+      : `"${cleanMessage.substring(0, 50)}...${cleanMessage.substring(cleanMessage.length - 50)}"`;
+    this.logBuffer.append(session, 'info', `← Message received (${cleanMessage.length} chars${conversationId ? `, conv:${conversationId}` : ''}${queueLen > 0 ? `, queue:${queueLen}` : ''}): ${msgPreview}`);
 
     this.logger.debug('Handling message via rate limiter', {
       sessionName: session,
@@ -231,18 +249,146 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     conversationId?: string,
     metadata?: Record<string, string>,
   ): Promise<AgentRunResult> {
-    try {
-      const result = await this.agentRunner!.run(cleanMessage, conversationId, metadata);
+    const HARD_TIMEOUT_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
+    const SOFT_WARNING_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS;
 
-      // Log tool calls to buffer for frontend visibility
-      for (const tc of result.toolCalls) {
-        const argsPreview = JSON.stringify(tc.args).substring(0, 120);
-        this.logBuffer.append(session, 'info', `🔧 ${tc.toolName}(${argsPreview})`);
-        const resultPreview = tc.result ? JSON.stringify(tc.result).substring(0, 200) : 'void';
+    // Execution tracking for enhanced timeout diagnostics
+    const executionTracker = {
+      phase: 'queued' as string,
+      currentTool: null as string | null,
+      toolCallsCompleted: [] as string[],
+      startedAt: new Date(),
+      lastActivityAt: new Date(),
+      messagePreview: cleanMessage.length <= 100
+        ? cleanMessage
+        : `${cleanMessage.substring(0, 50)}...${cleanMessage.substring(cleanMessage.length - 50)}`,
+    };
+
+    // Soft warning timer — logs if processing exceeds threshold but does NOT kill it.
+    const warningTimer = setTimeout(() => {
+      executionTracker.lastActivityAt = new Date();
+      this.logger.warn(`Message processing exceeding ${SOFT_WARNING_MS / 1000}s (still running)`, {
+        sessionName: session,
+        phase: executionTracker.phase,
+        toolCallsCompleted: executionTracker.toolCallsCompleted.length,
+        messagePreview: cleanMessage.substring(0, 100),
+      });
+    }, SOFT_WARNING_MS);
+
+    // Hard timeout — AbortController kills the streamText/generateText call after MESSAGE_TIMEOUT_MS
+    const abortController = new AbortController();
+    this.messageAbortController = abortController;
+    const hardTimer = setTimeout(() => {
+      abortController.abort();
+    }, HARD_TIMEOUT_MS);
+
+    // Text chunk buffer — collects streaming text and flushes on step boundaries
+    let textChunkBuffer = '';
+
+    // Build streaming callbacks that write to InProcessLogBuffer in real-time
+    const streamingCallbacks: StreamingEventCallbacks = {
+      onTextChunk: (chunk: string) => {
+        if (chunk.length > 0) {
+          executionTracker.lastActivityAt = new Date();
+          executionTracker.phase = 'model-thinking';
+          textChunkBuffer += chunk;
+        }
+      },
+      onToolCallStart: (toolName: string, _args: Record<string, unknown>) => {
+        executionTracker.phase = 'tool-calling';
+        executionTracker.currentTool = toolName;
+        executionTracker.lastActivityAt = new Date();
+      },
+      onToolCallFinish: (toolName: string, args: Record<string, unknown>, result: unknown, _durationMs: number) => {
+        executionTracker.toolCallsCompleted.push(toolName);
+        executionTracker.currentTool = null;
+        executionTracker.lastActivityAt = new Date();
+        const argsPreview = JSON.stringify(args).substring(0, 120);
+        this.logBuffer.append(session, 'info', `🔧 ${toolName}(${argsPreview})`);
+
+        // For bash_exec, show the command as an extra log line for readability
+        if (toolName === 'bash_exec' && args.command) {
+          const cmdPreview = String(args.command).substring(0, 200);
+          this.logBuffer.append(session, 'info', `  $ ${cmdPreview}`);
+        }
+
+        const resultPreview = result ? JSON.stringify(result).substring(0, 200) : 'void';
         this.logBuffer.append(session, 'debug', `  → ${resultPreview}`);
+      },
+      onStepFinish: (stepIndex: number, hasToolCalls: boolean) => {
+        executionTracker.lastActivityAt = new Date();
+
+        // Flush buffered text at each step boundary
+        if (textChunkBuffer.trim().length > 0) {
+          // Truncate very long text to keep logs readable
+          const text = textChunkBuffer.trim();
+          const preview = text.length > 500 ? text.substring(0, 500) + '...' : text;
+          this.logBuffer.append(session, 'info', `💬 ${preview}`);
+          textChunkBuffer = '';
+        }
+
+        if (!hasToolCalls) {
+          executionTracker.phase = 'model-thinking';
+        }
+      },
+    };
+
+    try {
+      executionTracker.phase = 'model-thinking';
+      const result = await Promise.race([
+        this.agentRunner!.run(cleanMessage, conversationId, metadata, {
+          abortSignal: abortController.signal,
+          streaming: streamingCallbacks,
+        }),
+        new Promise<never>((_resolve, reject) => {
+          abortController.signal.addEventListener('abort', () => {
+            const elapsed = Date.now() - executionTracker.startedAt.getTime();
+            const lastActivity = Date.now() - executionTracker.lastActivityAt.getTime();
+            const toolsSummary = executionTracker.toolCallsCompleted.length > 0
+              ? executionTracker.toolCallsCompleted.join(', ')
+              : 'none';
+            const currentToolInfo = executionTracker.currentTool
+              ? `Current tool: ${executionTracker.currentTool}. `
+              : '';
+            reject(new Error(
+              `Message processing timed out after ${HARD_TIMEOUT_MS}ms. `
+              + `Phase: ${executionTracker.phase}. `
+              + `${currentToolInfo}`
+              + `Tools completed: [${toolsSummary}] (${executionTracker.toolCallsCompleted.length} total). `
+              + `Last activity: ${Math.round(lastActivity / 1000)}s ago. `
+              + `Total elapsed: ${Math.round(elapsed / 1000)}s. `
+              + `Message: "${executionTracker.messagePreview}"`
+            ));
+          }, { once: true });
+        }),
+      ]);
+
+      clearTimeout(warningTimer);
+      clearTimeout(hardTimer);
+      this.messageAbortController = null;
+
+      // Flush any remaining buffered text after the run completes
+      if (textChunkBuffer.trim().length > 0) {
+        const text = textChunkBuffer.trim();
+        const preview = text.length > 500 ? text.substring(0, 500) + '...' : text;
+        this.logBuffer.append(session, 'info', `💬 ${preview}`);
+        textChunkBuffer = '';
+      }
+
+      // Tool calls already logged via streaming callbacks (onToolCallStart/Finish).
+      // Only log tool calls retroactively if generateText path was used (test mock).
+      if (this.agentRunner!._generateTextFn) {
+        for (const tc of result.toolCalls) {
+          executionTracker.toolCallsCompleted.push(tc.toolName);
+          const argsPreview = JSON.stringify(tc.args).substring(0, 120);
+          this.logBuffer.append(session, 'info', `🔧 ${tc.toolName}(${argsPreview})`);
+          const resultPreview = tc.result ? JSON.stringify(tc.result).substring(0, 200) : 'void';
+          this.logBuffer.append(session, 'debug', `  → ${resultPreview}`);
+        }
       }
 
       // Log response summary
+      executionTracker.phase = 'complete';
       const textPreview = result.text ? result.text.substring(0, 150) : '(no text)';
       this.logBuffer.append(session, 'info', `→ Response (${result.steps} steps, ${result.toolCalls.length} tools): ${textPreview}`);
       this.logBuffer.append(session, 'debug', `  Tokens: ${result.usage.input}in/${result.usage.output}out`);
@@ -255,12 +401,39 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
         finishReason: result.finishReason,
       });
 
+      // Record token usage when tracking is enabled
+      this.recordTokenUsageIfEnabled(session, result).catch(() => {
+        // Non-critical — don't let tracking errors affect message flow
+      });
+
       return result;
     } catch (error) {
+      clearTimeout(warningTimer);
+      clearTimeout(hardTimer);
+      this.messageAbortController = null;
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logBuffer.append(session, 'error', `Agent error: ${errMsg}`);
       throw error;
     }
+  }
+
+  /**
+   * Record token usage to the TokenUsageService if tracking is enabled in settings.
+   *
+   * @param session - Session name
+   * @param result - Agent run result containing usage data
+   */
+  private async recordTokenUsageIfEnabled(session: string, result: AgentRunResult): Promise<void> {
+    const settings = await getSettingsService().getSettings();
+    if (!settings.general.tokenTracking) return;
+
+    TokenUsageService.getInstance().recordUsage(
+      session,
+      session,
+      result.usage.input,
+      result.usage.output,
+      this.currentModelString,
+    );
   }
 
   /**
@@ -270,6 +443,37 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
    */
   isReady(): boolean {
     return this.initialized && this.agentRunner !== null && this.agentRunner.isInitialized();
+  }
+
+  /**
+   * Abort the currently executing message processing.
+   *
+   * Cancels the active model call, terminates running tool processes,
+   * and returns partial results where possible. Safe to call at any time —
+   * returns false if no run is in progress.
+   *
+   * @returns True if an active run was aborted, false if nothing was running
+   */
+  abortCurrentRun(): boolean {
+    if (!this.messageAbortController) {
+      return false;
+    }
+
+    const session = this.currentSessionName;
+    this.messageAbortController.abort();
+    this.messageAbortController = null;
+
+    // Also tell the runner to abort (for cases where the runner has its own abort)
+    if (this.agentRunner) {
+      this.agentRunner.abortCurrentRun();
+    }
+
+    if (session) {
+      this.logBuffer.append(session, 'warn', '⚠️ Run aborted by user');
+    }
+
+    this.logger.info('Agent run aborted', { sessionName: session });
+    return true;
   }
 
   /**
@@ -302,6 +506,9 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     // Mark as not initialized first to reject new messages immediately
     this.initialized = false;
 
+    // Stop heartbeat timer
+    this.stopHeartbeat();
+
     if (this.currentSessionName) {
       this.logBuffer.append(this.currentSessionName, 'info', 'Crewly Agent shutting down');
       this.logBuffer.removeSession(this.currentSessionName);
@@ -314,11 +521,66 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
   // ===== Private helpers =====
 
   /**
-   * Load the system prompt for a given role from file.
+   * Start periodic heartbeat to keep the in-process agent marked as active.
+   *
+   * Unlike PTY-based agents that get implicit heartbeats from every API call
+   * via the middleware, in-process agents only touch the API during message
+   * processing. Between messages, this timer ensures the agent stays registered
+   * as active in teamAgentStatus.json and the PtyActivityTracker.
+   *
+   * @param sessionName - Session name to heartbeat for
+   */
+  private startHeartbeat(sessionName: string): void {
+    this.stopHeartbeat();
+
+    const interval = setInterval(() => {
+      if (!this.initialized) {
+        this.stopHeartbeat();
+        return;
+      }
+
+      // Update heartbeat in teamAgentStatus.json (fire-and-forget)
+      // Pass memberId so the entry is keyed by member ID (not session name)
+      updateAgentHeartbeat(sessionName, this.currentMemberId).catch((err) => {
+        this.logger.debug('Heartbeat update failed (non-critical)', {
+          sessionName,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
+      // Record API activity so PtyActivityTracker doesn't mark us idle
+      try {
+        PtyActivityTrackerService.getInstance().recordApiActivity(sessionName);
+      } catch {
+        // PtyActivityTracker may not be initialized yet
+      }
+    }, CREWLY_AGENT_DEFAULTS.HEARTBEAT_INTERVAL_MS);
+
+    // Don't keep the process alive just for heartbeat
+    interval.unref();
+    this.heartbeatTimer = interval;
+
+    this.logger.debug('In-process heartbeat started', {
+      sessionName,
+      intervalMs: CREWLY_AGENT_DEFAULTS.HEARTBEAT_INTERVAL_MS,
+    });
+  }
+
+  /**
+   * Stop the periodic heartbeat timer.
+   */
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  /**
+   * Load the base system prompt for a given role from file.
    *
    * @param roleName - Role name (maps to config/roles/{roleName}/prompt.md)
-   * @returns System prompt content
-   * @throws Error if the prompt file cannot be read
+   * @returns System prompt content, or a generic fallback if file is missing
    */
   private async loadSystemPrompt(roleName: string = 'orchestrator'): Promise<string> {
     const promptPath = path.join(this.projectRoot, 'config', 'roles', roleName, 'prompt.md');
@@ -336,5 +598,123 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       });
       return 'You are the Crewly orchestrator agent. Manage teams and delegate tasks.';
     }
+  }
+
+  /**
+   * Build an enhanced system prompt that includes the base role prompt
+   * plus awareness of available skills and installed addons.
+   *
+   * Sections appended:
+   * 1. Available Skills - summary from AGENT_SKILLS_CATALOG.md
+   * 2. Installed Addons - names and versions from each addon's manifest.json
+   * 3. Instructions - basic behavioral guidance for the agent
+   *
+   * All file reads are wrapped in try/catch so missing files are gracefully skipped.
+   *
+   * @param roleName - Role name for the base prompt lookup
+   * @returns Combined system prompt string
+   */
+  async buildEnhancedSystemPrompt(roleName: string = 'orchestrator'): Promise<string> {
+    const basePrompt = await this.loadSystemPrompt(roleName);
+    const sections: string[] = [basePrompt];
+
+    // --- Available Skills ---
+    const skillsSummary = await this.loadSkillsCatalogSummary();
+    if (skillsSummary) {
+      sections.push(`\n## Available Skills\n${skillsSummary}`);
+    }
+
+    // --- Installed Addons ---
+    const addonsSection = await this.loadInstalledAddons();
+    if (addonsSection) {
+      sections.push(`\n## Installed Addons\n${addonsSection}`);
+    }
+
+    // --- Instructions ---
+    sections.push(
+      '\n## Instructions\n'
+      + 'You have access to the above skills via bash. '
+      + 'When asked questions, use your tools to find answers. '
+      + 'Maintain conversation context across messages.'
+    );
+
+    return sections.join('\n');
+  }
+
+  /**
+   * Load and summarize the agent skills catalog file.
+   *
+   * Reads ~/.crewly/skills/AGENT_SKILLS_CATALOG.md and extracts up to
+   * the first 50 lines as a summary. Returns null if the file is missing.
+   *
+   * @returns Skills summary string, or null if unavailable
+   */
+  private async loadSkillsCatalogSummary(): Promise<string | null> {
+    const catalogPath = path.join(
+      homedir(),
+      CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+      CREWLY_CONSTANTS.PATHS.SKILLS_DIR,
+      CREWLY_CONSTANTS.PATHS.SKILLS_CATALOG_FILE,
+    );
+
+    try {
+      const content = await fs.readFile(catalogPath, 'utf8');
+      const lines = content.split('\n');
+      const maxLines = 50;
+      const summary = lines.slice(0, maxLines).join('\n');
+      const truncated = lines.length > maxLines ? `\n... (${lines.length - maxLines} more lines)` : '';
+      this.logger.debug('Skills catalog loaded', { catalogPath, totalLines: lines.length });
+      return summary + truncated;
+    } catch {
+      this.logger.debug('Skills catalog not found, skipping', { catalogPath });
+      return null;
+    }
+  }
+
+  /**
+   * Scan installed addons and build a summary list.
+   *
+   * Reads manifest.json from each subdirectory under the addons directory
+   * and returns a markdown list of addon names, versions, and descriptions.
+   * Returns null if no addons are installed.
+   *
+   * @returns Addon list string, or null if no addons found
+   */
+  private async loadInstalledAddons(): Promise<string | null> {
+    const addonsDir = path.join(
+      homedir(),
+      CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+      ADDON_CONSTANTS.PATHS.ADDONS_DIR,
+    );
+
+    let entries: string[];
+    try {
+      entries = await fs.readdir(addonsDir);
+    } catch {
+      this.logger.debug('Addons directory not found, skipping', { addonsDir });
+      return null;
+    }
+
+    const addonLines: string[] = [];
+    for (const entry of entries) {
+      const manifestPath = path.join(addonsDir, entry, ADDON_CONSTANTS.MANIFEST_FILE);
+      try {
+        const raw = await fs.readFile(manifestPath, 'utf8');
+        const manifest = JSON.parse(raw) as { name?: string; version?: string; description?: string };
+        const name = manifest.name || entry;
+        const version = manifest.version || 'unknown';
+        const desc = manifest.description ? `: ${manifest.description}` : '';
+        addonLines.push(`- ${name} v${version}${desc}`);
+      } catch {
+        // Skip directories without valid manifest
+      }
+    }
+
+    if (addonLines.length === 0) {
+      return null;
+    }
+
+    this.logger.debug('Installed addons loaded', { count: addonLines.length });
+    return addonLines.join('\n');
   }
 }
