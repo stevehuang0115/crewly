@@ -689,12 +689,14 @@ export class AgentRegistrationService {
 			}
 		}
 
-		// Write prompt file before launching runtime so --append-system-prompt-file works
+		// Write prompt file before launching runtime so --agent (Claude Code) or --append-system-prompt-file works
 		let promptFilePath: string | undefined;
+		let agentName: string | undefined;
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
 				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
-				promptFilePath = await this.writePromptFile(sessionName, prompt);
+				promptFilePath = await this.writePromptFile(sessionName, prompt, { projectPath, runtimeType, role });
+				agentName = sessionName; // #207: pass agent name for --agent flag
 			} catch (promptError) {
 				this.logger.warn('Failed to pre-write prompt file (non-fatal, will fall back to direct delivery)', {
 					sessionName,
@@ -704,10 +706,8 @@ export class AgentRegistrationService {
 		}
 
 		// Reinitialize runtime using the appropriate initialization script (always fresh start)
-		// runtimeService2: Fresh instance for runtime reinitialization after cleanup
-		// New instance ensures clean state without cached detection results
 		const runtimeService2 = this.createRuntimeService(runtimeType);
-		await runtimeService2.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath);
+		await runtimeService2.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath, agentName);
 
 		// Wait for runtime to be ready (simplified detection)
 		// Use shorter check interval in test environment, and reasonable interval in production
@@ -1021,12 +1021,14 @@ export class AgentRegistrationService {
 			}
 		}
 
-		// Write prompt file before launching runtime so --append-system-prompt-file works
+		// Write prompt file before launching runtime so --agent (Claude Code) or --append-system-prompt-file works
 		let promptFilePath: string | undefined;
+		let agentName: string | undefined;
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
 				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
-				promptFilePath = await this.writePromptFile(sessionName, prompt);
+				promptFilePath = await this.writePromptFile(sessionName, prompt, { projectPath, runtimeType, role });
+				agentName = sessionName;
 			} catch (promptError) {
 				this.logger.warn('Failed to pre-write prompt file in full recreation (non-fatal)', {
 					sessionName,
@@ -1044,7 +1046,7 @@ export class AgentRegistrationService {
 
 			// Initialize runtime for orchestrator using script (always fresh start)
 			const runtimeService = this.createRuntimeService(runtimeType);
-			await runtimeService.executeRuntimeInitScript(sessionName, process.cwd(), effectiveFlags, promptFilePath);
+			await runtimeService.executeRuntimeInitScript(sessionName, process.cwd(), effectiveFlags, promptFilePath, agentName);
 
 			// Wait for runtime to be ready
 			const checkInterval = this.getCheckInterval();
@@ -1111,7 +1113,7 @@ export class AgentRegistrationService {
 			await (await this.getSessionHelper()).createSession(sessionName, projectPath || process.cwd());
 
 			const runtimeService = this.createRuntimeService(runtimeType);
-			await runtimeService.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath);
+			await runtimeService.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath, agentName);
 
 			// Wait for runtime to be ready (simplified detection)
 			const checkInterval = this.getCheckInterval();
@@ -1538,20 +1540,36 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 	 * @param prompt - The full prompt content
 	 * @returns The absolute path to the written file, or undefined on error
 	 */
+	/**
+	 * Write the registration prompt to a file on disk.
+	 *
+	 * For Claude Code agents (#207): writes to `{projectPath}/.claude/agents/{sessionName}.md`
+	 * with YAML frontmatter so the `--agent` flag can load it as a custom agent definition.
+	 * For other runtimes: writes to `~/.crewly/prompts/{sessionName}-init.md`.
+	 */
 	private async writePromptFile(
 		sessionName: string,
-		prompt: string
+		prompt: string,
+		options?: { projectPath?: string; runtimeType?: RuntimeType; role?: string }
 	): Promise<string | undefined> {
-		const promptFilePath = this.getInitPromptFilePath(sessionName);
+		const isClaudeAgent = options?.runtimeType === RUNTIME_TYPES.CLAUDE_CODE && options?.projectPath;
+		const promptFilePath = isClaudeAgent
+			? path.join(options.projectPath!, '.claude', 'agents', `${sessionName}.md`)
+			: this.getInitPromptFilePath(sessionName);
 		const promptsDir = path.dirname(promptFilePath);
+
+		const fileContent = isClaudeAgent
+			? `---\nname: ${sessionName}\ndescription: ${options?.role || 'developer'} agent for Crewly orchestration\n---\n\n${prompt}`
+			: prompt;
 
 		try {
 			await mkdir(promptsDir, { recursive: true });
-			await writeFile(promptFilePath, prompt, 'utf8');
+			await writeFile(promptFilePath, fileContent, 'utf8');
 			this.logger.debug('Wrote init prompt to file', {
 				sessionName,
 				promptFilePath,
-				promptLength: prompt.length,
+				promptLength: fileContent.length,
+				mode: isClaudeAgent ? 'claude-agent' : 'legacy',
 			});
 			return promptFilePath;
 		} catch (error) {
@@ -1565,7 +1583,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 	}
 
 	/**
-	 * Build the unified init prompt path used by all runtimes.
+	 * Build the unified init prompt path used by non-Claude-Code runtimes.
 	 */
 	private getInitPromptFilePath(sessionName: string): string {
 		return path.join(
@@ -4339,8 +4357,8 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		}
 
 		// Step 2: Build the message to send.
-		// Claude Code: prompt was already loaded via --append-system-prompt-file at launch,
-		// so the agent already has all instructions as a system prompt. Just send a short
+		// Claude Code: prompt was already loaded via --agent flag at launch (#207),
+		// so the agent already has all instructions as its agent definition. Just send a short
 		// kickoff trigger — no need to ask it to read the file again.
 		// Gemini CLI / other runtimes: need the file-read instruction since the prompt
 		// was NOT loaded via system prompt.

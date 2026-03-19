@@ -603,6 +603,53 @@ echo "second command"
 				'/test/path',
 			);
 		});
+
+		it('should use --agent flag when agentName is provided (#207)', async () => {
+			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({
+				initScript: 'initialize_claude.sh', displayName: 'Claude Code',
+				welcomeMessage: 'Welcome', timeout: 120000, description: 'Claude Code CLI',
+			});
+			jest.spyOn(service as any, 'loadInitScript').mockResolvedValue(['claude --dangerously-skip-permissions']);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path', undefined, '/path/to/agent.md', 'test-session');
+
+			expect(sendCommandsSpy).toHaveBeenCalledWith(
+				'test-session',
+				['claude --dangerously-skip-permissions --agent "test-session"'],
+				'/test/path',
+			);
+		});
+
+		it('should prefer --agent over --append-system-prompt-file (#207)', async () => {
+			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({
+				initScript: 'initialize_claude.sh', displayName: 'Claude Code',
+				welcomeMessage: 'Welcome', timeout: 120000, description: 'Claude Code CLI',
+			});
+			jest.spyOn(service as any, 'loadInitScript').mockResolvedValue(['claude --dangerously-skip-permissions']);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path', undefined, '/some/prompt.md', 'my-agent');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).toContain('--agent "my-agent"');
+			expect(calledCmd).not.toContain('--append-system-prompt-file');
+		});
+
+		it('should fall back to --append-system-prompt-file when agentName is undefined (#207)', async () => {
+			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({
+				initScript: 'initialize_claude.sh', displayName: 'Claude Code',
+				welcomeMessage: 'Welcome', timeout: 120000, description: 'Claude Code CLI',
+			});
+			jest.spyOn(service as any, 'loadInitScript').mockResolvedValue(['claude --dangerously-skip-permissions']);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path', undefined, '/some/prompt.md', undefined);
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).toContain('--append-system-prompt-file "/some/prompt.md"');
+			expect(calledCmd).not.toContain('--agent');
+		});
 	});
 
 	describe('settings-based init command', () => {

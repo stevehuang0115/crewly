@@ -86,11 +86,11 @@ export abstract class RuntimeAgentService {
 	 * @param sessionName - PTY session name
 	 * @param targetPath - Working directory for the session
 	 * @param runtimeFlags - Optional CLI flags to inject before --dangerously-skip-permissions
-	 * @param promptFilePath - Optional path to a prompt file; when provided for Claude Code,
-	 *                         appends --append-system-prompt-file to preserve built-in capabilities
-	 *                         while adding Crewly agent instructions
+	 * @param promptFilePath - Optional path to a prompt file; for non-Claude-Code runtimes,
+	 *                         appends --append-system-prompt-file flag
+	 * @param agentName - Optional agent name for Claude Code --agent flag (#207)
 	 */
-	async executeRuntimeInitScript(sessionName: string, targetPath?: string, runtimeFlags?: string[], promptFilePath?: string): Promise<void> {
+	async executeRuntimeInitScript(sessionName: string, targetPath?: string, runtimeFlags?: string[], promptFilePath?: string, agentName?: string): Promise<void> {
 		try {
 			// Try to get command from user settings first, fallback to init script
 			let commands: string[];
@@ -141,11 +141,20 @@ export abstract class RuntimeAgentService {
 				});
 			}
 
-			// Append --append-system-prompt-file for Claude Code when a prompt file is provided.
-			// Uses --append (not --system-prompt-file) to preserve Claude Code's built-in
-			// capabilities while adding Crewly agent instructions. The defensive language
-			// that previously triggered safety refusals was fixed in #208.
-			if (promptFilePath) {
+			// #207: Use --agent flag for Claude Code when agentName is provided.
+			// Falls back to --append-system-prompt-file for non-Claude-Code runtimes.
+			if (agentName) {
+				finalCommands = finalCommands.map(cmd => {
+					if (cmd.includes('--dangerously-skip-permissions')) {
+						return `${cmd} --agent "${agentName}"`;
+					}
+					return cmd;
+				});
+				this.logger.info('Injected --agent flag into init commands', {
+					sessionName,
+					agentName,
+				});
+			} else if (promptFilePath) {
 				finalCommands = finalCommands.map(cmd => {
 					if (cmd.includes('--dangerously-skip-permissions')) {
 						return `${cmd} --append-system-prompt-file "${promptFilePath}"`;
