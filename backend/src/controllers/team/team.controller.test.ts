@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { Request, Response } from 'express';
 import * as teamsHandlers from './team.controller.js';
-import { setTeamControllerEventBusService } from './team.controller.js';
+import { setTeamControllerEventBusService, clearHandoffGuard } from './team.controller.js';
 import type { ApiContext } from '../types.js';
 import { StorageService, TmuxService, SchedulerService, MessageSchedulerService } from '../../services/index.js';
 import { ActiveProjectsService } from '../../services/index.js';
@@ -71,6 +71,9 @@ describe('Teams Handlers', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+
+    // Clear the module-level handoffPushedSessions Set so each test starts fresh
+    clearHandoffGuard(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
 
     // Re-setup SessionHandoffService mock after clearAllMocks
     const { SessionHandoffService } = require('../../services/session/session-handoff.service.js');

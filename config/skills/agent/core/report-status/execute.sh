@@ -83,8 +83,10 @@ if [ "$STATUS" = "done" ]; then
   api_call POST "/task-management/complete-by-session" "$SESSION_BODY" || true
 fi
 
-# Auto-persist key findings as project knowledge when task is done (#127).
+# Auto-persist key findings as project knowledge when task is done (#127, #219).
+# Use [COMPLETED] prefix so recall can distinguish completed tasks from other patterns.
+# This prevents PM from re-delegating tasks that were already done.
 if [ "$STATUS" = "done" ] && [ -n "$SUMMARY" ]; then
   PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-  auto_remember "$SESSION_NAME" "Task completed by ${SESSION_NAME}: ${SUMMARY}" "pattern" "project" "$PROJECT_PATH"
+  auto_remember "$SESSION_NAME" "[COMPLETED] Task completed by ${SESSION_NAME}: ${SUMMARY}" "decision" "project" "$PROJECT_PATH"
 fi

@@ -369,15 +369,42 @@ export class MemoryService implements IMemoryService {
   /**
    * Combines agent and project memories into a formatted string
    */
+  /**
+   * Combines agent and project memories into a formatted string.
+   *
+   * Separates completed task markers (#219) into their own section so
+   * orchestrators and PMs can easily identify work that is already done
+   * and avoid re-delegating it.
+   *
+   * @param result - The recall result containing agent and project memories
+   * @returns Formatted combined string with clear section headings
+   */
   private combineMemories(result: RecallResult): string {
     const sections: string[] = [];
 
-    if (result.agentMemories.length > 0) {
-      sections.push('### From Your Experience\n' + result.agentMemories.map(m => `- ${m}`).join('\n'));
+    // Separate completed task markers from regular agent memories (#219)
+    const completedAgentTasks = result.agentMemories.filter(m => m.includes('[COMPLETED]'));
+    const otherAgentMemories = result.agentMemories.filter(m => !m.includes('[COMPLETED]'));
+
+    if (otherAgentMemories.length > 0) {
+      sections.push('### From Your Experience\n' + otherAgentMemories.map(m => `- ${m}`).join('\n'));
     }
 
-    if (result.projectMemories.length > 0) {
-      sections.push('### From Project Knowledge\n' + result.projectMemories.map(m => `- ${m}`).join('\n'));
+    // Separate completed task markers from regular project memories (#219)
+    const completedProjectTasks = result.projectMemories.filter(m => m.includes('[COMPLETED]'));
+    const otherProjectMemories = result.projectMemories.filter(m => !m.includes('[COMPLETED]'));
+
+    if (otherProjectMemories.length > 0) {
+      sections.push('### From Project Knowledge\n' + otherProjectMemories.map(m => `- ${m}`).join('\n'));
+    }
+
+    // Deduplicated completed tasks section (#219)
+    const allCompleted = [...new Set([...completedAgentTasks, ...completedProjectTasks])];
+    if (allCompleted.length > 0) {
+      sections.push(
+        '### Completed Tasks (do NOT re-delegate)\n' +
+        allCompleted.map(m => `- ${m}`).join('\n'),
+      );
     }
 
     if (result.knowledgeDocuments && result.knowledgeDocuments.length > 0) {

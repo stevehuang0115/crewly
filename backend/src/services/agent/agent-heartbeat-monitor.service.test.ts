@@ -328,6 +328,40 @@ describe('AgentHeartbeatMonitorService', () => {
 			expect(mockSessionBackend.isChildProcessAlive).not.toHaveBeenCalled();
 		});
 
+		it('should mark agent inactive when session is gone (#220 ghost agent fix)', async () => {
+			mockSessionBackend.sessionExists.mockReturnValue(false);
+			setStartedAtInPast(service);
+
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			await service.performCheck();
+
+			// Agent should be marked inactive in storage
+			expect(mockStorageService.updateAgentStatus).toHaveBeenCalledWith(
+				'dev-agent-1',
+				'inactive',
+			);
+
+			// WebSocket broadcast should notify UI
+			expect(mockGateway.broadcastTeamMemberStatus).toHaveBeenCalledWith(
+				expect.objectContaining({
+					teamId: 'team-1',
+					memberId: 'member-1',
+					agentStatus: 'inactive',
+				}),
+			);
+		});
+
+		it('should handle updateAgentStatus failure gracefully when session gone (#220)', async () => {
+			mockSessionBackend.sessionExists.mockReturnValue(false);
+			mockStorageService.updateAgentStatus.mockRejectedValueOnce(new Error('Storage write failed'));
+			setStartedAtInPast(service);
+
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+
+			// Should not throw — error is logged but not propagated
+			await expect(service.performCheck()).resolves.not.toThrow();
+		});
+
 		it('should do nothing when agent has recent PTY activity', async () => {
 			setStartedAtInPast(service);
 

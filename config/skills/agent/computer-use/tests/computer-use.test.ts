@@ -48,12 +48,8 @@ describe('Skill Structure', () => {
     expect(existsSync(EXECUTE_SH)).toBe(true);
   });
 
-  it('should have skill.json', () => {
-    expect(existsSync(join(SKILL_DIR, 'skill.json'))).toBe(true);
-  });
-
-  it('should have instructions.md', () => {
-    expect(existsSync(join(SKILL_DIR, 'instructions.md'))).toBe(true);
+  it('should have SKILL.md with frontmatter and instructions', () => {
+    expect(existsSync(join(SKILL_DIR, 'SKILL.md'))).toBe(true);
   });
 
   it('should have lib/ directory with all modules', () => {
@@ -65,27 +61,61 @@ describe('Skill Structure', () => {
 });
 
 // =============================================================================
-// Skill Metadata Tests
+// Skill Metadata Tests (parsed from SKILL.md YAML frontmatter)
 // =============================================================================
+
+/**
+ * Parse YAML frontmatter from SKILL.md into a plain object.
+ * Simple parser for key: value and list items.
+ *
+ * @param raw - Raw SKILL.md content
+ * @returns Parsed frontmatter object and markdown body
+ */
+function parseSkillMd(raw: string): { meta: Record<string, unknown>; body: string } {
+  const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!match) return { meta: {}, body: raw };
+  const yaml = match[1];
+  const body = match[2];
+  const meta: Record<string, unknown> = {};
+  let currentKey = '';
+  let currentList: string[] | null = null;
+  for (const line of yaml.split('\n')) {
+    const listMatch = line.match(/^  - (.+)$/);
+    if (listMatch && currentKey) {
+      if (!currentList) { currentList = []; meta[currentKey] = currentList; }
+      currentList.push(listMatch[1]);
+      continue;
+    }
+    const kvMatch = line.match(/^(\w[\w.]*?):\s*(.*)$/);
+    if (kvMatch) {
+      currentKey = kvMatch[1];
+      currentList = null;
+      const val = kvMatch[2].replace(/^["']|["']$/g, '').trim();
+      if (val) meta[currentKey] = val;
+    }
+  }
+  return { meta, body };
+}
 
 describe('Skill Metadata', () => {
   let metadata: Record<string, unknown>;
 
   beforeAll(() => {
-    const content = readFileSync(join(SKILL_DIR, 'skill.json'), 'utf-8');
-    metadata = JSON.parse(content);
+    const raw = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf-8');
+    const parsed = parseSkillMd(raw);
+    metadata = parsed.meta;
   });
 
-  it('should have id "computer-use"', () => {
-    expect(metadata.id).toBe('computer-use');
+  it('should have name containing "Desktop Control"', () => {
+    expect(metadata.name).toContain('Desktop Control');
   });
 
   it('should have execution type "script"', () => {
-    const exec = metadata.execution as Record<string, unknown>;
-    expect(exec.type).toBe('script');
+    const raw = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf-8');
+    expect(raw).toContain('type: script');
   });
 
-  it('should have triggers array', () => {
+  it('should have triggers array with more than 5 items', () => {
     expect(Array.isArray(metadata.triggers)).toBe(true);
     expect((metadata.triggers as string[]).length).toBeGreaterThan(5);
   });
@@ -373,11 +403,13 @@ describe('Audit Logging', () => {
 // Instructions Documentation Tests
 // =============================================================================
 
-describe('Instructions Documentation', () => {
+describe('Instructions Documentation (from SKILL.md body)', () => {
   let instructions: string;
 
   beforeAll(() => {
-    instructions = readFileSync(join(SKILL_DIR, 'instructions.md'), 'utf-8');
+    const raw = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf-8');
+    const match = raw.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
+    instructions = match ? match[1] : raw;
   });
 
   it('should document all subcommands', () => {

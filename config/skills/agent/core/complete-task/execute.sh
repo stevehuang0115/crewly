@@ -55,7 +55,7 @@ if echo "$ABSOLUTE_TASK_PATH" | grep -q '/in_progress/'; then
     # Still persist knowledge below, then exit
     if [ -n "$SUMMARY" ]; then
       PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-      auto_remember "$SESSION_NAME" "Task completed by ${SESSION_NAME}: ${SUMMARY}" "pattern" "project" "$PROJECT_PATH"
+      auto_remember "$SESSION_NAME" "[COMPLETED] Task completed by ${SESSION_NAME}: ${SUMMARY}" "decision" "project" "$PROJECT_PATH"
     fi
     exit 0
   fi
@@ -74,8 +74,10 @@ BODY=$(jq -n \
 
 api_call POST "/task-management/complete" "$BODY"
 
-# Auto-persist the task summary as project knowledge (#127).
+# Auto-persist the task summary as project knowledge (#127, #219).
+# Use [COMPLETED] prefix so recall can distinguish completed tasks from other patterns.
+# This prevents PM from re-delegating tasks that were already done.
 if [ -n "$SUMMARY" ]; then
   PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-  auto_remember "$SESSION_NAME" "Task completed by ${SESSION_NAME}: ${SUMMARY}" "pattern" "project" "$PROJECT_PATH"
+  auto_remember "$SESSION_NAME" "[COMPLETED] Task completed by ${SESSION_NAME}: ${SUMMARY}" "decision" "project" "$PROJECT_PATH"
 fi

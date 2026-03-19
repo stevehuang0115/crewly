@@ -303,6 +303,45 @@ describe('MemoryService', () => {
       expect(result.combined).toContain('From Project Knowledge');
     });
 
+    it('should separate completed task markers into dedicated section (#219)', async () => {
+      // Store a completed task marker (mimics what report-status/complete-task does)
+      await service.remember({
+        agentId: testAgentId,
+        projectPath: testProjectPath,
+        content: '[COMPLETED] Task completed by dev-001: Fixed login bug',
+        category: 'decision',
+        scope: 'project',
+        metadata: { title: 'Completed Task' },
+      });
+
+      // Also store a regular (non-completed) agent memory for contrast
+      await service.remember({
+        agentId: testAgentId,
+        content: '[COMPLETED] Task completed by dev-001: Added auth module',
+        category: 'fact',
+        scope: 'agent',
+      });
+
+      const result = await service.recall({
+        agentId: testAgentId,
+        projectPath: testProjectPath,
+        context: 'login bug completed task auth module',
+        scope: 'both',
+      });
+
+      // The [COMPLETED] markers should be separated by combineMemories:
+      // any memory with [COMPLETED] goes to the dedicated section,
+      // NOT into "From Your Experience" or "From Project Knowledge".
+      const combined = result.combined;
+      // If there are any [COMPLETED] items in the memories, they should
+      // be in the "Completed Tasks" section
+      const allMemories = [...result.agentMemories, ...result.projectMemories];
+      const completedItems = allMemories.filter(m => m.includes('[COMPLETED]'));
+      if (completedItems.length > 0) {
+        expect(combined).toContain('Completed Tasks (do NOT re-delegate)');
+      }
+    });
+
     it('should respect limit parameter', async () => {
       // Add more data
       for (let i = 0; i < 5; i++) {

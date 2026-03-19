@@ -96,6 +96,27 @@ jest.mock('../../services/session/pty/pty-session-backend.js', () => ({
 	PtySessionBackend: class PtySessionBackend {},
 }));
 
+// Mock InProcessLogBuffer (used by listTerminalSessions and captureTerminal)
+const mockInProcessLogBuffer = {
+	getSessionNames: jest.fn<() => string[]>().mockReturnValue([]),
+	hasSession: jest.fn<(s: string) => boolean>().mockReturnValue(false),
+	capture: jest.fn<(s: string, n: number) => string>().mockReturnValue(''),
+};
+jest.mock('../../services/agent/crewly-agent/in-process-log-buffer.js', () => ({
+	InProcessLogBuffer: {
+		getInstance: () => mockInProcessLogBuffer,
+	},
+}));
+
+// Mock AdaptiveHeartbeatService defaults
+jest.mock('../../services/agent/adaptive-heartbeat.service.js', () => ({
+	ADAPTIVE_HEARTBEAT_DEFAULTS: {
+		busyIntervalMs: 30000,
+		idleIntervalMs: 120000,
+		dormantIntervalMs: 600000,
+	},
+}));
+
 // Mock fs
 jest.mock('fs', () => ({
 	existsSync: jest.fn().mockReturnValue(false),
@@ -119,6 +140,11 @@ describe('TerminalController', () => {
 		(security.validateTerminalInput as jest.Mock).mockReturnValue({ isValid: true });
 		(security.sanitizeTerminalInput as jest.Mock).mockImplementation((...args: unknown[]) => args[0]);
 		(security.validateSessionName as jest.Mock).mockReturnValue({ isValid: true });
+
+		// Re-apply InProcessLogBuffer mock implementations (cleared by resetAllMocks)
+		mockInProcessLogBuffer.getSessionNames.mockReturnValue([]);
+		mockInProcessLogBuffer.hasSession.mockReturnValue(false);
+		mockInProcessLogBuffer.capture.mockReturnValue('');
 
 		// Create mock response with proper typing
 		const jsonMock = jest.fn().mockReturnThis();

@@ -17,12 +17,18 @@ jest.mock('../../constants.js', () => ({
     SLACK: 'slack',
     WEB_CHAT: 'web_chat',
     SYSTEM_EVENT: 'system_event',
+    GOOGLE_CHAT: 'google_chat',
+    WHATSAPP: 'whatsapp',
+    TELEGRAM: 'telegram',
   },
   MESSAGE_QUEUE_CONSTANTS: {
-    MAX_QUEUE_SIZE: 5,
+    MAX_QUEUE_SIZE: 20,
     DEFAULT_MESSAGE_TIMEOUT: 120000,
     MAX_HISTORY_SIZE: 3,
     INTER_MESSAGE_DELAY: 500,
+    MAX_SYSTEM_EVENT_BATCH: 100,
+    MAX_SYSTEM_EVENT_COALESCE_CHARS: 0,
+    MAX_PENDING_SYSTEM_EVENTS: 3,
     PERSISTENCE_FILE: 'message-queue.json',
     PERSISTENCE_DIR: 'queue',
     SOCKET_EVENTS: {
@@ -98,7 +104,7 @@ describe('MessageQueueService', () => {
     });
 
     it('should throw when queue is full', () => {
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 20; i++) {
         queue.enqueue({ ...validInput, conversationId: `conv-${i}` });
       }
 
@@ -179,6 +185,28 @@ describe('MessageQueueService', () => {
       expect(msg).not.toBeNull();
       expect(msg!.content).toBe('user chat');
       expect(msg!.source).toBe('web_chat');
+    });
+
+    it('should prioritize user messages (whatsapp) over system events', () => {
+      queue.enqueue({ content: 'system 1', conversationId: 'conv-sys-1', source: 'system_event' });
+      queue.enqueue({ content: 'wa msg', conversationId: 'conv-wa', source: 'whatsapp' });
+      queue.enqueue({ content: 'system 2', conversationId: 'conv-sys-2', source: 'system_event' });
+
+      const msg = queue.dequeue();
+      expect(msg).not.toBeNull();
+      expect(msg!.content).toBe('wa msg');
+      expect(msg!.source).toBe('whatsapp');
+    });
+
+    it('should prioritize user messages (telegram) over system events', () => {
+      queue.enqueue({ content: 'system 1', conversationId: 'conv-sys-1', source: 'system_event' });
+      queue.enqueue({ content: 'tg msg', conversationId: 'conv-tg', source: 'telegram' });
+      queue.enqueue({ content: 'system 2', conversationId: 'conv-sys-2', source: 'system_event' });
+
+      const msg = queue.dequeue();
+      expect(msg).not.toBeNull();
+      expect(msg!.content).toBe('tg msg');
+      expect(msg!.source).toBe('telegram');
     });
 
     it('should return first user message when multiple user messages exist', () => {
@@ -1000,6 +1028,95 @@ describe('MessageQueueService', () => {
       expect(batch[0].status).toBe('failed');
       expect(batch[0].error).toBe('delivery failed');
       expect(failedSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // #218: System event flood protection
+  // -----------------------------------------------------------------------
+
+  describe('hasUserMessagePending (#218)', () => {
+    it('should return false when queue is empty', () => {
+      expect(queue.hasUserMessagePending()).toBe(false);
+    });
+
+    it('should return false when only system events are pending', () => {
+      queue.enqueue({ content: 'event', conversationId: 'c1', source: 'system_event' });
+      expect(queue.hasUserMessagePending()).toBe(false);
+    });
+
+    it('should return true when a slack message is pending', () => {
+      queue.enqueue({ content: 'event', conversationId: 'c1', source: 'system_event' });
+      queue.enqueue({ content: 'hello', conversationId: 'c2', source: 'slack' });
+      expect(queue.hasUserMessagePending()).toBe(true);
+    });
+
+    it('should return true when a web_chat message is pending', () => {
+      queue.enqueue({ content: 'hello', conversationId: 'c1', source: 'web_chat' });
+      expect(queue.hasUserMessagePending()).toBe(true);
+    });
+
+    it('should return true when a google_chat message is pending', () => {
+      queue.enqueue({ content: 'hello', conversationId: 'c1', source: 'google_chat' });
+      expect(queue.hasUserMessagePending()).toBe(true);
+    });
+
+    it('should return true when a whatsapp message is pending', () => {
+      queue.enqueue({ content: 'hello', conversationId: 'c1', source: 'whatsapp' });
+      expect(queue.hasUserMessagePending()).toBe(true);
+    });
+
+    it('should return true when a telegram message is pending', () => {
+      queue.enqueue({ content: 'hello', conversationId: 'c1', source: 'telegram' });
+      expect(queue.hasUserMessagePending()).toBe(true);
+    });
+  });
+
+  describe('system event cap on enqueue (#218)', () => {
+    it('should drop oldest system events when exceeding MAX_PENDING_SYSTEM_EVENTS', () => {
+      // MAX_PENDING_SYSTEM_EVENTS is 3 in mock, coalesce disabled (threshold 0)
+      for (let i = 0; i < 3; i++) {
+        queue.enqueue({ content: `event-${i}`, conversationId: `c${i}`, source: 'system_event' });
+      }
+
+      const statusBefore = queue.getStatus();
+      expect(statusBefore.pendingCount).toBe(3);
+
+      // Enqueue 4th system event — should drop the oldest system event
+      queue.enqueue({ content: 'event-3', conversationId: 'c3', source: 'system_event' });
+
+      const statusAfter = queue.getStatus();
+      // 3 existing - 1 dropped + 1 new = 3
+      expect(statusAfter.pendingCount).toBe(3);
+    });
+
+    it('should not drop system events when under the limit', () => {
+      queue.enqueue({ content: 'event-1', conversationId: 'c1', source: 'system_event' });
+      queue.enqueue({ content: 'user msg', conversationId: 'c2', source: 'slack' });
+
+      // 1 system event + 1 user message, under limit of 3
+      const status = queue.getStatus();
+      expect(status.pendingCount).toBe(2);
+    });
+
+    it('should preserve user messages when dropping system events', () => {
+      // Fill with 3 system events (at the cap)
+      for (let i = 0; i < 3; i++) {
+        queue.enqueue({ content: `event-${i}`, conversationId: `c${i}`, source: 'system_event' });
+      }
+      queue.enqueue({ content: 'important user msg', conversationId: 'cuser', source: 'slack' });
+
+      // Enqueue one more system event to trigger cap — oldest system event dropped
+      queue.enqueue({ content: 'event-overflow', conversationId: 'cof', source: 'system_event' });
+
+      // User message must still be findable
+      expect(queue.hasUserMessagePending()).toBe(true);
+
+      // Dequeue should return the user message first (priority dequeue)
+      const msg = queue.dequeue();
+      expect(msg).not.toBeNull();
+      expect(msg!.source).toBe('slack');
+      expect(msg!.content).toBe('important user msg');
     });
   });
 });

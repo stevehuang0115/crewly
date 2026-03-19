@@ -569,10 +569,17 @@ export class QueueProcessorService extends EventEmitter {
   /**
    * Schedule processing of the next message if there are pending messages.
    * Uses INTER_MESSAGE_DELAY to avoid overwhelming the orchestrator.
+   *
+   * #218: Skip the inter-message delay when a user message is pending.
+   * This ensures user messages (from Slack, web chat, etc.) are never
+   * blocked behind the 500ms cooldown after system event delivery.
    */
   private scheduleNextIfPending(): void {
     if (this.running && this.queueService.hasPending()) {
-      this.scheduleProcessNext(MESSAGE_QUEUE_CONSTANTS.INTER_MESSAGE_DELAY);
+      const delay = this.queueService.hasUserMessagePending()
+        ? 0
+        : MESSAGE_QUEUE_CONSTANTS.INTER_MESSAGE_DELAY;
+      this.scheduleProcessNext(delay);
     }
   }
 

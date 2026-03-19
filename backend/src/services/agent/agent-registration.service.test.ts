@@ -2860,7 +2860,7 @@ describe('AgentRegistrationService', () => {
 				text: 'Response via reply_slack',
 				steps: 2,
 				usage: { input: 100, output: 50 },
-				toolCalls: [],
+				toolCalls: [{ toolName: 'reply_slack', args: { channel: 'C123', text: 'Response via reply_slack' } }],
 				finishReason: 'stop',
 			});
 

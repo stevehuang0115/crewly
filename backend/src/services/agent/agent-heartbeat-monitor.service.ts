@@ -31,7 +31,7 @@
 import * as fs from 'fs/promises';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
-import { AGENT_HEARTBEAT_MONITOR_CONSTANTS, AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_ROLE, SESSION_COMMAND_DELAYS } from '../../constants.js';
+import { AGENT_HEARTBEAT_MONITOR_CONSTANTS, AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_ROLE, SESSION_COMMAND_DELAYS, CREWLY_CONSTANTS } from '../../constants.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { AgentHeartbeatService } from './agent-heartbeat.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
@@ -275,10 +275,40 @@ export class AgentHeartbeatMonitorService {
 					continue;
 				}
 
-				// Skip if session doesn't exist
+				// #220: Auto-downgrade agent status when session is gone.
+				// Previously this only cleaned up monitor state without marking
+				// the agent inactive, causing "ghost" active statuses in the API.
 				if (!this.sessionBackend.sessionExists(member.sessionName)) {
-					// Clean up state for non-existent sessions
 					this.agentStates.delete(member.sessionName);
+
+					// Mark agent as inactive in storage so API reflects reality
+					try {
+						await this.storageService.updateAgentStatus(
+							member.sessionName,
+							CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+						);
+						this.logger.warn('Ghost agent detected: session gone, marked inactive (#220)', {
+							sessionName: member.sessionName,
+							memberId: member.id,
+							teamId: team.id,
+						});
+
+						// Broadcast status change to WebSocket clients
+						const gateway = getTerminalGateway();
+						if (gateway) {
+							gateway.broadcastTeamMemberStatus({
+								teamId: team.id,
+								memberId: member.id,
+								agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+							});
+						}
+					} catch (err) {
+						this.logger.error('Failed to downgrade ghost agent status', {
+							sessionName: member.sessionName,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+
 					continue;
 				}
 

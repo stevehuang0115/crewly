@@ -207,6 +207,28 @@ export class MessageQueueService extends EventEmitter {
           return lastPendingSystemEvent;
         }
       }
+
+      // #218: Cap pending system events to prevent agent status floods from
+      // burying user messages. Drop the oldest system events when over the limit.
+      const pendingSystemEvents = this.queue.filter((m) => m.source === 'system_event');
+      if (pendingSystemEvents.length >= MESSAGE_QUEUE_CONSTANTS.MAX_PENDING_SYSTEM_EVENTS) {
+        const toDrop = pendingSystemEvents.length - MESSAGE_QUEUE_CONSTANTS.MAX_PENDING_SYSTEM_EVENTS + 1;
+        let dropped = 0;
+        for (let i = 0; i < this.queue.length && dropped < toDrop; ) {
+          if (this.queue[i].source === 'system_event') {
+            this.queue.splice(i, 1);
+            dropped++;
+          } else {
+            i++;
+          }
+        }
+        if (dropped > 0) {
+          this.logger.info('Dropped oldest system events to prevent flood (#218)', {
+            dropped,
+            remaining: this.queue.filter((m) => m.source === 'system_event').length,
+          });
+        }
+      }
     }
 
     const message: QueuedMessage = {
@@ -230,7 +252,7 @@ export class MessageQueueService extends EventEmitter {
 
   /**
    * Dequeue the next pending message for processing.
-   * Prioritizes user messages (slack, web_chat) over system events so that
+   * Prioritizes user messages (slack, web_chat, whatsapp, google_chat, telegram) over system events so that
    * real user conversations are never blocked behind internal notifications.
    * Returns null if the queue is empty.
    *
@@ -243,7 +265,7 @@ export class MessageQueueService extends EventEmitter {
 
     // Prioritize user messages over system events
     const userIdx = this.queue.findIndex(
-      (m) => m.source === 'slack' || m.source === 'web_chat' || m.source === 'whatsapp' || m.source === 'google_chat'
+      (m) => m.source === 'slack' || m.source === 'web_chat' || m.source === 'whatsapp' || m.source === 'google_chat' || m.source === 'telegram'
     );
     const idx = userIdx >= 0 ? userIdx : 0;
     const [message] = this.queue.splice(idx, 1);
@@ -549,6 +571,21 @@ export class MessageQueueService extends EventEmitter {
    */
   hasPending(): boolean {
     return this.queue.length > 0;
+  }
+
+  /**
+   * Check if a user message (slack, web_chat, whatsapp, google_chat, telegram)
+   * is pending in the queue. Used by the queue processor to skip inter-message
+   * delay when user messages are waiting behind system events (#218).
+   *
+   * @returns True if a user message is pending
+   */
+  hasUserMessagePending(): boolean {
+    return this.queue.some(
+      (m) => m.source === 'slack' || m.source === 'web_chat'
+        || m.source === 'whatsapp' || m.source === 'google_chat'
+        || m.source === 'telegram'
+    );
   }
 
   /**

@@ -289,6 +289,9 @@ export const MESSAGE_QUEUE_CONSTANTS = {
 	MAX_SYSTEM_EVENT_BATCH: 100,
 	/** Max combined chars when coalescing pending system events in-queue */
 	MAX_SYSTEM_EVENT_COALESCE_CHARS: 12000,
+	/** Maximum pending system events in queue before oldest are dropped (#218).
+	 *  Prevents agent status event floods from burying user messages. */
+	MAX_PENDING_SYSTEM_EVENTS: 10,
 	/** Queue persistence file name (stored under crewly home) */
 	PERSISTENCE_FILE: 'message-queue.json',
 	/** Queue persistence directory name */
