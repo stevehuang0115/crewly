@@ -1006,36 +1006,6 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
-   * Add ✅ completion reaction to a pending message.
-   *
-   * Called by the reply-slack API endpoint after successfully delivering
-   * the agent's response. Looks up the original user message ts from
-   * the pending reactions map (keyed by channelId:threadTs) and adds
-   * a white_check_mark reaction.
-   *
-   * @param channelId - Slack channel ID
-   * @param threadTs - Thread timestamp used in the reply
-   */
-  async addCompletionReaction(channelId: string, threadTs: string): Promise<void> {
-    const key = `${channelId}:${threadTs}`;
-    const originalMessageTs = this.pendingReactions.get(key);
-    if (!originalMessageTs) {
-      return;
-    }
-
-    this.pendingReactions.delete(key);
-
-    try {
-      await this.slackService.addReaction(channelId, originalMessageTs, 'white_check_mark');
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      if (!errorMessage.includes('missing_scope') && !errorMessage.includes('already_reacted')) {
-        this.logger.warn('Could not add deferred completion reaction', { error: errorMessage });
-      }
-    }
-  }
-
-  /**
    * Record response to thread store. Slack delivery is handled exclusively
    * by the reply-slack skill via the API — no terminal output fallback needed.
    *

@@ -84,6 +84,16 @@ export class StorageService {
   }
 
   /**
+   * Get the crewly home directory path.
+   * Used by SchedulerService to locate orphaned temp files for cleanup (#217).
+   *
+   * @returns Absolute path to the crewly home directory (e.g. ~/.crewly)
+   */
+  getCrewlyHome(): string {
+    return this.crewlyHome;
+  }
+
+  /**
    * Ensures the crewly home and teams directories exist, creating them if necessary
    */
   private ensureDirectories(): void {

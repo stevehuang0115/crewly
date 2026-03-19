@@ -8,6 +8,8 @@
  */
 
 import { EventEmitter } from 'events';
+import * as path from 'path';
+import { readdir, unlink } from 'fs/promises';
 import { ScheduledCheck } from '../../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 import * as cron from 'node-cron';
@@ -162,6 +164,14 @@ export class SchedulerService extends EventEmitter {
   private recurringIdleStreak = new Map<string, number>();
   /** Auto-cancel recurring checks after this many consecutive idle observations. */
   private static readonly RECURRING_IDLE_AUTO_CANCEL_THRESHOLD = 3;
+  /** #211: Consecutive delivery failures per target session for ghost session auto-cancel. */
+  private consecutiveFailures = new Map<string, number>();
+  /** #211: Auto-cancel recurring checks after this many consecutive delivery failures (ghost sessions). */
+  private static readonly GHOST_SESSION_AUTO_CANCEL_THRESHOLD = 3;
+  /** #217: Write counter for periodic temp file cleanup. */
+  private writeCounter = 0;
+  /** #217: Clean up stale temp files every N writes. */
+  private static readonly TEMP_CLEANUP_INTERVAL = 10;
   /**
    * Per-agent manual check timestamps. Updated when orchestrator calls
    * get_agent_status or get_agent_logs via tool registry. Recurring checks
@@ -428,6 +438,7 @@ export class SchedulerService extends EventEmitter {
         error: err instanceof Error ? err.message : String(err),
       });
     });
+    this.triggerPeriodicTempCleanup();
 
     // Schedule the execution
     const timeout = setTimeout(() => {
@@ -534,6 +545,7 @@ export class SchedulerService extends EventEmitter {
         error: err instanceof Error ? err.message : String(err),
       });
     });
+    this.triggerPeriodicTempCleanup();
 
     // Store enhanced message info
     const enhancedMessage: EnhancedScheduledMessage = {
@@ -635,6 +647,7 @@ export class SchedulerService extends EventEmitter {
         error: err instanceof Error ? err.message : String(err),
       });
     });
+    this.triggerPeriodicTempCleanup();
 
     // Store enhanced message info
     const enhancedMessage: EnhancedScheduledMessage = {
@@ -1251,23 +1264,42 @@ export class SchedulerService extends EventEmitter {
         message,
         executedAt: new Date().toISOString(),
       });
+
+      // #211: Reset consecutive failure counter on successful delivery
+      this.consecutiveFailures.delete(targetSession);
     } catch (sendError) {
       success = false;
       error = sendError instanceof Error ? sendError.message : 'Unknown error';
       this.logger.error('Error executing check-in', { targetSession, error });
 
-      // #167: Dead-letter queue — queue the message for delivery when agent comes online
-      if (!this.deadLetterQueue.has(targetSession)) {
-        this.deadLetterQueue.set(targetSession, []);
-      }
-      const dlq = this.deadLetterQueue.get(targetSession)!;
-      // Limit DLQ per session to 10 messages to prevent unbounded growth
-      if (dlq.length < 10) {
-        dlq.push({ message, queuedAt: new Date().toISOString() });
-        this.logger.info('Message queued in dead-letter queue for offline agent', {
+      // #211: Track consecutive failures for ghost session auto-cancel.
+      // After GHOST_SESSION_AUTO_CANCEL_THRESHOLD consecutive delivery failures
+      // to the same session, auto-cancel all recurring checks targeting it.
+      const failures = (this.consecutiveFailures.get(targetSession) ?? 0) + 1;
+      this.consecutiveFailures.set(targetSession, failures);
+      if (failures >= SchedulerService.GHOST_SESSION_AUTO_CANCEL_THRESHOLD) {
+        this.logger.warn('Auto-cancelling all recurring checks for ghost session after consecutive failures', {
           targetSession,
-          queueSize: dlq.length,
+          consecutiveFailures: failures,
+          threshold: SchedulerService.GHOST_SESSION_AUTO_CANCEL_THRESHOLD,
         });
+        this.cancelAllChecksForSession(targetSession);
+        this.consecutiveFailures.delete(targetSession);
+        this.deadLetterQueue.delete(targetSession);
+      } else {
+        // #167: Dead-letter queue — queue the message for delivery when agent comes online
+        if (!this.deadLetterQueue.has(targetSession)) {
+          this.deadLetterQueue.set(targetSession, []);
+        }
+        const dlq = this.deadLetterQueue.get(targetSession)!;
+        // Limit DLQ per session to 10 messages to prevent unbounded growth
+        if (dlq.length < 10) {
+          dlq.push({ message, queuedAt: new Date().toISOString() });
+          this.logger.info('Message queued in dead-letter queue for offline agent', {
+            targetSession,
+            queueSize: dlq.length,
+          });
+        }
       }
 
       this.emit('check_execution_failed', {
@@ -1569,6 +1601,60 @@ export class SchedulerService extends EventEmitter {
   }
 
   /**
+   * #217: Clean up orphaned .tmp files left by atomicWriteFile crashes.
+   *
+   * @returns Number of temp files cleaned up
+   */
+  async cleanupStaleTempFiles(): Promise<number> {
+    const crewlyHome = this.storageService.getCrewlyHome();
+    let cleaned = 0;
+
+    try {
+      const entries = await readdir(crewlyHome);
+      const tmpPattern = /^(recurring-checks\.json|one-time-checks\.json)\.tmp\./;
+
+      for (const entry of entries) {
+        if (tmpPattern.test(entry)) {
+          try {
+            await unlink(path.join(crewlyHome, entry));
+            cleaned++;
+          } catch (unlinkErr) {
+            this.logger.debug('Failed to remove stale temp file', {
+              file: entry,
+              error: unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr),
+            });
+          }
+        }
+      }
+
+      if (cleaned > 0) {
+        this.logger.info('Cleaned up orphaned temp files', { count: cleaned });
+      }
+    } catch (scanErr) {
+      this.logger.warn('Failed to scan for orphaned temp files', {
+        error: scanErr instanceof Error ? scanErr.message : String(scanErr),
+      });
+    }
+
+    return cleaned;
+  }
+
+  /**
+   * #217: Increment the write counter and trigger periodic temp file cleanup.
+   */
+  private triggerPeriodicTempCleanup(): void {
+    this.writeCounter++;
+    if (this.writeCounter >= SchedulerService.TEMP_CLEANUP_INTERVAL) {
+      this.writeCounter = 0;
+      this.cleanupStaleTempFiles().catch(cleanupErr => {
+        this.logger.debug('Periodic temp cleanup failed', {
+          error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+        });
+      });
+    }
+  }
+
+  /**
    * Clean up all scheduled checks
    */
   cleanup(): void {
@@ -1586,6 +1672,7 @@ export class SchedulerService extends EventEmitter {
     this.recurringTimeouts.clear();
     this.recurringChecks.clear();
     this.recurringIdleStreak.clear();
+    this.consecutiveFailures.clear();
 
     // #167: Stop and clear all cron tasks
     for (const task of this.cronTasks.values()) {
@@ -1635,6 +1722,9 @@ export class SchedulerService extends EventEmitter {
    * @returns Number of checks restored
    */
   async restoreRecurringChecks(): Promise<number> {
+    // #217: Clean up orphaned temp files on startup
+    await this.cleanupStaleTempFiles();
+
     try {
       const persisted = await this.storageService.getRecurringChecks();
       if (persisted.length === 0) {

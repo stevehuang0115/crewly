@@ -15,6 +15,36 @@ import { CLOUD_CONSTANTS } from '../../constants.js';
 
 const logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('CloudAuthMiddleware');
 
+/**
+ * Throttle interval for repeated warning logs (5 minutes).
+ * Prevents log flooding from high-frequency polling endpoints like /devices.
+ */
+export const WARN_THROTTLE_MS = 5 * 60 * 1000;
+
+/**
+ * Map tracking last warn timestamps by key (reason:path).
+ * Exported for testing purposes.
+ */
+export const _warnTimestamps: Map<string, number> = new Map();
+
+/**
+ * Check whether a warning should be logged for the given key.
+ * Returns true if no warning was logged for this key within WARN_THROTTLE_MS.
+ * Updates the timestamp when returning true.
+ *
+ * @param key - Unique identifier for the warning (e.g., 'not-connected:/devices')
+ * @returns true if the warning should be logged
+ */
+function shouldLogWarn(key: string): boolean {
+  const now = Date.now();
+  const lastWarn = _warnTimestamps.get(key);
+  if (lastWarn !== undefined && now - lastWarn < WARN_THROTTLE_MS) {
+    return false;
+  }
+  _warnTimestamps.set(key, now);
+  return true;
+}
+
 /** Tier hierarchy for permission comparison (higher index = more permissive). */
 const TIER_HIERARCHY: CloudTier[] = [
   CLOUD_CONSTANTS.TIERS.FREE,
@@ -62,6 +92,8 @@ export function requireCloudConnection(req: Request, res: Response, next: NextFu
  *
  * The middleware first checks cloud connectivity, then verifies that the
  * current subscription tier meets or exceeds the required level.
+ * Warning logs are throttled to once per 5 minutes per path to prevent
+ * log flooding from high-frequency polling endpoints (#212).
  *
  * @param tier - Minimum required tier ('pro' or 'enterprise')
  * @returns Express middleware function
@@ -76,7 +108,10 @@ export function requireTier(tier: 'pro' | 'enterprise'): (req: Request, res: Res
     const client = CloudClientService.getInstance();
 
     if (!client.isConnected()) {
-      logger.warn('Tier check failed: not connected', { requiredTier: tier, path: req.path });
+      const throttleKey = `not-connected:${req.path}`;
+      if (shouldLogWarn(throttleKey)) {
+        logger.warn('Tier check failed: not connected', { requiredTier: tier, path: req.path });
+      }
       res.status(403).json({
         success: false,
         error: 'CrewlyAI Cloud connection required. Connect via POST /api/cloud/connect.',
@@ -89,11 +124,14 @@ export function requireTier(tier: 'pro' | 'enterprise'): (req: Request, res: Res
     const requiredIndex = TIER_HIERARCHY.indexOf(tier);
 
     if (currentIndex < requiredIndex) {
-      logger.warn('Tier check failed: insufficient tier', {
-        currentTier,
-        requiredTier: tier,
-        path: req.path,
-      });
+      const throttleKey = `insufficient-tier:${req.path}`;
+      if (shouldLogWarn(throttleKey)) {
+        logger.warn('Tier check failed: insufficient tier', {
+          currentTier,
+          requiredTier: tier,
+          path: req.path,
+        });
+      }
       res.status(403).json({
         success: false,
         error: `This feature requires a "${tier}" subscription. Current tier: "${currentTier}". Upgrade at https://crewly.dev/pricing.`,

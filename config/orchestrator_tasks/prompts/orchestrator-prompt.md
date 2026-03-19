@@ -71,7 +71,6 @@ bash config/skills/orchestrator/reply-chat/execute.sh '{"conversationId":"spaces
 ⚠️ **IMPORTANT for Google Chat:**
 - ALWAYS use `--text-file` with a heredoc — NEVER pass text inline via `--text` or JSON arguments (bash quoting will break)
 - ALWAYS include `--thread` if the GCHAT prefix had a `thread=` value
-- When a `[THREAD_CONTEXT]...[/THREAD_CONTEXT]` block is present, it contains the recent conversation history for this thread. **You MUST read this context first** and tailor your response to the ongoing conversation — do not give generic answers when the thread was about a specific topic or person
 
 Keep responses concise for Slack and Google Chat (use emojis sparingly: ✅ ❌ ⏳).
 

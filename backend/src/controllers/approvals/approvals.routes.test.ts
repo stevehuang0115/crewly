@@ -22,16 +22,15 @@ describe('Approvals Routes', () => {
     expect(routes).toEqual(
       expect.arrayContaining([
         { path: '/pending', methods: ['get'] },
-        { path: '/audit', methods: ['get'] },
         { path: '/:id/approve', methods: ['post'] },
         { path: '/:id/reject', methods: ['post'] },
       ]),
     );
   });
 
-  it('should have exactly 4 routes', () => {
+  it('should have exactly 3 routes', () => {
     const router = createApprovalsRouter();
     const routeCount = router.stack.filter((layer: any) => layer.route).length;
-    expect(routeCount).toBe(4);
+    expect(routeCount).toBe(3);
   });
 });

@@ -99,9 +99,9 @@ export async function preCommitGate(
     try {
       const gitLog = execSync('git log --oneline -30', { encoding: 'utf-8', timeout: 5000 });
 
-      const hasRound1 = gitLog.includes('review round 1') || gitLog.includes('round 1 feedback') || /round\s+1/i.test(gitLog);
-      const hasRound2 = gitLog.includes('review round 2') || gitLog.includes('round 2 feedback') || /round\s+2/i.test(gitLog);
-      const hasRound3 = gitLog.includes('review round 3') || gitLog.includes('round 3 feedback') || /round\s+3/i.test(gitLog);
+      const hasRound1 = gitLog.includes('review round 1') || gitLog.includes('round 1 feedback') || /round\s+\d\+?1/i.test(gitLog);
+      const hasRound2 = gitLog.includes('review round 2') || gitLog.includes('round 2 feedback') || /round\s+\d?\+?2/i.test(gitLog);
+      const hasRound3 = gitLog.includes('review round 3') || gitLog.includes('round 3 feedback') || /round\s+\d\+3/i.test(gitLog);
 
       if (hasRound1 || hasRound2 || hasRound3) {
         // Has at least some review rounds — check completeness

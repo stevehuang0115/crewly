@@ -214,18 +214,6 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       threadTs,
     });
 
-    // Add ✅ completion reaction to the original user message if pending.
-    // This fires when reply-slack delivers the agent's actual response,
-    // replacing the 👀 (eyes) indicator added on message receipt.
-    if (threadTs) {
-      try {
-        const bridge = getSlackOrchestratorBridge();
-        await bridge.addCompletionReaction(channelId, threadTs);
-      } catch {
-        // Non-critical — bridge may not be initialized
-      }
-    }
-
     res.json({
       success: true,
       data: { messageTs },

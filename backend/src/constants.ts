@@ -883,7 +883,7 @@ export const EMBEDDING_CONSTANTS = {
 	/** Gemini embedding model identifier */
 	GEMINI_MODEL: 'text-embedding-004',
 	/** Base endpoint for Gemini generative language API */
-	GEMINI_ENDPOINT: 'https://generativelanguage.googleapis.com/v1beta/models',
+	GEMINI_ENDPOINT: 'https://generativelanguage.googleapis.com/v1/models',
 	/** Timeout for embedding API calls (ms) */
 	TIMEOUT_MS: 10000,
 	/** Maximum documents to embed in a single batch */
@@ -1102,8 +1102,8 @@ export const CLOUD_CONSTANTS = {
 		CIPHER_ALGORITHM: 'aes-256-gcm',
 		/** Key length (bytes) */
 		KEY_LENGTH: 32,
-		/** Default Cloud API URL for relay queue auto-connect */
-		DEFAULT_API_URL: 'https://crewlyai.com',
+		/** Default WebSocket relay URL for Cloud Relay auto-connect */
+		DEFAULT_WS_URL: 'wss://api.crewlyai.com/relay',
 	},
 } as const;
 

@@ -5,8 +5,7 @@
     "enabled": true,
     "files": [
       { "file": "content-review.md", "trigger": "before_publish", "roles": ["*"] },
-      { "file": "brand-guidelines.md", "trigger": "always", "roles": ["*"] },
-      { "file": "publish-checklist.md", "trigger": "before_publish", "roles": ["*"] }
+      { "file": "brand-guidelines.md", "trigger": "always", "roles": ["*"] }
     ]
   },
   "members": [

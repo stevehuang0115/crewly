@@ -402,4 +402,10 @@ describe('StorageService', () => {
       );
     });
   });
+
+  describe('getCrewlyHome', () => {
+    test('should return the crewly home directory path', () => {
+      expect(storageService.getCrewlyHome()).toBe(testHome);
+    });
+  });
 });

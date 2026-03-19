@@ -82,14 +82,8 @@ auto_remember() {
   local category="${3:-pattern}" scope="${4:-project}"
   local project_path="${5:-}"
 
-  # #187: Auto-inject projectPath from CREWLY_PROJECT_PATH env var if not provided.
-  # This env var is set by the agent session runtime context.
-  if [ -z "$project_path" ] && [ -n "${CREWLY_PROJECT_PATH:-}" ]; then
-    project_path="$CREWLY_PROJECT_PATH"
-  fi
-
-  # #187: If scope is "project" but projectPath is still empty after env fallback,
-  # fall back to "agent" scope to avoid 400 errors from the memory API.
+  # #187: If scope is "project" but projectPath is empty, fall back to "agent" scope
+  # to avoid 400 errors from the memory API.
   if [ "$scope" = "project" ] && [ -z "$project_path" ]; then
     scope="agent"
   fi

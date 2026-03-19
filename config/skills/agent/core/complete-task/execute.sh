@@ -55,7 +55,7 @@ if echo "$ABSOLUTE_TASK_PATH" | grep -q '/in_progress/'; then
     # Still persist knowledge below, then exit
     if [ -n "$SUMMARY" ]; then
       PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-      auto_remember "$SESSION_NAME" "[COMPLETED] Task completed by ${SESSION_NAME}: ${SUMMARY}" "decision" "project" "$PROJECT_PATH"
+      auto_remember "$SESSION_NAME" "Task completed by ${SESSION_NAME}: ${SUMMARY}" "pattern" "project" "$PROJECT_PATH"
     fi
     exit 0
   fi

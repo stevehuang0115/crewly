@@ -5,25 +5,29 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { isCloudConnected, requireCloudConnection, requireTier } from './cloud-auth.middleware.js';
+import { isCloudConnected, requireCloudConnection, requireTier, WARN_THROTTLE_MS, _warnTimestamps } from './cloud-auth.middleware.js';
 import { CloudClientService } from './cloud-client.service.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
-jest.mock('../core/logger.service.js', () => ({
-  LoggerService: {
-    getInstance: () => ({
-      createComponentLogger: () => ({
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-        debug: jest.fn(),
+const mockLoggerWarn = jest.fn();
+
+jest.mock('../core/logger.service.js', () => {
+  return {
+    LoggerService: {
+      getInstance: () => ({
+        createComponentLogger: () => ({
+          info: jest.fn(),
+          warn: (...args: unknown[]) => mockLoggerWarn(...args),
+          error: jest.fn(),
+          debug: jest.fn(),
+        }),
       }),
-    }),
-  },
-}));
+    },
+  };
+});
 
 // We mock the CloudClientService module so we can control isConnected/getTier
 const mockIsConnected = jest.fn<boolean, []>();
@@ -65,6 +69,7 @@ const mockNext: NextFunction = jest.fn();
 describe('CloudAuthMiddleware', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    _warnTimestamps.clear();
   });
 
   // ----- isCloudConnected() -----------------------------------------------
@@ -201,6 +206,113 @@ describe('CloudAuthMiddleware', () => {
           error: expect.stringContaining('requires a "enterprise" subscription'),
         }),
       );
+    });
+  });
+
+  // ----- Warning throttle (#212) -------------------------------------------
+
+  describe('warning throttle (#212)', () => {
+    it('should log warn on first not-connected request', () => {
+      mockIsConnected.mockReturnValue(false);
+
+      const middleware = requireTier('pro');
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        'Tier check failed: not connected',
+        expect.objectContaining({ path: '/devices' }),
+      );
+    });
+
+    it('should suppress repeated not-connected warnings for same path within throttle window', () => {
+      mockIsConnected.mockReturnValue(false);
+
+      const middleware = requireTier('pro');
+
+      // First call — should warn
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+
+      // Subsequent calls — should not warn (within 5 min)
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    });
+
+    it('should still return 403 even when warning is throttled', () => {
+      mockIsConnected.mockReturnValue(false);
+
+      const middleware = requireTier('pro');
+
+      // First call
+      const res1 = mockRes();
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), res1, mockNext);
+      expect(res1.status).toHaveBeenCalledWith(403);
+
+      // Second call — warning throttled but 403 still returned
+      const res2 = mockRes();
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), res2, mockNext);
+      expect(res2.status).toHaveBeenCalledWith(403);
+    });
+
+    it('should warn again after throttle window expires', () => {
+      mockIsConnected.mockReturnValue(false);
+
+      const middleware = requireTier('pro');
+
+      // First call
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+
+      // Simulate time passing beyond throttle window
+      const key = 'not-connected:/devices';
+      _warnTimestamps.set(key, Date.now() - WARN_THROTTLE_MS - 1000);
+
+      // Next call — should warn again
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(2);
+    });
+
+    it('should throttle insufficient-tier warnings independently', () => {
+      mockIsConnected.mockReturnValue(true);
+      mockGetTier.mockReturnValue('free');
+
+      const middleware = requireTier('pro');
+
+      // First call — should warn
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+
+      // Repeated calls — suppressed
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    });
+
+    it('should throttle different paths independently', () => {
+      mockIsConnected.mockReturnValue(false);
+
+      const middleware = requireTier('pro');
+
+      // /devices path — first warn
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+
+      // /other path — separate throttle, should also warn
+      middleware(mockReq({ path: '/other' } as Partial<Request> as Request), mockRes(), mockNext);
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(2);
+
+      // /devices again — suppressed
+      middleware(mockReq({ path: '/devices' } as Partial<Request> as Request), mockRes(), mockNext);
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(2);
+    });
+
+    it('should export WARN_THROTTLE_MS as 5 minutes', () => {
+      expect(WARN_THROTTLE_MS).toBe(5 * 60 * 1000);
     });
   });
 });

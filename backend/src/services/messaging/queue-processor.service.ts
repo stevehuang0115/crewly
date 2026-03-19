@@ -29,7 +29,6 @@ import {
 } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { StorageService } from '../core/storage.service.js';
-import { getGchatThreadStore } from './gchat-thread-store.service.js';
 
 /**
  * QueueProcessorService dequeues messages one-at-a-time and delivers them
@@ -239,7 +238,7 @@ export class QueueProcessorService extends EventEmitter {
       // User messages and system events get shorter timeouts and force-delivery
       // to reduce delay. System events are fire-and-forget so force-delivery is
       // lower risk — prevents the 5×120s=10min retry loop that blocks notifications.
-      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT || message.source === MESSAGE_SOURCES.WHATSAPP || message.source === MESSAGE_SOURCES.GOOGLE_CHAT || message.source === MESSAGE_SOURCES.TELEGRAM;
+      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT || message.source === MESSAGE_SOURCES.WHATSAPP || message.source === MESSAGE_SOURCES.GOOGLE_CHAT;
       const readyTimeout = isUserMessage
         ? EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_TIMEOUT
         : isSystemEvent
@@ -368,28 +367,6 @@ export class QueueProcessorService extends EventEmitter {
         const threadId = message.sourceMetadata?.threadId as string | undefined;
         const threadSuffix = threadId ? ` thread=${threadId}` : '';
         deliveryContent = `[${prefix}:${message.conversationId}${threadSuffix}] ${message.content}`;
-
-        // #195: Inject thread history so the agent has conversation context
-        if (threadId && message.conversationId) {
-          try {
-            const threadStore = getGchatThreadStore();
-            if (threadStore) {
-              const history = await threadStore.getRecentMessages(
-                message.conversationId,
-                threadId,
-                GCHAT_THREAD_CONSTANTS.MAX_CONTEXT_MESSAGES,
-              );
-              if (history) {
-                deliveryContent += `\n\n[THREAD_CONTEXT]\n${history}\n[/THREAD_CONTEXT]`;
-              }
-            }
-          } catch (err) {
-            this.logger.debug('Failed to load GChat thread context (non-fatal)', {
-              threadId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        }
       } else {
         deliveryContent = `[${CHAT_ROUTING_CONSTANTS.MESSAGE_PREFIX}:${message.conversationId}] ${message.content}`;
       }
@@ -513,9 +490,6 @@ export class QueueProcessorService extends EventEmitter {
         return;
       }
 
-      // Track successful delivery for deduplication before marking complete.
-      this.deliveredMessageIds.set(message.id, Date.now());
-
       // Fire-and-forget: mark as completed immediately after delivery.
       // Responses are handled asynchronously by the orchestrator through
       // reply-* skills (reply-slack, reply-chat, reply-gchat).
@@ -535,7 +509,7 @@ export class QueueProcessorService extends EventEmitter {
         batchSize: isSystemEvent ? 1 + batchedMessages.length : 1,
       });
 
-      // Wait for target agent to finish post-delivery work before next message.
+      // Wait for orchestrator to finish post-delivery work before next message.
       // Skip for system events: they're fire-and-forget notifications.
       // The next processNext() iteration already calls waitForAgentReady before
       // delivery, so we don't need to block here for system events.

@@ -2005,4 +2005,169 @@ describe('SchedulerService', () => {
       expect(mockStorageService.deleteRecurringCheck).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('#211: Ghost session auto-cancel', () => {
+    it('should auto-cancel all checks after 3 consecutive delivery failures', async () => {
+      service.scheduleRecurringCheck('ghost-session', 10, 'Check ghost');
+
+      // Make delivery fail via thrown error
+      mockAgentRegistrationService.sendMessageToAgent.mockRejectedValue(
+        new Error('Session not found')
+      );
+
+      // Simulate 3 consecutive delivery failures
+      for (let i = 0; i < 3; i++) {
+        jest.advanceTimersByTime(10 * 60 * 1000);
+        await jest.runAllTimersAsync();
+      }
+
+      // After 3 failures, the check should be auto-cancelled
+      const stats = service.getStats();
+      expect(stats.recurringChecks).toBe(0);
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Auto-cancelling all recurring checks for ghost session after consecutive failures',
+        expect.objectContaining({
+          targetSession: 'ghost-session',
+          consecutiveFailures: 3,
+          threshold: 3,
+        })
+      );
+    });
+
+    it('should reset failure counter on successful delivery', async () => {
+      service.scheduleRecurringCheck('flaky-session', 10, 'Check flaky');
+
+      // Fail twice
+      mockAgentRegistrationService.sendMessageToAgent.mockRejectedValue(
+        new Error('Temporary error')
+      );
+      jest.advanceTimersByTime(10 * 60 * 1000);
+      await jest.runAllTimersAsync();
+      jest.advanceTimersByTime(10 * 60 * 1000);
+      await jest.runAllTimersAsync();
+
+      // Then succeed — should reset counter
+      mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true });
+      jest.advanceTimersByTime(10 * 60 * 1000);
+      await jest.runAllTimersAsync();
+
+      // Fail again twice — should NOT auto-cancel (counter was reset)
+      mockAgentRegistrationService.sendMessageToAgent.mockRejectedValue(
+        new Error('Temporary error')
+      );
+      jest.advanceTimersByTime(10 * 60 * 1000);
+      await jest.runAllTimersAsync();
+      jest.advanceTimersByTime(10 * 60 * 1000);
+      await jest.runAllTimersAsync();
+
+      // Check should still exist (only 2 consecutive failures after reset)
+      const stats = service.getStats();
+      expect(stats.recurringChecks).toBe(1);
+    });
+
+    it('should clear dead-letter queue when ghost session is auto-cancelled', async () => {
+      service.scheduleRecurringCheck('ghost-session', 10, 'Check ghost');
+
+      // Make delivery throw
+      mockAgentRegistrationService.sendMessageToAgent.mockRejectedValue(
+        new Error('Session not found')
+      );
+
+      // 3 failures to trigger auto-cancel
+      for (let i = 0; i < 3; i++) {
+        jest.advanceTimersByTime(10 * 60 * 1000);
+        await jest.runAllTimersAsync();
+      }
+
+      // DLQ should be cleared for ghost session
+      const dlqStats = service.getDeadLetterQueueStats();
+      expect(dlqStats['ghost-session']).toBeUndefined();
+    });
+  });
+
+  describe('#217: Orphaned temp file cleanup', () => {
+    beforeEach(() => {
+      (mockStorageService as any).getCrewlyHome = jest.fn().mockReturnValue('/mock/.crewly');
+    });
+
+    it('should clean up stale temp files on startup (restoreRecurringChecks)', async () => {
+      const fsp = await import('fs/promises');
+      const mockReaddir = jest.spyOn(fsp, 'readdir').mockResolvedValue([
+        'recurring-checks.json.tmp.12345.abc',
+        'one-time-checks.json.tmp.67890.def',
+        'recurring-checks.json.tmp.11111.ghi',
+        'projects.json',
+        'teams.json',
+      ] as any);
+      const mockUnlink = jest.spyOn(fsp, 'unlink').mockResolvedValue(undefined);
+
+      mockStorageService.getRecurringChecks.mockResolvedValue([]);
+
+      await service.restoreRecurringChecks();
+
+      expect(mockReaddir).toHaveBeenCalledWith('/mock/.crewly');
+      expect(mockUnlink).toHaveBeenCalledTimes(3);
+      expect(mockUnlink).toHaveBeenCalledWith('/mock/.crewly/recurring-checks.json.tmp.12345.abc');
+      expect(mockUnlink).toHaveBeenCalledWith('/mock/.crewly/one-time-checks.json.tmp.67890.def');
+      expect(mockUnlink).toHaveBeenCalledWith('/mock/.crewly/recurring-checks.json.tmp.11111.ghi');
+
+      mockReaddir.mockRestore();
+      mockUnlink.mockRestore();
+    });
+
+    it('should not remove non-temp files during cleanup', async () => {
+      const fsp = await import('fs/promises');
+      const mockReaddir = jest.spyOn(fsp, 'readdir').mockResolvedValue([
+        'recurring-checks.json',
+        'one-time-checks.json',
+        'projects.json',
+        'teams.json',
+        'scheduled-messages.json.tmp.99999.xyz',
+      ] as any);
+      const mockUnlink = jest.spyOn(fsp, 'unlink').mockResolvedValue(undefined);
+
+      const cleaned = await service.cleanupStaleTempFiles();
+
+      expect(cleaned).toBe(0);
+      expect(mockUnlink).not.toHaveBeenCalled();
+
+      mockReaddir.mockRestore();
+      mockUnlink.mockRestore();
+    });
+
+    it('should handle readdir errors gracefully', async () => {
+      const fsp = await import('fs/promises');
+      const mockReaddir = jest.spyOn(fsp, 'readdir').mockRejectedValue(new Error('EACCES'));
+
+      const cleaned = await service.cleanupStaleTempFiles();
+
+      expect(cleaned).toBe(0);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Failed to scan for orphaned temp files',
+        expect.objectContaining({ error: 'EACCES' })
+      );
+
+      mockReaddir.mockRestore();
+    });
+
+    it('should trigger periodic cleanup every 10th write', async () => {
+      const fsp = await import('fs/promises');
+      const mockReaddir = jest.spyOn(fsp, 'readdir').mockResolvedValue([] as any);
+
+      // Schedule 9 one-time checks — should NOT trigger cleanup
+      for (let i = 0; i < 9; i++) {
+        service.scheduleCheck('test-session', 60, `Message ${i}`);
+      }
+      expect(mockReaddir).not.toHaveBeenCalled();
+
+      // 10th schedule should trigger cleanup
+      service.scheduleCheck('test-session', 60, 'Message 9');
+      // Wait for the async cleanup to run
+      await new Promise(resolve => setImmediate(resolve));
+      expect(mockReaddir).toHaveBeenCalledTimes(1);
+
+      mockReaddir.mockRestore();
+    });
+  });
 });
