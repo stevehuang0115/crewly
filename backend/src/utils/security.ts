@@ -134,24 +134,27 @@ export function sanitizeForShell(
 
 	// Remove backtick command substitution patterns
 	const backtickPattern = /`[^`]*`/g;
-	if (backtickPattern.test(sanitized)) {
-		sanitized = sanitized.replace(backtickPattern, '');
+	const backtickReplaced = sanitized.replace(backtickPattern, '');
+	if (backtickReplaced !== sanitized) {
+		sanitized = backtickReplaced;
 		wasModified = true;
 		removedPatterns.push('backtick command substitution');
 	}
 
 	// Remove $() command substitution
 	const dollarParenPattern = /\$\([^)]*\)/g;
-	if (dollarParenPattern.test(sanitized)) {
-		sanitized = sanitized.replace(dollarParenPattern, '');
+	const dollarParenReplaced = sanitized.replace(dollarParenPattern, '');
+	if (dollarParenReplaced !== sanitized) {
+		sanitized = dollarParenReplaced;
 		wasModified = true;
 		removedPatterns.push('$() command substitution');
 	}
 
 	// Remove shell variable expansion $VAR or ${VAR}
 	const varPattern = /\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*/g;
-	if (varPattern.test(sanitized)) {
-		sanitized = sanitized.replace(varPattern, '');
+	const varReplaced = sanitized.replace(varPattern, '');
+	if (varReplaced !== sanitized) {
+		sanitized = varReplaced;
 		wasModified = true;
 		removedPatterns.push('shell variable expansion');
 	}

@@ -849,6 +849,10 @@ export const SLACK_RECONNECT_CONSTANTS = {
 	GRACE_PERIOD_MS: 10_000,
 	/** Interval for periodic connection health checks (ms) */
 	HEALTH_CHECK_INTERVAL_MS: 30_000,
+	/** Timeout for the auth.test API ping during health checks (ms) */
+	PING_TIMEOUT_MS: 10_000,
+	/** Number of consecutive ping failures before forcing a reconnect */
+	PING_FAILURES_BEFORE_RECONNECT: 2,
 } as const;
 
 export const SLACK_FILE_DOWNLOAD_CONSTANTS = {
@@ -1126,15 +1130,6 @@ export const AUTH_CONSTANTS = {
 		/** JWT issuer claim */
 		ISSUER: 'crewly-cloud',
 	},
-	/** Password hashing configuration (scrypt) */
-	PASSWORD: {
-		/** Scrypt key length (bytes) */
-		KEY_LENGTH: 64,
-		/** Scrypt cost parameter */
-		COST: 16384,
-		/** Salt length (bytes) */
-		SALT_LENGTH: 16,
-	},
 	/** User plans */
 	PLANS: {
 		FREE: 'free',
@@ -1161,26 +1156,6 @@ export const AUTH_CONSTANTS = {
 
 /** User plan type */
 export type UserPlan = (typeof AUTH_CONSTANTS.PLANS)[keyof typeof AUTH_CONSTANTS.PLANS];
-
-/** Admin console constants */
-export const ADMIN_CONSTANTS = {
-	/** Default admin credentials (overridable via env) */
-	CREDENTIALS: {
-		get EMAIL(): string {
-			return process.env['CREWLY_ADMIN_EMAIL'] || 'admin@crewly.dev';
-		},
-		get PASSWORD(): string {
-			return process.env['CREWLY_ADMIN_PASSWORD'] || 'crewly-admin-2026';
-		},
-	},
-	/** Admin JWT configuration */
-	JWT: {
-		/** Admin token expiry in seconds (8 hours) */
-		EXPIRY_S: 28_800,
-		/** Admin role claim */
-		ROLE: 'admin',
-	},
-} as const;
 
 /** Device heartbeat constants for dual-machine connectivity */
 export const DEVICE_CONSTANTS = {

@@ -506,16 +506,69 @@ async function toolGetTabs() {
 }
 
 /**
- * Executes arbitrary JavaScript in the active tab.
+ * Executes a predefined DOM query in the active tab.
+ *
+ * Only a fixed set of safe operations are allowed — arbitrary code execution
+ * is prohibited to prevent RCE via WebSocket injection.
+ *
+ * Supported operations:
+ * - `querySelectorAll` — returns matching element outlines (tag, id, classes, text)
+ * - `getTitle` — returns document.title
+ * - `getUrl` — returns window.location.href
+ * - `getSelection` — returns current text selection
+ * - `getScrollPosition` — returns scroll X/Y and document dimensions
  */
-async function toolExecuteScript({ code }) {
-  if (!code) throw new Error('Missing required param: code');
+const ALLOWED_EXECUTE_OPS = new Set([
+  'querySelectorAll',
+  'getTitle',
+  'getUrl',
+  'getSelection',
+  'getScrollPosition',
+]);
+
+async function toolExecuteScript({ operation, selector }) {
+  if (!operation) throw new Error('Missing required param: operation');
+  if (!ALLOWED_EXECUTE_OPS.has(operation)) {
+    throw new Error(
+      `Disallowed operation: "${operation}". Allowed: ${[...ALLOWED_EXECUTE_OPS].join(', ')}`,
+    );
+  }
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) throw new Error('No active tab');
 
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    func: new Function('return (' + code + ')'),
+    func: (op, sel) => {
+      switch (op) {
+        case 'querySelectorAll': {
+          if (!sel) return { error: 'selector is required for querySelectorAll' };
+          const els = document.querySelectorAll(sel);
+          return Array.from(els).slice(0, 100).map((el) => ({
+            tag: el.tagName,
+            id: el.id || undefined,
+            classes: el.className || undefined,
+            text: (el.textContent || '').slice(0, 200),
+          }));
+        }
+        case 'getTitle':
+          return document.title;
+        case 'getUrl':
+          return window.location.href;
+        case 'getSelection':
+          return (window.getSelection() || '').toString();
+        case 'getScrollPosition':
+          return {
+            x: window.scrollX,
+            y: window.scrollY,
+            docWidth: document.documentElement.scrollWidth,
+            docHeight: document.documentElement.scrollHeight,
+          };
+        default:
+          return { error: `Unknown operation: ${op}` };
+      }
+    },
+    args: [operation, selector || null],
   });
 
   return { value: results?.[0]?.result ?? null };

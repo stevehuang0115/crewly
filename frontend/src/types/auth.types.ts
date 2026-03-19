@@ -11,8 +11,8 @@
 // User plan
 // ---------------------------------------------------------------------------
 
-/** Subscription plan type. */
-export type UserPlan = 'free' | 'pro';
+/** Subscription plan type — must match backend AUTH_CONSTANTS.PLANS. */
+export type UserPlan = 'free' | 'pro' | 'enterprise';
 
 // ---------------------------------------------------------------------------
 // User profile
@@ -36,7 +36,7 @@ export interface UserProfile {
 // Auth API request/response
 // ---------------------------------------------------------------------------
 
-/** Response from register/login/refresh endpoints. */
+/** Response from Cloud OAuth authentication endpoints. */
 export interface AuthTokenResponse {
   accessToken: string;
   refreshToken: string;
@@ -80,7 +80,7 @@ export interface AuthState {
  * @returns true if value is 'free' or 'pro'
  */
 export function isValidUserPlan(value: unknown): value is UserPlan {
-  return value === 'free' || value === 'pro';
+  return value === 'free' || value === 'pro' || value === 'enterprise';
 }
 
 /**

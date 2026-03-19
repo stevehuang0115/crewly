@@ -99,18 +99,31 @@ function showControlIndicator(action) {
   const panel = document.createElement('div');
   panel.id = INDICATOR_ID;
 
-  const label = ACTION_LABELS[action] || `${action}...`;
-  panel.innerHTML = `
-    <div style="display:flex;align-items:center;gap:8px;">
-      <div style="
-        width:8px;height:8px;border-radius:50%;
-        background:${CREWLY_PURPLE};
-        animation:__crewlyPulse 1.5s ease-in-out infinite;
-      "></div>
-      <span style="font-weight:600;color:#ffffff;font-size:13px;">Crewly is taking over</span>
-      <span style="color:rgba(255,255,255,0.7);font-size:12px;">· ${label}</span>
-    </div>
-  `;
+  const label = ACTION_LABELS[action] || 'Working...';
+
+  // Build indicator DOM safely — no innerHTML with dynamic data
+  const row = document.createElement('div');
+  Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '8px' });
+
+  const dot = document.createElement('div');
+  Object.assign(dot.style, {
+    width: '8px', height: '8px', borderRadius: '50%',
+    background: CREWLY_PURPLE,
+    animation: '__crewlyPulse 1.5s ease-in-out infinite',
+  });
+
+  const title = document.createElement('span');
+  Object.assign(title.style, { fontWeight: '600', color: '#ffffff', fontSize: '13px' });
+  title.textContent = 'Crewly is taking over';
+
+  const actionLabel = document.createElement('span');
+  Object.assign(actionLabel.style, { color: 'rgba(255,255,255,0.7)', fontSize: '12px' });
+  actionLabel.textContent = `· ${label}`;
+
+  row.appendChild(dot);
+  row.appendChild(title);
+  row.appendChild(actionLabel);
+  panel.appendChild(row);
 
   Object.assign(panel.style, {
     position: 'fixed',

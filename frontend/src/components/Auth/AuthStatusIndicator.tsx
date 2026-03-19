@@ -23,12 +23,14 @@ import type { UserPlan } from '../../types/auth.types';
 const PLAN_BADGE_VARIANTS: Record<UserPlan, 'default' | 'primary'> = {
   free: 'default',
   pro: 'primary',
+  enterprise: 'primary',
 };
 
 /** Maps plan to display label. */
 const PLAN_LABELS: Record<UserPlan, string> = {
   free: 'Free',
   pro: 'Pro',
+  enterprise: 'Enterprise',
 };
 
 // ---------------------------------------------------------------------------
