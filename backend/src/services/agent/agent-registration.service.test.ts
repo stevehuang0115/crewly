@@ -295,7 +295,7 @@ describe('AgentRegistrationService', () => {
 			const allCalls = mockSessionHelper.sendMessage.mock.calls.map((c: any[]) => c[1]);
 			const kickoffCall = allCalls.find((msg: string) => msg && msg.includes('Begin your work now'));
 			expect(kickoffCall).toBeDefined();
-			expect(kickoffCall).toContain('initial assessment');
+			expect(kickoffCall).toContain('register-self');
 			// Should NOT contain file path (prompt loaded via --append-system-prompt-file)
 			expect(kickoffCall).not.toContain('Read the file at');
 		});

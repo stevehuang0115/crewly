@@ -1070,6 +1070,8 @@ export const CLOUD_CONSTANTS = {
 		QUEUE_ACK: '/api/v1/relay/queue/ack',
 		/** Device discovery */
 		DEVICES: '/api/v1/relay/devices',
+		/** Cloud handshake: send device metadata + active teams on connect */
+		HANDSHAKE: '/api/v1/relay/handshake',
 	},
 	/** Relay configuration (Cloud Message Queue — HTTP polling) */
 	RELAY: {

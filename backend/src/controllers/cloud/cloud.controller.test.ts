@@ -69,6 +69,44 @@ jest.mock('../../services/cloud/relay-client.service.js', () => ({
   },
 }));
 
+// Mock DeviceIdentityService
+const mockGetOrCreateIdentity = jest.fn().mockResolvedValue({
+  deviceId: 'test-device-uuid',
+  deviceName: 'test-hostname',
+  createdAt: '2026-03-19T00:00:00.000Z',
+  lastSeenAt: '2026-03-19T00:00:00.000Z',
+});
+
+jest.mock('../../services/cloud/device-identity.service.js', () => ({
+  DeviceIdentityService: {
+    getInstance: () => ({
+      getOrCreateIdentity: mockGetOrCreateIdentity,
+    }),
+  },
+}));
+
+// Mock StorageService
+const mockGetTeams = jest.fn().mockResolvedValue([
+  { id: 'team-1', name: 'Product', members: [{ agentStatus: 'active' }, { agentStatus: 'inactive' }] },
+  { id: 'team-2', name: 'Marketing', members: [{ agentStatus: 'active' }] },
+]);
+
+jest.mock('../../services/core/storage.service.js', () => ({
+  StorageService: {
+    getInstance: () => ({
+      getTeams: mockGetTeams,
+    }),
+  },
+}));
+
+// Mock global fetch for handshake
+const originalFetch = global.fetch;
+const mockFetch = jest.fn().mockResolvedValue({
+  ok: true,
+  status: 200,
+  json: () => Promise.resolve({ success: true }),
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -101,6 +139,11 @@ const mockNext: NextFunction = jest.fn();
 describe('Cloud Controller', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    global.fetch = mockFetch;
+  });
+
+  afterAll(() => {
+    global.fetch = originalFetch;
   });
 
   // ----- connectToCloud ---------------------------------------------------
@@ -278,6 +321,58 @@ describe('Cloud Controller', () => {
       await connectToCloud(req, res, mockNext);
 
       expect(mockNext).toHaveBeenCalledWith(error);
+    });
+
+    it('should send cloud handshake with device metadata after connect', async () => {
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1', plan: 'pro' });
+      mockRelayGetState.mockReturnValue('disconnected');
+
+      const req = mockReq({ body: { token: 'test-token', cloudUrl: 'https://cloud.test.com' } });
+      const res = mockRes();
+
+      await connectToCloud(req, res, mockNext);
+
+      // Allow the async handshake to fire
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Handshake should be called via fetch
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/relay/handshake'),
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            Authorization: 'Bearer test-token',
+          }),
+        }),
+      );
+
+      // Verify the payload structure
+      const callArgs = mockFetch.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('handshake'),
+      );
+      expect(callArgs).toBeDefined();
+      const body = JSON.parse(callArgs![1].body);
+      expect(body.deviceId).toBe('test-device-uuid');
+      expect(body.deviceName).toBe('test-hostname');
+      expect(body.teams).toHaveLength(2);
+      expect(body.teams[0].name).toBe('Product');
+      expect(body.teams[0].memberCount).toBe(2);
+      expect(body.teams[0].activeAgents).toBe(1);
+      expect(body.timestamp).toBeDefined();
+    });
+
+    it('should not fail cloud connect if handshake fails', async () => {
+      mockVerifyJwt.mockReturnValue({ sub: 'user-1', plan: 'pro' });
+      mockRelayGetState.mockReturnValue('disconnected');
+      mockFetch.mockRejectedValueOnce(new Error('Network timeout'));
+
+      const req = mockReq({ body: { token: 'test-token' } });
+      const res = mockRes();
+
+      await connectToCloud(req, res, mockNext);
+
+      // Cloud connect still returns success despite handshake failure
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
   });
 

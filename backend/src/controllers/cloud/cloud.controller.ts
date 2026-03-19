@@ -12,6 +12,8 @@ import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { RelayClientService } from '../../services/cloud/relay-client.service.js';
+import { DeviceIdentityService } from '../../services/cloud/device-identity.service.js';
+import { StorageService } from '../../services/core/storage.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { CLOUD_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
 import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
@@ -86,10 +88,108 @@ function autoConnectRelay(token: string): void {
   }
 }
 
+/** Payload sent to the Cloud during the handshake after connect. */
+export interface CloudHandshakePayload {
+  /** Unique device ID from ~/.crewly/device.json */
+  deviceId: string;
+  /** Human-readable device name (hostname) */
+  deviceName: string;
+  /** Active teams on this OSS instance */
+  teams: Array<{
+    id: string;
+    name: string;
+    memberCount: number;
+    activeAgents: number;
+  }>;
+  /** Crewly version (from package.json) */
+  version: string;
+  /** ISO timestamp of this handshake */
+  timestamp: string;
+}
+
+/**
+ * Send device metadata and active team lists to the Cloud server.
+ *
+ * This runs as a best-effort POST after a successful cloud connect.
+ * Failures are logged but do not affect the cloud connection.
+ *
+ * @param cloudUrl - Cloud API base URL
+ * @param token - Bearer token for authentication
+ */
+async function sendCloudHandshake(cloudUrl: string, token: string): Promise<void> {
+  try {
+    // Gather device identity
+    const identityService = DeviceIdentityService.getInstance();
+    const identity = await identityService.getOrCreateIdentity();
+
+    // Gather active teams
+    const storage = StorageService.getInstance();
+    const allTeams = await storage.getTeams();
+    const teamSummaries = allTeams.map((team) => ({
+      id: team.id,
+      name: team.name,
+      memberCount: team.members?.length ?? 0,
+      activeAgents: team.members?.filter((m) => m.agentStatus === 'active').length ?? 0,
+    }));
+
+    // Read version from package root (best-effort)
+    let version = 'unknown';
+    try {
+      const { readFile } = await import('fs/promises');
+      const { join } = await import('path');
+      const pkg = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf-8'));
+      version = pkg.version || 'unknown';
+    } catch {
+      // Non-critical — version is informational only
+    }
+
+    const payload: CloudHandshakePayload = {
+      deviceId: identity.deviceId,
+      deviceName: identity.deviceName,
+      teams: teamSummaries,
+      version,
+      timestamp: new Date().toISOString(),
+    };
+
+    const url = `${cloudUrl}${CLOUD_CONSTANTS.RELAY_ENDPOINTS.HANDSHAKE}`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(CLOUD_CONSTANTS.TIMEOUTS.CONNECT),
+    });
+
+    if (response.ok) {
+      logger.info('Cloud handshake sent successfully', {
+        deviceId: identity.deviceId,
+        teamCount: teamSummaries.length,
+      });
+    } else {
+      // 404 is expected when the Cloud endpoint is not yet deployed
+      const status = response.status;
+      if (status === 404) {
+        logger.debug('Cloud handshake endpoint not yet available (404)');
+      } else {
+        logger.warn('Cloud handshake failed', { status });
+      }
+    }
+  } catch (err) {
+    logger.warn('Cloud handshake failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 /**
  * POST /api/cloud/connect
  *
  * Connect to CrewlyAI Cloud with the provided URL and authentication token.
+ * After a successful connect, sends device metadata and active team lists
+ * to the Cloud via the handshake endpoint.
  *
  * @param req - Request with body: { cloudUrl?, token }
  * @param res - Response returning { success, data: { tier } }
@@ -124,6 +224,9 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
       result = await client.connect(resolvedUrl, token);
       logger.info('Connected to CrewlyAI Cloud (remote verification)', { tier: result.tier });
     }
+
+    // Send device metadata + active teams to Cloud (best-effort, non-blocking)
+    sendCloudHandshake(resolvedUrl, token).catch(() => {/* already logged inside */});
 
     // Auto-initiate relay connection (best-effort, non-blocking)
     autoConnectRelay(token);

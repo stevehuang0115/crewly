@@ -4363,7 +4363,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		// Gemini CLI / other runtimes: need the file-read instruction since the prompt
 		// was NOT loaded via system prompt.
 		const messageToSend = isClaudeCode
-			? 'Begin your work now. Follow the instructions you were given and start by doing an initial assessment of the project.'
+			? 'Begin your work now. Follow the step-by-step instructions in your agent definition EXACTLY — start with Step 1, then Step 2, then Step 3 (register-self). Do NOT skip or reorder steps. Registration is required before the system will deliver messages to you.'
 			: `Read the file at ${promptFilePath} and follow all instructions in it.`;
 
 		// Single attempt for all runtimes. Retrying causes duplicate messages because:
