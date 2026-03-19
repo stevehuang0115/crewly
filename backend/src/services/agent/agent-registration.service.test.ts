@@ -172,6 +172,7 @@ describe('AgentRegistrationService', () => {
 			updateOrchestratorStatus: jest.fn().mockResolvedValue(undefined),
 			getOrchestratorStatus: jest.fn().mockResolvedValue({ agentStatus: 'active' }),
 			getTeams: jest.fn().mockResolvedValue([]),
+			getMemberPrompt: jest.fn().mockResolvedValue(null),
 		} as any;
 
 		mockReadFile = require('fs/promises').readFile;
@@ -295,7 +296,7 @@ describe('AgentRegistrationService', () => {
 			const kickoffCall = allCalls.find((msg: string) => msg && msg.includes('Begin your work now'));
 			expect(kickoffCall).toBeDefined();
 			expect(kickoffCall).toContain('initial assessment');
-			// Should NOT contain file path (prompt loaded via --system-prompt-file)
+			// Should NOT contain file path (prompt loaded via --append-system-prompt-file)
 			expect(kickoffCall).not.toContain('Read the file at');
 		});
 
@@ -1081,6 +1082,59 @@ describe('AgentRegistrationService', () => {
 
 			// Orchestrator has no team member entry, so no TL addon
 			expect(result).not.toContain('TL ADDON');
+		});
+
+		it('should prepend member systemPrompt when available (#210)', async () => {
+			const promptTemplate = 'Base prompt for {{SESSION_NAME}}';
+			mockReadFile.mockResolvedValue(promptTemplate);
+
+			mockStorageService.getTeams.mockResolvedValue([{
+				id: 'team-1',
+				name: 'Test Team',
+				members: [
+					{ id: 'member-with-prompt', name: 'Agent', sessionName: 'agent-session', role: 'developer' },
+				],
+				projectIds: [],
+			}] as any);
+			mockStorageService.getMemberPrompt.mockResolvedValue('You are a senior backend engineer specializing in Node.js.');
+
+			const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+			const result = await loadRegistrationPrompt('developer', 'agent-session', 'member-with-prompt');
+
+			// systemPrompt should be at the beginning
+			expect(result.startsWith('You are a senior backend engineer')).toBe(true);
+			// Base prompt should still be present
+			expect(result).toContain('Base prompt for agent-session');
+		});
+
+		it('should not prepend systemPrompt when member has none (#210)', async () => {
+			const promptTemplate = 'Base prompt for {{SESSION_NAME}}';
+			mockReadFile.mockResolvedValue(promptTemplate);
+
+			mockStorageService.getTeams.mockResolvedValue([{
+				id: 'team-1',
+				name: 'Test Team',
+				members: [
+					{ id: 'member-no-prompt', name: 'Agent', sessionName: 'agent-session', role: 'developer' },
+				],
+				projectIds: [],
+			}] as any);
+			mockStorageService.getMemberPrompt.mockResolvedValue(null);
+
+			const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+			const result = await loadRegistrationPrompt('developer', 'agent-session', 'member-no-prompt');
+
+			// Should start with base prompt, not an empty prepend
+			expect(result.startsWith('Base prompt for agent-session')).toBe(true);
+		});
+
+		it('should include core/ in fallback register-self path (#210)', async () => {
+			mockReadFile.mockRejectedValue(new Error('File not found'));
+
+			const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+			const result = await loadRegistrationPrompt('dev', 'test-session');
+
+			expect(result).toContain('core/register-self/execute.sh');
 		});
 	});
 

@@ -309,17 +309,25 @@ export class AgentRegistrationService {
 	 * Find the project root by looking for package.json
 	 */
 	private findProjectRoot(): string {
-		// Resolve from this file's location to the package root (backend/src/services/agent/ → root)
-		// This works for both local dev and npm global installs (#209)
+		// Resolve from the compiled dist/ location to the package root (#209)
+		// dist/backend/src/services/agent/ → root (5 levels up)
+		// This works for both local dev and npm global installs
 		try {
-			const thisDir = path.dirname(new URL(import.meta.url).pathname);
-			const candidate = path.resolve(thisDir, '..', '..', '..', '..');
-			// Verify it looks like a crewly root (has config/skills/)
-			if (existsSync(path.join(candidate, 'config', 'skills'))) {
-				return candidate;
+			// Use __dirname equivalent: path.dirname(fileURLToPath(import.meta.url))
+			// But since Jest doesn't support import.meta, we use the module path directly
+			const candidates = [
+				// From source: backend/src/services/agent/ → root
+				path.resolve(__dirname, '..', '..', '..', '..'),
+				// From compiled dist: dist/backend/src/services/agent/ → root
+				path.resolve(__dirname, '..', '..', '..', '..', '..'),
+			];
+			for (const candidate of candidates) {
+				if (existsSync(path.join(candidate, 'config', 'skills'))) {
+					return candidate;
+				}
 			}
 		} catch {
-			// import.meta.url resolution failed — fall back
+			// Path resolution failed — fall back
 		}
 		return process.cwd();
 	}
@@ -681,7 +689,7 @@ export class AgentRegistrationService {
 			}
 		}
 
-		// Write prompt file before launching runtime so --system-prompt-file works
+		// Write prompt file before launching runtime so --append-system-prompt-file works
 		let promptFilePath: string | undefined;
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
@@ -1013,7 +1021,7 @@ export class AgentRegistrationService {
 			}
 		}
 
-		// Write prompt file before launching runtime so --system-prompt-file works
+		// Write prompt file before launching runtime so --append-system-prompt-file works
 		let promptFilePath: string | undefined;
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
@@ -1353,6 +1361,28 @@ export class AgentRegistrationService {
 			const marketplaceSkillsPath = path.join(os.homedir(), '.crewly', 'marketplace', 'skills');
 			prompt = prompt.replace(/\{\{MARKETPLACE_SKILLS_PATH\}\}/g, marketplaceSkillsPath);
 
+			// #210: Inject member's systemPrompt if available
+			// This contains role context and authorization info that the agent needs at startup
+			if (foundTeam && foundMember?.id) {
+				try {
+					const memberPrompt = await this.storageService.getMemberPrompt(foundTeam.id, foundMember.id);
+					if (memberPrompt && memberPrompt.trim()) {
+						prompt = memberPrompt.trim() + '\n\n' + prompt;
+						this.logger.info('Member systemPrompt prepended to init prompt', {
+							sessionName,
+							memberId: foundMember.id,
+							systemPromptLength: memberPrompt.length,
+						});
+					}
+				} catch (err) {
+					this.logger.warn('Failed to load member systemPrompt (non-critical)', {
+						sessionName,
+						memberId: foundMember.id,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			}
+
 			// Inject skill authorization section — tells agents that all skills
 			// (including browser control) are pre-authorized by the user
 			prompt += '\n\n## Authorized Operations\n\n'
@@ -1492,7 +1522,7 @@ This project uses Crewly for team coordination. You have bash skills available a
 
 Please run the register-self skill to let the team dashboard know you're available:
 \`\`\`bash
-bash ${skillsPath}/register-self/execute.sh '{"role":"${role}","sessionName":"${sessionName}"${memberIdJson}}'
+bash ${skillsPath}/core/register-self/execute.sh '{"role":"${role}","sessionName":"${sessionName}"${memberIdJson}}'
 \`\`\`
 All it does is update a local status flag so the web UI shows you as online - nothing more.
 
@@ -4309,7 +4339,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		}
 
 		// Step 2: Build the message to send.
-		// Claude Code: prompt was already loaded via --system-prompt-file at launch,
+		// Claude Code: prompt was already loaded via --append-system-prompt-file at launch,
 		// so the agent already has all instructions as a system prompt. Just send a short
 		// kickoff trigger — no need to ask it to read the file again.
 		// Gemini CLI / other runtimes: need the file-read instruction since the prompt
@@ -4409,7 +4439,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 					}
 
 					// Claude still at prompt after 8s — message likely not received.
-					// For Claude Code with --system-prompt-file, don't retry
+					// For Claude Code with --append-system-prompt-file, don't retry
 					// (would cause duplicate). Log warning and return false.
 					this.logger.warn('Kickoff delivery unconfirmed — Claude still at prompt after 8s (not retrying)', {
 						sessionName, runtimeType,
