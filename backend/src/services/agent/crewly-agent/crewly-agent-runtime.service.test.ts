@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals
 import { CrewlyAgentRuntimeService } from './crewly-agent-runtime.service.js';
 import type { SessionCommandHelper } from '../../session/index.js';
 import { RUNTIME_TYPES } from '../../../constants.js';
+import { CREWLY_AGENT_DEFAULTS } from './types.js';
 
 // Mock LoggerService to prevent test log entries from polluting production logs.
 // Without this, logger.warn() calls (e.g. ENOENT fallback in loadSystemPrompt)
@@ -753,6 +754,49 @@ describe('CrewlyAgentRuntimeService', () => {
       expect((service as any).messageAbortController).toBeNull();
       // abort() should have been called on the controller
       expect(mockAbort.abort).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('hard timeout (#198)', () => {
+    it('should abort and throw when MESSAGE_TIMEOUT_MS is exceeded', async () => {
+      const originalTimeout = CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
+      const originalWarning = CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS;
+      (CREWLY_AGENT_DEFAULTS as any).MESSAGE_TIMEOUT_MS = 200;
+      (CREWLY_AGENT_DEFAULTS as any).MESSAGE_SOFT_WARNING_MS = 100;
+
+      try {
+        mockRun.mockImplementation((_msg: string, _convId: unknown, _meta: unknown, opts: Record<string, unknown>) => {
+          const signal = opts?.abortSignal as AbortSignal | undefined;
+          return new Promise((_resolve, reject) => {
+            if (signal) {
+              signal.addEventListener('abort', () => {
+                reject(new Error('The operation was aborted'));
+              });
+            }
+          });
+        });
+
+        await service.initializeInProcess('crewly-orc');
+        await expect(service.handleMessage('Long running task')).rejects.toThrow(/timed out/i);
+      } finally {
+        (CREWLY_AGENT_DEFAULTS as any).MESSAGE_TIMEOUT_MS = originalTimeout;
+        (CREWLY_AGENT_DEFAULTS as any).MESSAGE_SOFT_WARNING_MS = originalWarning;
+      }
+    }, 10000);
+
+    it('should not abort before MESSAGE_TIMEOUT_MS', async () => {
+      const mockResult = {
+        text: 'Done',
+        steps: 1,
+        usage: { input: 10, output: 5 },
+        toolCalls: [],
+        finishReason: 'stop',
+      };
+      mockRun.mockResolvedValue(mockResult);
+
+      await service.initializeInProcess('crewly-orc');
+      const result = await service.handleMessage('Normal task');
+      expect(result.text).toBe('Done');
     });
   });
 

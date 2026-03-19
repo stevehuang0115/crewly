@@ -298,6 +298,7 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     metadata?: Record<string, string>,
   ): Promise<AgentRunResult> {
     const SOFT_WARNING_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS;
+    const HARD_TIMEOUT_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
 
     // Execution tracking for diagnostics
     const executionTracker = {
@@ -325,6 +326,24 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     // AbortController for external abort (abortCurrentRun) and repetition detection
     const abortController = new AbortController();
     this.messageAbortController = abortController;
+
+    // #198: Hard timeout — aborts the run if it exceeds MESSAGE_TIMEOUT_MS.
+    let hardTimeoutTriggered = false;
+    const hardTimeoutTimer = setTimeout(() => {
+      hardTimeoutTriggered = true;
+      this.logger.error(`Message processing hard timeout (${HARD_TIMEOUT_MS / 1000}s) reached — aborting`, {
+        sessionName: session,
+        phase: executionTracker.phase,
+        currentTool: executionTracker.currentTool,
+        toolCallsCompleted: executionTracker.toolCallsCompleted.length,
+        messagePreview: cleanMessage.substring(0, 100),
+        elapsedMs: Date.now() - executionTracker.startedAt.getTime(),
+      });
+      this.logBuffer.append(session, 'error',
+        `⏱️ Hard timeout (${HARD_TIMEOUT_MS / 1000}s) reached — aborting message processing. `
+        + `Phase: ${executionTracker.phase}, tools completed: ${executionTracker.toolCallsCompleted.length}`);
+      abortController.abort();
+    }, HARD_TIMEOUT_MS);
 
     // Text chunk buffer — collects streaming text and flushes on step boundaries
     let textChunkBuffer = '';
@@ -415,6 +434,7 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       });
 
       clearTimeout(warningTimer);
+      clearTimeout(hardTimeoutTimer);
       this.messageAbortController = null;
 
       // If we got here after a repetition-triggered abort, treat as error
@@ -467,7 +487,17 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       return result;
     } catch (error) {
       clearTimeout(warningTimer);
+      clearTimeout(hardTimeoutTimer);
       this.messageAbortController = null;
+
+      // If this was a hard timeout abort, wrap with a clear error.
+      // logBuffer entry already written by the setTimeout callback — skip duplicate.
+      if (hardTimeoutTriggered) {
+        throw new Error(
+          `Message processing timed out after ${HARD_TIMEOUT_MS / 1000}s. `
+          + `Phase: ${executionTracker.phase}, tools completed: ${executionTracker.toolCallsCompleted.length}`
+        );
+      }
 
       // If this was a repetition-triggered abort, wrap with a clear error
       if (repetitionDetected) {

@@ -3000,6 +3000,50 @@ describe('AgentRegistrationService', () => {
 		});
 	});
 
+	describe('writePromptFile (#207)', () => {
+		let mockWriteFileFn: jest.Mock;
+
+		beforeEach(() => {
+			mockWriteFileFn = require('fs/promises').writeFile as jest.Mock;
+			mockWriteFileFn.mockResolvedValue(undefined);
+		});
+
+		it('should write to .claude/agents/ with YAML frontmatter for claude-code runtime', async () => {
+			const result = await (service as any).writePromptFile(
+				'test-agent',
+				'Test prompt content',
+				{ projectPath: '/test/project', runtimeType: RUNTIME_TYPES.CLAUDE_CODE, role: 'developer' }
+			);
+
+			expect(result).toBe('/test/project/.claude/agents/test-agent.md');
+			expect(mockWriteFileFn).toHaveBeenCalledWith(
+				'/test/project/.claude/agents/test-agent.md',
+				expect.stringContaining('---\nname: "test-agent"\ndescription: "developer agent for Crewly orchestration"\n---'),
+				'utf8',
+			);
+			const writtenContent = mockWriteFileFn.mock.calls[mockWriteFileFn.mock.calls.length - 1][1];
+			expect(writtenContent).toContain('Test prompt content');
+		});
+
+		it('should write to ~/.crewly/prompts/ for non-claude-code runtimes', async () => {
+			const result = await (service as any).writePromptFile(
+				'test-agent',
+				'Test prompt content',
+				{ projectPath: '/test/project', runtimeType: 'gemini-cli', role: 'developer' }
+			);
+
+			expect(result).toContain('.crewly/prompts/test-agent-init.md');
+			const writtenContent = mockWriteFileFn.mock.calls[mockWriteFileFn.mock.calls.length - 1][1];
+			expect(writtenContent).not.toContain('---\nname: "');
+			expect(writtenContent).toBe('Test prompt content');
+		});
+
+		it('should write to legacy path when no options provided', async () => {
+			const result = await (service as any).writePromptFile('test-agent', 'Test prompt content');
+			expect(result).toContain('.crewly/prompts/test-agent-init.md');
+		});
+	});
+
 	describe('registerMemberActive', () => {
 		it('should use updateOrchestratorStatus for orchestrator session', async () => {
 			const result = await (service as any).registerMemberActive(
