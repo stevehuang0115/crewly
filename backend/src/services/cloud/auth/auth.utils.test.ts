@@ -7,8 +7,6 @@
 import type { Request } from 'express';
 import {
 	extractBearerToken,
-	MIN_PASSWORD_LENGTH,
-	EMAIL_REGEX,
 } from './auth.utils.js';
 
 describe('auth.utils', () => {
@@ -52,24 +50,4 @@ describe('auth.utils', () => {
 		});
 	});
 
-	describe('MIN_PASSWORD_LENGTH', () => {
-		it('should be 8', () => {
-			expect(MIN_PASSWORD_LENGTH).toBe(8);
-		});
-	});
-
-	describe('EMAIL_REGEX', () => {
-		it('should match valid emails', () => {
-			expect(EMAIL_REGEX.test('user@example.com')).toBe(true);
-			expect(EMAIL_REGEX.test('user+tag@domain.co')).toBe(true);
-			expect(EMAIL_REGEX.test('a@b.c')).toBe(true);
-		});
-
-		it('should reject invalid emails', () => {
-			expect(EMAIL_REGEX.test('')).toBe(false);
-			expect(EMAIL_REGEX.test('nodomain')).toBe(false);
-			expect(EMAIL_REGEX.test('@nope.com')).toBe(false);
-			expect(EMAIL_REGEX.test('no spaces@mail.com')).toBe(false);
-		});
-	});
 });

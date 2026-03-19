@@ -17,8 +17,11 @@ describe('Auth Types', () => {
       expect(isValidUserPlan('pro')).toBe(true);
     });
 
+    it('should accept "enterprise"', () => {
+      expect(isValidUserPlan('enterprise')).toBe(true);
+    });
+
     it('should reject invalid strings', () => {
-      expect(isValidUserPlan('enterprise')).toBe(false);
       expect(isValidUserPlan('premium')).toBe(false);
       expect(isValidUserPlan('')).toBe(false);
     });
@@ -65,8 +68,12 @@ describe('Auth Types', () => {
       expect(isUserProfile(noName)).toBe(false);
     });
 
+    it('should accept profile with enterprise plan', () => {
+      expect(isUserProfile({ ...validProfile, plan: 'enterprise' })).toBe(true);
+    });
+
     it('should reject objects with invalid plan', () => {
-      expect(isUserProfile({ ...validProfile, plan: 'enterprise' })).toBe(false);
+      expect(isUserProfile({ ...validProfile, plan: 'premium' })).toBe(false);
     });
   });
 });

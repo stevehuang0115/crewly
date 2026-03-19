@@ -52,6 +52,9 @@ interface SlackApp {
  * Slack Web Client interface
  */
 interface SlackWebClient {
+  auth: {
+    test: () => Promise<{ ok?: boolean; team?: string; user?: string }>;
+  };
   chat: {
     postMessage: (args: PostMessageArgs) => Promise<{ ts?: string }>;
     update: (args: UpdateMessageArgs) => Promise<void>;
@@ -202,6 +205,10 @@ export class SlackService extends EventEmitter {
   private reconnectAttempts = 0;
   /** Whether the service has been intentionally shut down (skip auto-reconnect) */
   private intentionalDisconnect = false;
+  /** Timestamp of the last successful Slack API ping */
+  private lastPingAt = 0;
+  /** Number of consecutive health-check ping failures */
+  private consecutivePingFailures = 0;
 
   /**
    * Initialize the Slack service with configuration
@@ -380,6 +387,8 @@ export class SlackService extends EventEmitter {
       socketClient.on('connected', () => {
         this.status.connected = true;
         this.reconnectAttempts = 0;
+        this.consecutivePingFailures = 0;
+        this.lastPingAt = Date.now();
         this.cancelReconnectGrace();
         this.logger.info('Socket Mode reconnected');
         this.emit('connected');
@@ -406,14 +415,58 @@ export class SlackService extends EventEmitter {
   /**
    * Start a periodic health check that verifies the Socket Mode connection
    * is alive and triggers reconnection if it has silently died.
+   *
+   * Uses an active Slack API ping (auth.test) to detect half-open sockets
+   * that appear connected but are actually dead after WiFi/network drops.
    */
   private startHealthCheck(): void {
     this.stopHealthCheck();
-    this.healthCheckTimer = setInterval(() => {
+    this.lastPingAt = Date.now();
+    this.consecutivePingFailures = 0;
+
+    this.healthCheckTimer = setInterval(async () => {
       if (this.intentionalDisconnect) return;
+
+      // Case 1: Already known to be disconnected — trigger reconnect
       if (!this.status.connected && !this.reconnecting) {
         this.logger.warn('Health check: Socket Mode not connected and no reconnect in progress — triggering reconnect');
         this.attemptReconnect();
+        return;
+      }
+
+      // Case 2: Status says connected — verify with an active API ping
+      if (this.status.connected && this.client && !this.reconnecting) {
+        try {
+          const pingPromise = this.client.auth.test();
+          const timeoutMs = SLACK_RECONNECT_CONSTANTS.PING_TIMEOUT_MS;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            const timer = setTimeout(() => reject(new Error('Ping timeout')), timeoutMs);
+            // Clear timer if ping resolves first to prevent leak
+            pingPromise.then(() => clearTimeout(timer), () => clearTimeout(timer));
+          });
+          await Promise.race([pingPromise, timeoutPromise]);
+
+          // Ping succeeded — connection is truly alive
+          this.lastPingAt = Date.now();
+          this.consecutivePingFailures = 0;
+        } catch (err) {
+          this.consecutivePingFailures++;
+          this.logger.warn('Health check ping failed', {
+            consecutiveFailures: this.consecutivePingFailures,
+            error: err instanceof Error ? err.message : String(err),
+          });
+
+          // After consecutive failures, declare connection dead and reconnect
+          if (this.consecutivePingFailures >= SLACK_RECONNECT_CONSTANTS.PING_FAILURES_BEFORE_RECONNECT) {
+            this.logger.warn('Health check: connection appears dead after consecutive ping failures — forcing reconnect', {
+              consecutiveFailures: this.consecutivePingFailures,
+              lastPingAt: new Date(this.lastPingAt).toISOString(),
+            });
+            this.status.connected = false;
+            this.consecutivePingFailures = 0;
+            this.attemptReconnect();
+          }
+        }
       }
     }, SLACK_RECONNECT_CONSTANTS.HEALTH_CHECK_INTERVAL_MS);
     // Allow Node to exit even if health check timer is still active
@@ -534,6 +587,8 @@ export class SlackService extends EventEmitter {
       this.status.socketMode = true;
       this.reconnectAttempts = 0;
       this.reconnecting = false;
+      this.consecutivePingFailures = 0;
+      this.lastPingAt = Date.now();
 
       this.setupConnectionMonitoring();
       this.emit('connected');

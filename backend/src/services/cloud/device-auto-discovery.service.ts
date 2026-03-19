@@ -91,6 +91,8 @@ export const DISCOVERY_CONSTANTS = {
 	MAX_CONSECUTIVE_POLL_FAILURES: 20,
 	/** Stop sending heartbeats after this many consecutive failures */
 	MAX_CONSECUTIVE_HEARTBEAT_FAILURES: 10,
+	/** HTTP request timeout for device API calls (ms) */
+	REQUEST_TIMEOUT_MS: 15_000,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -324,6 +326,7 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 				arch: os.arch(),
 				hostname: os.hostname(),
 			}),
+			signal: AbortSignal.timeout(DISCOVERY_CONSTANTS.REQUEST_TIMEOUT_MS),
 		});
 
 		if (!response.ok) {
@@ -353,6 +356,7 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 				headers: {
 					'Authorization': `Bearer ${this.config.token}`,
 				},
+				signal: AbortSignal.timeout(DISCOVERY_CONSTANTS.REQUEST_TIMEOUT_MS),
 			});
 
 			if (!response.ok) {
@@ -470,6 +474,7 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 				body: JSON.stringify({
 					deviceId: this.config.deviceId,
 				}),
+				signal: AbortSignal.timeout(DISCOVERY_CONSTANTS.REQUEST_TIMEOUT_MS),
 			});
 
 			if (!response.ok) {

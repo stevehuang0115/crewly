@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import DOMPurify from 'dompurify';
 import { X, Save, Eye, Edit3, File, FolderOpen } from 'lucide-react';
 import { Button, IconButton } from '../UI';
 
@@ -208,8 +209,8 @@ You are a QA Tester AI agent responsible for:
   };
 
   const renderMarkdown = (content: string) => {
-    // Simple markdown renderer for preview
-    return content
+    // Simple markdown renderer for preview — sanitized via DOMPurify
+    const raw = content
       .replace(/^# (.*)/gm, '<h1>$1</h1>')
       .replace(/^## (.*)/gm, '<h2>$1</h2>')
       .replace(/^### (.*)/gm, '<h3>$1</h3>')
@@ -220,6 +221,7 @@ You are a QA Tester AI agent responsible for:
       .replace(/- \[x\] (.*)/gi, '☑ $1')
       .replace(/^- (.*)/gm, '• $1')
       .replace(/\n/g, '<br>');
+    return DOMPurify.sanitize(raw);
   };
 
   return (

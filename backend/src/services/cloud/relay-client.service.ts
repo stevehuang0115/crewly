@@ -245,6 +245,7 @@ export class RelayClientService extends EventEmitter {
           role: this.config.role,
           pairingCode: this.config.pairingCode,
         }),
+        signal: AbortSignal.timeout(RELAY.REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {
@@ -322,6 +323,7 @@ export class RelayClientService extends EventEmitter {
         headers: {
           'Authorization': `Bearer ${this.config.token}`,
         },
+        signal: AbortSignal.timeout(RELAY.REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {
@@ -399,6 +401,7 @@ export class RelayClientService extends EventEmitter {
           queueId: this.sessionId,
           messageIds,
         }),
+        signal: AbortSignal.timeout(RELAY.REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
       this.logger.error('Failed to acknowledge messages', {
@@ -430,6 +433,7 @@ export class RelayClientService extends EventEmitter {
           peerQueueId: this.peerQueueId,
           payload,
         }),
+        signal: AbortSignal.timeout(RELAY.REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {

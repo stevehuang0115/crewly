@@ -14,11 +14,41 @@ class MockElement {
     this.tagName = tag.toUpperCase();
     this.id = '';
     this.style = {};
-    this.innerHTML = '';
-    this.textContent = '';
+    this._innerHTML = '';
+    this._textContent = '';
     this.children = [];
     this.parentNode = null;
     this._attributes = [];
+  }
+  get innerHTML() {
+    // If children were appended via DOM, aggregate their textContent
+    if (this.children.length > 0) {
+      return this.children.map(c => c.outerText || c.textContent || c._textContent || '').join('');
+    }
+    return this._innerHTML;
+  }
+  set innerHTML(val) {
+    this._innerHTML = val;
+    this.children = [];
+  }
+  get textContent() {
+    if (this.children.length > 0) {
+      return this.children.map(c => {
+        const own = c._textContent || '';
+        const childText = c.children ? c.children.map(gc => gc._textContent || gc.textContent || '').join('') : '';
+        return own + childText;
+      }).join('');
+    }
+    return this._textContent;
+  }
+  set textContent(val) {
+    this._textContent = val;
+  }
+  /** Approximate outerText for innerHTML aggregation */
+  get outerText() {
+    const own = this._textContent || '';
+    const childText = this.children ? this.children.map(c => c.outerText || c._textContent || '').join('') : '';
+    return own + childText;
   }
   remove() {
     if (this.parentNode) {
@@ -203,7 +233,7 @@ async function runTests() {
     showControlIndicator('navigate');
     const panel = documentElements['__crewly-ai-indicator'];
     assert(
-      panel.innerHTML.includes('Crewly is taking over'),
+      panel.textContent.includes('Crewly is taking over'),
       'Panel should show "Crewly is taking over"'
     );
   });
@@ -212,7 +242,7 @@ async function runTests() {
     showControlIndicator('navigate');
     const panel = documentElements['__crewly-ai-indicator'];
     assert(
-      panel.innerHTML.includes('Navigating...'),
+      panel.textContent.includes('Navigating...'),
       'Panel should show action label'
     );
   });
@@ -339,7 +369,7 @@ async function runTests() {
       showControlIndicator(action);
       const panel = documentElements['__crewly-ai-indicator'];
       assert(
-        panel.innerHTML.includes(expected),
+        panel.textContent.includes(expected),
         `Action "${action}" should show "${expected}"`
       );
     }
@@ -349,8 +379,8 @@ async function runTests() {
     showControlIndicator('customAction');
     const panel = documentElements['__crewly-ai-indicator'];
     assert(
-      panel.innerHTML.includes('customAction...'),
-      'Unknown action should show action name with ellipsis'
+      panel.textContent.includes('Working...'),
+      'Unknown action should show generic "Working..." fallback'
     );
   });
 

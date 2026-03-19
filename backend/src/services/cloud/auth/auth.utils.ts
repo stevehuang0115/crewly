@@ -31,16 +31,6 @@ export interface AuthenticatedRequest extends Request {
 }
 
 // ---------------------------------------------------------------------------
-// Shared Validation Constants
-// ---------------------------------------------------------------------------
-
-/** Minimum password length for registration. */
-export const MIN_PASSWORD_LENGTH = 8;
-
-/** Simple email format check regex. */
-export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-// ---------------------------------------------------------------------------
 // Shared Helpers
 // ---------------------------------------------------------------------------
 
