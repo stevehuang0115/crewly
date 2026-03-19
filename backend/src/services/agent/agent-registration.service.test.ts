@@ -2927,6 +2927,23 @@ describe('AgentRegistrationService', () => {
 				(service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.CLAUDE_CODE),
 			).resolves.not.toThrow();
 		});
+
+		it('should replace {{AGENT_SKILLS_PATH}} in template content (#209)', async () => {
+			// Clear cache from previous tests
+			(service as any).promptCache.clear();
+			mockReadFile.mockResolvedValue('Skills at {{AGENT_SKILLS_PATH}}/core');
+
+			await (service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.CLAUDE_CODE);
+
+			expect(mockWriteFileFs).toHaveBeenCalledWith(
+				expect.stringContaining('.crewly/CLAUDE.md'),
+				expect.stringContaining('/config/skills/agent/core'),
+				{ flag: 'wx' },
+			);
+			// Should NOT contain the raw placeholder
+			const writtenContent = mockWriteFileFs.mock.calls[0][1];
+			expect(writtenContent).not.toContain('{{AGENT_SKILLS_PATH}}');
+		});
 	});
 
 	describe('registerMemberActive', () => {

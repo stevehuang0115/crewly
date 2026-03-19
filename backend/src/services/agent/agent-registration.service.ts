@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as os from 'os';
 import { readFile, readdir, stat, mkdir, writeFile, access } from 'fs/promises';
+import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import {
 	SessionCommandHelper,
@@ -308,7 +309,18 @@ export class AgentRegistrationService {
 	 * Find the project root by looking for package.json
 	 */
 	private findProjectRoot(): string {
-		// Simple fallback - could be improved to walk up directories
+		// Resolve from this file's location to the package root (backend/src/services/agent/ → root)
+		// This works for both local dev and npm global installs (#209)
+		try {
+			const thisDir = path.dirname(new URL(import.meta.url).pathname);
+			const candidate = path.resolve(thisDir, '..', '..', '..', '..');
+			// Verify it looks like a crewly root (has config/skills/)
+			if (existsSync(path.join(candidate, 'config', 'skills'))) {
+				return candidate;
+			}
+		} catch {
+			// import.meta.url resolution failed — fall back
+		}
 		return process.cwd();
 	}
 
@@ -892,7 +904,11 @@ export class AgentRegistrationService {
 				this.promptCache.set(templatePath, content);
 			}
 
-			await writeFile(config.outputPath, content, { flag: 'wx' }).catch(() => {
+			// Replace template variables with actual paths (#209)
+			const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
+			const rendered = content.replace(/\{\{AGENT_SKILLS_PATH\}\}/g, agentSkillsPath);
+
+			await writeFile(config.outputPath, rendered, { flag: 'wx' }).catch(() => {
 				// File already exists — no action needed
 			});
 		} catch (err) {
