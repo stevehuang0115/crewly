@@ -69,6 +69,9 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
   // Touch scroll detection refs (replaces wheel-only detection for mobile)
   const lastTouchYRef = useRef<number>(0);
 
+  // Debounce timer for requesting fresh terminal state after resize
+  const resizeStateRequestRef = useRef<NodeJS.Timeout | null>(null);
+
   // Ref to track the current session for use in recursive timeouts
   // This prevents stale closures in the retry logic
   const selectedSessionRef = useRef<string>(selectedSession);
@@ -240,7 +243,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
     container.addEventListener('touchstart', handleTouchStart, { passive: true });
     container.addEventListener('touchmove', handleTouchMove, { passive: true });
 
-    // Handle resize
+    // Handle resize: sync PTY dimensions and request fresh state after debounce.
+    // The PTY resize is sent immediately so the process adapts, but requesting
+    // fresh terminal state is debounced to avoid excessive re-fetches during
+    // rapid resize events (e.g. window drag, panel animation).
     const handleResize = () => {
       if (fitAddonRef.current && xtermRef.current) {
         fitAddonRef.current.fit();
@@ -275,6 +281,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
       container.removeEventListener('wheel', handleWheel);
       container.removeEventListener('touchstart', handleTouchStart);
       container.removeEventListener('touchmove', handleTouchMove);
+      if (resizeStateRequestRef.current) {
+        clearTimeout(resizeStateRequestRef.current);
+        resizeStateRequestRef.current = null;
+      }
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;

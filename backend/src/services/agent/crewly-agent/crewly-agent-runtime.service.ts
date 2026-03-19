@@ -24,6 +24,10 @@ import type { ParentMessage, WorkerMessage } from './agent-worker.js';
 import { SessionCommandHelper } from '../../session/index.js';
 import { InProcessLogBuffer } from './in-process-log-buffer.js';
 import { RateLimiter } from './rate-limiter.js';
+import { updateAgentHeartbeat } from '../agent-heartbeat.service.js';
+import { PtyActivityTrackerService } from '../pty-activity-tracker.service.js';
+import { TokenUsageService } from '../../monitoring/token-usage.service.js';
+import { getSettingsService } from '../../settings/settings.service.js';
 
 
 /**
@@ -56,6 +60,24 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
   private currentModelString: string = 'unknown';
   private logBuffer: InProcessLogBuffer;
   private rateLimiter: RateLimiter<AgentRunResult>;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** AbortController for the currently executing message — enables external abort */
+  private messageAbortController: AbortController | null = null;
+
+  // ===== Worker process fields =====
+
+  /** Whether this instance uses a worker process instead of in-process execution */
+  private useWorkerProcess = false;
+  /** The forked worker child process */
+  private workerProcess: ChildProcess | null = null;
+  /** Stored config for hot-reload — needed to re-init the worker */
+  private storedConfig: CrewlyAgentConfig | null = null;
+  /** Pending promise resolver for the current worker run */
+  private workerRunResolve: ((result: AgentRunResult) => void) | null = null;
+  /** Pending promise rejector for the current worker run */
+  private workerRunReject: ((error: Error) => void) | null = null;
+  /** Whether the worker is currently processing a message */
+  private workerProcessing = false;
 
   constructor(sessionHelper: SessionCommandHelper, projectRoot: string) {
     super(sessionHelper, projectRoot);
@@ -226,22 +248,30 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     }
 
     const queueLen = this.rateLimiter.getQueueLength();
-    this.logBuffer.append(session, 'info', `← Message received (${cleanMessage.length} chars${conversationId ? `, conv:${conversationId}` : ''}${queueLen > 0 ? `, queue:${queueLen}` : ''})`);
+    const msgPreview = cleanMessage.length <= 120
+      ? `"${cleanMessage}"`
+      : `"${cleanMessage.substring(0, 50)}...${cleanMessage.substring(cleanMessage.length - 50)}"`;
+    this.logBuffer.append(session, 'info', `← Message received (${cleanMessage.length} chars${conversationId ? `, conv:${conversationId}` : ''}${queueLen > 0 ? `, queue:${queueLen}` : ''}): ${msgPreview}`);
 
-    this.logger.debug('Handling message via rate limiter', {
-      sessionName: session,
-      messageLength: cleanMessage.length,
-      historyLength: this.agentRunner.getHistoryLength(),
-      conversationId,
-      queueLength: queueLen,
-      requestsInWindow: this.rateLimiter.getRequestCountInWindow(),
-    });
+    if (!this.useWorkerProcess) {
+      this.logger.debug('Handling message via rate limiter', {
+        sessionName: session,
+        messageLength: cleanMessage.length,
+        historyLength: this.agentRunner!.getHistoryLength(),
+        conversationId,
+        queueLength: queueLen,
+        requestsInWindow: this.rateLimiter.getRequestCountInWindow(),
+      });
+    }
 
     // Route through rate limiter for throttling, coalescing, and 429 retry
     const result = await this.rateLimiter.enqueue(
       cleanMessage,
       metadata,
       async (msg, meta) => {
+        if (this.useWorkerProcess) {
+          return this.executeMessageViaWorker(session, msg, conversationId, meta);
+        }
         return this.executeMessage(session, msg, conversationId, meta);
       },
     );
@@ -267,8 +297,141 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     conversationId?: string,
     metadata?: Record<string, string>,
   ): Promise<AgentRunResult> {
+    const SOFT_WARNING_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS;
+    const HARD_TIMEOUT_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
+
+    // Execution tracking for diagnostics
+    const executionTracker = {
+      phase: 'queued' as string,
+      currentTool: null as string | null,
+      toolCallsCompleted: [] as string[],
+      startedAt: new Date(),
+      lastActivityAt: new Date(),
+      messagePreview: cleanMessage.length <= 100
+        ? cleanMessage
+        : `${cleanMessage.substring(0, 50)}...${cleanMessage.substring(cleanMessage.length - 50)}`,
+    };
+
+    // Soft warning timer — logs if processing exceeds threshold but does NOT kill it.
+    const warningTimer = setTimeout(() => {
+      executionTracker.lastActivityAt = new Date();
+      this.logger.warn(`Message processing exceeding ${SOFT_WARNING_MS / 1000}s (still running)`, {
+        sessionName: session,
+        phase: executionTracker.phase,
+        toolCallsCompleted: executionTracker.toolCallsCompleted.length,
+        messagePreview: cleanMessage.substring(0, 100),
+      });
+    }, SOFT_WARNING_MS);
+
+    // AbortController for external abort (abortCurrentRun) and repetition detection
+    const abortController = new AbortController();
+    this.messageAbortController = abortController;
+
+    // #198: Hard timeout — aborts the run if it exceeds MESSAGE_TIMEOUT_MS.
+    let hardTimeoutTriggered = false;
+    const hardTimeoutTimer = setTimeout(() => {
+      hardTimeoutTriggered = true;
+      this.logger.error(`Message processing hard timeout (${HARD_TIMEOUT_MS / 1000}s) reached — aborting`, {
+        sessionName: session,
+        phase: executionTracker.phase,
+        currentTool: executionTracker.currentTool,
+        toolCallsCompleted: executionTracker.toolCallsCompleted.length,
+        messagePreview: cleanMessage.substring(0, 100),
+        elapsedMs: Date.now() - executionTracker.startedAt.getTime(),
+      });
+      this.logBuffer.append(session, 'error',
+        `⏱️ Hard timeout (${HARD_TIMEOUT_MS / 1000}s) reached — aborting message processing. `
+        + `Phase: ${executionTracker.phase}, tools completed: ${executionTracker.toolCallsCompleted.length}`);
+      abortController.abort();
+    }, HARD_TIMEOUT_MS);
+
+    // Text chunk buffer — collects streaming text and flushes on step boundaries
+    let textChunkBuffer = '';
+
+    // Repetition/hallucination detection — tracks recent chunks to detect loops
+    const recentChunks: string[] = [];
+    const REPETITION_WINDOW = 20;   // number of recent chunks to track
+    const REPETITION_THRESHOLD = 5; // consecutive repeated patterns to trigger abort
+    let repetitionDetected = false;
+
+    // Build streaming callbacks that write to InProcessLogBuffer in real-time
+    const streamingCallbacks: StreamingEventCallbacks = {
+      onTextChunk: (chunk: string) => {
+        if (chunk.length > 0) {
+          executionTracker.lastActivityAt = new Date();
+          executionTracker.phase = 'model-thinking';
+          textChunkBuffer += chunk;
+
+          // Repetition detection: track recent chunks and check for loops
+          const trimmed = chunk.trim();
+          if (trimmed.length > 0) {
+            recentChunks.push(trimmed);
+            if (recentChunks.length > REPETITION_WINDOW) {
+              recentChunks.shift();
+            }
+            // Check if the last REPETITION_THRESHOLD chunks are identical
+            if (recentChunks.length >= REPETITION_THRESHOLD) {
+              const tail = recentChunks.slice(-REPETITION_THRESHOLD);
+              const allSame = tail.every(c => c === tail[0]);
+              if (allSame && tail[0].length >= 3) {
+                repetitionDetected = true;
+                this.logBuffer.append(session, 'warn', `⚠️ Repetition loop detected: "${tail[0].substring(0, 80)}" repeated ${REPETITION_THRESHOLD}x — aborting generation`);
+                this.logger.warn('Repetition/hallucination loop detected, aborting', {
+                  sessionName: session,
+                  repeatedChunk: tail[0].substring(0, 100),
+                  count: REPETITION_THRESHOLD,
+                });
+                abortController.abort();
+              }
+            }
+          }
+        }
+      },
+      onToolCallStart: (toolName: string, _args: Record<string, unknown>) => {
+        executionTracker.phase = 'tool-calling';
+        executionTracker.currentTool = toolName;
+        executionTracker.lastActivityAt = new Date();
+      },
+      onToolCallFinish: (toolName: string, args: Record<string, unknown>, result: unknown, _durationMs: number) => {
+        executionTracker.toolCallsCompleted.push(toolName);
+        executionTracker.currentTool = null;
+        executionTracker.lastActivityAt = new Date();
+        const argsPreview = JSON.stringify(args).substring(0, 120);
+        this.logBuffer.append(session, 'info', `🔧 ${toolName}(${argsPreview})`);
+
+        // For bash_exec, show the command as an extra log line for readability
+        if (toolName === 'bash_exec' && args.command) {
+          const cmdPreview = String(args.command).substring(0, 200);
+          this.logBuffer.append(session, 'info', `  $ ${cmdPreview}`);
+        }
+
+        const resultPreview = result ? JSON.stringify(result).substring(0, 200) : 'void';
+        this.logBuffer.append(session, 'debug', `  → ${resultPreview}`);
+      },
+      onStepFinish: (stepIndex: number, hasToolCalls: boolean) => {
+        executionTracker.lastActivityAt = new Date();
+
+        // Flush buffered text at each step boundary
+        if (textChunkBuffer.trim().length > 0) {
+          // Truncate very long text to keep logs readable
+          const text = textChunkBuffer.trim();
+          const preview = text.length > 500 ? text.substring(0, 500) + '...' : text;
+          this.logBuffer.append(session, 'info', `💬 ${preview}`);
+          textChunkBuffer = '';
+        }
+
+        if (!hasToolCalls) {
+          executionTracker.phase = 'model-thinking';
+        }
+      },
+    };
+
     try {
-      const result = await this.agentRunner!.run(cleanMessage, conversationId, metadata);
+      executionTracker.phase = 'model-thinking';
+      const result = await this.agentRunner!.run(cleanMessage, conversationId, metadata, {
+        abortSignal: abortController.signal,
+        streaming: streamingCallbacks,
+      });
 
       clearTimeout(warningTimer);
       clearTimeout(hardTimeoutTimer);
@@ -280,6 +443,26 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
           'Generation aborted: repetition/hallucination loop detected. '
           + `Repeated pattern: "${recentChunks[recentChunks.length - 1]?.substring(0, 80)}"`
         );
+      }
+
+      // Flush any remaining buffered text after the run completes
+      if (textChunkBuffer.trim().length > 0) {
+        const text = textChunkBuffer.trim();
+        const preview = text.length > 500 ? text.substring(0, 500) + '...' : text;
+        this.logBuffer.append(session, 'info', `💬 ${preview}`);
+        textChunkBuffer = '';
+      }
+
+      // Tool calls already logged via streaming callbacks (onToolCallStart/Finish).
+      // Only log tool calls retroactively if generateText path was used (test mock).
+      if (this.agentRunner!._generateTextFn) {
+        for (const tc of result.toolCalls) {
+          executionTracker.toolCallsCompleted.push(tc.toolName);
+          const argsPreview = JSON.stringify(tc.args).substring(0, 120);
+          this.logBuffer.append(session, 'info', `🔧 ${tc.toolName}(${argsPreview})`);
+          const resultPreview = tc.result ? JSON.stringify(tc.result).substring(0, 200) : 'void';
+          this.logBuffer.append(session, 'debug', `  → ${resultPreview}`);
+        }
       }
 
       // Log response summary
@@ -330,6 +513,25 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       this.logBuffer.append(session, 'error', `Agent error: ${errMsg}`);
       throw error;
     }
+  }
+
+  /**
+   * Record token usage to the TokenUsageService if tracking is enabled in settings.
+   *
+   * @param session - Session name
+   * @param result - Agent run result containing usage data
+   */
+  private async recordTokenUsageIfEnabled(session: string, result: AgentRunResult): Promise<void> {
+    const settings = await getSettingsService().getSettings();
+    if (!settings.general.tokenTracking) return;
+
+    TokenUsageService.getInstance().recordUsage(
+      session,
+      session,
+      result.usage.input,
+      result.usage.output,
+      this.currentModelString,
+    );
   }
 
   /**

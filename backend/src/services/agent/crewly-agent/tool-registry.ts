@@ -9,7 +9,7 @@
  */
 
 import { promises as fsPromises } from 'fs';
-import { execSync, spawnSync } from 'child_process';
+import * as childProcess from 'child_process';
 import { homedir } from 'os';
 import { z } from 'zod';
 import type { CrewlyApiClient } from './api-client.js';
@@ -40,6 +40,24 @@ const BLOCKED_COMMAND_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Bash commands that require explicit approval before execution.
+ * These are dangerous but not catastrophic — they modify remote state,
+ * delete files, or interact with container/network infrastructure.
+ *
+ * Matched against the raw command string (case-insensitive, word-boundary).
+ */
+export const APPROVAL_REQUIRED_BASH_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bgit\s+push\b/i, label: 'git push (modifies remote repository)' },
+  { pattern: /\bgit\s+push\s+.*--force\b/i, label: 'git push --force (destructive remote rewrite)' },
+  { pattern: /\brm\s+/i, label: 'rm (file deletion)' },
+  { pattern: /\bdocker\s+(rm|rmi|stop|kill|exec|run|build|push|pull)\b/i, label: 'docker operation (container/image management)' },
+  { pattern: /\bcurl\b/i, label: 'curl (network request)' },
+  { pattern: /\bwget\b/i, label: 'wget (network download)' },
+  { pattern: /\bnpm\s+publish\b/i, label: 'npm publish (package registry push)' },
+  { pattern: /\bgit\s+reset\s+--hard\b/i, label: 'git reset --hard (destructive history rewrite)' },
+];
+
+/**
  * Validate a shell command against the blocklist.
  *
  * @param command - Raw shell command string
@@ -55,42 +73,134 @@ export function validateBashCommand(command: string): string | null {
 }
 
 /**
- * Execute a shell command in an isolated process group so that signals
- * (SIGTERM, SIGINT) from the child cannot propagate to the Crewly server.
+ * Check if a bash command matches any approval-required pattern.
  *
- * Uses spawnSync with setsid (macOS/Linux) to create a new session,
- * preventing the child's process group signals from reaching the parent.
+ * @param command - Raw shell command string
+ * @returns Matching label if approval is required, or null if safe to proceed
+ */
+export function checkBashApprovalRequired(command: string): string | null {
+  for (const { pattern, label } of APPROVAL_REQUIRED_BASH_PATTERNS) {
+    if (pattern.test(command)) {
+      return label;
+    }
+  }
+  return null;
+}
+
+/**
+ * Execute a shell command asynchronously in an isolated process group so that
+ * signals (SIGTERM, SIGINT) from the child cannot propagate to the Crewly server.
+ *
+ * Uses spawn (async) to avoid blocking the Node.js event loop. The child
+ * process runs in a detached process group so its signals don't reach the parent.
  *
  * @param cmd - Shell command to run
  * @param workDir - Working directory
  * @param timeoutMs - Timeout in milliseconds
  * @returns Object with stdout, stderr, exitCode
  */
-function execIsolated(cmd: string, workDir: string, timeoutMs: number): {
+function execIsolatedAsync(cmd: string, workDir: string, timeoutMs: number): Promise<{
   stdout: string;
   stderr: string;
   exitCode: number;
-} {
-  const result = spawnSync('/bin/sh', ['-c', cmd], {
-    cwd: workDir,
-    encoding: 'utf-8',
-    timeout: timeoutMs,
-    maxBuffer: 1024 * 1024,
-    env: { ...process.env, FORCE_COLOR: '0' },
-    // Run in a new process group — signals sent to the child group
-    // will NOT propagate to the Crewly server's process group.
-    stdio: ['ignore', 'pipe', 'pipe'],
+}> {
+  return new Promise((resolve) => {
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutLen = 0;
+    let stderrLen = 0;
+    const maxBuffer = 1024 * 1024;
+    let finished = false;
+
+    const child = childProcess.spawn('/bin/sh', ['-c', cmd], {
+      cwd: workDir,
+      env: { ...process.env, FORCE_COLOR: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+
+    const timer = setTimeout(() => {
+      if (!finished) {
+        finished = true;
+        // Kill the entire process group
+        try { process.kill(-child.pid!, 'SIGTERM'); } catch { /* ignore */ }
+        try { child.kill('SIGTERM'); } catch { /* ignore */ }
+        resolve({
+          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf-8')
+            + `\n[crewly] Process killed by signal: SIGTERM (timeout: ${timeoutMs}ms)`,
+          exitCode: 128,
+        });
+      }
+    }, timeoutMs);
+
+    child.stdout!.on('data', (chunk: Buffer) => {
+      if (stdoutLen < maxBuffer) {
+        stdoutChunks.push(chunk);
+        stdoutLen += chunk.length;
+      }
+    });
+
+    child.stderr!.on('data', (chunk: Buffer) => {
+      if (stderrLen < maxBuffer) {
+        stderrChunks.push(chunk);
+        stderrLen += chunk.length;
+      }
+    });
+
+    child.on('close', (code, signal) => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        const exitCode = code ?? (signal ? 128 : 1);
+        const stderr = Buffer.concat(stderrChunks).toString('utf-8');
+        const signalInfo = signal
+          ? `\n[crewly] Process killed by signal: ${signal} (timeout: ${timeoutMs}ms)`
+          : '';
+        resolve({
+          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+          stderr: stderr + signalInfo,
+          exitCode,
+        });
+      }
+    });
+
+    child.on('error', (err) => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        resolve({
+          stdout: '',
+          stderr: err.message,
+          exitCode: 1,
+        });
+      }
+    });
+
+    // Unref so the child doesn't keep the process alive
+    child.unref();
   });
+}
 
-  // If the process was killed by a signal (e.g. timeout → SIGTERM),
-  // reflect it in the exit code.
-  const exitCode = result.status ?? (result.signal ? 128 : 1);
-
-  return {
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-    exitCode,
-  };
+/**
+ * Execute a git command asynchronously without blocking the event loop.
+ *
+ * @param cmd - Git command to run
+ * @param cwd - Working directory
+ * @returns stdout string trimmed
+ * @throws Error if the command fails
+ */
+async function execGitAsync(cmd: string, cwd: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    childProcess.exec(cmd, {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+    }, (error, stdout) => {
+      if (error) { reject(error); return; }
+      resolve(stdout as string);
+    });
+  });
 }
 
 /**
@@ -1237,7 +1347,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
     // ===================================================================
 
     bash_exec: {
-      description: 'Execute a shell command and return stdout/stderr. Commands run with a timeout (default 30s, max 120s). Use for build, test, lint, and system operations. Some commands (kill, reboot, rm -rf /, etc.) are blocked by security policy.',
+      description: 'Execute a shell command and return stdout/stderr. Commands run with a timeout (default 60s, max 300s). Use for build, test, lint, system operations, and skill scripts. Some commands (kill, reboot, rm -rf /, etc.) are blocked by security policy.',
       inputSchema: z.object({
         command: z.string().describe('Shell command to execute'),
         cwd: z.string().optional().describe('Working directory (defaults to project path)'),
@@ -1259,11 +1369,29 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
           };
         }
 
-        const workDir = expandPath((cwd as string | undefined) || projectPath || process.cwd());
-        const timeoutMs = Math.min((timeout as number | undefined) || 30000, 120000);
+        // Check if command requires explicit approval (git push, rm, docker, network, etc.)
+        // Only enforce if the security policy's requireApproval includes 'destructive'.
+        const approvalLabel = checkBashApprovalRequired(cmd);
+        if (approvalLabel && callbacks?.onEnqueueApproval && callbacks?.onCheckApproval) {
+          const policyCheck = callbacks.onCheckApproval('bash_exec', 'destructive');
+          if (!policyCheck.allowed && !policyCheck.blocked) {
+            const sanitizedArgs = sanitizeArgs({ command: cmd, cwd, timeout });
+            const enqueued = callbacks.onEnqueueApproval('bash_exec', 'destructive', sanitizedArgs);
+            return {
+              success: false,
+              requiresApproval: true,
+              approvalId: enqueued.approvalId,
+              reason: `Command requires approval: ${approvalLabel}`,
+              error: `Approval required for: ${approvalLabel}. Approval ID: ${enqueued.approvalId}`,
+            };
+          }
+        }
 
-        // Run in isolated process group to prevent signal propagation
-        const result = execIsolated(cmd, workDir, timeoutMs);
+        const workDir = expandPath((cwd as string | undefined) || projectPath || process.cwd());
+        const timeoutMs = Math.min((timeout as number | undefined) || 60000, 300000);
+
+        // Run in isolated process group to prevent signal propagation (async, non-blocking)
+        const result = await execIsolatedAsync(cmd, workDir, timeoutMs);
 
         if (result.exitCode === 0) {
           const truncated = result.stdout.length > 10000;

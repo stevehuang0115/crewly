@@ -1,7 +1,7 @@
 /**
  * Cloud Google OAuth Controller
  *
- * Handles Google OAuth login flow for the CrewlyAI Cloud Portal.
+ * Handles Google OAuth login flow for the CrewlyAI Cloud Console.
  * Provides both browser-redirect (GET) and API (POST) flows.
  *
  * Routes:
@@ -30,7 +30,7 @@ const CLOUD_GOOGLE_REDIRECT_URI = (req: Request): string =>
   process.env['CLOUD_GOOGLE_REDIRECT_URI'] ||
   `${req.protocol}://${req.get('host')}/api/cloud/google/callback`;
 
-/** Scopes for Cloud Portal login -- only need email and profile. */
+/** Scopes for Cloud Console login -- only need email and profile. */
 const LOGIN_SCOPES = ['openid', 'email', 'profile'];
 
 /** Default user plan assigned to new users. */
@@ -261,17 +261,17 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
     const state = req.query['state'] ? String(req.query['state']) : '';
     const errorParam = req.query['error'] ? String(req.query['error']) : '';
 
-    const portalUrl = CLOUD_PORTAL_FRONTEND_URL();
+    const consoleUrl = CLOUD_CONSOLE_FRONTEND_URL();
 
     if (errorParam) {
       logger.warn('Google OAuth returned error', { error: errorParam });
-      res.redirect(`${portalUrl}/login?error=${encodeURIComponent(errorParam)}`);
+      res.redirect(`${consoleUrl}/login?error=${encodeURIComponent(errorParam)}`);
       return;
     }
 
     if (!code) {
       logger.warn('Google OAuth callback missing code');
-      res.redirect(`${portalUrl}/login?error=missing_code`);
+      res.redirect(`${consoleUrl}/login?error=missing_code`);
       return;
     }
 
@@ -282,7 +282,7 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.error('Google OAuth exchange failed', { error: errMsg });
       const errorCode = errMsg.split(':')[0] || 'exchange_failed';
-      res.redirect(`${portalUrl}/login?error=${encodeURIComponent(errorCode)}`);
+      res.redirect(`${consoleUrl}/login?error=${encodeURIComponent(errorCode)}`);
       return;
     }
 
@@ -310,7 +310,7 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
       }
     }
 
-    const finalRedirect = postLoginRedirect || portalUrl;
+    const finalRedirect = postLoginRedirect || consoleUrl;
     const separator = finalRedirect.includes('?') ? '&' : '?';
 
     logger.info('Cloud Google OAuth login successful', { email: result.profile.email, userId: result.user.id });

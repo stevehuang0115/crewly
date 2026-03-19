@@ -88,6 +88,7 @@ import { VersionCheckService } from './services/system/version-check.service.js'
 import { LogRotationService } from './services/session/log-rotation.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
+import { AddonLoaderService } from './services/addon/addon-loader.service.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -344,7 +345,7 @@ export class CrewlyServer {
 			})
 		);
 
-		// CORS — allow Cloud Portal frontend and localhost OSS instances
+		// CORS — allow Cloud Console frontend and localhost OSS instances
 		const CORS_ALLOWED_ORIGINS = process.env['CORS_ALLOWED_ORIGINS']
 			? process.env['CORS_ALLOWED_ORIGINS'].split(',')
 			: ['https://crewlyai.com', 'https://www.crewlyai.com', 'http://localhost:8787', 'http://localhost:3000'];
@@ -900,17 +901,24 @@ export class CrewlyServer {
 			}
 
 			// Start AuditorSchedulerService (non-critical — audit scheduling)
-			try {
-				const auditorScheduler = AuditorSchedulerService.getInstance();
-				auditorScheduler.setAgentRegistrationService(this.apiController.agentRegistrationService);
-				auditorScheduler.setEventBusService(this.eventBusService);
-				setAuditorSchedulerService(auditorScheduler);
-				auditorScheduler.start();
-				this.logger.info('AuditorSchedulerService started (Claude Code PTY mode)');
-			} catch (error) {
-				this.logger.warn('Failed to start AuditorSchedulerService (non-critical)', {
-					error: error instanceof Error ? error.message : String(error),
-				});
+			// Skip if auditor is disabled via env var or default config
+			const auditorEnabled = process.env[AUDITOR_CONSTANTS.ENV_VAR]?.toLowerCase() === 'true'
+				|| (process.env[AUDITOR_CONSTANTS.ENV_VAR] === undefined && AUDITOR_CONSTANTS.ENABLED_BY_DEFAULT);
+			if (auditorEnabled) {
+				try {
+					const auditorScheduler = AuditorSchedulerService.getInstance();
+					auditorScheduler.setAgentRegistrationService(this.apiController.agentRegistrationService);
+					auditorScheduler.setEventBusService(this.eventBusService);
+					setAuditorSchedulerService(auditorScheduler);
+					auditorScheduler.start();
+					this.logger.info('AuditorSchedulerService started (Claude Code PTY mode)');
+				} catch (error) {
+					this.logger.warn('Failed to start AuditorSchedulerService (non-critical)', {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			} else {
+				this.logger.info('Auditor disabled (set CREWLY_ENABLE_AUDITOR=true to enable)');
 			}
 
 		} catch (error) {

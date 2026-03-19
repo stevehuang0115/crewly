@@ -8,8 +8,9 @@
  * @module services/agent/crewly-agent/agent-runner.service
  */
 
-import { generateText, stepCountIs, type ModelMessage, type LanguageModel } from 'ai';
+import { streamText, generateText, stepCountIs, type ModelMessage, type LanguageModel } from 'ai';
 import { TracingService } from '../../core/tracing.service.js';
+import { ContextFlushService } from '../../memory/context-flush.service.js';
 import { TRACING_CONSTANTS } from '../../../constants.js';
 import { ModelManager } from './model-manager.js';
 import { CrewlyApiClient } from './api-client.js';
@@ -166,9 +167,15 @@ export class AgentRunnerService {
   private mcpClient: McpClientService | null = null;
   /** Cached MCP tool definitions loaded during initialization */
   private mcpToolDefs: Record<string, ToolDefinition> = {};
-  /** Approval queue for tools requiring explicit approval */
-  private approvalQueue: ApprovalQueueService = new ApprovalQueueService();
+  /** Approval queue for tools requiring explicit approval (shared singleton) */
+  private approvalQueue: ApprovalQueueService = ApprovalQueueService.getInstance();
   private tracing = TracingService.getInstance();
+  /** Guards against concurrent compaction — only one compaction at a time */
+  private compacting = false;
+  /** AbortController for the current run — allows external cancellation */
+  private currentRunAbort: AbortController | null = null;
+  /** Streaming event callbacks — set per run by the runtime service */
+  private streamingCallbacks: StreamingEventCallbacks = {};
   /** @internal Override for testing — replaces the AI SDK generateText call */
   _generateTextFn: GenerateTextFn | null = null;
 
@@ -421,13 +428,15 @@ export class AgentRunnerService {
             threadTs: item.metadata.threadTs,
           };
         }
+        // Set streaming callbacks for this run
+        this.streamingCallbacks = item.options?.streaming ?? {};
         const result = await this.tracing.withSpan(TRACING_CONSTANTS.SPANS.AGENT_RUN, {
           attributes: {
             'agent.session': this.config.sessionName,
             'agent.role': this.config.role,
           }
         }, async () => {
-          return this.executeRun(item.message);
+          return this.executeRun(item.message, item.options?.abortSignal);
         });
         item.resolve(result);
       } catch (error) {

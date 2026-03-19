@@ -12,61 +12,13 @@ import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { RelayClientService } from '../../services/cloud/relay-client.service.js';
+import { DeviceIdentityService } from '../../services/cloud/device-identity.service.js';
+import { StorageService } from '../../services/core/storage.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { CLOUD_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
 import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudController');
-
-/** Relay server URL — env var overrides the default from constants. */
-const RELAY_WS_URL = (): string =>
-  process.env['CREWLY_RELAY_WS_URL'] || CLOUD_CONSTANTS.RELAY.DEFAULT_WS_URL;
-
-/**
- * Auto-connect to the Cloud Relay after a successful cloud login.
- *
- * Derives a deterministic pairing code and shared secret from the user's ID
- * so that all devices belonging to the same user auto-pair via the relay.
- * Best-effort — failures are logged but do not affect cloud connect.
- *
- * @param token - JWT access token from cloud login
- */
-function autoConnectRelay(token: string): void {
-  try {
-    const relay = RelayClientService.getInstance();
-    if (relay.getState() !== 'disconnected' && relay.getState() !== 'error') {
-      logger.info('Relay already connected or connecting, skipping auto-connect');
-      return;
-    }
-
-    const payload = verifyJwt(token);
-    if (!payload || !payload.sub) {
-      logger.warn('Cannot auto-connect relay: invalid token payload');
-      return;
-    }
-
-    const userId = String(payload.sub);
-    // Deterministic pairing code from user ID — both devices of the same user get the same code
-    const pairingCode = crypto.createHash('sha256').update(`crewly-pair-${userId}`).digest('hex').slice(0, 12);
-    // Shared secret incorporates the JWT secret so it can't be derived from user ID alone
-    const jwtSecret = AUTH_CONSTANTS.JWT.DEFAULT_SECRET;
-    const sharedSecret = crypto.createHash('sha256').update(`crewly-e2ee-${userId}-${jwtSecret}`).digest('hex');
-
-    relay.connect({
-      wsUrl: RELAY_WS_URL(),
-      pairingCode,
-      role: 'orchestrator',
-      token,
-      sharedSecret,
-    });
-
-    logger.info('Relay auto-connect initiated', { pairingCode: pairingCode.slice(0, 4) + '...' });
-  } catch (err) {
-    logger.warn('Relay auto-connect failed (non-fatal)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
 
 /**
  * Cloud Message Queue API URL.
@@ -255,7 +207,26 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
     const resolvedUrl = cloudUrl || CLOUD_CONSTANTS.DEFAULT_CLOUD_URL;
     const client = CloudClientService.getInstance();
 
-    logger.info('Connected to CrewlyAI Cloud', { tier: result.tier });
+    // Try local JWT verification first — this works when OSS and Cloud share
+    // the same JWT secret (CREWLY_JWT_SECRET), or when the token was issued
+    // by this same instance (e.g. local Google OAuth flow).
+    const localPayload = verifyJwt(token);
+    let result: { success: boolean; tier: string };
+
+    if (localPayload) {
+      // JWT verified locally — connect without calling cloud API
+      const tier = (localPayload.plan as string) || 'free';
+      client.connectLocal(resolvedUrl, token, tier as import('../../constants.js').CloudTier);
+      result = { success: true, tier };
+      logger.info('Connected to CrewlyAI Cloud (local JWT verification)', { tier });
+    } else {
+      // Local verification failed (different JWT secret) — call cloud API
+      result = await client.connect(resolvedUrl, token);
+      logger.info('Connected to CrewlyAI Cloud (remote verification)', { tier: result.tier });
+    }
+
+    // Send device metadata + active teams to Cloud (best-effort, non-blocking)
+    sendCloudHandshake(resolvedUrl, token).catch(() => {/* already logged inside */});
 
     // Auto-initiate relay connection (best-effort, non-blocking)
     autoConnectRelay(token);
@@ -375,11 +346,13 @@ export async function validateCloudToken(req: Request, res: Response, next: Next
       return;
     }
 
-    // If local verification fails and a cloud API base is explicitly configured,
-    // proxy to the remote cloud API (used by OSS instances)
-    const cloudApiBase = process.env['CREWLY_CLOUD_API_BASE'];
+    // If local verification fails, proxy to the remote cloud API.
+    // Use explicit CREWLY_CLOUD_API_BASE env, or fall back to
+    // CloudClientService's stored cloudUrl (set during connect).
+    const cloudApiBase = process.env['CREWLY_CLOUD_API_BASE']
+      || CloudClientService.getInstance().getCloudUrl();
     if (cloudApiBase) {
-      const response = await fetch(`${cloudApiBase}/cloud/validate`, {
+      const response = await fetch(`${cloudApiBase}${CLOUD_CONSTANTS.ENDPOINTS.AUTH_TOKEN}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -393,8 +366,8 @@ export async function validateCloudToken(req: Request, res: Response, next: Next
       return;
     }
 
-    // Token invalid and no proxy configured
-    res.status(401).json({ success: false, error: 'Invalid or expired token' });
+    // Token invalid and no cloud connection established
+    res.status(401).json({ success: false, error: 'Invalid or expired token. Connect to CrewlyAI Cloud first.' });
   } catch (error) {
     logger.error('Failed to validate cloud token', {
       error: error instanceof Error ? error.message : String(error),

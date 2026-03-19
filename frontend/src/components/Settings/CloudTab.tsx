@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap } from 'lucide-react';
+import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap, Monitor, Cpu, Wifi } from 'lucide-react';
 import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/cloud.constants';
 
 /**
@@ -18,6 +18,9 @@ import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/clou
  * to avoid CORS issues when validating tokens against api.crewlyai.com.
  */
 const CLOUD_VALIDATE_URL = '/api/cloud/validate';
+
+/** Cloud devices proxy endpoint — fetches device list from crewlyai.com. */
+const CLOUD_DEVICES_URL = '/api/relay/cloud-devices';
 
 // ---------------------------------------------------------------------------
 // Types

@@ -883,7 +883,7 @@ export const EMBEDDING_CONSTANTS = {
 	/** Gemini embedding model identifier */
 	GEMINI_MODEL: 'text-embedding-004',
 	/** Base endpoint for Gemini generative language API */
-	GEMINI_ENDPOINT: 'https://generativelanguage.googleapis.com/v1beta/models',
+	GEMINI_ENDPOINT: 'https://generativelanguage.googleapis.com/v1/models',
 	/** Timeout for embedding API calls (ms) */
 	TIMEOUT_MS: 10000,
 	/** Maximum documents to embed in a single batch */
