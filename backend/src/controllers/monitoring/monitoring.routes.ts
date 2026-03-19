@@ -11,6 +11,7 @@ import { Router } from 'express';
 import type { ApiContext } from '../types.js';
 import { getTokenUsage, resetTokenUsage } from './token-usage.controller.js';
 import { receiveExtensionLogs } from './extension-logs.controller.js';
+import { getPtyStatus } from './pty-status.controller.js';
 
 /**
  * Creates monitoring router with all monitoring-related endpoints.
@@ -29,6 +30,9 @@ export function createMonitoringRouter(_context?: ApiContext): Router {
 
   // POST /api/monitoring/extension-logs — receive Chrome Extension log batches
   router.post('/extension-logs', receiveExtensionLogs);
+
+  // GET /api/monitoring/pty-status — PTY isolation status for security overview
+  router.get('/pty-status', getPtyStatus);
 
   return router;
 }

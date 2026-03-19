@@ -5,17 +5,37 @@
  * the active pillar: PTY Isolation (A), Local Vector Storage (B),
  * or Granular Tool Approval (C). Per spec section 2.3.
  *
+ * Supports both controlled (via activePillar prop) and internal pillar
+ * switching via clickable tabs.
+ *
  * @module components/Security/SecurityArchDiagram
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { Shield, Database, CheckSquare } from 'lucide-react';
 import type { PillarId } from './SecurityPillarCard';
 
 /** Props for SecurityArchDiagram */
 export interface SecurityArchDiagramProps {
   /** Currently active pillar state */
   activePillar: PillarId;
+  /** Optional callback when pillar is changed internally */
+  onPillarChange?: (pillar: PillarId) => void;
 }
+
+/** Tab definition for internal pillar switching */
+const PILLAR_TABS = [
+  { id: 'pty' as PillarId, label: 'PTY Isolation', Icon: Shield },
+  { id: 'storage' as PillarId, label: 'Local Storage', Icon: Database },
+  { id: 'approval' as PillarId, label: 'Tool Approval', Icon: CheckSquare },
+] as const;
+
+/** Tab active color per pillar */
+const TAB_COLORS: Record<PillarId, { active: string; indicator: string }> = {
+  pty: { active: 'border-blue-500 text-blue-400', indicator: 'bg-blue-500' },
+  storage: { active: 'border-purple-500 text-purple-400', indicator: 'bg-purple-500' },
+  approval: { active: 'border-pink-500 text-pink-400', indicator: 'bg-pink-500' },
+};
 
 // ========================= State A: PTY Isolation =========================
 
@@ -28,15 +48,24 @@ const PTY_AGENTS = [
 
 /**
  * State A — PTY Isolation diagram showing isolated agent sandboxes
- * with blocked attack paths between them.
+ * with blocked attack paths and highlighted data flow.
  */
-const PtyIsolationDiagram: React.FC = () => (
-  <div className="space-y-4">
+const PtyIsolationDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransitioning }) => (
+  <div className={`space-y-4 transition-opacity duration-300 ${isTransitioning ? 'opacity-0' : 'opacity-100'}`}>
+    {/* Data flow label */}
+    <div className="flex items-center gap-2 mb-2">
+      <div className="h-px flex-1 bg-gradient-to-r from-blue-500/50 to-transparent" />
+      <span className="text-xs font-mono text-blue-400 uppercase tracking-wider" data-testid="flow-label-pty">
+        Process Isolation Flow
+      </span>
+      <div className="h-px flex-1 bg-gradient-to-l from-blue-500/50 to-transparent" />
+    </div>
+
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       {PTY_AGENTS.map((agent) => (
         <div
           key={agent.name}
-          className={`rounded-lg border-2 p-4 ${agent.color}`}
+          className={`rounded-lg border-2 p-4 ${agent.color} transition-all duration-300`}
           data-testid={`pty-agent-${agent.name.toLowerCase()}`}
         >
           <div className="font-mono text-sm text-zinc-300 mb-2">
@@ -84,8 +113,17 @@ const STORAGE_CATEGORIES = [
  * State B — Local Vector Storage diagram showing data staying on-machine
  * with no cloud connection.
  */
-const LocalStorageDiagram: React.FC = () => (
-  <div className="space-y-4">
+const LocalStorageDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransitioning }) => (
+  <div className={`space-y-4 transition-opacity duration-300 ${isTransitioning ? 'opacity-0' : 'opacity-100'}`}>
+    {/* Data flow label */}
+    <div className="flex items-center gap-2 mb-2">
+      <div className="h-px flex-1 bg-gradient-to-r from-purple-500/50 to-transparent" />
+      <span className="text-xs font-mono text-purple-400 uppercase tracking-wider" data-testid="flow-label-storage">
+        Data Sovereignty Flow
+      </span>
+      <div className="h-px flex-1 bg-gradient-to-l from-purple-500/50 to-transparent" />
+    </div>
+
     <div className="rounded-lg border-2 border-emerald-500/30 bg-emerald-500/5 p-6">
       <div className="text-sm font-semibold text-emerald-300 mb-4">
         Local SQLite + Vectors
@@ -132,11 +170,20 @@ const PERMISSION_ROWS = [
  * State C — Granular Tool Approval diagram showing the approval prompt
  * and permission matrix.
  */
-const ToolApprovalDiagram: React.FC = () => {
+const ToolApprovalDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransitioning }) => {
   const [decision, setDecision] = useState<'pending' | 'denied' | 'approved'>('pending');
 
   return (
-    <div className="space-y-4">
+    <div className={`space-y-4 transition-opacity duration-300 ${isTransitioning ? 'opacity-0' : 'opacity-100'}`}>
+      {/* Data flow label */}
+      <div className="flex items-center gap-2 mb-2">
+        <div className="h-px flex-1 bg-gradient-to-r from-pink-500/50 to-transparent" />
+        <span className="text-xs font-mono text-pink-400 uppercase tracking-wider" data-testid="flow-label-approval">
+          Approval Gate Flow
+        </span>
+        <div className="h-px flex-1 bg-gradient-to-l from-pink-500/50 to-transparent" />
+      </div>
+
       {/* Approval prompt */}
       <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-5">
         <div className="text-sm text-zinc-400 mb-3">
@@ -238,19 +285,47 @@ const PILLAR_LABELS: Record<PillarId, string> = {
 
 /**
  * Interactive 3-state architecture diagram that visualizes the active
- * security pillar. Switches between PTY isolation, local storage, and
- * tool approval views.
+ * security pillar. Includes clickable tabs for pillar switching and
+ * animated transitions between states.
  *
  * @param props - SecurityArchDiagramProps
  * @returns Architecture diagram element
  */
-export const SecurityArchDiagram: React.FC<SecurityArchDiagramProps> = ({ activePillar }) => {
+export const SecurityArchDiagram: React.FC<SecurityArchDiagramProps> = ({ activePillar, onPillarChange }) => {
+  const [internalPillar, setInternalPillar] = useState<PillarId>(activePillar);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+
+  // Sync internal state when prop changes
+  useEffect(() => {
+    if (activePillar !== internalPillar) {
+      setIsTransitioning(true);
+      const timer = setTimeout(() => {
+        setInternalPillar(activePillar);
+        setIsTransitioning(false);
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [activePillar, internalPillar]);
+
+  /**
+   * Handle tab click — animate transition and update state.
+   */
+  const handleTabClick = (pillar: PillarId) => {
+    if (pillar === internalPillar) return;
+    setIsTransitioning(true);
+    setTimeout(() => {
+      setInternalPillar(pillar);
+      setIsTransitioning(false);
+      onPillarChange?.(pillar);
+    }, 150);
+  };
+
   return (
     <div
       id="security-arch-diagram"
       className="rounded-xl border border-zinc-700 bg-zinc-950 p-6"
       role="img"
-      aria-label={PILLAR_LABELS[activePillar]}
+      aria-label={PILLAR_LABELS[internalPillar]}
       data-testid="security-arch-diagram"
     >
       {/* Machine boundary header */}
@@ -258,16 +333,48 @@ export const SecurityArchDiagram: React.FC<SecurityArchDiagramProps> = ({ active
         Your Machine
       </div>
 
+      {/* Interactive pillar tabs */}
+      <div
+        className="flex gap-1 mb-6 border-b border-zinc-800 -mx-2 px-2"
+        role="tablist"
+        aria-label="Security pillar selector"
+        data-testid="pillar-tabs"
+      >
+        {PILLAR_TABS.map(({ id, label, Icon }) => {
+          const isActive = internalPillar === id;
+          const colors = TAB_COLORS[id];
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              aria-controls="security-arch-content"
+              onClick={() => handleTabClick(id)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+                isActive
+                  ? colors.active
+                  : 'border-transparent text-zinc-500 hover:text-zinc-300'
+              }`}
+              data-testid={`tab-${id}`}
+            >
+              <Icon size={14} aria-hidden="true" />
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Render active state */}
-      <div className="motion-safe:animate-fade-in">
-        {activePillar === 'pty' && <PtyIsolationDiagram />}
-        {activePillar === 'storage' && <LocalStorageDiagram />}
-        {activePillar === 'approval' && <ToolApprovalDiagram />}
+      <div id="security-arch-content" role="tabpanel" className="motion-safe:animate-fade-in">
+        {internalPillar === 'pty' && <PtyIsolationDiagram isTransitioning={isTransitioning} />}
+        {internalPillar === 'storage' && <LocalStorageDiagram isTransitioning={isTransitioning} />}
+        {internalPillar === 'approval' && <ToolApprovalDiagram isTransitioning={isTransitioning} />}
       </div>
 
       {/* Screen reader text alternative */}
       <div className="sr-only">
-        {PILLAR_LABELS[activePillar]}
+        {PILLAR_LABELS[internalPillar]}
       </div>
     </div>
   );

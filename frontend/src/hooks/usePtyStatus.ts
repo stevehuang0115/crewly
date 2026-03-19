@@ -87,7 +87,7 @@ export function usePtyStatus(): UsePtyStatusResult {
 
   const fetchSessions = useCallback(async () => {
     try {
-      const response = await axios.get<ApiResponse<any[]>>(`${API_BASE}/sessions`);
+      const response = await axios.get<ApiResponse<any[]>>(`${API_BASE}/monitoring/pty-status`);
       if (!isMountedRef.current) return;
 
       if (response.data.success && Array.isArray(response.data.data)) {

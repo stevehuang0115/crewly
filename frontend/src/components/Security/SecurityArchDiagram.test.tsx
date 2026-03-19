@@ -3,15 +3,15 @@
  * Tests for SecurityArchDiagram component
  *
  * Verifies the 3-state interactive architecture diagram renders the
- * correct state based on activePillar prop, and meets accessibility
- * requirements per spec section 2.3 and 6.
+ * correct state based on activePillar prop, interactive tab switching,
+ * data flow labels, transitions, and accessibility requirements.
  *
  * @module components/Security/SecurityArchDiagram.test
  */
 
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
 import { SecurityArchDiagram } from './SecurityArchDiagram';
 
 describe('SecurityArchDiagram', () => {
@@ -42,6 +42,110 @@ describe('SecurityArchDiagram', () => {
     it('should show "Your Machine" label', () => {
       render(<SecurityArchDiagram activePillar="pty" />);
       expect(screen.getByText('Your Machine')).toBeDefined();
+    });
+  });
+
+  describe('interactive tabs', () => {
+    it('should render pillar tab bar', () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      expect(screen.getByTestId('pillar-tabs')).toBeDefined();
+    });
+
+    it('should render three tabs', () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      expect(screen.getByTestId('tab-pty')).toBeDefined();
+      expect(screen.getByTestId('tab-storage')).toBeDefined();
+      expect(screen.getByTestId('tab-approval')).toBeDefined();
+    });
+
+    it('should mark active tab with aria-selected=true', () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      expect(screen.getByTestId('tab-pty').getAttribute('aria-selected')).toBe('true');
+      expect(screen.getByTestId('tab-storage').getAttribute('aria-selected')).toBe('false');
+      expect(screen.getByTestId('tab-approval').getAttribute('aria-selected')).toBe('false');
+    });
+
+    it('should switch to storage when storage tab is clicked', async () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      fireEvent.click(screen.getByTestId('tab-storage'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('tab-storage').getAttribute('aria-selected')).toBe('true');
+      });
+    });
+
+    it('should switch to approval when approval tab is clicked', async () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      fireEvent.click(screen.getByTestId('tab-approval'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('tab-approval').getAttribute('aria-selected')).toBe('true');
+      });
+    });
+
+    it('should call onPillarChange callback when tab is clicked', async () => {
+      const onPillarChange = vi.fn();
+      render(<SecurityArchDiagram activePillar="pty" onPillarChange={onPillarChange} />);
+
+      fireEvent.click(screen.getByTestId('tab-storage'));
+
+      await waitFor(() => {
+        expect(onPillarChange).toHaveBeenCalledWith('storage');
+      });
+    });
+
+    it('should not call onPillarChange when clicking already active tab', () => {
+      const onPillarChange = vi.fn();
+      render(<SecurityArchDiagram activePillar="pty" onPillarChange={onPillarChange} />);
+
+      fireEvent.click(screen.getByTestId('tab-pty'));
+
+      // Should not be called since pty is already active
+      expect(onPillarChange).not.toHaveBeenCalled();
+    });
+
+    it('should have tablist role on tab container', () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      const tablist = screen.getByRole('tablist');
+      expect(tablist).toBeDefined();
+      expect(tablist.getAttribute('aria-label')).toContain('Security pillar selector');
+    });
+
+    it('should have tab role on each tab button', () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs.length).toBe(3);
+    });
+
+    it('should have tabpanel for content area', () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      expect(screen.getByRole('tabpanel')).toBeDefined();
+    });
+  });
+
+  describe('data flow labels', () => {
+    it('should show PTY data flow label', () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      expect(screen.getByTestId('flow-label-pty')).toBeDefined();
+      expect(screen.getByTestId('flow-label-pty').textContent).toContain('Process Isolation Flow');
+    });
+
+    it('should show storage data flow label', async () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      fireEvent.click(screen.getByTestId('tab-storage'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('flow-label-storage')).toBeDefined();
+      });
+    });
+
+    it('should show approval data flow label', async () => {
+      render(<SecurityArchDiagram activePillar="pty" />);
+      fireEvent.click(screen.getByTestId('tab-approval'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('flow-label-approval')).toBeDefined();
+      });
     });
   });
 
@@ -148,6 +252,22 @@ describe('SecurityArchDiagram', () => {
     it('should have accessible permission matrix', () => {
       render(<SecurityArchDiagram activePillar="approval" />);
       expect(screen.getByRole('list', { name: /permission matrix/i })).toBeDefined();
+    });
+  });
+
+  describe('prop synchronization', () => {
+    it('should sync internal state when activePillar prop changes', async () => {
+      const { rerender } = render(<SecurityArchDiagram activePillar="pty" />);
+
+      // Initially PTY
+      expect(screen.getByTestId('tab-pty').getAttribute('aria-selected')).toBe('true');
+
+      // Change prop to storage
+      rerender(<SecurityArchDiagram activePillar="storage" />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('tab-storage').getAttribute('aria-selected')).toBe('true');
+      });
     });
   });
 });

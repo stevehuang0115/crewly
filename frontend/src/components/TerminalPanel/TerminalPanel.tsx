@@ -9,6 +9,47 @@ import { useTerminal } from '../../contexts/TerminalContext';
 import { webSocketService } from '../../services/websocket.service';
 import { Button, IconButton } from '../UI';
 
+/**
+ * Regex matching ANSI cursor movement, positioning, erase, and scroll sequences
+ * that cause rendering corruption when terminal output is replayed at different
+ * dimensions than the original PTY.
+ *
+ * Matches:
+ * - Cursor movement: CSI n [ABCDEFG] (up/down/forward/back/etc.)
+ * - Cursor position: CSI n;m H, CSI n;m f, CSI n H
+ * - Erase: CSI n J (display), CSI n K (line)
+ * - Scroll: CSI n S, CSI n T
+ * - Cursor save/restore: CSI s/u, ESC 7/8
+ * - Cursor visibility: CSI ?25 h/l
+ * - Alternate screen buffer: CSI ?1049/47 h/l
+ *
+ * Does NOT match SGR (color/style) sequences: CSI ... m
+ */
+const CURSOR_SEQUENCES_RE = new RegExp(
+  [
+    '\\x1b\\[\\d*;?\\d*[ABCDEFGHJKSTf]',      // Cursor movement, position, erase, scroll
+    '\\x1b\\[[su]',                              // Cursor save/restore (CSI)
+    '\\x1b[78]',                                 // Cursor save/restore (DEC)
+    '\\x1b\\[\\?(?:25|1049|47)[hl]',            // Cursor visibility, alternate screen
+  ].join('|'),
+  'g'
+);
+
+/**
+ * Sanitize terminal output by stripping cursor movement and erase sequences.
+ * Preserves color/style (SGR) sequences and text content.
+ *
+ * Used when replaying terminal history that may have been generated at different
+ * terminal dimensions, which causes cursor-up/erase-line sequences from ink-based
+ * TUI renderers (e.g. Claude Code) to land on wrong lines.
+ *
+ * @param data - Raw terminal output with ANSI escape sequences
+ * @returns Sanitized output safe for replay at any terminal size
+ */
+function sanitizeCursorSequences(data: string): string {
+  return data.replace(CURSOR_SEQUENCES_RE, '');
+}
+
 interface TerminalSession {
   id: string;
   name: string;
@@ -68,6 +109,9 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
 
   // Touch scroll detection refs (replaces wheel-only detection for mobile)
   const lastTouchYRef = useRef<number>(0);
+
+  // Debounce timer for requesting fresh terminal state after resize
+  const resizeStateRequestRef = useRef<NodeJS.Timeout | null>(null);
 
   // Ref to track the current session for use in recursive timeouts
   // This prevents stale closures in the retry logic
@@ -240,13 +284,27 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
     container.addEventListener('touchstart', handleTouchStart, { passive: true });
     container.addEventListener('touchmove', handleTouchMove, { passive: true });
 
-    // Handle resize
+    // Handle resize: sync PTY dimensions and request fresh state after debounce.
+    // The PTY resize is sent immediately so the process adapts, but requesting
+    // fresh terminal state is debounced to avoid excessive re-fetches during
+    // rapid resize events (e.g. window drag, panel animation).
     const handleResize = () => {
       if (fitAddonRef.current && xtermRef.current) {
         fitAddonRef.current.fit();
         const dimensions = fitAddonRef.current.proposeDimensions();
         if (dimensions && selectedSessionRef.current) {
           webSocketService.resizeTerminal(selectedSessionRef.current, dimensions.cols, dimensions.rows);
+
+          // Debounce the terminal state re-request (300ms after last resize)
+          if (resizeStateRequestRef.current) {
+            clearTimeout(resizeStateRequestRef.current);
+          }
+          resizeStateRequestRef.current = setTimeout(() => {
+            if (selectedSessionRef.current) {
+              webSocketService.requestTerminalState(selectedSessionRef.current);
+            }
+            resizeStateRequestRef.current = null;
+          }, 300);
         }
       }
     };
@@ -264,6 +322,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
       container.removeEventListener('wheel', handleWheel);
       container.removeEventListener('touchstart', handleTouchStart);
       container.removeEventListener('touchmove', handleTouchMove);
+      if (resizeStateRequestRef.current) {
+        clearTimeout(resizeStateRequestRef.current);
+        resizeStateRequestRef.current = null;
+      }
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
@@ -300,11 +362,13 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
     }
   }, [scrollToBottomIfEnabled]);
 
-  // Clear xterm and write new content, scrolling to bottom after data is processed
+  // Clear xterm and write new content, scrolling to bottom after data is processed.
+  // Sanitizes cursor movement sequences from the replayed content to prevent
+  // rendering corruption when history was captured at different terminal dimensions.
   const replaceXtermContent = useCallback((data: string) => {
     if (xtermRef.current) {
       xtermRef.current.clear();
-      xtermRef.current.write(data, () => {
+      xtermRef.current.write(sanitizeCursorSequences(data), () => {
         scrollToBottomIfEnabled();
       });
     }
@@ -534,6 +598,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
     // Clear all session-related timeouts
     clearSessionTimeouts();
 
+    // Clear resize debounce timer
+    if (resizeStateRequestRef.current) {
+      clearTimeout(resizeStateRequestRef.current);
+      resizeStateRequestRef.current = null;
+    }
+
     // Unsubscribe from current session
     if (currentSubscription.current) {
       webSocketService.unsubscribeFromSession(currentSubscription.current);
@@ -604,20 +674,20 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
     setError(null);
     replaceXtermContent('# Connecting to terminal session...\r\n# Fetching live terminal output...\r\n');
 
-    webSocketService.subscribeToSession(sessionName);
-    currentSubscription.current = sessionName;
-
-    // Sync PTY dimensions with the frontend terminal size.
-    // Skip for in-process sessions (no PTY to resize).
-    // The PTY starts at a default 80x24 which is too small for TUI-based runtimes
-    // like Gemini CLI that render within the PTY viewport. Without this, Gemini CLI
-    // only renders 24 rows of content even though the frontend terminal is larger.
+    // Sync PTY dimensions BEFORE subscribing so the initial terminal state
+    // is generated at the correct dimensions. Without this, the raw history
+    // replayed by sendCurrentTerminalState contains cursor movement sequences
+    // calculated for the old 80x24 default, causing rendering corruption in
+    // the wider/taller frontend xterm.js terminal.
     if (fitAddonRef.current && !inProcessSessionsRef.current.has(sessionName)) {
       const dimensions = fitAddonRef.current.proposeDimensions();
       if (dimensions) {
         webSocketService.resizeTerminal(sessionName, dimensions.cols, dimensions.rows);
       }
     }
+
+    webSocketService.subscribeToSession(sessionName);
+    currentSubscription.current = sessionName;
 
     // Set timeout fallback to clear loading state if no response comes within 10 seconds
     sessionSwitchTimeout.current = setTimeout(() => {

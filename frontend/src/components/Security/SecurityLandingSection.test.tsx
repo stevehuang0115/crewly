@@ -57,22 +57,26 @@ describe('SecurityLandingSection', () => {
       expect(diagram.getAttribute('aria-label')).toContain('PTY Isolation');
     });
 
-    it('should switch to storage diagram when storage pillar clicked', () => {
+    it('should switch to storage diagram when storage pillar clicked', async () => {
       render(<SecurityLandingSection />);
       const seeHowButtons = screen.getAllByRole('button', { name: /see how/i });
       // Storage is the second pillar
       fireEvent.click(seeHowButtons[1]);
-      const diagram = screen.getByTestId('security-arch-diagram');
-      expect(diagram.getAttribute('aria-label')).toContain('stored locally');
+      await waitFor(() => {
+        const diagram = screen.getByTestId('security-arch-diagram');
+        expect(diagram.getAttribute('aria-label')).toContain('stored locally');
+      });
     });
 
-    it('should switch to approval diagram when approval pillar clicked', () => {
+    it('should switch to approval diagram when approval pillar clicked', async () => {
       render(<SecurityLandingSection />);
       const seeHowButtons = screen.getAllByRole('button', { name: /see how/i });
       // Approval is the third pillar
       fireEvent.click(seeHowButtons[2]);
-      const diagram = screen.getByTestId('security-arch-diagram');
-      expect(diagram.getAttribute('aria-label')).toContain('Granular Tool Approval');
+      await waitFor(() => {
+        const diagram = screen.getByTestId('security-arch-diagram');
+        expect(diagram.getAttribute('aria-label')).toContain('Granular Tool Approval');
+      });
     });
   });
 

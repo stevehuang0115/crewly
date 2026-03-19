@@ -146,7 +146,7 @@ const DEFAULT_SUPABASE_ANON_KEY =
 const DEFAULT_JWT_SECRET = 'crewly-dev-jwt-secret-change-in-production';
 
 /** Default Cloud API URL. */
-const DEFAULT_CLOUD_URL = 'https://cloud.crewly.dev';
+const DEFAULT_CLOUD_URL = 'https://api.crewlyai.com';
 
 // ---------------------------------------------------------------------------
 // Helpers

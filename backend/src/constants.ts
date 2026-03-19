@@ -1010,7 +1010,7 @@ export const GOOGLE_OAUTH_CONSTANTS = {
 export const CLOUD_CONSTANTS = {
 	/** Default CrewlyAI Cloud API base URL (env: CREWLY_CLOUD_URL) */
 	get DEFAULT_CLOUD_URL(): string {
-		return process.env['CREWLY_CLOUD_URL'] || 'https://cloud.crewly.dev';
+		return process.env['CREWLY_CLOUD_URL'] || 'https://api.crewlyai.com';
 	},
 	/** API version prefix for all cloud endpoints */
 	API_VERSION: '/v1',

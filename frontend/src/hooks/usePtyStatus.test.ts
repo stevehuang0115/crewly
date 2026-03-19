@@ -101,7 +101,7 @@ describe('usePtyStatus', () => {
     renderHook(() => usePtyStatus());
 
     await waitFor(() => {
-      expect(mockedAxios.get).toHaveBeenCalledWith('/api/sessions');
+      expect(mockedAxios.get).toHaveBeenCalledWith('/api/monitoring/pty-status');
     });
   });
 

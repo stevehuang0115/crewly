@@ -48,7 +48,7 @@ describe('EnvConfig', () => {
       expect(config.supabase.url).toContain('supabase.co');
       expect(config.supabase.anonKey).toBeTruthy();
       expect(config.auth.jwtSecret).toBe('crewly-dev-jwt-secret-change-in-production');
-      expect(config.cloud.apiUrl).toBe('https://cloud.crewly.dev');
+      expect(config.cloud.apiUrl).toBe('https://api.crewlyai.com');
     });
 
     it('should read PORT from environment', () => {

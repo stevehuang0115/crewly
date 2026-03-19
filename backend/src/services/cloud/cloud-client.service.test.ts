@@ -35,7 +35,7 @@ global.fetch = mockFetch;
 // Helpers
 // ---------------------------------------------------------------------------
 
-const CLOUD_URL = 'https://cloud.crewly.dev';
+const CLOUD_URL = 'https://api.crewlyai.com';
 const TOKEN = 'test-token-abc';
 
 /** Create a mock Response object. */

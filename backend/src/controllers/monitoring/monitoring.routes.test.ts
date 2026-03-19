@@ -5,6 +5,15 @@
  */
 
 import { Router } from 'express';
+
+// Mock session modules to avoid node-pty binary loading
+jest.mock('../../services/session/index.js', () => ({
+  getSessionBackend: jest.fn(),
+}));
+jest.mock('../../services/session/session-state-persistence.js', () => ({
+  getSessionStatePersistence: jest.fn(),
+}));
+
 import { createMonitoringRouter } from './monitoring.routes.js';
 import type { ApiContext } from '../types.js';
 
@@ -59,6 +68,20 @@ describe('Monitoring Routes', () => {
 
     expect(routes).toContainEqual(
       expect.objectContaining({ path: '/extension-logs', methods: expect.arrayContaining(['post']) })
+    );
+  });
+
+  it('should register pty-status GET route', () => {
+    const router = createMonitoringRouter();
+    const routes = router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({
+        path: layer.route.path,
+        methods: Object.keys(layer.route.methods),
+      }));
+
+    expect(routes).toContainEqual(
+      expect.objectContaining({ path: '/pty-status', methods: expect.arrayContaining(['get']) })
     );
   });
 });

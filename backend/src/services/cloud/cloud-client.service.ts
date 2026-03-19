@@ -99,7 +99,7 @@ export class CloudClientService {
   private static instance: CloudClientService | null = null;
   private readonly logger: ComponentLogger;
 
-  /** Cloud API base URL (e.g. "https://cloud.crewly.dev") */
+  /** Cloud API base URL (e.g. "https://api.crewlyai.com") */
   private cloudUrl: string | null = null;
   /** Bearer token obtained during connect() */
   private token: string | null = null;
@@ -152,7 +152,7 @@ export class CloudClientService {
    * @example
    * ```ts
    * const client = CloudClientService.getInstance();
-   * await client.connect('https://cloud.crewly.dev', 'sk-abc123');
+   * await client.connect('https://api.crewlyai.com', 'sk-abc123');
    * ```
    */
   async connect(cloudUrl: string, token: string): Promise<{ success: boolean; tier: CloudTier }> {

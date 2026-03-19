@@ -345,6 +345,10 @@ export const CREWLY_AGENT_DEFAULTS = {
   MAX_STEPS: 500,
   /** Maximum tool calls allowed per single response to prevent polling dead-loops */
   MAX_TOOL_CALLS_PER_RESPONSE: 15,
+  /** Consecutive identical tool calls before aborting (loop detection) */
+  LOOP_DETECTION_THRESHOLD: 3,
+  /** Consecutive error responses (404, 4xx, 5xx) from the same tool before aborting */
+  ERROR_LOOP_THRESHOLD: 3,
   /** Default API base URL */
   API_BASE_URL: 'http://localhost:8787',
   /** Default max history messages before compaction */

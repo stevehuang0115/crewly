@@ -39,6 +39,95 @@ import {
 } from './types.js';
 
 /**
+ * Fingerprint a tool call for comparison: deterministic JSON of name + args.
+ */
+function toolCallFingerprint(toolName: string, args: Record<string, unknown>): string {
+  return JSON.stringify({ t: toolName, a: args });
+}
+
+/**
+ * Detects looping behavior in tool calls: consecutive identical calls or
+ * consecutive error responses from the same tool.
+ *
+ * Usage: create per-run, call `recordToolCall()` in onStepFinish, check `loopDetected`.
+ */
+export class ToolCallLoopDetector {
+  /** Consecutive identical tool call fingerprints */
+  private consecutiveIdentical = 0;
+  private lastFingerprint: string | null = null;
+  /** Consecutive error results from the same tool */
+  private consecutiveErrors = 0;
+  private lastErrorTool: string | null = null;
+  /** Whether a loop was detected */
+  loopDetected = false;
+  /** Human-readable reason when loop is detected */
+  loopReason = '';
+
+  constructor(
+    private readonly identicalThreshold = CREWLY_AGENT_DEFAULTS.LOOP_DETECTION_THRESHOLD,
+    private readonly errorThreshold = CREWLY_AGENT_DEFAULTS.ERROR_LOOP_THRESHOLD,
+  ) {}
+
+  /**
+   * Record a tool call and check for loop patterns.
+   *
+   * @param toolName - Name of the tool called
+   * @param args - Arguments passed to the tool
+   * @param result - Result returned by the tool
+   * @returns True if a loop was just detected on this call
+   */
+  recordToolCall(toolName: string, args: Record<string, unknown>, result: unknown): boolean {
+    if (this.loopDetected) return true;
+
+    // 1. Check consecutive identical calls
+    const fp = toolCallFingerprint(toolName, args);
+    if (fp === this.lastFingerprint) {
+      this.consecutiveIdentical++;
+    } else {
+      this.consecutiveIdentical = 1;
+      this.lastFingerprint = fp;
+    }
+
+    if (this.consecutiveIdentical >= this.identicalThreshold) {
+      this.loopDetected = true;
+      this.loopReason = `Identical tool call repeated ${this.consecutiveIdentical} times: ${toolName}(${JSON.stringify(args).slice(0, 120)})`;
+      return true;
+    }
+
+    // 2. Check consecutive error results (404, 4xx, 5xx, error strings)
+    if (this.isErrorResult(result)) {
+      if (toolName === this.lastErrorTool) {
+        this.consecutiveErrors++;
+      } else {
+        this.consecutiveErrors = 1;
+        this.lastErrorTool = toolName;
+      }
+      if (this.consecutiveErrors >= this.errorThreshold) {
+        this.loopDetected = true;
+        this.loopReason = `Tool "${toolName}" returned errors ${this.consecutiveErrors} consecutive times. Last result: ${String(result).slice(0, 200)}`;
+        return true;
+      }
+    } else {
+      this.consecutiveErrors = 0;
+      this.lastErrorTool = null;
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if a tool result looks like an error (404, HTTP error codes, error strings).
+   */
+  private isErrorResult(result: unknown): boolean {
+    if (result === null || result === undefined) return false;
+    const str = typeof result === 'string' ? result : JSON.stringify(result);
+    // Match common error patterns: HTTP 4xx/5xx, "error", "not found", "failed"
+    return /\b(404|403|500|502|503|4\d{2}|5\d{2})\b/.test(str)
+      || /\b(error|not\s*found|failed|refused|denied|timeout)\b/i.test(str);
+  }
+}
+
+/**
  * Core agent runner that manages the AI SDK generateText loop.
  *
  * Responsibilities:
@@ -538,6 +627,10 @@ export class AgentRunnerService {
   ): Promise<AgentRunResult> {
     const toolCalls: ToolCallRecord[] = [];
     let stepCount = 0;
+    const loopDetector = new ToolCallLoopDetector();
+    // Local abort controller so we can abort on loop detection
+    const loopAbort = new AbortController();
+    const mergedSignal = AbortSignal.any([abortSignal, loopAbort.signal]);
 
     const streamResult = streamText({
       model: this.model!,
@@ -547,7 +640,7 @@ export class AgentRunnerService {
       stopWhen: stepCountIs(this.config.maxSteps),
       temperature: this.config.model.temperature,
       maxOutputTokens: this.config.model.maxTokens,
-      abortSignal,
+      abortSignal: mergedSignal,
       onChunk: ({ chunk }: { chunk: { type: string; text?: string } }) => {
         // Emit text chunks in real-time
         if (chunk.type === 'text-delta' && chunk.text) {
@@ -568,25 +661,44 @@ export class AgentRunnerService {
         stepCount++;
         const hasTools = (stepToolCalls?.length ?? 0) > 0;
 
-        // Collect tool calls from this step
+        // Collect tool calls from this step and check for loops
         if (stepToolCalls) {
           for (const tc of stepToolCalls) {
-            toolCalls.push({
-              toolName: tc.toolName,
-              args: (tc as Record<string, unknown>).input as Record<string, unknown> ?? {},
-              result: toolResults?.find(
-                (tr: { toolCallId: string }) => tr.toolCallId === tc.toolCallId,
-              )?.output,
-            });
+            const args = (tc as Record<string, unknown>).input as Record<string, unknown> ?? {};
+            const result = toolResults?.find(
+              (tr: { toolCallId: string }) => tr.toolCallId === tc.toolCallId,
+            )?.output;
+            toolCalls.push({ toolName: tc.toolName, args, result });
+            loopDetector.recordToolCall(tc.toolName, args, result);
           }
+        }
+
+        // Abort if loop detected — will be caught below
+        if (loopDetector.loopDetected) {
+          console.warn('[AgentRunner] Loop detected, aborting run:', loopDetector.loopReason);
+          loopAbort.abort();
         }
 
         this.streamingCallbacks.onStepFinish?.(stepCount, hasTools);
       },
     });
 
-    // Await the full result (stream completes when all steps are done)
-    const result = await streamResult;
+    // Await the full result (stream completes when all steps are done or aborted)
+    let result;
+    try {
+      result = await streamResult;
+    } catch (err) {
+      // If aborted due to loop detection, handle gracefully
+      if (loopDetector.loopDetected) {
+        return this.handleLoopDetected(loopDetector, toolCalls, stepCount);
+      }
+      throw err;
+    }
+
+    // Also check post-completion in case the loop threshold was hit on the final step
+    if (loopDetector.loopDetected) {
+      return this.handleLoopDetected(loopDetector, toolCalls, stepCount);
+    }
 
     // Warn if tool call count is excessive (polling dead-loop protection)
     const maxToolCalls = CREWLY_AGENT_DEFAULTS.MAX_TOOL_CALLS_PER_RESPONSE;
@@ -696,20 +808,26 @@ export class AgentRunnerService {
       abortSignal,
     });
 
-    // Track tool calls across all steps
+    // Track tool calls across all steps with loop detection
     const toolCalls: ToolCallRecord[] = [];
+    const loopDetector = new ToolCallLoopDetector();
     for (const step of result.steps) {
       if (step.toolCalls) {
         for (const tc of step.toolCalls) {
-          toolCalls.push({
-            toolName: tc.toolName,
-            args: (tc as Record<string, unknown>).input as Record<string, unknown> ?? {},
-            result: step.toolResults?.find(
-              (tr: { toolCallId: string }) => tr.toolCallId === tc.toolCallId,
-            )?.output,
-          });
+          const args = (tc as Record<string, unknown>).input as Record<string, unknown> ?? {};
+          const tcResult = step.toolResults?.find(
+            (tr: { toolCallId: string }) => tr.toolCallId === tc.toolCallId,
+          )?.output;
+          toolCalls.push({ toolName: tc.toolName, args, result: tcResult });
+          loopDetector.recordToolCall(tc.toolName, args, tcResult);
         }
       }
+    }
+
+    // If loop detected in generateText path, handle gracefully
+    if (loopDetector.loopDetected) {
+      console.warn('[AgentRunner] Loop detected in generateText:', loopDetector.loopReason);
+      return this.handleLoopDetected(loopDetector, toolCalls, result.steps.length);
     }
 
     // Warn if tool call count is excessive
@@ -763,6 +881,41 @@ export class AgentRunnerService {
       removed++;
       return false;
     });
+  }
+
+  /**
+   * Handle a detected tool call loop by injecting a corrective system message
+   * into conversation history and returning a structured result.
+   *
+   * @param detector - The loop detector with reason details
+   * @param toolCalls - Tool calls collected so far
+   * @param steps - Number of steps taken
+   * @returns AgentRunResult with the loop warning as text
+   */
+  private handleLoopDetected(
+    detector: ToolCallLoopDetector,
+    toolCalls: ToolCallRecord[],
+    steps: number,
+  ): AgentRunResult {
+    const guidance = `[LOOP DETECTED] ${detector.loopReason}. ` +
+      'You are repeating the same action without progress. ' +
+      'STOP and try a different approach: use a different tool, change the arguments, ' +
+      'skip this step, or ask for help. Do NOT repeat the same call again.';
+
+    // Inject corrective message so the model sees it on the next run
+    this.state.messages.push({ role: 'assistant', content: `[Loop detected — halting. ${detector.loopReason}]` });
+    this.state.messages.push({ role: 'user', content: guidance });
+
+    this.streamingCallbacks.onTextChunk?.(`\n⚠️ ${guidance}\n`);
+
+    return {
+      text: `[Loop detected] ${detector.loopReason}`,
+      steps,
+      usage: { input: 0, output: 0 },
+      toolCalls,
+      finishReason: 'loop-detected',
+      budgetWarning: undefined,
+    };
   }
 
   /**

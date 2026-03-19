@@ -292,26 +292,70 @@ describe('CrewlyAgentRuntimeService', () => {
       await expect(service.handleMessage('Test')).rejects.toThrow('API rate limit');
     });
 
-    it('should abort with hard timeout and include diagnostic details', async () => {
-      // Mock run to never resolve (simulates a hung API call)
-      mockRun.mockImplementation(() => new Promise(() => {}));
+    it('should detect repetition/hallucination loop and abort', async () => {
+      const { InProcessLogBuffer } = require('./in-process-log-buffer.js');
+      const logBuffer = InProcessLogBuffer.getInstance();
+      const appendSpy = jest.spyOn(logBuffer, 'append');
+
+      // Mock run to simulate streaming with repetitive chunks via the callbacks
+      mockRun.mockImplementation(async (_msg: string, _convId: unknown, _meta: unknown, opts: Record<string, unknown>) => {
+        const streaming = opts.streaming as Record<string, Function>;
+
+        // Simulate the model producing the same chunk 5+ times (hallucination)
+        for (let i = 0; i < 6; i++) {
+          streaming.onTextChunk('REPEATED_PATTERN ');
+        }
+
+        // The abort should have been triggered by repetition detection.
+        // In production streamText would throw on abort, but since our mock
+        // is synchronous, we return a result that triggers the post-check.
+        return {
+          text: 'REPEATED_PATTERN '.repeat(6),
+          steps: 1,
+          usage: { input: 10, output: 50 },
+          toolCalls: [],
+          finishReason: 'stop',
+        };
+      });
 
       await service.initializeInProcess('crewly-orc');
+      await expect(service.handleMessage('Test repetition')).rejects.toThrow(/repetition.*hallucination.*loop/i);
 
-      // Use fake timers for this test
-      jest.useFakeTimers();
+      // Should have logged a warning about repetition
+      const warnCalls = appendSpy.mock.calls.filter(
+        (call: unknown[]) => call[1] === 'warn' && String(call[2]).includes('Repetition loop detected')
+      );
+      expect(warnCalls.length).toBeGreaterThanOrEqual(1);
 
-      const promise = service.handleMessage('Stuck message');
+      appendSpy.mockRestore();
+    });
 
-      // Advance past the hard timeout (300s)
-      jest.advanceTimersByTime(300_001);
+    it('should not trigger repetition detection for varied text chunks', async () => {
+      mockRun.mockImplementation(async (_msg: string, _convId: unknown, _meta: unknown, opts: Record<string, unknown>) => {
+        const streaming = opts.streaming as Record<string, Function>;
 
-      await expect(promise).rejects.toThrow(/Phase: model-thinking/);
-      await expect(promise).rejects.toThrow(/Tools completed:/);
-      await expect(promise).rejects.toThrow(/Total elapsed:/);
-      await expect(promise).rejects.toThrow(/Message: "Stuck message"/);
+        // Simulate varied output (no repetition)
+        streaming.onTextChunk('First chunk. ');
+        streaming.onTextChunk('Second chunk. ');
+        streaming.onTextChunk('Third chunk. ');
+        streaming.onTextChunk('Fourth chunk. ');
+        streaming.onTextChunk('Fifth chunk. ');
+        streaming.onStepFinish(1, false);
 
-      jest.useRealTimers();
+        return {
+          text: 'First chunk. Second chunk. Third chunk. Fourth chunk. Fifth chunk.',
+          steps: 1,
+          usage: { input: 10, output: 20 },
+          toolCalls: [],
+          finishReason: 'stop',
+        };
+      });
+
+      await service.initializeInProcess('crewly-orc');
+      const result = await service.handleMessage('Normal message');
+
+      // Should succeed without throwing
+      expect(result.text).toContain('First chunk');
     });
 
     it('should include message preview in log for short messages', async () => {
@@ -842,6 +886,101 @@ describe('CrewlyAgentRuntimeService', () => {
       expect(cmdCalls.length).toBe(0);
 
       appendSpy.mockRestore();
+    });
+  });
+
+  describe('worker mode', () => {
+    it('should expose isWorkerMode() as false by default', () => {
+      expect(service.isWorkerMode()).toBe(false);
+    });
+
+    it('should expose getWorkerPid() as null by default', () => {
+      expect(service.getWorkerPid()).toBeNull();
+    });
+
+    it('should reject hotReload() when not in worker mode', async () => {
+      await expect(service.hotReload()).rejects.toThrow('hotReload() is only available in worker process mode');
+    });
+
+    it('should reject hotReload() when config is missing', async () => {
+      // Force worker mode without going through init
+      (service as any).useWorkerProcess = true;
+      await expect(service.hotReload()).rejects.toThrow('No stored config for hot-reload');
+    });
+
+    it('should store config for hot-reload during initializeInProcess', async () => {
+      await service.initializeInProcess('crewly-orc', { maxSteps: 42 });
+      expect((service as any).storedConfig).toBeDefined();
+      expect((service as any).storedConfig.maxSteps).toBe(42);
+    });
+
+    it('should clear storedConfig on shutdown', async () => {
+      await service.initializeInProcess('crewly-orc');
+      expect((service as any).storedConfig).toBeDefined();
+
+      service.shutdown();
+      expect((service as any).storedConfig).toBeNull();
+    });
+
+    it('should set useWorkerProcess flag when config option is true', async () => {
+      // We can't actually fork a worker in unit tests (no compiled worker file),
+      // but we can verify the flag is set before the worker init attempt
+      (service as any).initializeWorker = jest.fn<() => Promise<void>>().mockResolvedValue();
+
+      await service.initializeInProcess('crewly-orc', { useWorkerProcess: true });
+
+      expect(service.isWorkerMode()).toBe(true);
+      expect((service as any).initializeWorker).toHaveBeenCalled();
+    });
+
+    it('should use in-process path when useWorkerProcess is false', async () => {
+      await service.initializeInProcess('crewly-orc', { useWorkerProcess: false });
+
+      expect(service.isWorkerMode()).toBe(false);
+      expect(service.getAgentRunner()).toBeDefined();
+    });
+
+    it('should abort worker run when abortCurrentRun is called in worker mode', async () => {
+      // Simulate worker mode state
+      (service as any).useWorkerProcess = true;
+      (service as any).workerProcessing = true;
+      (service as any).workerProcess = { connected: true, send: jest.fn(), removeAllListeners: jest.fn(), pid: 12345 };
+      (service as any).currentSessionName = 'test-session';
+      (service as any).initialized = true;
+
+      let rejected = false;
+      (service as any).workerRunReject = (_err: Error) => { rejected = true; };
+      (service as any).workerRunResolve = jest.fn();
+
+      const result = service.abortCurrentRun();
+
+      expect(result).toBe(true);
+      expect(rejected).toBe(true);
+      expect((service as any).workerProcessing).toBe(false);
+    });
+
+    it('should return false from abortCurrentRun when no worker run in progress', async () => {
+      (service as any).useWorkerProcess = true;
+      (service as any).workerProcessing = false;
+
+      const result = service.abortCurrentRun();
+      expect(result).toBe(false);
+    });
+
+    it('should report isReady as false in worker mode when no worker', () => {
+      (service as any).useWorkerProcess = true;
+      (service as any).initialized = true;
+      (service as any).workerProcess = null;
+
+      expect(service.isReady()).toBe(false);
+    });
+
+    it('should report isReady as true in worker mode with connected worker', () => {
+      (service as any).useWorkerProcess = true;
+      (service as any).initialized = true;
+      (service as any).workerProcess = { connected: true, removeAllListeners: jest.fn(), pid: 12345 };
+
+      expect(service.isReady()).toBe(true);
     });
   });
 });

@@ -304,6 +304,20 @@ export class WebSocketService {
     this.socket.emit('terminal_resize', { sessionName, cols, rows });
   }
 
+  /**
+   * Request fresh terminal state from the backend.
+   * Used after resize to re-sync the frontend terminal with the correct dimensions.
+   *
+   * @param sessionName - The session to request state for
+   */
+  requestTerminalState(sessionName: string): void {
+    if (!this.socket?.connected) {
+      return;
+    }
+
+    this.socket.emit('request_terminal_state', sessionName);
+  }
+
   // Event listener management
   on(event: string, callback: (data: any) => void): void {
     if (!this.eventListeners.has(event)) {

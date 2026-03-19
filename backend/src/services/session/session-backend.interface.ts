@@ -368,6 +368,16 @@ export interface ISessionBackend {
 	isChildProcessAlive?(name: string): boolean;
 
 	/**
+	 * Resize a session's terminal dimensions.
+	 * Resizes both the PTY process and the headless terminal buffer.
+	 *
+	 * @param name - Name of the session
+	 * @param cols - New column count
+	 * @param rows - New row count
+	 */
+	resizeSession?(name: string, cols: number, rows: number): void;
+
+	/**
 	 * Destroy the backend and clean up all resources.
 	 * Kills all active sessions and releases any held resources.
 	 *

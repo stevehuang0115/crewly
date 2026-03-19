@@ -138,6 +138,23 @@ const MOCK_EVENTS: ApprovalEvent[] = [
 ];
 
 /**
+ * Maps backend audit action to frontend outcome type.
+ *
+ * @param action - Backend action string ('approved', 'rejected', etc.)
+ * @returns Frontend ApprovalOutcome
+ */
+function mapAuditAction(action: string): ApprovalOutcome {
+  switch (action) {
+    case 'approved': return 'approved';
+    case 'rejected': return 'denied';
+    case 'denied': return 'denied';
+    case 'auto': return 'auto';
+    case 'sop_block': return 'sop_block';
+    default: return 'auto';
+  }
+}
+
+/**
  * Hook for fetching and filtering approval audit events.
  *
  * Attempts to fetch from /api/approvals/audit. Falls back to mock data
@@ -163,7 +180,18 @@ export function useApprovalLog(): UseApprovalLogResult {
         { signal }
       );
       if (response.data.success && Array.isArray(response.data.data)) {
-        setEvents(response.data.data);
+        // Map backend ApprovalAuditEntry to frontend ApprovalEvent
+        const mapped: ApprovalEvent[] = response.data.data.map((entry: any) => ({
+          id: entry.approvalId || entry.id || `audit-${Date.now()}-${Math.random()}`,
+          timestamp: entry.timestamp,
+          sessionName: entry.sessionName || '',
+          agentName: entry.resolvedBy || entry.agentName || entry.sessionName || 'Unknown',
+          toolName: entry.toolName || '',
+          outcome: mapAuditAction(entry.action || entry.outcome),
+          riskLevel: entry.riskLevel || 'medium',
+          reason: entry.reason,
+        }));
+        setEvents(mapped);
         setError(null);
       } else {
         // Endpoint exists but returned no data — use mock

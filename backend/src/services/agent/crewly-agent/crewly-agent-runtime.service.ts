@@ -1,24 +1,26 @@
 /**
  * Crewly Agent Runtime Service
  *
- * Concrete RuntimeAgentService subclass for the in-process Crewly Agent.
- * Unlike PTY-based runtimes (Claude Code, Gemini CLI), this runtime runs
- * entirely inside the Node.js process using the Vercel AI SDK.
- *
- * No tmux session, no shell commands — messages are routed directly to
- * the AgentRunnerService.handleMessage() method.
+ * Concrete RuntimeAgentService subclass for the Crewly Agent.
+ * Supports two execution modes:
+ * - **In-process** (default): AgentRunner runs in the main Node.js process
+ * - **Worker process**: AgentRunner runs in a child process via fork(),
+ *   enabling hot-reload and crash isolation
  *
  * @module services/agent/crewly-agent/crewly-agent-runtime.service
  */
 
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { fork, type ChildProcess } from 'child_process';
+// fileURLToPath used for ESM __dirname equivalent — lazy-loaded to avoid CJS issues
 import { RuntimeAgentService } from '../runtime-agent.service.abstract.js';
 import { AgentRunnerService } from './agent-runner.service.js';
 import { RUNTIME_TYPES, CREWLY_CONSTANTS, ADDON_CONSTANTS, type RuntimeType } from '../../../constants.js';
 import { homedir } from 'os';
 import type { CrewlyAgentConfig, AgentRunResult, StreamingEventCallbacks } from './types.js';
 import { CREWLY_AGENT_DEFAULTS } from './types.js';
+import type { ParentMessage, WorkerMessage } from './agent-worker.js';
 import { SessionCommandHelper } from '../../session/index.js';
 import { InProcessLogBuffer } from './in-process-log-buffer.js';
 import { RateLimiter } from './rate-limiter.js';
@@ -29,19 +31,25 @@ import { getSettingsService } from '../../settings/settings.service.js';
 
 
 /**
- * In-process Crewly Agent runtime powered by AI SDK generateText.
+ * Crewly Agent runtime with optional worker process isolation.
  *
- * Key differences from PTY-based runtimes:
- * - No tmux session needed — runs in-process
- * - Messages routed via handleMessage() instead of PTY write
- * - System prompt loaded from config/roles/orchestrator/prompt.md
- * - Ready immediately after initialization (no CLI startup wait)
+ * Supports two modes:
+ * - **In-process** (default): AgentRunner runs directly in the main process
+ * - **Worker process** (`useWorkerProcess: true`): AgentRunner runs in a
+ *   forked child process, enabling hot-reload and crash isolation
  *
  * @example
  * ```typescript
+ * // In-process mode (default)
  * const runtime = new CrewlyAgentRuntimeService(sessionHelper, projectRoot);
  * await runtime.initializeInProcess('crewly-orc');
- * const result = await runtime.handleMessage('Check all team statuses');
+ *
+ * // Worker process mode
+ * const runtime = new CrewlyAgentRuntimeService(sessionHelper, projectRoot);
+ * await runtime.initializeInProcess('crewly-orc', { useWorkerProcess: true });
+ *
+ * // Hot-reload: restart worker with fresh code, preserving session
+ * await runtime.hotReload();
  * ```
  */
 export class CrewlyAgentRuntimeService extends RuntimeAgentService {
@@ -55,6 +63,21 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   /** AbortController for the currently executing message — enables external abort */
   private messageAbortController: AbortController | null = null;
+
+  // ===== Worker process fields =====
+
+  /** Whether this instance uses a worker process instead of in-process execution */
+  private useWorkerProcess = false;
+  /** The forked worker child process */
+  private workerProcess: ChildProcess | null = null;
+  /** Stored config for hot-reload — needed to re-init the worker */
+  private storedConfig: CrewlyAgentConfig | null = null;
+  /** Pending promise resolver for the current worker run */
+  private workerRunResolve: ((result: AgentRunResult) => void) | null = null;
+  /** Pending promise rejector for the current worker run */
+  private workerRunReject: ((error: Error) => void) | null = null;
+  /** Whether the worker is currently processing a message */
+  private workerProcessing = false;
 
   constructor(sessionHelper: SessionCommandHelper, projectRoot: string) {
     super(sessionHelper, projectRoot);
@@ -81,6 +104,9 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
    * @returns True if the agent runner is initialized
    */
   protected async detectRuntimeSpecific(_sessionName: string): Promise<boolean> {
+    if (this.useWorkerProcess) {
+      return this.initialized && this.workerProcess !== null && this.workerProcess.connected;
+    }
     return this.initialized && this.agentRunner !== null && this.agentRunner.isInitialized();
   }
 
@@ -115,22 +141,23 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
   // ===== In-process lifecycle methods =====
 
   /**
-   * Initialize the in-process agent runtime.
+   * Initialize the agent runtime.
    *
    * Loads the system prompt from config/roles/orchestrator/prompt.md,
-   * creates the AgentRunnerService, and initializes the model.
+   * creates the AgentRunnerService (in-process or worker), and initializes the model.
    *
    * @param sessionName - Session name for this agent instance
-   * @param config - Optional partial config overrides
+   * @param config - Optional partial config overrides. Set `useWorkerProcess: true` to run in a child process.
    * @param roleName - Role name for system prompt lookup (default: 'orchestrator')
    */
   async initializeInProcess(
     sessionName: string,
-    config?: Partial<CrewlyAgentConfig>,
+    config?: Partial<CrewlyAgentConfig> & { useWorkerProcess?: boolean },
     roleName?: string,
   ): Promise<void> {
     this.currentSessionName = sessionName;
     this.currentMemberId = config?.memberId;
+    this.useWorkerProcess = config?.useWorkerProcess ?? false;
 
     // Build enhanced system prompt with skills and addon awareness
     const systemPrompt = await this.buildEnhancedSystemPrompt(roleName || 'orchestrator');
@@ -147,15 +174,23 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       projectPath: config?.projectPath,
     };
 
-    this.agentRunner = new AgentRunnerService(fullConfig);
-    try {
-      await this.agentRunner.initialize();
-    } catch (error) {
-      // Clean up on initialization failure to prevent partial state
-      this.agentRunner = null;
-      this.currentSessionName = null;
-      throw error;
+    // Store config for hot-reload
+    this.storedConfig = fullConfig;
+
+    if (this.useWorkerProcess) {
+      await this.initializeWorker(fullConfig);
+    } else {
+      this.agentRunner = new AgentRunnerService(fullConfig);
+      try {
+        await this.agentRunner.initialize();
+      } catch (error) {
+        // Clean up on initialization failure to prevent partial state
+        this.agentRunner = null;
+        this.currentSessionName = null;
+        throw error;
+      }
     }
+
     this.initialized = true;
     this.currentModelString = `${fullConfig.model.provider}/${fullConfig.model.modelId}`;
 
@@ -164,10 +199,12 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
 
     // Register in-process session for frontend terminal visibility
     this.logBuffer.registerSession(sessionName);
-    this.logBuffer.append(sessionName, 'info', `Crewly Agent initialized (${this.currentModelString})`);
+    const mode = this.useWorkerProcess ? 'worker' : 'in-process';
+    this.logBuffer.append(sessionName, 'info', `Crewly Agent initialized [${mode}] (${this.currentModelString})`);
 
     this.logger.info('Crewly Agent runtime initialized', {
       sessionName,
+      mode,
       model: `${fullConfig.model.provider}/${fullConfig.model.modelId}`,
       maxSteps: fullConfig.maxSteps,
     });
@@ -185,8 +222,14 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
    * @throws Error if the runtime is not initialized
    */
   async handleMessage(message: string, metadata?: Record<string, string>): Promise<AgentRunResult> {
-    if (!this.agentRunner || !this.initialized) {
+    if (!this.initialized) {
       throw new Error('Crewly Agent runtime not initialized. Call initializeInProcess() first.');
+    }
+    if (!this.useWorkerProcess && !this.agentRunner) {
+      throw new Error('Crewly Agent runtime not initialized. Call initializeInProcess() first.');
+    }
+    if (this.useWorkerProcess && (!this.workerProcess || !this.workerProcess.connected)) {
+      throw new Error('Worker process not available. Call initializeInProcess() or hotReload() first.');
     }
 
     const session = this.currentSessionName!;
@@ -210,20 +253,25 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       : `"${cleanMessage.substring(0, 50)}...${cleanMessage.substring(cleanMessage.length - 50)}"`;
     this.logBuffer.append(session, 'info', `← Message received (${cleanMessage.length} chars${conversationId ? `, conv:${conversationId}` : ''}${queueLen > 0 ? `, queue:${queueLen}` : ''}): ${msgPreview}`);
 
-    this.logger.debug('Handling message via rate limiter', {
-      sessionName: session,
-      messageLength: cleanMessage.length,
-      historyLength: this.agentRunner.getHistoryLength(),
-      conversationId,
-      queueLength: queueLen,
-      requestsInWindow: this.rateLimiter.getRequestCountInWindow(),
-    });
+    if (!this.useWorkerProcess) {
+      this.logger.debug('Handling message via rate limiter', {
+        sessionName: session,
+        messageLength: cleanMessage.length,
+        historyLength: this.agentRunner!.getHistoryLength(),
+        conversationId,
+        queueLength: queueLen,
+        requestsInWindow: this.rateLimiter.getRequestCountInWindow(),
+      });
+    }
 
     // Route through rate limiter for throttling, coalescing, and 429 retry
     const result = await this.rateLimiter.enqueue(
       cleanMessage,
       metadata,
       async (msg, meta) => {
+        if (this.useWorkerProcess) {
+          return this.executeMessageViaWorker(session, msg, conversationId, meta);
+        }
         return this.executeMessage(session, msg, conversationId, meta);
       },
     );
@@ -249,10 +297,9 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     conversationId?: string,
     metadata?: Record<string, string>,
   ): Promise<AgentRunResult> {
-    const HARD_TIMEOUT_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
     const SOFT_WARNING_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS;
 
-    // Execution tracking for enhanced timeout diagnostics
+    // Execution tracking for diagnostics
     const executionTracker = {
       phase: 'queued' as string,
       currentTool: null as string | null,
@@ -275,15 +322,18 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       });
     }, SOFT_WARNING_MS);
 
-    // Hard timeout — AbortController kills the streamText/generateText call after MESSAGE_TIMEOUT_MS
+    // AbortController for external abort (abortCurrentRun) and repetition detection
     const abortController = new AbortController();
     this.messageAbortController = abortController;
-    const hardTimer = setTimeout(() => {
-      abortController.abort();
-    }, HARD_TIMEOUT_MS);
 
     // Text chunk buffer — collects streaming text and flushes on step boundaries
     let textChunkBuffer = '';
+
+    // Repetition/hallucination detection — tracks recent chunks to detect loops
+    const recentChunks: string[] = [];
+    const REPETITION_WINDOW = 20;   // number of recent chunks to track
+    const REPETITION_THRESHOLD = 5; // consecutive repeated patterns to trigger abort
+    let repetitionDetected = false;
 
     // Build streaming callbacks that write to InProcessLogBuffer in real-time
     const streamingCallbacks: StreamingEventCallbacks = {
@@ -292,6 +342,30 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
           executionTracker.lastActivityAt = new Date();
           executionTracker.phase = 'model-thinking';
           textChunkBuffer += chunk;
+
+          // Repetition detection: track recent chunks and check for loops
+          const trimmed = chunk.trim();
+          if (trimmed.length > 0) {
+            recentChunks.push(trimmed);
+            if (recentChunks.length > REPETITION_WINDOW) {
+              recentChunks.shift();
+            }
+            // Check if the last REPETITION_THRESHOLD chunks are identical
+            if (recentChunks.length >= REPETITION_THRESHOLD) {
+              const tail = recentChunks.slice(-REPETITION_THRESHOLD);
+              const allSame = tail.every(c => c === tail[0]);
+              if (allSame && tail[0].length >= 3) {
+                repetitionDetected = true;
+                this.logBuffer.append(session, 'warn', `⚠️ Repetition loop detected: "${tail[0].substring(0, 80)}" repeated ${REPETITION_THRESHOLD}x — aborting generation`);
+                this.logger.warn('Repetition/hallucination loop detected, aborting', {
+                  sessionName: session,
+                  repeatedChunk: tail[0].substring(0, 100),
+                  count: REPETITION_THRESHOLD,
+                });
+                abortController.abort();
+              }
+            }
+          }
         }
       },
       onToolCallStart: (toolName: string, _args: Record<string, unknown>) => {
@@ -335,37 +409,21 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
 
     try {
       executionTracker.phase = 'model-thinking';
-      const result = await Promise.race([
-        this.agentRunner!.run(cleanMessage, conversationId, metadata, {
-          abortSignal: abortController.signal,
-          streaming: streamingCallbacks,
-        }),
-        new Promise<never>((_resolve, reject) => {
-          abortController.signal.addEventListener('abort', () => {
-            const elapsed = Date.now() - executionTracker.startedAt.getTime();
-            const lastActivity = Date.now() - executionTracker.lastActivityAt.getTime();
-            const toolsSummary = executionTracker.toolCallsCompleted.length > 0
-              ? executionTracker.toolCallsCompleted.join(', ')
-              : 'none';
-            const currentToolInfo = executionTracker.currentTool
-              ? `Current tool: ${executionTracker.currentTool}. `
-              : '';
-            reject(new Error(
-              `Message processing timed out after ${HARD_TIMEOUT_MS}ms. `
-              + `Phase: ${executionTracker.phase}. `
-              + `${currentToolInfo}`
-              + `Tools completed: [${toolsSummary}] (${executionTracker.toolCallsCompleted.length} total). `
-              + `Last activity: ${Math.round(lastActivity / 1000)}s ago. `
-              + `Total elapsed: ${Math.round(elapsed / 1000)}s. `
-              + `Message: "${executionTracker.messagePreview}"`
-            ));
-          }, { once: true });
-        }),
-      ]);
+      const result = await this.agentRunner!.run(cleanMessage, conversationId, metadata, {
+        abortSignal: abortController.signal,
+        streaming: streamingCallbacks,
+      });
 
       clearTimeout(warningTimer);
-      clearTimeout(hardTimer);
       this.messageAbortController = null;
+
+      // If we got here after a repetition-triggered abort, treat as error
+      if (repetitionDetected) {
+        throw new Error(
+          'Generation aborted: repetition/hallucination loop detected. '
+          + `Repeated pattern: "${recentChunks[recentChunks.length - 1]?.substring(0, 80)}"`
+        );
+      }
 
       // Flush any remaining buffered text after the run completes
       if (textChunkBuffer.trim().length > 0) {
@@ -409,8 +467,18 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       return result;
     } catch (error) {
       clearTimeout(warningTimer);
-      clearTimeout(hardTimer);
       this.messageAbortController = null;
+
+      // If this was a repetition-triggered abort, wrap with a clear error
+      if (repetitionDetected) {
+        const repErr = new Error(
+          'Generation aborted: repetition/hallucination loop detected. '
+          + `Repeated pattern: "${recentChunks[recentChunks.length - 1]?.substring(0, 80)}"`
+        );
+        this.logBuffer.append(session, 'error', `Agent error: ${repErr.message}`);
+        throw repErr;
+      }
+
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logBuffer.append(session, 'error', `Agent error: ${errMsg}`);
       throw error;
@@ -442,6 +510,9 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
    * @returns True if initializeInProcess() has been called successfully
    */
   isReady(): boolean {
+    if (this.useWorkerProcess) {
+      return this.initialized && this.workerProcess !== null && this.workerProcess.connected;
+    }
     return this.initialized && this.agentRunner !== null && this.agentRunner.isInitialized();
   }
 
@@ -455,11 +526,30 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
    * @returns True if an active run was aborted, false if nothing was running
    */
   abortCurrentRun(): boolean {
+    const session = this.currentSessionName;
+
+    if (this.useWorkerProcess) {
+      if (!this.workerProcessing || !this.workerProcess) {
+        return false;
+      }
+      this.sendToWorker({ type: 'abort' });
+      if (this.workerRunReject) {
+        this.workerRunReject(new Error('Run aborted by user'));
+        this.workerRunResolve = null;
+        this.workerRunReject = null;
+      }
+      this.workerProcessing = false;
+      if (session) {
+        this.logBuffer.append(session, 'warn', '⚠️ Run aborted by user');
+      }
+      this.logger.info('Agent run aborted (worker)', { sessionName: session });
+      return true;
+    }
+
     if (!this.messageAbortController) {
       return false;
     }
 
-    const session = this.currentSessionName;
     this.messageAbortController.abort();
     this.messageAbortController = null;
 
@@ -501,6 +591,7 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
   shutdown(): void {
     this.logger.info('Shutting down Crewly Agent runtime', {
       sessionName: this.currentSessionName,
+      mode: this.useWorkerProcess ? 'worker' : 'in-process',
     });
 
     // Mark as not initialized first to reject new messages immediately
@@ -509,6 +600,11 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     // Stop heartbeat timer
     this.stopHeartbeat();
 
+    // Shut down worker process if running
+    if (this.workerProcess) {
+      this.terminateWorker();
+    }
+
     if (this.currentSessionName) {
       this.logBuffer.append(this.currentSessionName, 'info', 'Crewly Agent shutting down');
       this.logBuffer.removeSession(this.currentSessionName);
@@ -516,6 +612,367 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     this.rateLimiter.reset();
     this.agentRunner = null;
     this.currentSessionName = null;
+    this.storedConfig = null;
+  }
+
+  // ===== Worker process methods =====
+
+  /**
+   * Hot-reload the worker process.
+   *
+   * Kills the existing worker and spawns a fresh one with the stored config.
+   * This allows updating agent code without restarting the main backend.
+   * Conversation state is reset — use this when deploying new agent logic.
+   *
+   * @throws Error if not in worker mode or config is missing
+   */
+  async hotReload(): Promise<void> {
+    if (!this.useWorkerProcess) {
+      throw new Error('hotReload() is only available in worker process mode');
+    }
+    if (!this.storedConfig) {
+      throw new Error('No stored config for hot-reload. Was initializeInProcess() called?');
+    }
+
+    const session = this.currentSessionName!;
+    this.logBuffer.append(session, 'info', 'Hot-reloading worker process...');
+    this.logger.info('Hot-reloading worker process', { sessionName: session });
+
+    // Terminate old worker
+    this.terminateWorker();
+
+    // Spawn new worker with same config
+    await this.initializeWorker(this.storedConfig);
+
+    this.logBuffer.append(session, 'info', 'Worker hot-reload complete');
+    this.logger.info('Worker hot-reload complete', { sessionName: session });
+  }
+
+  /**
+   * Check if the runtime is using a worker process.
+   *
+   * @returns True if running in worker process mode
+   */
+  isWorkerMode(): boolean {
+    return this.useWorkerProcess;
+  }
+
+  /**
+   * Get the worker process PID (for monitoring/debugging).
+   *
+   * @returns Worker PID, or null if not in worker mode or worker is not running
+   */
+  getWorkerPid(): number | null {
+    return this.workerProcess?.pid ?? null;
+  }
+
+  /**
+   * Initialize a worker child process via fork().
+   *
+   * Forks the agent-worker.ts entry point and sends the init message
+   * with the agent config. Waits for the 'ready' response before resolving.
+   *
+   * @param config - Full agent config to send to the worker
+   * @throws Error if worker fails to initialize within timeout
+   */
+  private async initializeWorker(config: CrewlyAgentConfig): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const workerPath = this.getWorkerEntryPath();
+
+      this.workerProcess = fork(workerPath, [], {
+        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+        env: { ...process.env },
+      });
+
+      const initTimeout = setTimeout(() => {
+        this.terminateWorker();
+        reject(new Error('Worker initialization timed out (30s)'));
+      }, 30_000);
+
+      let initResolved = false;
+
+      this.workerProcess.on('message', (msg: WorkerMessage) => {
+        // Handle init response
+        if (!initResolved && msg.type === 'ready') {
+          initResolved = true;
+          clearTimeout(initTimeout);
+          resolve();
+          return;
+        }
+        if (!initResolved && msg.type === 'error' && (msg as { code?: string }).code === 'INIT_FAILED') {
+          initResolved = true;
+          clearTimeout(initTimeout);
+          reject(new Error(msg.error));
+          return;
+        }
+
+        // Handle runtime messages
+        this.handleWorkerMessage(msg);
+      });
+
+      this.workerProcess.on('exit', (code, signal) => {
+        this.logger.warn('Worker process exited', {
+          sessionName: this.currentSessionName,
+          code,
+          signal,
+        });
+
+        if (!initResolved) {
+          initResolved = true;
+          clearTimeout(initTimeout);
+          reject(new Error(`Worker exited during init (code=${code}, signal=${signal})`));
+        }
+
+        // Reject any pending run
+        if (this.workerRunReject) {
+          this.workerRunReject(new Error(`Worker process exited unexpectedly (code=${code}, signal=${signal})`));
+          this.workerRunResolve = null;
+          this.workerRunReject = null;
+          this.workerProcessing = false;
+        }
+
+        this.workerProcess = null;
+
+        if (this.currentSessionName) {
+          this.logBuffer.append(this.currentSessionName, 'warn', `Worker process exited (code=${code}, signal=${signal})`);
+        }
+      });
+
+      this.workerProcess.on('error', (err) => {
+        this.logger.error('Worker process error', {
+          sessionName: this.currentSessionName,
+          error: err.message,
+        });
+
+        if (!initResolved) {
+          initResolved = true;
+          clearTimeout(initTimeout);
+          reject(err);
+        }
+      });
+
+      // Capture worker stdout/stderr for debugging
+      this.workerProcess.stdout?.on('data', (data: Buffer) => {
+        const text = data.toString().trim();
+        if (text && this.currentSessionName) {
+          this.logBuffer.append(this.currentSessionName, 'debug', `[worker stdout] ${text}`);
+        }
+      });
+
+      this.workerProcess.stderr?.on('data', (data: Buffer) => {
+        const text = data.toString().trim();
+        if (text && this.currentSessionName) {
+          this.logBuffer.append(this.currentSessionName, 'warn', `[worker stderr] ${text}`);
+        }
+      });
+
+      // Send init message with config
+      this.sendToWorker({ type: 'init', config });
+    });
+  }
+
+  /**
+   * Execute a message via the worker process using IPC.
+   *
+   * Sends a 'run' message to the worker and waits for the 'result' or 'error'
+   * response. Streaming events are forwarded to the InProcessLogBuffer in real-time.
+   *
+   * @param session - Session name
+   * @param cleanMessage - Message content (prefix already stripped)
+   * @param conversationId - Optional conversation ID
+   * @param _metadata - Optional metadata (passed to worker)
+   * @returns Agent run result from the worker
+   */
+  private executeMessageViaWorker(
+    session: string,
+    cleanMessage: string,
+    conversationId?: string,
+    _metadata?: Record<string, string>,
+  ): Promise<AgentRunResult> {
+    return new Promise<AgentRunResult>((resolve, reject) => {
+      if (!this.workerProcess || !this.workerProcess.connected) {
+        reject(new Error('Worker process not available'));
+        return;
+      }
+
+      this.workerProcessing = true;
+      this.workerRunResolve = (result) => {
+        this.workerProcessing = false;
+        this.workerRunResolve = null;
+        this.workerRunReject = null;
+
+        // Log response summary
+        const textPreview = result.text ? result.text.substring(0, 150) : '(no text)';
+        this.logBuffer.append(session, 'info', `→ Response (${result.steps} steps, ${result.toolCalls.length} tools): ${textPreview}`);
+        this.logBuffer.append(session, 'debug', `  Tokens: ${result.usage.input}in/${result.usage.output}out`);
+
+        this.logger.info('Message processed (worker)', {
+          sessionName: session,
+          steps: result.steps,
+          toolCalls: result.toolCalls.length,
+          usage: result.usage,
+          finishReason: result.finishReason,
+        });
+
+        // Record token usage
+        this.recordTokenUsageIfEnabled(session, result).catch(() => {});
+
+        resolve(result);
+      };
+
+      this.workerRunReject = (error) => {
+        this.workerProcessing = false;
+        this.workerRunResolve = null;
+        this.workerRunReject = null;
+        this.logBuffer.append(session, 'error', `Agent error (worker): ${error.message}`);
+        reject(error);
+      };
+
+      this.sendToWorker({
+        type: 'run',
+        message: cleanMessage,
+        conversationId,
+        metadata: _metadata,
+      });
+    });
+  }
+
+  /**
+   * Handle messages received from the worker process.
+   *
+   * Routes streaming events to the InProcessLogBuffer and resolves/rejects
+   * pending run promises on result/error messages.
+   *
+   * @param msg - Worker message received via IPC
+   */
+  private handleWorkerMessage(msg: WorkerMessage): void {
+    const session = this.currentSessionName;
+
+    switch (msg.type) {
+      case 'result':
+        if (this.workerRunResolve) {
+          this.workerRunResolve(msg.data);
+        }
+        break;
+
+      case 'error':
+        if (this.workerRunReject) {
+          this.workerRunReject(new Error(msg.error));
+        } else if (session) {
+          // Error outside of a run (e.g. crash notification)
+          this.logBuffer.append(session, 'error', `Worker error: ${msg.error}`);
+        }
+        break;
+
+      case 'log':
+        if (session) {
+          this.logBuffer.append(session, msg.level, `[worker] ${msg.message}`);
+        }
+        break;
+
+      case 'stream':
+        if (!session) break;
+        switch (msg.event) {
+          case 'text':
+            // Text chunks are buffered and flushed at step boundaries
+            break;
+          case 'toolStart':
+            // No-op: logged on finish
+            break;
+          case 'toolFinish': {
+            const { toolName, args, result } = msg.data;
+            const argsPreview = JSON.stringify(args).substring(0, 120);
+            this.logBuffer.append(session, 'info', `🔧 ${toolName}(${argsPreview})`);
+            if (toolName === 'bash_exec' && args.command) {
+              const cmdPreview = String(args.command).substring(0, 200);
+              this.logBuffer.append(session, 'info', `  $ ${cmdPreview}`);
+            }
+            const resultPreview = result ? JSON.stringify(result).substring(0, 200) : 'void';
+            this.logBuffer.append(session, 'debug', `  → ${resultPreview}`);
+            break;
+          }
+          case 'stepFinish':
+            // Step boundaries are tracked by the worker
+            break;
+        }
+        break;
+
+      case 'state':
+        // State query responses (used internally)
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Send a typed message to the worker process.
+   *
+   * @param msg - Parent message to send
+   */
+  private sendToWorker(msg: ParentMessage): void {
+    if (this.workerProcess && this.workerProcess.connected) {
+      this.workerProcess.send(msg);
+    }
+  }
+
+  /**
+   * Terminate the worker process gracefully, with a forced kill fallback.
+   */
+  private terminateWorker(): void {
+    if (!this.workerProcess) return;
+
+    // Try graceful shutdown first
+    try {
+      if (this.workerProcess.connected) {
+        this.sendToWorker({ type: 'shutdown' });
+      }
+    } catch {
+      // Ignore send errors during shutdown
+    }
+
+    // Force kill after 5s if still alive
+    const pid = this.workerProcess.pid;
+    const killTimer = setTimeout(() => {
+      try {
+        if (pid) process.kill(pid, 'SIGKILL');
+      } catch {
+        // Already dead
+      }
+    }, 5_000);
+    killTimer.unref();
+
+    this.workerProcess.removeAllListeners();
+    this.workerProcess = null;
+    this.workerProcessing = false;
+
+    // Reject any pending run
+    if (this.workerRunReject) {
+      this.workerRunReject(new Error('Worker terminated'));
+      this.workerRunResolve = null;
+      this.workerRunReject = null;
+    }
+  }
+
+  /**
+   * Get the path to the compiled worker entry file.
+   *
+   * @returns Absolute path to the agent-worker.js compiled file
+   */
+  /**
+   * @internal Visible for testing — override to provide a custom worker path.
+   */
+  _workerEntryPath: string | null = null;
+
+  private getWorkerEntryPath(): string {
+    if (this._workerEntryPath) return this._workerEntryPath;
+
+    // Resolve path relative to the compiled dist/ directory.
+    // The worker file is always alongside this file after tsc compilation.
+    // Use __dirname (available in both CJS and compiled ESM with tsconfig module: NodeNext).
+    const thisDir = path.dirname(__filename);
+    return path.join(thisDir, 'agent-worker.js');
   }
 
   // ===== Private helpers =====

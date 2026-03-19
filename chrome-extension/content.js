@@ -71,12 +71,15 @@ const ACTION_LABELS = {
 
 /**
  * Show the AI control indicator — glowing border + floating panel.
+ * Glow: Full-edge inset box-shadow with pulsing animation (purple).
+ * Panel: Bottom-center floating div showing current action.
+ *
  * @param {string} action - Tool name being executed
  */
 function showControlIndicator(action) {
   hideControlIndicator(); // Remove any existing indicator first
 
-  // ── Glowing border overlay with pulsing animation ──
+  // ── Glowing edge overlay with pulsing inset box-shadow ──
   const border = document.createElement('div');
   border.id = BORDER_ID;
   Object.assign(border.style, {
@@ -87,13 +90,12 @@ function showControlIndicator(action) {
     bottom: '0',
     pointerEvents: 'none',
     zIndex: '2147483646',
-    border: `3px solid ${CREWLY_PURPLE}`,
-    boxShadow: `inset 0 0 30px rgba(124, 58, 237, 0.25), 0 0 30px rgba(124, 58, 237, 0.2)`,
+    boxShadow: 'inset 0 0 30px rgba(128, 0, 255, 0.3)',
     animation: '__crewlyBorderPulse 2s ease-in-out infinite',
   });
   document.documentElement.appendChild(border);
 
-  // ── Floating panel ──
+  // ── Floating panel (bottom center) ──
   const panel = document.createElement('div');
   panel.id = INDICATOR_ID;
 
@@ -105,23 +107,23 @@ function showControlIndicator(action) {
         background:${CREWLY_PURPLE};
         animation:__crewlyPulse 1.5s ease-in-out infinite;
       "></div>
-      <span style="font-weight:600;color:#e2e8f0;font-size:12px;">Crewly is controlling this page</span>
-      <span style="color:#94a3b8;font-size:11px;">· ${label}</span>
+      <span style="font-weight:600;color:#ffffff;font-size:13px;">Crewly is taking over</span>
+      <span style="color:rgba(255,255,255,0.7);font-size:12px;">· ${label}</span>
     </div>
   `;
 
   Object.assign(panel.style, {
     position: 'fixed',
-    bottom: '16px',
-    right: '16px',
+    bottom: '20px',
+    left: '50%',
+    transform: 'translateX(-50%)',
     zIndex: '2147483647',
-    background: 'rgba(15, 23, 42, 0.92)',
-    backdropFilter: 'blur(8px)',
-    border: `1px solid rgba(124, 58, 237, 0.4)`,
-    borderRadius: '10px',
-    padding: '8px 14px',
+    background: 'rgba(128, 0, 255, 0.9)',
+    backdropFilter: 'blur(10px)',
+    borderRadius: '20px',
+    padding: '8px 20px',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    boxShadow: '0 4px 24px rgba(0,0,0,0.3), 0 0 12px rgba(124, 58, 237, 0.15)',
+    boxShadow: '0 4px 24px rgba(0,0,0,0.3), 0 0 16px rgba(128, 0, 255, 0.3)',
     pointerEvents: 'none',
     transition: 'opacity 0.3s ease',
   });
@@ -137,12 +139,10 @@ function showControlIndicator(action) {
       }
       @keyframes __crewlyBorderPulse {
         0%, 100% {
-          border-color: rgba(124, 58, 237, 1);
-          box-shadow: inset 0 0 30px rgba(124, 58, 237, 0.25), 0 0 30px rgba(124, 58, 237, 0.2);
+          box-shadow: inset 0 0 30px rgba(128, 0, 255, 0.3);
         }
         50% {
-          border-color: rgba(124, 58, 237, 0.5);
-          box-shadow: inset 0 0 15px rgba(124, 58, 237, 0.1), 0 0 15px rgba(124, 58, 237, 0.08);
+          box-shadow: inset 0 0 50px rgba(128, 0, 255, 0.5);
         }
       }
     `;

@@ -106,7 +106,7 @@ export const SecurityLandingSection: React.FC = () => {
 
       {/* ========================= Architecture Diagram ========================= */}
       <div className="mb-10">
-        <SecurityArchDiagram activePillar={activePillar} />
+        <SecurityArchDiagram activePillar={activePillar} onPillarChange={setActivePillar} />
       </div>
 
       {/* ========================= Comparison Strip ========================= */}

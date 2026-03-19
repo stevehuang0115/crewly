@@ -174,7 +174,7 @@ export const CloudConnectionBanner: React.FC = () => {
           <Input
             label="Cloud URL (optional)"
             type="text"
-            placeholder="https://cloud.crewly.dev"
+            placeholder="https://api.crewlyai.com"
             value={cloudUrl}
             onChange={(e) => setCloudUrl(e.target.value)}
             helperText="Leave blank to use the default cloud endpoint."

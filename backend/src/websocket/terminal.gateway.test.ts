@@ -148,6 +148,7 @@ describe('TerminalGateway', () => {
 			expect(mockSocket.on).toHaveBeenCalledWith('unsubscribe_from_session', expect.any(Function));
 			expect(mockSocket.on).toHaveBeenCalledWith('send_input', expect.any(Function));
 			expect(mockSocket.on).toHaveBeenCalledWith('terminal_resize', expect.any(Function));
+			expect(mockSocket.on).toHaveBeenCalledWith('request_terminal_state', expect.any(Function));
 			expect(mockSocket.on).toHaveBeenCalledWith('disconnect', expect.any(Function));
 		});
 	});
@@ -225,6 +226,74 @@ describe('TerminalGateway', () => {
 
 			expect(mockSocket.emit).toHaveBeenCalledWith('error', expect.objectContaining({
 				type: 'session_not_found',
+			}));
+		});
+	});
+
+	describe('handleTerminalResize', () => {
+		it('should use backend.resizeSession when available', () => {
+			mockSessionBackend.resizeSession = jest.fn();
+
+			// Trigger connection + emit terminal_resize
+			if (connectionCallback) {
+				connectionCallback(mockSocket as Socket);
+			}
+
+			// Find the terminal_resize handler
+			const onMock = mockSocket.on as jest.Mock;
+			const resizeHandler = onMock.mock.calls.find(
+				(call: any[]) => call[0] === 'terminal_resize'
+			)?.[1];
+			expect(resizeHandler).toBeDefined();
+
+			resizeHandler({ sessionName: 'test-session', cols: 120, rows: 40 });
+
+			expect(mockSessionBackend.resizeSession).toHaveBeenCalledWith('test-session', 120, 40);
+			// session.resize should NOT be called directly when resizeSession is available
+			expect(mockSession.resize).not.toHaveBeenCalled();
+
+			delete mockSessionBackend.resizeSession;
+		});
+
+		it('should fall back to session.resize when resizeSession not available', () => {
+			// Trigger connection
+			if (connectionCallback) {
+				connectionCallback(mockSocket as Socket);
+			}
+
+			const onMock = mockSocket.on as jest.Mock;
+			const resizeHandler = onMock.mock.calls.find(
+				(call: any[]) => call[0] === 'terminal_resize'
+			)?.[1];
+			expect(resizeHandler).toBeDefined();
+
+			resizeHandler({ sessionName: 'test-session', cols: 120, rows: 40 });
+
+			expect(mockSession.resize).toHaveBeenCalledWith(120, 40);
+		});
+	});
+
+	describe('request_terminal_state', () => {
+		it('should send current terminal state when requested', () => {
+			// Subscribe first so session is known
+			gateway.subscribeToSession('test-session', mockSocket as Socket);
+			(mockSocket.emit as jest.Mock).mockClear();
+
+			// Trigger connection + emit request_terminal_state
+			if (connectionCallback) {
+				connectionCallback(mockSocket as Socket);
+			}
+
+			const onMock = mockSocket.on as jest.Mock;
+			const requestHandler = onMock.mock.calls.find(
+				(call: any[]) => call[0] === 'request_terminal_state'
+			)?.[1];
+			expect(requestHandler).toBeDefined();
+
+			requestHandler('test-session');
+
+			expect(mockSocket.emit).toHaveBeenCalledWith('initial_terminal_state', expect.objectContaining({
+				type: 'initial_terminal_state',
 			}));
 		});
 	});

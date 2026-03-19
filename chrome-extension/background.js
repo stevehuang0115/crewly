@@ -6,6 +6,9 @@
  * or content script, and returns results.
  */
 
+// ── CDP Screenshot Module ────────────────────────────────────────────────────
+importScripts('cdp-screenshot.js');
+
 // ── State ────────────────────────────────────────────────────────────────────
 let ws = null;
 let serverUrl = '';
@@ -364,7 +367,9 @@ async function toolNavigate({ url }) {
 
 /**
  * Adds a tab to the 'Crewly' tab group. Creates the group if it doesn't exist.
- * Uses a cached groupId to avoid duplicate groups.
+ * Uses a cached groupId to avoid duplicate groups. On reconnect, searches for
+ * existing 'crewly-tabs' groups before creating a new one.
+ *
  * @param {number} tabId - Tab to add to the group
  */
 async function _addToCrewlyGroup(tabId) {
@@ -376,6 +381,20 @@ async function _addToCrewlyGroup(tabId) {
       } catch {
         // Group was closed/removed — reset cache
         crewlyGroupId = null;
+      }
+    }
+
+    // Search for existing Crewly group if cache is empty (e.g. after reconnect)
+    if (crewlyGroupId === null) {
+      try {
+        const groups = await chrome.tabGroups.query({ title: 'crewly-tabs' });
+        if (groups.length > 0) {
+          crewlyGroupId = groups[0].id;
+          // Ensure color is correct (may have been changed by user)
+          await chrome.tabGroups.update(crewlyGroupId, { color: 'purple' });
+        }
+      } catch {
+        // tabGroups.query may fail on some Chrome versions — proceed to create
       }
     }
 
@@ -395,9 +414,12 @@ async function _addToCrewlyGroup(tabId) {
 
 /**
  * Captures a screenshot of the last navigated tab (or current visible tab).
+ * Uses CDP Page.captureScreenshot by default, falls back to captureVisibleTab.
  * If the user switched away from the navigated tab, brings it back to focus first.
  */
 async function toolScreenshot() {
+  let targetTabId = null;
+
   // Ensure we screenshot the correct tab (Task 4)
   if (lastNavigatedTabId !== null) {
     try {
@@ -407,16 +429,14 @@ async function toolScreenshot() {
         // Small delay to let Chrome render the tab
         await new Promise(r => setTimeout(r, 150));
       }
+      targetTabId = lastNavigatedTabId;
     } catch {
       // Tab was closed — fall back to current visible tab
       lastNavigatedTabId = null;
     }
   }
 
-  const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-  // Strip the data:image/png;base64, prefix
-  const base64 = dataUrl.replace(/^data:image\/png;base64,/, '');
-  return { base64, format: 'png', length: base64.length };
+  return await screenshotWithFallback(targetTabId);
 }
 
 /**
@@ -809,13 +829,25 @@ async function toolGetConsoleMessages({ clear }) {
 }
 
 /**
- * Takes a full page screenshot by scrolling and capturing segments.
+ * Takes a full page screenshot using CDP (single capture, no scrolling needed).
+ * Falls back to scroll-and-capture with captureVisibleTab if CDP is unavailable.
  * Returns an array of base64 screenshot segments from top to bottom.
  */
 async function toolFullPageScreenshot() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) throw new Error('No active tab');
 
+  return await fullPageScreenshotWithFallback(tab, _fullPageScreenshotScrollCapture);
+}
+
+/**
+ * Fallback full-page screenshot using scroll-and-capture with captureVisibleTab.
+ * Used when CDP debugger is unavailable.
+ *
+ * @param {object} tab - Chrome tab object
+ * @returns {Promise<{segments: Array, totalHeight: number, viewportHeight: number, segmentCount: number, format: string, method: string}>}
+ */
+async function _fullPageScreenshotScrollCapture(tab) {
   // Get page dimensions
   const dimResults = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
@@ -867,6 +899,7 @@ async function toolFullPageScreenshot() {
     viewportHeight: dims.viewportHeight,
     segmentCount: segments.length,
     format: 'png',
+    method: 'captureVisibleTab',
   };
 }
 

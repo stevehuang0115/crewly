@@ -110,6 +110,11 @@ export class TerminalGateway {
 				this.handleTerminalResize(data.sessionName, data.cols, data.rows);
 			});
 
+			// Handle request for fresh terminal state (e.g. after resize)
+			socket.on('request_terminal_state', (sessionName: string) => {
+				this.sendCurrentTerminalState(sessionName, socket);
+			});
+
 			// Handle client disconnection
 			socket.on('disconnect', () => {
 				this.handleClientDisconnect(socket);
@@ -518,13 +523,19 @@ export class TerminalGateway {
 				return;
 			}
 
-			const session = backend.getSession(sessionName);
-			if (!session) {
-				this.logger.debug('Cannot resize: session not found', { sessionName });
-				return;
+			// Use resizeSession if available (resizes both PTY and headless buffer).
+			// This prevents cursor movement corruption when the frontend xterm.js
+			// has different dimensions than the backend headless terminal buffer.
+			if (backend.resizeSession) {
+				backend.resizeSession(sessionName, cols, rows);
+			} else {
+				const session = backend.getSession(sessionName);
+				if (!session) {
+					this.logger.debug('Cannot resize: session not found', { sessionName });
+					return;
+				}
+				session.resize(cols, rows);
 			}
-
-			session.resize(cols, rows);
 
 			this.logger.debug('Terminal resized', { sessionName, cols, rows });
 

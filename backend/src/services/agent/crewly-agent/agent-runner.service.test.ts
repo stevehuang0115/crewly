@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { AgentRunnerService } from './agent-runner.service.js';
+import { AgentRunnerService, ToolCallLoopDetector } from './agent-runner.service.js';
 import { ModelManager } from './model-manager.js';
 import { CrewlyApiClient } from './api-client.js';
 import type { CrewlyAgentConfig, SecurityPolicy, AuditEntry } from './types.js';
@@ -1677,5 +1677,234 @@ describe('AgentRunnerService', () => {
       // Messages should have been trimmed
       expect(runner.getHistoryLength()).toBeLessThan(13);
     });
+  });
+
+  describe('loop detection in generateText path', () => {
+    it('should detect consecutive identical tool calls and return loop-detected', async () => {
+      await runner.initialize();
+
+      // Simulate 3 identical tool calls (threshold = 3)
+      const identicalToolCall = { toolName: 'bash', toolCallId: 'tc-1', input: { command: 'curl http://example.com/missing' } };
+      mockGenerateText.mockResolvedValueOnce({
+        text: '',
+        steps: [
+          {
+            toolCalls: [identicalToolCall],
+            toolResults: [{ toolCallId: 'tc-1', output: '404 Not Found' }],
+          },
+          {
+            toolCalls: [{ ...identicalToolCall, toolCallId: 'tc-2' }],
+            toolResults: [{ toolCallId: 'tc-2', output: '404 Not Found' }],
+          },
+          {
+            toolCalls: [{ ...identicalToolCall, toolCallId: 'tc-3' }],
+            toolResults: [{ toolCallId: 'tc-3', output: '404 Not Found' }],
+          },
+        ],
+        usage: { inputTokens: 100, outputTokens: 50 },
+        finishReason: 'stop',
+      });
+
+      const result = await runner.run('fetch the page');
+
+      expect(result.finishReason).toBe('loop-detected');
+      expect(result.text).toContain('Loop detected');
+      expect(result.toolCalls).toHaveLength(3);
+    });
+
+    it('should not trigger loop for different tool calls', async () => {
+      await runner.initialize();
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'All done',
+        steps: [
+          {
+            toolCalls: [{ toolName: 'bash', toolCallId: 'tc-1', input: { command: 'ls' } }],
+            toolResults: [{ toolCallId: 'tc-1', output: 'file1.ts' }],
+          },
+          {
+            toolCalls: [{ toolName: 'bash', toolCallId: 'tc-2', input: { command: 'cat file1.ts' } }],
+            toolResults: [{ toolCallId: 'tc-2', output: 'content' }],
+          },
+          {
+            toolCalls: [{ toolName: 'bash', toolCallId: 'tc-3', input: { command: 'echo done' } }],
+            toolResults: [{ toolCallId: 'tc-3', output: 'done' }],
+          },
+        ],
+        usage: { inputTokens: 50, outputTokens: 20 },
+        finishReason: 'stop',
+      });
+
+      const result = await runner.run('do things');
+
+      expect(result.finishReason).toBe('stop');
+      expect(result.text).toBe('All done');
+    });
+
+    it('should detect error loop from same tool returning errors', async () => {
+      await runner.initialize();
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: '',
+        steps: [
+          {
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'tc-1', input: { path: '/a.ts' } }],
+            toolResults: [{ toolCallId: 'tc-1', output: 'error: not found' }],
+          },
+          {
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'tc-2', input: { path: '/b.ts' } }],
+            toolResults: [{ toolCallId: 'tc-2', output: 'error: not found' }],
+          },
+          {
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'tc-3', input: { path: '/c.ts' } }],
+            toolResults: [{ toolCallId: 'tc-3', output: 'error: failed to read' }],
+          },
+        ],
+        usage: { inputTokens: 50, outputTokens: 20 },
+        finishReason: 'stop',
+      });
+
+      const result = await runner.run('find the file');
+
+      expect(result.finishReason).toBe('loop-detected');
+      expect(result.text).toContain('Loop detected');
+    });
+
+    it('should inject corrective messages into conversation history on loop', async () => {
+      await runner.initialize();
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: '',
+        steps: [
+          { toolCalls: [{ toolName: 'bash', toolCallId: 'tc-1', input: { command: 'curl x' } }], toolResults: [{ toolCallId: 'tc-1', output: 'ok' }] },
+          { toolCalls: [{ toolName: 'bash', toolCallId: 'tc-2', input: { command: 'curl x' } }], toolResults: [{ toolCallId: 'tc-2', output: 'ok' }] },
+          { toolCalls: [{ toolName: 'bash', toolCallId: 'tc-3', input: { command: 'curl x' } }], toolResults: [{ toolCallId: 'tc-3', output: 'ok' }] },
+        ],
+        usage: { inputTokens: 50, outputTokens: 20 },
+        finishReason: 'stop',
+      });
+
+      await runner.run('test');
+
+      // Should have injected corrective messages
+      const state = runner.getState();
+      const lastUserMsg = state.messages[state.messages.length - 1];
+      expect(lastUserMsg.role).toBe('user');
+      expect(String(lastUserMsg.content)).toContain('LOOP DETECTED');
+      expect(String(lastUserMsg.content)).toContain('different approach');
+    });
+  });
+});
+
+describe('ToolCallLoopDetector', () => {
+  it('should detect consecutive identical tool calls at threshold', () => {
+    const detector = new ToolCallLoopDetector(3, 3);
+
+    expect(detector.recordToolCall('bash', { command: 'ls' }, 'output')).toBe(false);
+    expect(detector.recordToolCall('bash', { command: 'ls' }, 'output')).toBe(false);
+    expect(detector.recordToolCall('bash', { command: 'ls' }, 'output')).toBe(true);
+    expect(detector.loopDetected).toBe(true);
+    expect(detector.loopReason).toContain('Identical tool call repeated 3 times');
+    expect(detector.loopReason).toContain('bash');
+  });
+
+  it('should not trigger for varied tool calls', () => {
+    const detector = new ToolCallLoopDetector(3, 3);
+
+    detector.recordToolCall('bash', { command: 'ls' }, 'output1');
+    detector.recordToolCall('bash', { command: 'pwd' }, 'output2');
+    detector.recordToolCall('bash', { command: 'ls' }, 'output3');
+
+    expect(detector.loopDetected).toBe(false);
+  });
+
+  it('should reset identical counter when a different call appears', () => {
+    const detector = new ToolCallLoopDetector(3, 3);
+
+    detector.recordToolCall('bash', { command: 'ls' }, 'ok');
+    detector.recordToolCall('bash', { command: 'ls' }, 'ok');
+    // Different call breaks the streak
+    detector.recordToolCall('bash', { command: 'pwd' }, 'ok');
+    detector.recordToolCall('bash', { command: 'ls' }, 'ok');
+    detector.recordToolCall('bash', { command: 'ls' }, 'ok');
+
+    expect(detector.loopDetected).toBe(false);
+  });
+
+  it('should detect consecutive error responses from the same tool', () => {
+    const detector = new ToolCallLoopDetector(5, 3);
+
+    detector.recordToolCall('web_fetch', { url: '/a' }, '404 not found');
+    detector.recordToolCall('web_fetch', { url: '/b' }, '404 not found');
+    expect(detector.recordToolCall('web_fetch', { url: '/c' }, '404 not found')).toBe(true);
+
+    expect(detector.loopDetected).toBe(true);
+    expect(detector.loopReason).toContain('returned errors 3 consecutive times');
+  });
+
+  it('should reset error counter when a different tool errors', () => {
+    const detector = new ToolCallLoopDetector(5, 3);
+
+    detector.recordToolCall('web_fetch', { url: '/a' }, '404 not found');
+    detector.recordToolCall('web_fetch', { url: '/b' }, '404 not found');
+    // Different tool resets the error counter
+    detector.recordToolCall('bash', { command: 'x' }, 'error: command not found');
+    detector.recordToolCall('web_fetch', { url: '/c' }, '404 not found');
+
+    expect(detector.loopDetected).toBe(false);
+  });
+
+  it('should reset error counter on successful result', () => {
+    const detector = new ToolCallLoopDetector(5, 3);
+
+    detector.recordToolCall('web_fetch', { url: '/a' }, '404 not found');
+    detector.recordToolCall('web_fetch', { url: '/b' }, '404 not found');
+    // Successful result resets error counter
+    detector.recordToolCall('web_fetch', { url: '/c' }, '<html>OK</html>');
+    detector.recordToolCall('web_fetch', { url: '/d' }, '404 not found');
+
+    expect(detector.loopDetected).toBe(false);
+  });
+
+  it('should detect various error patterns in results', () => {
+    const detector = new ToolCallLoopDetector(10, 2);
+
+    detector.recordToolCall('bash', { command: 'x' }, 'error: connection refused');
+    expect(detector.recordToolCall('bash', { command: 'y' }, 'failed to connect: timeout')).toBe(true);
+    expect(detector.loopReason).toContain('returned errors');
+  });
+
+  it('should stay detected once triggered', () => {
+    const detector = new ToolCallLoopDetector(2, 5);
+
+    detector.recordToolCall('bash', { command: 'ls' }, 'ok');
+    detector.recordToolCall('bash', { command: 'ls' }, 'ok');
+
+    expect(detector.loopDetected).toBe(true);
+    // Further calls should still report detected
+    expect(detector.recordToolCall('bash', { command: 'pwd' }, 'ok')).toBe(true);
+  });
+
+  it('should handle null/undefined results without error detection', () => {
+    const detector = new ToolCallLoopDetector(5, 2);
+
+    detector.recordToolCall('tool', {}, null);
+    detector.recordToolCall('tool', {}, undefined);
+
+    expect(detector.loopDetected).toBe(false);
+  });
+
+  it('should use custom thresholds', () => {
+    const detector = new ToolCallLoopDetector(5, 5);
+
+    // 4 identical calls should NOT trigger with threshold 5
+    for (let i = 0; i < 4; i++) {
+      detector.recordToolCall('bash', { command: 'ls' }, 'ok');
+    }
+    expect(detector.loopDetected).toBe(false);
+
+    // 5th should trigger
+    detector.recordToolCall('bash', { command: 'ls' }, 'ok');
+    expect(detector.loopDetected).toBe(true);
   });
 });

@@ -29,7 +29,7 @@ function disconnectedStatus(): CloudStatus {
 
 /** Creates a connected cloud status */
 function connectedStatus(): CloudStatus {
-  return { connected: true, tier: 'pro', cloudUrl: 'https://cloud.crewly.dev', status: 'connected' };
+  return { connected: true, tier: 'pro', cloudUrl: 'https://api.crewlyai.com', status: 'connected' };
 }
 
 describe('useCloudConnection', () => {
@@ -89,7 +89,7 @@ describe('useCloudConnection', () => {
     mockConnectToCloud.mockResolvedValue({
       connected: true,
       tier: 'enterprise',
-      cloudUrl: 'https://cloud.crewly.dev',
+      cloudUrl: 'https://api.crewlyai.com',
     });
 
     const { result } = renderHook(() => useCloudConnection());
@@ -218,7 +218,7 @@ describe('useCloudConnection', () => {
 
     // Resolve the connect
     await act(async () => {
-      resolveConnect!({ connected: true, tier: 'pro', cloudUrl: 'https://cloud.crewly.dev' });
+      resolveConnect!({ connected: true, tier: 'pro', cloudUrl: 'https://api.crewlyai.com' });
       await connectPromise!;
     });
 
