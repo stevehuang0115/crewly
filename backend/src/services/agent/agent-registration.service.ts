@@ -1534,18 +1534,15 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 	/**
 	 * Write the registration prompt to a file on disk.
-	 * Returns the file path on success, or undefined on failure.
-	 *
-	 * @param sessionName - Session name (used for filename)
-	 * @param prompt - The full prompt content
-	 * @returns The absolute path to the written file, or undefined on error
-	 */
-	/**
-	 * Write the registration prompt to a file on disk.
 	 *
 	 * For Claude Code agents (#207): writes to `{projectPath}/.claude/agents/{sessionName}.md`
 	 * with YAML frontmatter so the `--agent` flag can load it as a custom agent definition.
 	 * For other runtimes: writes to `~/.crewly/prompts/{sessionName}-init.md`.
+	 *
+	 * @param sessionName - Session name (used for filename)
+	 * @param prompt - The full prompt content
+	 * @param options - Optional: projectPath, runtimeType, and role for claude-code agent mode
+	 * @returns The absolute path to the written file, or undefined on error
 	 */
 	private async writePromptFile(
 		sessionName: string,
@@ -1558,8 +1555,11 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			: this.getInitPromptFilePath(sessionName);
 		const promptsDir = path.dirname(promptFilePath);
 
+		// Quote YAML values to prevent injection via sessionName or role containing special chars
+		const yamlSafeName = sessionName.replace(/"/g, '\\"');
+		const yamlSafeRole = (options?.role || 'developer').replace(/"/g, '\\"');
 		const fileContent = isClaudeAgent
-			? `---\nname: ${sessionName}\ndescription: ${options?.role || 'developer'} agent for Crewly orchestration\n---\n\n${prompt}`
+			? `---\nname: "${yamlSafeName}"\ndescription: "${yamlSafeRole} agent for Crewly orchestration"\n---\n\n${prompt}`
 			: prompt;
 
 		try {

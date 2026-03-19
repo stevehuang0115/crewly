@@ -3018,7 +3018,7 @@ describe('AgentRegistrationService', () => {
 			expect(result).toBe('/test/project/.claude/agents/test-agent.md');
 			expect(mockWriteFileFn).toHaveBeenCalledWith(
 				'/test/project/.claude/agents/test-agent.md',
-				expect.stringContaining('---\nname: test-agent\ndescription: developer agent for Crewly orchestration\n---'),
+				expect.stringContaining('---\nname: "test-agent"\ndescription: "developer agent for Crewly orchestration"\n---'),
 				'utf8',
 			);
 			const writtenContent = mockWriteFileFn.mock.calls[mockWriteFileFn.mock.calls.length - 1][1];
@@ -3034,7 +3034,7 @@ describe('AgentRegistrationService', () => {
 
 			expect(result).toContain('.crewly/prompts/test-agent-init.md');
 			const writtenContent = mockWriteFileFn.mock.calls[mockWriteFileFn.mock.calls.length - 1][1];
-			expect(writtenContent).not.toContain('---\nname:');
+			expect(writtenContent).not.toContain('---\nname: "');
 			expect(writtenContent).toBe('Test prompt content');
 		});
 

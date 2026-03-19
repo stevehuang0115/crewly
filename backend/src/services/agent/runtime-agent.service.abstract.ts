@@ -144,9 +144,11 @@ export abstract class RuntimeAgentService {
 			// #207: Use --agent flag for Claude Code when agentName is provided.
 			// Falls back to --append-system-prompt-file for non-Claude-Code runtimes.
 			if (agentName) {
+				// Sanitize agentName to prevent shell injection via crafted session names
+				const safeAgentName = agentName.replace(/["`$\\]/g, '');
 				finalCommands = finalCommands.map(cmd => {
 					if (cmd.includes('--dangerously-skip-permissions')) {
-						return `${cmd} --agent "${agentName}"`;
+						return `${cmd} --agent "${safeAgentName}"`;
 					}
 					return cmd;
 				});
