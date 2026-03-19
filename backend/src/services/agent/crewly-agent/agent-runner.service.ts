@@ -64,8 +64,8 @@ export class ToolCallLoopDetector {
   loopReason = '';
 
   constructor(
-    private readonly identicalThreshold = CREWLY_AGENT_DEFAULTS.LOOP_DETECTION_THRESHOLD,
-    private readonly errorThreshold = CREWLY_AGENT_DEFAULTS.ERROR_LOOP_THRESHOLD,
+    private readonly identicalThreshold: number = CREWLY_AGENT_DEFAULTS.LOOP_DETECTION_THRESHOLD,
+    private readonly errorThreshold: number = CREWLY_AGENT_DEFAULTS.ERROR_LOOP_THRESHOLD,
   ) {}
 
   /**
@@ -711,9 +711,19 @@ export class AgentRunnerService {
     }
 
     // Add assistant response to history
-    const text = await result.text;
+    let text = await result.text;
     if (text) {
       this.state.messages.push({ role: 'assistant', content: text });
+    }
+
+    // Empty response fallback: if model made tool calls but produced no text summary,
+    // prompt it once more to generate a summary (prevents silent completions)
+    if (!text && toolCalls.length > 0) {
+      console.warn('[AgentRunner] Empty text response after tool calls, requesting summary fallback');
+      const fallbackResult = await this.requestSummaryFallback();
+      if (fallbackResult) {
+        text = fallbackResult;
+      }
     }
 
     // Update token tracking
@@ -841,8 +851,19 @@ export class AgentRunnerService {
     }
 
     // Add assistant response to history
-    if (result.text) {
-      this.state.messages.push({ role: 'assistant', content: result.text });
+    let finalText = result.text;
+    if (finalText) {
+      this.state.messages.push({ role: 'assistant', content: finalText });
+    }
+
+    // Empty response fallback: if model made tool calls but produced no text summary,
+    // prompt it once more to generate a summary (prevents silent completions)
+    if (!finalText && toolCalls.length > 0) {
+      console.warn('[AgentRunner] Empty text response after tool calls, requesting summary fallback');
+      const fallbackResult = await this.requestSummaryFallback();
+      if (fallbackResult) {
+        finalText = fallbackResult;
+      }
     }
 
     // Update token tracking
@@ -858,7 +879,7 @@ export class AgentRunnerService {
     const budgetWarning = postBudget.level !== 'normal' ? postBudget.summary : undefined;
 
     return {
-      text: result.text,
+      text: finalText,
       steps: result.steps.length,
       usage,
       toolCalls,
@@ -916,6 +937,52 @@ export class AgentRunnerService {
       finishReason: 'loop-detected',
       budgetWarning: undefined,
     };
+  }
+
+  /**
+   * Request a text summary from the model when the previous response had tool calls
+   * but no text output. Injects a follow-up user message and makes a single
+   * generateText call with no tools to force a text-only response.
+   *
+   * @returns The summary text, or empty string if the fallback also fails
+   */
+  private async requestSummaryFallback(): Promise<string> {
+    if (!this.model) return '';
+
+    const prompt =
+      '请用文字总结你刚才完成的工作和发现的结果，然后调用report-status汇报。' +
+      'Please summarize what you just did, what you found, and any issues encountered. ' +
+      'Then call report-status to report your status.';
+
+    this.state.messages.push({ role: 'user', content: prompt });
+
+    try {
+      const fallback = await generateText({
+        model: this.model,
+        system: this.state.systemPrompt,
+        messages: this.state.messages,
+        maxOutputTokens: this.config.model.maxTokens,
+        temperature: this.config.model.temperature,
+      });
+
+      const text = fallback.text || '';
+      if (text) {
+        this.state.messages.push({ role: 'assistant', content: text });
+        this.streamingCallbacks.onTextChunk?.(text);
+
+        // Track fallback token usage
+        const fallbackUsage = fallback.usage;
+        if (fallbackUsage) {
+          this.state.totalTokens.input += fallbackUsage.inputTokens ?? 0;
+          this.state.totalTokens.output += fallbackUsage.outputTokens ?? 0;
+        }
+      }
+
+      return text;
+    } catch (err) {
+      console.error('[AgentRunner] Summary fallback failed:', err instanceof Error ? err.message : err);
+      return '';
+    }
   }
 
   /**

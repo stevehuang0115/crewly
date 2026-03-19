@@ -243,11 +243,13 @@ export async function validateCloudToken(req: Request, res: Response, next: Next
       return;
     }
 
-    // If local verification fails and a cloud API base is explicitly configured,
-    // proxy to the remote cloud API (used by OSS instances)
-    const cloudApiBase = process.env['CREWLY_CLOUD_API_BASE'];
+    // If local verification fails, proxy to the remote cloud API.
+    // Use explicit CREWLY_CLOUD_API_BASE env, or fall back to
+    // CloudClientService's stored cloudUrl (set during connect).
+    const cloudApiBase = process.env['CREWLY_CLOUD_API_BASE']
+      || CloudClientService.getInstance().getCloudUrl();
     if (cloudApiBase) {
-      const response = await fetch(`${cloudApiBase}/cloud/validate`, {
+      const response = await fetch(`${cloudApiBase}${CLOUD_CONSTANTS.ENDPOINTS.AUTH_TOKEN}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -261,8 +263,8 @@ export async function validateCloudToken(req: Request, res: Response, next: Next
       return;
     }
 
-    // Token invalid and no proxy configured
-    res.status(401).json({ success: false, error: 'Invalid or expired token' });
+    // Token invalid and no cloud connection established
+    res.status(401).json({ success: false, error: 'Invalid or expired token. Connect to CrewlyAI Cloud first.' });
   } catch (error) {
     logger.error('Failed to validate cloud token', {
       error: error instanceof Error ? error.message : String(error),

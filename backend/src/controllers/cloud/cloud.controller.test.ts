@@ -48,6 +48,7 @@ jest.mock('../../services/cloud/cloud-client.service.js', () => ({
       getStatus: mockGetStatus,
       getTemplates: mockGetTemplates,
       isConnected: mockIsConnected,
+      getCloudUrl: jest.fn().mockReturnValue(null),
     }),
   },
 }));
@@ -425,7 +426,7 @@ describe('Cloud Controller', () => {
 
     it('should proxy to cloud API when local verification fails and CREWLY_CLOUD_API_BASE is set', async () => {
       mockVerifyJwt.mockReturnValue(null);
-      process.env['CREWLY_CLOUD_API_BASE'] = 'https://api.crewlyai.com/api';
+      process.env['CREWLY_CLOUD_API_BASE'] = 'https://api.crewlyai.com';
 
       const cloudResponse = { success: true, data: { id: 'u1', email: 'test@test.com', plan: 'pro' } };
       global.fetch = jest.fn().mockResolvedValue({

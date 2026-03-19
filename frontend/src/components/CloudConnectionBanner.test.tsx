@@ -29,6 +29,10 @@ vi.mock('../hooks/useCloudConnection', () => ({
   })),
 }));
 
+vi.mock('../constants/cloud.constants', () => ({
+  buildCloudAuthRedirectUrl: () => 'https://crewlyai.com/cloud/auth?redirect=http%3A%2F%2Flocalhost%3A3000%2Fauth%2Fcallback',
+}));
+
 import { useCloudConnection } from '../hooks/useCloudConnection';
 
 /** Creates a disconnected hook result */
@@ -92,6 +96,29 @@ describe('CloudConnectionBanner', () => {
     expect(screen.getByRole('button', { name: /connect/i })).toBeInTheDocument();
   });
 
+  it('should redirect to cloud auth on connect click', async () => {
+    setDisconnected();
+    const originalHref = window.location.href;
+    Object.defineProperty(window, 'location', {
+      writable: true,
+      value: { ...window.location, href: originalHref },
+    });
+
+    const user = userEvent.setup();
+    render(<CloudConnectionBanner />);
+
+    await user.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    expect(window.location.href).toBe(
+      'https://crewlyai.com/cloud/auth?redirect=http%3A%2F%2Flocalhost%3A3000%2Fauth%2Fcallback',
+    );
+
+    Object.defineProperty(window, 'location', {
+      writable: true,
+      value: { ...window.location, href: originalHref },
+    });
+  });
+
   it('should render connected banner with tier badge', () => {
     setConnected();
     render(<CloudConnectionBanner />);
@@ -134,53 +161,6 @@ describe('CloudConnectionBanner', () => {
     expect(screen.queryByText('Connected to CrewlyAI Cloud')).not.toBeInTheDocument();
   });
 
-  it('should open connect modal when Connect button is clicked', async () => {
-    setDisconnected();
-    const user = userEvent.setup();
-    render(<CloudConnectionBanner />);
-
-    await user.click(screen.getByRole('button', { name: /connect/i }));
-
-    expect(screen.getByText('Connect to CrewlyAI Cloud')).toBeInTheDocument();
-    expect(screen.getByLabelText('API Token')).toBeInTheDocument();
-  });
-
-  it('should disable modal Connect button when token is empty', async () => {
-    setDisconnected();
-    const user = userEvent.setup();
-    render(<CloudConnectionBanner />);
-
-    // Open modal
-    await user.click(screen.getByRole('button', { name: /^connect$/i }));
-
-    // The modal's Connect button should be disabled when token is empty
-    const connectButtons = screen.getAllByRole('button', { name: /connect/i });
-    const modalConnectButton = connectButtons[connectButtons.length - 1];
-    expect(modalConnectButton).toBeDisabled();
-    expect(mockConnect).not.toHaveBeenCalled();
-  });
-
-  it('should call connect with token when form is submitted', async () => {
-    setDisconnected();
-    const user = userEvent.setup();
-    render(<CloudConnectionBanner />);
-
-    // Open modal
-    await user.click(screen.getByRole('button', { name: /^connect$/i }));
-
-    // Enter token
-    await user.type(screen.getByLabelText('API Token'), 'crewly_cloud_test123');
-
-    // Submit
-    const connectButtons = screen.getAllByRole('button', { name: /connect/i });
-    const modalConnectButton = connectButtons[connectButtons.length - 1];
-    await user.click(modalConnectButton);
-
-    await waitFor(() => {
-      expect(mockConnect).toHaveBeenCalledWith('crewly_cloud_test123', undefined);
-    });
-  });
-
   it('should call disconnect when Disconnect button is clicked', async () => {
     setConnected();
     const user = userEvent.setup();
@@ -199,21 +179,5 @@ describe('CloudConnectionBanner', () => {
 
     const disconnectButton = screen.getByRole('button', { name: /disconnect/i });
     expect(disconnectButton).toBeDisabled();
-  });
-
-  it('should close modal when Cancel is clicked', async () => {
-    setDisconnected();
-    const user = userEvent.setup();
-    render(<CloudConnectionBanner />);
-
-    // Open modal
-    await user.click(screen.getByRole('button', { name: /^connect$/i }));
-    expect(screen.getByLabelText('API Token')).toBeInTheDocument();
-
-    // Cancel
-    await user.click(screen.getByRole('button', { name: /cancel/i }));
-
-    // Modal should be closed
-    expect(screen.queryByLabelText('API Token')).not.toBeInTheDocument();
   });
 });

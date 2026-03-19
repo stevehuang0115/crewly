@@ -25,6 +25,9 @@ let firstControlDone = false;
 // Navigate→Screenshot tracking (Task 4)
 let lastNavigatedTabId = null;
 
+// Controlled tab tracking — only this tab gets glow/indicator
+let controlledTabId = null;
+
 // Glow indicator timing (Task 2)
 let indicatorShownAt = 0;
 const INDICATOR_MIN_DISPLAY_MS = 1000;
@@ -116,6 +119,7 @@ function _openSocket(url) {
     connectionState = 'disconnected';
     firstControlDone = false;
     lastNavigatedTabId = null;
+    controlledTabId = null;
     _broadcastState();
     _stopHeartbeat();
     _scheduleReconnect();
@@ -133,6 +137,7 @@ function _cleanup() {
   _stopHeartbeat();
   firstControlDone = false;
   lastNavigatedTabId = null;
+  controlledTabId = null;
   crewlyGroupId = null;
   if (ws) {
     ws.onclose = null; // prevent reconnect on intentional close
@@ -186,8 +191,10 @@ function _broadcastState() {
 // ── Visual indicator helpers ─────────────────────────────────────────────────
 
 /**
- * Send a showIndicator message to the active tab's content script.
- * Called once at the start of a WS command — stays visible until command ends.
+ * Send a showIndicator message to the controlled tab's content script.
+ * Only shows glow/indicator on the tab Crewly is actually operating on,
+ * not whatever tab the user happens to be viewing.
+ *
  * @param {string} tool - Tool name being executed
  * @returns {Promise<number|null>} Tab ID that received the indicator, or null
  */
@@ -196,15 +203,31 @@ async function _showToolIndicator(tool) {
   if (tool === 'getTabs' || tool === 'getCookies') return null;
 
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || tab.url?.startsWith('chrome://')) return null;
+    let targetTabId = controlledTabId;
+
+    // If no controlled tab yet, use the active tab (first command scenario)
+    if (targetTabId === null) {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id || tab.url?.startsWith('chrome://')) return null;
+      targetTabId = tab.id;
+    } else {
+      // Verify the controlled tab still exists
+      try {
+        const tab = await chrome.tabs.get(targetTabId);
+        if (tab.url?.startsWith('chrome://')) return null;
+      } catch {
+        // Tab was closed — clear tracking and skip indicator
+        controlledTabId = null;
+        return null;
+      }
+    }
 
     indicatorShownAt = Date.now();
-    chrome.tabs.sendMessage(tab.id, { type: 'showIndicator', action: tool }).catch(() => {
+    chrome.tabs.sendMessage(targetTabId, { type: 'showIndicator', action: tool }).catch(() => {
       // Content script may not be loaded yet — try injecting it
-      _ensureContentScriptAndShow(tab.id, tool);
+      _ensureContentScriptAndShow(targetTabId, tool);
     });
-    return tab.id;
+    return targetTabId;
   } catch {
     return null;
   }
@@ -258,11 +281,13 @@ async function _handleCommand(cmd) {
   const { id, tool, params = {} } = cmd;
 
   // First-control: bring the tab to foreground on the first real command (Task 3)
+  // Also set controlledTabId so indicators only appear on this tab
   if (!firstControlDone && tool !== 'getTabs' && tool !== 'getCookies') {
     firstControlDone = true;
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.id) {
+        controlledTabId = tab.id;
         await chrome.tabs.update(tab.id, { active: true });
         await chrome.windows.update(tab.windowId, { focused: true });
       }
@@ -355,8 +380,9 @@ async function toolNavigate({ url }) {
   // Wait for page load
   await _waitForTabLoad(updated.id);
 
-  // Track this tab for screenshot targeting (Task 4)
+  // Track this tab for screenshot targeting (Task 4) and indicator targeting
   lastNavigatedTabId = updated.id;
+  controlledTabId = updated.id;
 
   // Add tab to Crewly tab group (Task 1)
   await _addToCrewlyGroup(updated.id);

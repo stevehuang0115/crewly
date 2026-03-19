@@ -56,3 +56,9 @@ after content review is complete and all revisions are applied.
 - [ ] No copyright violations
 - [ ] Proper attributions included
 - [ ] Final proofread complete
+
+## Exceptions
+
+- **Urgent time-sensitive posts** (e.g., breaking news response): May publish with
+  a placeholder hero image and add the final image within 2 hours.
+- **Internal team content**: Skip compliance/legal section.

@@ -176,11 +176,14 @@ export class CloudClientService {
       throw new Error(`Cloud authentication failed: ${response.status} ${errorText}`);
     }
 
-    const data = (await response.json()) as { tier?: string };
+    // crewly-auth /api/cloud/validate returns { success, data: { plan, ... } }
+    // Also accept legacy { tier } format for forward compatibility
+    const data = (await response.json()) as { tier?: string; data?: { plan?: string } };
+    const resolvedTier = data.data?.plan || data.tier;
 
     this.cloudUrl = cloudUrl;
     this.token = token;
-    this.tier = (data.tier as CloudTier) || CLOUD_CONSTANTS.TIERS.FREE;
+    this.tier = (resolvedTier as CloudTier) || CLOUD_CONSTANTS.TIERS.FREE;
     this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.CONNECTED;
     this.lastSyncAt = new Date().toISOString();
 
@@ -299,6 +302,15 @@ export class CloudClientService {
   }
 
   /**
+   * Get the stored cloud API base URL (set during connect).
+   *
+   * @returns Cloud URL or null if not connected
+   */
+  getCloudUrl(): string | null {
+    return this.cloudUrl;
+  }
+
+  /**
    * Get the current cloud connection status and subscription tier.
    *
    * @returns Current status snapshot
@@ -351,6 +363,11 @@ export class CloudClientService {
     });
 
     if (!response.ok) {
+      // 404 means the cloud devices endpoint is not yet available — return empty list gracefully
+      if (response.status === 404) {
+        this.logger.warn('Cloud devices endpoint not available (404), returning empty list');
+        return [];
+      }
       this.logger.error('Failed to fetch cloud devices', { status: response.status });
       throw new Error(`Failed to fetch cloud devices: ${response.status}`);
     }

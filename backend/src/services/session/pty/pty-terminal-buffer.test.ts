@@ -375,6 +375,47 @@ describe('PtyTerminalBuffer', () => {
 			expect(history).toContain('Hello');
 		});
 	});
+
+	describe('serializeAsync', () => {
+		it('should return rendered terminal content as plain text', async () => {
+			buffer = new PtyTerminalBuffer();
+			buffer.write('Hello Normal\r\n');
+
+			const serialized = await buffer.serializeAsync();
+			expect(serialized).toContain('Hello Normal');
+		});
+
+		it('should show final rendered state after cursor rewrites', async () => {
+			buffer = new PtyTerminalBuffer();
+			// Simulate ink spinner pattern: write, cursor up, erase, rewrite
+			buffer.write('* Thinking...\r\n');
+			buffer.write('\x1b[1A\x1b[2K* Thinking... (3s)\r\n');
+
+			const serialized = await buffer.serializeAsync();
+			// Should contain the final spinner value (not intermediate states)
+			expect(serialized).toContain('Thinking... (3s)');
+			// Should NOT contain cursor up sequences
+			expect(serialized).not.toContain('\x1b[1A');
+		});
+
+		it('should strip color codes in serialized output (plain text)', async () => {
+			buffer = new PtyTerminalBuffer();
+			buffer.write('\x1b[32mGreen text\x1b[0m\r\n');
+
+			const serialized = await buffer.serializeAsync();
+			expect(serialized).toContain('Green text');
+			// Colors are stripped - serialized is plain text
+			expect(serialized).not.toMatch(/\x1b\[/);
+		});
+
+		it('should return empty string when disposed', async () => {
+			buffer = new PtyTerminalBuffer();
+			buffer.write('Hello\r\n');
+			buffer.dispose();
+
+			expect(await buffer.serializeAsync()).toBe('');
+		});
+	});
 });
 
 describe('PtyTerminalBuffer integration', () => {

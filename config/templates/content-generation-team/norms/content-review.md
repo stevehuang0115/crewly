@@ -64,3 +64,11 @@ against these standards before submitting content for review.
 - [ ] At least 1 visual per 500 words
 - [ ] Matches brand voice guidelines
 - [ ] Clear CTA in conclusion
+
+## Exceptions
+
+- **Social media posts**: Skip SEO compliance (Steps 3) — platform-specific
+  character limits apply instead.
+- **Internal team documents**: Skip SEO and brand voice checks.
+- **Urgent news/response posts**: May skip full accuracy check if clearly
+  labeled as "developing story" with commitment to update.

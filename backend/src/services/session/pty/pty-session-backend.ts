@@ -355,6 +355,28 @@ export class PtySessionBackend implements ISessionBackend {
 	}
 
 	/**
+	 * Get the serialized visual state of the terminal as plain text.
+	 *
+	 * Unlike getRawHistory() which returns raw bytes including cursor movement
+	 * sequences that cause corruption when replayed at different terminal
+	 * dimensions, this returns the rendered visual state — the final text after
+	 * all cursor movements and erases have been processed by the headless terminal.
+	 *
+	 * Flushes pending terminal writes before reading to ensure completeness.
+	 *
+	 * @param name - Name of the session
+	 * @returns Promise resolving to serialized terminal state safe for any dimensions
+	 */
+	async getSerializedState(name: string): Promise<string> {
+		const terminalBuffer = this.terminalBuffers.get(name);
+		if (!terminalBuffer) {
+			return '';
+		}
+
+		return terminalBuffer.serializeAsync();
+	}
+
+	/**
 	 * Get the PIDs of all active sessions.
 	 *
 	 * @returns Array of process IDs for all active sessions

@@ -681,7 +681,7 @@ export class TerminalGateway {
 	 * @param sessionName - The session name
 	 * @param socket - The client socket
 	 */
-	private sendCurrentTerminalState(sessionName: string, socket: Socket): void {
+	private async sendCurrentTerminalState(sessionName: string, socket: Socket): Promise<void> {
 		try {
 			this.logger.debug('Sending current terminal state', {
 				sessionName,
@@ -733,8 +733,13 @@ export class TerminalGateway {
 				return;
 			}
 
-			// Get raw output history with ANSI codes preserved for color rendering
-			const output = backend.getRawHistory(sessionName);
+			// Get serialized terminal visual state (plain text, no cursor movements).
+			// The headless terminal processes all ANSI sequences and returns the
+			// rendered result — safe for replay at any terminal dimensions.
+			// Falls back to raw history if serialization is not available.
+			const output = backend.getSerializedState
+				? await backend.getSerializedState(sessionName)
+				: backend.getRawHistory(sessionName);
 
 			const terminalState: TerminalOutput = {
 				sessionName,

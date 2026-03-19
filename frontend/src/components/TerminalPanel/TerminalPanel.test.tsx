@@ -934,13 +934,12 @@ describe('TerminalPanel', () => {
     });
   });
 
-  describe('Cursor Sequence Sanitization', () => {
-    it('sanitizes cursor movement sequences from replayed initial state', async () => {
+  describe('Initial State Rendering', () => {
+    it('writes initial terminal state directly to xterm without sanitization', async () => {
       await act(async () => {
         render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
       });
 
-      // Simulate receiving initial terminal state with cursor movement sequences
       const initialStateHandler = mockWebSocketService.on.mock.calls.find(
         (call: any[]) => call[0] === 'initial_terminal_state'
       )?.[1];
@@ -949,53 +948,23 @@ describe('TerminalPanel', () => {
       mockXtermInstance.write.mockClear();
       mockXtermInstance.clear.mockClear();
 
+      // Backend now sends serialized state (no cursor movements), so frontend
+      // writes it directly without sanitization
+      const serializedState = '\x1b[32mGreen text\x1b[0m\r\nLine 2';
       await act(async () => {
         initialStateHandler({
           sessionName: 'crewly-orc',
-          content: '\x1b[32mGreen text\x1b[0m\x1b[1A\x1b[2K\x1b[?25lHidden',
+          content: serializedState,
         });
       });
 
-      // Should have called clear + write with sanitized content
       expect(mockXtermInstance.clear).toHaveBeenCalled();
-      // Cursor up (\x1b[1A), erase line (\x1b[2K), and cursor hide (\x1b[?25l) should be stripped
-      // But SGR color sequences (\x1b[32m, \x1b[0m) should be preserved
       const writtenData = mockXtermInstance.write.mock.calls[0]?.[0];
-      expect(writtenData).toContain('\x1b[32m');  // Color preserved
-      expect(writtenData).toContain('\x1b[0m');   // Reset preserved
-      expect(writtenData).not.toContain('\x1b[1A');  // Cursor up stripped
-      expect(writtenData).not.toContain('\x1b[2K');  // Erase line stripped
-      expect(writtenData).not.toContain('\x1b[?25l'); // Cursor hide stripped
-      expect(writtenData).toContain('Green text');
-      expect(writtenData).toContain('Hidden');
+      // Content is written directly - no modifications
+      expect(writtenData).toBe(serializedState);
     });
 
-    it('preserves SGR color sequences while stripping cursor sequences', async () => {
-      await act(async () => {
-        render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
-      });
-
-      const initialStateHandler = mockWebSocketService.on.mock.calls.find(
-        (call: any[]) => call[0] === 'initial_terminal_state'
-      )?.[1];
-
-      mockXtermInstance.write.mockClear();
-
-      await act(async () => {
-        initialStateHandler({
-          sessionName: 'crewly-orc',
-          content: '\x1b[1;31mBold Red\x1b[0m\r\nNormal\x1b[3BSkipped',
-        });
-      });
-
-      const writtenData = mockXtermInstance.write.mock.calls[0]?.[0];
-      expect(writtenData).toContain('\x1b[1;31m');  // Bold red preserved
-      expect(writtenData).toContain('\x1b[0m');      // Reset preserved
-      expect(writtenData).toContain('\r\n');          // Newlines preserved
-      expect(writtenData).not.toContain('\x1b[3B');   // Cursor down stripped
-    });
-
-    it('does not sanitize live streaming terminal output', async () => {
+    it('passes live streaming output directly to xterm', async () => {
       await act(async () => {
         render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
       });
@@ -1007,6 +976,7 @@ describe('TerminalPanel', () => {
 
       mockXtermInstance.write.mockClear();
 
+      // Live streaming passes cursor sequences through for real-time rendering
       await act(async () => {
         outputHandler({
           sessionName: 'crewly-orc',
@@ -1014,7 +984,6 @@ describe('TerminalPanel', () => {
         });
       });
 
-      // Live streaming should NOT be sanitized - cursor sequences pass through
       const writtenData = mockXtermInstance.write.mock.calls[0]?.[0];
       expect(writtenData).toContain('\x1b[1A');
       expect(writtenData).toContain('\x1b[2K');

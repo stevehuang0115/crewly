@@ -275,6 +275,57 @@ export class PtyTerminalBuffer {
 	}
 
 	/**
+	 * Flush pending writes to the headless terminal.
+	 * @xterm/headless processes write() asynchronously. This ensures
+	 * all queued data has been processed before reading terminal state.
+	 *
+	 * @returns Promise that resolves when all pending writes are processed
+	 */
+	flush(): Promise<void> {
+		if (this.disposed) {
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve) => {
+			// Write an empty string with callback — the callback fires after
+			// all previously queued writes have been processed.
+			this.terminal.write('', () => resolve());
+		});
+	}
+
+	/**
+	 * Serialize the current terminal visual state as plain text.
+	 *
+	 * Unlike getHistoryAsString() which returns the raw byte stream (including
+	 * cursor movement sequences that cause corruption at different dimensions),
+	 * this returns the rendered visual state — the final text as displayed after
+	 * all cursor movements and erases have been processed by the headless terminal.
+	 *
+	 * Must be called after flush() to ensure all pending writes are processed.
+	 * Colors are not preserved in the serialized output, but live streaming
+	 * output will have full color support.
+	 *
+	 * @returns Terminal visual state as plain text safe for replay at any dimensions
+	 */
+	serialize(): string {
+		if (this.disposed) {
+			return '';
+		}
+
+		return this.getContent(this.terminal.buffer.active.length + this.terminal.rows);
+	}
+
+	/**
+	 * Flush pending writes and return the serialized terminal visual state.
+	 * Convenience method combining flush() + serialize().
+	 *
+	 * @returns Promise resolving to terminal visual state as plain text
+	 */
+	async serializeAsync(): Promise<string> {
+		await this.flush();
+		return this.serialize();
+	}
+
+	/**
 	 * Get the current history size in bytes.
 	 *
 	 * @returns Current history size in bytes

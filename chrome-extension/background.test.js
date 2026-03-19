@@ -141,6 +141,7 @@ bgCode = bgCode.replace(/^let ws /m, 'var ws ');
 bgCode = bgCode.replace(/^let serverUrl/m, 'var serverUrl');
 bgCode = bgCode.replace(/^let connectionState/m, 'var connectionState');
 bgCode = bgCode.replace(/^let firstControlDone/m, 'var firstControlDone');
+bgCode = bgCode.replace(/^let controlledTabId/m, 'var controlledTabId');
 // Also skip the chrome.storage.local.get auto-connect at the end
 bgCode = bgCode.replace(/chrome\.storage\.local\.get\(\['serverUrl'[\s\S]*?\}\);$/m, '// auto-connect disabled for tests');
 eval(bgCode);
@@ -160,6 +161,7 @@ function resetState() {
   indicatorMessages = [];
   crewlyGroupId = null;
   lastNavigatedTabId = null;
+  controlledTabId = null;
 }
 
 async function test(name, fn) {
@@ -358,6 +360,88 @@ async function runTests() {
     assert(manifest.name, 'Should have a name');
     assert(manifest.background?.service_worker, 'Should have service worker');
     assert(manifest.content_scripts?.length > 0, 'Should have content scripts');
+  });
+
+  // ── Indicator Tab Targeting Tests ──
+
+  console.log('\nIndicator Tab Targeting:');
+
+  await test('_showToolIndicator sends indicator only to controlledTabId', async () => {
+    // Set up: controlled tab is 2, but active tab is 1
+    mockTabs = [
+      { id: 1, active: true, url: 'https://other.com', windowId: 1 },
+      { id: 2, active: false, url: 'https://controlled.com', windowId: 1 },
+    ];
+    controlledTabId = 2;
+    indicatorMessages = [];
+
+    const tabId = await _showToolIndicator('click');
+    assertEqual(tabId, 2, 'Should return controlled tab ID');
+    assertEqual(indicatorMessages.length, 1, 'Should send exactly one message');
+    assertEqual(indicatorMessages[0].tabId, 2, 'Message should go to controlled tab, not active tab');
+  });
+
+  await test('_showToolIndicator falls back to active tab when no controlledTabId', async () => {
+    controlledTabId = null;
+    mockTabs = [{ id: 1, active: true, url: 'https://example.com', windowId: 1 }];
+    indicatorMessages = [];
+
+    const tabId = await _showToolIndicator('navigate');
+    assertEqual(tabId, 1, 'Should fall back to active tab');
+    assertEqual(indicatorMessages.length, 1);
+    assertEqual(indicatorMessages[0].tabId, 1);
+  });
+
+  await test('_showToolIndicator clears controlledTabId if tab was closed', async () => {
+    controlledTabId = 999; // Non-existent tab
+    const origGet = chrome.tabs.get;
+    chrome.tabs.get = async (id) => { throw new Error('Tab not found'); };
+    indicatorMessages = [];
+
+    const tabId = await _showToolIndicator('click');
+    assertEqual(tabId, null, 'Should return null for closed tab');
+    assertEqual(controlledTabId, null, 'Should clear controlledTabId');
+    assertEqual(indicatorMessages.length, 0, 'Should not send any message');
+
+    chrome.tabs.get = origGet;
+  });
+
+  await test('_handleCommand sets controlledTabId on first command', async () => {
+    firstControlDone = false;
+    controlledTabId = null;
+    mockTabs = [{ id: 5, active: true, url: 'https://example.com', windowId: 1 }];
+
+    await _handleCommand({ id: 'test-1', tool: 'readText', params: {} });
+    assertEqual(controlledTabId, 5, 'Should set controlledTabId to active tab on first command');
+  });
+
+  await test('toolNavigate updates controlledTabId', async () => {
+    mockTabs = [{ id: 3, active: true, url: 'https://old.com', windowId: 1 }];
+    controlledTabId = null;
+
+    await toolNavigate({ url: 'https://new-site.com' });
+    assertEqual(controlledTabId, 3, 'Should set controlledTabId to navigated tab');
+    assertEqual(lastNavigatedTabId, 3, 'Should also set lastNavigatedTabId');
+  });
+
+  await test('indicator not shown on non-controlled tabs even when they are active', async () => {
+    // Simulate: Crewly controls tab 2, user switches to tab 1
+    mockTabs = [
+      { id: 1, active: true, url: 'https://user-browsing.com', windowId: 1 },
+      { id: 2, active: false, url: 'https://crewly-controlled.com', windowId: 1 },
+    ];
+    controlledTabId = 2;
+    indicatorMessages = [];
+
+    // Execute a command — indicator should go to tab 2, not tab 1
+    firstControlDone = true; // Skip first-control logic
+    await _handleCommand({ id: 'test-2', tool: 'readText', params: {} });
+
+    const showMsgs = indicatorMessages.filter(m => m.type === 'showIndicator');
+    const hideMsgs = indicatorMessages.filter(m => m.type === 'hideIndicator');
+    assert(showMsgs.every(m => m.tabId === 2), 'All showIndicator messages should target tab 2');
+    assert(hideMsgs.every(m => m.tabId === 2), 'All hideIndicator messages should target tab 2');
+    assert(indicatorMessages.every(m => m.tabId !== 1), 'No messages should go to tab 1');
   });
 
   // ── Summary ──

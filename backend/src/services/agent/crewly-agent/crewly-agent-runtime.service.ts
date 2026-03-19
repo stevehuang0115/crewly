@@ -1092,7 +1092,12 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       '\n## Instructions\n'
       + 'You have access to the above skills via bash. '
       + 'When asked questions, use your tools to find answers. '
-      + 'Maintain conversation context across messages.'
+      + 'Maintain conversation context across messages.\n\n'
+      + '**IMPORTANT — Output Requirements:**\n'
+      + '每次任务完成后，你**必须**用文字输出任务总结（包括发现、结果、遇到的问题），然后调用report-status技能汇报状态。'
+      + '不要只做工具调用而不输出文字总结。\n'
+      + 'After completing any task, you MUST output a text summary (findings, results, issues encountered), '
+      + 'then call report-status to report your status. Never finish with only tool calls and no text output.'
     );
 
     return sections.join('\n');

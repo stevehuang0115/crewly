@@ -368,6 +368,16 @@ export interface ISessionBackend {
 	isChildProcessAlive?(name: string): boolean;
 
 	/**
+	 * Get the serialized visual state of the terminal with colors preserved.
+	 * Unlike getRawHistory(), the output contains no cursor movement sequences
+	 * and is safe for replay at any terminal dimensions.
+	 *
+	 * @param name - Name of the session
+	 * @returns Serialized terminal state as ANSI text
+	 */
+	getSerializedState?(name: string): Promise<string>;
+
+	/**
 	 * Resize a session's terminal dimensions.
 	 * Resizes both the PTY process and the headless terminal buffer.
 	 *

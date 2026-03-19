@@ -1016,8 +1016,8 @@ export const CLOUD_CONSTANTS = {
 	API_VERSION: '/v1',
 	/** Cloud API endpoints */
 	ENDPOINTS: {
-		/** Authentication and token verification */
-		AUTH_TOKEN: '/v1/auth/token',
+		/** Authentication and token verification (matches crewly-auth /api/cloud/validate) */
+		AUTH_TOKEN: '/api/cloud/validate',
 		/** Sync local config with cloud subscription status */
 		SYNC: '/v1/cloud/sync',
 		/** List premium templates */

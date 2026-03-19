@@ -62,3 +62,14 @@ just at publish time.
 - Brand colors: primary blue (#2563EB), accent green (#10B981)
 - Text on images: use sans-serif fonts, high contrast
 - No stock photos of people — use illustrations or abstract visuals
+
+### Social Media Formatting
+- X/Twitter: Lead with a hook, use thread format for long content
+- LinkedIn: Open with a personal insight or data point
+- Reddit: Match the subreddit's tone, provide genuine value, no overt self-promotion
+
+## Exceptions
+
+- **Guest posts / collaborations**: May adapt tone to match the host platform's
+  voice while maintaining terminology standards.
+- **Community responses**: May be more casual and personal.

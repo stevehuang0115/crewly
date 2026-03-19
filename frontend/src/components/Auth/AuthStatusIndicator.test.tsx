@@ -20,8 +20,7 @@ const mockAuthState = {
   license: null as { plan: string; features: string[]; active: boolean } | null,
   isLoading: false,
   error: null as string | null,
-  login: vi.fn(),
-  register: vi.fn(),
+  applyCloudAuth: vi.fn(),
   logout: mockLogout,
   getAccessToken: vi.fn(),
   hasFeature: vi.fn(),
@@ -31,6 +30,9 @@ vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => mockAuthState,
 }));
 
+vi.mock('../../constants/cloud.constants', () => ({
+  buildCloudAuthRedirectUrl: () => 'https://crewlyai.com/cloud/auth?redirect=http%3A%2F%2Flocalhost%3A3000%2Fauth%2Fcallback',
+}));
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -54,10 +56,40 @@ describe('AuthStatusIndicator', () => {
     expect(screen.getByText('Loading...')).toBeInTheDocument();
   });
 
-  it('should render nothing when not authenticated', () => {
-    const { container } = render(<AuthStatusIndicator />);
+  it('should show connect button when not authenticated', () => {
+    render(<AuthStatusIndicator />);
 
-    expect(container.innerHTML).toBe('');
+    expect(screen.getByTitle('Connect to CrewlyAI Cloud')).toBeInTheDocument();
+    expect(screen.getByText('Connect to Cloud')).toBeInTheDocument();
+  });
+
+  it('should redirect to cloud auth on connect click', () => {
+    const originalHref = window.location.href;
+    Object.defineProperty(window, 'location', {
+      writable: true,
+      value: { ...window.location, href: originalHref },
+    });
+
+    render(<AuthStatusIndicator />);
+
+    fireEvent.click(screen.getByTitle('Connect to CrewlyAI Cloud'));
+
+    expect(window.location.href).toBe(
+      'https://crewlyai.com/cloud/auth?redirect=http%3A%2F%2Flocalhost%3A3000%2Fauth%2Fcallback',
+    );
+
+    Object.defineProperty(window, 'location', {
+      writable: true,
+      value: { ...window.location, href: originalHref },
+    });
+  });
+
+  it('should hide connect label when collapsed and not authenticated', () => {
+    render(<AuthStatusIndicator isCollapsed />);
+
+    expect(screen.queryByText('Connect to Cloud')).not.toBeInTheDocument();
+    // But the button should still be there
+    expect(screen.getByTitle('Connect to CrewlyAI Cloud')).toBeInTheDocument();
   });
 
   it('should show user info when authenticated', () => {
@@ -106,11 +138,5 @@ describe('AuthStatusIndicator', () => {
     fireEvent.click(screen.getByLabelText('Sign out of CrewlyAI Cloud'));
 
     expect(mockLogout).toHaveBeenCalled();
-  });
-
-  it('should render nothing when collapsed and not authenticated', () => {
-    const { container } = render(<AuthStatusIndicator isCollapsed />);
-
-    expect(container.innerHTML).toBe('');
   });
 });

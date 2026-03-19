@@ -297,4 +297,50 @@ describe('CloudClientService', () => {
       expect(service.getTier()).toBe('free');
     });
   });
+
+  // ----- fetchCloudDevices() -----------------------------------------------
+
+  describe('fetchCloudDevices()', () => {
+    beforeEach(async () => {
+      // Connect first so ensureConnected() passes
+      mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'pro' }));
+      await service.connect(CLOUD_URL, TOKEN);
+      mockFetch.mockClear();
+    });
+
+    it('should return devices on success', async () => {
+      const devices = [{ sessionId: 's1', name: 'Device 1', connectedAt: '2026-01-01' }];
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true, devices }));
+
+      const result = await service.fetchCloudDevices();
+
+      expect(result).toEqual(devices);
+      expect(mockFetch).toHaveBeenCalledWith(
+        `${CLOUD_URL}${CLOUD_CONSTANTS.RELAY_ENDPOINTS.DEVICES}`,
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+
+    it('should return empty array when cloud returns 404', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 404));
+
+      const result = await service.fetchCloudDevices();
+
+      expect(result).toEqual([]);
+    });
+
+    it('should throw on non-404 error status', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 500));
+
+      await expect(service.fetchCloudDevices()).rejects.toThrow('Failed to fetch cloud devices: 500');
+    });
+
+    it('should return empty array when devices field is missing', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true }));
+
+      const result = await service.fetchCloudDevices();
+
+      expect(result).toEqual([]);
+    });
+  });
 });

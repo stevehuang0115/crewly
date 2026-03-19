@@ -6,30 +6,57 @@
 
 ## Overview
 
-Mandatory quality checks that must pass before any deployment. No exceptions. If any gate fails, the deployment is blocked until the issue is resolved.
+Before any code is deployed (to staging or production), all quality gates must pass.
+No exceptions. These gates are enforced automatically via the verification pipeline
+and manually verified by the team leader.
 
 ## Steps
 
-1. **TypeScript compilation** — Run `npm run build`. Zero errors and zero warnings required.
-2. **Unit test suite** — Run `npm run test:unit`. 100% pass rate required. No skipped tests allowed in CI.
-3. **Integration test suite** — Run `npm run test:integration`. All integration tests must pass.
-4. **Lint check** — Run `npm run lint`. No errors allowed. Warnings must be under 5.
-5. **Build artifact verification** — Confirm compiled output in `/dist/` runs correctly. Verify health endpoint responds.
-6. **Environment config validation** — Ensure all required environment variables are set for the target environment.
+1. **TypeScript Compilation**
+   - Run: `npm run build`
+   - Requirement: Zero errors, zero warnings
+   - Covers: All components (backend, frontend, CLI, MCP server)
+
+2. **Type Checking**
+   - Run: `npm run typecheck` (or `npx tsc --noEmit`)
+   - Requirement: No type errors in any source file
+   - Strict mode must be enabled
+
+3. **Unit Tests**
+   - Run: `npm test`
+   - Requirement: 100% pass rate
+   - Minimum 80% code coverage for new code
+
+4. **Linting**
+   - Run: `npm run lint`
+   - Requirement: No errors (warnings acceptable with justification)
+
+5. **Integration Verification**
+   - Backend health: `curl http://localhost:3000/health` returns 200
+   - MCP server health: `curl http://localhost:3001/health` returns 200
+   - CLI smoke test: `npx crewly start --no-browser` starts without errors
+
+6. **Code Quality**
+   - No `console.log` in production code
+   - No commented-out code blocks
+   - No TODO comments without linked GitHub issues
+   - All functions have JSDoc documentation
 
 ## Checklist
 
-- [ ] `npm run build` exits with code 0
-- [ ] `npm run test:unit` — all tests pass
-- [ ] `npm run test:integration` — all tests pass
+- [ ] `npm run build` — zero errors
+- [ ] `npm run typecheck` — zero type errors
+- [ ] `npm test` — 100% pass rate
 - [ ] `npm run lint` — no errors
-- [ ] No TypeScript `any` types in new code
-- [ ] No `TODO` comments without linked GitHub issues
-- [ ] Health endpoint responds with 200 OK
-- [ ] Environment variables validated for target environment
-- [ ] Database migrations (if any) tested in staging first
+- [ ] Backend health check passes
+- [ ] MCP server health check passes
+- [ ] No console.log in production code
+- [ ] No commented-out code
+- [ ] All new functions have JSDoc
 
 ## Exceptions
 
-- **Rollback deployments** may bypass gates 2-4 if reverting to a previously validated version.
-- **Infrastructure-only changes** (nginx config, Docker compose) may skip gates 1-4 but must pass gate 6.
+- **Staging-only deploys** for testing may proceed with lint warnings if time-critical,
+  but must be cleaned up before production deploy.
+- **Emergency hotfixes** must still pass Steps 1-4 (build, typecheck, tests, lint).
+  Steps 5-6 can be verified post-deploy.

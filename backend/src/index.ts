@@ -1097,7 +1097,7 @@ export class CrewlyServer {
 			const result = await this.apiController.agentRegistrationService.createAgentSession({
 				sessionName: ORCHESTRATOR_SESSION_NAME,
 				role: ORCHESTRATOR_ROLE,
-				projectPath: process.cwd(),
+				projectPath: this.config.crewlyHome,
 				windowName: ORCHESTRATOR_WINDOW_NAME,
 				runtimeType,
 				forceRecreate: true,
@@ -1116,7 +1116,7 @@ export class CrewlyServer {
 				await memoryService.initializeForSession(
 					ORCHESTRATOR_SESSION_NAME,
 					ORCHESTRATOR_ROLE,
-					process.cwd()
+					this.config.crewlyHome
 				);
 			} catch (memoryError) {
 				this.logger.warn('Failed to initialize orchestrator memory during auto-start', {

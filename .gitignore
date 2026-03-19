@@ -151,3 +151,6 @@ frontend/public/models/**/*.py
 frontend/public/models/**/*.sh
 # Exclude any .glb in subdirectories that isn't *-fixed.glb
 frontend/public/models/cow/cow.glb
+
+# Chrome Extension (lives in crewly-projects/chrome-extension/, not here)
+chrome-extension/

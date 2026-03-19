@@ -117,7 +117,7 @@ export class ConfigService {
 			process.env.CONFIG_PATH,
 			path.join(process.cwd(), 'config.json'),
 			path.join(process.cwd(), 'config', 'app.json'),
-			path.join(process.cwd(), '.crewly', 'config.json'),
+			path.join(os.homedir(), '.crewly', 'config.json'),
 		].filter(Boolean) as string[];
 
 		for (const configPath of possiblePaths) {

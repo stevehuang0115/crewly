@@ -33,9 +33,9 @@ O3 [推广]: 建立市场存在感 (Luna/Ella/Mila/Grace)
 
 **[NEW] O3.5: OpenClaw Competitive Response (March 2026 Focus)**
 - KR1: 发布 v1.5 Roadmap & GTM 计划 (Mia) — **DONE**
-- KR2: 完成 Messenger Hub (Slack/Telegram) 全打通 (Sam) — **IN PROGRESS**
-- KR3: 开发 Safe-Switch 迁移 CLI 工具 (Leo) — **IN PROGRESS**
-- KR4: 发布 "The Security Moat" 系列技术博客 (Luna) — **PLANNED**
+- KR2: 完成 Messenger Hub (Slack/Telegram) 全打通 (Sam) — **DONE**
+- KR3: 开发 Safe-Switch 迁移 CLI 工具 (Leo) — **DONE**
+- KR4: 发布 "The Security Moat" 系列技术博客 (Luna) — **IN PROGRESS**
 
 Phase 2→3 触发：首次公开发布 + 有外部用户 + 用户确认
 
