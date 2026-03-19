@@ -1723,7 +1723,7 @@ export class SchedulerService extends EventEmitter {
    */
   async restoreRecurringChecks(): Promise<number> {
     // #217: Clean up orphaned temp files on startup
-    await this.cleanupStaleTempFiles();
+    try { await this.cleanupStaleTempFiles(); } catch { /* non-critical */ }
 
     try {
       const persisted = await this.storageService.getRecurringChecks();

@@ -370,7 +370,7 @@ export class AgentRegistrationService {
 				try {
 					const skillJsonPath = await this.findSkillJsonPath(skillId);
 					if (!skillJsonPath) {
-						this.logger.warn('Skill config not found in any known directory', { skillId });
+						this.logger.debug('Skill config not found in any known directory (no runtime flags)', { skillId });
 						continue;
 					}
 					const skillContent = await readFile(skillJsonPath, 'utf8');
