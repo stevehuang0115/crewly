@@ -129,6 +129,50 @@ export class GoogleChatThreadStoreService {
   }
 
   /**
+   * Read recent messages from a thread file for context injection (#195).
+   * Returns the last N messages as a formatted string. Strips frontmatter.
+   *
+   * @param space - Google Chat space name
+   * @param thread - Google Chat thread name
+   * @param maxMessages - Maximum number of messages to return
+   * @returns Formatted recent messages string, or null if thread file doesn't exist
+   */
+  async getRecentMessages(
+    space: string,
+    thread: string,
+    maxMessages: number
+  ): Promise<string | null> {
+    const filePath = this.getThreadFilePath(space, thread);
+
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      return null;
+    }
+
+    // Strip YAML frontmatter
+    const fmEnd = content.indexOf('---', content.indexOf('---') + 3);
+    const body = fmEnd !== -1 ? content.slice(fmEnd + 3).trim() : content.trim();
+
+    if (!body || body === '## Messages') {
+      return null;
+    }
+
+    // Split by message headers: **Name** (timestamp):
+    const messageBlocks = body.split(/(?=\n\*\*[^*]+\*\*\s*\([^)]+\):)/);
+    const filtered = messageBlocks.filter(b => b.trim() && b.trim() !== '## Messages');
+
+    if (filtered.length === 0) {
+      return null;
+    }
+
+    // Take the last N messages
+    const recent = filtered.slice(-maxMessages);
+    return recent.map(m => m.trim()).join('\n\n');
+  }
+
+  /**
    * Append a bot reply to the thread conversation file.
    *
    * @param space - Google Chat space name

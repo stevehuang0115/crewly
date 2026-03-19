@@ -24,10 +24,12 @@ import {
   RUNTIME_TYPES,
   ORCHESTRATOR_HEARTBEAT_CONSTANTS,
   MESSAGE_SOURCES,
+  GCHAT_THREAD_CONSTANTS,
   type RuntimeType,
 } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { StorageService } from '../core/storage.service.js';
+import { getGchatThreadStore } from './gchat-thread-store.service.js';
 
 /**
  * QueueProcessorService dequeues messages one-at-a-time and delivers them
@@ -366,6 +368,28 @@ export class QueueProcessorService extends EventEmitter {
         const threadId = message.sourceMetadata?.threadId as string | undefined;
         const threadSuffix = threadId ? ` thread=${threadId}` : '';
         deliveryContent = `[${prefix}:${message.conversationId}${threadSuffix}] ${message.content}`;
+
+        // #195: Inject thread history so the agent has conversation context
+        if (threadId && message.conversationId) {
+          try {
+            const threadStore = getGchatThreadStore();
+            if (threadStore) {
+              const history = await threadStore.getRecentMessages(
+                message.conversationId,
+                threadId,
+                GCHAT_THREAD_CONSTANTS.MAX_CONTEXT_MESSAGES,
+              );
+              if (history) {
+                deliveryContent += `\n\n[THREAD_CONTEXT]\n${history}\n[/THREAD_CONTEXT]`;
+              }
+            }
+          } catch (err) {
+            this.logger.debug('Failed to load GChat thread context (non-fatal)', {
+              threadId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
       } else {
         deliveryContent = `[${CHAT_ROUTING_CONSTANTS.MESSAGE_PREFIX}:${message.conversationId}] ${message.content}`;
       }

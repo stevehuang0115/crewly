@@ -22,8 +22,9 @@ const logger = LoggerService.getInstance().createComponentLogger('TaskManagement
 let eventBusService: EventBusService | null = null;
 
 /**
- * Publish a task:completed event to the EventBus (#137).
- * Fire-and-forget — errors are logged but do not block task completion.
+ * Publish a task:completed event to the EventBus (#137) and send a Slack
+ * notification to the user (#202). Both are fire-and-forget — errors are
+ * logged but do not block task completion.
  *
  * @param task - The completed task metadata
  * @param sessionName - The session that completed the task
@@ -50,6 +51,32 @@ function publishTaskCompletedEvent(task: InProgressTask, sessionName?: string): 
 			error: err instanceof Error ? err.message : String(err),
 		});
 	}
+
+	// #202: Auto-notify user via Slack when any task completes (including background deploys)
+	notifyTaskCompletedViaSlack(task, sessionName);
+}
+
+/**
+ * Send a Slack notification for task completion (#202).
+ * Uses lazy import to avoid circular dependencies. Fire-and-forget.
+ *
+ * @param task - The completed task
+ * @param sessionName - The session that completed the task
+ */
+function notifyTaskCompletedViaSlack(task: InProgressTask, sessionName?: string): void {
+	import('../../services/orchestrator/slack-bridge-lazy.js')
+		.then(({ getSlackBridgeLazy }) => getSlackBridgeLazy())
+		.then(bridge => {
+			const agentName = sessionName || task.assignedSessionName || 'unknown';
+			const projectName = task.teamId || 'crewly';
+			return bridge.notifyTaskCompleted(task.taskName, agentName, projectName);
+		})
+		.catch(err => {
+			logger.debug('Slack task-completion notification skipped (non-fatal)', {
+				taskId: task.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
 }
 
 /**

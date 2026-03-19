@@ -87,8 +87,8 @@ export abstract class RuntimeAgentService {
 	 * @param targetPath - Working directory for the session
 	 * @param runtimeFlags - Optional CLI flags to inject before --dangerously-skip-permissions
 	 * @param promptFilePath - Optional path to a prompt file; when provided for Claude Code,
-	 *                         appends --append-system-prompt-file so the prompt is loaded as
-	 *                         a system instruction rather than pasted into the terminal
+	 *                         appends --system-prompt-file so the prompt is loaded as a
+	 *                         first-class system instruction rather than pasted into the terminal
 	 */
 	async executeRuntimeInitScript(sessionName: string, targetPath?: string, runtimeFlags?: string[], promptFilePath?: string): Promise<void> {
 		try {
@@ -141,15 +141,18 @@ export abstract class RuntimeAgentService {
 				});
 			}
 
-			// Append --append-system-prompt-file for Claude Code when a prompt file is provided
+			// Append --system-prompt-file for Claude Code when a prompt file is provided.
+			// Uses --system-prompt-file (not --append-system-prompt-file) so that Claude
+			// treats the content as a first-class system prompt rather than appended content
+			// which can trigger prompt-injection safety refusals (#207).
 			if (promptFilePath) {
 				finalCommands = finalCommands.map(cmd => {
 					if (cmd.includes('--dangerously-skip-permissions')) {
-						return `${cmd} --append-system-prompt-file "${promptFilePath}"`;
+						return `${cmd} --system-prompt-file "${promptFilePath}"`;
 					}
 					return cmd;
 				});
-				this.logger.info('Injected --append-system-prompt-file into init commands', {
+				this.logger.info('Injected --system-prompt-file into init commands', {
 					sessionName,
 					promptFilePath,
 				});

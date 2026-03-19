@@ -50,7 +50,10 @@ api_call() {
 # Prints a JSON error to stderr and exits with code 1.
 # -----------------------------------------------------------------------------
 error_exit() {
-  echo '{"error":"'"$1"'"}' >&2
+  # Use jq to safely encode the error message (handles quotes, special chars)
+  local msg
+  msg=$(jq -n --arg e "$1" '{"error": $e}')
+  echo "$msg" >&2
   exit 1
 }
 

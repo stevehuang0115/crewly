@@ -95,10 +95,11 @@ if [ -z "$INPUT_JSON" ] && [ -z "$TEXT" ] && [ ! -t 0 ]; then
 fi
 
 if [ -n "$INPUT_JSON" ]; then
-  SPACE=${SPACE:-$(echo "$INPUT_JSON" | jq -r '.space // empty')}
-  TEXT=${TEXT:-$(echo "$INPUT_JSON" | jq -r '.text // empty')}
-  THREAD_NAME=${THREAD_NAME:-$(echo "$INPUT_JSON" | jq -r '.threadName // empty')}
-  CONVERSATION_ID=${CONVERSATION_ID:-$(echo "$INPUT_JSON" | jq -r '.conversationId // empty')}
+  # Use printf instead of echo to avoid interpretation of escape sequences (#205, #206)
+  SPACE=${SPACE:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.space // empty')}
+  TEXT=${TEXT:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.text // empty')}
+  THREAD_NAME=${THREAD_NAME:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.threadName // empty')}
+  CONVERSATION_ID=${CONVERSATION_ID:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.conversationId // empty')}
 fi
 
 require_param "space" "$SPACE"
@@ -113,13 +114,19 @@ if [ -n "$TEXT" ]; then
   TEXT="${TEXT//\\n/$_NL}"
 fi
 
-# Build JSON body
+# Build JSON body using env vars to avoid shell escaping issues with
+# backticks, single quotes, markdown code blocks, etc. (#205, #206)
+# jq's env.VAR reads directly from the environment, bypassing all
+# shell argument boundary issues that --arg can have with special chars.
+export _GCHAT_SPACE="$SPACE"
+export _GCHAT_TEXT="$TEXT"
 if [ -n "$THREAD_NAME" ]; then
-  BODY=$(jq -n --arg channel "$SPACE" --arg text "$TEXT" --arg threadId "$THREAD_NAME" \
-    '{channel: $channel, text: $text, threadId: $threadId}')
+  export _GCHAT_THREAD="$THREAD_NAME"
+  BODY=$(jq -n '{channel: env._GCHAT_SPACE, text: env._GCHAT_TEXT, threadId: env._GCHAT_THREAD}')
+  unset _GCHAT_THREAD
 else
-  BODY=$(jq -n --arg channel "$SPACE" --arg text "$TEXT" \
-    '{channel: $channel, text: $text}')
+  BODY=$(jq -n '{channel: env._GCHAT_SPACE, text: env._GCHAT_TEXT}')
 fi
+unset _GCHAT_SPACE _GCHAT_TEXT
 
 api_call POST "/messengers/google-chat/send" "$BODY"

@@ -669,7 +669,7 @@ export class AgentRegistrationService {
 			}
 		}
 
-		// Write prompt file before launching runtime so --append-system-prompt-file works
+		// Write prompt file before launching runtime so --system-prompt-file works
 		let promptFilePath: string | undefined;
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
@@ -997,7 +997,7 @@ export class AgentRegistrationService {
 			}
 		}
 
-		// Write prompt file before launching runtime so --append-system-prompt-file works
+		// Write prompt file before launching runtime so --system-prompt-file works
 		let promptFilePath: string | undefined;
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
@@ -4293,7 +4293,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		}
 
 		// Step 2: Build the message to send.
-		// Claude Code: prompt was already loaded via --append-system-prompt-file at launch,
+		// Claude Code: prompt was already loaded via --system-prompt-file at launch,
 		// so the agent already has all instructions as a system prompt. Just send a short
 		// kickoff trigger — no need to ask it to read the file again.
 		// Gemini CLI / other runtimes: need the file-read instruction since the prompt
@@ -4393,7 +4393,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 					}
 
 					// Claude still at prompt after 8s — message likely not received.
-					// For Claude Code with --append-system-prompt-file, don't retry
+					// For Claude Code with --system-prompt-file, don't retry
 					// (would cause duplicate). Log warning and return false.
 					this.logger.warn('Kickoff delivery unconfirmed — Claude still at prompt after 8s (not retrying)', {
 						sessionName, runtimeType,

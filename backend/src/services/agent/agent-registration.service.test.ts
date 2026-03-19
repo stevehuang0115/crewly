@@ -295,7 +295,7 @@ describe('AgentRegistrationService', () => {
 			const kickoffCall = allCalls.find((msg: string) => msg && msg.includes('Begin your work now'));
 			expect(kickoffCall).toBeDefined();
 			expect(kickoffCall).toContain('initial assessment');
-			// Should NOT contain file path (prompt loaded via --append-system-prompt-file)
+			// Should NOT contain file path (prompt loaded via --system-prompt-file)
 			expect(kickoffCall).not.toContain('Read the file at');
 		});
 

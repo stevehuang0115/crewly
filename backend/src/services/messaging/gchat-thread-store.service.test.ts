@@ -163,6 +163,57 @@ describe('GoogleChatThreadStoreService', () => {
     });
   });
 
+  describe('getRecentMessages', () => {
+    it('should return null for non-existent thread', async () => {
+      const result = await store.getRecentMessages('spaces/NONE', 'spaces/NONE/threads/000', 10);
+      expect(result).toBeNull();
+    });
+
+    it('should return null for empty thread (only frontmatter)', async () => {
+      await store.ensureThreadFile('spaces/ABC', 'spaces/ABC/threads/XYZ', 'Steve');
+      const result = await store.getRecentMessages('spaces/ABC', 'spaces/ABC/threads/XYZ', 10);
+      expect(result).toBeNull();
+    });
+
+    it('should return recent messages', async () => {
+      await store.appendUserMessage('spaces/ABC', 'spaces/ABC/threads/XYZ', 'Steve', 'How is Ella doing?');
+      await store.appendBotReply('spaces/ABC', 'spaces/ABC/threads/XYZ', 'Ella is working on blog posts.');
+      await store.appendUserMessage('spaces/ABC', 'spaces/ABC/threads/XYZ', 'Steve', 'Any updates?');
+
+      const result = await store.getRecentMessages('spaces/ABC', 'spaces/ABC/threads/XYZ', 10);
+
+      expect(result).not.toBeNull();
+      expect(result).toContain('How is Ella doing?');
+      expect(result).toContain('Ella is working on blog posts.');
+      expect(result).toContain('Any updates?');
+    });
+
+    it('should limit messages to maxMessages', async () => {
+      for (let i = 1; i <= 5; i++) {
+        await store.appendUserMessage('spaces/ABC', 'spaces/ABC/threads/LIM', 'Steve', `Message ${i}`);
+      }
+
+      const result = await store.getRecentMessages('spaces/ABC', 'spaces/ABC/threads/LIM', 2);
+
+      expect(result).not.toBeNull();
+      expect(result).toContain('Message 4');
+      expect(result).toContain('Message 5');
+      expect(result).not.toContain('Message 1');
+      expect(result).not.toContain('Message 2');
+      expect(result).not.toContain('Message 3');
+    });
+
+    it('should include both user and bot messages', async () => {
+      await store.appendUserMessage('spaces/ABC', 'spaces/ABC/threads/MIX', 'Steve', 'Hello');
+      await store.appendBotReply('spaces/ABC', 'spaces/ABC/threads/MIX', 'Hi Steve!');
+
+      const result = await store.getRecentMessages('spaces/ABC', 'spaces/ABC/threads/MIX', 10);
+
+      expect(result).toContain('**Steve**');
+      expect(result).toContain('**Crewly**');
+    });
+  });
+
   describe('singleton', () => {
     it('should start as null', () => {
       resetGchatThreadStore();

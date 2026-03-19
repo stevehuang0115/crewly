@@ -116,12 +116,13 @@ if [ -z "$INPUT_JSON" ] && [ -z "$TEXT" ] && [ ! -t 0 ]; then
 fi
 
 if [ -n "$INPUT_JSON" ]; then
-  CHANNEL_ID=${CHANNEL_ID:-$(echo "$INPUT_JSON" | jq -r '.channelId // empty')}
-  TEXT=${TEXT:-$(echo "$INPUT_JSON" | jq -r '.text // empty')}
-  THREAD_TS=${THREAD_TS:-$(echo "$INPUT_JSON" | jq -r '.threadTs // empty')}
-  CONVERSATION_ID=${CONVERSATION_ID:-$(echo "$INPUT_JSON" | jq -r '.conversationId // empty')}
-  FILE_PATH=${FILE_PATH:-$(echo "$INPUT_JSON" | jq -r '.file // .filePath // empty')}
-  IMAGE_PATH=${IMAGE_PATH:-$(echo "$INPUT_JSON" | jq -r '.image // .imagePath // empty')}
+  # Use printf instead of echo to avoid interpretation of escape sequences (#205, #206)
+  CHANNEL_ID=${CHANNEL_ID:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.channelId // empty')}
+  TEXT=${TEXT:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.text // empty')}
+  THREAD_TS=${THREAD_TS:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.threadTs // empty')}
+  CONVERSATION_ID=${CONVERSATION_ID:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.conversationId // empty')}
+  FILE_PATH=${FILE_PATH:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.file // .filePath // empty')}
+  IMAGE_PATH=${IMAGE_PATH:-$(printf '%s\n' "$INPUT_JSON" | jq -r '.image // .imagePath // empty')}
 fi
 
 require_param "channelId" "$CHANNEL_ID"
@@ -194,13 +195,17 @@ elif [ -n "$FILE_PATH" ]; then
   api_call POST "/slack/upload-file" "$BODY"
 else
   # Text-only mode — use /api/slack/send
+  # Use env vars to avoid shell escaping issues with backticks, quotes, markdown (#205, #206)
+  export _SLACK_CHANNEL="$CHANNEL_ID"
+  export _SLACK_TEXT="$TEXT"
   if [ -n "$THREAD_TS" ]; then
-    BODY=$(jq -n --arg channelId "$CHANNEL_ID" --arg text "$TEXT" --arg threadTs "$THREAD_TS" \
-      '{channelId: $channelId, text: $text, threadTs: $threadTs}')
+    export _SLACK_THREAD="$THREAD_TS"
+    BODY=$(jq -n '{channelId: env._SLACK_CHANNEL, text: env._SLACK_TEXT, threadTs: env._SLACK_THREAD}')
+    unset _SLACK_THREAD
   else
-    BODY=$(jq -n --arg channelId "$CHANNEL_ID" --arg text "$TEXT" \
-      '{channelId: $channelId, text: $text}')
+    BODY=$(jq -n '{channelId: env._SLACK_CHANNEL, text: env._SLACK_TEXT}')
   fi
+  unset _SLACK_CHANNEL _SLACK_TEXT
 
   api_call POST "/slack/send" "$BODY"
 fi

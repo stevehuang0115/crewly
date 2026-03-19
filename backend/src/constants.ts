@@ -375,6 +375,8 @@ export const GCHAT_THREAD_CONSTANTS = {
 	STORAGE_DIR: 'gchat-threads',
 	/** File extension for thread conversation files */
 	FILE_EXTENSION: '.md',
+	/** Max recent messages to include as thread context in deliveries (#195) */
+	MAX_CONTEXT_MESSAGES: 10,
 } as const;
 
 /**

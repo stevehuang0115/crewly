@@ -3,8 +3,10 @@
  *
  * Singleton service for Stripe API interactions. Handles checkout sessions,
  * subscriptions, customer portal sessions, and webhook event processing.
+ * Syncs subscription lifecycle events to the Supabase `subscriptions` table.
  *
  * Requires STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET environment variables.
+ * Requires CREWLY_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY for webhook sync.
  * Returns { success: false, message: 'Stripe is not configured' } when keys
  * are missing, allowing the app to run without Stripe in development.
  *
@@ -12,7 +14,9 @@
  */
 
 import Stripe from 'stripe';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { LoggerService } from '../core/logger.service.js';
+import { getEnvConfig } from '../core/env.config.js';
 import { formatError } from '../../utils/format-error.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('StripeService');
@@ -33,8 +37,59 @@ export interface SubscriptionInfo {
   cancelAtPeriodEnd: boolean;
 }
 
+/** Row shape for the Supabase subscriptions table */
+export interface SubscriptionRow {
+  user_id: string;
+  stripe_customer_id: string;
+  stripe_subscription_id: string;
+  status: string;
+  plan_id: string;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  cancel_at: string | null;
+  cancel_at_period_end: boolean;
+  updated_at: string;
+}
+
 /** Default plan ID when metadata is missing */
 const DEFAULT_PLAN_ID = 'pro' as const;
+
+/** Supabase table name for subscription records */
+const SUBSCRIPTIONS_TABLE = 'subscriptions' as const;
+
+/**
+ * Extract current period dates from a subscription's first item.
+ * In Stripe API v2025+, period dates live on SubscriptionItem, not Subscription.
+ *
+ * @param subscription - Stripe subscription (or retrieved response)
+ * @returns Object with ISO period strings, or nulls if no items
+ */
+function extractPeriodDates(subscription: { items?: { data?: Array<{ current_period_start?: number; current_period_end?: number }> } }): {
+  current_period_start: string | null;
+  current_period_end: string | null;
+} {
+  const item = subscription.items?.data?.[0];
+  return {
+    current_period_start: item?.current_period_start
+      ? new Date(item.current_period_start * 1000).toISOString()
+      : null,
+    current_period_end: item?.current_period_end
+      ? new Date(item.current_period_end * 1000).toISOString()
+      : null,
+  };
+}
+
+/**
+ * Extract the subscription ID string from a Stripe Invoice.
+ * In Stripe API v2025+, subscription is at invoice.parent.subscription_details.subscription.
+ *
+ * @param invoice - Stripe Invoice object
+ * @returns Subscription ID string or null
+ */
+function extractInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+  const sub = invoice.parent?.subscription_details?.subscription;
+  return typeof sub === 'string' ? sub : sub?.id ?? null;
+}
 
 /** Maps plan+interval keys to environment variable names for Stripe Price IDs */
 const PRICE_ENV_VAR_MAP: Readonly<Record<string, string>> = {
@@ -67,6 +122,7 @@ export class StripeService {
   private static instance: StripeService | null = null;
   private stripe: Stripe | null = null;
   private webhookSecret: string | undefined;
+  private supabaseAdmin: SupabaseClient | null = null;
 
   private constructor() {
     const secretKey = process.env.STRIPE_SECRET_KEY;
@@ -74,6 +130,14 @@ export class StripeService {
 
     if (secretKey) {
       this.stripe = new Stripe(secretKey);
+    }
+
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (serviceRoleKey) {
+      const envConfig = getEnvConfig();
+      this.supabaseAdmin = createClient(envConfig.supabase.url, serviceRoleKey, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      });
     }
   }
 
@@ -305,12 +369,53 @@ export class StripeService {
   }
 
   // ---------------------------------------------------------------------------
+  // Supabase Sync
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Upsert a subscription row in the Supabase subscriptions table.
+   * Uses stripe_subscription_id as the conflict key.
+   * Logs a warning and continues if Supabase is not configured.
+   *
+   * @param row - Partial subscription row (stripe_subscription_id required)
+   */
+  private async upsertSubscription(row: Partial<SubscriptionRow> & Pick<SubscriptionRow, 'stripe_subscription_id'>): Promise<void> {
+    if (!this.supabaseAdmin) {
+      logger.warn('Supabase not configured — skipping subscription sync', {
+        subscriptionId: row.stripe_subscription_id,
+      });
+      return;
+    }
+
+    const { error } = await this.supabaseAdmin
+      .from(SUBSCRIPTIONS_TABLE)
+      .upsert(
+        { ...row, updated_at: new Date().toISOString() },
+        { onConflict: 'stripe_subscription_id' },
+      );
+
+    if (error) {
+      logger.error('Failed to sync subscription to Supabase', {
+        subscriptionId: row.stripe_subscription_id,
+        error: error.message,
+      });
+      throw new Error(`Supabase sync failed: ${error.message}`);
+    }
+
+    logger.info('Subscription synced to Supabase', {
+      subscriptionId: row.stripe_subscription_id,
+      status: row.status,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Webhook Event Handlers
   // ---------------------------------------------------------------------------
 
   /**
    * Handle checkout.session.completed — new subscription created.
-   * Links the Stripe customer to the internal userId via metadata.
+   * Links the Stripe customer to the internal userId via metadata,
+   * then upserts the subscription into Supabase.
    *
    * @param client - Stripe client instance
    * @param session - The completed checkout session
@@ -318,55 +423,119 @@ export class StripeService {
   private async handleCheckoutCompleted(client: Stripe, session: Stripe.Checkout.Session): Promise<void> {
     const userId = session.metadata?.userId ?? session.client_reference_id;
     const planId = session.metadata?.planId ?? DEFAULT_PLAN_ID;
+    const customerId = typeof session.customer === 'string' ? session.customer : null;
 
     if (!userId) {
       logger.warn('Checkout completed without userId', { sessionId: session.id });
       return;
     }
 
-    if (session.customer && typeof session.customer === 'string') {
-      await client.customers.update(session.customer, {
+    // Tag the Stripe customer with userId for future lookups
+    if (customerId) {
+      await client.customers.update(customerId, {
         metadata: { userId, planId },
       });
     }
 
-    logger.info('Checkout completed', { userId, planId, customerId: session.customer });
+    // Retrieve the subscription created by the checkout to get period dates
+    const subscriptionId = typeof session.subscription === 'string' ? session.subscription : null;
+    if (subscriptionId) {
+      const sub = await client.subscriptions.retrieve(subscriptionId);
+      const periods = extractPeriodDates(sub);
+      await this.upsertSubscription({
+        user_id: userId,
+        stripe_customer_id: customerId ?? '',
+        stripe_subscription_id: subscriptionId,
+        status: sub.status,
+        plan_id: planId,
+        current_period_start: periods.current_period_start,
+        current_period_end: periods.current_period_end,
+        cancel_at: sub.cancel_at ? new Date(sub.cancel_at * 1000).toISOString() : null,
+        cancel_at_period_end: sub.cancel_at_period_end,
+      });
+    }
+
+    logger.info('Checkout completed', { userId, planId, customerId, subscriptionId });
   }
 
   /**
-   * Handle customer.subscription.updated — plan changes, renewals.
+   * Handle customer.subscription.updated — plan changes, renewals, cancellations.
+   * Syncs the current subscription state to Supabase.
    *
    * @param subscription - The updated subscription
    */
   private async handleSubscriptionUpdated(subscription: Stripe.Subscription): Promise<void> {
+    const customerId = typeof subscription.customer === 'string' ? subscription.customer : '';
+    const planId = subscription.metadata?.planId ?? DEFAULT_PLAN_ID;
+    const periods = extractPeriodDates(subscription);
+
+    await this.upsertSubscription({
+      stripe_customer_id: customerId,
+      stripe_subscription_id: subscription.id,
+      status: subscription.status,
+      plan_id: planId,
+      current_period_start: periods.current_period_start,
+      current_period_end: periods.current_period_end,
+      cancel_at: subscription.cancel_at ? new Date(subscription.cancel_at * 1000).toISOString() : null,
+      cancel_at_period_end: subscription.cancel_at_period_end,
+    });
+
     logger.info('Subscription updated', {
       subscriptionId: subscription.id,
       status: subscription.status,
-      customerId: subscription.customer,
+      customerId,
     });
   }
 
   /**
    * Handle customer.subscription.deleted — subscription cancelled/expired.
+   * Updates the Supabase record with canceled status.
    *
    * @param subscription - The deleted subscription
    */
   private async handleSubscriptionDeleted(subscription: Stripe.Subscription): Promise<void> {
+    const customerId = typeof subscription.customer === 'string' ? subscription.customer : '';
+    const periods = extractPeriodDates(subscription);
+
+    await this.upsertSubscription({
+      stripe_customer_id: customerId,
+      stripe_subscription_id: subscription.id,
+      status: 'canceled',
+      plan_id: subscription.metadata?.planId ?? DEFAULT_PLAN_ID,
+      current_period_start: periods.current_period_start,
+      current_period_end: periods.current_period_end,
+      cancel_at: subscription.cancel_at ? new Date(subscription.cancel_at * 1000).toISOString() : null,
+      cancel_at_period_end: false,
+    });
+
     logger.info('Subscription deleted', {
       subscriptionId: subscription.id,
-      customerId: subscription.customer,
+      customerId,
     });
   }
 
   /**
    * Handle invoice.payment_failed — payment attempt failed.
+   * Updates the subscription status to past_due in Supabase when possible.
    *
    * @param invoice - The failed invoice
    */
   private async handlePaymentFailed(invoice: Stripe.Invoice): Promise<void> {
+    const subscriptionId = extractInvoiceSubscriptionId(invoice);
+    const customerId = typeof invoice.customer === 'string' ? invoice.customer : '';
+
+    if (subscriptionId) {
+      await this.upsertSubscription({
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscriptionId,
+        status: 'past_due',
+      });
+    }
+
     logger.warn('Payment failed', {
       invoiceId: invoice.id,
-      customerId: invoice.customer,
+      customerId,
+      subscriptionId,
       attemptCount: invoice.attempt_count,
     });
   }
