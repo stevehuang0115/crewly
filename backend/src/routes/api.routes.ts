@@ -10,6 +10,7 @@ import { registerErrorRoutes } from './modules/errors.routes.js';
 import { registerScheduledMessageRoutes } from './modules/scheduled-messages.routes.js';
 import { registerDeliveryLogRoutes } from './modules/delivery-logs.routes.js';
 import { registerConfigRoutes } from './modules/config.routes.js';
+import { registerCronTaskRoutes } from './modules/cron-task.routes.js';
 import { createFactoryRoutes } from './factory.routes.js';
 import { selfImprovementRouter } from '../controllers/self-improvement/index.js';
 import { createMessagingRouter } from '../controllers/messaging/messaging.routes.js';
@@ -118,6 +119,7 @@ export function createApiRoutes(apiController: ApiController): Router {
   registerScheduledMessageRoutes(router, apiController);
   registerDeliveryLogRoutes(router, apiController);
   registerConfigRoutes(router, apiController);
+  registerCronTaskRoutes(router);
 
   return router;
 }
