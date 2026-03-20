@@ -115,6 +115,8 @@ interface ServiceOptions {
 	app?: boolean;
 	lines?: string;
 	follow?: boolean;
+	/** Target version for upgrade (e.g. "1.4.48" or "latest") */
+	version?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,13 +152,19 @@ export async function serviceCommand(
 		case 'stop':
 			await stopService();
 			break;
+		case 'start':
+			await startService();
+			break;
+		case 'upgrade':
+			await upgradeService(options);
+			break;
 		case 'logs':
 			await serviceLogs(options);
 			break;
 		default:
 			console.log(chalk.red(`Unknown action: ${action}`));
 			console.log(
-				chalk.gray('Usage: crewly service <install|uninstall|status|restart|stop|logs>'),
+				chalk.gray('Usage: crewly service <install|uninstall|status|restart|stop|start|upgrade|logs>'),
 			);
 			process.exit(1);
 	}
@@ -562,6 +570,8 @@ export NODE_ENV="development"
 CREWLY_DIR="${projectRoot}"
 PIDFILE="$HOME/${CREWLY_CONSTANTS.PATHS.CREWLY_HOME}/crewly.pid"
 
+# cd on each systemd restart to handle directory inode changes after
+# npm install -g replaces the install directory. (#244)
 cd "$CREWLY_DIR" || { echo "Cannot cd to $CREWLY_DIR"; exit 1; }
 
 ${NATIVE_MODULE_CHECK}
@@ -651,12 +661,15 @@ if [ -f "$PIDFILE" ]; then
   fi
 fi
 
-cd "$CREWLY_DIR" || { echo "Cannot cd to $CREWLY_DIR"; exit 1; }
-
 echo "$(date): Starting Crewly backend (node $(node --version))..." | tee -a "$LOG_DIR/service.log"
 
 # Run in foreground so Terminal keeps the tab open; restart on crash
 while true; do
+  # cd inside the loop so the cwd is refreshed after npm install -g replaces
+  # the directory (new inode). Without this, the stale cwd causes ENOENT on
+  # every process.cwd() call in Node. (#244)
+  cd "$CREWLY_DIR" || { echo "Cannot cd to $CREWLY_DIR"; exit 1; }
+
   ${NATIVE_MODULE_CHECK}
 
   node dist/cli/cli/src/index.js start >> "$LOG_DIR/service.log" 2>&1 &
@@ -880,6 +893,143 @@ async function stopService(): Promise<void> {
 	}
 
 	console.log(chalk.green('Crewly service stopped.'));
+}
+
+// ===========================================================================
+// Start
+// ===========================================================================
+
+/**
+ * Starts the Crewly service if not already running.
+ *
+ * Checks the PID file for a running process, clears stale PID files,
+ * and launches the service using the platform-native method:
+ * - macOS: `open` the .command file (opens in Terminal.app)
+ * - Linux: `systemctl --user start`
+ *
+ * @throws Error if the service is not installed
+ */
+async function startService(): Promise<void> {
+	assertSupportedPlatform();
+
+	// Check if already running
+	const pid = getRunningPid();
+	if (pid) {
+		console.log(chalk.yellow(`Crewly service is already running (PID ${pid}).`));
+		return;
+	}
+
+	// Clear stale PID file
+	if (fs.existsSync(PID_FILE)) {
+		fs.unlinkSync(PID_FILE);
+	}
+
+	if (process.platform === 'darwin') {
+		if (!fs.existsSync(COMMAND_FILE_PATH)) {
+			console.log(chalk.red('Service is not installed. Run "crewly service install" first.'));
+			process.exit(1);
+		}
+
+		try {
+			await execAsync(`open "${COMMAND_FILE_PATH}"`);
+			console.log(chalk.green('Crewly service started (opened .command in Terminal.app).'));
+		} catch (error) {
+			console.log(chalk.red('Failed to open .command file.'));
+			console.log(chalk.gray(`  Try manually: open ${COMMAND_FILE_PATH}`));
+		}
+	} else {
+		// Linux
+		if (!fs.existsSync(SYSTEMD_UNIT_PATH)) {
+			console.log(chalk.red('Service is not installed. Run "crewly service install" first.'));
+			process.exit(1);
+		}
+
+		try {
+			await execAsync(`systemctl --user start ${SYSTEMD_UNIT_NAME}`);
+			console.log(chalk.green('Crewly service started via systemd.'));
+		} catch {
+			console.log(chalk.red('Failed to start service via systemctl.'));
+			console.log(chalk.gray(`  Try: systemctl --user start ${SYSTEMD_UNIT_NAME}`));
+		}
+	}
+}
+
+// ===========================================================================
+// Upgrade
+// ===========================================================================
+
+/**
+ * Upgrades the Crewly installation and regenerates service files.
+ *
+ * Steps:
+ * 1. Stop the running service
+ * 2. Run `npm install -g crewly@<version>` (defaults to "latest")
+ * 3. Regenerate the .command / systemd wrapper with the new project root
+ * 4. Restart the service
+ *
+ * @param options - Upgrade options (--version to specify target version)
+ */
+async function upgradeService(options: ServiceOptions): Promise<void> {
+	assertSupportedPlatform();
+
+	const targetVersion = options.version || 'latest';
+
+	console.log(chalk.blue(`Upgrading Crewly to ${targetVersion}...`));
+
+	// 1. Stop the service
+	console.log(chalk.gray('  Stopping service...'));
+	await stopService();
+
+	// 2. Run npm install -g
+	console.log(chalk.gray(`  Installing crewly@${targetVersion}...`));
+	try {
+		const { stdout, stderr } = await execAsync(
+			`npm install -g crewly@${targetVersion}`,
+			{ timeout: 120_000 },
+		);
+		if (stdout) console.log(chalk.gray(`  ${stdout.trim()}`));
+		if (stderr && !stderr.includes('npm warn')) {
+			console.log(chalk.yellow(`  ${stderr.trim()}`));
+		}
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		console.log(chalk.red(`  npm install failed: ${msg}`));
+		console.log(chalk.gray('  The service was stopped but not upgraded. Start it manually.'));
+		process.exit(1);
+	}
+
+	// 3. Regenerate service files with fresh project root
+	const newProjectRoot = findProjectRoot();
+	if (!newProjectRoot) {
+		console.log(chalk.yellow('  Could not detect new project root. Skipping service file regeneration.'));
+		console.log(chalk.gray('  Run "crewly service install --force" to regenerate manually.'));
+	} else {
+		console.log(chalk.gray('  Regenerating service files...'));
+		fs.mkdirSync(LOG_DIR, { recursive: true });
+
+		if (process.platform === 'darwin') {
+			const commandFileContent = generateCommandFile(newProjectRoot);
+			fs.writeFileSync(COMMAND_FILE_PATH, commandFileContent, { mode: 0o755 });
+			console.log(chalk.green(`  Updated ${COMMAND_FILE_PATH}`));
+		} else {
+			const wrapperContent = generateLinuxWrapper(newProjectRoot);
+			fs.writeFileSync(SYSTEMD_WRAPPER_PATH, wrapperContent, { mode: 0o755 });
+			console.log(chalk.green(`  Updated ${SYSTEMD_WRAPPER_PATH}`));
+
+			try {
+				await execAsync('systemctl --user daemon-reload');
+			} catch {
+				// Non-critical
+			}
+		}
+	}
+
+	// 4. Restart
+	console.log(chalk.gray('  Starting service...'));
+	await startService();
+
+	console.log('');
+	console.log(chalk.green(`Crewly upgraded to ${targetVersion} and restarted.`));
 }
 
 // ===========================================================================
