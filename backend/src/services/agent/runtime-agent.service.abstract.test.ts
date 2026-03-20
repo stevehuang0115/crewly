@@ -650,6 +650,36 @@ echo "second command"
 			expect(calledCmd).toContain('--append-system-prompt-file "/some/prompt.md"');
 			expect(calledCmd).not.toContain('--agent');
 		});
+		it('#229: should inject GEMINI_NO_UPDATE=1 for gemini-cli runtime', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('gemini-cli');
+			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({
+				initScript: 'initialize_gemini.sh', displayName: 'Gemini CLI',
+				welcomeMessage: 'Welcome', timeout: 120000, description: 'Gemini CLI',
+			});
+			jest.spyOn(service as any, 'loadInitScript').mockResolvedValue(['gemini']);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).toContain('GEMINI_NO_UPDATE=1');
+		});
+
+		it('#230/#234: should inject --no-update-check and --full-auto for codex-cli runtime', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({
+				initScript: 'initialize_codex.sh', displayName: 'Codex CLI',
+				welcomeMessage: 'Welcome', timeout: 120000, description: 'Codex CLI',
+			});
+			jest.spyOn(service as any, 'loadInitScript').mockResolvedValue(['codex --dangerously-skip-permissions']);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).toContain('--no-update-check');
+			expect(calledCmd).toContain('--full-auto');
+		});
 	});
 
 	describe('settings-based init command', () => {

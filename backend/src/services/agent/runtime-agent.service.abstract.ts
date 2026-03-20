@@ -181,6 +181,31 @@ export abstract class RuntimeAgentService {
 				this.logger.info('Injected --disallowedTools for plan mode prevention', { sessionName });
 			}
 
+			// #229: Suppress Gemini CLI auto-updates that kill agent mid-task
+			if (this.getRuntimeType() === 'gemini-cli') {
+				finalCommands = finalCommands.map(cmd =>
+					cmd.startsWith('GEMINI_NO_UPDATE=') ? cmd : `GEMINI_NO_UPDATE=1 ${cmd}`
+				);
+				this.logger.info('Injected GEMINI_NO_UPDATE=1 to prevent auto-update kills', { sessionName });
+			}
+
+			// #230: Suppress Codex CLI update prompt that blocks automated startup
+			// #234: Add --full-auto so Codex stays in interactive mode after task completion
+			if (this.getRuntimeType() === 'codex-cli') {
+				finalCommands = finalCommands.map(cmd => {
+					if (cmd.includes('codex')) {
+						if (!cmd.includes('--no-update-check')) {
+							cmd = cmd.replace(/codex\b/, 'codex --no-update-check');
+						}
+						if (!cmd.includes('--full-auto')) {
+							cmd = cmd.replace(/codex\b/, 'codex --full-auto');
+						}
+					}
+					return cmd;
+				});
+				this.logger.info('Injected --no-update-check + --full-auto for Codex CLI', { sessionName });
+			}
+
 			// Clear the commandline before execute
 			await this.sessionHelper.clearCurrentCommandLine(sessionName);
 			await this.sendShellCommandsToSession(sessionName, finalCommands, targetPath);

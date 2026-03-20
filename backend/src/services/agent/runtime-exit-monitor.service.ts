@@ -449,6 +449,25 @@ export class RuntimeExitMonitorService {
 				if (restarted) return;
 			}
 
+			// #228/#234: Auto-restart agents that exit idle (Claude Code + Codex CLI).
+			// These runtimes exit after task completion or idle timeout. Restart to keep available.
+			if ((monitored.runtimeType === 'claude-code' || monitored.runtimeType === 'codex-cli')
+				&& monitored.role !== ORCHESTRATOR_ROLE
+				&& this.agentRegistrationService && this.isAgentRestartAllowed(sessionName)) {
+				try {
+					this.logger.info('Agent idle/clean exit — auto-restarting to maintain availability', { sessionName, runtimeType: monitored.runtimeType });
+					await this.restartAgentWithTasks(sessionName, monitored, []);
+					this.recordAgentRestart(sessionName);
+					this.stopMonitoring(sessionName);
+					return;
+				} catch (restartError) {
+					this.logger.warn('Agent idle restart failed, transitioning to inactive', {
+						sessionName,
+						error: restartError instanceof Error ? restartError.message : String(restartError),
+					});
+				}
+			}
+
 			// Orchestrator-specific restart
 			if (sessionName === ORCHESTRATOR_SESSION_NAME) {
 				const restarted = await this.tryOrchestratorRestart(sessionName, monitored);
