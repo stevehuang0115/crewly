@@ -89,4 +89,16 @@ describe('Team Routes', () => {
     );
     expect(putRoutes.length).toBeGreaterThan(0);
   });
+
+  it('should have PATCH route for partial member updates (fixes #232)', () => {
+    const patchRoutes = router.stack.filter(layer =>
+      layer.route && (layer.route as any).methods.patch
+    );
+    // At least 2 PATCH routes: team update + member update
+    expect(patchRoutes.length).toBeGreaterThanOrEqual(2);
+    const memberPatch = patchRoutes.find(
+      layer => (layer.route as any).path === '/:teamId/members/:memberId'
+    );
+    expect(memberPatch).toBeDefined();
+  });
 });

@@ -50,6 +50,7 @@ export function createTeamRouter(context: ApiContext): Router {
   // Team member management
   router.post('/:id/members', addTeamMember.bind(context));
   router.put('/:teamId/members/:memberId', updateTeamMember.bind(context));
+  router.patch('/:teamId/members/:memberId', updateTeamMember.bind(context));
   router.delete('/:teamId/members/:memberId', deleteTeamMember.bind(context));
 
   // Team member lifecycle
