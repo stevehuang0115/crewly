@@ -340,6 +340,8 @@ export class CloudClientService {
    * ```
    */
   async getTemplates(): Promise<CloudTemplateSummary[]> {
+    // If token is already known to be expired, return empty without hitting the API
+    if (this.isTokenExpired()) return [];
     this.ensureConnected();
 
     const url = `${this.cloudUrl}${CLOUD_CONSTANTS.ENDPOINTS.TEMPLATES}`;
@@ -381,6 +383,10 @@ export class CloudClientService {
    * ```
    */
   async getTemplateDetail(id: string): Promise<CloudTemplateDetail> {
+    // If token is already known to be expired, throw user-friendly error
+    if (this.isTokenExpired()) {
+      throw new Error('Cloud token expired. Please reconnect to CrewlyAI Cloud.');
+    }
     this.ensureConnected();
 
     const endpoint = CLOUD_CONSTANTS.ENDPOINTS.TEMPLATE_DETAIL.replace(':id', id);
@@ -470,6 +476,8 @@ export class CloudClientService {
    * @throws Error when not connected or fetch fails
    */
   async fetchCloudDevices(): Promise<CloudRelayDevice[]> {
+    // If token is already known to be expired, return empty without hitting the API
+    if (this.isTokenExpired()) return [];
     this.ensureConnected();
 
     const url = `${this.cloudUrl}${CLOUD_CONSTANTS.RELAY_ENDPOINTS.DEVICES}`;
