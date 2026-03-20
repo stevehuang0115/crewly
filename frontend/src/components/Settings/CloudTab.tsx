@@ -51,8 +51,10 @@ interface CloudDevice {
   state: 'waiting' | 'paired' | 'disconnected';
   pairedWith: string | null;
   registeredAt: string;
-  lastHeartbeatAt: string;
+  lastHeartbeatAt?: string;
   name?: string;
+  deviceName?: string;
+  deviceId?: string;
   isLocal?: boolean;
 }
 
@@ -105,7 +107,7 @@ const DeviceCard: React.FC<{ device: CloudDevice }> = ({ device }) => {
   const Icon = device.role === 'orchestrator' ? Monitor : Cpu;
   const stateColor = DEVICE_STATE_COLORS[device.state] ?? 'bg-gray-500';
   const stateLabel = DEVICE_STATE_LABELS[device.state] ?? device.state;
-  const displayName = device.name ?? `${device.role} (${device.sessionId.slice(0, 8)}...)`;
+  const displayName = device.name || device.deviceName || `${device.role} (${device.sessionId.slice(0, 8)}...)`;
 
   return (
     <div
@@ -132,7 +134,7 @@ const DeviceCard: React.FC<{ device: CloudDevice }> = ({ device }) => {
             )}
           </div>
           <span className="text-xs text-text-secondary-dark">
-            Last seen: {formatRelativeTime(device.lastHeartbeatAt)}
+            {device.lastHeartbeatAt ? `Last seen: ${formatRelativeTime(device.lastHeartbeatAt)}` : `Registered: ${formatRelativeTime(device.registeredAt)}`}
           </span>
         </div>
       </div>
