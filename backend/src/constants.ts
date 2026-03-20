@@ -1119,6 +1119,47 @@ export const CLOUD_CONSTANTS = {
 	},
 } as const;
 
+/**
+ * Constants for the Cloud Sync system.
+ * Replaces the WebSocket Relay pairing model with heartbeat-based device
+ * discovery and HTTP-polled messaging.
+ *
+ * @see docs/cloud-sync-design.md
+ */
+export const CLOUD_SYNC_CONSTANTS = {
+	/** Interval between heartbeat uploads (ms) */
+	HEARTBEAT_INTERVAL_MS: 30_000,
+	/** Interval between message poll requests (ms) */
+	MESSAGE_POLL_INTERVAL_MS: 5_000,
+	/** Interval between device list poll requests (ms) */
+	DEVICE_POLL_INTERVAL_MS: 30_000,
+	/** Device considered offline after this threshold (ms) */
+	OFFLINE_THRESHOLD_MS: 60_000,
+	/** Messages older than this are considered stale (ms) */
+	MESSAGE_TTL_MS: 300_000,
+	/** Maximum messages per device queue */
+	MAX_QUEUE_SIZE: 1_000,
+	/** HTTP request timeout for sync API calls (ms) */
+	REQUEST_TIMEOUT_MS: 15_000,
+	/** Maximum consecutive failures before entering error state */
+	MAX_CONSECUTIVE_FAILURES: 10,
+	/** Base delay for exponential backoff on failure (ms) */
+	BACKOFF_BASE_MS: 1_000,
+	/** Maximum backoff delay (ms) */
+	BACKOFF_MAX_MS: 60_000,
+	/** Cloud Sync API endpoints (relative to cloudUrl) */
+	ENDPOINTS: {
+		/** Device heartbeat upload */
+		HEARTBEAT: '/v1/devices/heartbeat',
+		/** List all devices for account */
+		DEVICES: '/v1/devices',
+		/** Send/receive messages */
+		MESSAGES: '/v1/messages',
+		/** Acknowledge processed messages */
+		MESSAGES_ACK: '/v1/messages/ack',
+	},
+} as const;
+
 /** Subscription tier type */
 export type CloudTier = (typeof CLOUD_CONSTANTS.TIERS)[keyof typeof CLOUD_CONSTANTS.TIERS];
 
