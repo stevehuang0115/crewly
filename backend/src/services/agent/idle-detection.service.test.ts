@@ -165,6 +165,28 @@ describe('IdleDetectionService', () => {
 			expect(mockSuspendAgent).not.toHaveBeenCalled();
 		});
 
+		it('should skip auditor role agents (always-on)', async () => {
+			mockGetTeams.mockResolvedValue([
+				{
+					id: 'team1',
+					members: [
+						{
+							id: 'aud1',
+							sessionName: 'crewly-auditor',
+							role: 'auditor',
+							agentStatus: 'active',
+						},
+					],
+				},
+			]);
+			mockIsIdleFor.mockReturnValue(true);
+
+			const service = IdleDetectionService.getInstance();
+			await service.performCheck();
+
+			expect(mockSuspendAgent).not.toHaveBeenCalled();
+		});
+
 		it('should skip non-active agents', async () => {
 			mockGetTeams.mockResolvedValue([
 				{
@@ -186,7 +208,8 @@ describe('IdleDetectionService', () => {
 			expect(mockIsIdleFor).not.toHaveBeenCalled();
 		});
 
-		it('should suspend idle agents', async () => {
+		it('should stop idle agents when registration service is set', async () => {
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
 			mockGetTeams.mockResolvedValue([
 				{
 					id: 'team1',
@@ -203,6 +226,31 @@ describe('IdleDetectionService', () => {
 			mockIsIdleFor.mockReturnValue(true);
 
 			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+			await service.performCheck();
+
+			expect(mockTerminate).toHaveBeenCalledWith('agent-dev', 'developer');
+			expect(mockUpdateAgentStatus).toHaveBeenCalledWith('agent-dev', 'inactive', 'idle_exit');
+		});
+
+		it('should fall back to suspend when registration service not set', async () => {
+			mockGetTeams.mockResolvedValue([
+				{
+					id: 'team1',
+					members: [
+						{
+							id: 'dev1',
+							sessionName: 'agent-dev',
+							role: 'developer',
+							agentStatus: 'active',
+						},
+					],
+				},
+			]);
+			mockIsIdleFor.mockReturnValue(true);
+
+			const service = IdleDetectionService.getInstance();
+			// No registration service set — should fall back to suspend
 			await service.performCheck();
 
 			expect(mockSuspendAgent).toHaveBeenCalledWith('agent-dev', 'team1', 'dev1', 'developer');
@@ -337,6 +385,7 @@ describe('IdleDetectionService', () => {
 
 			// Should still call isIdleFor with default timeout (10 min = 600000ms)
 			expect(mockIsIdleFor).toHaveBeenCalledWith('agent-dev', 600000);
+			// Without registration service, falls back to suspend
 			expect(mockSuspendAgent).toHaveBeenCalled();
 		});
 	});

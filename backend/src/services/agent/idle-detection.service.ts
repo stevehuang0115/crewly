@@ -16,6 +16,7 @@ import { AgentSuspendService } from './agent-suspend.service.js';
 import { ActivityMonitorService } from '../monitoring/activity-monitor.service.js';
 import { getSettingsService } from '../settings/index.js';
 import { getSessionBackendSync } from '../session/index.js';
+import type { AgentRegistrationService } from './agent-registration.service.js';
 
 /**
  * Periodically scans active agents and suspends those that have been
@@ -29,9 +30,19 @@ export class IdleDetectionService {
 	private static instance: IdleDetectionService | null = null;
 	private logger: ComponentLogger;
 	private timer: ReturnType<typeof setInterval> | null = null;
+	private agentRegistrationService: AgentRegistrationService | null = null;
 
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('IdleDetection');
+	}
+
+	/**
+	 * Inject AgentRegistrationService for auto-stop capability.
+	 *
+	 * @param service - AgentRegistrationService instance
+	 */
+	setAgentRegistrationService(service: AgentRegistrationService): void {
+		this.agentRegistrationService = service;
 	}
 
 	/**
@@ -142,9 +153,9 @@ export class IdleDetectionService {
 					continue;
 				}
 
-				// Skip exempt roles
-				if (AGENT_SUSPEND_CONSTANTS.EXEMPT_ROLES.includes(
-					member.role as typeof AGENT_SUSPEND_CONSTANTS.EXEMPT_ROLES[number]
+				// Skip always-on roles (orchestrator, auditor)
+				if (AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES.includes(
+					member.role as typeof AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES[number]
 				)) {
 					continue;
 				}
@@ -210,25 +221,52 @@ export class IdleDetectionService {
 							});
 						}
 					} else {
-						this.logger.info('Agent idle timeout reached, suspending', {
-							sessionName: member.sessionName,
-							role: member.role,
-							idleMinutes: effectiveTimeoutMs / 60000,
-							agentStatus: member.agentStatus,
-						});
-
-						try {
-							await suspendService.suspendAgent(
-								member.sessionName,
-								team.id,
-								member.id,
-								member.role
-							);
-						} catch (err) {
-							this.logger.error('Failed to suspend idle agent', {
+						// Auto-stop: terminate idle agents to free resources
+						if (this.agentRegistrationService) {
+							this.logger.info('Agent idle timeout reached, stopping', {
 								sessionName: member.sessionName,
-								error: err instanceof Error ? err.message : String(err),
+								role: member.role,
+								idleMinutes: effectiveTimeoutMs / 60000,
+								agentStatus: member.agentStatus,
 							});
+
+							try {
+								await this.agentRegistrationService.terminateAgentSession(
+									member.sessionName,
+									member.role
+								);
+								await StorageService.getInstance().updateAgentStatus(
+									member.sessionName,
+									CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as any,
+									'idle_exit'
+								);
+							} catch (err) {
+								this.logger.error('Failed to stop idle agent', {
+									sessionName: member.sessionName,
+									error: err instanceof Error ? err.message : String(err),
+								});
+							}
+						} else {
+							// Fallback: suspend if registration service not available
+							this.logger.info('Agent idle timeout reached, suspending (no registration service)', {
+								sessionName: member.sessionName,
+								role: member.role,
+								idleMinutes: effectiveTimeoutMs / 60000,
+							});
+
+							try {
+								await suspendService.suspendAgent(
+									member.sessionName,
+									team.id,
+									member.id,
+									member.role
+								);
+							} catch (err) {
+								this.logger.error('Failed to suspend idle agent', {
+									sessionName: member.sessionName,
+									error: err instanceof Error ? err.message : String(err),
+								});
+							}
 						}
 					}
 				}

@@ -867,6 +867,10 @@ export const AGENT_SUSPEND_CONSTANTS = {
 	EXEMPT_ROLES: ['orchestrator'] as const,
 	/** Idle timeout for agents stuck in 'started' status (minutes) */
 	STARTED_AGENT_IDLE_TIMEOUT_MINUTES: 15,
+	/** Roles that should never be auto-stopped (always-on) */
+	ALWAYS_ON_ROLES: ['orchestrator', 'auditor'] as const,
+	/** Idle timeout in ms before a worker agent is stopped (default 10 min) */
+	AGENT_IDLE_STOP_TIMEOUT_MS: 600_000,
 } as const;
 
 // ========================= SERVER PROCESS CONSTANTS =========================
