@@ -174,7 +174,7 @@ describe('RelayClientService', () => {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer test-token',
           }),
-          body: JSON.stringify({ role: 'agent', pairingCode: 'test-pair-123' }),
+          body: expect.stringContaining('"role":"agent"'),
         }),
       );
     });

@@ -82,8 +82,12 @@ export interface CloudRelayDevice {
   registeredAt: string;
   /** ISO last heartbeat timestamp */
   lastHeartbeatAt: string;
-  /** Human-readable device name */
+  /** Human-readable device name (legacy field) */
   name?: string;
+  /** Human-readable device name returned by Cloud API */
+  deviceName?: string;
+  /** Unique device identifier */
+  deviceId?: string;
 }
 
 /** Current cloud connection state exposed by getStatus(). */

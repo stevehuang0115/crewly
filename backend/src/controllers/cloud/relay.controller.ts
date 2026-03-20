@@ -270,6 +270,8 @@ export async function getCloudDevices(req: Request, res: Response, _next: NextFu
 
     const devicesWithLocal = devices.map((device) => ({
       ...device,
+      // Cloud API returns `deviceName` but frontend expects `name` — normalize
+      name: (device as any).deviceName || device.name,
       isLocal: localSessionId ? device.sessionId === localSessionId : false,
     }));
 

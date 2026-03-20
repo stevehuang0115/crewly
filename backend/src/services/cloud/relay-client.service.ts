@@ -16,6 +16,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { hostname } from 'os';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { CLOUD_CONSTANTS } from '../../constants.js';
 import type {
@@ -244,6 +245,7 @@ export class RelayClientService extends EventEmitter {
         body: JSON.stringify({
           role: this.config.role,
           pairingCode: this.config.pairingCode,
+          deviceName: hostname(),
         }),
         signal: AbortSignal.timeout(RELAY.REQUEST_TIMEOUT_MS),
       });
