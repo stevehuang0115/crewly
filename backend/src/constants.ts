@@ -1066,6 +1066,8 @@ export const CLOUD_CONSTANTS = {
 		DISCONNECTED: 'disconnected',
 		CONNECTED: 'connected',
 		ERROR: 'error',
+		/** Token expired or revoked — cloud API returned 401/403 */
+		TOKEN_EXPIRED: 'token_expired',
 	},
 	/** Relay-specific endpoints (Cloud Message Queue) */
 	RELAY_ENDPOINTS: {

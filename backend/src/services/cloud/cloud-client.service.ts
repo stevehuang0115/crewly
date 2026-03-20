@@ -351,6 +351,11 @@ export class CloudClientService {
     });
 
     if (!response.ok) {
+      // 401/403 means token expired or revoked — return empty list + update status
+      if (this.isAuthError(response.status)) {
+        this.handleAuthFailure('getTemplates', response.status);
+        return [];
+      }
       this.logger.error('Failed to fetch templates', { status: response.status });
       throw new Error(`Failed to fetch templates: ${response.status}`);
     }
@@ -388,6 +393,11 @@ export class CloudClientService {
     });
 
     if (!response.ok) {
+      // 401/403 means token expired or revoked
+      if (this.isAuthError(response.status)) {
+        this.handleAuthFailure('getTemplateDetail', response.status);
+        throw new Error('Cloud token expired. Please reconnect to CrewlyAI Cloud.');
+      }
       if (response.status === 404) {
         throw new Error(`Template not found: ${id}`);
       }
@@ -433,6 +443,15 @@ export class CloudClientService {
   }
 
   /**
+   * Check whether the cloud token has expired (401/403 from cloud API).
+   *
+   * @returns true if the token has expired
+   */
+  isTokenExpired(): boolean {
+    return this.connectionStatus === CLOUD_CONSTANTS.CONNECTION_STATUS.TOKEN_EXPIRED;
+  }
+
+  /**
    * Get the current subscription tier.
    *
    * @returns Current tier value
@@ -462,6 +481,11 @@ export class CloudClientService {
     });
 
     if (!response.ok) {
+      // 401/403 means token expired or revoked — return empty list + update status
+      if (this.isAuthError(response.status)) {
+        this.handleAuthFailure('fetchCloudDevices', response.status);
+        return [];
+      }
       // 404 means the cloud devices endpoint is not yet available — return empty list gracefully
       if (response.status === 404) {
         this.logger.warn('Cloud devices endpoint not available (404), returning empty list');
@@ -506,5 +530,28 @@ export class CloudClientService {
       Authorization: `Bearer ${this.token}`,
       'Content-Type': 'application/json',
     };
+  }
+
+  /**
+   * Check if an HTTP status code indicates an authentication/authorization failure.
+   *
+   * @param status - HTTP status code
+   * @returns true if the status is 401 or 403
+   */
+  private isAuthError(status: number): boolean {
+    return status === 401 || status === 403;
+  }
+
+  /**
+   * Handle a 401/403 response from the cloud API by transitioning
+   * the connection status to TOKEN_EXPIRED. This signals the frontend
+   * to show a reconnect prompt instead of a raw error.
+   *
+   * @param context - Description of the failed operation (for logging)
+   * @param status - HTTP status code from the cloud API
+   */
+  private handleAuthFailure(context: string, status: number): void {
+    this.logger.warn(`Cloud token expired or revoked during ${context}`, { status });
+    this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.TOKEN_EXPIRED;
   }
 }

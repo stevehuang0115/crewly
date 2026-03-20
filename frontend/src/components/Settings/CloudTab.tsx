@@ -14,8 +14,10 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap, Monitor, Cpu, Wifi } from 'lucide-react';
+import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap, Monitor, Cpu, Wifi, UserPlus, Link2 } from 'lucide-react';
 import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/cloud.constants';
+import { InviteDeviceModal } from './InviteDeviceModal';
+import { JoinRelayModal } from './JoinRelayModal';
 
 /**
  * Cloud API validation endpoint — proxied through the local OSS backend
@@ -153,17 +155,22 @@ const DeviceListSection: React.FC = () => {
   const [devices, setDevices] = useState<CloudDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tokenExpired, setTokenExpired] = useState(false);
 
   /** Fetch devices from the backend proxy. */
   const fetchDevices = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
+      setTokenExpired(false);
       const res = await fetch(CLOUD_DEVICES_URL);
       const data = await res.json();
 
       if (res.ok && data.success && data.data?.devices) {
         setDevices(data.data.devices);
+        if (data.data.tokenExpired) {
+          setTokenExpired(true);
+        }
       } else {
         setError(data.error || 'Failed to load devices');
       }
@@ -206,7 +213,13 @@ const DeviceListSection: React.FC = () => {
         </div>
       )}
 
-      {!loading && !error && devices.length === 0 && (
+      {tokenExpired && !error && (
+        <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2" data-testid="token-expired-warning">
+          Cloud session expired. Please disconnect and sign in again to refresh your token.
+        </div>
+      )}
+
+      {!loading && !error && !tokenExpired && devices.length === 0 && (
         <div className="text-center py-6">
           <Monitor className="w-8 h-8 text-text-secondary-dark/30 mx-auto mb-2" />
           <p className="text-xs text-text-secondary-dark">No devices connected yet</p>
@@ -247,6 +260,8 @@ export const CloudTab: React.FC = () => {
   const [backendTier, setBackendTier] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showJoinModal, setShowJoinModal] = useState(false);
 
   /**
    * Check backend cloud status — the authoritative source of truth.
@@ -478,8 +493,32 @@ export const CloudTab: React.FC = () => {
             </div>
           </div>
 
+          {/* Relay Pairing Buttons */}
+          <div className="flex items-center gap-2" data-testid="relay-pairing-buttons">
+            <button
+              onClick={() => setShowInviteModal(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-text-primary-dark bg-primary/10 border border-primary/20 rounded-lg hover:bg-primary/20 transition-colors"
+              data-testid="invite-device-button"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              Invite Device
+            </button>
+            <button
+              onClick={() => setShowJoinModal(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-text-primary-dark bg-surface-dark border border-border-dark rounded-lg hover:bg-background-dark transition-colors"
+              data-testid="join-relay-button"
+            >
+              <Link2 className="w-3.5 h-3.5" />
+              Join Relay
+            </button>
+          </div>
+
           {/* Device Discovery List */}
           <DeviceListSection />
+
+          {/* Modals */}
+          <InviteDeviceModal isOpen={showInviteModal} onClose={() => setShowInviteModal(false)} />
+          <JoinRelayModal isOpen={showJoinModal} onClose={() => setShowJoinModal(false)} />
         </>
       ) : (
         /* Disconnected State */
