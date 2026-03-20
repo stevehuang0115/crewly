@@ -157,4 +157,100 @@ describe('SoulModule', () => {
 		expect(result).toContain('_Source: personal_');
 		expect(result).toContain('Member personality');
 	});
+
+	describe('Self-Awareness integration', () => {
+		it('should append self-awareness section when self-improvement data exists', async () => {
+			const growthData = {
+				areas: [
+					{ area: 'error handling', progress: 'improving', identifiedAt: '2026-03-19', evidence: [] },
+					{ area: 'test coverage', progress: 'identified', identifiedAt: '2026-03-19', evidence: [] },
+				],
+				lastReviewedAt: '2026-03-19',
+			};
+			const selfModelData = {
+				decisionPatterns: [],
+				biases: [],
+				blindSpots: [{ description: 'misses edge cases in async code', identifiedAt: '2026-03-19' }],
+			};
+			const predictionsData = {
+				predictions: [],
+				calibrationScore: 0.72,
+			};
+
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				if (p.endsWith('growth-areas.json')) return JSON.stringify(growthData);
+				if (p.endsWith('self-model.json')) return JSON.stringify(selfModelData);
+				if (p.endsWith('predictions.json')) return JSON.stringify(predictionsData);
+				throw new Error('ENOENT');
+			});
+
+			const result = await module.build(baseConfig);
+
+			expect(result).toContain('## Self-Awareness');
+			expect(result).toContain('error handling (improving)');
+			expect(result).toContain('test coverage (identified)');
+			expect(result).toContain('misses edge cases in async code');
+			expect(result).toContain('**Prediction Calibration:** 72%');
+		});
+
+		it('should not append self-awareness when no data exists', async () => {
+			mockedFs.readFileSync.mockImplementation(() => {
+				throw new Error('ENOENT');
+			});
+
+			const result = await module.build(baseConfig);
+
+			expect(result).not.toContain('## Self-Awareness');
+		});
+
+		it('should show only top 3 growth areas', async () => {
+			const growthData = {
+				areas: [
+					{ area: 'area1', progress: 'identified' },
+					{ area: 'area2', progress: 'improving' },
+					{ area: 'area3', progress: 'proficient' },
+					{ area: 'area4', progress: 'identified' },
+				],
+				lastReviewedAt: '2026-03-19',
+			};
+
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				if (p.endsWith('growth-areas.json')) return JSON.stringify(growthData);
+				throw new Error('ENOENT');
+			});
+
+			const result = await module.build(baseConfig);
+
+			expect(result).toContain('area1');
+			expect(result).toContain('area2');
+			expect(result).toContain('area3');
+			expect(result).not.toContain('area4');
+		});
+
+		it('should show only top 2 blind spots', async () => {
+			const selfModelData = {
+				decisionPatterns: [],
+				biases: [],
+				blindSpots: [
+					{ description: 'spot1', identifiedAt: '2026-03-19' },
+					{ description: 'spot2', identifiedAt: '2026-03-19' },
+					{ description: 'spot3', identifiedAt: '2026-03-19' },
+				],
+			};
+
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				if (p.endsWith('self-model.json')) return JSON.stringify(selfModelData);
+				throw new Error('ENOENT');
+			});
+
+			const result = await module.build(baseConfig);
+
+			expect(result).toContain('spot1');
+			expect(result).toContain('spot2');
+			expect(result).not.toContain('spot3');
+		});
+	});
 });

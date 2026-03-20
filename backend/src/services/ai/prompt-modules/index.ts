@@ -11,7 +11,10 @@ export {
 	ModuleConfig,
 	SubordinateInfoCompat,
 	ModuleBuildResult,
+	AssemblyReport,
+	TruncatedModuleInfo,
 	estimateTokens,
+	loadRoleFragment,
 } from './prompt-module.interface.js';
 
 // Prompt modules

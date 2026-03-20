@@ -35,13 +35,15 @@ export class SoulModule implements PromptModule {
 
 	/**
 	 * Build the soul section by resolving the soul file from the resolution chain.
+	 * If self-improvement data exists, appends a Self-Awareness section.
 	 *
 	 * @param config - Module configuration with role and project details
 	 * @returns Formatted markdown soul section
 	 */
 	async build(config: ModuleConfig): Promise<string> {
 		const soul = await this.resolveSoul(config);
-		return soul;
+		const selfAwareness = this.buildSelfAwareness(config.sessionName);
+		return selfAwareness ? `${soul}\n\n${selfAwareness}` : soul;
 	}
 
 	/**
@@ -118,5 +120,61 @@ export class SoulModule implements PromptModule {
 	private formatSoul(content: string, source: 'member' | 'role' | 'archetype'): string {
 		const sourceLabel = source === 'member' ? 'personal' : source === 'role' ? 'role default' : 'archetype';
 		return `## Your Soul\n_Source: ${sourceLabel}_\n\n${content}`;
+	}
+
+	/**
+	 * Build the Self-Awareness section from self-improvement data.
+	 * Reads growth areas, self-model (blind spots), and prediction calibration.
+	 * Kept under ~200 tokens.
+	 *
+	 * @param sessionName - Agent session name
+	 * @returns Self-awareness markdown section, or null if no data exists
+	 */
+	private buildSelfAwareness(sessionName: string): string | null {
+		const homeDir = process.env.HOME || process.env.USERPROFILE || '/tmp';
+		const agentDir = path.join(homeDir, '.crewly', 'agents', sessionName);
+
+		const lines: string[] = [];
+
+		// Growth areas — top 3
+		try {
+			const raw = fs.readFileSync(path.join(agentDir, 'growth-areas.json'), 'utf-8');
+			const data = JSON.parse(raw);
+			if (data.areas && data.areas.length > 0) {
+				const top3 = data.areas.slice(0, 3);
+				lines.push('**Growth Areas:**');
+				for (const area of top3) {
+					lines.push(`- ${area.area} (${area.progress})`);
+				}
+			}
+		} catch { /* no growth areas data */ }
+
+		// Blind spots — top 2
+		try {
+			const raw = fs.readFileSync(path.join(agentDir, 'self-model.json'), 'utf-8');
+			const data = JSON.parse(raw);
+			if (data.blindSpots && data.blindSpots.length > 0) {
+				const top2 = data.blindSpots.slice(0, 2);
+				lines.push('**Blind Spots:**');
+				for (const spot of top2) {
+					lines.push(`- ${spot.description}`);
+				}
+			}
+		} catch { /* no self-model data */ }
+
+		// Prediction calibration score
+		try {
+			const raw = fs.readFileSync(path.join(agentDir, 'predictions.json'), 'utf-8');
+			const data = JSON.parse(raw);
+			if (data.calibrationScore > 0) {
+				lines.push(`**Prediction Calibration:** ${Math.round(data.calibrationScore * 100)}%`);
+			}
+		} catch { /* no predictions data */ }
+
+		if (lines.length === 0) {
+			return null;
+		}
+
+		return `## Self-Awareness\n${lines.join('\n')}`;
 	}
 }

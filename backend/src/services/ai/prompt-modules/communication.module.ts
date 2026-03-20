@@ -1,4 +1,4 @@
-import { PromptModule, ModuleConfig } from './prompt-module.interface.js';
+import { PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
 
 /**
  * Communication module — defines how agents communicate across channels.
@@ -37,7 +37,12 @@ export class CommunicationModule implements PromptModule {
 		const isOrchestrator = config.role === 'orchestrator';
 		const isTL = config.canDelegate === true;
 
+		// Try loading role-specific fragment (orchestrator has the richest version)
 		if (isOrchestrator) {
+			const fragment = loadRoleFragment(config.projectRoot, config.role, 'communication');
+			if (fragment) {
+				return fragment;
+			}
 			return this.buildOrchestratorComms(config);
 		}
 		if (isTL) {

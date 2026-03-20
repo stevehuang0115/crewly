@@ -3,17 +3,25 @@ import {
 	PromptModule,
 	ModuleConfig,
 	ModuleBuildResult,
+	AssemblyReport,
+	TruncatedModuleInfo,
 	estimateTokens,
 } from './prompt-module.interface.js';
 import { IdentityModule } from './identity.module.js';
+import { SoulModule } from './soul.module.js';
 import { SkillsReferenceModule } from './skills-reference.module.js';
 import { MemoryReferenceModule } from './memory-reference.module.js';
 import { TeamReferenceModule } from './team-reference.module.js';
 import { ProjectReferenceModule } from './project-reference.module.js';
+import { UserProfileReferenceModule } from './user-profile-reference.module.js';
+import { LearningReferenceModule } from './learning-reference.module.js';
+import { CommunicationModule } from './communication.module.js';
+import { RecoveryModule } from './recovery.module.js';
+import { LifecycleModule } from './lifecycle.module.js';
 
 /**
  * Default total token budget for all prompt modules combined.
- * Modules exceeding this budget are skipped (compactable ones only).
+ * Modules exceeding this budget are truncated or skipped (compactable ones only).
  */
 const DEFAULT_TOKEN_BUDGET = 25000;
 
@@ -23,19 +31,34 @@ const DEFAULT_TOKEN_BUDGET = 25000;
 const MODULE_SEPARATOR = '\n\n---\n\n';
 
 /**
+ * When trimming a module to fit budget, reduce to this fraction of maxTokens first.
+ */
+const TRIM_FRACTION = 0.5;
+
+/**
+ * Internal build result with module reference for truncation.
+ */
+interface InternalBuildResult extends ModuleBuildResult {
+	compactable: boolean;
+	priority: number;
+}
+
+/**
  * Service that orchestrates the assembly of prompt modules into a complete agent prompt.
  *
  * Responsibilities:
  * - Registers and manages prompt modules
  * - Assembles modules in priority order
- * - Enforces per-module and total token budgets
- * - Supports Trusted Zone (non-compactable) vs Flexible Zone (compactable) modules
- * - Works across all runtime types (claude-code, gemini-cli, crewly-agent)
+ * - Enforces per-module and total token budgets with 2-stage truncation:
+ *   1. First pass: build all Trusted Zone (non-compactable) + Flexible Zone modules
+ *   2. If over budget: trim lowest-priority compactable modules to 50% of maxTokens
+ *   3. If still over budget: remove lowest-priority compactable modules entirely
+ * - Returns AssemblyReport with token breakdown and truncation details
  *
  * @example
  * ```typescript
  * const assembler = new PromptAssemblyService();
- * const prompt = await assembler.assemble({
+ * const { prompt, report } = await assembler.assemble({
  *   sessionName: 'crewly-dev-001',
  *   memberId: 'uuid-123',
  *   role: 'developer',
@@ -65,10 +88,16 @@ export class PromptAssemblyService {
 	private registerDefaultModules(): void {
 		this.modules = [
 			new IdentityModule(),
+			new SoulModule(),
 			new MemoryReferenceModule(),
 			new SkillsReferenceModule(),
 			new TeamReferenceModule(),
 			new ProjectReferenceModule(),
+			new CommunicationModule(),
+			new UserProfileReferenceModule(),
+			new LearningReferenceModule(),
+			new RecoveryModule(),
+			new LifecycleModule(),
 		];
 	}
 
@@ -115,22 +144,24 @@ export class PromptAssemblyService {
 	/**
 	 * Assemble all applicable prompt modules into a single prompt string.
 	 *
-	 * Modules are processed in priority order (lowest number first).
-	 * Non-compactable modules are always included (Trusted Zone).
-	 * Compactable modules are skipped if the token budget is exceeded (Flexible Zone).
+	 * Uses 2-stage truncation for compactable modules when over budget:
+	 * 1. Trim lowest-priority compactable modules to 50% of their content
+	 * 2. Remove lowest-priority compactable modules entirely
+	 *
+	 * Trusted Zone (non-compactable) modules are never truncated or removed.
 	 *
 	 * @param config - Configuration with all context needed by modules
-	 * @returns Assembled prompt string with all module sections
+	 * @returns Object with assembled prompt string and budget report
 	 */
-	async assemble(config: ModuleConfig): Promise<string> {
-		const results: ModuleBuildResult[] = [];
-		let totalTokens = 0;
+	async assemble(config: ModuleConfig): Promise<{ prompt: string; report: AssemblyReport }> {
+		const built: InternalBuildResult[] = [];
+		const truncated: TruncatedModuleInfo[] = [];
 
 		// Sort modules by priority (ascending — lower number = higher priority)
 		const sorted = [...this.modules].sort((a, b) => a.priority - b.priority);
 
+		// Phase 1: Build all applicable modules
 		for (const module of sorted) {
-			// Check if module should be included
 			if (!module.shouldInclude(config)) {
 				this.logger.debug(`Module '${module.name}' skipped (shouldInclude=false)`, {
 					sessionName: config.sessionName,
@@ -138,32 +169,16 @@ export class PromptAssemblyService {
 				continue;
 			}
 
-			// Check token budget for compactable modules
-			if (module.compactable && totalTokens + module.maxTokens > this.totalTokenBudget) {
-				this.logger.info(`Module '${module.name}' skipped (token budget exceeded)`, {
-					sessionName: config.sessionName,
-					currentTokens: totalTokens,
-					moduleMaxTokens: module.maxTokens,
-					budget: this.totalTokenBudget,
-				});
-				continue;
-			}
-
 			try {
 				const content = await module.build(config);
 				if (content && content.trim()) {
 					const tokens = estimateTokens(content);
-					results.push({
+					built.push({
 						name: module.name,
 						content: content.trim(),
 						estimatedTokens: tokens,
-					});
-					totalTokens += tokens;
-
-					this.logger.debug(`Module '${module.name}' built`, {
-						sessionName: config.sessionName,
-						tokens,
-						totalTokens,
+						compactable: module.compactable,
+						priority: module.priority,
 					});
 				}
 			} catch (error) {
@@ -171,69 +186,169 @@ export class PromptAssemblyService {
 					sessionName: config.sessionName,
 					error: error instanceof Error ? error.message : String(error),
 				});
-				// Non-compactable modules failing is critical
 				if (!module.compactable) {
 					throw error;
 				}
-				// Compactable modules failing is logged but not fatal
 			}
 		}
 
+		// Phase 2: Enforce token budget via 2-stage truncation
+		let totalTokens = built.reduce((sum, r) => sum + r.estimatedTokens, 0);
+
+		if (totalTokens > this.totalTokenBudget) {
+			// Get compactable modules sorted by priority descending (lowest priority first to trim)
+			const compactableIndices = built
+				.map((r, i) => ({ ...r, index: i }))
+				.filter((r) => r.compactable)
+				.sort((a, b) => b.priority - a.priority);
+
+			// Stage 1: Trim to 50% of content (lowest priority first)
+			for (const item of compactableIndices) {
+				if (totalTokens <= this.totalTokenBudget) break;
+
+				const original = built[item.index];
+				const trimmedContent = this.trimContent(original.content, TRIM_FRACTION);
+				const trimmedTokens = estimateTokens(trimmedContent);
+				const savings = original.estimatedTokens - trimmedTokens;
+
+				if (savings > 0) {
+					totalTokens -= savings;
+					built[item.index] = {
+						...original,
+						content: trimmedContent,
+						estimatedTokens: trimmedTokens,
+					};
+					truncated.push({
+						name: original.name,
+						originalTokens: original.estimatedTokens,
+						finalTokens: trimmedTokens,
+						action: 'trimmed',
+					});
+
+					this.logger.info(`Module '${original.name}' trimmed to 50%`, {
+						sessionName: config.sessionName,
+						originalTokens: original.estimatedTokens,
+						trimmedTokens,
+						totalTokens,
+					});
+				}
+			}
+
+			// Stage 2: Remove entirely (lowest priority first)
+			if (totalTokens > this.totalTokenBudget) {
+				// Re-get compactable indices (some may have been trimmed)
+				const removable = built
+					.map((r, i) => ({ ...r, index: i }))
+					.filter((r) => r.compactable)
+					.sort((a, b) => b.priority - a.priority);
+
+				for (const item of removable) {
+					if (totalTokens <= this.totalTokenBudget) break;
+
+					const original = built[item.index];
+					totalTokens -= original.estimatedTokens;
+
+					// Check if already in truncated list (was trimmed in stage 1)
+					const existingTruncIdx = truncated.findIndex((t) => t.name === original.name);
+					if (existingTruncIdx >= 0) {
+						truncated[existingTruncIdx].finalTokens = 0;
+						truncated[existingTruncIdx].action = 'removed';
+					} else {
+						truncated.push({
+							name: original.name,
+							originalTokens: original.estimatedTokens,
+							finalTokens: 0,
+							action: 'removed',
+						});
+					}
+
+					// Mark for removal by zeroing content
+					built[item.index] = { ...original, content: '', estimatedTokens: 0 };
+
+					this.logger.info(`Module '${original.name}' removed (budget)`, {
+						sessionName: config.sessionName,
+						freedTokens: original.estimatedTokens,
+						totalTokens,
+					});
+				}
+			}
+		}
+
+		// Filter out removed modules and build final output
+		const finalResults = built.filter((r) => r.content.length > 0);
+		const finalTotalTokens = finalResults.reduce((sum, r) => sum + r.estimatedTokens, 0);
+
+		const report: AssemblyReport = {
+			totalTokens: finalTotalTokens,
+			moduleBreakdown: finalResults.map((r) => ({
+				name: r.name,
+				content: r.content,
+				estimatedTokens: r.estimatedTokens,
+			})),
+			truncated,
+		};
+
 		this.logger.info('Prompt assembly complete', {
 			sessionName: config.sessionName,
-			moduleCount: results.length,
-			totalTokens,
+			moduleCount: finalResults.length,
+			totalTokens: finalTotalTokens,
 			budget: this.totalTokenBudget,
-			modules: results.map((r) => r.name),
+			truncatedCount: truncated.length,
+			modules: finalResults.map((r) => r.name),
 		});
 
-		return results.map((r) => r.content).join(MODULE_SEPARATOR);
+		return {
+			prompt: finalResults.map((r) => r.content).join(MODULE_SEPARATOR),
+			report,
+		};
 	}
 
 	/**
 	 * Assemble modules and return detailed results with per-module metadata.
-	 * Useful for debugging and token budget analysis.
+	 * Convenience wrapper that returns just the report (same as assemble().report).
 	 *
 	 * @param config - Configuration with all context needed by modules
-	 * @returns Array of module build results with token estimates
+	 * @returns Assembly details with prompt, modules, and total tokens
 	 */
 	async assembleWithDetails(config: ModuleConfig): Promise<{
 		prompt: string;
 		modules: ModuleBuildResult[];
 		totalTokens: number;
+		truncated: TruncatedModuleInfo[];
 	}> {
-		const results: ModuleBuildResult[] = [];
-		let totalTokens = 0;
+		const { prompt, report } = await this.assemble(config);
+		return {
+			prompt,
+			modules: report.moduleBreakdown,
+			totalTokens: report.totalTokens,
+			truncated: report.truncated,
+		};
+	}
 
-		const sorted = [...this.modules].sort((a, b) => a.priority - b.priority);
+	/**
+	 * Trim content to a target fraction of its original length.
+	 * Trims at line boundaries to avoid cutting mid-sentence.
+	 *
+	 * @param content - Original content string
+	 * @param fraction - Target fraction (e.g., 0.5 for 50%)
+	 * @returns Trimmed content
+	 */
+	private trimContent(content: string, fraction: number): string {
+		const targetLength = Math.floor(content.length * fraction);
+		if (targetLength >= content.length) return content;
 
-		for (const module of sorted) {
-			if (!module.shouldInclude(config)) continue;
+		const lines = content.split('\n');
+		let accumulated = 0;
+		const kept: string[] = [];
 
-			if (module.compactable && totalTokens + module.maxTokens > this.totalTokenBudget) {
-				continue;
+		for (const line of lines) {
+			if (accumulated + line.length + 1 > targetLength && kept.length > 0) {
+				break;
 			}
-
-			try {
-				const content = await module.build(config);
-				if (content && content.trim()) {
-					const tokens = estimateTokens(content);
-					results.push({
-						name: module.name,
-						content: content.trim(),
-						estimatedTokens: tokens,
-					});
-					totalTokens += tokens;
-				}
-			} catch (error) {
-				if (!module.compactable) throw error;
-			}
+			kept.push(line);
+			accumulated += line.length + 1; // +1 for newline
 		}
 
-		return {
-			prompt: results.map((r) => r.content).join(MODULE_SEPARATOR),
-			modules: results,
-			totalTokens,
-		};
+		return kept.join('\n');
 	}
 }

@@ -254,4 +254,43 @@ export class ContextAssemblyService {
 		}
 		return this.totalTokenBudget;
 	}
+
+	/**
+	 * Refresh context with a reduced budget — triggered by ContextWindowMonitorService
+	 * (Feature F13) when context window usage exceeds the compaction threshold (80%).
+	 *
+	 * Only reloads the highest-priority loaders that fit within the reduced budget.
+	 * Loaders are loaded in registration order; once budget is exhausted, remaining
+	 * loaders are skipped.
+	 *
+	 * Integration: ContextWindowMonitorService calls this via
+	 * `contextAssembly.compactRefresh(config, reducedBudget)` when usage > 80%.
+	 *
+	 * @param config - Loader configuration
+	 * @param reducedBudget - Reduced token budget for compacted context
+	 * @returns Assembled context string within reduced budget
+	 */
+	async compactRefresh(
+		config: ContextLoaderConfig,
+		reducedBudget: number
+	): Promise<string> {
+		const originalBudget = this.totalTokenBudget;
+		this.totalTokenBudget = reducedBudget;
+
+		this.logger.info('Compact refresh triggered', {
+			agentId: config.agentId,
+			originalBudget,
+			reducedBudget,
+		});
+
+		// Clear cache to force fresh loads
+		this.clearCache();
+
+		const result = await this.loadAll(config);
+
+		// Restore original budget
+		this.totalTokenBudget = originalBudget;
+
+		return result;
+	}
 }

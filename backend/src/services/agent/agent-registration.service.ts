@@ -1496,6 +1496,13 @@ export class AgentRegistrationService {
 				}
 			}
 
+			// TODO(Phase 5): Replace legacy prompt assembly with PromptAssemblyService.
+			// When CREWLY_USE_MODULAR_PROMPTS=true, call PromptAssemblyService.assemble()
+			// instead of the above monolithic template approach. The modular system handles
+			// identity, skills, communication, recovery, lifecycle, and team-reference modules
+			// with proper token budget enforcement and priority ordering.
+			// See: backend/src/services/ai/prompt-modules/prompt-assembly.service.ts
+
 			return prompt;
 		} catch (error) {
 			// Fallback to inline prompt if file doesn't exist

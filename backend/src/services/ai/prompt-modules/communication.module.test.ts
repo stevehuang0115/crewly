@@ -1,6 +1,12 @@
 import { CommunicationModule } from './communication.module.js';
 import { ModuleConfig } from './prompt-module.interface.js';
 
+// Mock fs for fragment loading
+jest.mock('fs', () => ({
+	existsSync: jest.fn().mockReturnValue(false),
+	readFileSync: jest.fn().mockReturnValue(''),
+}));
+
 describe('CommunicationModule', () => {
 	let module: CommunicationModule;
 
@@ -147,6 +153,40 @@ describe('CommunicationModule', () => {
 			const result = await module.build(noPathConfig);
 
 			expect(result).toContain(baseConfig.projectRoot);
+		});
+	});
+
+	describe('fragment loading', () => {
+		it('should load fragment for orchestrator when available', async () => {
+			const fs = require('fs');
+			fs.existsSync.mockReturnValueOnce(true);
+			fs.readFileSync.mockReturnValueOnce('# Custom Orchestrator Communication\nLoaded from fragment');
+
+			const orchConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator' };
+			const result = await module.build(orchConfig);
+
+			expect(result).toContain('Custom Orchestrator Communication');
+			expect(result).toContain('Loaded from fragment');
+		});
+
+		it('should fall back to inline content when fragment not found', async () => {
+			const fs = require('fs');
+			fs.existsSync.mockReturnValue(false);
+
+			const orchConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator' };
+			const result = await module.build(orchConfig);
+
+			expect(result).toContain('## Communication Protocol');
+		});
+
+		it('should not attempt fragment loading for non-orchestrator roles', async () => {
+			const fs = require('fs');
+			fs.existsSync.mockClear();
+
+			const result = await module.build(baseConfig);
+
+			expect(result).toContain('## Communication');
+			// Worker path doesn't call loadRoleFragment
 		});
 	});
 });

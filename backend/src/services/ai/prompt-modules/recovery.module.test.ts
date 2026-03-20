@@ -1,6 +1,12 @@
 import { RecoveryModule } from './recovery.module.js';
 import { ModuleConfig } from './prompt-module.interface.js';
 
+// Mock fs for fragment loading
+jest.mock('fs', () => ({
+	existsSync: jest.fn().mockReturnValue(false),
+	readFileSync: jest.fn().mockReturnValue(''),
+}));
+
 describe('RecoveryModule', () => {
 	let module: RecoveryModule;
 
@@ -106,5 +112,36 @@ describe('RecoveryModule', () => {
 		// Contains code blocks
 		expect(result).toContain('```bash');
 		expect(result).toContain('```');
+	});
+
+	describe('fragment loading', () => {
+		it('should load fragment for orchestrator when available', async () => {
+			const fs = require('fs');
+			fs.existsSync.mockReturnValueOnce(true);
+			fs.readFileSync.mockReturnValueOnce('# Orchestrator Recovery\nCustom startup sequence');
+
+			const orchConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator' };
+			const result = await module.build(orchConfig);
+
+			expect(result).toContain('Orchestrator Recovery');
+			expect(result).toContain('Custom startup sequence');
+		});
+
+		it('should fall back to inline content for orchestrator when no fragment', async () => {
+			const fs = require('fs');
+			fs.existsSync.mockReturnValue(false);
+
+			const orchConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator' };
+			const result = await module.build(orchConfig);
+
+			expect(result).toContain('Session Recovery Protocol');
+		});
+
+		it('should not attempt fragment loading for worker roles', async () => {
+			const result = await module.build(baseConfig);
+
+			expect(result).toContain('Session Recovery Protocol');
+			expect(result).toContain('recall');
+		});
 	});
 });

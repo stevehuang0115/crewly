@@ -1,4 +1,4 @@
-import { PromptModule, ModuleConfig } from './prompt-module.interface.js';
+import { PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
 
 /**
  * Lifecycle module — agent lifecycle behaviors and cognitive loop.
@@ -39,6 +39,13 @@ export class LifecycleModule implements PromptModule {
 		const isOrchestrator = config.role === 'orchestrator';
 		const isTL = config.canDelegate === true;
 
+		// Try loading role-specific fragment
+		if (isOrchestrator) {
+			const fragment = loadRoleFragment(config.projectRoot, config.role, 'lifecycle');
+			if (fragment) {
+				return fragment;
+			}
+		}
 		if (isOrchestrator || isTL) {
 			return this.buildFullLifecycle(config);
 		}

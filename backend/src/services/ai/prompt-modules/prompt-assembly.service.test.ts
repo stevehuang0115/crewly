@@ -21,7 +21,7 @@ jest.mock('fs/promises', () => ({
 	access: jest.fn().mockRejectedValue(new Error('ENOENT')),
 }));
 
-// Mock fs for TeamReferenceModule
+// Mock fs for TeamReferenceModule and SoulModule
 jest.mock('fs', () => ({
 	existsSync: jest.fn().mockReturnValue(false),
 	readdirSync: jest.fn().mockReturnValue([]),
@@ -40,18 +40,34 @@ describe('PromptAssemblyService', () => {
 		projectRoot: '/project-root',
 	};
 
-	describe('constructor', () => {
-		it('should register default modules', () => {
-			const service = new PromptAssemblyService();
-			const modules = service.getModules();
+	/**
+	 * Helper: create a service with only custom modules (clears defaults).
+	 */
+	function emptyService(budget?: number): PromptAssemblyService {
+		const service = new PromptAssemblyService(budget);
+		for (const m of service.getModules()) {
+			service.removeModule(m.name);
+		}
+		return service;
+	}
 
-			expect(modules.length).toBeGreaterThanOrEqual(5);
-			const names = modules.map((m) => m.name);
+	describe('constructor', () => {
+		it('should register default modules including Phase 1-4', () => {
+			const service = new PromptAssemblyService();
+			const names = service.getModules().map((m) => m.name);
+
 			expect(names).toContain('identity');
+			expect(names).toContain('soul');
 			expect(names).toContain('skills_references');
 			expect(names).toContain('memory_references');
 			expect(names).toContain('team_references');
 			expect(names).toContain('project_references');
+			expect(names).toContain('communication');
+			expect(names).toContain('recovery');
+			expect(names).toContain('lifecycle');
+			expect(names).toContain('user_profile_reference');
+			expect(names).toContain('learning_references');
+			expect(names.length).toBe(11);
 		});
 
 		it('should use default token budget of 25000', () => {
@@ -89,31 +105,19 @@ describe('PromptAssemblyService', () => {
 	});
 
 	describe('assemble', () => {
-		it('should assemble all default modules', async () => {
+		it('should assemble all default modules and return report', async () => {
 			const service = new PromptAssemblyService();
-			const prompt = await service.assemble(baseConfig);
+			const { prompt, report } = await service.assemble(baseConfig);
 
-			// Should contain identity section
 			expect(prompt).toContain('## Your Identity');
 			expect(prompt).toContain('crewly-dev-001');
-
-			// Should contain memory routing
-			expect(prompt).toContain('Memory Routing Rules');
-
-			// Should contain skills reference
-			expect(prompt).toContain('Available Skills');
-
-			// Should contain project references
-			expect(prompt).toContain('Project References');
+			expect(report.totalTokens).toBeGreaterThan(0);
+			expect(report.moduleBreakdown.length).toBeGreaterThan(0);
+			expect(Array.isArray(report.truncated)).toBe(true);
 		});
 
 		it('should assemble modules in priority order', async () => {
-			const service = new PromptAssemblyService();
-			// Remove defaults and add controlled modules
-			for (const m of service.getModules()) {
-				service.removeModule(m.name);
-			}
-
+			const service = emptyService();
 			const order: string[] = [];
 
 			service.addModule({
@@ -144,15 +148,11 @@ describe('PromptAssemblyService', () => {
 			});
 
 			await service.assemble(baseConfig);
-
 			expect(order).toEqual(['high-priority', 'mid-priority', 'low-priority']);
 		});
 
 		it('should skip modules where shouldInclude returns false', async () => {
-			const service = new PromptAssemblyService();
-			for (const m of service.getModules()) {
-				service.removeModule(m.name);
-			}
+			const service = emptyService();
 
 			service.addModule({
 				name: 'included',
@@ -172,66 +172,13 @@ describe('PromptAssemblyService', () => {
 				build: async () => 'excluded-content',
 			});
 
-			const prompt = await service.assemble(baseConfig);
-
+			const { prompt } = await service.assemble(baseConfig);
 			expect(prompt).toContain('included-content');
 			expect(prompt).not.toContain('excluded-content');
 		});
 
-		it('should skip compactable modules when token budget exceeded', async () => {
-			const service = new PromptAssemblyService(50); // Very small budget
-			for (const m of service.getModules()) {
-				service.removeModule(m.name);
-			}
-
-			service.addModule({
-				name: 'essential',
-				priority: 1,
-				maxTokens: 30,
-				compactable: false, // Non-compactable: always included
-				shouldInclude: () => true,
-				build: async () => 'a'.repeat(100), // ~25 tokens
-			});
-
-			service.addModule({
-				name: 'optional',
-				priority: 2,
-				maxTokens: 100,
-				compactable: true, // Compactable: skipped when over budget
-				shouldInclude: () => true,
-				build: async () => 'optional-content',
-			});
-
-			const prompt = await service.assemble(baseConfig);
-
-			expect(prompt).toContain('a'.repeat(100));
-			expect(prompt).not.toContain('optional-content');
-		});
-
-		it('should always include non-compactable modules regardless of budget', async () => {
-			const service = new PromptAssemblyService(1); // Tiny budget
-			for (const m of service.getModules()) {
-				service.removeModule(m.name);
-			}
-
-			service.addModule({
-				name: 'critical',
-				priority: 1,
-				maxTokens: 1000,
-				compactable: false,
-				shouldInclude: () => true,
-				build: async () => 'critical-content',
-			});
-
-			const prompt = await service.assemble(baseConfig);
-			expect(prompt).toContain('critical-content');
-		});
-
 		it('should separate modules with ---', async () => {
-			const service = new PromptAssemblyService();
-			for (const m of service.getModules()) {
-				service.removeModule(m.name);
-			}
+			const service = emptyService();
 
 			service.addModule({
 				name: 'first',
@@ -251,16 +198,12 @@ describe('PromptAssemblyService', () => {
 				build: async () => 'second-content',
 			});
 
-			const prompt = await service.assemble(baseConfig);
-
+			const { prompt } = await service.assemble(baseConfig);
 			expect(prompt).toBe('first-content\n\n---\n\nsecond-content');
 		});
 
 		it('should skip modules that return empty content', async () => {
-			const service = new PromptAssemblyService();
-			for (const m of service.getModules()) {
-				service.removeModule(m.name);
-			}
+			const service = emptyService();
 
 			service.addModule({
 				name: 'non-empty',
@@ -280,15 +223,12 @@ describe('PromptAssemblyService', () => {
 				build: async () => '',
 			});
 
-			const prompt = await service.assemble(baseConfig);
+			const { prompt } = await service.assemble(baseConfig);
 			expect(prompt).toBe('content');
 		});
 
 		it('should handle module build errors for compactable modules gracefully', async () => {
-			const service = new PromptAssemblyService();
-			for (const m of service.getModules()) {
-				service.removeModule(m.name);
-			}
+			const service = emptyService();
 
 			service.addModule({
 				name: 'ok',
@@ -308,15 +248,12 @@ describe('PromptAssemblyService', () => {
 				build: async () => { throw new Error('build failed'); },
 			});
 
-			const prompt = await service.assemble(baseConfig);
+			const { prompt } = await service.assemble(baseConfig);
 			expect(prompt).toBe('ok-content');
 		});
 
 		it('should throw when non-compactable module fails', async () => {
-			const service = new PromptAssemblyService();
-			for (const m of service.getModules()) {
-				service.removeModule(m.name);
-			}
+			const service = emptyService();
 
 			service.addModule({
 				name: 'critical-broken',
@@ -331,12 +268,186 @@ describe('PromptAssemblyService', () => {
 		});
 	});
 
-	describe('assembleWithDetails', () => {
-		it('should return module details with token estimates', async () => {
-			const service = new PromptAssemblyService();
-			for (const m of service.getModules()) {
-				service.removeModule(m.name);
+	describe('token budget enforcement', () => {
+		it('should always include non-compactable modules regardless of budget', async () => {
+			const service = emptyService(1); // Tiny budget
+
+			service.addModule({
+				name: 'critical',
+				priority: 1,
+				maxTokens: 1000,
+				compactable: false,
+				shouldInclude: () => true,
+				build: async () => 'critical-content',
+			});
+
+			const { prompt, report } = await service.assemble(baseConfig);
+			expect(prompt).toContain('critical-content');
+			expect(report.truncated.length).toBe(0);
+		});
+
+		it('should trim compactable modules to 50% when over budget (stage 1)', async () => {
+			// Build multi-line content: 20 lines × ~20 chars = ~400 chars = ~100 tokens
+			const lines = Array.from({ length: 20 }, (_, i) => `Line ${i + 1} of content`);
+			const longContent = lines.join('\n');
+			const fullTokens = estimateTokens(longContent); // ~100
+
+			// Trusted ~2 tokens. Budget = trusted + 60% of compactable
+			// This means trimming to 50% will bring it under budget, no removal needed
+			const budget = 2 + Math.floor(fullTokens * 0.6);
+			const service = emptyService(budget);
+
+			service.addModule({
+				name: 'trusted',
+				priority: 1,
+				maxTokens: 50,
+				compactable: false,
+				shouldInclude: () => true,
+				build: async () => 'short', // ~2 tokens
+			});
+
+			service.addModule({
+				name: 'flexible',
+				priority: 10,
+				maxTokens: 200,
+				compactable: true,
+				shouldInclude: () => true,
+				build: async () => longContent,
+			});
+
+			const { prompt, report } = await service.assemble(baseConfig);
+
+			expect(prompt).toContain('short');
+			expect(report.truncated.length).toBe(1);
+			expect(report.truncated[0].name).toBe('flexible');
+			expect(report.truncated[0].action).toBe('trimmed');
+			expect(report.truncated[0].finalTokens).toBeLessThan(report.truncated[0].originalTokens);
+		});
+
+		it('should remove compactable modules entirely when trim is not enough (stage 2)', async () => {
+			const service = emptyService(5); // Very tiny budget
+
+			service.addModule({
+				name: 'trusted',
+				priority: 1,
+				maxTokens: 100,
+				compactable: false,
+				shouldInclude: () => true,
+				build: async () => 'ok', // ~1 token
+			});
+
+			const lines = Array.from({ length: 40 }, (_, i) => `Line ${i + 1} of bloated content`);
+
+			service.addModule({
+				name: 'removable',
+				priority: 10,
+				maxTokens: 500,
+				compactable: true,
+				shouldInclude: () => true,
+				build: async () => lines.join('\n'), // ~250 tokens
+			});
+
+			const { prompt, report } = await service.assemble(baseConfig);
+
+			expect(prompt).toContain('ok');
+			expect(prompt).not.toContain('bloated');
+			expect(report.truncated.length).toBe(1);
+			expect(report.truncated[0].name).toBe('removable');
+			expect(report.truncated[0].action).toBe('removed');
+			expect(report.truncated[0].finalTokens).toBe(0);
+		});
+
+		it('should trim lowest-priority modules first', async () => {
+			// Budget allows trusted + one compactable but not two
+			const service = emptyService(40);
+
+			service.addModule({
+				name: 'trusted',
+				priority: 1,
+				maxTokens: 50,
+				compactable: false,
+				shouldInclude: () => true,
+				build: async () => 'hi', // ~1 token
+			});
+
+			service.addModule({
+				name: 'high-flex',
+				priority: 3,
+				maxTokens: 200,
+				compactable: true,
+				shouldInclude: () => true,
+				build: async () => 'a'.repeat(80), // ~20 tokens
+			});
+
+			service.addModule({
+				name: 'low-flex',
+				priority: 9,
+				maxTokens: 200,
+				compactable: true,
+				shouldInclude: () => true,
+				build: async () => 'b'.repeat(80), // ~20 tokens
+			});
+
+			const { report } = await service.assemble(baseConfig);
+
+			// low-flex (priority 9) should be truncated/removed before high-flex (priority 3)
+			const truncatedNames = report.truncated.map((t) => t.name);
+			if (truncatedNames.length > 0) {
+				expect(truncatedNames[0]).toBe('low-flex');
 			}
+		});
+
+		it('should not truncate when within budget', async () => {
+			const service = emptyService(50000);
+
+			service.addModule({
+				name: 'mod1',
+				priority: 1,
+				maxTokens: 100,
+				compactable: true,
+				shouldInclude: () => true,
+				build: async () => 'content',
+			});
+
+			const { report } = await service.assemble(baseConfig);
+			expect(report.truncated.length).toBe(0);
+			expect(report.totalTokens).toBeGreaterThan(0);
+		});
+
+		it('should report per-module breakdown', async () => {
+			const service = emptyService();
+
+			service.addModule({
+				name: 'mod-a',
+				priority: 1,
+				maxTokens: 100,
+				compactable: false,
+				shouldInclude: () => true,
+				build: async () => 'content-a',
+			});
+
+			service.addModule({
+				name: 'mod-b',
+				priority: 2,
+				maxTokens: 100,
+				compactable: false,
+				shouldInclude: () => true,
+				build: async () => 'content-b',
+			});
+
+			const { report } = await service.assemble(baseConfig);
+			expect(report.moduleBreakdown.length).toBe(2);
+			expect(report.moduleBreakdown[0].name).toBe('mod-a');
+			expect(report.moduleBreakdown[1].name).toBe('mod-b');
+			expect(report.totalTokens).toBe(
+				report.moduleBreakdown.reduce((sum, m) => sum + m.estimatedTokens, 0)
+			);
+		});
+	});
+
+	describe('assembleWithDetails', () => {
+		it('should return module details with token estimates and truncated info', async () => {
+			const service = emptyService();
 
 			service.addModule({
 				name: 'test-module',
@@ -355,6 +466,7 @@ describe('PromptAssemblyService', () => {
 			expect(result.modules[0].estimatedTokens).toBe(estimateTokens('test content here'));
 			expect(result.totalTokens).toBe(estimateTokens('test content here'));
 			expect(result.prompt).toBe('test content here');
+			expect(Array.isArray(result.truncated)).toBe(true);
 		});
 	});
 

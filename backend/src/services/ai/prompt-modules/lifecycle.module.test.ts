@@ -1,6 +1,12 @@
 import { LifecycleModule } from './lifecycle.module.js';
 import { ModuleConfig } from './prompt-module.interface.js';
 
+// Mock fs for fragment loading
+jest.mock('fs', () => ({
+	existsSync: jest.fn().mockReturnValue(false),
+	readFileSync: jest.fn().mockReturnValue(''),
+}));
+
 describe('LifecycleModule', () => {
 	let module: LifecycleModule;
 
@@ -136,6 +142,9 @@ describe('LifecycleModule', () => {
 		});
 
 		it('should use projectRoot when projectPath is undefined for orchestrator', async () => {
+			const fs = require('fs');
+			fs.existsSync.mockReturnValue(false);
+
 			const noPathConfig: ModuleConfig = {
 				...baseConfig,
 				role: 'orchestrator',
@@ -144,6 +153,37 @@ describe('LifecycleModule', () => {
 			const result = await module.build(noPathConfig);
 
 			expect(result).toContain(baseConfig.projectRoot);
+		});
+	});
+
+	describe('fragment loading', () => {
+		it('should load fragment for orchestrator when available', async () => {
+			const fs = require('fs');
+			fs.existsSync.mockReturnValueOnce(true);
+			fs.readFileSync.mockReturnValueOnce('# Orchestrator Lifecycle\nMonitoring protocol here');
+
+			const orchConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator' };
+			const result = await module.build(orchConfig);
+
+			expect(result).toContain('Orchestrator Lifecycle');
+			expect(result).toContain('Monitoring protocol here');
+		});
+
+		it('should fall back to inline content when no fragment', async () => {
+			const fs = require('fs');
+			fs.existsSync.mockReturnValue(false);
+
+			const orchConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator' };
+			const result = await module.build(orchConfig);
+
+			expect(result).toContain('## Lifecycle Management');
+		});
+
+		it('should not attempt fragment loading for TL', async () => {
+			const tlConfig: ModuleConfig = { ...baseConfig, role: 'team-leader', canDelegate: true };
+			const result = await module.build(tlConfig);
+
+			expect(result).toContain('## Lifecycle Management');
 		});
 	});
 });

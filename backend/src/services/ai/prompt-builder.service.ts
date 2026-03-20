@@ -231,6 +231,12 @@ Start all teams on Phase 1 simultaneously.`.trim();
 		config: TeamMemberSessionConfig,
 		options: PromptOptions = {}
 	): Promise<string> {
+		// TODO(Phase 5): Replace with PromptAssemblyService.assemble() when
+		// CREWLY_USE_MODULAR_PROMPTS=true. The modular system handles all sections
+		// (identity, skills, communication, recovery, lifecycle, team-reference)
+		// with proper token budget enforcement and priority ordering.
+		// See: backend/src/services/ai/prompt-modules/prompt-assembly.service.ts
+
 		const includeMemory = options.includeMemory !== false;
 		const includeSOPs = options.includeSOPs !== false;
 

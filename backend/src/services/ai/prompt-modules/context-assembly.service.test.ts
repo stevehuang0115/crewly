@@ -250,4 +250,57 @@ describe('ContextAssemblyService', () => {
 			expect(service.tokenBudget()).toBe(5000);
 		});
 	});
+
+	describe('compactRefresh', () => {
+		it('should reload context with reduced budget', async () => {
+			const service = new ContextAssemblyService(15000);
+			service.registerLoader('small', async () => 'small data');
+			service.registerLoader('large', async () => 'x'.repeat(500));
+
+			// First load with full budget
+			const full = await service.loadAll(baseLoaderConfig);
+			expect(full).toContain('small data');
+			expect(full).toContain('x'.repeat(500));
+
+			// Compact refresh with tiny budget
+			const compact = await service.compactRefresh(baseLoaderConfig, 30);
+			expect(compact).toContain('small data');
+			expect(compact).not.toContain('x'.repeat(500));
+		});
+
+		it('should restore original budget after compact refresh', async () => {
+			const service = new ContextAssemblyService(15000);
+			service.registerLoader('test', async () => 'data');
+
+			await service.compactRefresh(baseLoaderConfig, 5000);
+
+			// Budget should be restored to original
+			expect(service.tokenBudget()).toBe(15000);
+		});
+
+		it('should clear cache before reloading', async () => {
+			const service = new ContextAssemblyService(15000);
+			let callCount = 0;
+			service.registerLoader('counter', async () => {
+				callCount++;
+				return `data-${callCount}`;
+			});
+
+			// First load caches
+			await service.loadAll(baseLoaderConfig);
+			expect(callCount).toBe(1);
+
+			// Compact refresh should force reload (cache cleared)
+			await service.compactRefresh(baseLoaderConfig, 15000);
+			expect(callCount).toBe(2);
+		});
+
+		it('should return empty string when budget is too small for any loader', async () => {
+			const service = new ContextAssemblyService(15000);
+			service.registerLoader('large', async () => 'x'.repeat(100));
+
+			const result = await service.compactRefresh(baseLoaderConfig, 1);
+			expect(result).toBe('');
+		});
+	});
 });

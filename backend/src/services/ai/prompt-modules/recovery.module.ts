@@ -1,4 +1,4 @@
-import { PromptModule, ModuleConfig } from './prompt-module.interface.js';
+import { PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
 
 /**
  * Recovery module — unified session recovery protocol.
@@ -35,6 +35,14 @@ export class RecoveryModule implements PromptModule {
 	 * @returns Formatted markdown recovery section
 	 */
 	async build(config: ModuleConfig): Promise<string> {
+		// Try loading role-specific fragment (orchestrator has a different startup flow)
+		if (config.role === 'orchestrator') {
+			const fragment = loadRoleFragment(config.projectRoot, config.role, 'recovery');
+			if (fragment) {
+				return fragment;
+			}
+		}
+
 		const agentId = config.sessionName;
 		const role = config.role;
 		const projectPath = config.projectPath || config.projectRoot;

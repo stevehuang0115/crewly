@@ -1,4 +1,10 @@
-import { estimateTokens, PromptModule, ModuleConfig } from './prompt-module.interface.js';
+import { estimateTokens, PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
+
+// Mock fs
+jest.mock('fs', () => ({
+	existsSync: jest.fn(),
+	readFileSync: jest.fn(),
+}));
 
 describe('prompt-module.interface', () => {
 	describe('estimateTokens', () => {
@@ -24,6 +30,36 @@ describe('prompt-module.interface', () => {
 		it('should handle long strings', () => {
 			const longText = 'a'.repeat(1000);
 			expect(estimateTokens(longText)).toBe(250);
+		});
+	});
+
+	describe('loadRoleFragment', () => {
+		it('should return fragment content when file exists', () => {
+			const fs = require('fs');
+			fs.existsSync.mockReturnValueOnce(true);
+			fs.readFileSync.mockReturnValueOnce('# Fragment Content\nHello');
+
+			const result = loadRoleFragment('/project', 'orchestrator', 'communication');
+			expect(result).toBe('# Fragment Content\nHello');
+			expect(fs.existsSync).toHaveBeenCalledWith(
+				expect.stringContaining('config/roles/orchestrator/fragments/communication.md')
+			);
+		});
+
+		it('should return null when file does not exist', () => {
+			const fs = require('fs');
+			fs.existsSync.mockReturnValueOnce(false);
+
+			const result = loadRoleFragment('/project', 'developer', 'lifecycle');
+			expect(result).toBeNull();
+		});
+
+		it('should return null on read error', () => {
+			const fs = require('fs');
+			fs.existsSync.mockImplementationOnce(() => { throw new Error('permission denied'); });
+
+			const result = loadRoleFragment('/project', 'developer', 'recovery');
+			expect(result).toBeNull();
 		});
 	});
 

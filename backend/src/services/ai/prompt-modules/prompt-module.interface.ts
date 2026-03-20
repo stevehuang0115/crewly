@@ -95,6 +95,60 @@ export interface PromptModule {
 }
 
 /**
+ * Report returned by PromptAssemblyService.assemble() describing
+ * token usage and any truncation that occurred.
+ */
+export interface AssemblyReport {
+	/** Total estimated tokens in the final prompt */
+	totalTokens: number;
+	/** Per-module token breakdown */
+	moduleBreakdown: ModuleBuildResult[];
+	/** Modules that were truncated or removed to fit budget */
+	truncated: TruncatedModuleInfo[];
+}
+
+/**
+ * Info about a module that was truncated or removed during assembly.
+ */
+export interface TruncatedModuleInfo {
+	/** Module name */
+	name: string;
+	/** Original estimated tokens before truncation */
+	originalTokens: number;
+	/** Tokens after truncation (0 if fully removed) */
+	finalTokens: number;
+	/** What happened: 'trimmed' (to 50%) or 'removed' (dropped entirely) */
+	action: 'trimmed' | 'removed';
+}
+
+/**
+ * Load a role-specific fragment file from config/roles/{role}/fragments/{fragmentName}.md.
+ * Returns null if the file doesn't exist.
+ *
+ * @param projectRoot - Project root path (where config/ lives)
+ * @param role - Agent role (e.g. 'orchestrator')
+ * @param fragmentName - Fragment file name without .md extension
+ * @returns Fragment content string or null
+ */
+export function loadRoleFragment(
+	projectRoot: string,
+	role: string,
+	fragmentName: string
+): string | null {
+	try {
+		const fs = require('fs');
+		const path = require('path');
+		const fragmentPath = path.join(projectRoot, 'config', 'roles', role, 'fragments', `${fragmentName}.md`);
+		if (fs.existsSync(fragmentPath)) {
+			return fs.readFileSync(fragmentPath, 'utf-8');
+		}
+	} catch {
+		// Fragment not found — fall back to inline content
+	}
+	return null;
+}
+
+/**
  * Estimate token count from a string.
  * Uses the rough heuristic of ~4 characters per token (suitable for English/code mix).
  *
