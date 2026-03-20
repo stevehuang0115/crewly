@@ -695,7 +695,12 @@ export class AgentRegistrationService {
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
 				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
-				promptFilePath = await this.writePromptFile(sessionName, prompt);
+				promptFilePath = await this.writePromptFile(sessionName, prompt, {
+					runtimeType,
+					projectPath,
+					role,
+				});
+				agentName = sessionName;
 			} catch (promptError) {
 				this.logger.warn('Failed to pre-write prompt file (non-fatal, will fall back to direct delivery)', {
 					sessionName,
@@ -1022,7 +1027,12 @@ export class AgentRegistrationService {
 		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
 			try {
 				const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
-				promptFilePath = await this.writePromptFile(sessionName, prompt);
+				promptFilePath = await this.writePromptFile(sessionName, prompt, {
+					runtimeType,
+					projectPath,
+					role,
+				});
+				agentName = sessionName;
 			} catch (promptError) {
 				this.logger.warn('Failed to pre-write prompt file in full recreation (non-fatal)', {
 					sessionName,

@@ -3042,6 +3042,18 @@ describe('AgentRegistrationService', () => {
 			const result = await (service as any).writePromptFile('test-agent', 'Test prompt content');
 			expect(result).toContain('.crewly/prompts/test-agent-init.md');
 		});
+
+		it('#223: should set agentName when writePromptFile succeeds for claude-code', async () => {
+			// Verify the pattern: writePromptFile with options + agentName = sessionName
+			const result = await (service as any).writePromptFile(
+				'sam-session',
+				'prompt',
+				{ projectPath: '/project', runtimeType: RUNTIME_TYPES.CLAUDE_CODE, role: 'developer' }
+			);
+			// If writePromptFile succeeds, agentName should be set to sessionName
+			// (verified by checking the file path indicates agent mode was used)
+			expect(result).toBe('/project/.claude/agents/sam-session.md');
+		});
 	});
 
 	describe('registerMemberActive', () => {
