@@ -2575,6 +2575,25 @@ describe('AgentRegistrationService', () => {
 			const entries = tracker.get('test-session');
 			expect(entries[0].recovered).toBe(true);
 		});
+
+		it('#213: should skip orchestrator session in TUI prompt-line scanning', async () => {
+			// Register orchestrator as TUI session
+			const registry = (service as any).tuiSessionRegistry as Map<string, string>;
+			registry.set('crewly-orc', RUNTIME_TYPES.CLAUDE_CODE);
+
+			// Simulate text at orchestrator prompt that would normally trigger recovery
+			mockSessionHelper.capturePane.mockReturnValue(
+				'Some output\n' +
+				'> This text is sitting at the orchestrator prompt for a long time\n'
+			);
+			mockSessionHelper.listSessions.mockReturnValue(['crewly-orc']);
+
+			await (service as any).scanForStuckMessages();
+
+			// Should NOT have pressed Tab or Enter — orchestrator is excluded
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalledWith('crewly-orc', 'Tab');
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalledWith('crewly-orc');
+		});
 	});
 
 	describe('Crewly Agent in-process runtime integration', () => {

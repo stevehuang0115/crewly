@@ -2307,7 +2307,8 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			}
 
 			// Create new session (same approach for both orchestrator and team members)
-			const cwdToUse = projectPath || process.cwd();
+			// #222: Use projectRoot (crewly install dir) as fallback instead of process.cwd()
+			const cwdToUse = projectPath || this.projectRoot || process.cwd();
 			this.logger.info('Creating PTY session', {
 				sessionName,
 				cwd: cwdToUse,
@@ -2377,6 +2378,12 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				sessionName,
 				ENV_CONSTANTS.CREWLY_PROJECT_PATH,
 				cwdToUse
+			);
+			// #222: Set install dir so agents can resolve skill paths regardless of CWD
+			await sessionHelper.setEnvironmentVariable(
+				sessionName,
+				ENV_CONSTANTS.CREWLY_INSTALL_DIR,
+				this.projectRoot
 			);
 
 			// Inject API keys from settings (with override chain) for all runtimes
@@ -3913,6 +3920,13 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				// Skip Gemini CLI sessions — their TUI prompt behaves differently
 				// and false-positive stuck detection causes Tab+Enter spam.
 				if (runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+					continue;
+				}
+
+				// #213: Skip orchestrator — it frequently waits for long-running
+				// agent tasks (30+ min), and false stuck detection causes disruptive
+				// Tab+Enter key injections that interrupt its workflow.
+				if (sessionName === ORCHESTRATOR_SESSION_NAME) {
 					continue;
 				}
 
