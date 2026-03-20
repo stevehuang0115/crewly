@@ -238,6 +238,14 @@ export async function getCloudDevices(req: Request, res: Response, _next: NextFu
 
     // Check connection before attempting fetch
     if (!cloudClient.isConnected()) {
+      // If token expired, return a user-friendly hint instead of empty list
+      if (cloudClient.isTokenExpired()) {
+        res.json({
+          success: true,
+          data: { devices: [], localSessionId: null, tokenExpired: true },
+        });
+        return;
+      }
       res.json({
         success: true,
         data: { devices: [], localSessionId: null },
@@ -246,6 +254,15 @@ export async function getCloudDevices(req: Request, res: Response, _next: NextFu
     }
 
     const devices = await cloudClient.fetchCloudDevices();
+
+    // If the fetch triggered token expiry detection, return the hint
+    if (cloudClient.isTokenExpired()) {
+      res.json({
+        success: true,
+        data: { devices: [], localSessionId: null, tokenExpired: true },
+      });
+      return;
+    }
 
     // Mark the current device (this OSS instance)
     const relayClient = RelayClientService.getInstance();

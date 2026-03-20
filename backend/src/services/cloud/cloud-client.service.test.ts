@@ -329,7 +329,7 @@ describe('CloudClientService', () => {
       expect(result).toEqual([]);
     });
 
-    it('should throw on non-404 error status', async () => {
+    it('should throw on non-404/non-auth error status', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({}, 500));
 
       await expect(service.fetchCloudDevices()).rejects.toThrow('Failed to fetch cloud devices: 500');
@@ -341,6 +341,127 @@ describe('CloudClientService', () => {
       const result = await service.fetchCloudDevices();
 
       expect(result).toEqual([]);
+    });
+
+    it('should return empty array and set token_expired on 401', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 401));
+
+      const result = await service.fetchCloudDevices();
+
+      expect(result).toEqual([]);
+      expect(service.isTokenExpired()).toBe(true);
+      expect(service.isConnected()).toBe(false);
+    });
+
+    it('should return empty array and set token_expired on 403', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 403));
+
+      const result = await service.fetchCloudDevices();
+
+      expect(result).toEqual([]);
+      expect(service.isTokenExpired()).toBe(true);
+    });
+  });
+
+  // ----- 401/403 handling across all methods --------------------------------
+
+  describe('auth error handling (401/403)', () => {
+    beforeEach(async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'pro' }));
+      await service.connect(CLOUD_URL, TOKEN);
+      mockFetch.mockClear();
+    });
+
+    it('getTemplates should return empty array on 401', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 401));
+
+      const result = await service.getTemplates();
+
+      expect(result).toEqual([]);
+      expect(service.isTokenExpired()).toBe(true);
+    });
+
+    it('getTemplates should return empty array on 403', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 403));
+
+      const result = await service.getTemplates();
+
+      expect(result).toEqual([]);
+      expect(service.isTokenExpired()).toBe(true);
+    });
+
+    it('getTemplateDetail should throw user-friendly error on 401', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 401));
+
+      await expect(service.getTemplateDetail('tpl-1')).rejects.toThrow(
+        /Cloud token expired/,
+      );
+      expect(service.isTokenExpired()).toBe(true);
+    });
+
+    it('getTemplateDetail should throw user-friendly error on 403', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 403));
+
+      await expect(service.getTemplateDetail('tpl-1')).rejects.toThrow(
+        /Cloud token expired/,
+      );
+      expect(service.isTokenExpired()).toBe(true);
+    });
+
+    it('isTokenExpired should return false before any auth error', () => {
+      expect(service.isTokenExpired()).toBe(false);
+    });
+
+    it('isConnected should return false after token expiry', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 401));
+
+      await service.fetchCloudDevices();
+
+      expect(service.isConnected()).toBe(false);
+      expect(service.isTokenExpired()).toBe(true);
+    });
+
+    it('getStatus should report token_expired after auth failure', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 403));
+
+      await service.fetchCloudDevices();
+
+      const status = service.getStatus();
+      expect(status.connectionStatus).toBe(CLOUD_CONSTANTS.CONNECTION_STATUS.TOKEN_EXPIRED);
+    });
+
+    it('fetchCloudDevices should return empty on second call after TOKEN_EXPIRED (no throw)', async () => {
+      // First call: triggers 403 → sets TOKEN_EXPIRED
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 403));
+      await service.fetchCloudDevices();
+      expect(service.isTokenExpired()).toBe(true);
+
+      // Second call: should return [] without throwing or calling fetch
+      mockFetch.mockClear();
+      const result = await service.fetchCloudDevices();
+      expect(result).toEqual([]);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('getTemplates should return empty on second call after TOKEN_EXPIRED (no throw)', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 401));
+      await service.getTemplates();
+      expect(service.isTokenExpired()).toBe(true);
+
+      mockFetch.mockClear();
+      const result = await service.getTemplates();
+      expect(result).toEqual([]);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('getTemplateDetail should throw user-friendly error on second call after TOKEN_EXPIRED', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({}, 401));
+      await expect(service.getTemplateDetail('tpl-1')).rejects.toThrow(/Cloud token expired/);
+      expect(service.isTokenExpired()).toBe(true);
+
+      mockFetch.mockClear();
+      await expect(service.getTemplateDetail('tpl-1')).rejects.toThrow(/Cloud token expired/);
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 });

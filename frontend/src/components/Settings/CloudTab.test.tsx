@@ -376,4 +376,124 @@ describe('CloudTab', () => {
 
     expect(screen.queryByTestId('cloud-device-list-section')).toBeNull();
   });
+
+  // -----------------------------------------------------------------------
+  // Relay Pairing Buttons
+  // -----------------------------------------------------------------------
+
+  it('should show Invite Device and Join Relay buttons when connected', async () => {
+    mockAuthenticatedWithDevices();
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('invite-device-button')).toBeDefined();
+      expect(screen.getByTestId('join-relay-button')).toBeDefined();
+    });
+  });
+
+  it('should not show relay buttons when disconnected', async () => {
+    mockFullyDisconnected();
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('cloud-sign-in-button')).toBeDefined();
+    });
+
+    expect(screen.queryByTestId('invite-device-button')).toBeNull();
+    expect(screen.queryByTestId('join-relay-button')).toBeNull();
+  });
+
+  it('should open Invite Device modal when button clicked', async () => {
+    mockAuthenticatedWithDevices();
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('invite-device-button')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByTestId('invite-device-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('invite-device-modal')).toBeDefined();
+    });
+  });
+
+  it('should open Join Relay modal when button clicked', async () => {
+    mockAuthenticatedWithDevices();
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('join-relay-button')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByTestId('join-relay-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('join-relay-modal')).toBeDefined();
+    });
+  });
+
+  it('should show relay buttons for backend-only connection', async () => {
+    mockBackendOnlyConnection('pro');
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('invite-device-button')).toBeDefined();
+      expect(screen.getByTestId('join-relay-button')).toBeDefined();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Token Expired Warning
+  // -----------------------------------------------------------------------
+
+  it('should show amber token-expired warning when cloud-devices returns tokenExpired', async () => {
+    mockStorage.set('crewly_cloud_token', 'valid-token');
+
+    mockFetch.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/cloud/status')) {
+        return backendConnected('pro');
+      }
+      if (typeof url === 'string' && url.includes('/cloud/validate')) {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: { id: 'u1', email: 'test@test.com', plan: 'pro', name: 'Test User' },
+          }),
+        };
+      }
+      if (typeof url === 'string' && url.includes('/cloud/connect')) {
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      if (typeof url === 'string' && url.includes('/relay/cloud-devices')) {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: { devices: [], localSessionId: null, tokenExpired: true },
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ success: false }) };
+    });
+
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('token-expired-warning')).toBeDefined();
+    });
+    expect(screen.getByText(/Cloud session expired/)).toBeDefined();
+  });
+
+  it('should not show amber warning when tokenExpired is absent', async () => {
+    mockAuthenticatedWithDevices([]);
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('cloud-device-list-section')).toBeDefined();
+    });
+
+    expect(screen.queryByTestId('token-expired-warning')).toBeNull();
+  });
 });

@@ -39,12 +39,14 @@ jest.mock('../../services/cloud/relay-client.service.js', () => ({
 
 const mockFetchCloudDevices = jest.fn();
 const mockIsConnected = jest.fn();
+const mockIsTokenExpired = jest.fn().mockReturnValue(false);
 
 jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
     getInstance: () => ({
       fetchCloudDevices: mockFetchCloudDevices,
       isConnected: mockIsConnected,
+      isTokenExpired: mockIsTokenExpired,
     }),
   },
 }));
@@ -91,6 +93,7 @@ describe('Relay Controller', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsTokenExpired.mockReturnValue(false);
   });
 
   // -----------------------------------------------------------------------
@@ -461,6 +464,38 @@ describe('Relay Controller', () => {
         error: expect.stringContaining('Cloud unreachable'),
       });
       expect(next).not.toHaveBeenCalled();
+    });
+
+    it('should return tokenExpired flag when not connected due to expired token', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      mockIsConnected.mockReturnValue(false);
+      mockIsTokenExpired.mockReturnValue(true);
+
+      await getCloudDevices(req, res, next);
+
+      expect(mockFetchCloudDevices).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: { devices: [], localSessionId: null, tokenExpired: true },
+      });
+    });
+
+    it('should return tokenExpired flag when fetch triggers token expiry', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      mockIsConnected.mockReturnValue(true);
+      mockFetchCloudDevices.mockResolvedValue([]);
+      mockClientGetSessionId.mockReturnValue(null);
+      // fetchCloudDevices internally sets token_expired; post-fetch check detects it
+      mockIsTokenExpired.mockReturnValue(true);
+
+      await getCloudDevices(req, res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: { devices: [], localSessionId: null, tokenExpired: true },
+      });
     });
   });
 });
