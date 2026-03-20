@@ -28,6 +28,10 @@ jest.mock('../agent/pty-activity-tracker.service.js', () => ({
 // requeue/retry code path.
 let mockSystemEventForceDeliver = true;
 
+// Module-level variable to allow per-test override of the pending-ack TTL.
+// Default: 10_000 (10s for faster testing). Override in TTL-specific tests.
+let mockPendingAckTtlMs = 10_000;
+
 // Mock constants
 jest.mock('../../constants.js', () => ({
   MESSAGE_QUEUE_CONSTANTS: {
@@ -64,7 +68,7 @@ jest.mock('../../constants.js', () => ({
     get SYSTEM_EVENT_FORCE_DELIVER() { return mockSystemEventForceDeliver; },
     PENDING_ACK_SCAN_LINES: 300,
     PENDING_ACK_MAX_RETRIES: 3,
-    PENDING_ACK_TTL_MS: 600_000,
+    get PENDING_ACK_TTL_MS() { return mockPendingAckTtlMs; },
   },
   RUNTIME_TYPES: {
     CLAUDE_CODE: 'claude-code',
@@ -164,6 +168,8 @@ describe('QueueProcessorService', () => {
 
     // Default: system events force-deliver (override per-test for requeue tests)
     mockSystemEventForceDeliver = true;
+    // Default: 10s TTL for pending-ack (fast enough for tests)
+    mockPendingAckTtlMs = 10_000;
 
     processor = new QueueProcessorService(
       queueService,
@@ -1775,6 +1781,266 @@ describe('QueueProcessorService', () => {
       // Should NOT have redelivered (dedup re-check found the conversationId)
       expect(mockAgentRegistrationService.sendMessageToAgent.mock.calls.length).toBe(sendCountBefore);
       // Message marked completed via dedup path
+      expect(processor.getPendingAckCount()).toBe(0);
+    });
+
+    it('should require [CHAT:id] prefix match, not bare conversationId', async () => {
+      mockAgentRegistrationService.waitForAgentReady
+        .mockResolvedValueOnce(false)   // pre-delivery: force
+        .mockResolvedValueOnce(false)   // post-delivery idle
+        .mockResolvedValueOnce(true);   // flush poll: ready
+
+      // PTY output contains the bare conversationId but NOT the [CHAT:id] prefix
+      mockAgentRegistrationService.captureAgentOutput
+        .mockResolvedValue('Some log mentioning conv-bare-id in passing');
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Prefix test',
+        conversationId: 'conv-bare-id',
+        source: 'slack',
+      });
+
+      // Force-deliver
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(processor.getPendingAckCount()).toBe(1);
+      const sendCountBefore = mockAgentRegistrationService.sendMessageToAgent.mock.calls.length;
+
+      // Trigger flush — bare ID present but no [CHAT:conv-bare-id] prefix
+      jest.advanceTimersByTime(600);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      // Should have redelivered because prefix match failed
+      expect(mockAgentRegistrationService.sendMessageToAgent.mock.calls.length).toBeGreaterThan(sendCountBefore);
+      expect(processor.getPendingAckCount()).toBe(1);
+    });
+
+    it('should match [GCHAT:id] prefix for google_chat messages', async () => {
+      mockAgentRegistrationService.waitForAgentReady
+        .mockResolvedValueOnce(false)   // pre-delivery: force
+        .mockResolvedValueOnce(false)   // post-delivery idle
+        .mockResolvedValueOnce(true);   // flush poll: ready
+
+      mockAgentRegistrationService.captureAgentOutput
+        .mockResolvedValue('[GCHAT:conv-gchat-1] Hello from Chat');
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'GChat test',
+        conversationId: 'conv-gchat-1',
+        source: 'google_chat',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(processor.getPendingAckCount()).toBe(1);
+
+      jest.advanceTimersByTime(600);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      // Should be marked completed — [GCHAT:id] prefix matched
+      expect(processor.getPendingAckCount()).toBe(0);
+    });
+  });
+
+  describe('#239 pending-ack TTL cleanup timer', () => {
+    it('should purge expired entries via cleanup timer when agent crashes', async () => {
+      // Use a short TTL so we can trigger the cleanup timer
+      mockPendingAckTtlMs = 2000;
+      // Recreate processor with new TTL
+      processor.stop();
+      processor = new QueueProcessorService(queueService, responseRouter, mockAgentRegistrationService);
+
+      mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(false);
+      const markFailedSpy = jest.spyOn(queueService, 'markFailed');
+      const routeErrorSpy = jest.spyOn(responseRouter, 'routeError');
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Will expire',
+        conversationId: 'conv-expire',
+        source: 'slack',
+      });
+
+      // Force-deliver
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(processor.getPendingAckCount()).toBe(1);
+
+      // Advance past TTL×2 to guarantee the cleanup timer fires with entries beyond TTL.
+      // The timer interval equals TTL, and the check is strict greater-than.
+      jest.advanceTimersByTime(4500);
+      await flushPromises();
+      await flushPromises();
+
+      expect(processor.getPendingAckCount()).toBe(0);
+      expect(markFailedSpy).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.stringContaining('TTL cleanup')
+      );
+      expect(routeErrorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: 'conv-expire' }),
+        expect.stringContaining('did not process your message in time')
+      );
+    });
+
+    it('should not purge entries within TTL', async () => {
+      mockPendingAckTtlMs = 5000;
+      processor.stop();
+      processor = new QueueProcessorService(queueService, responseRouter, mockAgentRegistrationService);
+
+      mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(false);
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Still fresh',
+        conversationId: 'conv-fresh',
+        source: 'web_chat',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(processor.getPendingAckCount()).toBe(1);
+
+      // Advance less than TTL
+      jest.advanceTimersByTime(3000);
+      await flushPromises();
+      await flushPromises();
+
+      // Entry should still be there
+      expect(processor.getPendingAckCount()).toBe(1);
+    });
+  });
+
+  describe('#239 multiple concurrent pending-ack messages', () => {
+    it('should track and flush multiple pending-ack messages independently', async () => {
+      // Pre-delivery: not ready for both, then ready for flush
+      mockAgentRegistrationService.waitForAgentReady
+        .mockResolvedValueOnce(false)   // msg1 pre-delivery
+        .mockResolvedValueOnce(false)   // msg1 post-delivery idle
+        .mockResolvedValueOnce(false)   // msg2 pre-delivery
+        .mockResolvedValueOnce(false)   // msg2 post-delivery idle
+        .mockResolvedValue(true);       // flush polls: ready
+
+      // PTY output contains msg1 but NOT msg2
+      mockAgentRegistrationService.captureAgentOutput
+        .mockResolvedValue('[CHAT:conv-multi-1] First message');
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'First',
+        conversationId: 'conv-multi-1',
+        source: 'slack',
+      });
+
+      // Process first message
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      queueService.enqueue({
+        content: 'Second',
+        conversationId: 'conv-multi-2',
+        source: 'web_chat',
+      });
+
+      // Process second message (skip INTER_MESSAGE_DELAY for user message)
+      jest.advanceTimersByTime(10);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(processor.getPendingAckCount()).toBe(2);
+
+      // Trigger flush — msg1 found, msg2 not found
+      jest.advanceTimersByTime(600);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      // msg1 should be completed, msg2 should remain (and get redelivered)
+      expect(processor.getPendingAckCount()).toBe(1);
+    });
+
+    it('should handle all messages completing on flush', async () => {
+      mockAgentRegistrationService.waitForAgentReady
+        .mockResolvedValueOnce(false)   // msg1 pre-delivery
+        .mockResolvedValueOnce(false)   // msg1 post-delivery
+        .mockResolvedValueOnce(false)   // msg2 pre-delivery
+        .mockResolvedValueOnce(false)   // msg2 post-delivery
+        .mockResolvedValue(true);       // flush polls
+
+      // PTY output contains both messages
+      mockAgentRegistrationService.captureAgentOutput
+        .mockResolvedValue('[CHAT:conv-both-1] msg1\n[CHAT:conv-both-2] msg2');
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'First',
+        conversationId: 'conv-both-1',
+        source: 'slack',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      queueService.enqueue({
+        content: 'Second',
+        conversationId: 'conv-both-2',
+        source: 'web_chat',
+      });
+
+      jest.advanceTimersByTime(10);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(processor.getPendingAckCount()).toBe(2);
+
+      // Trigger flush — both found
+      jest.advanceTimersByTime(600);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
       expect(processor.getPendingAckCount()).toBe(0);
     });
   });

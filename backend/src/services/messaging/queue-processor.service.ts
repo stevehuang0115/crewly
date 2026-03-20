@@ -98,6 +98,9 @@ export class QueueProcessorService extends EventEmitter {
   /** Timer for periodic cleanup of stale dedup entries */
   private dedupCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** Timer for periodic cleanup of stale pending-ack entries */
+  private pendingAckCleanupTimer: ReturnType<typeof setInterval> | null = null;
+
   /**
    * #239: Tracks force-delivered user messages awaiting acknowledgment.
    * When a user message is force-delivered (agent not at prompt), it is
@@ -129,6 +132,7 @@ export class QueueProcessorService extends EventEmitter {
     this.running = true;
     this.queueService.on('enqueued', this.onMessageEnqueued);
     this.startDedupCleanup();
+    this.startPendingAckCleanup();
     this.logger.info('Queue processor started');
 
     // Process any messages already in the queue
@@ -152,6 +156,7 @@ export class QueueProcessorService extends EventEmitter {
     }
 
     this.stopDedupCleanup();
+    this.stopPendingAckCleanup();
     this.deliveredMessageIds.clear();
     this.pendingAckMessages.clear();
 
@@ -720,6 +725,74 @@ export class QueueProcessorService extends EventEmitter {
   }
 
   /**
+   * Start periodic cleanup of stale pending-ack entries.
+   * Runs at PENDING_ACK_TTL_MS intervals and fails entries that have exceeded
+   * the TTL — prevents memory leaks if an agent crashes and never returns to prompt.
+   */
+  private startPendingAckCleanup(): void {
+    if (this.pendingAckCleanupTimer) return;
+    const ttlMs = EVENT_DELIVERY_CONSTANTS.PENDING_ACK_TTL_MS ?? 600_000;
+    this.pendingAckCleanupTimer = setInterval(() => {
+      this.purgeExpiredPendingAcks();
+    }, ttlMs);
+    if (this.pendingAckCleanupTimer.unref) {
+      this.pendingAckCleanupTimer.unref();
+    }
+  }
+
+  /**
+   * Stop the periodic pending-ack cleanup timer.
+   */
+  private stopPendingAckCleanup(): void {
+    if (this.pendingAckCleanupTimer) {
+      clearInterval(this.pendingAckCleanupTimer);
+      this.pendingAckCleanupTimer = null;
+    }
+  }
+
+  /**
+   * Remove pending-ack entries that have exceeded the TTL.
+   * Marks them as failed and routes error to the source so the user is notified.
+   */
+  private purgeExpiredPendingAcks(): void {
+    const ttlMs = EVENT_DELIVERY_CONSTANTS.PENDING_ACK_TTL_MS ?? 600_000;
+    const now = Date.now();
+    let purged = 0;
+    for (const [id, entry] of this.pendingAckMessages) {
+      if (now - entry.deliveredAt > ttlMs) {
+        this.queueService.markFailed(id, 'Force-delivered message expired without acknowledgment (TTL cleanup)');
+        this.responseRouter.routeError(
+          entry.originalMessage,
+          'Message delivery failed: the orchestrator did not process your message in time. Please try again.'
+        );
+        this.pendingAckMessages.delete(id);
+        purged++;
+      }
+    }
+    if (purged > 0) {
+      this.logger.warn('Purged expired pending-ack entries', { purged, remaining: this.pendingAckMessages.size });
+    }
+  }
+
+  /**
+   * Check if a pending-ack message's fingerprint appears in PTY output.
+   *
+   * Matches the full [CHAT:conversationId] or [GCHAT:conversationId] prefix
+   * rather than a bare conversationId to avoid false positives from short
+   * or common IDs appearing in unrelated output.
+   *
+   * @param output - Captured PTY output string
+   * @param conversationId - The conversation ID to search for
+   * @returns true if the message fingerprint was found
+   */
+  private isPendingAckInOutput(output: string, conversationId: string): boolean {
+    return output.includes(`[CHAT:${conversationId}]`)
+      || output.includes(`[GCHAT:${conversationId}]`)
+      || output.includes(`[CHAT:${conversationId} `)
+      || output.includes(`[GCHAT:${conversationId} `);
+  }
+
+  /**
    * #239: Flush pending-ack messages by verifying them against PTY output.
    *
    * Called when the agent returns to prompt (waitForAgentReady succeeds).
@@ -765,10 +838,10 @@ export class QueueProcessorService extends EventEmitter {
         continue;
       }
 
-      // Check if the conversationId appears in the PTY output.
-      // The delivery content includes [CHAT:conversationId] or [GCHAT:conversationId]
-      // prefixes, which the agent echoes when it processes the message.
-      const wasProcessed = ptyOutput.includes(entry.conversationId);
+      // Check if the delivery prefix [CHAT:conversationId] or [GCHAT:conversationId]
+      // appears in the PTY output. Using the full prefix avoids false positives from
+      // short or common conversationIds that might appear in unrelated output.
+      const wasProcessed = this.isPendingAckInOutput(ptyOutput, entry.conversationId);
 
       if (wasProcessed) {
         this.logger.info('Pending-ack message confirmed in PTY output', {
@@ -804,7 +877,7 @@ export class QueueProcessorService extends EventEmitter {
         sessionName,
         scanLines
       );
-      if (freshOutput.includes(entry.conversationId)) {
+      if (this.isPendingAckInOutput(freshOutput, entry.conversationId)) {
         this.logger.info('Pending-ack message found on re-check, marking completed', {
           messageId: entry.messageId,
           conversationId: entry.conversationId,
