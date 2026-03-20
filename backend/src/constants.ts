@@ -224,6 +224,12 @@ export const EVENT_DELIVERY_CONSTANTS = {
 	DEEP_SCAN_INTERVAL: 5000,
 	/** Number of lines to capture for deep-scan prompt detection */
 	DEEP_SCAN_LINES: 500,
+	/** Number of PTY lines to scan when verifying force-delivered message acknowledgment */
+	PENDING_ACK_SCAN_LINES: 300,
+	/** Maximum re-delivery attempts for force-delivered messages that were not acknowledged */
+	PENDING_ACK_MAX_RETRIES: 3,
+	/** Time in milliseconds before a pending-ack entry is considered stale and discarded */
+	PENDING_ACK_TTL_MS: 600_000,
 } as const;
 
 /**
