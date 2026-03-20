@@ -30,8 +30,13 @@ jest.mock('child_process', () => ({
 	exec: jest.fn(
 		(
 			cmd: string,
-			cb: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+			...rest: unknown[]
 		) => {
+			// exec(cmd, cb) or exec(cmd, opts, cb)
+			const cb = typeof rest[0] === 'function'
+				? rest[0] as (err: Error | null, result: { stdout: string; stderr: string }) => void
+				: rest[1] as (err: Error | null, result: { stdout: string; stderr: string }) => void;
+
 			const result = mockExecAsync(cmd);
 			if (result instanceof Error) {
 				cb(result, { stdout: '', stderr: result.message });
@@ -49,6 +54,7 @@ jest.mock('child_process', () => ({
 			}
 		},
 	),
+	spawn: jest.fn(),
 }));
 
 jest.mock('../../../config/index.js', () => ({
@@ -237,6 +243,169 @@ describe('serviceCommand', () => {
 			expect(mockUnlinkSync).toHaveBeenCalledWith(
 				expect.stringContaining('crewly-service.sh'),
 			);
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// start subcommand
+	// -----------------------------------------------------------------------
+
+	describe('start (macOS)', () => {
+		it('opens .command file when not running', async () => {
+			mockExistsSync.mockImplementation((p: string) => {
+				if (p.includes('crewly.pid')) return false;
+				if (p.includes('crewly-start.command')) return true;
+				return false;
+			});
+
+			mockExecAsync.mockReturnValue('');
+
+			await serviceCommand('start', {});
+
+			expect(mockExecAsync).toHaveBeenCalledWith(
+				expect.stringContaining('open'),
+			);
+
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('started');
+		});
+
+		it('shows warning if already running', async () => {
+			mockExistsSync.mockImplementation((p: string) => {
+				if (p.includes('crewly.pid')) return true;
+				return false;
+			});
+			mockReadFileSync.mockReturnValue('12345');
+
+			const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+
+			await serviceCommand('start', {});
+
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('already running');
+
+			killSpy.mockRestore();
+		});
+
+		it('clears stale PID file before starting', async () => {
+			mockExistsSync.mockImplementation((p: string) => {
+				if (p.includes('crewly.pid')) return true;
+				if (p.includes('crewly-start.command')) return true;
+				return false;
+			});
+			mockReadFileSync.mockReturnValue('99999');
+
+			// PID check fails → stale
+			const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => {
+				throw new Error('ESRCH');
+			});
+			mockExecAsync.mockReturnValue('');
+
+			await serviceCommand('start', {});
+
+			expect(mockUnlinkSync).toHaveBeenCalledWith(
+				expect.stringContaining('crewly.pid'),
+			);
+
+			killSpy.mockRestore();
+		});
+
+		it('exits with error if not installed', async () => {
+			mockExistsSync.mockReturnValue(false);
+
+			await serviceCommand('start', {});
+
+			expect(exitSpy).toHaveBeenCalledWith(1);
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('not installed');
+		});
+	});
+
+	describe('start (Linux)', () => {
+		beforeEach(() => {
+			Object.defineProperty(process, 'platform', { value: 'linux' });
+		});
+
+		it('calls systemctl start when installed', async () => {
+			mockExistsSync.mockImplementation((p: string) => {
+				if (p.includes('crewly.pid')) return false;
+				if (p.includes('crewly.service')) return true;
+				return false;
+			});
+			mockExecAsync.mockReturnValue('');
+
+			await serviceCommand('start', {});
+
+			expect(mockExecAsync).toHaveBeenCalledWith(
+				expect.stringContaining('systemctl --user start'),
+			);
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// upgrade subcommand
+	// -----------------------------------------------------------------------
+
+	describe('upgrade (macOS)', () => {
+		it('stops, installs, regenerates, and starts', async () => {
+			// Stop phase: no running process
+			mockExistsSync.mockImplementation((p: string) => {
+				if (p.includes('crewly.pid')) return false;
+				if (p.includes('crewly-start.command')) return true;
+				if (p.includes('package.json')) return true;
+				return false;
+			});
+			mockReadFileSync.mockReturnValue(JSON.stringify({ name: 'crewly' }));
+			mockExecAsync.mockReturnValue('');
+
+			await serviceCommand('upgrade', { version: '1.5.0' });
+
+			// Should run npm install
+			expect(mockExecAsync).toHaveBeenCalledWith(
+				'npm install -g crewly@1.5.0',
+			);
+
+			// Should regenerate .command file
+			expect(mockWriteFileSync).toHaveBeenCalledWith(
+				expect.stringContaining('crewly-start.command'),
+				expect.stringContaining('#!/bin/bash'),
+				expect.objectContaining({ mode: 0o755 }),
+			);
+
+			// Should open the .command file to start
+			expect(mockExecAsync).toHaveBeenCalledWith(
+				expect.stringContaining('open'),
+			);
+		});
+
+		it('defaults to latest when no version specified', async () => {
+			mockExistsSync.mockImplementation((p: string) => {
+				if (p.includes('crewly.pid')) return false;
+				if (p.includes('crewly-start.command')) return true;
+				if (p.includes('package.json')) return true;
+				return false;
+			});
+			mockReadFileSync.mockReturnValue(JSON.stringify({ name: 'crewly' }));
+			mockExecAsync.mockReturnValue('');
+
+			await serviceCommand('upgrade', {});
+
+			expect(mockExecAsync).toHaveBeenCalledWith(
+				'npm install -g crewly@latest',
+			);
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// help text
+	// -----------------------------------------------------------------------
+
+	describe('help text', () => {
+		it('shows start and upgrade in usage message', async () => {
+			await serviceCommand('bogus', {});
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('start');
+			expect(output).toContain('upgrade');
 		});
 	});
 
@@ -549,6 +718,20 @@ describe('generateCommandFile', () => {
 		expect(content).toContain('pty.node');
 		expect(content).toContain('npm rebuild node-pty');
 		expect(content).toContain('Architecture mismatch');
+	});
+
+	it('#244: has cd INSIDE the while loop (not before it)', () => {
+		const content = generateCommandFile('/any/path');
+		const whilePos = content.indexOf('while true');
+		const cdPos = content.indexOf('cd "$CREWLY_DIR"');
+		// cd must appear AFTER 'while true', not before it
+		expect(whilePos).toBeGreaterThan(-1);
+		expect(cdPos).toBeGreaterThan(whilePos);
+	});
+
+	it('#244: cd has error handling', () => {
+		const content = generateCommandFile('/any/path');
+		expect(content).toContain('cd "$CREWLY_DIR" || {');
 	});
 });
 
