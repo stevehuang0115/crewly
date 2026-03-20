@@ -4543,4 +4543,26 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		});
 		return false;
 	}
+
+	/**
+	 * Capture the current PTY output of a running agent session.
+	 *
+	 * Used by the queue processor to verify that a force-delivered message
+	 * was actually seen by the agent (pending-ack verification).
+	 *
+	 * @param sessionName - The agent session name
+	 * @param lines - Number of lines to capture (default 200)
+	 * @returns The captured terminal output, or empty string if session not found
+	 */
+	async captureAgentOutput(sessionName: string, lines = 200): Promise<string> {
+		try {
+			const sessionHelper = await this.getSessionHelper();
+			if (!sessionHelper.sessionExists(sessionName)) {
+				return '';
+			}
+			return sessionHelper.capturePane(sessionName, lines);
+		} catch {
+			return '';
+		}
+	}
 }

@@ -92,6 +92,13 @@ function mockRes(): Response {
 
 const mockNext: NextFunction = jest.fn();
 
+const originalFetch = global.fetch;
+const mockFetch = jest.fn().mockResolvedValue({
+  ok: true,
+  status: 200,
+  json: async () => ({ success: true }),
+}) as jest.Mock;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -99,7 +106,7 @@ const mockNext: NextFunction = jest.fn();
 describe('Cloud Controller', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    global.fetch = mockFetch;
+    global.fetch = mockFetch as unknown as typeof fetch;
   });
 
   afterAll(() => {

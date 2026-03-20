@@ -6,6 +6,11 @@
  * fire-and-forget pattern. Responses are handled asynchronously by the
  * orchestrator through reply-* skills (reply-slack, reply-chat, reply-gchat).
  *
+ * #239: Force-delivered user messages (Slack/web chat) are tracked in a
+ * pending-ack list. When the agent returns to prompt, the PTY output is
+ * checked for evidence the message was processed. If not found, the message
+ * is re-delivered to prevent silent loss.
+ *
  * @module services/messaging/queue-processor
  */
 
@@ -48,6 +53,29 @@ import { StorageService } from '../core/storage.service.js';
 /** Time in milliseconds before a delivered message ID is purged from the dedup set */
 const DEDUP_TTL_MS = 300_000; // 5 minutes
 
+/**
+ * Entry in the pending-ack list for force-delivered user messages.
+ * Tracks all information needed to verify or redeliver the message.
+ */
+export interface PendingAckEntry {
+  /** Unique message ID */
+  messageId: string;
+  /** Conversation ID used as a fingerprint to detect processing in PTY output */
+  conversationId: string;
+  /** The formatted delivery content (for redelivery) */
+  deliveryContent: string;
+  /** Target session the message was delivered to */
+  targetSession: string;
+  /** Runtime type of the target agent */
+  runtimeType: RuntimeType;
+  /** Timestamp when force-delivered */
+  deliveredAt: number;
+  /** Number of redelivery attempts so far */
+  retryCount: number;
+  /** The original queued message (for markCompleted / markFailed / routeResponse) */
+  originalMessage: import('../../types/messaging.types.js').QueuedMessage;
+}
+
 export class QueueProcessorService extends EventEmitter {
   private logger: ComponentLogger;
   private queueService: MessageQueueService;
@@ -69,6 +97,18 @@ export class QueueProcessorService extends EventEmitter {
 
   /** Timer for periodic cleanup of stale dedup entries */
   private dedupCleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Timer for periodic cleanup of stale pending-ack entries */
+  private pendingAckCleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * #239: Tracks force-delivered user messages awaiting acknowledgment.
+   * When a user message is force-delivered (agent not at prompt), it is
+   * added here instead of being marked completed. On the next successful
+   * waitForAgentReady (agent returns to prompt), the PTY output is checked
+   * for evidence that each pending message was actually processed.
+   */
+  private pendingAckMessages: Map<string, PendingAckEntry> = new Map();
 
   constructor(
     queueService: MessageQueueService,
@@ -92,6 +132,7 @@ export class QueueProcessorService extends EventEmitter {
     this.running = true;
     this.queueService.on('enqueued', this.onMessageEnqueued);
     this.startDedupCleanup();
+    this.startPendingAckCleanup();
     this.logger.info('Queue processor started');
 
     // Process any messages already in the queue
@@ -115,7 +156,9 @@ export class QueueProcessorService extends EventEmitter {
     }
 
     this.stopDedupCleanup();
+    this.stopPendingAckCleanup();
     this.deliveredMessageIds.clear();
+    this.pendingAckMessages.clear();
 
     this.logger.info('Queue processor stopped');
   }
@@ -191,6 +234,25 @@ export class QueueProcessorService extends EventEmitter {
 
     const message = this.queueService.dequeue();
     if (!message) {
+      // #239: Even with no new messages, flush any pending-ack entries
+      // when the agent is potentially idle. This handles the case where
+      // the queue is empty but force-delivered messages need verification.
+      if (this.pendingAckMessages.size > 0) {
+        const storedRuntimeType = orchestratorInfo?.runtimeType as RuntimeType | undefined;
+        const rt: RuntimeType = storedRuntimeType || RUNTIME_TYPES.CLAUDE_CODE;
+        const isReady = await this.agentRegistrationService.waitForAgentReady(
+          ORCHESTRATOR_SESSION_NAME,
+          EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_TIMEOUT,
+          rt
+        );
+        if (isReady) {
+          await this.flushPendingAcks(ORCHESTRATOR_SESSION_NAME, rt);
+        }
+        // Schedule another check if there are still pending acks
+        if (this.pendingAckMessages.size > 0) {
+          this.scheduleProcessNext(EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL);
+        }
+      }
       return;
     }
 
@@ -257,6 +319,13 @@ export class QueueProcessorService extends EventEmitter {
         runtimeType
       );
 
+      // #239: When the agent returns to prompt, flush any force-delivered
+      // messages that are pending acknowledgment. This is the key mechanism
+      // to detect and redeliver messages that were silently consumed by the PTY.
+      if (isReady && this.pendingAckMessages.size > 0) {
+        await this.flushPendingAcks(deliveryTarget, runtimeType);
+      }
+
       // Check if message was force-cancelled while waiting for agent readiness
       if (message.status === 'cancelled') {
         this.logger.info('Message was cancelled during processing, skipping delivery', {
@@ -265,6 +334,10 @@ export class QueueProcessorService extends EventEmitter {
         clearInterval(keepaliveInterval);
         return;
       }
+
+      // #239: Track whether this delivery was forced (agent not at prompt).
+      // Force-delivered user messages need pending-ack tracking.
+      let wasForceDelivered = false;
 
       if (!isReady) {
         // For user messages and system events: force-deliver immediately instead
@@ -275,6 +348,7 @@ export class QueueProcessorService extends EventEmitter {
           (isUserMessage && EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_FORCE_DELIVER) ||
           (isSystemEvent && EVENT_DELIVERY_CONSTANTS.SYSTEM_EVENT_FORCE_DELIVER);
         if (shouldForceDeliver) {
+          wasForceDelivered = true;
           this.logger.warn('Agent not ready but force-delivering message to reduce delay', {
             messageId: message.id,
             source: message.source,
@@ -490,24 +564,52 @@ export class QueueProcessorService extends EventEmitter {
         return;
       }
 
-      // Fire-and-forget: mark as completed immediately after delivery.
-      // Responses are handled asynchronously by the orchestrator through
-      // reply-* skills (reply-slack, reply-chat, reply-gchat).
-      this.queueService.markCompleted(message.id, '');
-      // Mark all batched system event messages as completed too
-      if (batchedMessages.length > 0) {
-        this.queueService.markBatchCompleted(batchedMessages);
+      // #239: For force-delivered user messages, add to pending-ack list
+      // instead of marking completed. The message will be verified or
+      // redelivered when the agent next returns to prompt.
+      if (wasForceDelivered && isUserMessage) {
+        this.pendingAckMessages.set(message.id, {
+          messageId: message.id,
+          conversationId: message.conversationId,
+          deliveryContent,
+          targetSession,
+          runtimeType: deliveryRuntimeType,
+          deliveredAt: Date.now(),
+          retryCount: 0,
+          originalMessage: message,
+        });
+
+        // Resolve source callbacks immediately to unblock callers (e.g. Slack bridge).
+        // The actual reply comes via reply-* skills; pending-ack only guards against
+        // the message being silently swallowed by the PTY.
+        this.responseRouter.routeResponse(message, '');
+
+        this.logger.info('Force-delivered user message added to pending-ack list', {
+          messageId: message.id,
+          source: message.source,
+          conversationId: message.conversationId,
+          pendingAckCount: this.pendingAckMessages.size,
+        });
+      } else {
+        // Normal path: mark as completed immediately after delivery.
+        // Responses are handled asynchronously by the orchestrator through
+        // reply-* skills (reply-slack, reply-chat, reply-gchat).
+        this.queueService.markCompleted(message.id, '');
+        // Mark all batched system event messages as completed too
+        if (batchedMessages.length > 0) {
+          this.queueService.markBatchCompleted(batchedMessages);
+        }
+
+        // Resolve any pending source callbacks (e.g. slackResolve, googleChatResolve)
+        // with empty response to unblock callers. The actual reply comes via reply-* skills.
+        this.responseRouter.routeResponse(message, '');
+
+        this.logger.info('Message delivered (fire-and-forget)', {
+          messageId: message.id,
+          source: message.source,
+          batchSize: isSystemEvent ? 1 + batchedMessages.length : 1,
+        });
       }
-
-      // Resolve any pending source callbacks (e.g. slackResolve, googleChatResolve)
-      // with empty response to unblock callers. The actual reply comes via reply-* skills.
-      this.responseRouter.routeResponse(message, '');
-
-      this.logger.info('Message delivered (fire-and-forget)', {
-        messageId: message.id,
-        source: message.source,
-        batchSize: isSystemEvent ? 1 + batchedMessages.length : 1,
-      });
 
       // Wait for orchestrator to finish post-delivery work before next message.
       // Skip for system events: they're fire-and-forget notifications.
@@ -549,11 +651,17 @@ export class QueueProcessorService extends EventEmitter {
    * blocked behind the 500ms cooldown after system event delivery.
    */
   private scheduleNextIfPending(): void {
-    if (this.running && this.queueService.hasPending()) {
+    if (!this.running) return;
+
+    if (this.queueService.hasPending()) {
       const delay = this.queueService.hasUserMessagePending()
         ? 0
         : MESSAGE_QUEUE_CONSTANTS.INTER_MESSAGE_DELAY;
       this.scheduleProcessNext(delay);
+    } else if (this.pendingAckMessages.size > 0) {
+      // #239: No new queue messages but pending-ack entries need flushing.
+      // Schedule a poll to check if agent returned to prompt.
+      this.scheduleProcessNext(EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL);
     }
   }
 
@@ -605,5 +713,203 @@ export class QueueProcessorService extends EventEmitter {
    */
   getDeliveredMessageCount(): number {
     return this.deliveredMessageIds.size;
+  }
+
+  /**
+   * Get the number of messages awaiting acknowledgment (for testing).
+   *
+   * @returns Number of entries in the pending-ack list
+   */
+  getPendingAckCount(): number {
+    return this.pendingAckMessages.size;
+  }
+
+  /**
+   * Start periodic cleanup of stale pending-ack entries.
+   * Runs at PENDING_ACK_TTL_MS intervals and fails entries that have exceeded
+   * the TTL — prevents memory leaks if an agent crashes and never returns to prompt.
+   */
+  private startPendingAckCleanup(): void {
+    if (this.pendingAckCleanupTimer) return;
+    const ttlMs = EVENT_DELIVERY_CONSTANTS.PENDING_ACK_TTL_MS ?? 600_000;
+    this.pendingAckCleanupTimer = setInterval(() => {
+      this.purgeExpiredPendingAcks();
+    }, ttlMs);
+    if (this.pendingAckCleanupTimer.unref) {
+      this.pendingAckCleanupTimer.unref();
+    }
+  }
+
+  /**
+   * Stop the periodic pending-ack cleanup timer.
+   */
+  private stopPendingAckCleanup(): void {
+    if (this.pendingAckCleanupTimer) {
+      clearInterval(this.pendingAckCleanupTimer);
+      this.pendingAckCleanupTimer = null;
+    }
+  }
+
+  /**
+   * Remove pending-ack entries that have exceeded the TTL.
+   * Marks them as failed and routes error to the source so the user is notified.
+   */
+  private purgeExpiredPendingAcks(): void {
+    const ttlMs = EVENT_DELIVERY_CONSTANTS.PENDING_ACK_TTL_MS ?? 600_000;
+    const now = Date.now();
+    let purged = 0;
+    for (const [id, entry] of this.pendingAckMessages) {
+      if (now - entry.deliveredAt > ttlMs) {
+        this.queueService.markFailed(id, 'Force-delivered message expired without acknowledgment (TTL cleanup)');
+        this.responseRouter.routeError(
+          entry.originalMessage,
+          'Message delivery failed: the orchestrator did not process your message in time. Please try again.'
+        );
+        this.pendingAckMessages.delete(id);
+        purged++;
+      }
+    }
+    if (purged > 0) {
+      this.logger.warn('Purged expired pending-ack entries', { purged, remaining: this.pendingAckMessages.size });
+    }
+  }
+
+  /**
+   * Check if a pending-ack message's fingerprint appears in PTY output.
+   *
+   * Matches the full [CHAT:conversationId] or [GCHAT:conversationId] prefix
+   * rather than a bare conversationId to avoid false positives from short
+   * or common IDs appearing in unrelated output.
+   *
+   * @param output - Captured PTY output string
+   * @param conversationId - The conversation ID to search for
+   * @returns true if the message fingerprint was found
+   */
+  private isPendingAckInOutput(output: string, conversationId: string): boolean {
+    return output.includes(`[CHAT:${conversationId}]`)
+      || output.includes(`[GCHAT:${conversationId}]`)
+      || output.includes(`[CHAT:${conversationId} `)
+      || output.includes(`[GCHAT:${conversationId} `);
+  }
+
+  /**
+   * #239: Flush pending-ack messages by verifying them against PTY output.
+   *
+   * Called when the agent returns to prompt (waitForAgentReady succeeds).
+   * For each pending-ack entry:
+   * - Captures the agent's recent PTY output
+   * - Checks if the conversationId or CHAT prefix appears in the output
+   * - If found → message was processed, mark completed
+   * - If not found → message was swallowed, redeliver
+   * - If max retries exceeded → mark failed
+   *
+   * @param sessionName - The agent session to check
+   * @param runtimeType - Runtime type for redelivery
+   */
+  private async flushPendingAcks(sessionName: string, runtimeType: RuntimeType): Promise<void> {
+    if (this.pendingAckMessages.size === 0) return;
+
+    const scanLines = EVENT_DELIVERY_CONSTANTS.PENDING_ACK_SCAN_LINES ?? 300;
+    const maxRetries = EVENT_DELIVERY_CONSTANTS.PENDING_ACK_MAX_RETRIES ?? 3;
+    const ttlMs = EVENT_DELIVERY_CONSTANTS.PENDING_ACK_TTL_MS ?? 600_000;
+
+    // Capture PTY output once for all pending checks
+    const ptyOutput = await this.agentRegistrationService.captureAgentOutput(
+      sessionName,
+      scanLines
+    );
+
+    const now = Date.now();
+    const entriesToProcess = Array.from(this.pendingAckMessages.values());
+
+    for (const entry of entriesToProcess) {
+      // Skip entries for different sessions
+      if (entry.targetSession !== sessionName) continue;
+
+      // Purge stale entries beyond TTL
+      if (now - entry.deliveredAt > ttlMs) {
+        this.logger.warn('Pending-ack entry expired beyond TTL, marking failed', {
+          messageId: entry.messageId,
+          conversationId: entry.conversationId,
+          ageMs: now - entry.deliveredAt,
+        });
+        this.queueService.markFailed(entry.messageId, 'Force-delivered message expired without acknowledgment');
+        this.pendingAckMessages.delete(entry.messageId);
+        continue;
+      }
+
+      // Check if the delivery prefix [CHAT:conversationId] or [GCHAT:conversationId]
+      // appears in the PTY output. Using the full prefix avoids false positives from
+      // short or common conversationIds that might appear in unrelated output.
+      const wasProcessed = this.isPendingAckInOutput(ptyOutput, entry.conversationId);
+
+      if (wasProcessed) {
+        this.logger.info('Pending-ack message confirmed in PTY output', {
+          messageId: entry.messageId,
+          conversationId: entry.conversationId,
+        });
+        this.queueService.markCompleted(entry.messageId, '');
+        this.pendingAckMessages.delete(entry.messageId);
+        continue;
+      }
+
+      // Message not found in output — was likely swallowed by the PTY
+      if (entry.retryCount >= maxRetries) {
+        this.logger.error('Force-delivered message not acknowledged after max retries, marking failed', {
+          messageId: entry.messageId,
+          conversationId: entry.conversationId,
+          retryCount: entry.retryCount,
+        });
+        this.queueService.markFailed(
+          entry.messageId,
+          `Force-delivered message was not processed by the agent after ${entry.retryCount} redelivery attempts`
+        );
+        this.responseRouter.routeError(
+          entry.originalMessage,
+          'Message delivery failed: the orchestrator did not process your message. Please try again.'
+        );
+        this.pendingAckMessages.delete(entry.messageId);
+        continue;
+      }
+
+      // Redeliver: double-check PTY output right before sending to minimize duplicates
+      const freshOutput = await this.agentRegistrationService.captureAgentOutput(
+        sessionName,
+        scanLines
+      );
+      if (this.isPendingAckInOutput(freshOutput, entry.conversationId)) {
+        this.logger.info('Pending-ack message found on re-check, marking completed', {
+          messageId: entry.messageId,
+          conversationId: entry.conversationId,
+        });
+        this.queueService.markCompleted(entry.messageId, '');
+        this.pendingAckMessages.delete(entry.messageId);
+        continue;
+      }
+
+      // Redeliver the message
+      entry.retryCount++;
+      this.logger.warn('Redelivering force-delivered message (not found in PTY output)', {
+        messageId: entry.messageId,
+        conversationId: entry.conversationId,
+        retryCount: entry.retryCount,
+        maxRetries,
+      });
+
+      const redeliveryResult = await this.agentRegistrationService.sendMessageToAgent(
+        entry.targetSession,
+        entry.deliveryContent,
+        entry.runtimeType
+      );
+
+      if (!redeliveryResult.success) {
+        this.logger.warn('Redelivery failed, will retry on next idle', {
+          messageId: entry.messageId,
+          error: redeliveryResult.error,
+        });
+      }
+      // Keep in pendingAckMessages for next flush attempt regardless of success,
+      // because we still need to verify the agent actually processes it.
+    }
   }
 }

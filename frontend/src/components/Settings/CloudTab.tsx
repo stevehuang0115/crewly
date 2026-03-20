@@ -6,6 +6,10 @@
  * Pro features like device sync and relay connections.
  * Shows connected devices when authenticated.
  *
+ * Uses the backend `/api/cloud/status` endpoint as the source of truth
+ * for connection state, and optionally enriches with user profile from
+ * localStorage token validation.
+ *
  * @module components/Settings/CloudTab
  */
 
@@ -18,6 +22,9 @@ import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/clou
  * to avoid CORS issues when validating tokens against api.crewlyai.com.
  */
 const CLOUD_VALIDATE_URL = '/api/cloud/validate';
+
+/** Backend cloud status endpoint — source of truth for connection state. */
+const CLOUD_STATUS_URL = '/api/cloud/status';
 
 /** Cloud devices proxy endpoint — fetches device list from crewlyai.com. */
 const CLOUD_DEVICES_URL = '/api/relay/cloud-devices';
@@ -234,11 +241,50 @@ const DeviceListSection: React.FC = () => {
  */
 export const CloudTab: React.FC = () => {
   const [user, setUser] = useState<CloudUser | null>(null);
+  /** Whether the backend reports a cloud connection (source of truth). */
+  const [backendConnected, setBackendConnected] = useState(false);
+  /** Subscription tier from the backend status. */
+  const [backendTier, setBackendTier] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   /**
+   * Check backend cloud status — the authoritative source of truth.
+   *
+   * The backend CloudClientService tracks the actual connection state.
+   * Cloud connections made via CLI or auto-reconnect are reflected here
+   * even when the browser localStorage has no token.
+   *
+   * @returns Whether the backend reports an active connection
+   */
+  const checkBackendStatus = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch(CLOUD_STATUS_URL);
+      const data = await res.json();
+      if (res.ok && data.success && data.data) {
+        const status = data.data;
+        const isConnected = status.connectionStatus === 'connected';
+        setBackendConnected(isConnected);
+        if (isConnected) {
+          setBackendTier(status.tier ?? null);
+        }
+        return isConnected;
+      }
+    } catch {
+      // Backend unreachable — fall through to localStorage check
+    }
+    setBackendConnected(false);
+    setBackendTier(null);
+    return false;
+  }, []);
+
+  /**
    * Validate the stored cloud token and fetch user info.
+   *
+   * If the backend reports connected but localStorage has no token,
+   * the component still shows the connected state (from backend).
+   * The user profile is only populated when a localStorage token
+   * can be validated.
    */
   const validateToken = useCallback(async () => {
     const token = localStorage.getItem(CLOUD_TOKEN_KEY);
@@ -279,10 +325,16 @@ export const CloudTab: React.FC = () => {
     }
   }, []);
 
-  /** Validate token on mount. */
+  /**
+   * Initialize connection state: check backend first, then validate token.
+   */
   useEffect(() => {
-    validateToken();
-  }, [validateToken]);
+    const init = async () => {
+      await checkBackendStatus();
+      await validateToken();
+    };
+    init();
+  }, [checkBackendStatus, validateToken]);
 
   /**
    * Start the OAuth sign-in flow via crewlyai.com/cloud/auth.
@@ -318,11 +370,21 @@ export const CloudTab: React.FC = () => {
 
   /**
    * Disconnect from CrewlyAI Cloud.
+   * Clears both the localStorage token and the backend connection.
    */
-  const handleDisconnect = () => {
+  const handleDisconnect = async () => {
     localStorage.removeItem(CLOUD_TOKEN_KEY);
     setUser(null);
+    setBackendConnected(false);
+    setBackendTier(null);
     setError(null);
+
+    // Also disconnect on the backend
+    try {
+      await fetch('/api/cloud/disconnect', { method: 'POST' });
+    } catch {
+      // Best-effort — local state is already cleared
+    }
   };
 
   /**
@@ -363,14 +425,14 @@ export const CloudTab: React.FC = () => {
         </div>
       )}
 
-      {/* Connected State */}
-      {user ? (
+      {/* Connected State — show when backend reports connected OR user profile is validated */}
+      {(user || backendConnected) ? (
         <>
           <div className="bg-surface-dark border border-border-dark rounded-lg p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
-                  {user.avatar ? (
+                  {user?.avatar ? (
                     <img
                       src={user.avatar}
                       alt={user.name || user.email}
@@ -383,22 +445,24 @@ export const CloudTab: React.FC = () => {
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-text-primary-dark">
-                      {user.name || user.email}
+                      {user ? (user.name || user.email) : 'CrewlyAI Cloud'}
                     </span>
                     <Check className="w-4 h-4 text-emerald-400" />
                   </div>
-                  <span className="text-xs text-text-secondary-dark">{user.email}</span>
+                  <span className="text-xs text-text-secondary-dark">
+                    {user ? user.email : 'Connected via backend'}
+                  </span>
                 </div>
               </div>
 
-              <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getPlanBadgeClass(user.plan)}`}>
-                {user.plan.charAt(0).toUpperCase() + user.plan.slice(1)}
+              <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getPlanBadgeClass(user?.plan ?? backendTier ?? 'free')}`}>
+                {(user?.plan ?? backendTier ?? 'free').charAt(0).toUpperCase() + (user?.plan ?? backendTier ?? 'free').slice(1)}
               </span>
             </div>
 
             <div className="flex items-center gap-2 pt-2 border-t border-border-dark">
               <button
-                onClick={validateToken}
+                onClick={async () => { await checkBackendStatus(); await validateToken(); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors"
               >
                 <RefreshCw className="w-3.5 h-3.5" />

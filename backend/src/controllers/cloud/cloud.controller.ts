@@ -25,13 +25,13 @@ const logger = LoggerService.getInstance().createComponentLogger('CloudControlle
  *
  * Priority:
  * 1. CREWLY_RELAY_API_URL env var (explicit override, e.g. http://localhost:3000 for local dev)
- * 2. Default Cloud backend at https://crewlyai.com
+ * 2. Default Cloud backend at https://api.crewlyai.com
  */
 const RELAY_API_URL = (): string => {
   if (process.env['CREWLY_RELAY_API_URL']) {
     return process.env['CREWLY_RELAY_API_URL'];
   }
-  return 'https://crewlyai.com';
+  return 'https://api.crewlyai.com';
 };
 
 /**

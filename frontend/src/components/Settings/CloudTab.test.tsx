@@ -1,6 +1,11 @@
 /**
  * CloudTab Component Tests
  *
+ * Tests cover three connection scenarios:
+ * 1. Fully disconnected (no backend connection, no localStorage token)
+ * 2. Connected via localStorage token (browser-initiated OAuth)
+ * 3. Connected via backend only (CLI/auto-reconnect, no localStorage token)
+ *
  * @module components/Settings/CloudTab.test
  */
 
@@ -20,22 +25,46 @@ vi.stubGlobal('localStorage', {
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+/** Default disconnected backend status response. */
+const BACKEND_DISCONNECTED = {
+  ok: true,
+  json: async () => ({
+    success: true,
+    data: { connectionStatus: 'disconnected', cloudUrl: null, tier: 'free', lastSyncAt: null },
+  }),
+};
+
+/** Connected backend status response with a given tier. */
+function backendConnected(tier = 'pro') {
+  return {
+    ok: true,
+    json: async () => ({
+      success: true,
+      data: { connectionStatus: 'connected', cloudUrl: 'https://api.crewlyai.com', tier, lastSyncAt: new Date().toISOString() },
+    }),
+  };
+}
+
 /**
- * Helper to set up an authenticated session.
- * Handles the full fetch sequence: validate → store token → fetch devices.
+ * Helper to set up an authenticated session with localStorage token.
+ * Handles the full fetch sequence: backend status → validate → store token → fetch devices.
  *
  * @param devices - Devices to return from cloud-devices endpoint
+ * @param tier - Backend tier to return (default: 'pro')
  */
-function mockAuthenticatedWithDevices(devices: unknown[] = []) {
+function mockAuthenticatedWithDevices(devices: unknown[] = [], tier = 'pro') {
   mockStorage.set('crewly_cloud_token', 'valid-token');
 
   mockFetch.mockImplementation(async (url: string) => {
+    if (typeof url === 'string' && url.includes('/cloud/status')) {
+      return backendConnected(tier);
+    }
     if (typeof url === 'string' && url.includes('/cloud/validate')) {
       return {
         ok: true,
         json: async () => ({
           success: true,
-          data: { id: 'u1', email: 'test@test.com', plan: 'pro', name: 'Test User' },
+          data: { id: 'u1', email: 'test@test.com', plan: tier, name: 'Test User' },
         }),
       };
     }
@@ -55,6 +84,48 @@ function mockAuthenticatedWithDevices(devices: unknown[] = []) {
   });
 }
 
+/**
+ * Helper to mock backend-connected but NO localStorage token.
+ * Simulates CLI or auto-reconnect connections.
+ *
+ * @param tier - Subscription tier
+ * @param devices - Devices to return
+ */
+function mockBackendOnlyConnection(tier = 'pro', devices: unknown[] = []) {
+  // No localStorage token set
+
+  mockFetch.mockImplementation(async (url: string) => {
+    if (typeof url === 'string' && url.includes('/cloud/status')) {
+      return backendConnected(tier);
+    }
+    if (typeof url === 'string' && url.includes('/relay/cloud-devices')) {
+      return {
+        ok: true,
+        json: async () => ({
+          success: true,
+          data: { devices, localSessionId: 'local-session-1' },
+        }),
+      };
+    }
+    if (typeof url === 'string' && url.includes('/cloud/disconnect')) {
+      return { ok: true, json: async () => ({ success: true }) };
+    }
+    return { ok: false, json: async () => ({ success: false }) };
+  });
+}
+
+/**
+ * Helper to mock fully disconnected state (backend + no localStorage).
+ */
+function mockFullyDisconnected() {
+  mockFetch.mockImplementation(async (url: string) => {
+    if (typeof url === 'string' && url.includes('/cloud/status')) {
+      return BACKEND_DISCONNECTED;
+    }
+    return { ok: false, json: async () => ({ success: false }) };
+  });
+}
+
 describe('CloudTab', () => {
   beforeEach(() => {
     mockStorage.clear();
@@ -67,7 +138,8 @@ describe('CloudTab', () => {
   // Auth States
   // -----------------------------------------------------------------------
 
-  it('should render sign-in button when not connected', async () => {
+  it('should render sign-in button when fully disconnected', async () => {
+    mockFullyDisconnected();
     render(<CloudTab />);
 
     await waitFor(() => {
@@ -86,11 +158,19 @@ describe('CloudTab', () => {
     });
   });
 
-  it('should clear token when validation fails', async () => {
+  it('should clear token when validation fails but backend disconnected', async () => {
     mockStorage.set('crewly_cloud_token', 'invalid-token');
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ success: false, error: 'Invalid token' }),
+    mockFetch.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/cloud/status')) {
+        return BACKEND_DISCONNECTED;
+      }
+      if (typeof url === 'string' && url.includes('/cloud/validate')) {
+        return {
+          ok: false,
+          json: async () => ({ success: false, error: 'Invalid token' }),
+        };
+      }
+      return { ok: false, json: async () => ({ success: false }) };
     });
 
     render(<CloudTab />);
@@ -112,6 +192,51 @@ describe('CloudTab', () => {
 
     await waitFor(() => {
       expect(mockStorage.has('crewly_cloud_token')).toBe(false);
+      expect(screen.getByTestId('cloud-sign-in-button')).toBeDefined();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Backend-Only Connection (the bug scenario)
+  // -----------------------------------------------------------------------
+
+  it('should show connected state when backend is connected but no localStorage token', async () => {
+    mockBackendOnlyConnection('pro');
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Connected via backend')).toBeDefined();
+      expect(screen.getByText('Pro')).toBeDefined();
+    });
+
+    // Should NOT show sign-in button
+    expect(screen.queryByTestId('cloud-sign-in-button')).toBeNull();
+    // The connected state card should show "CrewlyAI Cloud" as the display name
+    const nameElements = screen.getAllByText('CrewlyAI Cloud');
+    expect(nameElements.length).toBeGreaterThanOrEqual(2); // header h2 + connected state span
+  });
+
+  it('should show device list when backend is connected without token', async () => {
+    mockBackendOnlyConnection('enterprise');
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('cloud-device-list-section')).toBeDefined();
+      expect(screen.getByText('Enterprise')).toBeDefined();
+    });
+  });
+
+  it('should disconnect backend-only connection when disconnect clicked', async () => {
+    mockBackendOnlyConnection('pro');
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Disconnect')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByText('Disconnect'));
+
+    await waitFor(() => {
       expect(screen.getByTestId('cloud-sign-in-button')).toBeDefined();
     });
   });
@@ -210,6 +335,9 @@ describe('CloudTab', () => {
     mockStorage.set('crewly_cloud_token', 'valid-token');
 
     mockFetch.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/cloud/status')) {
+        return backendConnected('free');
+      }
       if (typeof url === 'string' && url.includes('/cloud/validate')) {
         return {
           ok: true,
@@ -239,6 +367,7 @@ describe('CloudTab', () => {
   });
 
   it('should not show device list when not connected', async () => {
+    mockFullyDisconnected();
     render(<CloudTab />);
 
     await waitFor(() => {
