@@ -67,13 +67,29 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
 					signal: controller.signal,
 				});
 
-				if (!response.ok) return null;
+				if (!response.ok) {
+					// #214: Log specific guidance for common error codes
+					const hint = response.status === 404
+						? 'Model may be deprecated — check Gemini embedding model availability'
+						: response.status === 401 || response.status === 403
+							? 'Check your GEMINI_API_KEY — it may be invalid or lack permissions'
+							: '';
+					this.logger.warn('Gemini embedding API error, falling back to keyword search', {
+						status: response.status,
+						model: EMBEDDING_CONSTANTS.GEMINI_MODEL,
+						hint,
+					});
+					return null;
+				}
 				const data = (await response.json()) as { embedding?: { values?: number[] } };
 				return data.embedding?.values ?? null;
 			} finally {
 				clearTimeout(timeout);
 			}
-		} catch {
+		} catch (error) {
+			this.logger.warn('Gemini embedding API call failed, falling back to keyword search', {
+				error: error instanceof Error ? error.message : String(error),
+			});
 			return null;
 		}
 	}

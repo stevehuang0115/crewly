@@ -160,8 +160,27 @@ export class SkillCatalogService {
    */
   constructor(projectRoot?: string) {
     this.logger = LoggerService.getInstance().createComponentLogger('SkillCatalogService');
-    this.projectRoot = projectRoot || process.cwd();
+    // #222: Resolve install dir reliably instead of defaulting to CWD
+    this.projectRoot = projectRoot || this.resolveInstallDir();
     this.catalogDir = path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME, CATALOG_SUBDIR);
+  }
+
+  /**
+   * #222: Resolve the Crewly install directory from __dirname or CWD.
+   *
+   * @returns Absolute path to the Crewly install directory
+   */
+  private resolveInstallDir(): string {
+    const candidates = [
+      path.resolve(__dirname, '..', '..', '..'),          // from src/services/skill/
+      path.resolve(__dirname, '..', '..', '..', '..'),    // from dist/src/services/skill/
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(path.join(candidate, 'config', 'skills'))) {
+        return candidate;
+      }
+    }
+    return process.cwd();
   }
 
   /**

@@ -371,6 +371,10 @@ Create a `.env` file in your project root or set these in your shell:
 GEMINI_API_KEY=your_key_here           # Required for Gemini CLI runtime
 
 # Slack Integration (optional)
+# Import config/slack-app-manifest.json into your Slack app at api.slack.com
+# Required bot scopes: chat:write, files:read, files:write, app_mentions:read,
+#   channels:history, groups:history, im:history, mpim:history, users:read
+# Note: files:read is required for downloading files shared by users (#216)
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 SLACK_SIGNING_SECRET=...

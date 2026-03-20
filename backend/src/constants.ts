@@ -67,6 +67,8 @@ export const ENV_CONSTANTS = {
 	CREWLY_PROJECT_PATH: 'CREWLY_PROJECT_PATH',
 	/** Enable Claude Code telemetry for token tracking */
 	CLAUDE_CODE_ENABLE_TELEMETRY: 'CLAUDE_CODE_ENABLE_TELEMETRY',
+	/** #222: Absolute path to the Crewly installation directory (where config/skills/ lives) */
+	CREWLY_INSTALL_DIR: 'CREWLY_INSTALL_DIR',
 } as const;
 
 // Agent-specific timeout values (in milliseconds)

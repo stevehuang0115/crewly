@@ -696,7 +696,8 @@ export abstract class RuntimeAgentService {
 		targetPath?: string
 	): Promise<void> {
 		// Change to target directory first
-		const cdPath = targetPath || process.cwd();
+		// #222: Prefer projectRoot over process.cwd() to avoid wrong CWD
+		const cdPath = targetPath || this.projectRoot || process.cwd();
 		this.logger.info('Changing directory before runtime init', {
 			sessionName,
 			runtimeType: this.getRuntimeType(),

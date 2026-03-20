@@ -1611,7 +1611,8 @@ export class SchedulerService extends EventEmitter {
 
     try {
       const entries = await readdir(crewlyHome);
-      const tmpPattern = /^(recurring-checks\.json|one-time-checks\.json)\.tmp\./;
+      // #217: Broadened to match ALL atomicWriteFile temp files (*.tmp.{timestamp}.{random})
+      const tmpPattern = /\.tmp\.\d+\./;
 
       for (const entry of entries) {
         if (tmpPattern.test(entry)) {

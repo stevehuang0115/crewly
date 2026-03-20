@@ -326,7 +326,15 @@ export class LocalVectorSearchStrategy implements KnowledgeSearchStrategy {
         });
 
         if (!response.ok) {
-          this.logger.warn('Gemini embedding API returned non-OK status', { status: response.status });
+          // #214: Add actionable hints for common error codes
+          const hint = response.status === 404
+            ? 'Model may be deprecated — verify Gemini embedding model availability'
+            : response.status === 401 || response.status === 403
+              ? 'Check GEMINI_API_KEY validity and permissions'
+              : '';
+          this.logger.warn('Gemini embedding API error, falling back to keyword search', {
+            status: response.status, model: EMBEDDING_CONSTANTS.GEMINI_MODEL, hint,
+          });
           return null;
         }
 
