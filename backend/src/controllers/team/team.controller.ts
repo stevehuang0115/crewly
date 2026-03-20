@@ -581,6 +581,8 @@ async function _stopTeamMemberCore(
     mutableMember.sessionName = '';
     mutableMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE;
     mutableMember.workingStatus = CREWLY_CONSTANTS.WORKING_STATUSES.IDLE;
+    // #235: Record manual stop as dropout reason
+    (mutableMember as any).dropoutReason = 'manual';
     mutableMember.updatedAt = new Date().toISOString();
     await context.storageService.saveTeam(team);
 

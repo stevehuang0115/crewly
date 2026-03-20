@@ -1368,7 +1368,7 @@ This is a foundational task that should be completed first before other developm
    * @param sessionName - Session name of the agent (CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME for orchestrator)
    * @param status - New agent status (CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE | CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVATING | CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE)
    */
-  async updateAgentStatus(sessionName: string, status: AgentStatus): Promise<void> {
+  async updateAgentStatus(sessionName: string, status: AgentStatus, dropoutReason?: TeamMember['dropoutReason']): Promise<void> {
     // Handle orchestrator separately
     if (sessionName === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME) {
       return withOperationLock(this.orchestratorFile, async () => {
@@ -1404,6 +1404,9 @@ This is a foundational task that should be completed first before other developm
         for (const member of team.members || []) {
           if (member.sessionName === sessionName) {
             member.agentStatus = status;
+            if (dropoutReason) {
+              member.dropoutReason = dropoutReason;
+            }
             member.updatedAt = new Date().toISOString();
             memberFound = true;
 

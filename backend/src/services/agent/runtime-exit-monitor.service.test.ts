@@ -1605,4 +1605,26 @@ describe('RuntimeExitMonitorService', () => {
 		});
 	});
 
+	describe('#235: inferDropoutReason', () => {
+		it('should infer idle_exit as default reason', () => {
+			const reason = (service as any).inferDropoutReason({ buffer: 'normal shell prompt' });
+			expect(reason).toBe('idle_exit');
+		});
+
+		it('should infer crash from fatal errors', () => {
+			const reason = (service as any).inferDropoutReason({ buffer: 'fatal error occurred' });
+			expect(reason).toBe('crash');
+		});
+
+		it('should infer update_exit from update patterns', () => {
+			const reason = (service as any).inferDropoutReason({ buffer: 'update available, restart required' });
+			expect(reason).toBe('update_exit');
+		});
+
+		it('should infer task_complete from completion patterns', () => {
+			const reason = (service as any).inferDropoutReason({ buffer: 'task complete, all done' });
+			expect(reason).toBe('task_complete');
+		});
+	});
+
 });

@@ -696,16 +696,21 @@ export class RuntimeExitMonitorService {
 	 */
 	private async transitionToInactive(
 		sessionName: string,
-		monitored: MonitoredSession
+		monitored: MonitoredSession,
+		dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete'
 	): Promise<void> {
+		// #235: Determine dropout reason from exit patterns if not provided
+		const reason = dropoutReason || this.inferDropoutReason(monitored);
+
 		// Update agent status to inactive
 		try {
 			const storageService = StorageService.getInstance();
 			await storageService.updateAgentStatus(
 				sessionName,
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				reason
 			);
-			this.logger.info('Agent status updated to inactive after runtime exit', { sessionName });
+			this.logger.info('Agent status updated to inactive after runtime exit', { sessionName, dropoutReason: reason });
 
 			// Publish agent:inactive event to EventBus so orchestrator is notified
 			if (this.eventBusService) {
@@ -1235,6 +1240,26 @@ export class RuntimeExitMonitorService {
 			activeTaskCount: activeTasks.length,
 			restartSucceeded,
 		});
+	}
+
+	/**
+	 * #235: Infer dropout reason from the monitored session's buffer.
+	 *
+	 * @param monitored - Monitored session state
+	 * @returns Inferred dropout reason
+	 */
+	private inferDropoutReason(monitored: MonitoredSession): 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' {
+		const buffer = monitored.buffer.toLowerCase();
+		if (buffer.includes('update') && (buffer.includes('restart') || buffer.includes('upgrade'))) {
+			return 'update_exit';
+		}
+		if (buffer.includes('fatal') || buffer.includes('panic') || buffer.includes('segfault') || buffer.includes('killed')) {
+			return 'crash';
+		}
+		if (buffer.includes('task') && (buffer.includes('complete') || buffer.includes('done') || buffer.includes('finished'))) {
+			return 'task_complete';
+		}
+		return 'idle_exit';
 	}
 
 	/**

@@ -61,6 +61,9 @@ export interface TeamMember {
 
   /** Maximum number of concurrent tasks this member can handle. */
   maxConcurrentTasks?: number;
+
+  /** #235: Reason the agent last went inactive */
+  dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete';
 }
 
 export interface Team {
