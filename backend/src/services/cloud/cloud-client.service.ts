@@ -11,12 +11,26 @@
  * @module services/cloud/cloud-client.service
  */
 
+import * as os from 'os';
+import * as path from 'path';
+import { readFile, writeFile, mkdir, unlink } from 'fs/promises';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import {
   CLOUD_CONSTANTS,
   type CloudTier,
   type CloudConnectionStatus,
 } from '../../constants.js';
+
+/**
+ * Persisted cloud config stored at ~/.crewly/cloud/config.json.
+ * Enables auto-reconnect on backend restart.
+ */
+export interface PersistedCloudConfig {
+  cloudUrl: string;
+  token: string;
+  tier: string;
+  connectedAt: string;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -188,6 +202,14 @@ export class CloudClientService {
     this.lastSyncAt = new Date().toISOString();
 
     this.logger.info('Connected to CrewlyAI Cloud', { tier: this.tier });
+
+    // Persist credentials for auto-reconnect on restart
+    this.persistConfig().catch((err) => {
+      this.logger.warn('Failed to persist cloud config (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
     return { success: true, tier: this.tier };
   }
 
@@ -210,6 +232,13 @@ export class CloudClientService {
     this.lastSyncAt = new Date().toISOString();
 
     this.logger.info('Connected to CrewlyAI Cloud (local verification)', { tier: this.tier });
+
+    // Persist credentials for auto-reconnect on restart
+    this.persistConfig().catch((err) => {
+      this.logger.warn('Failed to persist cloud config (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   /**
@@ -224,7 +253,77 @@ export class CloudClientService {
     this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.DISCONNECTED;
     this.tier = CLOUD_CONSTANTS.TIERS.FREE;
     this.lastSyncAt = null;
+
+    // Remove persisted config
+    this.removePersistedConfig().catch((err) => {
+      this.logger.warn('Failed to remove persisted cloud config (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
+
+  // -------------------------------------------------------------------------
+  // Config Persistence
+  // -------------------------------------------------------------------------
+
+  /**
+   * Path to the persisted cloud config file.
+   */
+  static getConfigPath(): string {
+    return path.join(os.homedir(), '.crewly', 'cloud', 'config.json');
+  }
+
+  /**
+   * Load persisted cloud config from disk.
+   * Returns null if file doesn't exist or is invalid.
+   */
+  async loadPersistedConfig(): Promise<PersistedCloudConfig | null> {
+    try {
+      const data = await readFile(CloudClientService.getConfigPath(), 'utf-8');
+      const config = JSON.parse(data) as PersistedCloudConfig;
+      if (config.cloudUrl && config.token && config.tier) {
+        return config;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Persist current cloud connection config to disk for auto-reconnect.
+   */
+  private async persistConfig(): Promise<void> {
+    if (!this.cloudUrl || !this.token) return;
+
+    const config: PersistedCloudConfig = {
+      cloudUrl: this.cloudUrl,
+      token: this.token,
+      tier: this.tier,
+      connectedAt: new Date().toISOString(),
+    };
+
+    const configPath = CloudClientService.getConfigPath();
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    this.logger.debug('Persisted cloud config to disk');
+  }
+
+  /**
+   * Remove persisted cloud config from disk (on disconnect).
+   */
+  private async removePersistedConfig(): Promise<void> {
+    try {
+      await unlink(CloudClientService.getConfigPath());
+      this.logger.debug('Removed persisted cloud config');
+    } catch {
+      // File may not exist — not an error
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Template Fetching
+  // -------------------------------------------------------------------------
 
   /**
    * Fetch the list of premium templates available on CrewlyAI Cloud.

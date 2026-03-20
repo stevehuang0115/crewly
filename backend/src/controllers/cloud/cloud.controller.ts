@@ -43,6 +43,16 @@ const RELAY_API_URL = (): string => {
  *
  * @param token - JWT access token from cloud login
  */
+/**
+ * Auto-connect relay using a JWT token.
+ * Exported as autoConnectRelayFromToken for use by cloud-initializer.
+ *
+ * @param token - JWT access token
+ */
+export function autoConnectRelayFromToken(token: string): void {
+	autoConnectRelay(token);
+}
+
 function autoConnectRelay(token: string): void {
   try {
     const relay = RelayClientService.getInstance();

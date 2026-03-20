@@ -59,6 +59,7 @@ import { initializeSlackIfConfigured, shutdownSlack } from './services/slack/ind
 import { initializeWhatsAppIfConfigured, shutdownWhatsApp } from './services/whatsapp/index.js';
 import { initializeGoogleChatIfConfigured } from './services/messaging/google-chat-initializer.js';
 import { initializeTelegramIfConfigured, shutdownTelegram } from './services/telegram/index.js';
+import { initializeCloudIfConfigured } from './services/cloud/cloud-initializer.js';
 import { MessageQueueService, QueueProcessorService, ResponseRouterService } from './services/messaging/index.js';
 import { EventBusService } from './services/event-bus/index.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
@@ -790,6 +791,13 @@ export class CrewlyServer {
 
 			// Initialize Telegram if configured
 			await this.initializeTelegramIfConfigured();
+
+			// Restore Cloud connection from persisted config (non-blocking)
+			initializeCloudIfConfigured().catch((err) => {
+				this.logger.warn('Cloud initialization failed (non-fatal)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
 
 			// Start NOTIFY reconciliation service (retries failed Slack deliveries)
 			this.notifyReconciliationService = new NotifyReconciliationService();
