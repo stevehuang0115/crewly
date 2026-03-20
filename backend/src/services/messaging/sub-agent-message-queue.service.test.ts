@@ -191,4 +191,23 @@ describe('SubAgentMessageQueue', () => {
 			expect(queue.getQueueSize('test-session')).toBe(2);
 		});
 	});
+
+	describe('#236: AGENT_BUSY queuing', () => {
+		it('should accept messages queued for busy agents', () => {
+			queue.enqueue('busy-agent', 'message while busy');
+			expect(queue.hasPending('busy-agent')).toBe(true);
+			expect(queue.getQueueSize('busy-agent')).toBe(1);
+		});
+
+		it('should deliver queued messages when agent becomes available', () => {
+			queue.enqueue('busy-agent', 'queued msg 1');
+			queue.enqueue('busy-agent', 'queued msg 2');
+
+			const messages = queue.dequeueAll('busy-agent');
+			expect(messages).toHaveLength(2);
+			expect(messages[0].data).toBe('queued msg 1');
+			expect(messages[1].data).toBe('queued msg 2');
+			expect(queue.hasPending('busy-agent')).toBe(false);
+		});
+	});
 });

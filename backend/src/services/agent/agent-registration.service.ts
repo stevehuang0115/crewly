@@ -2611,6 +2611,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		success: boolean;
 		message?: string;
 		error?: string;
+		queued?: boolean;
 	}> {
 		// Per-session delivery serialization: chain this delivery after any
 		// in-flight delivery to the same session. This prevents concurrent
@@ -2779,17 +2780,28 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			const delivered = await this.sendMessageWithRetry(sessionName, message, maxDeliveryAttempts, runtimeType);
 
 			if (!delivered) {
-				// Check if the agent is actively processing (busy) — the queue
-				// processor can re-queue instead of permanently failing the message.
+				// Check if the agent is actively processing (busy) — queue for later delivery.
 				// Use PTY idle time instead of regex patterns for robust cross-runtime detection.
 				const idleMs = PtyActivityTrackerService.getInstance().getIdleTimeMs(sessionName);
 				const isBusy = idleMs < SESSION_COMMAND_DELAYS.AGENT_BUSY_IDLE_THRESHOLD_MS;
 
+				if (isBusy) {
+					// #236: Queue message for delivery when agent becomes idle
+					SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
+					this.logger.info('Agent busy — message queued for later delivery', {
+						sessionName,
+						messageLength: message.length,
+					});
+					return {
+						success: true,
+						queued: true,
+						message: '[AGENT_BUSY] Message queued for delivery when agent becomes idle',
+					};
+				}
+
 				return {
 					success: false,
-					error: isBusy
-						? '[AGENT_BUSY] Failed to deliver message — agent is actively processing'
-						: 'Failed to deliver message after multiple attempts',
+					error: 'Failed to deliver message after multiple attempts',
 				};
 			}
 
