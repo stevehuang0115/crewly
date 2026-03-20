@@ -341,7 +341,7 @@ export class OAuthReloginMonitorService {
 			return;
 		}
 
-		// Append to rolling buffer for error detection
+		// Append to rolling buffer (kept for URL capture and diagnostics)
 		state.buffer += clean;
 
 		// Cap buffer size
@@ -354,8 +354,13 @@ export class OAuthReloginMonitorService {
 			return;
 		}
 
-		// Check for OAuth error patterns (case-insensitive string matching)
-		if (!this.detectOAuthError(state.buffer)) {
+		// Check ONLY the incoming data chunk for OAuth error patterns.
+		// The real Claude Code auth error contains all pattern strings in a single
+		// output message (e.g. 'API Error: 401 {"type":"error","error":{"type":"authentication_error",...}}').
+		// Checking the entire rolling buffer caused false positives when unrelated text
+		// from different output events (e.g. get-agent-logs, skill output) combined
+		// to match patterns across the buffer.
+		if (!this.detectOAuthError(clean)) {
 			return;
 		}
 
@@ -523,9 +528,18 @@ export class OAuthReloginMonitorService {
 	private detectOAuthError(buffer: string): boolean {
 		const lowerBuffer = buffer.toLowerCase();
 
-		return OAUTH_ERROR_PATTERN_SETS.some((patternSet) =>
+		const matchedSet = OAUTH_ERROR_PATTERN_SETS.find((patternSet) =>
 			patternSet.every((pattern) => lowerBuffer.includes(pattern.toLowerCase()))
 		);
+
+		if (matchedSet) {
+			this.logger.info('OAuth error pattern detected', {
+				matchedPatterns: matchedSet,
+				bufferTail: buffer.slice(-500),
+			});
+		}
+
+		return !!matchedSet;
 	}
 
 	/**

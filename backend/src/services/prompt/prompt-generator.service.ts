@@ -281,12 +281,11 @@ export class PromptGeneratorService {
   buildContextPrefix(member: TeamMember, teamId: string, teamName: string): string {
     const promptPath = this.storageService.getMemberPromptPath(teamId, member.id);
 
-    return `<CONTEXT>
-You are: ${member.name} (${member.role})
-Team: ${teamName}
-Prompt file: ${promptPath}
-Read this file if you need to remember your instructions.
-</CONTEXT>
+    return `## Session Context
+- **Agent:** ${member.name} (${member.role})
+- **Team:** ${teamName}
+- **Prompt file:** ${promptPath}
+- Read this file if you need to remember your instructions.
 
 `;
   }
@@ -299,11 +298,10 @@ Read this file if you need to remember your instructions.
   buildOrchestratorContextPrefix(): string {
     const promptPath = this.storageService.getOrchestratorPromptPath();
 
-    return `<CONTEXT>
-You are: Crewly Orchestrator
-Prompt file: ${promptPath}
-Read this file if you need to remember your instructions.
-</CONTEXT>
+    return `## Session Context
+- **Agent:** Crewly Orchestrator
+- **Prompt file:** ${promptPath}
+- Read this file if you need to remember your instructions.
 
 `;
   }

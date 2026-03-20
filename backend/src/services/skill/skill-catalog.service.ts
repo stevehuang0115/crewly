@@ -695,9 +695,11 @@ export class SkillCatalogService {
    * @returns Complete Markdown document as a string
    */
   private renderCatalog(groupedSkills: Map<string, LoadedSkill[]>): string {
+    // Use absolute path so skills work regardless of the orchestrator's cwd
+    const absoluteSkillsPath = path.join(this.projectRoot, ORCHESTRATOR_SKILLS_RELATIVE_PATH);
     return this.renderCatalogWithConfig(groupedSkills, {
       title: 'Orchestrator Skills Catalog',
-      skillsRelativePath: ORCHESTRATOR_SKILLS_RELATIVE_PATH,
+      skillsRelativePath: absoluteSkillsPath,
     });
   }
 

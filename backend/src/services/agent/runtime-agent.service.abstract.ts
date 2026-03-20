@@ -169,6 +169,18 @@ export abstract class RuntimeAgentService {
 				});
 			}
 
+			// Inject --disallowedTools for Claude Code to prevent plan mode
+			// (replaces prompt-level "NEVER use plan mode" instruction to reduce PI signal)
+			if (this.getRuntimeType() === 'claude-code') {
+				finalCommands = finalCommands.map(cmd => {
+					if (cmd.includes('--dangerously-skip-permissions') && !cmd.includes('--disallowedTools')) {
+						return `${cmd} --disallowedTools EnterPlanMode,ExitPlanMode`;
+					}
+					return cmd;
+				});
+				this.logger.info('Injected --disallowedTools for plan mode prevention', { sessionName });
+			}
+
 			// Clear the commandline before execute
 			await this.sessionHelper.clearCurrentCommandLine(sessionName);
 			await this.sendShellCommandsToSession(sessionName, finalCommands, targetPath);

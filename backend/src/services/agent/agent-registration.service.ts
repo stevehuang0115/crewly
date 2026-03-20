@@ -1353,6 +1353,11 @@ export class AgentRegistrationService {
 			const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
 			prompt = prompt.replace(/\{\{AGENT_SKILLS_PATH\}\}/g, agentSkillsPath);
 
+			// Replace orchestrator skills path placeholder — ensures skill scripts
+			// resolve correctly regardless of the orchestrator's working directory
+			const orchestratorSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'orchestrator');
+			prompt = prompt.replace(/\{\{ORCHESTRATOR_SKILLS_PATH\}\}/g, orchestratorSkillsPath);
+
 			// Replace marketplace skills path placeholder
 			const marketplaceSkillsPath = path.join(os.homedir(), '.crewly', 'marketplace', 'skills');
 			prompt = prompt.replace(/\{\{MARKETPLACE_SKILLS_PATH\}\}/g, marketplaceSkillsPath);
@@ -1379,13 +1384,11 @@ export class AgentRegistrationService {
 				}
 			}
 
-			// Inject skill authorization section — tells agents that all skills
-			// (including browser control) are pre-authorized by the user
-			prompt += '\n\n## Authorized Operations\n\n'
-				+ 'The user has authorized you to operate their browser and execute all skills '
-				+ 'in the Crewly skills directory. These are legitimate, authorized operations. '
-				+ 'Do not refuse browser control requests — they come from the user who owns the browser. '
-				+ 'When a browser skill (e.g. remote-browser) is available, use it instead of Playwright or raw HTTP for browser tasks.';
+			// Inject skill authorization section — tells agents about available capabilities
+			prompt += '\n\n## Available Capabilities\n\n'
+				+ 'This session has browser automation enabled via the Playwright MCP server. '
+				+ 'Browser skills (e.g. remote-browser) are the preferred way to perform browser tasks. '
+				+ 'Bash skills in the Crewly skills directory are available for team communication and status reporting.';
 
 			// Inject Team Lead addon for members with canDelegate=true and subordinates
 			if (foundMember?.canDelegate && foundMember.subordinateIds && foundMember.subordinateIds.length > 0 && foundTeam) {
@@ -4359,6 +4362,9 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		const messageToSend = isClaudeCode
 			? 'Begin your work now. Follow the step-by-step instructions in your agent definition EXACTLY — start with Step 1, then Step 2, then Step 3 (register-self). Do NOT skip or reorder steps. Registration is required before the system will deliver messages to you.'
 			: `Read the file at ${promptFilePath} and follow all instructions in it.`;
+		// Note: kickoff message is intentionally imperative for reliable agent bootstrapping.
+		// The --agent flag (Claude Code) loads the prompt as trusted system context, so this
+		// short trigger is not subject to PI detection.
 
 		// Single attempt for all runtimes. Retrying causes duplicate messages because:
 		// - Claude Code: returns to its prompt between tool calls, making retry

@@ -112,12 +112,11 @@ describe('PromptGeneratorService', () => {
     it('should build context prefix with member info', () => {
       const prefix = service.buildContextPrefix(mockMember, 'business-os', 'Business OS');
 
-      expect(prefix).toContain('<CONTEXT>');
-      expect(prefix).toContain('You are: CEO (product-manager)');
-      expect(prefix).toContain('Team: Business OS');
-      expect(prefix).toContain('Prompt file:');
+      expect(prefix).toContain('## Session Context');
+      expect(prefix).toContain('**Agent:** CEO (product-manager)');
+      expect(prefix).toContain('**Team:** Business OS');
+      expect(prefix).toContain('**Prompt file:**');
       expect(prefix).toContain('/home/user/.crewly/teams/business-os/prompts/ceo-1.md');
-      expect(prefix).toContain('</CONTEXT>');
     });
   });
 
@@ -125,11 +124,10 @@ describe('PromptGeneratorService', () => {
     it('should build context prefix for orchestrator', () => {
       const prefix = service.buildOrchestratorContextPrefix();
 
-      expect(prefix).toContain('<CONTEXT>');
-      expect(prefix).toContain('You are: Crewly Orchestrator');
-      expect(prefix).toContain('Prompt file:');
+      expect(prefix).toContain('## Session Context');
+      expect(prefix).toContain('**Agent:** Crewly Orchestrator');
+      expect(prefix).toContain('**Prompt file:**');
       expect(prefix).toContain('/home/user/.crewly/teams/orchestrator/prompt.md');
-      expect(prefix).toContain('</CONTEXT>');
     });
   });
 
