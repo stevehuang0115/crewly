@@ -2427,10 +2427,13 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			});
 
 			// Use the existing unified registration system
+			// #227: Claude Code gets extended timeout for PI protection evaluation
 			const timeout =
 				role === ORCHESTRATOR_ROLE
 					? AGENT_TIMEOUTS.ORCHESTRATOR_INITIALIZATION
-					: AGENT_TIMEOUTS.REGULAR_AGENT_INITIALIZATION;
+					: runtimeType === RUNTIME_TYPES.CLAUDE_CODE
+						? AGENT_TIMEOUTS.CLAUDE_CODE_INITIALIZATION
+						: AGENT_TIMEOUTS.REGULAR_AGENT_INITIALIZATION;
 			const initResult = await this.initializeAgentWithRegistration(
 				sessionName,
 				role,

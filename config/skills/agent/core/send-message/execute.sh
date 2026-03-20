@@ -7,9 +7,10 @@ source "${SCRIPT_DIR}/../../_common/lib.sh"
 INPUT="${1:-}"
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"to\":\"agent-session\",\"message\":\"Can you review my PR?\"}'"
 
-TO=$(echo "$INPUT" | jq -r '.to // empty')
+# Accept both "to" and "sessionName" for compatibility (#231)
+TO=$(echo "$INPUT" | jq -r '.to // .sessionName // empty')
 MESSAGE=$(echo "$INPUT" | jq -r '.message // empty')
-require_param "to" "$TO"
+require_param "to (or sessionName)" "$TO"
 require_param "message" "$MESSAGE"
 
 BODY=$(jq -n --arg data "$MESSAGE" --arg mode "message" '{data: $data, mode: $mode}')

@@ -75,6 +75,8 @@ export const ENV_CONSTANTS = {
 export const AGENT_TIMEOUTS = {
 	ORCHESTRATOR_INITIALIZATION: 120000, // 2 minutes for orchestrator
 	REGULAR_AGENT_INITIALIZATION: 75000, // 75 seconds for regular agents
+	/** #227: Extended timeout for Claude Code — PI protection evaluation takes 2-3 min */
+	CLAUDE_CODE_INITIALIZATION: 300000, // 5 minutes for Claude Code agents
 } as const;
 
 // Agent runtime types

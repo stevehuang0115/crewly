@@ -398,7 +398,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --chrome --dangerously-skip-permissions'],
+				['claude --chrome --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -420,7 +420,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --chrome --verbose --dangerously-skip-permissions'],
+				['claude --chrome --verbose --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -442,7 +442,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --dangerously-skip-permissions'],
+				['claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -464,7 +464,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --dangerously-skip-permissions'],
+				['claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -491,7 +491,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --dangerously-skip-permissions --append-system-prompt-file "/home/test/.crewly/prompts/test-session-init.md"'],
+				['claude --dangerously-skip-permissions --append-system-prompt-file "/home/test/.crewly/prompts/test-session-init.md" --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -518,7 +518,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --chrome --dangerously-skip-permissions --append-system-prompt-file "/home/test/.crewly/prompts/test-session-init.md"'],
+				['claude --chrome --dangerously-skip-permissions --append-system-prompt-file "/home/test/.crewly/prompts/test-session-init.md" --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -577,7 +577,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --dangerously-skip-permissions --append-system-prompt-file "/home/test user/.crewly/prompts/my session-init.md"'],
+				['claude --dangerously-skip-permissions --append-system-prompt-file "/home/test user/.crewly/prompts/my session-init.md" --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -599,7 +599,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --dangerously-skip-permissions'],
+				['claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -616,7 +616,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --dangerously-skip-permissions --agent "test-session"'],
+				['claude --dangerously-skip-permissions --agent "test-session" --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -697,7 +697,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['/custom/claude --dangerously-skip-permissions'],
+				['/custom/claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -721,7 +721,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --dangerously-skip-permissions --append-system-prompt-file "/home/test/.crewly/prompts/test-session-init.md"'],
+				['claude --dangerously-skip-permissions --append-system-prompt-file "/home/test/.crewly/prompts/test-session-init.md" --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -750,7 +750,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --dangerously-skip-permissions'],
+				['claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
@@ -776,7 +776,7 @@ echo "second command"
 
 			expect(sendCommandsSpy).toHaveBeenCalledWith(
 				'test-session',
-				['claude --dangerously-skip-permissions'],
+				['claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
 		});
