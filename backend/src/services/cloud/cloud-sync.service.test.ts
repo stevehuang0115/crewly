@@ -7,6 +7,7 @@
  * @module services/cloud/cloud-sync.service.test
  */
 
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CloudSyncService } from './cloud-sync.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type { CloudSyncConfig, SyncDevice, IncomingMessage } from './cloud-sync.types.js';
@@ -15,32 +16,32 @@ import type { CloudSyncConfig, SyncDevice, IncomingMessage } from './cloud-sync.
 // Mocks
 // ---------------------------------------------------------------------------
 
-jest.mock('../core/logger.service.js', () => ({
+vi.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-        debug: jest.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
       }),
     }),
   },
 }));
 
 // Mock StorageService for team summaries in heartbeat
-jest.mock('../core/storage.service.js', () => ({
+vi.mock('../core/storage.service.js', () => ({
   StorageService: {
     getInstance: () => ({
-      getTeams: jest.fn().mockResolvedValue([
+      getTeams: vi.fn().mockResolvedValue([
         { id: 't1', name: 'Team Alpha', members: [{ agentStatus: 'active' }, { agentStatus: 'inactive' }] },
       ]),
     }),
   },
 }));
 
-const mockFetch = jest.fn() as jest.MockedFunction<typeof global.fetch>;
-global.fetch = mockFetch;
+const mockFetch = vi.fn<typeof global.fetch>();
+global.fetch = mockFetch as any;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -63,15 +64,13 @@ function mockResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
-    json: jest.fn().mockResolvedValue(body),
-    text: jest.fn().mockResolvedValue(JSON.stringify(body)),
+    json: vi.fn().mockResolvedValue(body),
+    text: vi.fn().mockResolvedValue(JSON.stringify(body)),
   } as unknown as Response;
 }
 
-/** Flush all pending microtasks. */
-const flushPromises = () => new Promise<void>((r) =>
-  jest.requireActual<typeof import('timers')>('timers').setImmediate(r)
-);
+/** Flush all pending microtasks (compatible with vi.useFakeTimers). */
+const flushPromises = () => vi.advanceTimersByTimeAsync(0);
 
 /** Make a valid SyncDevice. */
 function makeDevice(overrides: Partial<SyncDevice> = {}): SyncDevice {
@@ -92,8 +91,8 @@ describe('CloudSyncService', () => {
   let service: CloudSyncService;
 
   beforeEach(() => {
-    jest.useFakeTimers();
-    jest.clearAllMocks();
+    vi.useFakeTimers();
+    vi.clearAllMocks();
     CloudSyncService.resetInstance();
     service = CloudSyncService.getInstance();
     // Default: all fetch calls succeed with empty success
@@ -102,7 +101,7 @@ describe('CloudSyncService', () => {
 
   afterEach(() => {
     service.stop();
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   // ----- Singleton ----------------------------------------------------------
@@ -172,7 +171,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const heartbeatCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/v1/devices/heartbeat')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/handshake')
       );
 
       expect(heartbeatCall).toBeDefined();
@@ -196,7 +195,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const heartbeatCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/v1/devices/heartbeat')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/handshake')
       );
       expect(heartbeatCall![1]!.headers).toEqual(
         expect.objectContaining({ Authorization: `Bearer ${TOKEN}` })
@@ -220,7 +219,7 @@ describe('CloudSyncService', () => {
 
       const initialCalls = mockFetch.mock.calls.length;
 
-      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
       await flushPromises();
 
       expect(mockFetch.mock.calls.length).toBeGreaterThan(initialCalls);
@@ -239,7 +238,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const deviceCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/v1/devices') && !url.includes('heartbeat')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/devices')
       );
       expect(deviceCall).toBeDefined();
       expect(deviceCall![0]).toBe(`${CLOUD_URL}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES}`);
@@ -259,6 +258,29 @@ describe('CloudSyncService', () => {
       expect(devices[0].deviceName).toBe('Remote.local');
     });
 
+    it('should normalize Cloud relay format (sessionId → deviceId)', async () => {
+      // Cloud server returns devices with sessionId instead of deviceId
+      const cloudDevice = {
+        sessionId: 'cloud-dev-789',
+        name: 'CloudMachine.local',
+        state: 'paired',
+        registeredAt: new Date().toISOString(),
+        lastHeartbeatAt: new Date().toISOString(),
+      };
+      mockFetch.mockResolvedValue(
+        mockResponse({ success: true, devices: [cloudDevice] })
+      );
+
+      service.start(testConfig);
+      await flushPromises();
+
+      const devices = service.getDevices();
+      expect(devices).toHaveLength(1);
+      expect(devices[0].deviceId).toBe('cloud-dev-789');
+      expect(devices[0].deviceName).toBe('CloudMachine.local');
+      expect(devices[0].status).toBe('online'); // 'paired' state → online
+    });
+
     it('should mark local device with isLocal flag', async () => {
       const localDevice = makeDevice({ deviceId: DEVICE_ID, deviceName: DEVICE_NAME });
       mockFetch.mockResolvedValue(
@@ -275,6 +297,8 @@ describe('CloudSyncService', () => {
     it('should mark device offline when heartbeat is stale', async () => {
       const staleDevice = makeDevice({
         lastHeartbeatAt: new Date(Date.now() - 120_000).toISOString(),
+        status: undefined as any, // no status field — rely on heartbeat freshness
+        state: undefined as any,
       });
       mockFetch.mockResolvedValue(
         mockResponse({ success: true, devices: [staleDevice] })
@@ -287,7 +311,7 @@ describe('CloudSyncService', () => {
     });
 
     it('should emit devices_updated event', async () => {
-      const listener = jest.fn();
+      const listener = vi.fn();
       service.on('devices_updated', listener);
 
       mockFetch.mockResolvedValue(
@@ -303,7 +327,7 @@ describe('CloudSyncService', () => {
     });
 
     it('should emit device_online when new device appears', async () => {
-      const listener = jest.fn();
+      const listener = vi.fn();
       service.on('device_online', listener);
 
       mockFetch.mockResolvedValue(
@@ -317,7 +341,7 @@ describe('CloudSyncService', () => {
     });
 
     it('should emit device_offline when device disappears', async () => {
-      const listener = jest.fn();
+      const listener = vi.fn();
       service.on('device_offline', listener);
 
       // First poll: device exists
@@ -331,7 +355,7 @@ describe('CloudSyncService', () => {
       mockFetch.mockResolvedValue(
         mockResponse({ success: true, devices: [] })
       );
-      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.DEVICE_POLL_INTERVAL_MS + 100);
+      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.DEVICE_POLL_INTERVAL_MS + 100);
       await flushPromises();
 
       expect(listener).toHaveBeenCalledWith(expect.objectContaining({
@@ -350,7 +374,7 @@ describe('CloudSyncService', () => {
           devices: [
             makeDevice({ deviceId: DEVICE_ID, lastHeartbeatAt: fresh }),
             makeDevice({ deviceId: 'dev-online', lastHeartbeatAt: fresh }),
-            makeDevice({ deviceId: 'dev-offline', lastHeartbeatAt: stale }),
+            makeDevice({ deviceId: 'dev-offline', lastHeartbeatAt: stale, status: undefined as any, state: undefined as any }),
           ],
         })
       );
@@ -367,32 +391,29 @@ describe('CloudSyncService', () => {
   // ----- Message Polling ----------------------------------------------------
 
   describe('pollMessages', () => {
-    it('should fetch messages from correct endpoint with deviceId', async () => {
+    it('should fetch messages from correct endpoint with queueId', async () => {
       mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
 
       service.start(testConfig);
-      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
+      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
       await flushPromises();
 
       const msgCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/v1/messages?')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/queue/poll')
       );
       expect(msgCall).toBeDefined();
-      expect(msgCall![0]).toContain(`deviceId=${encodeURIComponent(DEVICE_ID)}`);
+      expect(msgCall![0]).toContain(`queueId=${encodeURIComponent(DEVICE_ID)}`);
     });
 
     it('should emit message event for each received message', async () => {
-      const listener = jest.fn();
+      const listener = vi.fn();
       service.on('message', listener);
 
-      const msg: IncomingMessage = {
+      const msg = {
         id: 'msg-1',
-        from: 'dev-456',
-        fromDeviceName: 'iMac.local',
-        type: 'command',
-        payload: { action: 'test' },
-        encrypted: false,
-        sentAt: new Date().toISOString(),
+        fromDeviceId: 'dev-456',
+        payload: JSON.stringify({ action: 'test' }),
+        createdAt: new Date().toISOString(),
       };
 
       mockFetch
@@ -404,22 +425,19 @@ describe('CloudSyncService', () => {
       service.start(testConfig);
       await flushPromises();
 
-      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
+      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
       await flushPromises();
       await flushPromises();
 
-      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1', type: 'command' }));
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
     });
 
     it('should acknowledge messages after processing', async () => {
-      const msg: IncomingMessage = {
+      const msg = {
         id: 'msg-ack-1',
-        from: 'dev-456',
-        fromDeviceName: 'iMac.local',
-        type: 'ping',
-        payload: {},
-        encrypted: false,
-        sentAt: new Date().toISOString(),
+        fromDeviceId: 'dev-456',
+        payload: '{}',
+        createdAt: new Date().toISOString(),
       };
 
       mockFetch
@@ -431,17 +449,17 @@ describe('CloudSyncService', () => {
       service.start(testConfig);
       await flushPromises();
 
-      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
+      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
       await flushPromises();
       await flushPromises();
 
       const ackCall = mockFetch.mock.calls.find(
         ([url, opts]) =>
-          typeof url === 'string' && url.includes('/v1/messages/ack') && opts?.method === 'POST'
+          typeof url === 'string' && url.includes('/api/v1/relay/queue/ack') && opts?.method === 'POST'
       );
       expect(ackCall).toBeDefined();
       const ackBody = JSON.parse(ackCall![1]!.body as string);
-      expect(ackBody.deviceId).toBe(DEVICE_ID);
+      expect(ackBody.queueId).toBe(DEVICE_ID);
       expect(ackBody.messageIds).toContain('msg-ack-1');
     });
 
@@ -449,11 +467,11 @@ describe('CloudSyncService', () => {
       mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
 
       service.start(testConfig);
-      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
+      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
       await flushPromises();
 
       const ackCalls = mockFetch.mock.calls.filter(
-        ([url]) => typeof url === 'string' && url.includes('/v1/messages/ack')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/queue/ack')
       );
       expect(ackCalls).toHaveLength(0);
     });
@@ -462,7 +480,7 @@ describe('CloudSyncService', () => {
   // ----- sendMessage --------------------------------------------------------
 
   describe('sendMessage', () => {
-    it('should POST to messages endpoint with correct body', async () => {
+    it('should POST to send endpoint with correct body', async () => {
       service.start(testConfig);
       await flushPromises();
       mockFetch.mockClear();
@@ -476,10 +494,10 @@ describe('CloudSyncService', () => {
       );
 
       const body = JSON.parse(mockFetch.mock.calls[0][1]!.body as string);
-      expect(body.to).toBe('dev-target');
-      expect(body.type).toBe('command');
-      expect(body.payload).toEqual({ action: 'deploy' });
-      expect(body.encrypted).toBe(false);
+      expect(body.toDeviceId).toBe('dev-target');
+      const payload = JSON.parse(body.payload);
+      expect(payload.type).toBe('command');
+      expect(payload.data).toEqual({ action: 'deploy' });
     });
 
     it('should throw when not started', async () => {
@@ -510,7 +528,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
         await flushPromises();
       }
 
@@ -524,7 +542,7 @@ describe('CloudSyncService', () => {
       service.start(testConfig);
       await flushPromises();
 
-      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
       await flushPromises();
 
       expect(service.getState()).toBe('syncing');
@@ -540,7 +558,7 @@ describe('CloudSyncService', () => {
     });
 
     it('should not emit device_online for local device', async () => {
-      const listener = jest.fn();
+      const listener = vi.fn();
       service.on('device_online', listener);
 
       mockFetch.mockResolvedValue(

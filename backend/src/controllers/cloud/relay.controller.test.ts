@@ -1,3 +1,4 @@
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 /**
  * Tests for Relay Controller (Client-side only)
  *
@@ -12,6 +13,7 @@ import {
   disconnectFromRelay,
   getRelayDevices,
   getCloudDevices,
+  getDevicesFromSync,
   sendRelayMessage,
 } from './relay.controller.js';
 
@@ -19,13 +21,13 @@ import {
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockClientConnect = jest.fn();
-const mockClientDisconnect = jest.fn();
-const mockClientSend = jest.fn();
-const mockClientGetState = jest.fn();
-const mockClientGetSessionId = jest.fn();
+const mockClientConnect = vi.fn();
+const mockClientDisconnect = vi.fn();
+const mockClientSend = vi.fn();
+const mockClientGetState = vi.fn();
+const mockClientGetSessionId = vi.fn();
 
-jest.mock('../../services/cloud/relay-client.service.js', () => ({
+vi.mock('../../services/cloud/relay-client.service.js', () => ({
   RelayClientService: {
     getInstance: () => ({
       connect: mockClientConnect,
@@ -37,11 +39,11 @@ jest.mock('../../services/cloud/relay-client.service.js', () => ({
   },
 }));
 
-const mockFetchCloudDevices = jest.fn();
-const mockIsConnected = jest.fn();
-const mockIsTokenExpired = jest.fn().mockReturnValue(false);
+const mockFetchCloudDevices = vi.fn();
+const mockIsConnected = vi.fn();
+const mockIsTokenExpired = vi.fn().mockReturnValue(false);
 
-jest.mock('../../services/cloud/cloud-client.service.js', () => ({
+vi.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
     getInstance: () => ({
       fetchCloudDevices: mockFetchCloudDevices,
@@ -51,14 +53,41 @@ jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   },
 }));
 
-jest.mock('../../services/core/logger.service.js', () => ({
+const mockSyncGetState = vi.fn().mockReturnValue('stopped');
+const mockSyncIsStarted = vi.fn().mockReturnValue(false);
+const mockSyncGetDevices = vi.fn().mockReturnValue([]);
+
+vi.mock('../../services/cloud/cloud-sync.service.js', () => ({
+  CloudSyncService: {
+    getInstance: () => ({
+      getState: mockSyncGetState,
+      isStarted: mockSyncIsStarted,
+      getDevices: mockSyncGetDevices,
+    }),
+  },
+}));
+
+const mockGetOrCreateIdentity = vi.fn().mockResolvedValue({
+  deviceId: 'local-device-1',
+  deviceName: 'test-host',
+});
+
+vi.mock('../../services/cloud/device-identity.service.js', () => ({
+  DeviceIdentityService: {
+    getInstance: () => ({
+      getOrCreateIdentity: mockGetOrCreateIdentity,
+    }),
+  },
+}));
+
+vi.mock('../../services/core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-        debug: jest.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
       }),
     }),
   },
@@ -72,14 +101,14 @@ function mockReq(body: Record<string, unknown> = {}): Request {
   return {
     body,
     secure: false,
-    get: jest.fn().mockReturnValue('localhost:3000'),
+    get: vi.fn().mockReturnValue('localhost:3000'),
   } as unknown as Request;
 }
 
 function mockRes(): Response {
   const res = {
-    status: jest.fn().mockReturnThis(),
-    json: jest.fn().mockReturnThis(),
+    status: vi.fn().mockReturnThis(),
+    json: vi.fn().mockReturnThis(),
   } as unknown as Response;
   return res;
 }
@@ -89,10 +118,10 @@ function mockRes(): Response {
 // ---------------------------------------------------------------------------
 
 describe('Relay Controller', () => {
-  const next: NextFunction = jest.fn();
+  const next: NextFunction = vi.fn();
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     mockIsTokenExpired.mockReturnValue(false);
   });
 
@@ -495,6 +524,119 @@ describe('Relay Controller', () => {
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         data: { devices: [], localSessionId: null, tokenExpired: true },
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // GET /cloud/devices — getDevicesFromSync
+  // -----------------------------------------------------------------------
+
+  describe('getDevicesFromSync', () => {
+    it('should return devices from CloudSyncService when sync is active', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      mockSyncIsStarted.mockReturnValue(true);
+      mockSyncGetState.mockReturnValue('syncing');
+      mockSyncGetDevices.mockReturnValue([
+        {
+          deviceId: 'dev-1',
+          deviceName: 'MacBook Pro',
+          status: 'online',
+          lastHeartbeatAt: '2026-03-20T14:00:00Z',
+        },
+        {
+          deviceId: 'local-device-1',
+          deviceName: 'test-host',
+          status: 'online',
+          lastHeartbeatAt: '2026-03-20T14:00:00Z',
+        },
+      ]);
+
+      await getDevicesFromSync(req, res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          devices: [
+            expect.objectContaining({ deviceId: 'dev-1', isLocal: false }),
+            expect.objectContaining({ deviceId: 'local-device-1', isLocal: true }),
+          ],
+          localSessionId: 'local-device-1',
+          syncState: 'syncing',
+        },
+      });
+    });
+
+    it('should fall back to getCloudDevices when sync is not started', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      mockSyncIsStarted.mockReturnValue(false);
+      mockSyncGetState.mockReturnValue('stopped');
+      mockIsConnected.mockReturnValue(true);
+      mockFetchCloudDevices.mockResolvedValue([
+        { sessionId: 'sess-1', role: 'orchestrator', state: 'paired', pairedWith: null, registeredAt: '2026-01-01', name: 'Legacy Device' },
+      ]);
+      mockClientGetSessionId.mockReturnValue('sess-1');
+
+      await getDevicesFromSync(req, res, next);
+
+      // Should have delegated to getCloudDevices — verify via the legacy response shape
+      expect(mockFetchCloudDevices).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          data: expect.objectContaining({
+            devices: expect.arrayContaining([
+              expect.objectContaining({ sessionId: 'sess-1' }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it('should return 500 when an unexpected error occurs', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      mockSyncIsStarted.mockReturnValue(true);
+      mockSyncGetState.mockReturnValue('syncing');
+      mockSyncGetDevices.mockImplementation(() => {
+        throw new Error('Unexpected sync failure');
+      });
+
+      await getDevicesFromSync(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: expect.stringContaining('Unexpected sync failure'),
+      });
+    });
+
+    it('should mark isLocal correctly using DeviceIdentityService', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      mockSyncIsStarted.mockReturnValue(true);
+      mockSyncGetState.mockReturnValue('syncing');
+      mockSyncGetDevices.mockReturnValue([
+        {
+          deviceId: 'remote-device',
+          deviceName: 'Remote Server',
+          status: 'online',
+          lastHeartbeatAt: '2026-03-20T14:00:00Z',
+        },
+      ]);
+
+      await getDevicesFromSync(req, res, next);
+
+      expect(mockGetOrCreateIdentity).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          devices: [expect.objectContaining({ deviceId: 'remote-device', isLocal: false })],
+          localSessionId: 'local-device-1',
+          syncState: 'syncing',
+        },
       });
     });
   });

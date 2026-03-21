@@ -28,8 +28,11 @@ const CLOUD_VALIDATE_URL = '/api/cloud/validate';
 /** Backend cloud status endpoint — source of truth for connection state. */
 const CLOUD_STATUS_URL = '/api/cloud/status';
 
-/** Cloud devices proxy endpoint — fetches device list from crewlyai.com. */
-const CLOUD_DEVICES_URL = '/api/relay/cloud-devices';
+/** Cloud devices endpoint — reads from CloudSyncService or falls back to legacy proxy. */
+const CLOUD_DEVICES_URL = '/api/cloud/devices';
+
+/** Legacy cloud devices endpoint — used as fallback when new endpoint returns empty. */
+const LEGACY_CLOUD_DEVICES_URL = '/api/relay/cloud-devices';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,18 +47,22 @@ interface CloudUser {
   avatar?: string;
 }
 
-/** A relay device returned by the Cloud devices API. */
+/** A device returned by the Cloud devices API. */
 interface CloudDevice {
-  sessionId: string;
-  role: 'orchestrator' | 'agent';
-  state: 'waiting' | 'paired' | 'disconnected';
-  pairedWith: string | null;
-  registeredAt: string;
+  sessionId?: string;
+  role?: 'orchestrator' | 'agent';
+  state?: 'waiting' | 'paired' | 'disconnected';
+  pairedWith?: string | null;
+  registeredAt?: string;
   lastHeartbeatAt?: string;
   name?: string;
   deviceName?: string;
   deviceId?: string;
   isLocal?: boolean;
+  /** Cloud Sync fields */
+  status?: 'online' | 'offline';
+  capabilities?: string[];
+  version?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,18 +86,22 @@ function formatRelativeTime(iso: string): string {
   return `${Math.floor(diffSec / 86400)}d ago`;
 }
 
-/** Map device state to status label. */
+/** Map device state to status label (supports both legacy relay and cloud sync). */
 const DEVICE_STATE_LABELS: Record<string, string> = {
   waiting: 'Connecting',
   paired: 'Connected',
   disconnected: 'Offline',
+  online: 'Online',
+  offline: 'Offline',
 };
 
-/** Map device state to dot color CSS class. */
+/** Map device state to dot color CSS class (supports both legacy relay and cloud sync). */
 const DEVICE_STATE_COLORS: Record<string, string> = {
   waiting: 'bg-yellow-400',
   paired: 'bg-emerald-400',
   disconnected: 'bg-gray-500',
+  online: 'bg-emerald-400',
+  offline: 'bg-gray-500',
 };
 
 // ---------------------------------------------------------------------------
@@ -105,13 +116,15 @@ const DEVICE_STATE_COLORS: Record<string, string> = {
  */
 const DeviceCard: React.FC<{ device: CloudDevice }> = ({ device }) => {
   const Icon = device.role === 'orchestrator' ? Monitor : Cpu;
-  const stateColor = DEVICE_STATE_COLORS[device.state] ?? 'bg-gray-500';
-  const stateLabel = DEVICE_STATE_LABELS[device.state] ?? device.state;
-  const displayName = device.name || device.deviceName || `${device.role} (${device.sessionId.slice(0, 8)}...)`;
+  // Prefer cloud sync 'status' over legacy 'state'
+  const deviceStatus = device.status || device.state || 'disconnected';
+  const stateColor = DEVICE_STATE_COLORS[deviceStatus] ?? 'bg-gray-500';
+  const stateLabel = DEVICE_STATE_LABELS[deviceStatus] ?? deviceStatus;
+  const displayName = device.name || device.deviceName || (device.sessionId ? `${device.role || 'device'} (${device.sessionId.slice(0, 8)}...)` : device.deviceId || 'Unknown');
 
   return (
     <div
-      data-testid={`cloud-device-${device.sessionId}`}
+      data-testid={`cloud-device-${device.sessionId || device.deviceId}`}
       className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${
         device.isLocal
           ? 'border-primary/30 bg-primary/5'
@@ -158,18 +171,50 @@ const DeviceListSection: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tokenExpired, setTokenExpired] = useState(false);
+  const [syncState, setSyncState] = useState<string | null>(null);
 
-  /** Fetch devices from the backend proxy. */
+  /** Fetch devices from the new CloudSync endpoint, with fallback to legacy. */
   const fetchDevices = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       setTokenExpired(false);
+      setSyncState(null);
+
       const res = await fetch(CLOUD_DEVICES_URL);
       const data = await res.json();
 
-      if (res.ok && data.success && data.data?.devices) {
-        setDevices(data.data.devices);
+      if (res.ok && data.success && data.data) {
+        if (data.data.syncState) {
+          setSyncState(data.data.syncState);
+        }
+
+        if (data.data.devices && data.data.devices.length > 0) {
+          setDevices(data.data.devices);
+          if (data.data.tokenExpired) {
+            setTokenExpired(true);
+          }
+          return;
+        }
+
+        // New endpoint returned empty and sync is not active — try legacy endpoint
+        if (!data.data.syncState || data.data.syncState === 'stopped') {
+          try {
+            const legacyRes = await fetch(LEGACY_CLOUD_DEVICES_URL);
+            const legacyData = await legacyRes.json();
+            if (legacyRes.ok && legacyData.success && legacyData.data?.devices) {
+              setDevices(legacyData.data.devices);
+              if (legacyData.data.tokenExpired) {
+                setTokenExpired(true);
+              }
+              return;
+            }
+          } catch {
+            // Legacy fallback failed — use whatever the new endpoint returned
+          }
+        }
+
+        setDevices(data.data.devices || []);
         if (data.data.tokenExpired) {
           setTokenExpired(true);
         }
@@ -197,6 +242,20 @@ const DeviceListSection: React.FC = () => {
           <span className="text-xs text-text-secondary-dark">
             ({devices.length})
           </span>
+          {syncState && (
+            <span
+              data-testid="sync-state-badge"
+              className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                syncState === 'syncing'
+                  ? 'bg-emerald-500/10 text-emerald-400'
+                  : syncState === 'error'
+                  ? 'bg-rose-500/10 text-rose-400'
+                  : 'bg-gray-500/10 text-gray-400'
+              }`}
+            >
+              {syncState === 'syncing' ? 'Sync Active' : syncState === 'error' ? 'Sync Error' : 'Sync Off'}
+            </span>
+          )}
         </div>
         <button
           onClick={fetchDevices}
@@ -234,7 +293,7 @@ const DeviceListSection: React.FC = () => {
       {devices.length > 0 && (
         <div className="space-y-2">
           {devices.map((device) => (
-            <DeviceCard key={device.sessionId} device={device} />
+            <DeviceCard key={device.sessionId || device.deviceId || Math.random().toString()} device={device} />
           ))}
         </div>
       )}
@@ -364,13 +423,16 @@ export const CloudTab: React.FC = () => {
 
   /**
    * Store token via the OSS backend connect endpoint.
+   * Includes the refresh token from localStorage so the backend can
+   * persist it for auto-renewal after access token expiry.
    */
   const handleStoreToken = useCallback(async (token: string) => {
     try {
+      const refreshToken = localStorage.getItem('crewly_refresh_token') || undefined;
       await fetch('/api/cloud/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ token, ...(refreshToken && { refreshToken }) }),
       });
     } catch {
       // Best-effort — the token is already stored in localStorage

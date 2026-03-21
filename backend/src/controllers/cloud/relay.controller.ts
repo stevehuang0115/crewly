@@ -17,6 +17,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { RelayClientService } from '../../services/cloud/relay-client.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
+import { CloudSyncService } from '../../services/cloud/cloud-sync.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import type {
   RelayClientConfig,
@@ -288,6 +289,76 @@ export async function getCloudDevices(req: Request, res: Response, _next: NextFu
     res.status(502).json({
       success: false,
       error: `Cloud device fetch failed: ${message}`,
+    });
+  }
+}
+
+/**
+ * GET /cloud/devices
+ *
+ * Fetch device list from CloudSyncService when it is active, or fall back
+ * to the legacy getCloudDevices proxy when Cloud Sync is not started.
+ *
+ * Response shape:
+ * ```json
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "devices": [...],
+ *     "localSessionId": "device-uuid",
+ *     "syncState": "syncing" | "stopped" | "error"
+ *   }
+ * }
+ * ```
+ *
+ * @param req - Express request (no params required)
+ * @param res - Response with device list and sync state
+ * @param next - Next function for error propagation
+ */
+export async function getDevicesFromSync(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const syncService = CloudSyncService.getInstance();
+    const syncState = syncService.getState();
+
+    // When CloudSync is active, read from its local cache
+    if (syncService.isStarted()) {
+      const devices = syncService.getDevices();
+
+      // Determine local device ID from DeviceIdentityService (lazy import to avoid circular deps)
+      let localDeviceId: string | null = null;
+      try {
+        const { DeviceIdentityService } = await import('../../services/cloud/device-identity.service.js');
+        const identity = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+        localDeviceId = identity.deviceId;
+      } catch {
+        logger.debug('Could not resolve local device ID for isLocal flag');
+      }
+
+      const devicesWithLocal = devices.map((device) => ({
+        ...device,
+        isLocal: localDeviceId ? device.deviceId === localDeviceId : false,
+      }));
+
+      res.json({
+        success: true,
+        data: {
+          devices: devicesWithLocal,
+          localSessionId: localDeviceId,
+          syncState,
+        },
+      });
+      return;
+    }
+
+    // Fallback: CloudSync not started — delegate to legacy cloud-devices endpoint logic
+    logger.debug('CloudSync not started, falling back to legacy fetchCloudDevices');
+    await getCloudDevices(req, res, next);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error('Failed to get devices from sync', { error: message });
+    res.status(500).json({
+      success: false,
+      error: `Device fetch failed: ${message}`,
     });
   }
 }

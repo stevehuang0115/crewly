@@ -354,6 +354,14 @@ export class CloudSyncService extends EventEmitter {
       });
 
       if (!response.ok) {
+        // On 401/403, attempt token refresh before counting as failure
+        if (response.status === 401 || response.status === 403) {
+          const refreshed = await this.handleAuthError(response.status);
+          if (refreshed) {
+            this.logger.info('Heartbeat will retry with refreshed token on next cycle');
+            return;
+          }
+        }
         throw new Error(`Heartbeat failed: ${response.status}`);
       }
 
@@ -393,6 +401,14 @@ export class CloudSyncService extends EventEmitter {
       });
 
       if (!response.ok) {
+        // On 401/403, attempt token refresh before counting as failure
+        if (response.status === 401 || response.status === 403) {
+          const refreshed = await this.handleAuthError(response.status);
+          if (refreshed) {
+            this.logger.info('Device poll will retry with refreshed token on next cycle');
+            return;
+          }
+        }
         throw new Error(`Device poll failed: ${response.status}`);
       }
 
@@ -492,6 +508,14 @@ export class CloudSyncService extends EventEmitter {
       });
 
       if (!response.ok) {
+        // On 401/403, attempt token refresh before counting as failure
+        if (response.status === 401 || response.status === 403) {
+          const refreshed = await this.handleAuthError(response.status);
+          if (refreshed) {
+            this.logger.info('Message poll will retry with refreshed token on next cycle');
+            return;
+          }
+        }
         throw new Error(`Message poll failed: ${response.status}`);
       }
 
@@ -583,6 +607,48 @@ export class CloudSyncService extends EventEmitter {
         messagePollFailures: this.messagePollFailures,
       });
       this.state = 'error';
+    }
+  }
+
+  /** Guard to prevent concurrent token refresh attempts */
+  private tokenRefreshInProgress = false;
+
+  /**
+   * Check if an HTTP status code indicates an authentication failure (401/403).
+   * If so, attempt to refresh the token via CloudClientService.
+   * On success, updates this service's config with the new token.
+   *
+   * @param status - HTTP status code from a Cloud API response
+   * @returns true if the token was refreshed successfully
+   */
+  private async handleAuthError(status: number): Promise<boolean> {
+    if (status !== 401 && status !== 403) return false;
+    if (this.tokenRefreshInProgress) return false;
+
+    this.tokenRefreshInProgress = true;
+    try {
+      const { CloudClientService } = await import('./cloud-client.service.js');
+      const client = CloudClientService.getInstance();
+
+      const refreshed = await client.tryRefreshToken();
+      if (refreshed) {
+        const newToken = client.getToken();
+        if (newToken && this.config) {
+          this.config = { ...this.config, token: newToken };
+          this.logger.info('CloudSyncService token refreshed after auth error');
+        }
+        return true;
+      }
+
+      this.logger.warn('CloudSyncService token refresh failed — API returned auth error', { status });
+      return false;
+    } catch (err) {
+      this.logger.warn('CloudSyncService token refresh attempt threw', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    } finally {
+      this.tokenRefreshInProgress = false;
     }
   }
 

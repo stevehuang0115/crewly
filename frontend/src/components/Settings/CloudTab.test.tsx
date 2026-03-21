@@ -52,7 +52,7 @@ function backendConnected(tier = 'pro') {
  * @param devices - Devices to return from cloud-devices endpoint
  * @param tier - Backend tier to return (default: 'pro')
  */
-function mockAuthenticatedWithDevices(devices: unknown[] = [], tier = 'pro') {
+function mockAuthenticatedWithDevices(devices: unknown[] = [], tier = 'pro', syncState?: string) {
   mockStorage.set('crewly_cloud_token', 'valid-token');
 
   mockFetch.mockImplementation(async (url: string) => {
@@ -71,6 +71,17 @@ function mockAuthenticatedWithDevices(devices: unknown[] = [], tier = 'pro') {
     if (typeof url === 'string' && url.includes('/cloud/connect')) {
       return { ok: true, json: async () => ({ success: true }) };
     }
+    // New endpoint: /api/cloud/devices
+    if (typeof url === 'string' && url.includes('/cloud/devices') && !url.includes('/relay/')) {
+      return {
+        ok: true,
+        json: async () => ({
+          success: true,
+          data: { devices, localSessionId: 'local-session-1', syncState: syncState || undefined },
+        }),
+      };
+    }
+    // Legacy endpoint fallback: /api/relay/cloud-devices
     if (typeof url === 'string' && url.includes('/relay/cloud-devices')) {
       return {
         ok: true,
@@ -98,6 +109,17 @@ function mockBackendOnlyConnection(tier = 'pro', devices: unknown[] = []) {
     if (typeof url === 'string' && url.includes('/cloud/status')) {
       return backendConnected(tier);
     }
+    // New endpoint: /api/cloud/devices
+    if (typeof url === 'string' && url.includes('/cloud/devices') && !url.includes('/relay/')) {
+      return {
+        ok: true,
+        json: async () => ({
+          success: true,
+          data: { devices, localSessionId: 'local-session-1' },
+        }),
+      };
+    }
+    // Legacy fallback
     if (typeof url === 'string' && url.includes('/relay/cloud-devices')) {
       return {
         ok: true,
@@ -350,7 +372,7 @@ describe('CloudTab', () => {
       if (typeof url === 'string' && url.includes('/cloud/connect')) {
         return { ok: true, json: async () => ({ success: true }) };
       }
-      if (typeof url === 'string' && url.includes('/relay/cloud-devices')) {
+      if (typeof url === 'string' && url.includes('/cloud/devices') && !url.includes('/relay/')) {
         return {
           ok: false,
           json: async () => ({ success: false, error: 'Cloud connection required' }),
@@ -466,7 +488,7 @@ describe('CloudTab', () => {
       if (typeof url === 'string' && url.includes('/cloud/connect')) {
         return { ok: true, json: async () => ({ success: true }) };
       }
-      if (typeof url === 'string' && url.includes('/relay/cloud-devices')) {
+      if (typeof url === 'string' && url.includes('/cloud/devices') && !url.includes('/relay/')) {
         return {
           ok: true,
           json: async () => ({
@@ -495,5 +517,47 @@ describe('CloudTab', () => {
     });
 
     expect(screen.queryByTestId('token-expired-warning')).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // Cloud Sync Integration
+  // -----------------------------------------------------------------------
+
+  it('should fetch from /api/cloud/devices instead of /api/relay/cloud-devices', async () => {
+    mockAuthenticatedWithDevices([]);
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('cloud-device-list-section')).toBeDefined();
+    });
+
+    // Verify the new endpoint was called
+    const calls = mockFetch.mock.calls.map((c: unknown[]) => c[0]);
+    expect(calls.some((url: string) => url.includes('/cloud/devices'))).toBe(true);
+  });
+
+  it('should show sync state badge when syncState is returned', async () => {
+    mockAuthenticatedWithDevices(
+      [{ sessionId: 'dev-1', role: 'agent', state: 'paired', pairedWith: null, registeredAt: new Date().toISOString(), name: 'Test' }],
+      'pro',
+      'syncing',
+    );
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('sync-state-badge')).toBeDefined();
+      expect(screen.getByText('Sync Active')).toBeDefined();
+    });
+  });
+
+  it('should not show sync badge when syncState is absent', async () => {
+    mockAuthenticatedWithDevices([]);
+    render(<CloudTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('cloud-device-list-section')).toBeDefined();
+    });
+
+    expect(screen.queryByTestId('sync-state-badge')).toBeNull();
   });
 });

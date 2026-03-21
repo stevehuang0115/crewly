@@ -56,7 +56,7 @@ export interface SyncTeamSummary {
 
 /**
  * A device visible in the same Cloud account.
- * Populated by polling GET /v1/devices.
+ * Populated by polling GET /api/v1/relay/devices.
  */
 export interface SyncDevice {
   /** Unique device identifier (UUID) */
@@ -75,6 +75,14 @@ export interface SyncDevice {
   lastHeartbeatAt: string;
   /** Whether this device is the local OSS instance */
   isLocal?: boolean;
+  /** Relay session ID (legacy compat — maps from Cloud sessionId) */
+  sessionId?: string;
+  /** Device role in the relay topology */
+  role?: string;
+  /** Relay pairing state ('waiting' | 'paired' | 'disconnected') */
+  state?: string;
+  /** ISO timestamp of initial registration */
+  registeredAt?: string;
 }
 
 // ---------------------------------------------------------------------------

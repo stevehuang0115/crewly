@@ -665,7 +665,7 @@ echo "second command"
 			expect(calledCmd).toContain('GEMINI_NO_UPDATE=1');
 		});
 
-		it('#230/#234: should inject --no-update-check and --full-auto for codex-cli runtime', async () => {
+		it('#234: should inject --full-auto for codex-cli runtime', async () => {
 			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
 			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({
 				initScript: 'initialize_codex.sh', displayName: 'Codex CLI',
@@ -677,8 +677,22 @@ echo "second command"
 			await service.executeRuntimeInitScript('test-session', '/test/path');
 
 			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
-			expect(calledCmd).toContain('--no-update-check');
 			expect(calledCmd).toContain('--full-auto');
+		});
+
+		it('#243: should NOT inject --no-update-check for codex-cli (invalid flag)', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({
+				initScript: 'initialize_codex.sh', displayName: 'Codex CLI',
+				welcomeMessage: 'Welcome', timeout: 120000, description: 'Codex CLI',
+			});
+			jest.spyOn(service as any, 'loadInitScript').mockResolvedValue(['codex --dangerously-skip-permissions']);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).not.toContain('--no-update-check');
 		});
 	});
 

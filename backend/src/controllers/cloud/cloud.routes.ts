@@ -8,6 +8,7 @@
  * - POST /disconnect           - Disconnect from CrewlyAI Cloud
  * - POST /validate             - Validate JWT (local verification + optional proxy)
  * - GET  /status               - Get connection status and subscription tier
+ * - GET  /devices              - Get device list from CloudSync (or fallback to legacy)
  * - GET  /templates            - Fetch premium templates (requires connection)
  * - GET  /google/start         - Redirect to Google OAuth consent screen
  * - GET  /google/callback      - Handle Google OAuth callback, issue JWT, redirect to frontend
@@ -26,6 +27,7 @@ import {
   validateCloudToken,
   refreshCloudToken,
 } from './cloud.controller.js';
+import { getDevicesFromSync } from './relay.controller.js';
 import {
   cloudGoogleStart,
   cloudGoogleCallback,
@@ -46,6 +48,7 @@ export function createCloudRouter(): Router {
   router.post('/validate', validateCloudToken);
   router.post('/refresh', refreshCloudToken);
   router.get('/status', getCloudStatus);
+  router.get('/devices', getDevicesFromSync);
   router.get('/templates', getCloudTemplates);
 
   // Google OAuth login flow — browser-redirect (GET)

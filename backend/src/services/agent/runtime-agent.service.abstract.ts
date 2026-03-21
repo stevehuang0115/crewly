@@ -189,21 +189,18 @@ export abstract class RuntimeAgentService {
 				this.logger.info('Injected GEMINI_NO_UPDATE=1 to prevent auto-update kills', { sessionName });
 			}
 
-			// #230: Suppress Codex CLI update prompt that blocks automated startup
 			// #234: Add --full-auto so Codex stays in interactive mode after task completion
+			// #243: Removed --no-update-check — not a valid codex flag, causes startup failure
 			if (this.getRuntimeType() === 'codex-cli') {
 				finalCommands = finalCommands.map(cmd => {
 					if (cmd.includes('codex')) {
-						if (!cmd.includes('--no-update-check')) {
-							cmd = cmd.replace(/codex\b/, 'codex --no-update-check');
-						}
 						if (!cmd.includes('--full-auto')) {
 							cmd = cmd.replace(/codex\b/, 'codex --full-auto');
 						}
 					}
 					return cmd;
 				});
-				this.logger.info('Injected --no-update-check + --full-auto for Codex CLI', { sessionName });
+				this.logger.info('Injected --full-auto for Codex CLI', { sessionName });
 			}
 
 			// Clear the commandline before execute

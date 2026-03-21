@@ -1,38 +1,63 @@
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { initializeCloudIfConfigured } from './cloud-initializer.js';
 import { CloudClientService } from './cloud-client.service.js';
 
 // Mock logger
-jest.mock('../core/logger.service.js', () => ({
+vi.mock('../core/logger.service.js', () => ({
 	LoggerService: {
-		getInstance: jest.fn().mockReturnValue({
-			createComponentLogger: jest.fn().mockReturnValue({
-				info: jest.fn(),
-				debug: jest.fn(),
-				warn: jest.fn(),
-				error: jest.fn(),
+		getInstance: vi.fn().mockReturnValue({
+			createComponentLogger: vi.fn().mockReturnValue({
+				info: vi.fn(),
+				debug: vi.fn(),
+				warn: vi.fn(),
+				error: vi.fn(),
 			}),
 		}),
 	},
 }));
 
 // Mock fs/promises
-jest.mock('fs/promises', () => ({
-	readFile: jest.fn(),
-	writeFile: jest.fn().mockResolvedValue(undefined),
-	mkdir: jest.fn().mockResolvedValue(undefined),
-	unlink: jest.fn().mockResolvedValue(undefined),
+vi.mock('fs/promises', () => ({
+	readFile: vi.fn(),
+	writeFile: vi.fn().mockResolvedValue(undefined),
+	mkdir: vi.fn().mockResolvedValue(undefined),
+	unlink: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock the controller auto-connect (dynamic import)
-jest.mock('../../controllers/cloud/cloud.controller.js', () => ({
-	autoConnectRelayFromToken: jest.fn(),
+vi.mock('../../controllers/cloud/cloud.controller.js', () => ({
+	autoConnectRelayFromToken: vi.fn(),
 }));
 
-const mockReadFile = require('fs/promises').readFile as jest.Mock;
+const mockSyncStart = vi.fn();
+
+vi.mock('./cloud-sync.service.js', () => ({
+	CloudSyncService: {
+		getInstance: () => ({
+			start: mockSyncStart,
+		}),
+	},
+}));
+
+const mockGetOrCreateIdentity = vi.fn().mockResolvedValue({
+	deviceId: 'test-device-uuid',
+	deviceName: 'test-hostname',
+});
+
+vi.mock('./device-identity.service.js', () => ({
+	DeviceIdentityService: {
+		getInstance: () => ({
+			getOrCreateIdentity: mockGetOrCreateIdentity,
+		}),
+	},
+}));
+
+import { readFile } from 'fs/promises';
+const mockReadFile = vi.mocked(readFile);
 
 describe('CloudInitializer', () => {
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		CloudClientService.resetInstance();
 	});
 
@@ -104,7 +129,43 @@ describe('CloudInitializer', () => {
 
 		await initializeCloudIfConfigured();
 
-		const { autoConnectRelayFromToken } = require('../../controllers/cloud/cloud.controller.js');
+		const { autoConnectRelayFromToken } = await import('../../controllers/cloud/cloud.controller.js');
 		expect(autoConnectRelayFromToken).toHaveBeenCalledWith('jwt-token');
+	});
+
+	it('should start CloudSyncService on successful restore', async () => {
+		const config = {
+			cloudUrl: 'https://api.crewlyai.com',
+			token: 'jwt-token-sync',
+			tier: 'pro',
+			connectedAt: '2026-03-20T00:00:00Z',
+		};
+		mockReadFile.mockResolvedValue(JSON.stringify(config));
+
+		await initializeCloudIfConfigured();
+
+		expect(mockSyncStart).toHaveBeenCalledWith({
+			cloudUrl: 'https://api.crewlyai.com',
+			token: 'jwt-token-sync',
+			deviceId: 'test-device-uuid',
+			deviceName: 'test-hostname',
+		});
+	});
+
+	it('should not fail initialization if CloudSyncService.start throws', async () => {
+		const config = {
+			cloudUrl: 'https://api.crewlyai.com',
+			token: 'jwt-token',
+			tier: 'pro',
+			connectedAt: '2026-03-20T00:00:00Z',
+		};
+		mockReadFile.mockResolvedValue(JSON.stringify(config));
+		mockSyncStart.mockImplementation(() => { throw new Error('Sync start failed'); });
+
+		const result = await initializeCloudIfConfigured();
+
+		// Should still succeed — sync failure is non-fatal
+		expect(result.attempted).toBe(true);
+		expect(result.success).toBe(true);
 	});
 });
