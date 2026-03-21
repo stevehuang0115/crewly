@@ -171,7 +171,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const heartbeatCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/handshake')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/heartbeat')
       );
 
       expect(heartbeatCall).toBeDefined();
@@ -195,7 +195,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const heartbeatCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/handshake')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/heartbeat')
       );
       expect(heartbeatCall![1]!.headers).toEqual(
         expect.objectContaining({ Authorization: `Bearer ${TOKEN}` })
@@ -238,7 +238,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const deviceCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/devices')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/devices')
       );
       expect(deviceCall).toBeDefined();
       expect(deviceCall![0]).toBe(`${CLOUD_URL}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES}`);
@@ -391,7 +391,7 @@ describe('CloudSyncService', () => {
   // ----- Message Polling ----------------------------------------------------
 
   describe('pollMessages', () => {
-    it('should fetch messages from correct endpoint with queueId', async () => {
+    it('should fetch messages from correct endpoint with deviceId', async () => {
       mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
 
       service.start(testConfig);
@@ -399,10 +399,10 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const msgCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/queue/poll')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/messages') && !url.includes('/ack')
       );
       expect(msgCall).toBeDefined();
-      expect(msgCall![0]).toContain(`queueId=${encodeURIComponent(DEVICE_ID)}`);
+      expect(msgCall![0]).toContain(`deviceId=${encodeURIComponent(DEVICE_ID)}`);
     });
 
     it('should emit message event for each received message', async () => {
@@ -455,11 +455,11 @@ describe('CloudSyncService', () => {
 
       const ackCall = mockFetch.mock.calls.find(
         ([url, opts]) =>
-          typeof url === 'string' && url.includes('/api/v1/relay/queue/ack') && opts?.method === 'POST'
+          typeof url === 'string' && url.includes('/api/v1/sync/messages/ack') && opts?.method === 'POST'
       );
       expect(ackCall).toBeDefined();
       const ackBody = JSON.parse(ackCall![1]!.body as string);
-      expect(ackBody.queueId).toBe(DEVICE_ID);
+      expect(ackBody.deviceId).toBe(DEVICE_ID);
       expect(ackBody.messageIds).toContain('msg-ack-1');
     });
 
@@ -471,7 +471,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const ackCalls = mockFetch.mock.calls.filter(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/queue/ack')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/messages/ack')
       );
       expect(ackCalls).toHaveLength(0);
     });
@@ -494,10 +494,10 @@ describe('CloudSyncService', () => {
       );
 
       const body = JSON.parse(mockFetch.mock.calls[0][1]!.body as string);
-      expect(body.toDeviceId).toBe('dev-target');
-      const payload = JSON.parse(body.payload);
-      expect(payload.type).toBe('command');
-      expect(payload.data).toEqual({ action: 'deploy' });
+      expect(body.to).toBe('dev-target');
+      expect(body.type).toBe('command');
+      expect(body.payload).toEqual({ action: 'deploy' });
+      expect(body.encrypted).toBe(false);
     });
 
     it('should throw when not started', async () => {

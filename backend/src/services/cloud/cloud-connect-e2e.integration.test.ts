@@ -69,8 +69,8 @@ function createMockCloudServer() {
 
     // --- Route matching ---
 
-    // POST /api/v1/relay/handshake — Heartbeat/Device Registration
-    if (url.endsWith('/api/v1/relay/handshake') && method === 'POST') {
+    // POST /api/v1/sync/heartbeat — Heartbeat/Device Registration
+    if (url.endsWith('/api/v1/sync/heartbeat') && method === 'POST') {
       if (!headers.Authorization) {
         return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401 });
       }
@@ -86,11 +86,11 @@ function createMockCloudServer() {
           registeredAt: devices.get(deviceId)?.registeredAt || new Date().toISOString(),
         });
       }
-      return new Response(JSON.stringify({ success: true }), { status: 200 });
+      return new Response(JSON.stringify({ success: true, ttl: 60000 }), { status: 200 });
     }
 
-    // GET /api/v1/relay/devices — Device Discovery
-    if (url.endsWith('/api/v1/relay/devices') && method === 'GET') {
+    // GET /api/v1/sync/devices — Device Discovery
+    if (url.endsWith('/api/v1/sync/devices') && method === 'GET') {
       if (!headers.Authorization) {
         return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401 });
       }
@@ -100,47 +100,51 @@ function createMockCloudServer() {
       }), { status: 200 });
     }
 
-    // POST /api/v1/relay/queue/send — Send Message
-    if (url.endsWith('/api/v1/relay/queue/send') && method === 'POST') {
+    // POST /api/v1/sync/messages — Send Message
+    if (url.endsWith('/api/v1/sync/messages') && method === 'POST') {
       if (!headers.Authorization) {
         return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401 });
       }
-      const { toDeviceId, payload } = body || {};
-      if (!toDeviceId || !payload) {
-        return new Response(JSON.stringify({ success: false, error: 'Missing toDeviceId or payload' }), { status: 400 });
+      const { to, type, payload } = body || {};
+      if (!to) {
+        return new Response(JSON.stringify({ success: false, error: 'Missing to' }), { status: 400 });
       }
-      const queue = messageQueues.get(toDeviceId) || [];
+      const queue = messageQueues.get(to) || [];
+      const msgId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       queue.push({
-        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        fromDeviceId: 'sender-device',
+        id: msgId,
+        from: 'sender-device',
+        fromDeviceName: 'Sender',
+        type: type || 'relay',
         payload,
-        createdAt: new Date().toISOString(),
+        encrypted: body?.encrypted || false,
+        sentAt: new Date().toISOString(),
       });
-      messageQueues.set(toDeviceId, queue);
-      return new Response(JSON.stringify({ success: true }), { status: 200 });
+      messageQueues.set(to, queue);
+      return new Response(JSON.stringify({ success: true, messageId: msgId }), { status: 200 });
     }
 
-    // GET /api/v1/relay/queue/poll — Poll Messages
-    if (url.includes('/api/v1/relay/queue/poll') && method === 'GET') {
+    // GET /api/v1/sync/messages — Poll Messages
+    if (url.includes('/api/v1/sync/messages') && !url.includes('/ack') && method === 'GET') {
       if (!headers.Authorization) {
         return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401 });
       }
       const urlObj = new URL(url);
-      const queueId = urlObj.searchParams.get('queueId') || '';
-      const messages = messageQueues.get(queueId) || [];
+      const deviceId = urlObj.searchParams.get('deviceId') || '';
+      const messages = messageQueues.get(deviceId) || [];
       return new Response(JSON.stringify({
         success: true,
         messages,
       }), { status: 200 });
     }
 
-    // POST /api/v1/relay/queue/ack — Acknowledge Messages
-    if (url.endsWith('/api/v1/relay/queue/ack') && method === 'POST') {
-      const { queueId, messageIds } = body || {};
-      if (queueId && messageIds) {
-        const queue = messageQueues.get(queueId) || [];
+    // POST /api/v1/sync/messages/ack — Acknowledge Messages
+    if (url.endsWith('/api/v1/sync/messages/ack') && method === 'POST') {
+      const { deviceId, messageIds } = body || {};
+      if (deviceId && messageIds) {
+        const queue = messageQueues.get(deviceId) || [];
         const remaining = queue.filter((m: any) => !messageIds.includes(m.id));
-        messageQueues.set(queueId, remaining);
+        messageQueues.set(deviceId, remaining);
       }
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     }
@@ -170,35 +174,23 @@ function makeConfig(overrides?: Partial<CloudSyncConfig>): CloudSyncConfig {
 // ---------------------------------------------------------------------------
 
 describe('Cloud Connect E2E — Endpoint Path Consistency', () => {
-  it('CLOUD_SYNC_CONSTANTS.ENDPOINTS match CLOUD_CONSTANTS.RELAY_ENDPOINTS', () => {
-    // The #1 root cause of 20+ regressions: endpoint path mismatches.
-    // CLOUD_SYNC_CONSTANTS.ENDPOINTS (used by CloudSyncService at runtime)
-    // must match CLOUD_CONSTANTS.RELAY_ENDPOINTS (the canonical definitions).
+  it('CLOUD_SYNC_CONSTANTS.ENDPOINTS use /api/v1/sync/ prefix (not legacy /relay/)', () => {
+    // Cloud Sync uses dedicated /api/v1/sync/* endpoints on the production relay service.
+    // The legacy CLOUD_CONSTANTS.RELAY_ENDPOINTS (/api/v1/relay/*) are for the
+    // RelayClientService pairing-based system and MUST remain separate.
+    //
+    // This test prevents regression to the old relay endpoints which caused
+    // the device discovery bug (handshake went to HttpQueueService instead of CloudSyncHandler).
 
-    // Heartbeat uses the handshake endpoint
-    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT).toBe(
-      CLOUD_CONSTANTS.RELAY_ENDPOINTS.HANDSHAKE
-    );
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT).toBe('/api/v1/sync/heartbeat');
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES).toBe('/api/v1/sync/devices');
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES).toBe('/api/v1/sync/messages');
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL).toBe('/api/v1/sync/messages');
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_ACK).toBe('/api/v1/sync/messages/ack');
 
-    // Devices
-    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES).toBe(
-      CLOUD_CONSTANTS.RELAY_ENDPOINTS.DEVICES
-    );
-
-    // Messages send
-    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES).toBe(
-      CLOUD_CONSTANTS.RELAY_ENDPOINTS.QUEUE_SEND
-    );
-
-    // Messages poll
-    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL).toBe(
-      CLOUD_CONSTANTS.RELAY_ENDPOINTS.QUEUE_POLL
-    );
-
-    // Messages ack
-    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_ACK).toBe(
-      CLOUD_CONSTANTS.RELAY_ENDPOINTS.QUEUE_ACK
-    );
+    // Verify they DON'T match the legacy relay endpoints
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT).not.toBe(CLOUD_CONSTANTS.RELAY_ENDPOINTS.HANDSHAKE);
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES).not.toBe(CLOUD_CONSTANTS.RELAY_ENDPOINTS.DEVICES);
   });
 
   it('all endpoint paths start with /api/v1/', () => {
@@ -236,8 +228,8 @@ describe('Cloud Connect E2E — Cloud API Liveness', () => {
   const CLOUD_URL = 'https://api.crewlyai.com';
   const SKIP_LIVE = process.env.CI === 'true' || process.env.SKIP_LIVE_CLOUD === 'true';
 
-  it.skipIf(SKIP_LIVE)('Cloud relay handshake endpoint exists (returns 401 without token)', async () => {
-    const response = await fetch(`${CLOUD_URL}/api/v1/relay/handshake`, {
+  it.skipIf(SKIP_LIVE)('Cloud sync heartbeat endpoint exists (returns 401 without token)', async () => {
+    const response = await fetch(`${CLOUD_URL}/api/v1/sync/heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceId: 'test', deviceName: 'test' }),
@@ -245,43 +237,43 @@ describe('Cloud Connect E2E — Cloud API Liveness', () => {
     });
     // 401/403 means the endpoint exists but needs auth — that's what we want
     // 404 would mean the endpoint doesn't exist (BAD)
-    expect(response.status, 'Handshake endpoint should exist (not 404)').not.toBe(404);
+    expect(response.status, 'Heartbeat endpoint should exist (not 404)').not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud relay devices endpoint exists (returns 401 without token)', async () => {
-    const response = await fetch(`${CLOUD_URL}/api/v1/relay/devices`, {
+  it.skipIf(SKIP_LIVE)('Cloud sync devices endpoint exists (returns 401 without token)', async () => {
+    const response = await fetch(`${CLOUD_URL}/api/v1/sync/devices`, {
       method: 'GET',
       signal: AbortSignal.timeout(10_000),
     });
     expect(response.status, 'Devices endpoint should exist (not 404)').not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud message queue send endpoint exists', async () => {
-    const response = await fetch(`${CLOUD_URL}/api/v1/relay/queue/send`, {
+  it.skipIf(SKIP_LIVE)('Cloud sync message send endpoint exists', async () => {
+    const response = await fetch(`${CLOUD_URL}/api/v1/sync/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ toDeviceId: 'test', payload: 'test' }),
+      body: JSON.stringify({ to: 'test', type: 'ping', payload: {} }),
       signal: AbortSignal.timeout(10_000),
     });
-    expect(response.status, 'Queue send endpoint should exist (not 404)').not.toBe(404);
+    expect(response.status, 'Message send endpoint should exist (not 404)').not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud message queue poll endpoint exists', async () => {
-    const response = await fetch(`${CLOUD_URL}/api/v1/relay/queue/poll?queueId=test`, {
+  it.skipIf(SKIP_LIVE)('Cloud sync message poll endpoint exists', async () => {
+    const response = await fetch(`${CLOUD_URL}/api/v1/sync/messages?deviceId=test`, {
       method: 'GET',
       signal: AbortSignal.timeout(10_000),
     });
-    expect(response.status, 'Queue poll endpoint should exist (not 404)').not.toBe(404);
+    expect(response.status, 'Message poll endpoint should exist (not 404)').not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud message queue ack endpoint exists', async () => {
-    const response = await fetch(`${CLOUD_URL}/api/v1/relay/queue/ack`, {
+  it.skipIf(SKIP_LIVE)('Cloud sync message ack endpoint exists', async () => {
+    const response = await fetch(`${CLOUD_URL}/api/v1/sync/messages/ack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ queueId: 'test', messageIds: [] }),
+      body: JSON.stringify({ deviceId: 'test', messageIds: [] }),
       signal: AbortSignal.timeout(10_000),
     });
-    expect(response.status, 'Queue ack endpoint should exist (not 404)').not.toBe(404);
+    expect(response.status, 'Message ack endpoint should exist (not 404)').not.toBe(404);
   });
 });
 
@@ -331,7 +323,7 @@ describe('Cloud Connect E2E — Two-Device Simulation', () => {
 
     // Verify the HTTP request was correct
     const heartbeatReq = mockServer.requests.find((r) =>
-      r.url.includes('/api/v1/relay/handshake') && r.method === 'POST'
+      r.url.includes('/api/v1/sync/heartbeat') && r.method === 'POST'
     );
     expect(heartbeatReq).toBeDefined();
     expect(heartbeatReq!.headers.Authorization).toBe(`Bearer ${configA.token}`);
@@ -796,23 +788,23 @@ describe('Cloud Connect E2E — Frontend↔Backend Contract', () => {
 
     // Heartbeat
     const heartbeatUrl = `${cloudUrl}${endpoints.HEARTBEAT}`;
-    expect(heartbeatUrl).toBe('https://api.crewlyai.com/api/v1/relay/handshake');
+    expect(heartbeatUrl).toBe('https://api.crewlyai.com/api/v1/sync/heartbeat');
 
     // Devices
     const devicesUrl = `${cloudUrl}${endpoints.DEVICES}`;
-    expect(devicesUrl).toBe('https://api.crewlyai.com/api/v1/relay/devices');
+    expect(devicesUrl).toBe('https://api.crewlyai.com/api/v1/sync/devices');
 
     // Messages send
     const sendUrl = `${cloudUrl}${endpoints.MESSAGES}`;
-    expect(sendUrl).toBe('https://api.crewlyai.com/api/v1/relay/queue/send');
+    expect(sendUrl).toBe('https://api.crewlyai.com/api/v1/sync/messages');
 
     // Messages poll (with query param)
-    const pollUrl = `${cloudUrl}${endpoints.MESSAGES_POLL}?queueId=device-123`;
-    expect(pollUrl).toBe('https://api.crewlyai.com/api/v1/relay/queue/poll?queueId=device-123');
+    const pollUrl = `${cloudUrl}${endpoints.MESSAGES_POLL}?deviceId=device-123`;
+    expect(pollUrl).toBe('https://api.crewlyai.com/api/v1/sync/messages?deviceId=device-123');
 
     // Messages ack
     const ackUrl = `${cloudUrl}${endpoints.MESSAGES_ACK}`;
-    expect(ackUrl).toBe('https://api.crewlyai.com/api/v1/relay/queue/ack');
+    expect(ackUrl).toBe('https://api.crewlyai.com/api/v1/sync/messages/ack');
   });
 
   it('auth headers use Bearer token format', () => {
@@ -1025,14 +1017,20 @@ describe('Cloud Connect E2E — Constants Drift Detection', () => {
     // Detect if someone accidentally created the same endpoint under two different names
     const syncPaths = Object.values(CLOUD_SYNC_CONSTANTS.ENDPOINTS);
     const relayPaths = Object.values(CLOUD_CONSTANTS.RELAY_ENDPOINTS);
-    const allPaths = [...syncPaths, ...relayPaths];
 
-    // Within CLOUD_SYNC_CONSTANTS, all paths should be unique
+    // Within CLOUD_SYNC_CONSTANTS, MESSAGES and MESSAGES_POLL share the same path
+    // (differentiated by HTTP method: POST vs GET). Exclude that known overlap.
     const uniqueSyncPaths = new Set(syncPaths);
-    expect(uniqueSyncPaths.size).toBe(syncPaths.length);
+    // 4 unique paths from 5 entries: heartbeat, devices, messages (send+poll), messages/ack
+    expect(uniqueSyncPaths.size).toBe(syncPaths.length - 1);
 
     // Within RELAY_ENDPOINTS, all paths should be unique
     const uniqueRelayPaths = new Set(relayPaths);
     expect(uniqueRelayPaths.size).toBe(relayPaths.length);
+
+    // Cloud Sync and Relay endpoints should NOT overlap (they use different prefixes)
+    for (const syncPath of syncPaths) {
+      expect(relayPaths, `Sync path ${syncPath} should not exist in relay paths`).not.toContain(syncPath);
+    }
   });
 });

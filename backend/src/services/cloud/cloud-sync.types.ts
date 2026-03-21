@@ -56,7 +56,7 @@ export interface SyncTeamSummary {
 
 /**
  * A device visible in the same Cloud account.
- * Populated by polling GET /api/v1/relay/devices.
+ * Populated by polling GET /api/v1/sync/devices.
  */
 export interface SyncDevice {
   /** Unique device identifier (UUID) */

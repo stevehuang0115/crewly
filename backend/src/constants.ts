@@ -1149,16 +1149,16 @@ export const CLOUD_SYNC_CONSTANTS = {
 	BACKOFF_MAX_MS: 60_000,
 	/** Cloud Sync API endpoints (relative to cloudUrl) */
 	ENDPOINTS: {
-		/** Device heartbeat — reuses the relay handshake endpoint to register/update device status */
-		HEARTBEAT: '/api/v1/relay/handshake',
-		/** List all devices for account */
-		DEVICES: '/api/v1/relay/devices',
+		/** Device heartbeat — upserts device record on Cloud Sync handler */
+		HEARTBEAT: '/api/v1/sync/heartbeat',
+		/** List all devices for account (computed online/offline from heartbeat freshness) */
+		DEVICES: '/api/v1/sync/devices',
 		/** Send messages to another device's queue */
-		MESSAGES: '/api/v1/relay/queue/send',
-		/** Poll for incoming messages */
-		MESSAGES_POLL: '/api/v1/relay/queue/poll',
+		MESSAGES: '/api/v1/sync/messages',
+		/** Poll for incoming messages (GET with ?deviceId=) */
+		MESSAGES_POLL: '/api/v1/sync/messages',
 		/** Acknowledge processed messages */
-		MESSAGES_ACK: '/api/v1/relay/queue/ack',
+		MESSAGES_ACK: '/api/v1/sync/messages/ack',
 	},
 } as const;
 

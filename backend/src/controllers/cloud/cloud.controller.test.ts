@@ -353,7 +353,7 @@ describe('Cloud Controller', () => {
 
       // Handshake should be called via fetch
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/relay/handshake'),
+        expect.stringContaining('/api/v1/sync/heartbeat'),
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
@@ -364,7 +364,7 @@ describe('Cloud Controller', () => {
 
       // Verify the payload structure
       const callArgs = mockFetch.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('handshake'),
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('/sync/heartbeat'),
       );
       expect(callArgs).toBeDefined();
       const body = JSON.parse(callArgs![1].body);

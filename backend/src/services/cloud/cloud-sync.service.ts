@@ -301,13 +301,15 @@ export class CloudSyncService extends EventEmitter {
 
     const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES}`;
 
-    // Cloud send endpoint expects { toDeviceId, payload (string) }
+    // Cloud Sync messages endpoint expects { to, type, payload, encrypted? }
     const response = await fetch(url, {
       method: 'POST',
       headers: this.authHeaders(),
       body: JSON.stringify({
-        toDeviceId,
-        payload: JSON.stringify({ type, data: payload, encrypted: false }),
+        to: toDeviceId,
+        type,
+        payload,
+        encrypted: false,
       }),
       signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
     });
@@ -492,14 +494,14 @@ export class CloudSyncService extends EventEmitter {
    * Poll the Cloud server for pending messages addressed to this device.
    * Emits 'message' event for each received message, then acknowledges.
    *
-   * The Cloud poll endpoint uses `queueId` query param (since JWT has no deviceId claim).
-   * Cloud returns messages as: `{ id, fromDeviceId, payload, createdAt }`.
+   * The Cloud Sync message poll endpoint uses `deviceId` query param.
+   * Cloud returns messages as: `{ id, from, fromDeviceName, type, payload, encrypted, sentAt }`.
    */
   async pollMessages(): Promise<void> {
     if (!this.config) return;
 
     try {
-      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL}?queueId=${encodeURIComponent(this.config.deviceId)}`;
+      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL}?deviceId=${encodeURIComponent(this.config.deviceId)}`;
 
       const response = await fetch(url, {
         method: 'GET',
@@ -559,7 +561,7 @@ export class CloudSyncService extends EventEmitter {
 
   /**
    * Acknowledge processed messages so Cloud can remove them from the queue.
-   * Uses `queueId` in body since the JWT has no deviceId claim.
+   * Uses `deviceId` in body to identify the target message queue.
    *
    * @param messageIds - Array of message IDs to acknowledge
    */
@@ -573,7 +575,7 @@ export class CloudSyncService extends EventEmitter {
         method: 'POST',
         headers: this.authHeaders(),
         body: JSON.stringify({
-          queueId: this.config.deviceId,
+          deviceId: this.config.deviceId,
           messageIds,
         }),
         signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),

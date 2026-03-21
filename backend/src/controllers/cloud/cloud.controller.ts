@@ -16,7 +16,7 @@ import { DeviceIdentityService } from '../../services/cloud/device-identity.serv
 import { CloudSyncService } from '../../services/cloud/cloud-sync.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
-import { CLOUD_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
+import { CLOUD_CONSTANTS, CLOUD_SYNC_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
 import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudController');
@@ -162,7 +162,7 @@ async function sendCloudHandshake(cloudUrl: string, token: string): Promise<void
       timestamp: new Date().toISOString(),
     };
 
-    const url = `${cloudUrl}${CLOUD_CONSTANTS.RELAY_ENDPOINTS.HANDSHAKE}`;
+    const url = `${cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT}`;
 
     const response = await fetch(url, {
       method: 'POST',
