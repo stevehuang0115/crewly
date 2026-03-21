@@ -17,6 +17,7 @@ import { readFile, writeFile, mkdir, unlink } from 'fs/promises';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import {
   CLOUD_CONSTANTS,
+  AUTH_CONSTANTS,
   type CloudTier,
   type CloudConnectionStatus,
 } from '../../constants.js';
@@ -30,6 +31,8 @@ export interface PersistedCloudConfig {
   token: string;
   tier: string;
   connectedAt: string;
+  /** Refresh token for auto-renewing expired access tokens */
+  refreshToken?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,12 +124,18 @@ export class CloudClientService {
   private cloudUrl: string | null = null;
   /** Bearer token obtained during connect() */
   private token: string | null = null;
+  /** Refresh token for auto-renewing expired access tokens */
+  private refreshToken: string | null = null;
   /** Current connection status */
   private connectionStatus: CloudConnectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.DISCONNECTED;
   /** Subscription tier reported by cloud */
   private tier: CloudTier = CLOUD_CONSTANTS.TIERS.FREE;
   /** Timestamp of the most recent successful cloud API call */
   private lastSyncAt: string | null = null;
+  /** Timer for proactive token refresh (fires 5 min before expiry) */
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Guard to prevent concurrent refresh attempts */
+  private refreshInProgress = false;
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('CloudClientService');
@@ -173,7 +182,7 @@ export class CloudClientService {
    * await client.connect('https://api.crewlyai.com', 'sk-abc123');
    * ```
    */
-  async connect(cloudUrl: string, token: string): Promise<{ success: boolean; tier: CloudTier }> {
+  async connect(cloudUrl: string, token: string, refreshToken?: string): Promise<{ success: boolean; tier: CloudTier }> {
     this.logger.info('Connecting to CrewlyAI Cloud', { cloudUrl });
 
     const url = `${cloudUrl}${CLOUD_CONSTANTS.ENDPOINTS.AUTH_TOKEN}`;
@@ -201,11 +210,15 @@ export class CloudClientService {
 
     this.cloudUrl = cloudUrl;
     this.token = token;
+    this.refreshToken = refreshToken || this.refreshToken;
     this.tier = (resolvedTier as CloudTier) || CLOUD_CONSTANTS.TIERS.FREE;
     this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.CONNECTED;
     this.lastSyncAt = new Date().toISOString();
 
     this.logger.info('Connected to CrewlyAI Cloud', { tier: this.tier });
+
+    // Schedule proactive token refresh
+    this.scheduleTokenRefresh(token);
 
     // Persist credentials for auto-reconnect on restart
     this.persistConfig().catch((err) => {
@@ -227,15 +240,20 @@ export class CloudClientService {
    * @param cloudUrl - Base URL of the CrewlyAI Cloud API
    * @param token - JWT access token (already verified locally)
    * @param tier - Subscription tier extracted from the JWT payload
+   * @param refreshToken - Optional refresh token for auto-renewal
    */
-  connectLocal(cloudUrl: string, token: string, tier: CloudTier): void {
+  connectLocal(cloudUrl: string, token: string, tier: CloudTier, refreshToken?: string): void {
     this.cloudUrl = cloudUrl;
     this.token = token;
+    this.refreshToken = refreshToken || this.refreshToken;
     this.tier = tier || CLOUD_CONSTANTS.TIERS.FREE;
     this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.CONNECTED;
     this.lastSyncAt = new Date().toISOString();
 
     this.logger.info('Connected to CrewlyAI Cloud (local verification)', { tier: this.tier });
+
+    // Schedule proactive token refresh
+    this.scheduleTokenRefresh(token);
 
     // Persist credentials for auto-reconnect on restart
     this.persistConfig().catch((err) => {
@@ -254,9 +272,11 @@ export class CloudClientService {
     this.logger.info('Disconnecting from CrewlyAI Cloud');
     this.cloudUrl = null;
     this.token = null;
+    this.refreshToken = null;
     this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.DISCONNECTED;
     this.tier = CLOUD_CONSTANTS.TIERS.FREE;
     this.lastSyncAt = null;
+    if (this.refreshTimer) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
 
     // Remove persisted config
     this.removePersistedConfig().catch((err) => {
@@ -305,6 +325,7 @@ export class CloudClientService {
       token: this.token,
       tier: this.tier,
       connectedAt: new Date().toISOString(),
+      ...(this.refreshToken && { refreshToken: this.refreshToken }),
     };
 
     const configPath = CloudClientService.getConfigPath();
@@ -518,6 +539,165 @@ export class CloudClientService {
   }
 
   // -------------------------------------------------------------------------
+  // Token Auto-Refresh
+  // -------------------------------------------------------------------------
+
+  /**
+   * Set the refresh token for auto-renewal.
+   *
+   * Called by the connect controller after OAuth login provides a refresh token.
+   *
+   * @param refreshToken - Refresh token string
+   */
+  setRefreshToken(refreshToken: string): void {
+    this.refreshToken = refreshToken;
+    // Re-persist config with the new refresh token
+    this.persistConfig().catch(() => {});
+    this.logger.debug('Refresh token stored');
+  }
+
+  /**
+   * Get the current access token (for CloudSyncService token updates).
+   *
+   * @returns Current access token or null
+   */
+  getToken(): string | null {
+    return this.token;
+  }
+
+  /**
+   * Attempt to refresh the access token using the stored refresh token.
+   *
+   * Issues a new access token locally (since both access and refresh tokens
+   * are signed with the same HMAC secret on this OSS instance).
+   *
+   * @returns true if refresh succeeded, false if no refresh token or refresh failed
+   */
+  async tryRefreshToken(): Promise<boolean> {
+    if (this.refreshInProgress) {
+      this.logger.debug('Token refresh already in progress, skipping');
+      return false;
+    }
+    if (!this.refreshToken) {
+      this.logger.debug('No refresh token available for auto-refresh');
+      return false;
+    }
+
+    this.refreshInProgress = true;
+    try {
+      // Dynamically import to avoid circular dependency
+      const { verifyJwt, signJwt } = await import('../../controllers/cloud/cloud-google-auth.controller.js');
+
+      const payload = verifyJwt(this.refreshToken);
+      if (!payload || payload.type !== 'refresh') {
+        this.logger.warn('Refresh token invalid or expired — cannot auto-refresh');
+        this.refreshToken = null;
+        return false;
+      }
+
+      // Issue a new access token from the refresh token claims
+      const now = Math.floor(Date.now() / 1000);
+      const newAccessToken = signJwt({
+        sub: payload.sub,
+        email: payload.email || '',
+        name: payload.name || '',
+        plan: payload.plan || 'free',
+        iat: now,
+        exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
+        iss: AUTH_CONSTANTS.JWT.ISSUER,
+        type: 'access',
+      });
+
+      // Update service state
+      this.token = newAccessToken;
+      this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.CONNECTED;
+      this.lastSyncAt = new Date().toISOString();
+
+      // Schedule next refresh
+      this.scheduleTokenRefresh(newAccessToken);
+
+      // Persist new token
+      await this.persistConfig();
+
+      // Update CloudSyncService with the new token (if running)
+      try {
+        const { CloudSyncService } = await import('./cloud-sync.service.js');
+        const syncService = CloudSyncService.getInstance();
+        if (syncService.isStarted()) {
+          syncService.updateToken(newAccessToken);
+        }
+      } catch {
+        // CloudSyncService may not be available — non-fatal
+      }
+
+      this.logger.info('Access token auto-refreshed successfully', {
+        sub: payload.sub,
+        expiresIn: AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
+      });
+
+      return true;
+    } catch (error) {
+      this.logger.warn('Token auto-refresh failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    } finally {
+      this.refreshInProgress = false;
+    }
+  }
+
+  /**
+   * Schedule a proactive token refresh 5 minutes before expiry.
+   *
+   * Parses the JWT `exp` claim and sets a timer. If the token has
+   * less than 5 minutes remaining, refreshes immediately.
+   *
+   * @param token - JWT access token to extract expiry from
+   */
+  private scheduleTokenRefresh(token: string): void {
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+
+    if (!this.refreshToken) return;
+
+    try {
+      // Decode JWT payload to get exp (without verifying — just need the timestamp)
+      const parts = token.split('.');
+      if (parts.length !== 3) return;
+      const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8'));
+      const exp = payload.exp as number;
+      if (!exp) return;
+
+      const now = Math.floor(Date.now() / 1000);
+      // Refresh 5 minutes (300s) before expiry
+      const refreshAt = exp - 300;
+      const delayMs = Math.max(0, (refreshAt - now) * 1000);
+
+      if (delayMs <= 0) {
+        // Token already near expiry — refresh immediately
+        this.logger.info('Access token near expiry, refreshing immediately');
+        this.tryRefreshToken().catch(() => {});
+        return;
+      }
+
+      this.refreshTimer = setTimeout(() => {
+        this.logger.info('Proactive token refresh triggered');
+        this.tryRefreshToken().catch(() => {});
+      }, delayMs);
+
+      // Unref so the timer doesn't keep the process alive
+      if (this.refreshTimer.unref) this.refreshTimer.unref();
+
+      const minutesUntilRefresh = Math.round(delayMs / 60_000);
+      this.logger.debug('Token refresh scheduled', { minutesUntilRefresh });
+    } catch {
+      this.logger.debug('Could not schedule token refresh (non-fatal)');
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
 
@@ -565,5 +745,14 @@ export class CloudClientService {
   private handleAuthFailure(context: string, status: number): void {
     this.logger.warn(`Cloud token expired or revoked during ${context}`, { status });
     this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.TOKEN_EXPIRED;
+
+    // Attempt auto-refresh in background if refresh token is available
+    if (this.refreshToken) {
+      this.tryRefreshToken().then((refreshed) => {
+        if (refreshed) {
+          this.logger.info(`Token auto-refreshed after ${context} auth failure`);
+        }
+      }).catch(() => {});
+    }
   }
 }

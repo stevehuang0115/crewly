@@ -24,17 +24,22 @@ export const AuthCallback: React.FC = () => {
   useEffect(() => {
     const processCallback = async () => {
       const token = searchParams.get('token');
+      const refreshToken = searchParams.get('refreshToken');
       const error = searchParams.get('error');
 
       if (token) {
         localStorage.setItem(CLOUD_TOKEN_KEY, token);
+        // Store refresh token for frontend-side renewal
+        if (refreshToken) {
+          localStorage.setItem('crewly_refresh_token', refreshToken);
+        }
 
         // Notify backend and wait for cloud connect + relay auto-connect to initiate
         try {
           await fetch('/api/cloud/connect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token }),
+            body: JSON.stringify({ token, refreshToken }),
           });
         } catch {
           // Non-fatal — settings page will validate independently

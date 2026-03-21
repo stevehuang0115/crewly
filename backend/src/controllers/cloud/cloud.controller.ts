@@ -13,6 +13,7 @@ import crypto from 'crypto';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { RelayClientService } from '../../services/cloud/relay-client.service.js';
 import { DeviceIdentityService } from '../../services/cloud/device-identity.service.js';
+import { CloudSyncService } from '../../services/cloud/cloud-sync.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { CLOUD_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
@@ -201,13 +202,13 @@ async function sendCloudHandshake(cloudUrl: string, token: string): Promise<void
  * After a successful connect, sends device metadata and active team lists
  * to the Cloud via the handshake endpoint.
  *
- * @param req - Request with body: { cloudUrl?, token }
+ * @param req - Request with body: { cloudUrl?, token, refreshToken? }
  * @param res - Response returning { success, data: { tier } }
  * @param next - Next function for error propagation
  */
 export async function connectToCloud(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { cloudUrl, token } = req.body;
+    const { cloudUrl, token, refreshToken } = req.body;
 
     if (!token) {
       res.status(400).json({ success: false, error: 'Missing required parameter: token' });
@@ -226,13 +227,18 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
     if (localPayload) {
       // JWT verified locally — connect without calling cloud API
       const tier = (localPayload.plan as string) || 'free';
-      client.connectLocal(resolvedUrl, token, tier as import('../../constants.js').CloudTier);
+      client.connectLocal(resolvedUrl, token, tier as import('../../constants.js').CloudTier, refreshToken);
       result = { success: true, tier };
       logger.info('Connected to CrewlyAI Cloud (local JWT verification)', { tier });
     } else {
       // Local verification failed (different JWT secret) — call cloud API
-      result = await client.connect(resolvedUrl, token);
+      result = await client.connect(resolvedUrl, token, refreshToken);
       logger.info('Connected to CrewlyAI Cloud (remote verification)', { tier: result.tier });
+    }
+
+    // Store refresh token if provided separately
+    if (refreshToken && !client.getToken()) {
+      client.setRefreshToken(refreshToken);
     }
 
     // Send device metadata + active teams to Cloud (best-effort, non-blocking)
@@ -240,6 +246,23 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
 
     // Auto-initiate relay connection (best-effort, non-blocking)
     autoConnectRelay(token);
+
+    // Start Cloud Sync for device discovery and message polling (best-effort)
+    try {
+      const identityService = DeviceIdentityService.getInstance();
+      const identity = await identityService.getOrCreateIdentity();
+      CloudSyncService.getInstance().start({
+        cloudUrl: resolvedUrl,
+        token,
+        deviceId: identity.deviceId,
+        deviceName: identity.deviceName,
+      });
+      logger.info('CloudSyncService started after cloud connect', { deviceId: identity.deviceId });
+    } catch (syncErr) {
+      logger.warn('CloudSyncService start failed (non-fatal)', {
+        error: syncErr instanceof Error ? syncErr.message : String(syncErr),
+      });
+    }
 
     res.json({ success: true, data: { tier: result.tier } });
   } catch (error) {
@@ -267,6 +290,16 @@ export async function disconnectFromCloud(req: Request, res: Response, next: Nex
   try {
     const client = CloudClientService.getInstance();
     client.disconnect();
+
+    // Stop Cloud Sync service
+    try {
+      CloudSyncService.getInstance().stop();
+      logger.info('CloudSyncService stopped as part of cloud disconnect');
+    } catch (syncErr) {
+      logger.warn('CloudSyncService stop failed (non-fatal)', {
+        error: syncErr instanceof Error ? syncErr.message : String(syncErr),
+      });
+    }
 
     // Also disconnect relay
     try {

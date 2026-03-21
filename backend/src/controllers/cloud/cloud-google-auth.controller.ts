@@ -286,7 +286,7 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
       return;
     }
 
-    // Issue JWT
+    // Issue JWT access token
     const now = Math.floor(Date.now() / 1000);
     const accessToken = signJwt({
       sub: result.user.id,
@@ -297,6 +297,18 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
       exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
       iss: AUTH_CONSTANTS.JWT.ISSUER,
       type: 'access',
+    });
+
+    // Issue refresh token (long-lived, enables auto-renewal after access token expires)
+    const refreshToken = signJwt({
+      sub: result.user.id,
+      email: result.profile.email,
+      name: result.profile.name || '',
+      plan: DEFAULT_USER_PLAN,
+      iat: now,
+      exp: now + AUTH_CONSTANTS.JWT.REFRESH_TOKEN_EXPIRY_S,
+      iss: AUTH_CONSTANTS.JWT.ISSUER,
+      type: 'refresh',
     });
 
     // Parse state for post-login redirect
@@ -314,7 +326,7 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
     const separator = finalRedirect.includes('?') ? '&' : '?';
 
     logger.info('Cloud Google OAuth login successful', { email: result.profile.email, userId: result.user.id });
-    res.redirect(`${finalRedirect}${separator}token=${accessToken}`);
+    res.redirect(`${finalRedirect}${separator}token=${accessToken}&refreshToken=${refreshToken}`);
   } catch (error) {
     logger.error('Cloud Google OAuth callback error', {
       error: error instanceof Error ? error.message : String(error),
