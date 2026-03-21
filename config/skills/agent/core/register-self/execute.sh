@@ -7,8 +7,9 @@ source "${SCRIPT_DIR}/../../_common/lib.sh"
 INPUT="${1:-}"
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"role\":\"developer\",\"sessionName\":\"dev-1\"}'"
 
-ROLE=$(echo "$INPUT" | jq -r '.role // empty')
-SESSION_NAME=$(echo "$INPUT" | jq -r '.sessionName // empty')
+# Accept both canonical (role/sessionName) and legacy (agentRole/agentId) parameter names
+ROLE=$(echo "$INPUT" | jq -r '.role // .agentRole // empty')
+SESSION_NAME=$(echo "$INPUT" | jq -r '.sessionName // .agentId // empty')
 require_param "role" "$ROLE"
 require_param "sessionName" "$SESSION_NAME"
 

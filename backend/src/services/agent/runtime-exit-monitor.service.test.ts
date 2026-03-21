@@ -1,6 +1,6 @@
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { OrchestratorRestartService } from '../orchestrator/orchestrator-restart.service.js';
-import { CREWLY_CONSTANTS, RUNTIME_EXIT_CONSTANTS, RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, GEMINI_FAILURE_PATTERNS, GEMINI_FAILURE_RETRY_CONSTANTS, CLAUDE_FATAL_PATTERNS, AGENT_HEARTBEAT_MONITOR_CONSTANTS, GEMINI_DELIBERATION_PATTERN, GEMINI_DELIBERATION_THRESHOLD } from '../../constants.js';
+import { CREWLY_CONSTANTS, RUNTIME_EXIT_CONSTANTS, RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, GEMINI_FAILURE_PATTERNS, GEMINI_FAILURE_RETRY_CONSTANTS, CLAUDE_FATAL_PATTERNS, AGENT_HEARTBEAT_MONITOR_CONSTANTS, GEMINI_DELIBERATION_PATTERN, GEMINI_DELIBERATION_THRESHOLD, GEMINI_TOOL_CHECK_LOOP_PATTERN, GEMINI_TOOL_CHECK_LOOP_THRESHOLD, GEMINI_TOOL_CHECK_LOOP_WINDOW_MS } from '../../constants.js';
 
 // Mock http module to prevent real HTTP requests during tests (e.g. notifyOrchestratorOfFailure)
 jest.mock('http', () => ({
@@ -1518,6 +1518,14 @@ describe('RuntimeExitMonitorService', () => {
 			jest.useRealTimers();
 		});
 
+		it('should detect GEMINI_TOOL_CHECK_LOOP_PATTERN matches including contractions (#251)', () => {
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test("Ready. Final response.")).toBe(true);
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test("Wait, I will check if I should use mcp_chrome-devtools_navigate_page")).toBe(true);
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test("Wait, I'll check if I should use mcp_chrome-devtools_new_page? No.")).toBe(true);
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test("Wait, I\u2019ll check if I should use mcp_some_tool")).toBe(true);
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test("Normal agent output")).toBe(false);
+		});
+
 		it('should detect GEMINI_DELIBERATION_PATTERN matches', () => {
 			expect(GEMINI_DELIBERATION_PATTERN.test("Wait, I'll also read the file")).toBe(true);
 			expect(GEMINI_DELIBERATION_PATTERN.test("Actually, I'll just do reads first")).toBe(true);
@@ -1607,23 +1615,158 @@ describe('RuntimeExitMonitorService', () => {
 
 	describe('#235: inferDropoutReason', () => {
 		it('should infer idle_exit as default reason', () => {
-			const reason = (service as any).inferDropoutReason({ buffer: 'normal shell prompt' });
+			const reason = (service as any).inferDropoutReason({ buffer: 'normal shell prompt', toolCheckLoopTimestamps: [] });
 			expect(reason).toBe('idle_exit');
 		});
 
 		it('should infer crash from fatal errors', () => {
-			const reason = (service as any).inferDropoutReason({ buffer: 'fatal error occurred' });
+			const reason = (service as any).inferDropoutReason({ buffer: 'fatal error occurred', toolCheckLoopTimestamps: [] });
 			expect(reason).toBe('crash');
 		});
 
 		it('should infer update_exit from update patterns', () => {
-			const reason = (service as any).inferDropoutReason({ buffer: 'update available, restart required' });
+			const reason = (service as any).inferDropoutReason({ buffer: 'update available, restart required', toolCheckLoopTimestamps: [] });
 			expect(reason).toBe('update_exit');
 		});
 
 		it('should infer task_complete from completion patterns', () => {
-			const reason = (service as any).inferDropoutReason({ buffer: 'task complete, all done' });
+			const reason = (service as any).inferDropoutReason({ buffer: 'task complete, all done', toolCheckLoopTimestamps: [] });
 			expect(reason).toBe('task_complete');
+		});
+
+		it('should infer loop_detected when tool-check timestamps exceed threshold (#251)', () => {
+			const now = Date.now();
+			const timestamps = Array.from({ length: GEMINI_TOOL_CHECK_LOOP_THRESHOLD }, (_, i) => now - i * 1000);
+			const reason = (service as any).inferDropoutReason({ buffer: 'some output', toolCheckLoopTimestamps: timestamps });
+			expect(reason).toBe('loop_detected');
+		});
+
+		it('should infer loop_detected when deliberation threshold is exceeded', () => {
+			const deliberationLine = "Wait, I'll also check this.\n";
+			const buffer = deliberationLine.repeat(GEMINI_DELIBERATION_THRESHOLD + 1);
+			const reason = (service as any).inferDropoutReason({ buffer, toolCheckLoopTimestamps: [] });
+			expect(reason).toBe('loop_detected');
+		});
+	});
+
+	describe('#251: Gemini tool-check loop detection', () => {
+		it('should detect GEMINI_TOOL_CHECK_LOOP_PATTERN matches', () => {
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test('Ready. Final response.')).toBe(true);
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test('Ready.  Final response')).toBe(true);
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test('Wait, I will check if I should use mcp_chrome-devtools_getPageInfo? No.')).toBe(true);
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test('Wait, I will check if I should use mcp_something')).toBe(true);
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test('Normal agent output about tasks')).toBe(false);
+			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test('I will use the read tool')).toBe(false);
+		});
+
+		it('should trigger recovery when tool-check loop threshold is exceeded within time window (#251)', async () => {
+			jest.useFakeTimers();
+
+			mockCapturePane.mockReturnValue('Type your message');
+
+			service.startMonitoring('gemini-loop', RUNTIME_TYPES.GEMINI_CLI, 'developer');
+			const onDataCallback = mockOnData.mock.calls[0][0];
+
+			jest.advanceTimersByTime(RUNTIME_EXIT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 100);
+
+			// Feed tool-check loop output — each chunk triggers one pattern match
+			for (let i = 0; i < GEMINI_TOOL_CHECK_LOOP_THRESHOLD + 1; i++) {
+				onDataCallback('Wait, I will check if I should use mcp_chrome-devtools_screenshot? No. Ready. Final response.\n');
+				// Small gap between messages (1 second apart, well within 2-minute window)
+				jest.advanceTimersByTime(1000);
+			}
+
+			// Allow debounce + confirmation
+			await jest.advanceTimersByTimeAsync(
+				RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 5000
+			);
+
+			// The exit monitor should have detected the tool-check loop
+			service.stopMonitoring('gemini-loop');
+			jest.useRealTimers();
+		});
+
+		it('should NOT trigger tool-check loop recovery below threshold (#251)', async () => {
+			jest.useFakeTimers();
+
+			service.startMonitoring('gemini-few', RUNTIME_TYPES.GEMINI_CLI, 'developer');
+			const onDataCallback = mockOnData.mock.calls[0][0];
+
+			jest.advanceTimersByTime(RUNTIME_EXIT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 100);
+
+			// Feed only 2 occurrences (below threshold of 5)
+			onDataCallback('Ready. Final response.\n');
+			jest.advanceTimersByTime(1000);
+			onDataCallback('Ready. Final response.\n');
+
+			await jest.advanceTimersByTimeAsync(
+				RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 1000
+			);
+
+			// Should NOT have triggered any exit detection
+			expect(mockUpdateAgentStatus).not.toHaveBeenCalled();
+
+			service.stopMonitoring('gemini-few');
+			jest.useRealTimers();
+		});
+
+		it('should NOT trigger tool-check loop for non-Gemini runtimes (#251)', async () => {
+			jest.useFakeTimers();
+
+			service.startMonitoring('claude-agent', RUNTIME_TYPES.CLAUDE_CODE, 'developer');
+			const onDataCallback = mockOnData.mock.calls[0][0];
+
+			jest.advanceTimersByTime(RUNTIME_EXIT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 100);
+
+			// Feed tool-check loop output to a Claude agent — should be ignored
+			for (let i = 0; i < GEMINI_TOOL_CHECK_LOOP_THRESHOLD + 1; i++) {
+				onDataCallback('Ready. Final response.\n');
+				jest.advanceTimersByTime(1000);
+			}
+
+			await jest.advanceTimersByTimeAsync(
+				RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 1000
+			);
+
+			// Should NOT have triggered (wrong runtime type)
+			expect(mockUpdateAgentStatus).not.toHaveBeenCalled();
+
+			service.stopMonitoring('claude-agent');
+			jest.useRealTimers();
+		});
+
+		it('should prune timestamps outside the time window (#251)', async () => {
+			jest.useFakeTimers();
+
+			service.startMonitoring('gemini-spread', RUNTIME_TYPES.GEMINI_CLI, 'developer');
+			const onDataCallback = mockOnData.mock.calls[0][0];
+
+			jest.advanceTimersByTime(RUNTIME_EXIT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 100);
+
+			// Feed 3 matches early
+			for (let i = 0; i < 3; i++) {
+				onDataCallback('Ready. Final response.\n');
+				jest.advanceTimersByTime(1000);
+			}
+
+			// Wait 3 minutes (beyond the 2-minute window) so those 3 expire
+			jest.advanceTimersByTime(3 * 60 * 1000);
+
+			// Feed 3 more — only 3 are within window (below threshold of 5)
+			for (let i = 0; i < 3; i++) {
+				onDataCallback('Ready. Final response.\n');
+				jest.advanceTimersByTime(1000);
+			}
+
+			await jest.advanceTimersByTimeAsync(
+				RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 1000
+			);
+
+			// Should NOT trigger — only 3 within window
+			expect(mockUpdateAgentStatus).not.toHaveBeenCalled();
+
+			service.stopMonitoring('gemini-spread');
+			jest.useRealTimers();
 		});
 	});
 

@@ -176,6 +176,11 @@ export class MonitoringService {
     }
 
     if (monitoringConfig.healthCheckInterval > 0) {
+      // Run initial health check immediately so /api/health has data from startup (#250)
+      this.runHealthChecks().catch(() => {
+        // Non-critical — will retry on next interval
+      });
+
       this.healthCheckInterval = setInterval(() => {
         this.runHealthChecks();
       }, monitoringConfig.healthCheckInterval);
@@ -557,15 +562,27 @@ export class MonitoringService {
 
   public getOverallHealth(): 'healthy' | 'degraded' | 'unhealthy' {
     const healthValues = Array.from(this.healthChecks.values());
-    
+
+    // During startup grace period (first 60s), return healthy to avoid
+    // false alarms from transient resource spikes during initialization (#250)
+    const STARTUP_GRACE_PERIOD_MS = 60_000;
+    if (Date.now() - this.startTime < STARTUP_GRACE_PERIOD_MS) {
+      return 'healthy';
+    }
+
+    // If no health checks have completed yet, return healthy (not unhealthy)
+    if (healthValues.length === 0) {
+      return 'healthy';
+    }
+
     if (healthValues.some(h => h.status === 'unhealthy')) {
       return 'unhealthy';
     }
-    
+
     if (healthValues.some(h => h.status === 'degraded')) {
       return 'degraded';
     }
-    
+
     return 'healthy';
   }
 

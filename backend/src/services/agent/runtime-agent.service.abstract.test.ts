@@ -665,7 +665,7 @@ echo "second command"
 			expect(calledCmd).toContain('GEMINI_NO_UPDATE=1');
 		});
 
-		it('#234: should inject --full-auto for codex-cli runtime', async () => {
+		it('#234: should inject --full-auto for codex-cli when no approval flag present', async () => {
 			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
 			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({
 				initScript: 'initialize_codex.sh', displayName: 'Codex CLI',
@@ -678,6 +678,39 @@ echo "second command"
 
 			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
 			expect(calledCmd).toContain('--full-auto');
+		});
+
+		it('#246: should NOT inject --full-auto when -a flag is already present', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['codex-cli'] = 'codex -a never -s danger-full-access';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).not.toContain('--full-auto');
+			expect(calledCmd).toContain('-a never');
+			expect(calledCmd).toContain('-s danger-full-access');
+		});
+
+		it('#246: should NOT inject --full-auto when --approval-mode is present', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['codex-cli'] = 'codex --approval-mode full-auto';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).not.toContain('codex --full-auto');
+			expect(calledCmd).toContain('--approval-mode full-auto');
 		});
 
 		it('#243: should NOT inject --no-update-check for codex-cli (invalid flag)', async () => {

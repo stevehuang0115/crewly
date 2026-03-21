@@ -77,6 +77,8 @@ export const AGENT_TIMEOUTS = {
 	REGULAR_AGENT_INITIALIZATION: 75000, // 75 seconds for regular agents
 	/** #227: Extended timeout for Claude Code — PI protection evaluation takes 2-3 min */
 	CLAUDE_CODE_INITIALIZATION: 300000, // 5 minutes for Claude Code agents
+	/** #252: Watchdog timeout — if agent is still in 'starting' state after this period, mark as error */
+	STARTING_WATCHDOG: 300000, // 5 minutes
 } as const;
 
 // Agent runtime types
@@ -529,6 +531,23 @@ export const GEMINI_DELIBERATION_PATTERN = /(?:Wait,\s+I['''\u2019]ll|Actually,\
 /** Number of deliberation pattern matches in the terminal buffer before
  *  declaring the agent stuck in a deliberation loop (#188). */
 export const GEMINI_DELIBERATION_THRESHOLD = 5;
+
+/**
+ * #251: Gemini tool-check loop detection pattern.
+ * Matches repeated "Ready. Final response." or "Wait, I will check if I should use mcp_"
+ * cycling that indicates the agent is stuck checking Chrome DevTools MCP tools
+ * without making progress. Time-windowed: triggers when the pattern appears
+ * GEMINI_TOOL_CHECK_LOOP_THRESHOLD times within GEMINI_TOOL_CHECK_LOOP_WINDOW_MS.
+ */
+export const GEMINI_TOOL_CHECK_LOOP_PATTERN = /(?:Ready\.\s*Final\s+response\.?|Wait,\s*I[\u2019']?(?:ll|\s+will)\s+check\s+if\s+I\s+should\s+use\s+mcp_)/i;
+
+/** #251: Number of tool-check loop pattern matches within the time window
+ *  before declaring the agent stuck. */
+export const GEMINI_TOOL_CHECK_LOOP_THRESHOLD = 5;
+
+/** #251: Time window in milliseconds for counting tool-check loop occurrences.
+ *  If THRESHOLD matches occur within this window, the agent is considered stuck. */
+export const GEMINI_TOOL_CHECK_LOOP_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
 
 /**
  * Gemini update/upgrade markers that should trigger forced recovery.
@@ -1149,11 +1168,13 @@ export const CLOUD_SYNC_CONSTANTS = {
 	BACKOFF_MAX_MS: 60_000,
 	/** Cloud Sync API endpoints (relative to cloudUrl) */
 	ENDPOINTS: {
-		/** Device heartbeat — upserts device record on Cloud Sync handler */
-		HEARTBEAT: '/api/v1/sync/heartbeat',
-		/** List all devices for account (computed online/offline from heartbeat freshness) */
-		DEVICES: '/api/v1/sync/devices',
-		/** Send messages to another device's queue */
+		/** Device heartbeat — POST to Cloud Auth service device registry */
+		HEARTBEAT: '/api/devices/heartbeat',
+		/** Device heartbeat — POST to Cloud Relay sync handler (registers device for messaging) */
+		HEARTBEAT_SYNC: '/api/v1/sync/heartbeat',
+		/** List all devices for account */
+		DEVICES: '/api/devices',
+		/** Send a message to another device via Cloud Sync message queue */
 		MESSAGES: '/api/v1/sync/messages',
 		/** Poll for incoming messages (GET with ?deviceId=) */
 		MESSAGES_POLL: '/api/v1/sync/messages',

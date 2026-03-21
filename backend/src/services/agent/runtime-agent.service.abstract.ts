@@ -189,18 +189,23 @@ export abstract class RuntimeAgentService {
 				this.logger.info('Injected GEMINI_NO_UPDATE=1 to prevent auto-update kills', { sessionName });
 			}
 
-			// #234: Add --full-auto so Codex stays in interactive mode after task completion
-			// #243: Removed --no-update-check — not a valid codex flag, causes startup failure
+			// #234: Codex needs approval bypass for non-interactive operation.
+			// #243: Removed --no-update-check — not a valid codex flag, causes startup failure.
+			// #246: Do NOT inject --full-auto when -a is already present — the newer
+			// Codex CLI uses `-a never` (set in default runtimeCommands) which serves
+			// the same purpose. Combining both causes a startup failure.
 			if (this.getRuntimeType() === 'codex-cli') {
 				finalCommands = finalCommands.map(cmd => {
 					if (cmd.includes('codex')) {
-						if (!cmd.includes('--full-auto')) {
+						// Only inject --full-auto if neither --full-auto nor -a flag is present
+						const hasApprovalFlag = cmd.includes('--full-auto') || / -a /.test(cmd) || cmd.includes('--approval-mode');
+						if (!hasApprovalFlag) {
 							cmd = cmd.replace(/codex\b/, 'codex --full-auto');
+							this.logger.info('Injected --full-auto for Codex CLI (no approval flag present)', { sessionName });
 						}
 					}
 					return cmd;
 				});
-				this.logger.info('Injected --full-auto for Codex CLI', { sessionName });
 			}
 
 			// Clear the commandline before execute

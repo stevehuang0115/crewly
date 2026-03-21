@@ -336,6 +336,10 @@ export class CloudSyncService extends EventEmitter {
     try {
       const teams = await gatherTeamSummaries();
 
+      // Cloud API expects the same payload as the frontend useDeviceHeartbeat hook.
+      // The Cloud server identifies the device from the JWT token, so we send
+      // deviceName and teams. We also send the extended fields for richer metadata
+      // that the Cloud API may store but does not require.
       const payload: HeartbeatPayload = {
         deviceId: this.config.deviceId,
         deviceName: this.config.deviceName,
@@ -346,25 +350,34 @@ export class CloudSyncService extends EventEmitter {
         timestamp: new Date().toISOString(),
       };
 
-      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT}`;
+      const authUrl = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT}`;
+      const syncUrl = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT_SYNC}`;
+      const bodyStr = JSON.stringify(payload);
+      const headers = this.authHeaders();
+      const timeout = CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS;
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: this.authHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
-      });
+      // Send heartbeat to BOTH Cloud endpoints in parallel:
+      // 1. Auth service (/api/devices/heartbeat) — for device discovery
+      // 2. Relay sync handler (/api/v1/sync/heartbeat) — for message queue device registration
+      const [authRes, syncRes] = await Promise.all([
+        fetch(authUrl, { method: 'POST', headers, body: bodyStr, signal: AbortSignal.timeout(timeout) }),
+        fetch(syncUrl, { method: 'POST', headers, body: bodyStr, signal: AbortSignal.timeout(timeout) }).catch(() => null),
+      ]);
 
-      if (!response.ok) {
+      if (!authRes.ok) {
         // On 401/403, attempt token refresh before counting as failure
-        if (response.status === 401 || response.status === 403) {
-          const refreshed = await this.handleAuthError(response.status);
+        if (authRes.status === 401 || authRes.status === 403) {
+          const refreshed = await this.handleAuthError(authRes.status);
           if (refreshed) {
             this.logger.info('Heartbeat will retry with refreshed token on next cycle');
             return;
           }
         }
-        throw new Error(`Heartbeat failed: ${response.status}`);
+        throw new Error(`Heartbeat failed: ${authRes.status}`);
+      }
+
+      if (syncRes && !syncRes.ok) {
+        this.logger.debug('Sync heartbeat returned non-OK (non-fatal)', { status: syncRes.status });
       }
 
       this.heartbeatFailures = 0;
@@ -414,26 +427,37 @@ export class CloudSyncService extends EventEmitter {
         throw new Error(`Device poll failed: ${response.status}`);
       }
 
-      const data = await response.json() as { success: boolean; devices?: any[] };
+      const data = await response.json() as { success?: boolean; data?: any[]; devices?: any[] };
 
-      if (!data.success || !data.devices) {
-        throw new Error('Device poll returned unsuccessful response');
+      // Cloud /api/devices returns { success, data: Device[] }
+      // Legacy /api/v1/sync/devices returned { success, devices: Device[] }
+      // Support both formats for forward/backward compatibility
+      const rawDevices = data.data || data.devices;
+
+      if (!rawDevices) {
+        // Empty response is valid when no other devices are online
+        this.devices = [];
+        this.devicePollFailures = 0;
+        this.emit('devices_updated', this.getDevices());
+        return;
       }
 
       const previousOnlineIds = new Set(
         this.devices.filter((d) => d.status === 'online').map((d) => d.deviceId)
       );
 
-      // Normalize Cloud relay devices to SyncDevice format.
-      // Cloud returns: { sessionId, role, state, pairedWith, registeredAt, lastHeartbeatAt, name }
-      // We need:       { deviceId, deviceName, status, lastHeartbeatAt, isLocal, ... }
+      // Normalize Cloud device records to SyncDevice format.
+      // Cloud /api/devices returns: { deviceId, deviceName, email, teams, lastSeenAt }
+      // Legacy relay returns: { sessionId, role, state, pairedWith, registeredAt, lastHeartbeatAt, name }
+      // We need:              { deviceId, deviceName, status, lastHeartbeatAt, isLocal, ... }
       const offlineThreshold = CLOUD_SYNC_CONSTANTS.OFFLINE_THRESHOLD_MS;
       const now = Date.now();
-      const updatedDevices: SyncDevice[] = data.devices.map((d: any) => {
+      const updatedDevices: SyncDevice[] = rawDevices.map((d: any) => {
         const deviceId = d.deviceId || d.sessionId || '';
-        const lastSeen = d.lastHeartbeatAt || d.registeredAt || new Date().toISOString();
-        // Determine online/offline from heartbeat recency or from relay state
+        const lastSeen = d.lastSeenAt || d.lastHeartbeatAt || d.registeredAt || new Date().toISOString();
+        // Determine online/offline from heartbeat recency, explicit status, or relay state
         const isOnline = d.status === 'online' ||
+          d.online === true ||
           d.state === 'paired' ||
           d.state === 'waiting' ||
           (now - new Date(lastSeen).getTime() <= offlineThreshold);
@@ -446,11 +470,13 @@ export class CloudSyncService extends EventEmitter {
           isLocal: deviceId === this.config!.deviceId,
           version: d.version,
           capabilities: d.capabilities,
-          // Preserve relay-specific fields for the frontend
+          // Preserve extra fields for the frontend
           ...(d.role && { role: d.role }),
           ...(d.state && { state: d.state }),
           ...(d.registeredAt && { registeredAt: d.registeredAt }),
           ...(d.sessionId && { sessionId: d.sessionId }),
+          ...(d.email && { email: d.email }),
+          ...(d.teams && { teams: d.teams }),
         } as SyncDevice;
       });
 
@@ -521,16 +547,19 @@ export class CloudSyncService extends EventEmitter {
         throw new Error(`Message poll failed: ${response.status}`);
       }
 
-      const data = await response.json() as { success: boolean; messages?: any[] };
+      const data = await response.json() as { success?: boolean; messages?: any[]; data?: any[] };
 
-      if (!data.success || !data.messages || data.messages.length === 0) {
+      // Support both { messages: [...] } and { data: [...] } response formats
+      const rawMessages = data.messages || data.data;
+
+      if (!rawMessages || rawMessages.length === 0) {
         this.messagePollFailures = 0;
         return;
       }
 
       // Normalize Cloud message format to IncomingMessage shape
       const messageIds: string[] = [];
-      for (const raw of data.messages) {
+      for (const raw of rawMessages) {
         const msg: IncomingMessage = {
           id: raw.id,
           from: raw.fromDeviceId || raw.from || '',
@@ -548,7 +577,7 @@ export class CloudSyncService extends EventEmitter {
       await this.ackMessages(messageIds);
 
       this.messagePollFailures = 0;
-      this.logger.debug('Polled and processed messages', { count: data.messages.length });
+      this.logger.debug('Polled and processed messages', { count: rawMessages.length });
     } catch (error) {
       this.messagePollFailures++;
       this.logger.warn('Message poll failed', {

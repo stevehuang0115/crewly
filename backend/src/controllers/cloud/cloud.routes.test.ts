@@ -19,6 +19,7 @@ vi.mock('./cloud.controller.js', () => ({
   refreshCloudToken: vi.fn((_req, res) => res.status(200).json({ success: true })),
   getCloudStatus: vi.fn((_req, res) => res.status(200).json({ success: true })),
   getCloudTemplates: vi.fn((_req, res) => res.status(200).json({ success: true })),
+  sendCloudMessage: vi.fn((_req, res) => res.status(200).json({ success: true })),
 }));
 
 vi.mock('./relay.controller.js', () => ({
@@ -116,7 +117,11 @@ describe('Cloud Routes', () => {
     expect(routes).toContainEqual({ method: 'POST', path: '/google/callback' });
   });
 
-  it('should register exactly 11 routes', () => {
-    expect(routes).toHaveLength(11);
+  it('should register POST /send route', () => {
+    expect(routes).toContainEqual({ method: 'POST', path: '/send' });
+  });
+
+  it('should register exactly 12 routes', () => {
+    expect(routes).toHaveLength(12);
   });
 });

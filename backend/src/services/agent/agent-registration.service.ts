@@ -2969,6 +2969,8 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 	): Promise<boolean> {
 		const sessionHelper = await this.getSessionHelper();
 		const isClaudeCode = runtimeType === RUNTIME_TYPES.CLAUDE_CODE;
+		const isCodexCli = runtimeType === RUNTIME_TYPES.CODEX_CLI;
+		const isGeminiCli = runtimeType === RUNTIME_TYPES.GEMINI_CLI;
 
 		// Register TUI sessions for TUI prompt-line scanning (Part 1 of scanner).
 		// The scanner itself is started lazily by trackSentMessage() which
@@ -3099,7 +3101,27 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 					} catch { /* non-fatal */ }
 					await sessionHelper.sendKey(sessionName, 'Tab');
 					await delay(300);
+				} else if (isCodexCli) {
+					// #246: Codex CLI TUI recovery — simpler than Gemini.
+					// Codex uses Ink-based TUI with › prompt. Avoid Gemini-specific
+					// F12/compress/error-state logic which is irrelevant for Codex.
+					if (attempt > 1) {
+						// PTY resize to trigger SIGWINCH → Ink re-render
+						try {
+							const session = sessionHelper.getSession(sessionName);
+							if (session) {
+								session.resize(81, 25);
+								await delay(200);
+								session.resize(80, 24);
+								await delay(300);
+							}
+						} catch { /* non-fatal */ }
+						// Ctrl+U to clear any stale input text
+						await sessionHelper.sendKey(sessionName, 'C-u');
+						await delay(300);
+					}
 				} else {
+					// Gemini CLI TUI recovery
 					// Detect recent /compress — Ink TUI loses internal focus after
 					// /compress re-renders, causing subsequent messages to be silently
 					// dropped even though the prompt `>` is visible (#114).
@@ -3181,7 +3203,7 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				// For Gemini CLI: detect and gently escape interactive modes before
 				// sending the message. Avoid Ctrl-C here — Gemini interprets it as
 				// destructive cancellation/quit in some states.
-				if (!isClaudeCode) {
+				if (isGeminiCli) {
 					const preOutput = sessionHelper.capturePane(sessionName, 10);
 					const interactiveModePatterns = [
 						'Select a file',       // /resume file picker
@@ -4451,6 +4473,12 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 						// Claude Code: Escape closes slash menus + Ctrl+U clears line.
 						await sessionHelper.sendEscape(sessionName);
 						await delay(200);
+						await sessionHelper.sendKey(sessionName, 'C-u');
+						await delay(300);
+					} else if (runtimeType === RUNTIME_TYPES.CODEX_CLI) {
+						// #246: Codex CLI — Ctrl+U to clear any stale input text.
+						// Unlike Gemini, Codex doesn't need Enter flush; its Ink TUI
+						// handles Ctrl+U for line clear similar to Claude Code.
 						await sessionHelper.sendKey(sessionName, 'C-u');
 						await delay(300);
 					} else {

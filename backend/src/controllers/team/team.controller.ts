@@ -24,7 +24,7 @@ import {
   NON_RECOVERABLE_ERROR_PATTERNS,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
-import { CREWLY_CONSTANTS } from '../../constants.js';
+import { CREWLY_CONSTANTS, AGENT_TIMEOUTS } from '../../constants.js';
 import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.service.js';
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
 import { getSettingsService } from '../../services/settings/settings.service.js';
@@ -457,6 +457,36 @@ async function _startTeamMemberCore(
       } catch (memError) {
         logger.warn('Failed to initialize memory', { sessionName, error: memError instanceof Error ? memError.message : String(memError) });
       }
+
+      // #252: Start a watchdog timer to detect agents stuck in 'starting' state
+      // If agent hasn't registered (reached 'active') within STARTING_WATCHDOG timeout,
+      // reset to 'inactive' with a dropout reason so the orchestrator can take action.
+      setTimeout(async () => {
+        try {
+          const watchdogTeams = await context.storageService.getTeams();
+          const watchdogTeam = watchdogTeams.find(t => t.id === team.id);
+          const watchdogMember = watchdogTeam?.members.find(m => m.id === member.id) as MutableTeamMember | undefined;
+          if (watchdogTeam && watchdogMember &&
+              (watchdogMember.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.STARTING ||
+               watchdogMember.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.STARTED)) {
+            logger.warn('Agent stuck in starting state — watchdog triggering reset (#252)', {
+              sessionName,
+              memberId: member.id,
+              agentStatus: watchdogMember.agentStatus,
+              timeoutMs: AGENT_TIMEOUTS.STARTING_WATCHDOG,
+            });
+            watchdogMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE;
+            watchdogMember.dropoutReason = 'startup_timeout';
+            watchdogMember.updatedAt = new Date().toISOString();
+            await context.storageService.saveTeam(watchdogTeam);
+          }
+        } catch (watchdogError) {
+          logger.error('Starting watchdog error', {
+            sessionName,
+            error: watchdogError instanceof Error ? watchdogError.message : String(watchdogError),
+          });
+        }
+      }, AGENT_TIMEOUTS.STARTING_WATCHDOG).unref();
 
       // CRITICAL: Load fresh data again after session creation to preserve MCP registration updates
       const finalTeams = await context.storageService.getTeams();

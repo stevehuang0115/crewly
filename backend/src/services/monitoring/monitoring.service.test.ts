@@ -399,6 +399,9 @@ describe('MonitoringService', () => {
     });
 
     it('should determine overall health status', () => {
+      // Move startTime back so grace period doesn't apply
+      (service as any).startTime = Date.now() - 120000;
+
       (service as any).healthChecks.set('service1', { status: 'healthy' });
       (service as any).healthChecks.set('service2', { status: 'healthy' });
       expect(service.getOverallHealth()).toBe('healthy');
@@ -408,6 +411,20 @@ describe('MonitoringService', () => {
 
       (service as any).healthChecks.set('service4', { status: 'unhealthy' });
       expect(service.getOverallHealth()).toBe('unhealthy');
+    });
+
+    it('should return healthy during startup grace period even with unhealthy checks (#250)', () => {
+      // Set startTime to now (within grace period)
+      (service as any).startTime = Date.now();
+      (service as any).healthChecks.set('cpu', { status: 'unhealthy' });
+      expect(service.getOverallHealth()).toBe('healthy');
+    });
+
+    it('should return healthy when no health checks have run yet (#250)', () => {
+      // Move past grace period but clear all health checks
+      (service as any).startTime = Date.now() - 120000;
+      (service as any).healthChecks.clear();
+      expect(service.getOverallHealth()).toBe('healthy');
     });
   });
 

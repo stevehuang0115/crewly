@@ -69,8 +69,8 @@ function createMockCloudServer() {
 
     // --- Route matching ---
 
-    // POST /api/v1/sync/heartbeat — Heartbeat/Device Registration
-    if (url.endsWith('/api/v1/sync/heartbeat') && method === 'POST') {
+    // POST /api/devices/heartbeat — Heartbeat/Device Registration (matches Cloud API)
+    if (url.endsWith('/api/devices/heartbeat') && method === 'POST') {
       if (!headers.Authorization) {
         return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401 });
       }
@@ -89,8 +89,16 @@ function createMockCloudServer() {
       return new Response(JSON.stringify({ success: true, ttl: 60000 }), { status: 200 });
     }
 
-    // GET /api/v1/sync/devices — Device Discovery
-    if (url.endsWith('/api/v1/sync/devices') && method === 'GET') {
+    // POST /api/v1/sync/heartbeat — Relay Sync Heartbeat (registers device for messaging)
+    if (url.endsWith('/api/v1/sync/heartbeat') && method === 'POST') {
+      if (!headers.Authorization) {
+        return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401 });
+      }
+      return new Response(JSON.stringify({ success: true, ttl: 60000 }), { status: 200 });
+    }
+
+    // GET /api/devices — Device Discovery (matches Cloud API)
+    if (url.endsWith('/api/devices') && method === 'GET') {
       if (!headers.Authorization) {
         return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401 });
       }
@@ -125,7 +133,7 @@ function createMockCloudServer() {
     }
 
     // GET /api/v1/sync/messages — Poll Messages
-    if (url.includes('/api/v1/sync/messages') && !url.includes('/ack') && method === 'GET') {
+    if (url.includes('/api/v1/sync/messages') && method === 'GET') {
       if (!headers.Authorization) {
         return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401 });
       }
@@ -138,7 +146,7 @@ function createMockCloudServer() {
       }), { status: 200 });
     }
 
-    // POST /api/v1/sync/messages/ack — Acknowledge Messages
+    // POST /api/v1/sync/messages/ack — Acknowledge Messages (Cloud Sync message queue)
     if (url.endsWith('/api/v1/sync/messages/ack') && method === 'POST') {
       const { deviceId, messageIds } = body || {};
       if (deviceId && messageIds) {
@@ -174,30 +182,29 @@ function makeConfig(overrides?: Partial<CloudSyncConfig>): CloudSyncConfig {
 // ---------------------------------------------------------------------------
 
 describe('Cloud Connect E2E — Endpoint Path Consistency', () => {
-  it('CLOUD_SYNC_CONSTANTS.ENDPOINTS use /api/v1/sync/ prefix (not legacy /relay/)', () => {
-    // Cloud Sync uses dedicated /api/v1/sync/* endpoints on the production relay service.
-    // The legacy CLOUD_CONSTANTS.RELAY_ENDPOINTS (/api/v1/relay/*) are for the
-    // RelayClientService pairing-based system and MUST remain separate.
+  it('CLOUD_SYNC_CONSTANTS.ENDPOINTS use Cloud API paths that actually exist on api.crewlyai.com', () => {
+    // Cloud Sync device endpoints use /api/devices/* (same as frontend useDeviceHeartbeat).
+    // Message endpoints use the Cloud Sync message queue /api/v1/sync/messages*.
     //
-    // This test prevents regression to the old relay endpoints which caused
-    // the device discovery bug (handshake went to HttpQueueService instead of CloudSyncHandler).
+    // CRITICAL: The old /api/v1/sync/* endpoints returned 404 on the Cloud server,
+    // which was the root cause of the two-device discovery bug.
 
-    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT).toBe('/api/v1/sync/heartbeat');
-    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES).toBe('/api/v1/sync/devices');
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT).toBe('/api/devices/heartbeat');
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT_SYNC).toBe('/api/v1/sync/heartbeat');
+    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES).toBe('/api/devices');
     expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES).toBe('/api/v1/sync/messages');
     expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL).toBe('/api/v1/sync/messages');
     expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_ACK).toBe('/api/v1/sync/messages/ack');
 
-    // Verify they DON'T match the legacy relay endpoints
-    expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT).not.toBe(CLOUD_CONSTANTS.RELAY_ENDPOINTS.HANDSHAKE);
+    // Verify they DON'T match the legacy relay DEVICES endpoint (which is a different system)
     expect(CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES).not.toBe(CLOUD_CONSTANTS.RELAY_ENDPOINTS.DEVICES);
   });
 
-  it('all endpoint paths start with /api/v1/', () => {
-    // Ensures no one accidentally uses /v1/ (legacy) or /api/relay/ (wrong prefix)
+  it('all endpoint paths start with /api/', () => {
+    // Ensures all endpoints use the /api/ prefix (not bare /v1/ which is legacy)
     const endpoints = CLOUD_SYNC_CONSTANTS.ENDPOINTS;
     for (const [key, path] of Object.entries(endpoints)) {
-      expect(path, `ENDPOINTS.${key} should start with /api/v1/`).toMatch(/^\/api\/v1\//);
+      expect(path, `ENDPOINTS.${key} should start with /api/`).toMatch(/^\/api\//);
     }
   });
 
@@ -228,8 +235,8 @@ describe('Cloud Connect E2E — Cloud API Liveness', () => {
   const CLOUD_URL = 'https://api.crewlyai.com';
   const SKIP_LIVE = process.env.CI === 'true' || process.env.SKIP_LIVE_CLOUD === 'true';
 
-  it.skipIf(SKIP_LIVE)('Cloud sync heartbeat endpoint exists (returns 401 without token)', async () => {
-    const response = await fetch(`${CLOUD_URL}/api/v1/sync/heartbeat`, {
+  it.skipIf(SKIP_LIVE)('Cloud device heartbeat endpoint exists (returns 401 without token)', async () => {
+    const response = await fetch(`${CLOUD_URL}/api/devices/heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceId: 'test', deviceName: 'test' }),
@@ -240,15 +247,15 @@ describe('Cloud Connect E2E — Cloud API Liveness', () => {
     expect(response.status, 'Heartbeat endpoint should exist (not 404)').not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud sync devices endpoint exists (returns 401 without token)', async () => {
-    const response = await fetch(`${CLOUD_URL}/api/v1/sync/devices`, {
+  it.skipIf(SKIP_LIVE)('Cloud device list endpoint exists (returns 401 without token)', async () => {
+    const response = await fetch(`${CLOUD_URL}/api/devices`, {
       method: 'GET',
       signal: AbortSignal.timeout(10_000),
     });
     expect(response.status, 'Devices endpoint should exist (not 404)').not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud sync message send endpoint exists', async () => {
+  it.skipIf(SKIP_LIVE)('Cloud relay queue send endpoint exists', async () => {
     const response = await fetch(`${CLOUD_URL}/api/v1/sync/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -258,7 +265,7 @@ describe('Cloud Connect E2E — Cloud API Liveness', () => {
     expect(response.status, 'Message send endpoint should exist (not 404)').not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud sync message poll endpoint exists', async () => {
+  it.skipIf(SKIP_LIVE)('Cloud relay queue poll endpoint exists', async () => {
     const response = await fetch(`${CLOUD_URL}/api/v1/sync/messages?deviceId=test`, {
       method: 'GET',
       signal: AbortSignal.timeout(10_000),
@@ -266,7 +273,7 @@ describe('Cloud Connect E2E — Cloud API Liveness', () => {
     expect(response.status, 'Message poll endpoint should exist (not 404)').not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud sync message ack endpoint exists', async () => {
+  it.skipIf(SKIP_LIVE)('Cloud relay queue ack endpoint exists', async () => {
     const response = await fetch(`${CLOUD_URL}/api/v1/sync/messages/ack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -323,7 +330,7 @@ describe('Cloud Connect E2E — Two-Device Simulation', () => {
 
     // Verify the HTTP request was correct
     const heartbeatReq = mockServer.requests.find((r) =>
-      r.url.includes('/api/v1/sync/heartbeat') && r.method === 'POST'
+      r.url.includes('/api/devices/heartbeat') && r.method === 'POST'
     );
     expect(heartbeatReq).toBeDefined();
     expect(heartbeatReq!.headers.Authorization).toBe(`Bearer ${configA.token}`);
@@ -788,11 +795,15 @@ describe('Cloud Connect E2E — Frontend↔Backend Contract', () => {
 
     // Heartbeat
     const heartbeatUrl = `${cloudUrl}${endpoints.HEARTBEAT}`;
-    expect(heartbeatUrl).toBe('https://api.crewlyai.com/api/v1/sync/heartbeat');
+    expect(heartbeatUrl).toBe('https://api.crewlyai.com/api/devices/heartbeat');
 
     // Devices
     const devicesUrl = `${cloudUrl}${endpoints.DEVICES}`;
-    expect(devicesUrl).toBe('https://api.crewlyai.com/api/v1/sync/devices');
+    expect(devicesUrl).toBe('https://api.crewlyai.com/api/devices');
+
+    // Sync heartbeat (for message handler device registration)
+    const syncHeartbeatUrl = `${cloudUrl}${endpoints.HEARTBEAT_SYNC}`;
+    expect(syncHeartbeatUrl).toBe('https://api.crewlyai.com/api/v1/sync/heartbeat');
 
     // Messages send
     const sendUrl = `${cloudUrl}${endpoints.MESSAGES}`;
@@ -1013,24 +1024,13 @@ describe('Cloud Connect E2E — Constants Drift Detection', () => {
     expect(AUTH_CONSTANTS.JWT.REFRESH_TOKEN_EXPIRY_S).toBeLessThanOrEqual(31_536_000);
   });
 
-  it('no duplicate endpoint paths across CLOUD_SYNC and RELAY_ENDPOINTS', () => {
-    // Detect if someone accidentally created the same endpoint under two different names
+  it('no unexpected duplicate endpoint paths within CLOUD_SYNC_CONSTANTS', () => {
+    // MESSAGES and MESSAGES_POLL share the same path (/api/v1/sync/messages)
+    // because they are differentiated by HTTP method (POST vs GET).
+    // All other endpoint paths should be unique.
     const syncPaths = Object.values(CLOUD_SYNC_CONSTANTS.ENDPOINTS);
-    const relayPaths = Object.values(CLOUD_CONSTANTS.RELAY_ENDPOINTS);
-
-    // Within CLOUD_SYNC_CONSTANTS, MESSAGES and MESSAGES_POLL share the same path
-    // (differentiated by HTTP method: POST vs GET). Exclude that known overlap.
     const uniqueSyncPaths = new Set(syncPaths);
-    // 4 unique paths from 5 entries: heartbeat, devices, messages (send+poll), messages/ack
+    // 5 unique paths out of 6 entries: heartbeat, heartbeat_sync, devices, messages (send+poll), messages/ack
     expect(uniqueSyncPaths.size).toBe(syncPaths.length - 1);
-
-    // Within RELAY_ENDPOINTS, all paths should be unique
-    const uniqueRelayPaths = new Set(relayPaths);
-    expect(uniqueRelayPaths.size).toBe(relayPaths.length);
-
-    // Cloud Sync and Relay endpoints should NOT overlap (they use different prefixes)
-    for (const syncPath of syncPaths) {
-      expect(relayPaths, `Sync path ${syncPath} should not exist in relay paths`).not.toContain(syncPath);
-    }
   });
 });

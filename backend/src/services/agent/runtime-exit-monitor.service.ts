@@ -33,6 +33,9 @@ import {
 	GEMINI_FORCE_RESTART_PATTERNS,
 	GEMINI_DELIBERATION_PATTERN,
 	GEMINI_DELIBERATION_THRESHOLD,
+	GEMINI_TOOL_CHECK_LOOP_PATTERN,
+	GEMINI_TOOL_CHECK_LOOP_THRESHOLD,
+	GEMINI_TOOL_CHECK_LOOP_WINDOW_MS,
 	CLAUDE_FATAL_PATTERNS,
 	GEMINI_FAILURE_RETRY_CONSTANTS,
 	GEMINI_READY_PATTERNS,
@@ -62,6 +65,8 @@ interface MonitoredSession {
 	processPollingInterval?: ReturnType<typeof setInterval>;
 	/** Number of Gemini failure retry attempts so far */
 	geminiFailureRetries: number;
+	/** #251: Timestamps of tool-check loop pattern matches for time-windowed detection */
+	toolCheckLoopTimestamps: number[];
 }
 
 /**
@@ -217,6 +222,7 @@ export class RuntimeExitMonitorService {
 			confirmationInFlight: false,
 			unsubscribe: () => {},
 			geminiFailureRetries: 0,
+			toolCheckLoopTimestamps: [],
 		};
 
 		// Get exit patterns for this runtime type
@@ -361,6 +367,33 @@ export class RuntimeExitMonitorService {
 					threshold: GEMINI_DELIBERATION_THRESHOLD,
 				});
 				matched = true;
+			}
+		}
+
+		// #251: Tool-check loop detection for Gemini CLI agents.
+		// Detects "Ready. Final response." / "Wait, I will check if I should use mcp_"
+		// cycling through Chrome DevTools MCP tools without completing.
+		// Time-windowed: THRESHOLD matches within WINDOW_MS triggers force-stop.
+		if (!matched && monitored.runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+			if (GEMINI_TOOL_CHECK_LOOP_PATTERN.test(data)) {
+				const now = Date.now();
+				monitored.toolCheckLoopTimestamps.push(now);
+
+				// Prune timestamps outside the time window
+				const windowStart = now - GEMINI_TOOL_CHECK_LOOP_WINDOW_MS;
+				monitored.toolCheckLoopTimestamps = monitored.toolCheckLoopTimestamps.filter(
+					(ts) => ts >= windowStart
+				);
+
+				if (monitored.toolCheckLoopTimestamps.length >= GEMINI_TOOL_CHECK_LOOP_THRESHOLD) {
+					this.logger.warn('Gemini tool-check loop detected (#251), force-stopping agent', {
+						sessionName,
+						matchCount: monitored.toolCheckLoopTimestamps.length,
+						threshold: GEMINI_TOOL_CHECK_LOOP_THRESHOLD,
+						windowMs: GEMINI_TOOL_CHECK_LOOP_WINDOW_MS,
+					});
+					matched = true;
+				}
 			}
 		}
 
@@ -518,6 +551,19 @@ export class RuntimeExitMonitorService {
 				return true;
 			}
 		} else if (monitored.runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+			// #251: Tool-check loop is a confirmed failure — agent is alive but stuck
+			if (monitored.toolCheckLoopTimestamps.length >= GEMINI_TOOL_CHECK_LOOP_THRESHOLD) {
+				this.logger.warn('Gemini tool-check loop confirmed (#251), forcing recovery', { sessionName });
+				return true;
+			}
+
+			// #188: Deliberation loop is also a confirmed failure
+			const deliberationCount = monitored.buffer.split(GEMINI_DELIBERATION_PATTERN).length - 1;
+			if (deliberationCount >= GEMINI_DELIBERATION_THRESHOLD) {
+				this.logger.warn('Gemini deliberation loop confirmed (#188), forcing recovery', { sessionName });
+				return true;
+			}
+
 			const isGeminiFailure = GEMINI_FAILURE_PATTERNS.some((pattern) => pattern.test(monitored.buffer));
 			const isGeminiForceRestart = GEMINI_FORCE_RESTART_PATTERNS.some((pattern) => pattern.test(monitored.buffer));
 
@@ -697,7 +743,7 @@ export class RuntimeExitMonitorService {
 	private async transitionToInactive(
 		sessionName: string,
 		monitored: MonitoredSession,
-		dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete'
+		dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected'
 	): Promise<void> {
 		// #235: Determine dropout reason from exit patterns if not provided
 		const reason = dropoutReason || this.inferDropoutReason(monitored);
@@ -1248,8 +1294,20 @@ export class RuntimeExitMonitorService {
 	 * @param monitored - Monitored session state
 	 * @returns Inferred dropout reason
 	 */
-	private inferDropoutReason(monitored: MonitoredSession): 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' {
+	private inferDropoutReason(monitored: MonitoredSession): 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected' {
 		const buffer = monitored.buffer.toLowerCase();
+
+		// #251: Check for tool-check loop (time-windowed timestamps)
+		if (monitored.toolCheckLoopTimestamps.length >= GEMINI_TOOL_CHECK_LOOP_THRESHOLD) {
+			return 'loop_detected';
+		}
+
+		// #188: Check for deliberation loop
+		const deliberationCount = buffer.split(GEMINI_DELIBERATION_PATTERN).length - 1;
+		if (deliberationCount >= GEMINI_DELIBERATION_THRESHOLD) {
+			return 'loop_detected';
+		}
+
 		if (buffer.includes('update') && (buffer.includes('restart') || buffer.includes('upgrade'))) {
 			return 'update_exit';
 		}

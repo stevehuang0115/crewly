@@ -282,11 +282,27 @@ describe('generateTeamConfig', () => {
     expect(config.updatedAt).toBeDefined();
   });
 
-  it('should set runtimeType to claude-code', () => {
+  it('should default runtimeType to claude-code when not specified', () => {
     const config = generateTeamConfig(preset, 'my-app');
     const members = config.members as Array<{ runtimeType: string }>;
     for (const m of members) {
       expect(m.runtimeType).toBe('claude-code');
+    }
+  });
+
+  it('#246: should use provided runtimeType for all members', () => {
+    const config = generateTeamConfig(preset, 'my-app', 'codex-cli');
+    const members = config.members as Array<{ runtimeType: string }>;
+    for (const m of members) {
+      expect(m.runtimeType).toBe('codex-cli');
+    }
+  });
+
+  it('#246: should support gemini-cli runtimeType', () => {
+    const config = generateTeamConfig(preset, 'my-app', 'gemini-cli');
+    const members = config.members as Array<{ runtimeType: string }>;
+    for (const m of members) {
+      expect(m.runtimeType).toBe('gemini-cli');
     }
   });
 });

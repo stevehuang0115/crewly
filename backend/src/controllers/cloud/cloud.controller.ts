@@ -503,3 +503,58 @@ export async function getCloudTemplates(req: Request, res: Response, next: NextF
     next(error);
   }
 }
+
+/**
+ * POST /api/cloud/send
+ *
+ * Send a message to another device via the Cloud Sync message queue.
+ * Requires an active CloudSyncService (i.e. connected to Cloud).
+ *
+ * @param req - Request with body: { toDeviceId, type, payload }
+ * @param res - Response returning { success, message }
+ * @param next - Next function for error propagation
+ */
+export async function sendCloudMessage(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { toDeviceId, type, payload } = req.body as {
+      toDeviceId?: string;
+      type?: string;
+      payload?: unknown;
+    };
+
+    if (!toDeviceId || typeof toDeviceId !== 'string') {
+      res.status(400).json({ success: false, error: 'Missing required parameter: toDeviceId' });
+      return;
+    }
+
+    if (!type || typeof type !== 'string') {
+      res.status(400).json({ success: false, error: 'Missing required parameter: type' });
+      return;
+    }
+
+    const syncService = CloudSyncService.getInstance();
+
+    if (!syncService.isStarted()) {
+      res.status(409).json({
+        success: false,
+        error: 'CloudSyncService not started. Connect to Cloud first via POST /api/cloud/connect.',
+      });
+      return;
+    }
+
+    await syncService.sendMessage(toDeviceId, type as import('../../services/cloud/cloud-sync.types.js').MessageType, payload);
+
+    logger.info('Cloud message sent', { toDeviceId, type });
+
+    res.json({ success: true, message: 'Message sent successfully' });
+  } catch (error) {
+    logger.error('Failed to send cloud message', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    if (error instanceof Error && error.message.includes('not started')) {
+      res.status(409).json({ success: false, error: error.message });
+      return;
+    }
+    next(error);
+  }
+}

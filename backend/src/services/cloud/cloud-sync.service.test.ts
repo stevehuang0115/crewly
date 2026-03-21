@@ -158,8 +158,8 @@ describe('CloudSyncService', () => {
       service.start(testConfig);
       await flushPromises();
 
-      // At least 2 fetch calls: one heartbeat + one device poll
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      // At least 3 fetch calls: dual heartbeat (auth + sync) + one device poll
+      expect(mockFetch).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -171,7 +171,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const heartbeatCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/heartbeat')
+        ([url]) => typeof url === 'string' && url.includes('/api/devices/heartbeat')
       );
 
       expect(heartbeatCall).toBeDefined();
@@ -195,7 +195,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const heartbeatCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/heartbeat')
+        ([url]) => typeof url === 'string' && url.includes('/api/devices/heartbeat')
       );
       expect(heartbeatCall![1]!.headers).toEqual(
         expect.objectContaining({ Authorization: `Bearer ${TOKEN}` })
@@ -238,7 +238,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const deviceCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/devices')
+        ([url]) => typeof url === 'string' && url.endsWith('/api/devices')
       );
       expect(deviceCall).toBeDefined();
       expect(deviceCall![0]).toBe(`${CLOUD_URL}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES}`);
@@ -399,7 +399,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const msgCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/messages') && !url.includes('/ack')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/messages') && url.includes('deviceId=')
       );
       expect(msgCall).toBeDefined();
       expect(msgCall![0]).toContain(`deviceId=${encodeURIComponent(DEVICE_ID)}`);
@@ -417,9 +417,10 @@ describe('CloudSyncService', () => {
       };
 
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ success: true }))
-        .mockResolvedValueOnce(mockResponse({ success: true, devices: [] }))
-        .mockResolvedValueOnce(mockResponse({ success: true, messages: [msg] }))
+        .mockResolvedValueOnce(mockResponse({ success: true })) // auth heartbeat
+        .mockResolvedValueOnce(mockResponse({ success: true })) // sync heartbeat
+        .mockResolvedValueOnce(mockResponse({ success: true, devices: [] })) // device poll
+        .mockResolvedValueOnce(mockResponse({ success: true, messages: [msg] })) // message poll
         .mockResolvedValue(mockResponse({ success: true }));
 
       service.start(testConfig);
@@ -441,9 +442,10 @@ describe('CloudSyncService', () => {
       };
 
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ success: true }))
-        .mockResolvedValueOnce(mockResponse({ success: true, devices: [] }))
-        .mockResolvedValueOnce(mockResponse({ success: true, messages: [msg] }))
+        .mockResolvedValueOnce(mockResponse({ success: true })) // auth heartbeat
+        .mockResolvedValueOnce(mockResponse({ success: true })) // sync heartbeat
+        .mockResolvedValueOnce(mockResponse({ success: true, devices: [] })) // device poll
+        .mockResolvedValueOnce(mockResponse({ success: true, messages: [msg] })) // message poll
         .mockResolvedValue(mockResponse({ success: true }));
 
       service.start(testConfig);
@@ -471,7 +473,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       const ackCalls = mockFetch.mock.calls.filter(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/sync/messages/ack')
+        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/queue/ack')
       );
       expect(ackCalls).toHaveLength(0);
     });

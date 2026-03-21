@@ -10,6 +10,7 @@
  * - GET  /status               - Get connection status and subscription tier
  * - GET  /devices              - Get device list from CloudSync (or fallback to legacy)
  * - GET  /templates            - Fetch premium templates (requires connection)
+ * - POST /send                 - Send a message to another device via Cloud Sync
  * - GET  /google/start         - Redirect to Google OAuth consent screen
  * - GET  /google/callback      - Handle Google OAuth callback, issue JWT, redirect to frontend
  * - POST /google/url           - Return Google OAuth URL as JSON (SPA client flow)
@@ -26,6 +27,7 @@ import {
   getCloudTemplates,
   validateCloudToken,
   refreshCloudToken,
+  sendCloudMessage,
 } from './cloud.controller.js';
 import { getDevicesFromSync } from './relay.controller.js';
 import {
@@ -49,6 +51,7 @@ export function createCloudRouter(): Router {
   router.post('/refresh', refreshCloudToken);
   router.get('/status', getCloudStatus);
   router.get('/devices', getDevicesFromSync);
+  router.post('/send', sendCloudMessage);
   router.get('/templates', getCloudTemplates);
 
   // Google OAuth login flow — browser-redirect (GET)

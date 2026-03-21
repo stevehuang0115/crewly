@@ -319,6 +319,7 @@ export function generateGoalsContent(
 export function generateTeamConfig(
   preset: PresetTeam,
   projectName: string,
+  runtimeType: string = 'claude-code',
 ): Record<string, unknown> {
   const now = new Date().toISOString();
   const safeProjectName = projectName.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
@@ -333,7 +334,7 @@ export function generateTeamConfig(
       role: m.role,
       sessionName,
       systemPrompt: m.systemPrompt,
-      runtimeType: 'claude-code',
+      runtimeType,
       agentStatus: 'inactive',
       workingStatus: 'idle',
       skillOverrides: [],
