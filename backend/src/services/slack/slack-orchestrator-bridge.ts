@@ -36,6 +36,8 @@ import type { MessageQueueService } from '../messaging/message-queue.service.js'
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
 import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
+import { getCrossMachineMessageService } from './cross-machine-message.service.js';
 
 /**
  * Bridge configuration
@@ -136,6 +138,20 @@ export class SlackOrchestratorBridge extends EventEmitter {
     // Listen for Slack messages
     this.slackService.on('message', this.handleSlackMessage.bind(this));
 
+    // Initialize cross-machine messaging and route received messages to orchestrator
+    try {
+      const crossMachineService = getCrossMachineMessageService();
+      await crossMachineService.initialize();
+      crossMachineService.on('message', (msg) => {
+        this.handleCrossMachineMessage(msg);
+      });
+      this.logger.info('Cross-machine message listener registered');
+    } catch (err) {
+      this.logger.warn('Cross-machine messaging not available', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     this.initialized = true;
     this.logger.info('Initialized');
   }
@@ -194,6 +210,20 @@ export class SlackOrchestratorBridge extends EventEmitter {
     });
 
     try {
+      // Cross-machine message intercept — detect and route before normal processing
+      if (message.text && message.text.startsWith(CROSS_MACHINE_PREFIX)) {
+        const crossMachineService = getCrossMachineMessageService();
+        if (crossMachineService.isEnabled()) {
+          const handled = crossMachineService.handleIncomingMessage(message);
+          if (handled) {
+            this.logger.debug('Cross-machine message handled', {
+              preview: message.text.substring(0, 80),
+            });
+            return; // Don't process as a normal message
+          }
+        }
+      }
+
       // Download files if present (both images and non-image files)
       if (message.hasFiles && message.files) {
         const imageFiles = message.files.filter(f => f.mimetype?.startsWith('image/'));
@@ -343,6 +373,54 @@ export class SlackOrchestratorBridge extends EventEmitter {
       this.logger.error('Error handling message', { error: error instanceof Error ? error.message : String(error) });
       await this.sendErrorResponse(message, error as Error);
       this.emit('error', error);
+    }
+  }
+
+  /**
+   * Handle an incoming cross-machine message.
+   * Routes the message payload to the local orchestrator via the message queue.
+   *
+   * @param msg - Parsed cross-machine message
+   */
+  private async handleCrossMachineMessage(msg: import('../../types/cross-machine.types.js').CrossMachineMessage): Promise<void> {
+    this.logger.info('Routing cross-machine message to orchestrator', {
+      from: msg.fromName,
+      type: msg.type,
+      messageId: msg.messageId,
+    });
+
+    // Format as a human-readable message for the orchestrator
+    const orchestratorMessage = [
+      `[Cross-Machine] from ${msg.fromName} (${msg.from})`,
+      `Type: ${msg.type}`,
+      msg.payload.message ? `Message: ${msg.payload.message}` : '',
+      msg.payload.task ? `Task: ${msg.payload.task}` : '',
+      msg.payload.priority ? `Priority: ${msg.payload.priority}` : '',
+      msg.payload.context ? `Context: ${msg.payload.context}` : '',
+      msg.payload.summary ? `Summary: ${msg.payload.summary}` : '',
+    ].filter(Boolean).join('\n');
+
+    if (this.messageQueueService) {
+      try {
+        this.messageQueueService.enqueue({
+          content: orchestratorMessage,
+          conversationId: `x-machine-${msg.from}-${Date.now()}`,
+          source: 'cross-machine',
+          sourceMetadata: {
+            fromDevice: msg.from,
+            fromDeviceName: msg.fromName,
+            messageType: msg.type,
+            messageId: msg.messageId,
+          },
+        });
+        this.logger.info('Cross-machine message enqueued to orchestrator');
+      } catch (err) {
+        this.logger.error('Failed to enqueue cross-machine message', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    } else {
+      this.logger.warn('Cannot route cross-machine message — MessageQueueService not available');
     }
   }
 

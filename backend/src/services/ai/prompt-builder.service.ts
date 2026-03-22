@@ -5,6 +5,8 @@ import { TeamMemberSessionConfig, SubordinateInfo, SOPRole } from '../../types/i
 import { MemoryService } from '../memory/memory.service.js';
 import { SOPService } from '../sop/sop.service.js';
 import { getRoleService } from '../settings/role.service.js';
+import { PromptAssemblyService } from './prompt-modules/prompt-assembly.service.js';
+import type { ModuleConfig } from './prompt-modules/prompt-module.interface.js';
 
 /**
  * Options for building system prompts
@@ -231,11 +233,10 @@ Start all teams on Phase 1 simultaneously.`.trim();
 		config: TeamMemberSessionConfig,
 		options: PromptOptions = {}
 	): Promise<string> {
-		// TODO(Phase 5): Replace with PromptAssemblyService.assemble() when
-		// CREWLY_USE_MODULAR_PROMPTS=true. The modular system handles all sections
-		// (identity, skills, communication, recovery, lifecycle, team-reference)
-		// with proper token budget enforcement and priority ordering.
-		// See: backend/src/services/ai/prompt-modules/prompt-assembly.service.ts
+		// Phase 5: Use modular prompt assembly when feature flag is enabled
+		if (process.env.CREWLY_USE_MODULAR_PROMPTS === 'true') {
+			return this.buildModularPrompt(config, options);
+		}
 
 		const includeMemory = options.includeMemory !== false;
 		const includeSOPs = options.includeSOPs !== false;
@@ -291,6 +292,59 @@ Start all teams on Phase 1 simultaneously.`.trim();
 		}
 
 		return basePrompt;
+	}
+
+	/**
+	 * Build system prompt using the modular PromptAssemblyService.
+	 *
+	 * Called when CREWLY_USE_MODULAR_PROMPTS=true. The modular system handles
+	 * all prompt sections (identity, skills, communication, recovery, lifecycle,
+	 * team-reference, memory, soul, learning) with proper token budget enforcement
+	 * and priority ordering.
+	 *
+	 * @param config - Team member session configuration
+	 * @param options - Prompt options (currently unused by modular system)
+	 * @returns Assembled prompt string
+	 */
+	private async buildModularPrompt(
+		config: TeamMemberSessionConfig,
+		_options: PromptOptions = {}
+	): Promise<string> {
+		const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
+		const tlSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'team-leader');
+
+		const moduleConfig: ModuleConfig = {
+			sessionName: config.name,
+			memberId: config.memberId ?? '',
+			role: config.role,
+			teamId: config.teamId,
+			projectPath: config.projectPath,
+			runtimeType: config.runtimeType as ModuleConfig['runtimeType'],
+			canDelegate: config.canDelegate,
+			subordinates: config.subordinates?.map(s => ({
+				name: s.name,
+				sessionName: s.sessionName,
+				role: s.role,
+				memberId: s.memberId,
+			})),
+			agentSkillsPath,
+			tlSkillsPath,
+			projectRoot: this.projectRoot,
+		};
+
+		const assembler = new PromptAssemblyService();
+		const { prompt, report } = await assembler.assemble(moduleConfig);
+
+		this.logger.info('Modular prompt assembled', {
+			sessionName: config.name,
+			role: config.role,
+			totalTokens: report.totalTokens,
+			moduleCount: report.moduleBreakdown.length,
+			truncatedCount: report.truncated.length,
+			modules: report.moduleBreakdown.map(m => m.name),
+		});
+
+		return prompt;
 	}
 
 	/**

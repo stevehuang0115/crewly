@@ -430,6 +430,15 @@ export const SLACK_BRIDGE_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for cross-machine messaging via Slack.
+ * Two Crewly instances communicate through a shared Slack channel.
+ */
+export const CROSS_MACHINE_CONSTANTS = {
+	/** Maximum number of processed message IDs to track for deduplication */
+	MAX_TRACKED_MESSAGE_IDS: 500,
+} as const;
+
+/**
  * Constants for Slack message deduplication.
  * Prevents identical messages from being sent to the same channel+thread
  * within a short time window.
@@ -957,6 +966,7 @@ export const MESSAGE_SOURCES = {
 	SYSTEM_EVENT: 'system_event',
 	GOOGLE_CHAT: 'google_chat',
 	TELEGRAM: 'telegram',
+	CROSS_MACHINE: 'cross-machine',
 } as const;
 
 /**

@@ -1,33 +1,37 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PromptBuilderService } from './prompt-builder.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { TeamMemberSessionConfig } from '../../types/index.js';
 
 // Mock dependencies
-jest.mock('../core/logger.service.js', () => ({
+vi.mock('../core/logger.service.js', () => ({
 	LoggerService: {
-		getInstance: jest.fn().mockReturnValue({
-			createComponentLogger: jest.fn().mockReturnValue({
-				info: jest.fn(),
-				debug: jest.fn(),
-				warn: jest.fn(),
-				error: jest.fn(),
+		getInstance: vi.fn().mockReturnValue({
+			createComponentLogger: vi.fn().mockReturnValue({
+				info: vi.fn(),
+				debug: vi.fn(),
+				warn: vi.fn(),
+				error: vi.fn(),
 			}),
 		}),
 	},
 }));
 
-jest.mock('fs/promises', () => ({
-	readFile: jest.fn(),
-	access: jest.fn(),
+vi.mock('fs/promises', () => ({
+	readFile: vi.fn(),
+	access: vi.fn(),
 }));
 
-// Mock MemoryService
-const mockInitializeForSession = jest.fn().mockResolvedValue(undefined);
-const mockGetFullContext = jest.fn().mockResolvedValue('');
+// Import the mocked module so we can access mock functions
+import * as fsPromises from 'fs/promises';
 
-jest.mock('../memory/memory.service.js', () => ({
+// Mock MemoryService
+const mockInitializeForSession = vi.fn().mockResolvedValue(undefined);
+const mockGetFullContext = vi.fn().mockResolvedValue('');
+
+vi.mock('../memory/memory.service.js', () => ({
 	MemoryService: {
-		getInstance: jest.fn(() => ({
+		getInstance: vi.fn(() => ({
 			initializeForSession: mockInitializeForSession,
 			getFullContext: mockGetFullContext,
 		})),
@@ -35,34 +39,34 @@ jest.mock('../memory/memory.service.js', () => ({
 }));
 
 // Mock SOPService
-const mockGenerateSOPContext = jest.fn().mockResolvedValue('');
+const mockGenerateSOPContext = vi.fn().mockResolvedValue('');
 
-jest.mock('../sop/sop.service.js', () => ({
+vi.mock('../sop/sop.service.js', () => ({
 	SOPService: {
-		getInstance: jest.fn(() => ({
+		getInstance: vi.fn(() => ({
 			generateSOPContext: mockGenerateSOPContext,
 		})),
 	},
 }));
 
 // Mock RoleService - return null to force file fallback for testing file paths
-const mockGetRoleByName = jest.fn().mockResolvedValue(null);
+const mockGetRoleByName = vi.fn().mockResolvedValue(null);
 
-jest.mock('../settings/role.service.js', () => ({
-	getRoleService: jest.fn(() => ({
+vi.mock('../settings/role.service.js', () => ({
+	getRoleService: vi.fn(() => ({
 		getRoleByName: mockGetRoleByName,
 	})),
 }));
 
 describe('PromptBuilderService', () => {
 	let service: PromptBuilderService;
-	let mockReadFile: jest.Mock;
-	let mockAccess: jest.Mock;
+	let mockReadFile: ReturnType<typeof vi.fn>;
+	let mockAccess: ReturnType<typeof vi.fn>;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
-		mockReadFile = require('fs/promises').readFile;
-		mockAccess = require('fs/promises').access;
+		vi.clearAllMocks();
+		mockReadFile = vi.mocked(fsPromises.readFile);
+		mockAccess = vi.mocked(fsPromises.access);
 		service = new PromptBuilderService('/test/project');
 	});
 
@@ -1347,6 +1351,47 @@ Decompose and delegate.`;
 			expect(result).toContain('"agentId":"crewly-orc"');
 			expect(result).toContain('"agentRole":"orchestrator"');
 			expect(result).toContain('orchestrator session startup');
+		});
+	});
+
+	describe('CREWLY_USE_MODULAR_PROMPTS feature flag', () => {
+		const mockConfig: TeamMemberSessionConfig = {
+			name: 'test-session',
+			role: 'developer',
+			projectPath: '/test/project',
+			memberId: 'member-123',
+			systemPrompt: '',
+		};
+
+		const originalEnv = process.env.CREWLY_USE_MODULAR_PROMPTS;
+
+		afterEach(() => {
+			if (originalEnv === undefined) {
+				delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+			} else {
+				process.env.CREWLY_USE_MODULAR_PROMPTS = originalEnv;
+			}
+		});
+
+		it('should use legacy prompt when flag is not set', async () => {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+			const result = await service.buildSystemPromptWithMemory(mockConfig);
+			// Legacy path builds from base prompt + memory + SOPs
+			expect(result).toContain('developer tasks');
+		});
+
+		it('should use legacy prompt when flag is false', async () => {
+			process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
+			const result = await service.buildSystemPromptWithMemory(mockConfig);
+			expect(result).toContain('developer tasks');
+		});
+
+		it('should use modular prompt when flag is true', async () => {
+			process.env.CREWLY_USE_MODULAR_PROMPTS = 'true';
+			const result = await service.buildSystemPromptWithMemory(mockConfig);
+			// Modular assembly returns module-based content instead of legacy
+			expect(typeof result).toBe('string');
+			expect(result.length).toBeGreaterThan(0);
 		});
 	});
 });

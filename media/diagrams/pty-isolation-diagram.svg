@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;family=Inter:wght@400;600;700&amp;display=swap');
+      .title { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 28px; fill: #F0F6FC; }
+      .subtitle { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 16px; fill: #8B949E; }
+      .terminal-text { font-family: 'JetBrains Mono', monospace; font-size: 14px; fill: #C9D1D9; }
+      .terminal-prompt { font-family: 'JetBrains Mono', monospace; font-size: 14px; fill: #22C55E; }
+      .terminal-error { font-family: 'JetBrains Mono', monospace; font-size: 14px; fill: #EF4444; }
+      .agent-name { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 16px; }
+      .badge-text { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 12px; fill: #F0F6FC; }
+      .footer-text { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 15px; fill: #EF4444; }
+      .stat-text { font-family: 'JetBrains Mono', monospace; font-size: 12px; fill: #6B7280; }
+      .logo-text { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 18px; fill: #8B949E; }
+    </style>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0D1117" />
+      <stop offset="100%" style="stop-color:#161B22" />
+    </linearGradient>
+    <filter id="glow-blue">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+    </filter>
+    <filter id="glow-purple">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+    </filter>
+    <filter id="glow-pink">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="700" fill="url(#bg-grad)" rx="12" />
+
+  <!-- Title -->
+  <text x="600" y="52" text-anchor="middle" class="title">PTY Isolation — Every Agent Has Its Own Sandbox</text>
+  <text x="600" y="78" text-anchor="middle" class="subtitle">Process-level isolation. No shared memory, ports, or file access between agents.</text>
+
+  <!-- PTY Box 1: Sam (Blue) -->
+  <rect x="60" y="110" width="340" height="330" rx="10" fill="#0D1117" stroke="#3B82F6" stroke-width="2" filter="url(#glow-blue)" />
+  <!-- Title bar -->
+  <rect x="60" y="110" width="340" height="36" rx="10" fill="#1E3A5F" />
+  <rect x="60" y="130" width="340" height="16" fill="#1E3A5F" />
+  <!-- Window dots -->
+  <circle cx="80" cy="128" r="5" fill="#EF4444" opacity="0.8" />
+  <circle cx="96" cy="128" r="5" fill="#EAB308" opacity="0.8" />
+  <circle cx="112" cy="128" r="5" fill="#22C55E" opacity="0.8" />
+  <text x="230" y="133" text-anchor="middle" class="agent-name" fill="#3B82F6">PTY #1 — Sam (Tech Lead)</text>
+  <!-- Terminal content -->
+  <text x="80" y="175" class="terminal-prompt">$ whoami</text>
+  <text x="80" y="195" class="terminal-text">sam-agent-pty4821</text>
+  <text x="80" y="225" class="terminal-prompt">$ npm run test</text>
+  <text x="80" y="245" class="terminal-text">PASS  src/auth.test.ts</text>
+  <text x="80" y="265" class="terminal-text">PASS  src/jwt.test.ts</text>
+  <text x="80" y="285" class="terminal-text" fill="#22C55E">349 tests passed (12.4s)</text>
+  <text x="80" y="315" class="terminal-prompt">$ ls /home/leo-agent/</text>
+  <text x="80" y="335" class="terminal-error">Permission denied</text>
+  <!-- Red X icon -->
+  <text x="260" y="335" class="terminal-error" font-size="18">&#x2718;</text>
+  <!-- Stats bar -->
+  <rect x="60" y="410" width="340" height="30" fill="#161B22" rx="0" />
+  <rect x="60" y="410" width="340" height="30" fill="#161B22" />
+  <text x="80" y="430" class="stat-text">PID: 4821  |  MEM: 128MB  |  CPU: 2.1%</text>
+  <!-- Green secure badge -->
+  <rect x="270" y="370" width="110" height="24" rx="12" fill="#14532D" />
+  <circle cx="285" cy="382" r="4" fill="#22C55E" />
+  <text x="295" y="387" class="badge-text">ISOLATED</text>
+
+  <!-- PTY Box 2: Leo (Purple) -->
+  <rect x="430" y="110" width="340" height="330" rx="10" fill="#0D1117" stroke="#8B5CF6" stroke-width="2" filter="url(#glow-purple)" />
+  <rect x="430" y="110" width="340" height="36" rx="10" fill="#3B1E5F" />
+  <rect x="430" y="130" width="340" height="16" fill="#3B1E5F" />
+  <circle cx="450" cy="128" r="5" fill="#EF4444" opacity="0.8" />
+  <circle cx="466" cy="128" r="5" fill="#EAB308" opacity="0.8" />
+  <circle cx="482" cy="128" r="5" fill="#22C55E" opacity="0.8" />
+  <text x="600" y="133" text-anchor="middle" class="agent-name" fill="#8B5CF6">PTY #2 — Leo (Developer)</text>
+  <text x="450" y="175" class="terminal-prompt">$ whoami</text>
+  <text x="450" y="195" class="terminal-text">leo-agent-pty4822</text>
+  <text x="450" y="225" class="terminal-prompt">$ cargo build --release</text>
+  <text x="450" y="245" class="terminal-text">Compiling crewly-desktop v0.1</text>
+  <text x="450" y="265" class="terminal-text" fill="#22C55E">Finished release [optimized]</text>
+  <text x="450" y="295" class="terminal-prompt">$ ls /home/sam-agent/</text>
+  <text x="450" y="315" class="terminal-error">Permission denied</text>
+  <text x="630" y="315" class="terminal-error" font-size="18">&#x2718;</text>
+  <text x="450" y="345" class="terminal-prompt">$ cat /home/ava-agent/.env</text>
+  <text x="450" y="365" class="terminal-error">Permission denied</text>
+  <text x="660" y="365" class="terminal-error" font-size="18">&#x2718;</text>
+  <rect x="430" y="410" width="340" height="30" fill="#161B22" />
+  <text x="450" y="430" class="stat-text">PID: 4822  |  MEM: 96MB   |  CPU: 4.7%</text>
+  <rect x="640" y="370" width="110" height="24" rx="12" fill="#14532D" />
+  <circle cx="655" cy="382" r="4" fill="#22C55E" />
+  <text x="665" y="387" class="badge-text">ISOLATED</text>
+
+  <!-- PTY Box 3: Ava (Pink) -->
+  <rect x="800" y="110" width="340" height="330" rx="10" fill="#0D1117" stroke="#EC4899" stroke-width="2" filter="url(#glow-pink)" />
+  <rect x="800" y="110" width="340" height="36" rx="10" fill="#5F1E3B" />
+  <rect x="800" y="130" width="340" height="16" fill="#5F1E3B" />
+  <circle cx="820" cy="128" r="5" fill="#EF4444" opacity="0.8" />
+  <circle cx="836" cy="128" r="5" fill="#EAB308" opacity="0.8" />
+  <circle cx="852" cy="128" r="5" fill="#22C55E" opacity="0.8" />
+  <text x="970" y="133" text-anchor="middle" class="agent-name" fill="#EC4899">PTY #3 — Ava (UX Designer)</text>
+  <text x="820" y="175" class="terminal-prompt">$ whoami</text>
+  <text x="820" y="195" class="terminal-text">ava-agent-pty4823</text>
+  <text x="820" y="225" class="terminal-prompt">$ node design-audit.js</text>
+  <text x="820" y="245" class="terminal-text">Scanning components...</text>
+  <text x="820" y="265" class="terminal-text" fill="#22C55E">WCAG 2.1 AA: All pass</text>
+  <text x="820" y="295" class="terminal-prompt">$ ls /home/sam-agent/</text>
+  <text x="820" y="315" class="terminal-error">Permission denied</text>
+  <text x="1000" y="315" class="terminal-error" font-size="18">&#x2718;</text>
+  <rect x="800" y="410" width="340" height="30" fill="#161B22" />
+  <text x="820" y="430" class="stat-text">PID: 4823  |  MEM: 64MB   |  CPU: 0.8%</text>
+  <rect x="1010" y="370" width="110" height="24" rx="12" fill="#14532D" />
+  <circle cx="1025" cy="382" r="4" fill="#22C55E" />
+  <text x="1035" y="387" class="badge-text">ISOLATED</text>
+
+  <!-- Blocked cross-access arrows (dashed red) -->
+  <!-- Sam -> Leo blocked -->
+  <line x1="400" y1="260" x2="430" y2="260" stroke="#EF4444" stroke-width="2" stroke-dasharray="6,4" opacity="0.6" />
+  <!-- Leo -> Sam blocked -->
+  <line x1="430" y1="310" x2="400" y2="310" stroke="#EF4444" stroke-width="2" stroke-dasharray="6,4" opacity="0.6" />
+  <!-- Leo -> Ava blocked -->
+  <line x1="770" y1="310" x2="800" y2="310" stroke="#EF4444" stroke-width="2" stroke-dasharray="6,4" opacity="0.6" />
+
+  <!-- Footer: Security guarantees -->
+  <rect x="60" y="470" width="1080" height="60" rx="8" fill="#1C1917" stroke="#292524" stroke-width="1" />
+  <!-- Three guarantee items -->
+  <text x="165" y="497" class="footer-text" fill="#EF4444">&#x2718;</text>
+  <text x="180" y="497" class="footer-text" fill="#EF4444"> No shared processes</text>
+  <text x="480" y="497" class="footer-text" fill="#EF4444">&#x2718;</text>
+  <text x="495" y="497" class="footer-text" fill="#EF4444"> No shared ports</text>
+  <text x="770" y="497" class="footer-text" fill="#EF4444">&#x2718;</text>
+  <text x="785" y="497" class="footer-text" fill="#EF4444"> No lateral movement</text>
+  <!-- Green checkmark -->
+  <text x="410" y="519" class="footer-text" fill="#22C55E">&#x2714;</text>
+  <text x="425" y="519" class="footer-text" fill="#22C55E"> Complete process-level isolation per agent</text>
+
+  <!-- How it works explanation -->
+  <rect x="60" y="550" width="1080" height="100" rx="8" fill="#0D1117" stroke="#21262D" stroke-width="1" />
+  <text x="100" y="580" class="terminal-text" fill="#8B949E">How it works:</text>
+  <text x="100" y="605" class="terminal-text">Each agent spawns in its own pseudo-terminal (PTY) with a dedicated process tree,</text>
+  <text x="100" y="625" class="terminal-text">isolated file system view, and separate environment variables. A compromised agent</text>
+  <text x="100" y="645" class="terminal-text">cannot read, write, or execute anything outside its own sandbox boundary.</text>
+
+  <!-- Crewly branding -->
+  <text x="1120" y="685" text-anchor="end" class="logo-text">crewly</text>
+</svg>

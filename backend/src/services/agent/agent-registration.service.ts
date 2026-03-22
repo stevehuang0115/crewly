@@ -39,6 +39,8 @@ import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
 import { PromptBuilderService } from '../ai/prompt-builder.service.js';
+import { PromptAssemblyService } from '../ai/prompt-modules/prompt-assembly.service.js';
+import type { ModuleConfig } from '../ai/prompt-modules/prompt-module.interface.js';
 import type { SubordinateInfo, TeamMemberSessionConfig, Team, TeamMember } from '../../types/index.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import {
@@ -1506,12 +1508,55 @@ export class AgentRegistrationService {
 				}
 			}
 
-			// TODO(Phase 5): Replace legacy prompt assembly with PromptAssemblyService.
-			// When CREWLY_USE_MODULAR_PROMPTS=true, call PromptAssemblyService.assemble()
-			// instead of the above monolithic template approach. The modular system handles
-			// identity, skills, communication, recovery, lifecycle, and team-reference modules
-			// with proper token budget enforcement and priority ordering.
-			// See: backend/src/services/ai/prompt-modules/prompt-assembly.service.ts
+			// Phase 5: Use modular prompt assembly when feature flag is enabled.
+			// When CREWLY_USE_MODULAR_PROMPTS=true, replaces the entire monolithic template
+			// with PromptAssemblyService — handling identity, skills, communication, recovery,
+			// lifecycle, memory, soul, and team-reference modules with token budget enforcement.
+			if (process.env.CREWLY_USE_MODULAR_PROMPTS === 'true') {
+				this.logger.info('Using modular prompt assembly (Phase 5)', { sessionName, role });
+
+				const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
+				const tlSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'team-leader');
+
+				const moduleConfig: ModuleConfig = {
+					sessionName,
+					memberId: memberId ?? foundMember?.id ?? '',
+					role,
+					teamId: foundTeam?.id,
+					projectPath,
+					runtimeType: runtimeType as ModuleConfig['runtimeType'],
+					canDelegate: foundMember?.canDelegate,
+					subordinates: foundMember?.subordinateIds
+						?.map((subId) => {
+							const subMember = foundTeam?.members?.find((m) => m.id === subId);
+							if (!subMember) return null;
+							return {
+								name: subMember.name,
+								sessionName: subMember.sessionName || '',
+								role: subMember.role || 'developer',
+								memberId: subMember.id || subId,
+							};
+						})
+						.filter((s): s is NonNullable<typeof s> => s !== null),
+					agentSkillsPath,
+					tlSkillsPath,
+					projectRoot: this.projectRoot,
+				};
+
+				const assembler = new PromptAssemblyService();
+				const { prompt: modularPrompt, report } = await assembler.assemble(moduleConfig);
+
+				this.logger.info('Modular prompt assembled for registration', {
+					sessionName,
+					role,
+					totalTokens: report.totalTokens,
+					moduleCount: report.moduleBreakdown.length,
+					truncatedCount: report.truncated.length,
+					modules: report.moduleBreakdown.map(m => m.name),
+				});
+
+				return modularPrompt;
+			}
 
 			return prompt;
 		} catch (error) {

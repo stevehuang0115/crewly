@@ -58,9 +58,9 @@ case "$ACTION" in
     require_param "scheduledDate" "$SCHEDULED_DATE"
 
     # Validate platform
-    VALID_PLATFORMS="x|linkedin|xiaohongshu|substack|youtube|github|reddit"
+    VALID_PLATFORMS="x|linkedin|xiaohongshu|substack|youtube|github|reddit|instagram|facebook"
     if ! echo "$PLATFORM" | grep -qE "^(${VALID_PLATFORMS})$"; then
-      error_exit "Invalid platform: $PLATFORM. Valid: x, linkedin, xiaohongshu, substack, youtube, github, reddit"
+      error_exit "Invalid platform: $PLATFORM. Valid: x, linkedin, instagram, facebook, xiaohongshu, substack, youtube, github, reddit"
     fi
 
     # Validate status

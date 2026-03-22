@@ -1,0 +1,90 @@
+{
+  "id": "marketing-team",
+  "name": "AI Marketing Team",
+  "description": "3-agent marketing team for SMBs: strategy, content creation, and analytics",
+  "category": "content",
+  "version": "1.0.0",
+  "author": "Crewly",
+  "tags": ["marketing", "social-media", "content", "analytics", "smb"],
+  "icon": "📣",
+  "hierarchical": true,
+  "roles": [
+    {
+      "role": "strategist",
+      "label": "Marketing Strategist",
+      "defaultName": "Maya",
+      "count": 1,
+      "hierarchyLevel": 1,
+      "canDelegate": true,
+      "defaultSkills": ["content-calendar", "competitor-content-tracker"]
+    },
+    {
+      "role": "writer",
+      "label": "Content Writer",
+      "defaultName": "Alex",
+      "count": 1,
+      "hierarchyLevel": 2,
+      "canDelegate": false,
+      "reportsTo": "strategist",
+      "defaultSkills": ["social-media-post", "content-writer", "seo-blog-writer"]
+    },
+    {
+      "role": "analyst",
+      "label": "Marketing Analyst",
+      "defaultName": "Jordan",
+      "count": 1,
+      "hierarchyLevel": 2,
+      "canDelegate": false,
+      "reportsTo": "strategist",
+      "defaultSkills": ["daily-standup-report"]
+    }
+  ],
+  "defaultRuntime": "claude-code",
+  "verificationPipeline": {
+    "name": "Marketing Content Review",
+    "steps": [
+      {
+        "id": "manual-content-review",
+        "name": "Manual Content Review",
+        "description": "Review all marketing content for brand consistency, tone, and accuracy before publishing",
+        "method": "manual_review",
+        "critical": true,
+        "config": {
+          "reviewer": "strategist",
+          "checklist": [
+            "Brand voice consistency",
+            "Factual accuracy",
+            "Platform-appropriate formatting",
+            "Call-to-action present",
+            "No sensitive or controversial content"
+          ]
+        }
+      }
+    ],
+    "passPolicy": "all",
+    "maxRetries": 2
+  },
+  "requiredSkills": ["social-media-post", "content-calendar"],
+  "optionalSkills": ["daily-standup-report", "seo-blog-writer"],
+  "budget": {
+    "maxTokensPerDay": 2000000,
+    "alertThreshold": 80
+  },
+  "mission": "Plan, create, and analyze marketing content across social media platforms to grow audience engagement and brand awareness for SMBs",
+  "monitoringDefaults": {
+    "idleEvent": true,
+    "fallbackCheckMinutes": 15
+  },
+  "maxWorkersPerLeader": 4,
+  "autoAssign": true,
+  "qualityGate": {
+    "autoApprove": false,
+    "minQualityScore": 80
+  },
+  "primaryWorkflow": "workflows/weekly-content-cycle.yaml",
+  "qualityGatesFile": "quality-gates.yaml",
+  "learnedPatternsFile": "learned-patterns.json",
+  "knowledgeIndexFile": "knowledge/index.json",
+  "createdAt": "2026-03-22T00:00:00.000Z",
+  "updatedAt": "2026-03-22T00:00:00.000Z"
+}

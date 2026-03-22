@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700">
+  <defs>
+    <style>
+      .title { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 28px; fill: #F0F6FC; }
+      .subtitle { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 16px; fill: #8B949E; }
+      .box-label { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 14px; fill: #F0F6FC; }
+      .box-detail { font-family: 'JetBrains Mono', monospace; font-size: 12px; fill: #8B949E; }
+      .section-label { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 16px; fill: #22C55E; }
+      .cloud-label { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 18px; fill: #6B7280; }
+      .no-conn { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 16px; fill: #EF4444; }
+      .quote-text { font-family: 'Inter', sans-serif; font-weight: 400; font-style: italic; font-size: 18px; fill: #C9D1D9; }
+      .badge-text { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 12px; fill: #F0F6FC; }
+      .encrypt-text { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 13px; fill: #22C55E; }
+      .logo-text { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 18px; fill: #8B949E; }
+    </style>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0D1117" />
+      <stop offset="100%" style="stop-color:#161B22" />
+    </linearGradient>
+    <filter id="glow-green">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="700" fill="url(#bg-grad)" rx="12" />
+
+  <!-- Title -->
+  <text x="600" y="48" text-anchor="middle" class="title">Local Vector Storage — 100% Data Sovereignty</text>
+  <text x="600" y="74" text-anchor="middle" class="subtitle">Your code, conversations, and agent memory never leave your machine.</text>
+
+  <!-- YOUR MACHINE boundary -->
+  <rect x="80" y="100" width="700" height="440" rx="12" fill="none" stroke="#22C55E" stroke-width="2.5" stroke-dasharray="0" filter="url(#glow-green)" />
+  <rect x="100" y="87" width="200" height="26" rx="4" fill="#0D1117" />
+  <text x="110" y="106" class="section-label">YOUR MACHINE</text>
+  <!-- Lock icon -->
+  <rect x="290" y="92" width="14" height="10" rx="2" fill="none" stroke="#22C55E" stroke-width="1.5" />
+  <path d="M293,92 V88 A4,4 0 0 1 301,88 V92" fill="none" stroke="#22C55E" stroke-width="1.5" />
+
+  <!-- Row 1: Data stores -->
+  <text x="120" y="145" class="box-detail" fill="#6B7280">Runtime Data</text>
+
+  <!-- Agent Memory -->
+  <rect x="120" y="160" width="190" height="90" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1" />
+  <rect x="130" y="172" width="28" height="28" rx="6" fill="#1E3A5F" />
+  <text x="137" y="192" font-size="16" fill="#3B82F6">&#x1F9E0;</text>
+  <text x="168" y="185" class="box-label">Agent Memory</text>
+  <text x="168" y="205" class="box-detail">SQLite database</text>
+  <text x="168" y="222" class="box-detail">~/.crewly/memory/</text>
+  <rect x="130" y="230" width="60" height="16" rx="8" fill="#14532D" />
+  <text x="137" y="242" class="badge-text" font-size="10">ENCRYPTED</text>
+
+  <!-- Conversations -->
+  <rect x="330" y="160" width="190" height="90" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1" />
+  <rect x="340" y="172" width="28" height="28" rx="6" fill="#3B1E5F" />
+  <text x="347" y="192" font-size="16" fill="#8B5CF6">&#x1F4AC;</text>
+  <text x="378" y="185" class="box-label">Conversations</text>
+  <text x="378" y="205" class="box-detail">PTY terminal logs</text>
+  <text x="378" y="222" class="box-detail">~/.crewly/sessions/</text>
+  <rect x="340" y="230" width="60" height="16" rx="8" fill="#14532D" />
+  <text x="347" y="242" class="badge-text" font-size="10">ENCRYPTED</text>
+
+  <!-- Project Knowledge -->
+  <rect x="540" y="160" width="190" height="90" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1" />
+  <rect x="550" y="172" width="28" height="28" rx="6" fill="#5F1E3B" />
+  <text x="557" y="192" font-size="16" fill="#EC4899">&#x1F4DA;</text>
+  <text x="588" y="185" class="box-label">Project Knowledge</text>
+  <text x="588" y="205" class="box-detail">Vector embeddings</text>
+  <text x="588" y="222" class="box-detail">~/.crewly/knowledge/</text>
+  <rect x="550" y="230" width="60" height="16" rx="8" fill="#14532D" />
+  <text x="557" y="242" class="badge-text" font-size="10">ENCRYPTED</text>
+
+  <!-- Row 2: Config stores -->
+  <text x="120" y="285" class="box-detail" fill="#6B7280">Configuration</text>
+
+  <!-- Team Config -->
+  <rect x="120" y="300" width="190" height="90" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1" />
+  <rect x="130" y="312" width="28" height="28" rx="6" fill="#1E3A3F" />
+  <text x="137" y="332" font-size="16" fill="#14B8A6">&#x1F465;</text>
+  <text x="168" y="325" class="box-label">Team Config</text>
+  <text x="168" y="345" class="box-detail">Roles, hierarchy, SOPs</text>
+  <text x="168" y="362" class="box-detail">~/.crewly/teams/</text>
+
+  <!-- Skills Registry -->
+  <rect x="330" y="300" width="190" height="90" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1" />
+  <rect x="340" y="312" width="28" height="28" rx="6" fill="#3F3A1E" />
+  <text x="347" y="332" font-size="16" fill="#EAB308">&#x1F527;</text>
+  <text x="378" y="325" class="box-label">Skills Registry</text>
+  <text x="378" y="345" class="box-detail">Bash scripts, tools</text>
+  <text x="378" y="362" class="box-detail">~/.crewly/skills/</text>
+
+  <!-- Config & SOPs -->
+  <rect x="540" y="300" width="190" height="90" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1" />
+  <rect x="550" y="312" width="28" height="28" rx="6" fill="#2E1E3F" />
+  <text x="557" y="332" font-size="16" fill="#A78BFA">&#x1F4CB;</text>
+  <text x="588" y="325" class="box-label">Config &amp; SOPs</text>
+  <text x="588" y="345" class="box-detail">Norms, quality gates</text>
+  <text x="588" y="362" class="box-detail">~/.crewly/config/</text>
+
+  <!-- Encryption bar -->
+  <rect x="120" y="420" width="610" height="36" rx="6" fill="#14532D" stroke="#22C55E" stroke-width="1" />
+  <text x="140" y="443" class="encrypt-text">&#x1F512;  ALL DATA ENCRYPTED AT REST  |  AES-256  |  Keys never transmitted</text>
+
+  <!-- Separator: blocked path to cloud -->
+  <rect x="120" y="478" width="610" height="40" rx="6" fill="#1C1917" stroke="#292524" stroke-width="1" />
+  <text x="245" y="503" class="no-conn">&#x2718;  NO OUTBOUND DATA TRANSMISSION</text>
+
+  <!-- CLOUD section (right side, greyed out) -->
+  <rect x="850" y="140" width="280" height="380" rx="12" fill="#161B22" stroke="#374151" stroke-width="1.5" stroke-dasharray="8,4" />
+  <text x="870" y="96" class="cloud-label">CLOUD</text>
+  <!-- Cloud icon -->
+  <text x="990" y="200" text-anchor="middle" font-size="60" fill="#374151" opacity="0.5">&#x2601;</text>
+  <text x="990" y="240" text-anchor="middle" class="cloud-label" opacity="0.5">Third-party servers</text>
+
+  <!-- Crossed out items -->
+  <text x="880" y="290" class="box-detail" fill="#4B5563">&#x2718; No API key storage</text>
+  <text x="880" y="315" class="box-detail" fill="#4B5563">&#x2718; No conversation logs</text>
+  <text x="880" y="340" class="box-detail" fill="#4B5563">&#x2718; No telemetry data</text>
+  <text x="880" y="365" class="box-detail" fill="#4B5563">&#x2718; No usage analytics</text>
+  <text x="880" y="390" class="box-detail" fill="#4B5563">&#x2718; No vector uploads</text>
+  <text x="880" y="415" class="box-detail" fill="#4B5563">&#x2718; No model training data</text>
+
+  <!-- Big red blocked badge -->
+  <rect x="890" y="440" width="220" height="36" rx="18" fill="#7F1D1D" />
+  <text x="1000" y="463" text-anchor="middle" class="badge-text" font-size="14">&#x1F6AB;  ZERO CLOUD DEPENDENCY</text>
+
+  <!-- Blocked connection line -->
+  <line x1="780" y1="300" x2="850" y2="300" stroke="#EF4444" stroke-width="2.5" stroke-dasharray="6,4" />
+  <!-- X on the line -->
+  <rect x="800" y="288" width="24" height="24" rx="12" fill="#7F1D1D" />
+  <text x="812" y="305" text-anchor="middle" font-size="14" fill="#EF4444" font-weight="bold">&#x2718;</text>
+
+  <!-- Quote -->
+  <rect x="80" y="555" width="1040" height="60" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1" />
+  <text x="600" y="582" text-anchor="middle" class="quote-text">"Your code, conversations, and agent memory never leave this machine."</text>
+  <text x="600" y="605" text-anchor="middle" class="box-detail" fill="#6B7280">— Crewly Security Architecture</text>
+
+  <!-- Comparison chips -->
+  <rect x="80" y="630" width="340" height="40" rx="6" fill="#14532D" stroke="#22C55E" stroke-width="1" />
+  <text x="100" y="655" class="encrypt-text">&#x2714;  Crewly: 100% local storage</text>
+
+  <rect x="440" y="630" width="340" height="40" rx="6" fill="#7F1D1D" stroke="#EF4444" stroke-width="1" />
+  <text x="460" y="655" font-family="JetBrains Mono, monospace" font-weight="600" font-size="13" fill="#EF4444">&#x2718;  Others: Cloud-dependent by default</text>
+
+  <!-- Branding -->
+  <text x="1120" y="685" text-anchor="end" class="logo-text">crewly</text>
+</svg>

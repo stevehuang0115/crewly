@@ -1,0 +1,370 @@
+/**
+ * Cross-Machine Message Service Tests
+ *
+ * Tests for the CrossMachineMessageService that enables
+ * Slack-based cross-machine orchestrator communication.
+ *
+ * @module services/slack/cross-machine-message.service.test
+ */
+
+import { CrossMachineMessageService } from './cross-machine-message.service.js';
+import {
+  CROSS_MACHINE_PREFIX,
+  serializeCrossMachineMessage,
+  type CrossMachineMessage,
+} from '../../types/cross-machine.types.js';
+import type { SlackIncomingMessage } from '../../types/slack.types.js';
+import type { DeviceIdentity } from '../cloud/device-identity.service.js';
+
+// Mock dependencies
+jest.mock('./slack.service.js', () => ({
+  getSlackService: jest.fn(() => mockSlackService),
+}));
+
+jest.mock('../cloud/device-identity.service.js', () => ({
+  DeviceIdentityService: {
+    getInstance: jest.fn(() => mockDeviceIdentity),
+  },
+}));
+
+jest.mock('../../constants.js', () => ({
+  CROSS_MACHINE_CONSTANTS: {
+    MAX_TRACKED_MESSAGE_IDS: 10,
+  },
+}));
+
+jest.mock('../core/logger.service.js', () => ({
+  LoggerService: {
+    getInstance: () => ({
+      createComponentLogger: () => ({
+        info: jest.fn(),
+        debug: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+      }),
+    }),
+  },
+}));
+
+jest.mock('fs/promises', () => ({
+  readFile: jest.fn(),
+  writeFile: jest.fn(),
+  mkdir: jest.fn(),
+}));
+
+jest.mock('fs', () => ({
+  existsSync: jest.fn(() => false),
+}));
+
+const mockSlackService = {
+  sendMessage: jest.fn().mockResolvedValue('1234567890.123456'),
+  isConnected: jest.fn().mockReturnValue(true),
+  on: jest.fn(),
+};
+
+const localIdentity: DeviceIdentity = {
+  deviceId: 'local-device-001',
+  deviceName: 'My-MacBook',
+  createdAt: '2026-03-22T00:00:00.000Z',
+  lastSeenAt: '2026-03-22T12:00:00.000Z',
+};
+
+const mockDeviceIdentity = {
+  getOrCreateIdentity: jest.fn().mockResolvedValue(localIdentity),
+  getDeviceId: jest.fn().mockResolvedValue('local-device-001'),
+};
+
+/**
+ * Create a mock SlackIncomingMessage for testing.
+ */
+function createSlackMessage(text: string): SlackIncomingMessage {
+  return {
+    id: 'msg-slack-1',
+    type: 'message',
+    text,
+    userId: 'U123',
+    channelId: 'C-XMACHINE',
+    ts: '1111111111.111111',
+    teamId: 'T123',
+    eventTs: '1111111111.111112',
+  };
+}
+
+/**
+ * Create a CrossMachineMessage for testing.
+ */
+function createCrossMessage(overrides: Partial<CrossMachineMessage> = {}): CrossMachineMessage {
+  return {
+    protocol: 'crewly-x-machine',
+    version: 1,
+    from: 'remote-device-002',
+    fromName: 'Office-iMac',
+    to: 'local-device-001',
+    type: 'delegate-task',
+    payload: { task: 'Run tests' },
+    timestamp: '2026-03-22T12:00:00.000Z',
+    messageId: `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    ...overrides,
+  };
+}
+
+describe('CrossMachineMessageService', () => {
+  let service: CrossMachineMessageService;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    CrossMachineMessageService.resetInstance();
+    service = new CrossMachineMessageService(
+      mockSlackService as any,
+      mockDeviceIdentity as any
+    );
+  });
+
+  describe('initialize', () => {
+    it('should load device identity on init', async () => {
+      await service.initialize();
+      expect(mockDeviceIdentity.getOrCreateIdentity).toHaveBeenCalled();
+    });
+
+    it('should only initialize once', async () => {
+      await service.initialize();
+      await service.initialize();
+      expect(mockDeviceIdentity.getOrCreateIdentity).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('isEnabled', () => {
+    it('should return false when not initialized', () => {
+      expect(service.isEnabled()).toBe(false);
+    });
+
+    it('should return false when no config', async () => {
+      await service.initialize();
+      expect(service.isEnabled()).toBe(false);
+    });
+
+    it('should return true when configured and enabled', async () => {
+      await service.initialize();
+      await service.configure({ channelId: 'C-XMACHINE', enabled: true });
+      expect(service.isEnabled()).toBe(true);
+    });
+
+    it('should return false when configured but disabled', async () => {
+      await service.initialize();
+      await service.configure({ channelId: 'C-XMACHINE', enabled: false });
+      expect(service.isEnabled()).toBe(false);
+    });
+  });
+
+  describe('getIdentity', () => {
+    it('should return null before init', () => {
+      expect(service.getIdentity()).toBeNull();
+    });
+
+    it('should return identity after init', async () => {
+      await service.initialize();
+      const identity = service.getIdentity();
+      expect(identity).toEqual(localIdentity);
+    });
+
+    it('should return a copy (not reference)', async () => {
+      await service.initialize();
+      const id1 = service.getIdentity();
+      const id2 = service.getIdentity();
+      expect(id1).toEqual(id2);
+      expect(id1).not.toBe(id2);
+    });
+  });
+
+  describe('sendMessage', () => {
+    beforeEach(async () => {
+      await service.initialize();
+      await service.configure({ channelId: 'C-XMACHINE', enabled: true });
+    });
+
+    it('should send a message via Slack', async () => {
+      const result = await service.sendMessage('remote-device-002', 'delegate-task', { task: 'Test' });
+
+      expect(result.success).toBe(true);
+      expect(result.slackTs).toBe('1234567890.123456');
+      expect(mockSlackService.sendMessage).toHaveBeenCalledTimes(1);
+
+      const call = mockSlackService.sendMessage.mock.calls[0][0];
+      expect(call.channelId).toBe('C-XMACHINE');
+      expect(call.text).toContain(CROSS_MACHINE_PREFIX);
+      expect(call.text).toContain('"protocol":"crewly-x-machine"');
+      expect(call.text).toContain('"to":"remote-device-002"');
+    });
+
+    it('should fail when not enabled', async () => {
+      await service.configure({ channelId: 'C-XMACHINE', enabled: false });
+      const result = await service.sendMessage('remote', 'ping');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('not enabled');
+    });
+
+    it('should fail when Slack is not connected', async () => {
+      mockSlackService.isConnected.mockReturnValueOnce(false);
+      const result = await service.sendMessage('remote', 'ping');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Slack is not connected');
+    });
+
+    it('should handle Slack send errors gracefully', async () => {
+      mockSlackService.sendMessage.mockRejectedValueOnce(new Error('channel_not_found'));
+      const result = await service.sendMessage('remote', 'ping');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('channel_not_found');
+    });
+
+    it('should include from identity in the message', async () => {
+      await service.sendMessage('remote', 'ping');
+      const call = mockSlackService.sendMessage.mock.calls[0][0];
+      expect(call.text).toContain('"from":"local-device-001"');
+      expect(call.text).toContain('"fromName":"My-MacBook"');
+    });
+
+    it('should generate unique message IDs', async () => {
+      await service.sendMessage('remote', 'ping');
+      await service.sendMessage('remote', 'ping');
+      const text1 = mockSlackService.sendMessage.mock.calls[0][0].text;
+      const text2 = mockSlackService.sendMessage.mock.calls[1][0].text;
+      const id1 = JSON.parse(text1.slice(CROSS_MACHINE_PREFIX.length).trim()).messageId;
+      const id2 = JSON.parse(text2.slice(CROSS_MACHINE_PREFIX.length).trim()).messageId;
+      expect(id1).not.toBe(id2);
+    });
+  });
+
+  describe('handleIncomingMessage', () => {
+    beforeEach(async () => {
+      await service.initialize();
+      await service.configure({ channelId: 'C-XMACHINE', enabled: true });
+    });
+
+    it('should return false for non-cross-machine messages', () => {
+      const slackMsg = createSlackMessage('Hello, regular message');
+      expect(service.handleIncomingMessage(slackMsg)).toBe(false);
+    });
+
+    it('should handle messages addressed to this machine', () => {
+      const crossMsg = createCrossMessage({ to: 'local-device-001' });
+      const slackMsg = createSlackMessage(serializeCrossMachineMessage(crossMsg));
+
+      const handler = jest.fn();
+      service.on('message', handler);
+
+      const result = service.handleIncomingMessage(slackMsg);
+      expect(result).toBe(true);
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+        from: 'remote-device-002',
+        to: 'local-device-001',
+        type: 'delegate-task',
+      }));
+    });
+
+    it('should handle broadcast messages', () => {
+      const crossMsg = createCrossMessage({ to: '*' });
+      const slackMsg = createSlackMessage(serializeCrossMachineMessage(crossMsg));
+
+      const broadcastHandler = jest.fn();
+      const messageHandler = jest.fn();
+      service.on('broadcast', broadcastHandler);
+      service.on('message', messageHandler);
+
+      service.handleIncomingMessage(slackMsg);
+      expect(broadcastHandler).toHaveBeenCalledTimes(1);
+      expect(messageHandler).toHaveBeenCalledTimes(1);
+    });
+
+    it('should ignore messages from self', () => {
+      const crossMsg = createCrossMessage({ from: 'local-device-001' });
+      const slackMsg = createSlackMessage(serializeCrossMachineMessage(crossMsg));
+
+      const handler = jest.fn();
+      service.on('message', handler);
+
+      const result = service.handleIncomingMessage(slackMsg);
+      expect(result).toBe(true); // Handled (by ignoring)
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should ignore messages addressed to other machines', () => {
+      const crossMsg = createCrossMessage({ to: 'other-device-003' });
+      const slackMsg = createSlackMessage(serializeCrossMachineMessage(crossMsg));
+
+      const handler = jest.fn();
+      service.on('message', handler);
+
+      const result = service.handleIncomingMessage(slackMsg);
+      expect(result).toBe(true); // Handled (by ignoring)
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should deduplicate messages by messageId', () => {
+      const crossMsg = createCrossMessage({ messageId: 'dup-msg-1' });
+      const slackMsg = createSlackMessage(serializeCrossMachineMessage(crossMsg));
+
+      const handler = jest.fn();
+      service.on('message', handler);
+
+      service.handleIncomingMessage(slackMsg);
+      service.handleIncomingMessage(slackMsg);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('should auto-respond to ping with pong', () => {
+      const crossMsg = createCrossMessage({ type: 'ping' });
+      const slackMsg = createSlackMessage(serializeCrossMachineMessage(crossMsg));
+
+      service.handleIncomingMessage(slackMsg);
+
+      // Pong is sent asynchronously via sendMessage
+      expect(mockSlackService.sendMessage).toHaveBeenCalled();
+      const sentText = mockSlackService.sendMessage.mock.calls[0][0].text;
+      expect(sentText).toContain('"type":"pong"');
+      expect(sentText).toContain('"to":"remote-device-002"');
+    });
+
+    it('should prune tracked message IDs when exceeding max', () => {
+      // MAX_TRACKED_MESSAGE_IDS is mocked to 10
+      for (let i = 0; i < 15; i++) {
+        const crossMsg = createCrossMessage({
+          messageId: `msg-${i}`,
+          to: 'local-device-001',
+        });
+        const slackMsg = createSlackMessage(serializeCrossMachineMessage(crossMsg));
+        service.handleIncomingMessage(slackMsg);
+      }
+
+      // Service should still be functional (no crash)
+      const handler = jest.fn();
+      service.on('message', handler);
+      const crossMsg = createCrossMessage({
+        messageId: 'msg-new',
+        to: 'local-device-001',
+      });
+      const slackMsg = createSlackMessage(serializeCrossMachineMessage(crossMsg));
+      service.handleIncomingMessage(slackMsg);
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('configure', () => {
+    it('should update config', async () => {
+      await service.initialize();
+      await service.configure({ channelId: 'C-NEW', enabled: true });
+      const config = service.getConfig();
+      expect(config).toEqual({ channelId: 'C-NEW', enabled: true });
+    });
+
+    it('should return a copy of config', async () => {
+      await service.initialize();
+      await service.configure({ channelId: 'C-TEST', enabled: true });
+      const c1 = service.getConfig();
+      const c2 = service.getConfig();
+      expect(c1).toEqual(c2);
+      expect(c1).not.toBe(c2);
+    });
+  });
+});

@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700">
+  <defs>
+    <style>
+      .title { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 28px; fill: #F0F6FC; }
+      .subtitle { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 16px; fill: #8B949E; }
+      .modal-title { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 20px; fill: #F0F6FC; }
+      .label { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 14px; fill: #C9D1D9; }
+      .value { font-family: 'JetBrains Mono', monospace; font-size: 14px; fill: #F0F6FC; }
+      .detail { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 13px; fill: #8B949E; }
+      .btn-text { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 15px; }
+      .risk-text { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 13px; }
+      .flow-label { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 13px; fill: #8B949E; }
+      .flow-step { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 12px; fill: #F0F6FC; }
+      .logo-text { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 18px; fill: #8B949E; }
+      .stat-num { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 32px; fill: #F0F6FC; }
+      .stat-label { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 12px; fill: #8B949E; }
+    </style>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0D1117" />
+      <stop offset="100%" style="stop-color:#161B22" />
+    </linearGradient>
+    <filter id="modal-shadow">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#000000" flood-opacity="0.6" />
+    </filter>
+    <linearGradient id="risk-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#22C55E" />
+      <stop offset="50%" style="stop-color:#EAB308" />
+      <stop offset="100%" style="stop-color:#EF4444" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="700" fill="url(#bg-grad)" rx="12" />
+
+  <!-- Title -->
+  <text x="600" y="48" text-anchor="middle" class="title">Granular Tool Approval — See and Approve Every Action</text>
+  <text x="600" y="74" text-anchor="middle" class="subtitle">No agent can execute destructive operations without explicit human approval.</text>
+
+  <!-- Left side: Approval flow diagram -->
+  <text x="80" y="115" class="flow-label">APPROVAL FLOW</text>
+
+  <!-- Step 1: Agent requests -->
+  <rect x="80" y="130" width="200" height="60" rx="8" fill="#161B22" stroke="#3B82F6" stroke-width="1.5" />
+  <circle cx="105" cy="155" r="4" fill="#3B82F6" />
+  <text x="115" y="152" class="flow-step">Agent requests</text>
+  <text x="115" y="170" class="detail">git push --force</text>
+
+  <!-- Arrow down -->
+  <line x1="180" y1="190" x2="180" y2="220" stroke="#3B82F6" stroke-width="1.5" />
+  <polygon points="175,220 185,220 180,228" fill="#3B82F6" />
+
+  <!-- Step 2: Risk assessment -->
+  <rect x="80" y="230" width="200" height="60" rx="8" fill="#161B22" stroke="#EAB308" stroke-width="1.5" />
+  <circle cx="105" cy="255" r="4" fill="#EAB308" />
+  <text x="115" y="252" class="flow-step">Risk assessment</text>
+  <text x="115" y="270" class="detail">Classify: LOW/MED/HIGH</text>
+
+  <!-- Arrow down -->
+  <line x1="180" y1="290" x2="180" y2="320" stroke="#EAB308" stroke-width="1.5" />
+  <polygon points="175,320 185,320 180,328" fill="#EAB308" />
+
+  <!-- Step 3: Human review -->
+  <rect x="80" y="330" width="200" height="60" rx="8" fill="#161B22" stroke="#EC4899" stroke-width="1.5" />
+  <circle cx="105" cy="355" r="4" fill="#EC4899" />
+  <text x="115" y="352" class="flow-step">Human review</text>
+  <text x="115" y="370" class="detail">Approve or Deny</text>
+
+  <!-- Arrow split -->
+  <line x1="130" y1="390" x2="130" y2="420" stroke="#22C55E" stroke-width="1.5" />
+  <polygon points="125,420 135,420 130,428" fill="#22C55E" />
+  <line x1="230" y1="390" x2="230" y2="420" stroke="#EF4444" stroke-width="1.5" />
+  <polygon points="225,420 235,420 230,428" fill="#EF4444" />
+
+  <!-- Step 4a: Approved -->
+  <rect x="60" y="430" width="140" height="45" rx="8" fill="#14532D" stroke="#22C55E" stroke-width="1.5" />
+  <text x="130" y="458" text-anchor="middle" class="flow-step" fill="#22C55E">Executed</text>
+
+  <!-- Step 4b: Denied -->
+  <rect x="160" y="430" width="140" height="45" rx="8" fill="#7F1D1D" stroke="#EF4444" stroke-width="1.5" />
+  <text x="230" y="458" text-anchor="middle" class="flow-step" fill="#EF4444">Blocked</text>
+
+  <!-- Center: The approval modal (hero element) -->
+  <!-- Dimmed backdrop -->
+  <rect x="350" y="100" width="520" height="430" rx="12" fill="#0D1117" opacity="0.5" />
+
+  <!-- Modal -->
+  <rect x="370" y="120" width="480" height="395" rx="12" fill="#161B22" stroke="#374151" stroke-width="1" filter="url(#modal-shadow)" />
+
+  <!-- Modal header -->
+  <rect x="370" y="120" width="480" height="48" rx="12" fill="#21262D" />
+  <rect x="370" y="156" width="480" height="12" fill="#21262D" />
+  <!-- Warning icon -->
+  <rect x="393" y="132" width="28" height="28" rx="6" fill="#7F1D1D" />
+  <text x="407" y="152" text-anchor="middle" font-size="16" fill="#EF4444">&#x26A0;</text>
+  <text x="435" y="150" class="modal-title">APPROVAL REQUIRED</text>
+
+  <!-- Agent info -->
+  <text x="400" y="198" class="label">Agent</text>
+  <circle cx="400" cy="218" r="12" fill="#1E3A5F" />
+  <text x="400" y="223" text-anchor="middle" font-size="11" fill="#3B82F6" font-weight="600">S</text>
+  <text x="420" y="222" class="value">Sam (Tech Lead)</text>
+
+  <!-- Divider -->
+  <line x1="400" y1="240" x2="820" y2="240" stroke="#21262D" stroke-width="1" />
+
+  <!-- Action -->
+  <text x="400" y="265" class="label">Requested Action</text>
+  <rect x="400" y="275" width="420" height="30" rx="4" fill="#0D1117" />
+  <text x="415" y="295" class="value" fill="#EF4444">git push --force origin main</text>
+
+  <!-- Risk level -->
+  <text x="400" y="330" class="label">Risk Level</text>
+  <!-- Risk bar background -->
+  <rect x="400" y="340" width="300" height="12" rx="6" fill="#21262D" />
+  <!-- Risk bar filled (HIGH = 90%) -->
+  <rect x="400" y="340" width="270" height="12" rx="6" fill="url(#risk-grad)" />
+  <text x="720" y="352" class="risk-text" fill="#EF4444">HIGH</text>
+
+  <!-- Warning text -->
+  <rect x="400" y="365" width="420" height="50" rx="6" fill="#1C1917" stroke="#292524" stroke-width="1" />
+  <text x="415" y="385" class="detail" fill="#C9D1D9">This is a destructive operation that targets a</text>
+  <text x="415" y="403" class="detail" fill="#C9D1D9">protected branch and cannot be undone.</text>
+
+  <!-- Buttons -->
+  <rect x="400" y="430" width="180" height="44" rx="8" fill="#21262D" stroke="#374151" stroke-width="1" />
+  <text x="490" y="457" text-anchor="middle" class="btn-text" fill="#C9D1D9">Deny</text>
+
+  <rect x="600" y="430" width="220" height="44" rx="8" fill="#22C55E" />
+  <text x="710" y="457" text-anchor="middle" class="btn-text" fill="#0D1117">Approve</text>
+
+  <!-- Audit trail info -->
+  <text x="400" y="500" class="detail">All decisions are logged to the security audit trail.</text>
+
+  <!-- Right side: Stats -->
+  <rect x="900" y="100" width="250" height="430" rx="12" fill="#161B22" stroke="#21262D" stroke-width="1" />
+  <text x="920" y="130" class="label" fill="#6B7280">AUDIT TRAIL (TODAY)</text>
+
+  <!-- Stat: Total actions -->
+  <text x="920" y="180" class="stat-num">247</text>
+  <text x="920" y="200" class="stat-label">Actions reviewed</text>
+
+  <!-- Stat: Approved -->
+  <text x="920" y="250" class="stat-num" fill="#22C55E">231</text>
+  <text x="920" y="270" class="stat-label">Approved (93.5%)</text>
+
+  <!-- Stat: Denied -->
+  <text x="920" y="320" class="stat-num" fill="#EF4444">16</text>
+  <text x="920" y="340" class="stat-label">Denied (6.5%)</text>
+
+  <!-- Stat: High risk -->
+  <text x="920" y="390" class="stat-num" fill="#EAB308">8</text>
+  <text x="920" y="410" class="stat-label">High-risk caught</text>
+
+  <!-- Recent log entries -->
+  <text x="920" y="445" class="detail" fill="#6B7280">Recent:</text>
+  <text x="920" y="465" class="detail" fill="#22C55E">14:23 Sam: npm publish &#x2714;</text>
+  <text x="920" y="483" class="detail" fill="#EF4444">14:21 Sam: git push -f &#x2718;</text>
+  <text x="920" y="501" class="detail" fill="#22C55E">14:18 Leo: cargo build &#x2714;</text>
+  <text x="920" y="519" class="detail" fill="#22C55E">14:15 Ava: npm test &#x2714;</text>
+
+  <!-- Footer -->
+  <rect x="80" y="560" width="1040" height="80" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1" />
+  <text x="160" y="590" class="label" fill="#22C55E">Low Risk</text>
+  <text x="160" y="610" class="detail">Auto-approved</text>
+  <text x="160" y="628" class="detail">npm test, git status, ls</text>
+
+  <text x="450" y="590" class="label" fill="#EAB308">Medium Risk</text>
+  <text x="450" y="610" class="detail">Notification + log</text>
+  <text x="450" y="628" class="detail">npm install, git commit</text>
+
+  <text x="750" y="590" class="label" fill="#EF4444">High Risk</text>
+  <text x="750" y="610" class="detail">Requires approval</text>
+  <text x="750" y="628" class="detail">git push -f, rm -rf, deploy</text>
+
+  <!-- Risk level dots -->
+  <circle cx="140" cy="587" r="5" fill="#22C55E" />
+  <circle cx="430" cy="587" r="5" fill="#EAB308" />
+  <circle cx="730" cy="587" r="5" fill="#EF4444" />
+
+  <!-- Branding -->
+  <text x="1120" y="685" text-anchor="end" class="logo-text">crewly</text>
+</svg>

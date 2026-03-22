@@ -401,7 +401,11 @@ export class RelayClientService extends EventEmitter {
 
   /**
    * Handle a poll failure by incrementing the failure counter and
-   * emitting an error event if the threshold is exceeded.
+   * triggering re-registration if the threshold is exceeded.
+   *
+   * After MAX_CONSECUTIVE_POLL_FAILURES, the service assumes the server
+   * may have expired the queue and performs a full re-registration cycle
+   * (stop polling → cleanup → re-register with backoff).
    *
    * @param reason - Human-readable failure reason for logging
    */
@@ -413,8 +417,17 @@ export class RelayClientService extends EventEmitter {
     });
 
     if (this.consecutivePollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
-      this.logger.error('Too many consecutive poll failures — emitting error');
+      this.logger.error('Too many consecutive poll failures — re-registering');
       this.emit('error', new Error(`Relay poll failed ${this.consecutivePollFailures} times consecutively`));
+
+      // Stop the current polling loop and attempt re-registration
+      // This handles the case where the server expired our queue
+      this.stopPolling();
+      this.sessionId = null;
+      this.peerQueueId = null;
+      this.consecutivePollFailures = 0;
+      this.setState('error');
+      this.scheduleReconnect();
     }
   }
 

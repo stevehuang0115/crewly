@@ -307,13 +307,21 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 	/**
 	 * Register this device with the cloud device registry.
 	 */
+	/**
+	 * Register this device with the cloud device registry.
+	 *
+	 * Uses PUT semantics to ensure upsert behavior — if the device already
+	 * exists (same deviceId), the server should update rather than create
+	 * a duplicate entry. The deviceId is included both in the body and
+	 * as a hint to the server.
+	 */
 	private async registerDevice(): Promise<void> {
 		if (!this.config) throw new Error('Discovery not configured');
 
 		const url = `${this.config.cloudUrl}${DISCOVERY_CONSTANTS.DEVICES_PATH}/register`;
 
 		const response = await fetch(url, {
-			method: 'POST',
+			method: 'PUT',
 			headers: {
 				'Content-Type': 'application/json',
 				'Authorization': `Bearer ${this.config.token}`,
@@ -329,7 +337,31 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 			signal: AbortSignal.timeout(DISCOVERY_CONSTANTS.REQUEST_TIMEOUT_MS),
 		});
 
-		if (!response.ok) {
+		// Fall back to POST if PUT returns 405 (server doesn't support PUT yet)
+		if (response.status === 405) {
+			this.logger.debug('PUT not supported, falling back to POST for device registration');
+			const postResponse = await fetch(url, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${this.config.token}`,
+				},
+				body: JSON.stringify({
+					deviceId: this.config.deviceId,
+					deviceName: this.config.deviceName,
+					role: this.config.role,
+					platform: os.platform(),
+					arch: os.arch(),
+					hostname: os.hostname(),
+				}),
+				signal: AbortSignal.timeout(DISCOVERY_CONSTANTS.REQUEST_TIMEOUT_MS),
+			});
+
+			if (!postResponse.ok) {
+				const body = await postResponse.text().catch(() => '');
+				throw new Error(`Device registration failed: ${postResponse.status} ${body.slice(0, 200)}`);
+			}
+		} else if (!response.ok) {
 			const body = await response.text().catch(() => '');
 			throw new Error(`Device registration failed: ${response.status} ${body.slice(0, 200)}`);
 		}
@@ -365,7 +397,26 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 			}
 
 			const data = (await response.json()) as { devices?: DiscoveredDevice[] };
-			const devices = data.devices || [];
+			const rawDevices = data.devices || [];
+
+			// Deduplicate by deviceId — the server may return the same device
+			// multiple times if registration didn't upsert correctly. Keep only
+			// the entry with the most recent lastHeartbeatAt for each deviceId.
+			const deviceMap = new Map<string, DiscoveredDevice>();
+			for (const device of rawDevices) {
+				const existing = deviceMap.get(device.deviceId);
+				if (!existing || device.lastHeartbeatAt > existing.lastHeartbeatAt) {
+					deviceMap.set(device.deviceId, device);
+				}
+			}
+			const devices = Array.from(deviceMap.values());
+
+			if (devices.length !== rawDevices.length) {
+				this.logger.warn('Removed duplicate device entries from poll response', {
+					raw: rawDevices.length,
+					deduped: devices.length,
+				});
+			}
 
 			// Success — reset failure counter
 			if (this.consecutivePollFailures > 0) {

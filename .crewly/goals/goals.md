@@ -29,7 +29,7 @@ O3 [推广]: 建立市场存在感 (Luna/Ella/Mila/Grace)
 - KR1: 每周1篇技术博客/教程（Nano Banana 配图）
 - KR2: 制作 Demo 视频 +宣传素材（Veo/Flopost）
 - KR3: 提交 HN / Product Hunt / 开发者目录
-- KR4: 3 个预设团队模板作为 onboarding 钩子
+- KR4: 3 个预设团队模板作为 onboarding 钩子 — **DONE**
 
 **[NEW] O3.5: OpenClaw Competitive Response (March 2026 Focus)**
 - KR1: 发布 v1.5 Roadmap & GTM 计划 (Mia) — **DONE**

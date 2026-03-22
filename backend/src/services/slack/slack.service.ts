@@ -20,6 +20,7 @@ import type {
   SlackBlock,
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
+import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 
@@ -287,8 +288,14 @@ export class SlackService extends EventEmitter {
       if (!message.text && (!message.files || message.files.length === 0)) return;
       if (!message.user) return;
 
-      // Check user permissions
-      if (!isUserAllowed(message.user, config)) {
+      // Bypass user permission check for cross-machine messages —
+      // these come from other bots and are authenticated by device ID,
+      // not Slack user ID. The CrossMachineMessageService handles its
+      // own security (device identity, target filtering, deduplication).
+      const isCrossMachine = message.text && message.text.startsWith(CROSS_MACHINE_PREFIX);
+
+      // Check user permissions (skip for cross-machine messages)
+      if (!isCrossMachine && !isUserAllowed(message.user, config)) {
         this.logger.info('Unauthorized user', { userId: message.user });
         return;
       }

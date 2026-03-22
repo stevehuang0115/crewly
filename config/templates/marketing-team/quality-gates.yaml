@@ -1,0 +1,47 @@
+version: "1.0.0"
+
+settings:
+  runInParallel: false
+  stopOnFirstFailure: true
+
+gates:
+  strategy-quality:
+    name: Strategy Quality Gate
+    description: Ensures content calendars are complete, balanced, and aligned with goals.
+    type: manual
+    required: true
+    criteria:
+      - Weekly calendar has 5-7 posts across target platforms.
+      - Content mix ratio is within 5% of targets.
+      - Each entry has a clear topic, platform, and type.
+      - Trending topics are incorporated where relevant.
+    reviewer: "Marketing Strategist (Maya)"
+    onFailure: block
+
+  content-quality:
+    name: Content Quality Gate
+    description: Validates individual content pieces against brand and platform standards.
+    type: manual
+    required: true
+    criteria:
+      - Brand voice consistency maintained.
+      - Platform-specific formatting and length requirements met.
+      - No grammatical errors or typos.
+      - Clear call-to-action present.
+      - Visual direction provided where applicable.
+    reviewer: "Marketing Strategist (Maya)"
+    onFailure: block
+
+  report-quality:
+    name: Report Quality Gate
+    description: Ensures analytics reports are accurate, complete, and actionable.
+    type: manual
+    required: true
+    criteria:
+      - All platform metrics included and current.
+      - Week-over-week comparisons provided.
+      - Top performers identified with analysis.
+      - Minimum 3 actionable recommendations.
+      - Data sources cited for all metrics.
+    reviewer: "Marketing Analyst (Jordan)"
+    onFailure: block

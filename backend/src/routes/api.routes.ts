@@ -28,6 +28,7 @@ import { createCloudRouter, createRelayRouter } from '../controllers/cloud/index
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
+import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -111,6 +112,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Browser Bridge routes for Chrome Extension remote browser control
   router.use('/browser', createBrowserRouter());
+
+  // Cross-machine communication routes for Slack-based inter-machine messaging
+  router.use('/cross-machine', createCrossMachineRouter());
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here

@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700">
+  <defs>
+    <style>
+      .title { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 28px; fill: #F0F6FC; }
+      .subtitle { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 16px; fill: #8B949E; }
+      .node-title { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 16px; fill: #F0F6FC; }
+      .node-role { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 13px; fill: #8B949E; }
+      .node-task { font-family: 'JetBrains Mono', monospace; font-size: 12px; fill: #C9D1D9; }
+      .arrow-label { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 12px; fill: #8B949E; }
+      .status-text { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 12px; }
+      .phase-label { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 14px; fill: #6B7280; }
+      .gate-text { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 14px; }
+      .logo-text { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 18px; fill: #8B949E; }
+    </style>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0D1117" />
+      <stop offset="100%" style="stop-color:#161B22" />
+    </linearGradient>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22C55E" />
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3B82F6" />
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8B5CF6" />
+    </marker>
+    <marker id="arrow-yellow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#EAB308" />
+    </marker>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="700" fill="url(#bg-grad)" rx="12" />
+
+  <!-- Title -->
+  <text x="600" y="48" text-anchor="middle" class="title">Multi-Agent Orchestration — Real Team Collaboration</text>
+  <text x="600" y="74" text-anchor="middle" class="subtitle">Orchestrator delegates to Team Lead, who decomposes and assigns to developers.</text>
+
+  <!-- Phase labels (left side) -->
+  <text x="30" y="155" class="phase-label" transform="rotate(-90, 30, 155)">PLAN</text>
+  <text x="30" y="340" class="phase-label" transform="rotate(-90, 30, 340)">EXECUTE</text>
+  <text x="30" y="530" class="phase-label" transform="rotate(-90, 30, 530)">REVIEW</text>
+
+  <!-- Phase divider lines -->
+  <line x1="55" y1="230" x2="1150" y2="230" stroke="#21262D" stroke-width="1" stroke-dasharray="4,4" />
+  <line x1="55" y1="450" x2="1150" y2="450" stroke="#21262D" stroke-width="1" stroke-dasharray="4,4" />
+
+  <!-- === PLAN PHASE === -->
+
+  <!-- Orchestrator Node -->
+  <rect x="440" y="100" width="320" height="100" rx="12" fill="#161B22" stroke="#22C55E" stroke-width="2" filter="url(#glow)" />
+  <circle cx="475" cy="130" r="18" fill="#14532D" />
+  <text x="475" y="136" text-anchor="middle" font-size="18">&#x1F3AF;</text>
+  <text x="505" y="128" class="node-title">Orchestrator</text>
+  <text x="505" y="148" class="node-role">Coordinator — plans and delegates</text>
+  <text x="470" y="180" class="node-task">"Build JWT auth + login UI"</text>
+  <!-- Active status -->
+  <circle cx="730" cy="120" r="6" fill="#22C55E" />
+  <text x="715" y="145" class="status-text" fill="#22C55E">ACTIVE</text>
+
+  <!-- Arrow: Orchestrator -> Sam -->
+  <line x1="600" y1="200" x2="600" y2="270" stroke="#22C55E" stroke-width="2" marker-end="url(#arrow-green)" />
+  <text x="615" y="240" class="arrow-label">delegates</text>
+
+  <!-- === EXECUTE PHASE === -->
+
+  <!-- Sam (TL) Node -->
+  <rect x="380" y="270" width="440" height="100" rx="12" fill="#161B22" stroke="#3B82F6" stroke-width="2" />
+  <circle cx="415" cy="300" r="18" fill="#1E3A5F" />
+  <text x="415" y="306" text-anchor="middle" font-size="18">&#x1F477;</text>
+  <text x="445" y="298" class="node-title">Sam (Tech Lead)</text>
+  <text x="445" y="318" class="node-role">Decomposes task, assigns sub-tasks, reviews code</text>
+  <text x="410" y="350" class="node-task">Decompose: "JWT middleware" + "Login UI" + "Auth tests"</text>
+  <circle cx="790" cy="290" r="6" fill="#3B82F6" />
+  <text x="775" y="315" class="status-text" fill="#3B82F6">ACTIVE</text>
+
+  <!-- Arrows: Sam -> Leo, Sam -> Dev2 -->
+  <line x1="500" y1="370" x2="320" y2="460" stroke="#3B82F6" stroke-width="2" marker-end="url(#arrow-blue)" />
+  <text x="380" y="420" class="arrow-label">assigns</text>
+
+  <line x1="700" y1="370" x2="880" y2="460" stroke="#3B82F6" stroke-width="2" marker-end="url(#arrow-blue)" />
+  <text x="800" y="420" class="arrow-label">assigns</text>
+
+  <!-- Leo Node -->
+  <rect x="120" y="460" width="380" height="90" rx="12" fill="#161B22" stroke="#8B5CF6" stroke-width="2" />
+  <circle cx="155" cy="490" r="18" fill="#3B1E5F" />
+  <text x="155" y="496" text-anchor="middle" font-size="18">&#x1F468;&#x200D;&#x1F4BB;</text>
+  <text x="185" y="488" class="node-title">Leo (Developer)</text>
+  <text x="185" y="508" class="node-role">Backend — JWT middleware + auth service</text>
+  <text x="155" y="535" class="node-task">$ npm run test — 127 tests passed</text>
+  <circle cx="470" cy="480" r="6" fill="#22C55E" />
+  <text x="455" y="505" class="status-text" fill="#22C55E">DONE</text>
+
+  <!-- Dev2 Node -->
+  <rect x="700" y="460" width="380" height="90" rx="12" fill="#161B22" stroke="#EC4899" stroke-width="2" />
+  <circle cx="735" cy="490" r="18" fill="#5F1E3B" />
+  <text x="735" y="496" text-anchor="middle" font-size="18">&#x1F469;&#x200D;&#x1F4BB;</text>
+  <text x="765" y="488" class="node-title">Ava (UX Designer)</text>
+  <text x="765" y="508" class="node-role">Frontend — Login page + auth flow UI</text>
+  <text x="735" y="535" class="node-task">$ npm run test:ui — 43 tests passed</text>
+  <circle cx="1050" cy="480" r="6" fill="#EAB308" />
+  <text x="1015" y="505" class="status-text" fill="#EAB308">IN PROGRESS</text>
+
+  <!-- === REVIEW PHASE === -->
+
+  <!-- Arrows: Leo -> Quality Gate, Dev2 -> Quality Gate -->
+  <line x1="310" y1="550" x2="500" y2="600" stroke="#8B5CF6" stroke-width="2" marker-end="url(#arrow-purple)" />
+  <line x1="890" y1="550" x2="700" y2="600" stroke="#EC4899" stroke-width="2" marker-end="url(#arrow-purple)" />
+
+  <!-- Quality Gate -->
+  <rect x="420" y="590" width="360" height="55" rx="10" fill="#14532D" stroke="#22C55E" stroke-width="2" />
+  <text x="445" y="623" class="gate-text" fill="#22C55E">&#x2714;  CREWLY QUALITY GATE: ALL CHECKS PASSED</text>
+
+  <!-- Arrow: Quality Gate -> Merge -->
+  <line x1="780" y1="617" x2="870" y2="617" stroke="#22C55E" stroke-width="2" marker-end="url(#arrow-green)" />
+
+  <!-- Merge badge -->
+  <rect x="870" y="600" width="180" height="35" rx="17" fill="#1E3A5F" stroke="#3B82F6" stroke-width="1.5" />
+  <text x="960" y="623" text-anchor="middle" class="status-text" fill="#3B82F6">&#x2714;  Merged to main</text>
+
+  <!-- Timeline indicators -->
+  <rect x="80" y="660" width="1040" height="24" rx="4" fill="#161B22" />
+  <rect x="80" y="660" width="340" height="24" rx="4" fill="#14532D" opacity="0.5" />
+  <rect x="420" y="660" width="440" height="24" rx="4" fill="#1E3A5F" opacity="0.5" />
+  <rect x="860" y="660" width="260" height="24" rx="4" fill="#3B1E5F" opacity="0.3" />
+  <text x="250" y="677" text-anchor="middle" class="arrow-label" fill="#22C55E">Plan (2min)</text>
+  <text x="640" y="677" text-anchor="middle" class="arrow-label" fill="#3B82F6">Execute (parallel)</text>
+  <text x="990" y="677" text-anchor="middle" class="arrow-label" fill="#8B5CF6">Review + Merge</text>
+
+  <!-- Branding -->
+  <text x="1120" y="694" text-anchor="end" class="logo-text">crewly</text>
+</svg>

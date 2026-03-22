@@ -119,6 +119,28 @@ export {
   resetImprovementStartupService,
 } from './orchestrator/index.js';
 
+// Onboarding Services
+export {
+  BrandOnboardingService,
+  ONBOARDING_QUESTIONS,
+  DEFAULT_CONTENT_MIX,
+  ContentApprovalService,
+  CONTENT_APPROVAL_TTL_MS,
+  MAX_PENDING_APPROVALS,
+} from './onboarding/index.js';
+export type {
+  OnboardingQuestion,
+  OnboardingAnswer,
+  OnboardingSession,
+  OnboardingStatus,
+  BrandProfile,
+  GenerateGuideOptions,
+  ContentApprovalRequest,
+  ContentApprovalStatus,
+  SubmitForApprovalOptions,
+  ApprovalResolution,
+} from './onboarding/index.js';
+
 // MCP Client Services
 export {
   McpClientService,
