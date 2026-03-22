@@ -192,6 +192,8 @@ export interface RelayQueueMessage {
 export interface RelayQueuePollResponse {
   /** Array of unread messages */
   messages: RelayQueueMessage[];
+  /** Peer's queue ID (included when peer registers after caller — enables pairing detection during poll) */
+  peerQueueId?: string;
 }
 
 /** Response from POST /api/v1/relay/queue/register. */

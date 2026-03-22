@@ -120,6 +120,8 @@ export class CloudSyncService extends EventEmitter {
   private devicePollFailures = 0;
   /** Consecutive message poll failure count */
   private messagePollFailures = 0;
+  /** Error recovery timer handle */
+  private errorRecoveryTimer: ReturnType<typeof setInterval> | null = null;
 
   private constructor() {
     super();
@@ -218,6 +220,7 @@ export class CloudSyncService extends EventEmitter {
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     if (this.devicePollTimer) { clearInterval(this.devicePollTimer); this.devicePollTimer = null; }
     if (this.messagePollTimer) { clearInterval(this.messagePollTimer); this.messagePollTimer = null; }
+    if (this.errorRecoveryTimer) { clearInterval(this.errorRecoveryTimer); this.errorRecoveryTimer = null; }
 
     this.state = 'stopped';
     this.config = null;
@@ -301,15 +304,22 @@ export class CloudSyncService extends EventEmitter {
 
     const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES}`;
 
-    // Cloud Sync messages endpoint expects { to, type, payload, encrypted? }
+    // Cloud Relay queue/send expects { toDeviceId, payload }.
+    // We wrap type + encrypted + actual payload into the payload field so
+    // the receiver can reconstruct the full IncomingMessage shape on poll.
+    const wrappedPayload = JSON.stringify({
+      type,
+      data: payload,
+      encrypted: false,
+      fromDeviceName: this.config.deviceName,
+    });
+
     const response = await fetch(url, {
       method: 'POST',
       headers: this.authHeaders(),
       body: JSON.stringify({
-        to: toDeviceId,
-        type,
-        payload,
-        encrypted: false,
+        toDeviceId,
+        payload: wrappedPayload,
       }),
       signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
     });
@@ -329,17 +339,17 @@ export class CloudSyncService extends EventEmitter {
   /**
    * Send a heartbeat to the Cloud server with current device state.
    * Called periodically by the heartbeat timer.
+   *
+   * Posts to the Cloud Relay handshake endpoint (/api/v1/relay/handshake)
+   * which registers/updates the device with enriched metadata.
    */
   async sendHeartbeat(): Promise<void> {
-    if (!this.config) return;
+    if (!this.config || this.state === 'error') return;
 
     try {
       const teams = await gatherTeamSummaries();
 
-      // Cloud API expects the same payload as the frontend useDeviceHeartbeat hook.
-      // The Cloud server identifies the device from the JWT token, so we send
-      // deviceName and teams. We also send the extended fields for richer metadata
-      // that the Cloud API may store but does not require.
+      // Cloud Relay handshake expects: { deviceId, deviceName, teams, version, timestamp }
       const payload: HeartbeatPayload = {
         deviceId: this.config.deviceId,
         deviceName: this.config.deviceName,
@@ -350,34 +360,25 @@ export class CloudSyncService extends EventEmitter {
         timestamp: new Date().toISOString(),
       };
 
-      const authUrl = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT}`;
-      const syncUrl = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT_SYNC}`;
-      const bodyStr = JSON.stringify(payload);
-      const headers = this.authHeaders();
-      const timeout = CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS;
+      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT}`;
 
-      // Send heartbeat to BOTH Cloud endpoints in parallel:
-      // 1. Auth service (/api/devices/heartbeat) — for device discovery
-      // 2. Relay sync handler (/api/v1/sync/heartbeat) — for message queue device registration
-      const [authRes, syncRes] = await Promise.all([
-        fetch(authUrl, { method: 'POST', headers, body: bodyStr, signal: AbortSignal.timeout(timeout) }),
-        fetch(syncUrl, { method: 'POST', headers, body: bodyStr, signal: AbortSignal.timeout(timeout) }).catch(() => null),
-      ]);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: this.authHeaders(),
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
+      });
 
-      if (!authRes.ok) {
+      if (!response.ok) {
         // On 401/403, attempt token refresh before counting as failure
-        if (authRes.status === 401 || authRes.status === 403) {
-          const refreshed = await this.handleAuthError(authRes.status);
+        if (response.status === 401 || response.status === 403) {
+          const refreshed = await this.handleAuthError(response.status);
           if (refreshed) {
             this.logger.info('Heartbeat will retry with refreshed token on next cycle');
             return;
           }
         }
-        throw new Error(`Heartbeat failed: ${authRes.status}`);
-      }
-
-      if (syncRes && !syncRes.ok) {
-        this.logger.debug('Sync heartbeat returned non-OK (non-fatal)', { status: syncRes.status });
+        throw new Error(`Heartbeat failed: ${response.status}`);
       }
 
       this.heartbeatFailures = 0;
@@ -404,14 +405,19 @@ export class CloudSyncService extends EventEmitter {
    * which we normalize to the SyncDevice shape used by the frontend.
    */
   async pollDevices(): Promise<void> {
-    if (!this.config) return;
+    if (!this.config || this.state === 'error') return;
 
     try {
       const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES}`;
 
       const response = await fetch(url, {
         method: 'GET',
-        headers: this.authHeaders(),
+        headers: {
+          ...this.authHeaders(),
+          // Send the real local deviceId so the Cloud auto-register uses
+          // THIS machine's identity, not the (potentially stale) JWT deviceId.
+          'X-Device-Id': this.config.deviceId,
+        },
         signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
       });
 
@@ -429,8 +435,8 @@ export class CloudSyncService extends EventEmitter {
 
       const data = await response.json() as { success?: boolean; data?: any[]; devices?: any[] };
 
-      // Cloud /api/devices returns { success, data: Device[] }
-      // Legacy /api/v1/sync/devices returned { success, devices: Device[] }
+      // Cloud /api/v1/relay/devices returns { success, devices: Device[] }
+      // Legacy endpoints returned { success, data: Device[] }
       // Support both formats for forward/backward compatibility
       const rawDevices = data.data || data.devices;
 
@@ -524,10 +530,11 @@ export class CloudSyncService extends EventEmitter {
    * Cloud returns messages as: `{ id, from, fromDeviceName, type, payload, encrypted, sentAt }`.
    */
   async pollMessages(): Promise<void> {
-    if (!this.config) return;
+    if (!this.config || this.state === 'error') return;
 
     try {
-      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL}?deviceId=${encodeURIComponent(this.config.deviceId)}`;
+      // Cloud Relay queue/poll accepts ?queueId= query param (fallback when JWT has no deviceId)
+      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL}?queueId=${encodeURIComponent(this.config.deviceId)}`;
 
       const response = await fetch(url, {
         method: 'GET',
@@ -557,16 +564,37 @@ export class CloudSyncService extends EventEmitter {
         return;
       }
 
-      // Normalize Cloud message format to IncomingMessage shape
+      // Normalize Cloud Relay message format to IncomingMessage shape.
+      // Cloud returns: { id, fromDeviceId, payload (string), createdAt }.
+      // The payload may be a JSON string wrapping { type, data, encrypted, fromDeviceName }
+      // (sent by our sendMessage), or a raw string from legacy senders.
       const messageIds: string[] = [];
       for (const raw of rawMessages) {
+        let msgType: MessageType = 'relay';
+        let msgPayload: unknown = raw.payload;
+        let msgEncrypted = false;
+        let msgFromDeviceName = '';
+
+        // Try to unwrap our wrapped payload format
+        try {
+          const parsed = typeof raw.payload === 'string' ? JSON.parse(raw.payload) : raw.payload;
+          if (parsed && typeof parsed === 'object' && 'type' in parsed && 'data' in parsed) {
+            msgType = parsed.type || 'relay';
+            msgPayload = parsed.data;
+            msgEncrypted = parsed.encrypted ?? false;
+            msgFromDeviceName = parsed.fromDeviceName || '';
+          }
+        } catch {
+          // Not JSON or not our format — use raw payload as-is
+        }
+
         const msg: IncomingMessage = {
           id: raw.id,
           from: raw.fromDeviceId || raw.from || '',
-          fromDeviceName: raw.fromDeviceName || '',
-          type: raw.type || 'relay',
-          payload: raw.payload,
-          encrypted: raw.encrypted ?? false,
+          fromDeviceName: msgFromDeviceName,
+          type: msgType,
+          payload: msgPayload,
+          encrypted: msgEncrypted,
           sentAt: raw.createdAt || raw.sentAt || new Date().toISOString(),
         };
         this.emit('message', msg);
@@ -590,7 +618,8 @@ export class CloudSyncService extends EventEmitter {
 
   /**
    * Acknowledge processed messages so Cloud can remove them from the queue.
-   * Uses `deviceId` in body to identify the target message queue.
+   * Uses `queueId` in body to identify the target message queue (fallback
+   * when JWT has no deviceId claim).
    *
    * @param messageIds - Array of message IDs to acknowledge
    */
@@ -604,7 +633,7 @@ export class CloudSyncService extends EventEmitter {
         method: 'POST',
         headers: this.authHeaders(),
         body: JSON.stringify({
-          deviceId: this.config.deviceId,
+          queueId: this.config.deviceId,
           messageIds,
         }),
         signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
@@ -623,22 +652,106 @@ export class CloudSyncService extends EventEmitter {
 
   /**
    * Check if any failure counter has exceeded the threshold.
-   * If so, transition to error state.
+   * If so, transition to error state and schedule a recovery attempt.
    */
   private checkErrorThreshold(): void {
+    if (this.state === 'error') return; // Already in error state, don't log repeatedly
     const max = CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES;
     if (
       this.heartbeatFailures >= max ||
       this.devicePollFailures >= max ||
       this.messagePollFailures >= max
     ) {
-      this.logger.error('Cloud Sync entering error state after repeated failures', {
+      this.logger.error('Cloud Sync entering error state after repeated failures — scheduling recovery', {
         heartbeatFailures: this.heartbeatFailures,
         devicePollFailures: this.devicePollFailures,
         messagePollFailures: this.messagePollFailures,
       });
       this.state = 'error';
+      this.scheduleErrorRecovery();
     }
+  }
+
+  /**
+   * Schedule periodic recovery attempts when in error state.
+   *
+   * Tries a single heartbeat every ERROR_RECOVERY_INTERVAL_MS (60s by default).
+   * If the heartbeat succeeds, resets all failure counters and resumes normal
+   * polling. This prevents permanent sync loss from transient network issues.
+   */
+  private scheduleErrorRecovery(): void {
+    if (this.errorRecoveryTimer) return; // Already scheduled
+
+    const recoveryInterval = CLOUD_SYNC_CONSTANTS.ERROR_RECOVERY_INTERVAL_MS ?? 60_000;
+
+    this.errorRecoveryTimer = setInterval(async () => {
+      if (this.state !== 'error' || !this.config) {
+        // Already recovered or stopped — cancel recovery timer
+        if (this.errorRecoveryTimer) {
+          clearInterval(this.errorRecoveryTimer);
+          this.errorRecoveryTimer = null;
+        }
+        return;
+      }
+
+      this.logger.info('Attempting Cloud Sync error recovery...');
+
+      try {
+        const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT}`;
+        const teams = await gatherTeamSummaries();
+
+        const payload: HeartbeatPayload = {
+          deviceId: this.config.deviceId,
+          deviceName: this.config.deviceName,
+          status: 'online',
+          version: this.version,
+          capabilities: ['orchestrator', 'agent-runner'],
+          teams,
+          timestamp: new Date().toISOString(),
+        };
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: this.authHeaders(),
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
+        });
+
+        if (response.ok) {
+          this.logger.info('Cloud Sync recovery succeeded — resuming normal polling');
+          this.heartbeatFailures = 0;
+          this.devicePollFailures = 0;
+          this.messagePollFailures = 0;
+          this.state = 'syncing';
+
+          // Cancel recovery timer
+          if (this.errorRecoveryTimer) {
+            clearInterval(this.errorRecoveryTimer);
+            this.errorRecoveryTimer = null;
+          }
+
+          // Do an immediate device poll to refresh cached devices
+          this.pollDevices().catch(() => {});
+        } else if (response.status === 401 || response.status === 403) {
+          // Try token refresh
+          const refreshed = await this.handleAuthError(response.status);
+          if (refreshed) {
+            this.logger.info('Token refreshed during recovery — will retry next cycle');
+          } else {
+            this.logger.warn('Recovery heartbeat auth failed, will retry', { status: response.status });
+          }
+        } else {
+          this.logger.warn('Recovery heartbeat failed, will retry', { status: response.status });
+        }
+      } catch (error) {
+        this.logger.warn('Recovery attempt failed, will retry', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }, recoveryInterval);
+
+    // Unref so the timer doesn't keep the process alive
+    if (this.errorRecoveryTimer.unref) this.errorRecoveryTimer.unref();
   }
 
   /** Guard to prevent concurrent token refresh attempts */

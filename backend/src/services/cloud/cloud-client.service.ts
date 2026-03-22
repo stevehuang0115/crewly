@@ -595,6 +595,20 @@ export class CloudClientService {
         return false;
       }
 
+      // Resolve device ID from the LOCAL device identity (always preferred).
+      // The refresh token may carry a stale deviceId from a different machine
+      // (e.g. when tokens are copied between machines via shared config).
+      // Using the local identity ensures the JWT identifies THIS machine.
+      let deviceId: string | undefined;
+      try {
+        const { DeviceIdentityService } = await import('./device-identity.service.js');
+        const identity = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+        deviceId = identity.deviceId;
+      } catch {
+        // Fallback to refresh token's deviceId if local identity unavailable
+        deviceId = payload.deviceId as string | undefined;
+      }
+
       // Issue a new access token from the refresh token claims
       const now = Math.floor(Date.now() / 1000);
       const newAccessToken = signJwt({
@@ -602,6 +616,7 @@ export class CloudClientService {
         email: payload.email || '',
         name: payload.name || '',
         plan: payload.plan || 'free',
+        ...(deviceId && { deviceId }),
         iat: now,
         exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
         iss: AUTH_CONSTANTS.JWT.ISSUER,

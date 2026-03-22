@@ -207,6 +207,12 @@ export class CrewlyServer {
 			// Increase buffer size for large terminal output
 			maxHttpBufferSize: 5 * 1024 * 1024, // 5MB
 			perMessageDeflate: false,
+			// CRITICAL: Prevent Engine.IO from destroying non-matching upgrade requests.
+			// BrowserBridgeService shares this httpServer and handles /ws/browser upgrades.
+			// Without this, Engine.IO sets a 1-second timer to socket.end() any upgrade
+			// that doesn't match /socket.io/ — killing BrowserBridge connections before
+			// any data is exchanged (manifests as "Invalid frame header" errors).
+			destroyUpgrade: false,
 		});
 
 		this.initializeServices();

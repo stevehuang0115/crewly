@@ -11,6 +11,8 @@
  * - End-to-end encryption (E2EE) — relay never sees plaintext
  * - Exponential backoff on registration failures
  * - Automatic message acknowledgement after processing
+ * - Token auto-refresh via CloudClientService integration
+ * - Consecutive failure tracking with error state escalation
  *
  * @module services/cloud/relay-client.service
  */
@@ -36,6 +38,10 @@ import {
 } from './relay-crypto.service.js';
 
 const RELAY = CLOUD_CONSTANTS.RELAY;
+const RELAY_ENDPOINTS = CLOUD_CONSTANTS.RELAY_ENDPOINTS;
+
+/** Maximum consecutive poll failures before emitting an error event */
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
 
 // ---------------------------------------------------------------------------
 // Events emitted by RelayClientService
@@ -90,6 +96,10 @@ export class RelayClientService extends EventEmitter {
   private intentionalDisconnect = false;
   /** Timestamp of last seen message for pagination */
   private lastSeenTimestamp: string | null = null;
+  /** Consecutive poll failure count for error escalation */
+  private consecutivePollFailures = 0;
+  /** Total poll cycles executed (for observability) */
+  private pollCount = 0;
 
   private constructor() {
     super();
@@ -228,6 +238,10 @@ export class RelayClientService extends EventEmitter {
 
   /**
    * Register with the Cloud Message Queue via HTTP POST.
+   *
+   * Uses CLOUD_CONSTANTS.RELAY_ENDPOINTS.QUEUE_REGISTER for the endpoint URL.
+   * On success, transitions to 'registered' or 'paired' state and starts polling.
+   * On failure, enters 'error' state and schedules reconnection with backoff.
    */
   private async doRegister(): Promise<void> {
     if (!this.config) return;
@@ -236,11 +250,14 @@ export class RelayClientService extends EventEmitter {
     this.logger.info('Registering with Cloud Message Queue', { apiUrl: this.config.apiUrl });
 
     try {
-      const response = await fetch(`${this.config.apiUrl}/api/v1/relay/queue/register`, {
+      const token = this.getAuthToken();
+      const url = `${this.config.apiUrl}${RELAY_ENDPOINTS.QUEUE_REGISTER}`;
+
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.token}`,
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           role: this.config.role,
@@ -262,6 +279,7 @@ export class RelayClientService extends EventEmitter {
 
       this.sessionId = data.queueId;
       this.reconnectAttempts = 0;
+      this.consecutivePollFailures = 0;
       this.logger.info('Registered with Cloud Queue', { queueId: data.queueId });
 
       if (data.peerQueueId) {
@@ -310,12 +328,20 @@ export class RelayClientService extends EventEmitter {
 
   /**
    * Poll the queue for new messages and process them.
+   *
+   * Uses CLOUD_CONSTANTS.RELAY_ENDPOINTS.QUEUE_POLL for the endpoint URL.
+   * Handles pairing detection when the poll response includes a peerQueueId
+   * (transition from 'registered' → 'paired'). Tracks consecutive failures
+   * and emits an error event after MAX_CONSECUTIVE_POLL_FAILURES.
    */
   private async poll(): Promise<void> {
     if (!this.config || !this.sessionId) return;
 
+    this.pollCount++;
+
     try {
-      let url = `${this.config.apiUrl}/api/v1/relay/queue/poll?queueId=${this.sessionId}`;
+      const token = this.getAuthToken();
+      let url = `${this.config.apiUrl}${RELAY_ENDPOINTS.QUEUE_POLL}?queueId=${this.sessionId}`;
       if (this.lastSeenTimestamp) {
         url += `&since=${encodeURIComponent(this.lastSeenTimestamp)}`;
       }
@@ -323,17 +349,30 @@ export class RelayClientService extends EventEmitter {
       const response = await fetch(url, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${this.config.token}`,
+          'Authorization': `Bearer ${token}`,
         },
         signal: AbortSignal.timeout(RELAY.REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {
-        this.logger.error('Poll request failed', { status: response.status });
+        this.handlePollFailure(`Poll request failed with HTTP ${response.status}`);
         return;
       }
 
+      // Reset failure counter on successful response
+      this.consecutivePollFailures = 0;
+
       const data = await response.json() as RelayQueuePollResponse;
+
+      // Detect pairing during poll — server may return peerQueueId once peer registers
+      if (data.peerQueueId && !this.peerQueueId) {
+        this.peerQueueId = data.peerQueueId;
+        if (this.state === 'registered') {
+          this.setState('paired');
+          this.emit('paired', this.peerQueueId, 'peer');
+          this.logger.info('Paired with peer during poll', { peerQueueId: this.peerQueueId });
+        }
+      }
 
       if (!data.messages || data.messages.length === 0) return;
 
@@ -356,9 +395,26 @@ export class RelayClientService extends EventEmitter {
         await this.ackMessages(messageIds);
       }
     } catch (err) {
-      this.logger.error('Poll cycle failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      this.handlePollFailure(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Handle a poll failure by incrementing the failure counter and
+   * emitting an error event if the threshold is exceeded.
+   *
+   * @param reason - Human-readable failure reason for logging
+   */
+  private handlePollFailure(reason: string): void {
+    this.consecutivePollFailures++;
+    this.logger.error('Poll cycle failed', {
+      reason,
+      consecutiveFailures: this.consecutivePollFailures,
+    });
+
+    if (this.consecutivePollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+      this.logger.error('Too many consecutive poll failures — emitting error');
+      this.emit('error', new Error(`Relay poll failed ${this.consecutivePollFailures} times consecutively`));
     }
   }
 
@@ -387,17 +443,24 @@ export class RelayClientService extends EventEmitter {
   /**
    * Acknowledge processed messages so they are not re-delivered.
    *
+   * Uses CLOUD_CONSTANTS.RELAY_ENDPOINTS.QUEUE_ACK for the endpoint URL.
+   * Fire-and-forget — ack failures are logged but do not affect state.
+   * Unacked messages may be re-delivered on the next poll cycle.
+   *
    * @param messageIds - Array of message IDs to acknowledge
    */
   private async ackMessages(messageIds: string[]): Promise<void> {
     if (!this.config || !this.sessionId) return;
 
     try {
-      await fetch(`${this.config.apiUrl}/api/v1/relay/queue/ack`, {
+      const token = this.getAuthToken();
+      const url = `${this.config.apiUrl}${RELAY_ENDPOINTS.QUEUE_ACK}`;
+
+      await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.token}`,
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           queueId: this.sessionId,
@@ -419,17 +482,22 @@ export class RelayClientService extends EventEmitter {
   /**
    * Send an encrypted payload to the peer via HTTP POST.
    *
+   * Uses CLOUD_CONSTANTS.RELAY_ENDPOINTS.QUEUE_SEND for the endpoint URL.
+   *
    * @param payload - Serialized encrypted envelope
    */
   private async sendViaHttp(payload: string): Promise<void> {
     if (!this.config || !this.peerQueueId) return;
 
     try {
-      const response = await fetch(`${this.config.apiUrl}/api/v1/relay/queue/send`, {
+      const token = this.getAuthToken();
+      const url = `${this.config.apiUrl}${RELAY_ENDPOINTS.QUEUE_SEND}`;
+
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.token}`,
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           peerQueueId: this.peerQueueId,
@@ -498,6 +566,51 @@ export class RelayClientService extends EventEmitter {
   }
 
   /**
+   * Get the total number of poll cycles executed since last connect.
+   *
+   * Useful for monitoring and debugging relay health.
+   *
+   * @returns Number of poll cycles
+   */
+  getPollCount(): number {
+    return this.pollCount;
+  }
+
+  /**
+   * Get the current number of consecutive poll failures.
+   *
+   * @returns Consecutive failure count (resets on success)
+   */
+  getConsecutivePollFailures(): number {
+    return this.consecutivePollFailures;
+  }
+
+  /**
+   * Get the best available auth token for Cloud API calls.
+   *
+   * Attempts to read a fresh token from CloudClientService (which handles
+   * auto-refresh). Falls back to the token stored in config if CloudClientService
+   * is not connected or unavailable.
+   *
+   * @returns Bearer token string
+   */
+  private getAuthToken(): string {
+    try {
+      // Dynamically import to avoid circular dependency at module load time
+      // CloudClientService.getToken() returns the latest (possibly refreshed) token
+      const { CloudClientService } = require('./cloud-client.service.js');
+      const cloudClient = CloudClientService.getInstance();
+      if (cloudClient.isConnected()) {
+        const freshToken = cloudClient.getToken();
+        if (freshToken) return freshToken;
+      }
+    } catch {
+      // CloudClientService not available — use config token
+    }
+    return this.config?.token ?? '';
+  }
+
+  /**
    * Clean up timers and reset connection state.
    */
   private cleanup(): void {
@@ -510,5 +623,7 @@ export class RelayClientService extends EventEmitter {
 
     this.sessionId = null;
     this.peerQueueId = null;
+    this.consecutivePollFailures = 0;
+    this.pollCount = 0;
   }
 }

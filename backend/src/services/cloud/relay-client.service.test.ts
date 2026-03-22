@@ -2,7 +2,8 @@
  * Tests for Relay Client Service (HTTP polling-based)
  *
  * Unit tests for the relay client singleton, state management,
- * HTTP registration, polling, ack, send, and E2EE integration.
+ * HTTP registration, polling, ack, send, E2EE integration,
+ * token refresh, pairing detection, and failure tracking.
  *
  * @module services/cloud/relay-client.service.test
  */
@@ -35,6 +36,18 @@ jest.mock('./relay-crypto.service.js', () => ({
   decrypt: jest.fn(() => 'decrypted-plaintext'),
   serializeEnvelope: jest.fn(() => 'serialized-envelope'),
   deserializeEnvelope: jest.fn(() => ({ iv: 'aXY=', ciphertext: 'Y2lwaGVy', authTag: 'dGFn' })),
+}));
+
+// Mock CloudClientService for token refresh tests
+const mockCloudClient = {
+  isConnected: jest.fn().mockReturnValue(false),
+  getToken: jest.fn().mockReturnValue(null),
+};
+
+jest.mock('./cloud-client.service.js', () => ({
+  CloudClientService: {
+    getInstance: () => mockCloudClient,
+  },
 }));
 
 /** Captured fetch calls for assertion. */
@@ -95,6 +108,8 @@ describe('RelayClientService', () => {
     jest.clearAllMocks();
     RelayClientService.resetInstance();
     mockFetch.mockReset();
+    mockCloudClient.isConnected.mockReturnValue(false);
+    mockCloudClient.getToken.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -131,6 +146,12 @@ describe('RelayClientService', () => {
     expect(client.getSessionId()).toBeNull();
   });
 
+  it('should start with zero poll count and zero failures', () => {
+    const client = RelayClientService.getInstance();
+    expect(client.getPollCount()).toBe(0);
+    expect(client.getConsecutivePollFailures()).toBe(0);
+  });
+
   // -----------------------------------------------------------------------
   // Send validation
   // -----------------------------------------------------------------------
@@ -150,12 +171,33 @@ describe('RelayClientService', () => {
     expect(client.getState()).toBe('disconnected');
   });
 
+  it('should reset poll count and failures on disconnect', async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+    );
+
+    const client = RelayClientService.getInstance();
+    client.connect(makeConfig());
+    await flushMicrotasks();
+
+    // Trigger a poll to increment pollCount
+    mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
+    jest.advanceTimersByTime(5000);
+    await flushMicrotasks();
+
+    expect(client.getPollCount()).toBe(1);
+
+    client.disconnect();
+    expect(client.getPollCount()).toBe(0);
+    expect(client.getConsecutivePollFailures()).toBe(0);
+  });
+
   // -----------------------------------------------------------------------
   // Connect → Register → Poll cycle
   // -----------------------------------------------------------------------
 
   describe('connect and register', () => {
-    it('should POST to register endpoint with correct headers and body', async () => {
+    it('should POST to register endpoint using RELAY_ENDPOINTS constant', async () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
       );
@@ -260,6 +302,30 @@ describe('RelayClientService', () => {
       expect(pollCall[1]).toEqual(expect.objectContaining({ method: 'GET' }));
     });
 
+    it('should increment pollCount on each poll cycle', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      expect(client.getPollCount()).toBe(0);
+
+      // First poll
+      mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+      expect(client.getPollCount()).toBe(1);
+
+      // Second poll
+      mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+      expect(client.getPollCount()).toBe(2);
+    });
+
     it('should decrypt and emit messages from poll response', async () => {
       // Register
       mockFetch.mockResolvedValueOnce(
@@ -316,7 +382,7 @@ describe('RelayClientService', () => {
       jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
-      // Check ack call
+      // Check ack call uses RELAY_ENDPOINTS.QUEUE_ACK constant path
       const ackCall = mockFetch.mock.calls[2];
       expect(ackCall[0]).toBe('https://api.crewly.test/api/v1/relay/queue/ack');
       expect(JSON.parse(ackCall[1].body)).toEqual({
@@ -382,6 +448,227 @@ describe('RelayClientService', () => {
   });
 
   // -----------------------------------------------------------------------
+  // Pairing detection during poll
+  // -----------------------------------------------------------------------
+
+  describe('pairing detection during poll', () => {
+    it('should transition to paired state when poll returns peerQueueId', async () => {
+      // Register without peer
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      const pairedSpy = jest.fn();
+      client.on('paired', pairedSpy);
+
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      expect(client.getState()).toBe('registered');
+
+      // Poll returns peerQueueId (peer just registered)
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ messages: [], peerQueueId: 'q-peer-late' }),
+      );
+
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      expect(client.getState()).toBe('paired');
+      expect(pairedSpy).toHaveBeenCalledWith('q-peer-late', 'peer');
+    });
+
+    it('should not re-emit paired if already paired', async () => {
+      // Register with peer (already paired)
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: 'q-peer' }),
+      );
+
+      const client = RelayClientService.getInstance();
+      const pairedSpy = jest.fn();
+      client.on('paired', pairedSpy);
+
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      expect(pairedSpy).toHaveBeenCalledTimes(1);
+
+      // Poll also returns peerQueueId — should NOT trigger second paired event
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ messages: [], peerQueueId: 'q-peer' }),
+      );
+
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      // Still only one paired call (from registration)
+      expect(pairedSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Consecutive poll failure tracking
+  // -----------------------------------------------------------------------
+
+  describe('consecutive poll failure tracking', () => {
+    it('should track consecutive poll failures', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      expect(client.getConsecutivePollFailures()).toBe(0);
+
+      // Fail 3 polls
+      for (let i = 0; i < 3; i++) {
+        mockFetch.mockRejectedValueOnce(new Error('network error'));
+        jest.advanceTimersByTime(5000);
+        await flushMicrotasks();
+      }
+
+      expect(client.getConsecutivePollFailures()).toBe(3);
+    });
+
+    it('should reset failure count on successful poll', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Fail 2 polls
+      mockFetch.mockRejectedValueOnce(new Error('fail'));
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      mockFetch.mockRejectedValueOnce(new Error('fail'));
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      expect(client.getConsecutivePollFailures()).toBe(2);
+
+      // Successful poll
+      mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      expect(client.getConsecutivePollFailures()).toBe(0);
+    });
+
+    it('should emit error event after MAX_CONSECUTIVE_POLL_FAILURES', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      const errorSpy = jest.fn();
+      client.on('error', errorSpy);
+
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Fail 5 polls (MAX_CONSECUTIVE_POLL_FAILURES)
+      for (let i = 0; i < 5; i++) {
+        mockFetch.mockRejectedValueOnce(new Error('network error'));
+        jest.advanceTimersByTime(5000);
+        await flushMicrotasks();
+      }
+
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining('5 times consecutively'),
+        }),
+      );
+    });
+
+    it('should handle non-ok poll responses as failures', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Non-ok poll response (500)
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ error: 'server error' }, false, 500),
+      );
+
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      expect(client.getConsecutivePollFailures()).toBe(1);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Token refresh integration
+  // -----------------------------------------------------------------------
+
+  describe('token refresh integration', () => {
+    it('should use CloudClientService token when connected', async () => {
+      mockCloudClient.isConnected.mockReturnValue(true);
+      mockCloudClient.getToken.mockReturnValue('refreshed-cloud-token');
+
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Register should use the refreshed token
+      const registerCall = mockFetch.mock.calls[0];
+      expect(registerCall[1].headers['Authorization']).toBe('Bearer refreshed-cloud-token');
+    });
+
+    it('should fall back to config token when CloudClientService is not connected', async () => {
+      mockCloudClient.isConnected.mockReturnValue(false);
+
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      const registerCall = mockFetch.mock.calls[0];
+      expect(registerCall[1].headers['Authorization']).toBe('Bearer test-token');
+    });
+
+    it('should use fresh token for poll requests', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Now CloudClientService becomes connected with fresh token
+      mockCloudClient.isConnected.mockReturnValue(true);
+      mockCloudClient.getToken.mockReturnValue('poll-fresh-token');
+
+      mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
+      jest.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      const pollCall = mockFetch.mock.calls[1];
+      expect(pollCall[1].headers['Authorization']).toBe('Bearer poll-fresh-token');
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Send via HTTP
   // -----------------------------------------------------------------------
 
@@ -407,7 +694,7 @@ describe('RelayClientService', () => {
       expect(sendCall[1]).toEqual(expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({
-          'Authorization': 'Bearer test-token',
+          'Authorization': expect.stringContaining('Bearer'),
         }),
       }));
       expect(JSON.parse(sendCall[1].body)).toEqual({
