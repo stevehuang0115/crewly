@@ -206,6 +206,7 @@ export class CrewlyServer {
 			allowUpgrades: true,
 			// Increase buffer size for large terminal output
 			maxHttpBufferSize: 5 * 1024 * 1024, // 5MB
+			perMessageDeflate: false,
 		});
 
 		this.initializeServices();
@@ -718,6 +719,18 @@ export class CrewlyServer {
 				});
 			}
 
+			// Start Browser Bridge WebSocket server for Chrome Extension
+			try {
+				const { BrowserBridgeService } = await import('./services/browser/browser-bridge.service.js');
+				const browserBridge = BrowserBridgeService.getInstance();
+				browserBridge.attach(this.httpServer);
+				this.logger.info('Browser Bridge WebSocket server started');
+			} catch (error) {
+				this.logger.warn('Failed to start Browser Bridge (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Start team activity WebSocket service
 			this.logger.info('Starting team activity WebSocket service...');
 			this.teamActivityWebSocketService.start();
@@ -761,6 +774,34 @@ export class CrewlyServer {
 			} catch (error) {
 				this.logger.warn('Failed to load persisted queue state', {
 					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// #247: Replay pending messages that arrived while the orchestrator was offline.
+			// This must happen after loadPersistedState() (so we know what's already queued)
+			// but before the queue processor starts (so replayed messages are ready for delivery).
+			try {
+				const { MessageReplayService } = await import('./services/messaging/message-replay.service.js');
+				const { getChatService } = await import('./services/chat/chat.service.js');
+				const chatService = getChatService();
+				const replayService = new MessageReplayService(
+					this.messageQueueService,
+					chatService,
+					this.config.crewlyHome
+				);
+				const replayResult = await replayService.replayPendingMessages();
+				if (replayResult.replayedCount > 0) {
+					this.logger.info('Replayed pending messages from offline period (#247)', {
+						replayed: replayResult.replayedCount,
+						found: replayResult.foundCount,
+						skipped: replayResult.skippedDuplicate,
+						offlineSince: replayResult.offlineSince,
+						offlineDurationMs: replayResult.offlineDurationMs,
+					});
+				}
+			} catch (replayErr) {
+				this.logger.warn('Failed to replay pending messages (non-critical)', {
+					error: replayErr instanceof Error ? replayErr.message : String(replayErr),
 				});
 			}
 
@@ -1572,6 +1613,14 @@ export class CrewlyServer {
 
 			// Stop orchestrator heartbeat monitor
 			OrchestratorHeartbeatMonitorService.getInstance().stop();
+
+			// Stop Browser Bridge WebSocket server
+			try {
+				const { BrowserBridgeService } = await import('./services/browser/browser-bridge.service.js');
+				BrowserBridgeService.getInstance().stop();
+			} catch {
+				// May not have been initialized
+			}
 
 			// Stop team activity WebSocket service
 			this.teamActivityWebSocketService.stop();

@@ -1,0 +1,328 @@
+/**
+ * Browser Bridge Service
+ *
+ * Provides a raw WebSocket server that the Crewly Chrome Extension connects to.
+ * Acts as a bridge between REST API calls (from remote-browser skill) and the
+ * Chrome Extension. When a REST endpoint receives a command, it forwards it to
+ * the connected Chrome Extension via WebSocket and waits for the response.
+ *
+ * Architecture:
+ *   remote-browser skill ─HTTP→ /api/browser/* ─WS→ Chrome Extension
+ *   Chrome Extension ─WS→ BrowserBridgeService ─HTTP response→ remote-browser skill
+ *
+ * @module services/browser/browser-bridge.service
+ */
+
+import { WebSocketServer, WebSocket } from 'ws';
+import type { Server as HttpServer } from 'http';
+import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
+
+/** Represents a connected Chrome Extension client */
+export interface BrowserClient {
+	/** Unique client identifier */
+	id: string;
+	/** WebSocket connection */
+	ws: WebSocket;
+	/** Timestamp when connected */
+	connectedAt: Date;
+	/** User-agent header from the connection */
+	userAgent?: string;
+}
+
+/** Pending command waiting for a response from the Chrome Extension */
+interface PendingCommand {
+	/** Resolve the promise with the response */
+	resolve: (value: BrowserCommandResponse) => void;
+	/** Reject the promise on timeout/error */
+	reject: (reason: Error) => void;
+	/** Timer for command timeout */
+	timer: ReturnType<typeof setTimeout>;
+}
+
+/** Command sent to Chrome Extension via WebSocket */
+export interface BrowserCommand {
+	/** Unique command ID for request-response correlation */
+	id: string;
+	/** Tool name the Chrome Extension should execute */
+	tool: string;
+	/** Parameters for the tool */
+	params?: Record<string, unknown>;
+}
+
+/** Response from Chrome Extension */
+export interface BrowserCommandResponse {
+	/** Command ID matching the request */
+	id: string;
+	/** Whether the command succeeded */
+	success: boolean;
+	/** Result data on success */
+	result?: unknown;
+	/** Error message on failure */
+	error?: string;
+}
+
+/** Status information about the browser bridge */
+export interface BrowserBridgeStatus {
+	/** Whether at least one Chrome Extension is connected */
+	connected: boolean;
+	/** Number of connected Chrome Extension clients */
+	clientCount: number;
+	/** WebSocket server path */
+	wsPath: string;
+}
+
+/**
+ * BrowserBridgeService manages WebSocket connections from the Crewly Chrome
+ * Extension and provides a command-response bridge for the REST API layer.
+ *
+ * Singleton pattern ensures a single WebSocket server per backend instance.
+ */
+export class BrowserBridgeService {
+	private static instance: BrowserBridgeService | null = null;
+	private readonly logger: ComponentLogger;
+	private wss: WebSocketServer | null = null;
+	private clients: Map<string, BrowserClient> = new Map();
+	private pendingCommands: Map<string, PendingCommand> = new Map();
+	private commandCounter = 0;
+
+	private constructor() {
+		this.logger = LoggerService.getInstance().createComponentLogger('BrowserBridge');
+	}
+
+	/**
+	 * Get the singleton instance.
+	 *
+	 * @returns BrowserBridgeService instance
+	 */
+	static getInstance(): BrowserBridgeService {
+		if (!BrowserBridgeService.instance) {
+			BrowserBridgeService.instance = new BrowserBridgeService();
+		}
+		return BrowserBridgeService.instance;
+	}
+
+	/**
+	 * Reset singleton instance (for testing).
+	 */
+	static resetInstance(): void {
+		BrowserBridgeService.instance = null;
+	}
+
+	/**
+	 * Attach the WebSocket server to an existing HTTP server.
+	 * Uses a path-based approach so the WS server shares the same port
+	 * as the main Express HTTP server.
+	 *
+	 * @param httpServer - The HTTP server to attach to
+	 */
+	attach(httpServer: HttpServer): void {
+		if (this.wss) {
+			this.logger.warn('WebSocket server already attached');
+			return;
+		}
+
+		this.wss = new WebSocketServer({
+			server: httpServer,
+			path: BROWSER_BRIDGE_CONSTANTS.WS_PATH,
+			perMessageDeflate: false,
+		});
+
+		this.wss.on('connection', (ws, req) => {
+			const clientId = `ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			const userAgent = req.headers['user-agent'];
+
+			const client: BrowserClient = {
+				id: clientId,
+				ws,
+				connectedAt: new Date(),
+				userAgent,
+			};
+
+			this.clients.set(clientId, client);
+			this.logger.info('Chrome Extension connected', {
+				clientId,
+				clientCount: this.clients.size,
+			});
+
+			ws.on('message', (data) => {
+				this.handleMessage(clientId, data);
+			});
+
+			ws.on('close', (code, reason) => {
+				this.clients.delete(clientId);
+				this.logger.info('Chrome Extension disconnected', {
+					clientId,
+					code,
+					reason: reason.toString(),
+					clientCount: this.clients.size,
+				});
+			});
+
+			ws.on('error', (err) => {
+				this.logger.error('Chrome Extension WebSocket error', {
+					clientId,
+					error: err.message,
+				});
+			});
+
+			// Send a welcome/pong to confirm connection
+			ws.send(JSON.stringify({ type: 'pong' }));
+		});
+
+		this.wss.on('error', (err) => {
+			this.logger.error('WebSocket server error', { error: err.message });
+		});
+
+		this.logger.info('Browser Bridge WebSocket server attached', {
+			path: BROWSER_BRIDGE_CONSTANTS.WS_PATH,
+		});
+	}
+
+	/**
+	 * Handle incoming WebSocket message from a Chrome Extension client.
+	 * Messages are either heartbeat pings or command responses.
+	 *
+	 * @param clientId - ID of the client that sent the message
+	 * @param data - Raw WebSocket message data
+	 */
+	private handleMessage(clientId: string, data: unknown): void {
+		try {
+			const msg = JSON.parse(String(data));
+
+			// Handle heartbeat ping
+			if (msg.type === 'ping') {
+				const client = this.clients.get(clientId);
+				if (client && client.ws.readyState === WebSocket.OPEN) {
+					client.ws.send(JSON.stringify({ type: 'pong' }));
+				}
+				return;
+			}
+
+			// Handle command response (has 'id' field)
+			if (msg.id && this.pendingCommands.has(msg.id)) {
+				const pending = this.pendingCommands.get(msg.id)!;
+				clearTimeout(pending.timer);
+				this.pendingCommands.delete(msg.id);
+				pending.resolve(msg as BrowserCommandResponse);
+				return;
+			}
+
+			this.logger.debug('Unhandled message from Chrome Extension', { clientId, msg });
+		} catch (err) {
+			this.logger.warn('Failed to parse Chrome Extension message', {
+				clientId,
+				error: (err as Error).message,
+			});
+		}
+	}
+
+	/**
+	 * Send a command to the Chrome Extension and wait for the response.
+	 * Commands are sent to the first connected client.
+	 *
+	 * @param tool - Tool name to execute (e.g., 'navigate', 'screenshot')
+	 * @param params - Tool parameters
+	 * @param timeoutMs - Command timeout in milliseconds
+	 * @returns Response from the Chrome Extension
+	 * @throws Error if no client is connected or command times out
+	 */
+	async sendCommand(
+		tool: string,
+		params?: Record<string, unknown>,
+		timeoutMs: number = BROWSER_BRIDGE_CONSTANTS.COMMAND_TIMEOUT_MS
+	): Promise<BrowserCommandResponse> {
+		const client = this.getActiveClient();
+		if (!client) {
+			throw new Error('No Chrome Extension connected');
+		}
+
+		const id = `cmd-${++this.commandCounter}-${Date.now()}`;
+		const command: BrowserCommand = { id, tool, params };
+
+		return new Promise<BrowserCommandResponse>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pendingCommands.delete(id);
+				reject(new Error(`Command '${tool}' timed out after ${timeoutMs}ms`));
+			}, timeoutMs);
+
+			this.pendingCommands.set(id, { resolve, reject, timer });
+
+			try {
+				client.ws.send(JSON.stringify(command));
+			} catch (err) {
+				clearTimeout(timer);
+				this.pendingCommands.delete(id);
+				reject(new Error(`Failed to send command: ${(err as Error).message}`));
+			}
+		});
+	}
+
+	/**
+	 * Get the current bridge status.
+	 *
+	 * @returns Status information
+	 */
+	getStatus(): BrowserBridgeStatus {
+		return {
+			connected: this.clients.size > 0,
+			clientCount: this.clients.size,
+			wsPath: BROWSER_BRIDGE_CONSTANTS.WS_PATH,
+		};
+	}
+
+	/**
+	 * Check if at least one Chrome Extension client is connected.
+	 *
+	 * @returns True if connected
+	 */
+	isConnected(): boolean {
+		return this.clients.size > 0;
+	}
+
+	/**
+	 * Get the first active (OPEN) client, cleaning up stale ones.
+	 *
+	 * @returns Active BrowserClient or null
+	 */
+	private getActiveClient(): BrowserClient | null {
+		for (const [id, client] of this.clients) {
+			if (client.ws.readyState === WebSocket.OPEN) {
+				return client;
+			}
+			// Clean up stale clients
+			this.clients.delete(id);
+		}
+		return null;
+	}
+
+	/**
+	 * Shut down the WebSocket server and disconnect all clients.
+	 */
+	stop(): void {
+		// Clear all pending commands
+		for (const [id, pending] of this.pendingCommands) {
+			clearTimeout(pending.timer);
+			pending.reject(new Error('Browser Bridge shutting down'));
+			this.pendingCommands.delete(id);
+		}
+
+		// Close all client connections
+		for (const [id, client] of this.clients) {
+			try {
+				client.ws.close(1001, 'Server shutting down');
+			} catch {
+				// Ignore close errors
+			}
+			this.clients.delete(id);
+		}
+
+		// Close the WebSocket server
+		if (this.wss) {
+			this.wss.close();
+			this.wss = null;
+		}
+
+		this.logger.info('Browser Bridge stopped');
+	}
+}
