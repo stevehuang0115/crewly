@@ -6,11 +6,13 @@
  *   crewly cloud status                   — Show current connection status
  *   crewly cloud logout                   — Disconnect from CrewlyAI Cloud
  *
- * The login flow supports two modes:
+ * The login flow supports three modes:
  * 1. Direct token login via --token flag
  * 2. Browser-based OAuth: starts a local HTTP callback server, opens the
  *    backend Google OAuth URL, receives the token via redirect, persists
  *    credentials to ~/.crewly/cloud/config.json, then calls POST /api/cloud/connect.
+ * 3. Mobile/no-browser login via --no-browser flag: prints a URL for the user
+ *    to open on their phone, which displays the token after OAuth for manual copy-paste.
  *
  * @module cli/commands/cloud
  */
@@ -18,6 +20,7 @@
 import chalk from 'chalk';
 import axios from 'axios';
 import http from 'http';
+import readline from 'readline';
 import { exec } from 'child_process';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -46,6 +49,12 @@ const CLOUD_STATUS_ENDPOINT = '/api/cloud/status';
 /** Google OAuth start endpoint (on Cloud API, NOT local backend) */
 const GOOGLE_OAUTH_START_ENDPOINT = '/api/cloud/google/start';
 
+/** Cloud Console URL (where the CLI token page is hosted) */
+const CLOUD_CONSOLE_URL = process.env['CLOUD_CONSOLE_URL'] || 'https://crewlyai.com';
+
+/** CLI token display page path on the Cloud Console */
+const CLI_TOKEN_PAGE_PATH = '/cloud/cli-token';
+
 /** Timeout for backend API requests (ms) */
 const API_TIMEOUT_MS = 15_000;
 
@@ -62,6 +71,8 @@ const CLOUD_CONFIG_FILE = join(CLOUD_CONFIG_DIR, 'config.json');
 /** Options for the login subcommand */
 interface LoginOptions {
   token?: string;
+  /** Commander.js sets this to false when --no-browser is passed */
+  browser?: boolean;
 }
 
 /**
@@ -149,6 +160,43 @@ export function loadCloudCredentials(): CloudCredentials | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Detect whether the current environment can open a browser.
+ *
+ * Returns false for SSH sessions, Docker containers, and Linux systems
+ * without a display server. Returns true for macOS terminals and Linux
+ * desktops with DISPLAY or WAYLAND_DISPLAY set.
+ *
+ * @returns true if browser can likely be opened
+ */
+export function canOpenBrowser(): boolean {
+  // SSH session — no local browser available
+  if (process.env['SSH_CLIENT'] || process.env['SSH_TTY'] || process.env['SSH_CONNECTION']) {
+    return false;
+  }
+
+  // Docker container (common marker file)
+  try {
+    if (existsSync('/.dockerenv')) {
+      return false;
+    }
+  } catch {
+    // Ignore — assume we're not in Docker
+  }
+
+  // CI environments
+  if (process.env['CI'] || process.env['GITHUB_ACTIONS'] || process.env['JENKINS_URL']) {
+    return false;
+  }
+
+  // Linux without display server
+  if (platform() === 'linux' && !process.env['DISPLAY'] && !process.env['WAYLAND_DISPLAY']) {
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -265,20 +313,57 @@ export function startCallbackServer(): {
 }
 
 /**
+ * Prompt the user to paste a token from stdin.
+ *
+ * Creates a readline interface and waits for the user to paste the token
+ * they copied from the mobile login page.
+ *
+ * @param prompt - The prompt message to display
+ * @returns The trimmed user input
+ */
+export function promptForToken(prompt: string): Promise<string> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise<string>((resolve) => {
+    rl.question(prompt, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+/**
  * Handle the `crewly cloud login` subcommand.
  *
- * With `--token`: saves the token and calls POST /api/cloud/connect directly.
- * Without `--token`: starts a local HTTP callback server, opens the browser
- * to the backend OAuth URL, waits for the callback, saves credentials, and
- * then calls POST /api/cloud/connect.
+ * Supports three login modes:
+ * 1. `--token <token>`: saves the token and calls POST /api/cloud/connect directly.
+ * 2. `--no-browser`: prints a URL for mobile login, waits for user to paste token.
+ * 3. Default: starts a local HTTP callback server, opens the browser to the
+ *    backend OAuth URL, waits for the callback, saves credentials.
  *
- * @param options - Login command options (optional --token)
+ * @param options - Login command options (optional --token, --no-browser)
  */
 export async function loginCommand(options: LoginOptions): Promise<void> {
   if (options.token) {
     // Direct token login
     console.log(chalk.blue('Logging in with provided token...'));
     await connectWithToken(options.token);
+    return;
+  }
+
+  // Auto-detect: use mobile flow if --no-browser was passed OR environment
+  // cannot open a browser (SSH, Docker, CI, headless Linux).
+  const useBrowser = options.browser !== false && canOpenBrowser();
+
+  if (!useBrowser) {
+    if (options.browser !== false) {
+      // Auto-detected headless — inform the user
+      console.log(chalk.yellow('  Headless environment detected — using manual token flow.'));
+    }
+    await mobileLoginFlow();
     return;
   }
 
@@ -324,6 +409,50 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     console.log(chalk.red(`  ✗ Login failed: ${msg}`));
     process.exit(1);
   }
+}
+
+/**
+ * Mobile-friendly login flow for headless or remote environments.
+ *
+ * Generates a URL that the user opens on their phone. After Google OAuth,
+ * they land on a page that displays the token for copying. The user then
+ * pastes the token back into the CLI.
+ *
+ * Flow:
+ * 1. CLI prints a URL pointing to Cloud OAuth with redirect to /cloud/cli-token
+ * 2. User opens URL on phone, completes Google OAuth
+ * 3. Cloud redirects to crewlyai.com/cloud/cli-token?token=X&refreshToken=Y
+ * 4. Page displays the token with a copy button
+ * 5. User pastes the token into the CLI prompt
+ */
+async function mobileLoginFlow(): Promise<void> {
+  console.log('');
+  console.log(chalk.blue('CrewlyAI Cloud Login (Mobile)'));
+  console.log(chalk.gray('─'.repeat(40)));
+  console.log('');
+
+  // Build the OAuth URL that redirects to the CLI token page after login
+  const cliTokenPageUrl = `${CLOUD_CONSOLE_URL}${CLI_TOKEN_PAGE_PATH}`;
+  const oauthUrl = `${CLOUD_API_URL}${GOOGLE_OAUTH_START_ENDPOINT}?redirect=${encodeURIComponent(cliTokenPageUrl)}`;
+
+  console.log(chalk.white('  Open this URL on your phone or any browser:'));
+  console.log('');
+  console.log(chalk.cyan(`  ${oauthUrl}`));
+  console.log('');
+  console.log(chalk.gray('  After logging in, you\'ll see a token on the page.'));
+  console.log(chalk.gray('  Copy the token and paste it below.'));
+  console.log('');
+
+  const token = await promptForToken(chalk.white('  Paste token here: '));
+
+  if (!token) {
+    console.log(chalk.red('  ✗ No token provided'));
+    process.exit(1);
+  }
+
+  console.log('');
+  console.log(chalk.blue('  Connecting with token...'));
+  await connectWithToken(token);
 }
 
 /**

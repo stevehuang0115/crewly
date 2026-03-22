@@ -140,6 +140,7 @@ cloudCmd
   .command('login')
   .description('Login to CrewlyAI Cloud via Google OAuth or direct token')
   .option('--token <token>', 'Login with a token directly (skip browser OAuth)')
+  .option('--no-browser', 'Show a URL to open on your phone instead of opening a local browser')
   .action(loginCommand);
 
 cloudCmd

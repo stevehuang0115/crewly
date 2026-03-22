@@ -62,12 +62,23 @@ describe('PromptBuilderService', () => {
 	let service: PromptBuilderService;
 	let mockReadFile: ReturnType<typeof vi.fn>;
 	let mockAccess: ReturnType<typeof vi.fn>;
+	const savedModularEnv = process.env.CREWLY_USE_MODULAR_PROMPTS;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// Default to legacy path for existing tests; the feature-flag describe block overrides this
+		process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
 		mockReadFile = vi.mocked(fsPromises.readFile);
 		mockAccess = vi.mocked(fsPromises.access);
 		service = new PromptBuilderService('/test/project');
+	});
+
+	afterEach(() => {
+		if (savedModularEnv === undefined) {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+		} else {
+			process.env.CREWLY_USE_MODULAR_PROMPTS = savedModularEnv;
+		}
 	});
 
 	describe('buildOrchestratorPrompt', () => {
@@ -1373,14 +1384,15 @@ Decompose and delegate.`;
 			}
 		});
 
-		it('should use legacy prompt when flag is not set', async () => {
+		it('should use modular prompt by default when flag is not set', async () => {
 			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
 			const result = await service.buildSystemPromptWithMemory(mockConfig);
-			// Legacy path builds from base prompt + memory + SOPs
-			expect(result).toContain('developer tasks');
+			// Modular assembly is now the default path
+			expect(typeof result).toBe('string');
+			expect(result.length).toBeGreaterThan(0);
 		});
 
-		it('should use legacy prompt when flag is false', async () => {
+		it('should use legacy prompt when flag is explicitly false', async () => {
 			process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
 			const result = await service.buildSystemPromptWithMemory(mockConfig);
 			expect(result).toContain('developer tasks');

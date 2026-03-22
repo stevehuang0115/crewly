@@ -1508,11 +1508,11 @@ export class AgentRegistrationService {
 				}
 			}
 
-			// Phase 5: Use modular prompt assembly when feature flag is enabled.
-			// When CREWLY_USE_MODULAR_PROMPTS=true, replaces the entire monolithic template
-			// with PromptAssemblyService — handling identity, skills, communication, recovery,
-			// lifecycle, memory, soul, and team-reference modules with token budget enforcement.
-			if (process.env.CREWLY_USE_MODULAR_PROMPTS === 'true') {
+			// Phase 5: Use modular prompt assembly (enabled by default, disable with CREWLY_USE_MODULAR_PROMPTS=false).
+			// Replaces the entire monolithic template with PromptAssemblyService — handling identity,
+			// skills, communication, recovery, lifecycle, memory, soul, and team-reference modules
+			// with token budget enforcement.
+			if (process.env.CREWLY_USE_MODULAR_PROMPTS !== 'false') {
 				this.logger.info('Using modular prompt assembly (Phase 5)', { sessionName, role });
 
 				const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');

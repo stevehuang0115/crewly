@@ -99,9 +99,12 @@ describe('AgentRegistrationService', () => {
 	let mockAccess: any;
 	let mockSessionHelper: any;
 	let mockRuntimeService: any;
+	const savedModularEnv = process.env.CREWLY_USE_MODULAR_PROMPTS;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// Default to legacy path for existing tests; the feature-flag describe block overrides this
+		process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
 
 		// Reset idle time mock to default (agent not busy)
 		mockGetIdleTimeMs.mockReturnValue(999999);
@@ -195,6 +198,14 @@ describe('AgentRegistrationService', () => {
 		});
 
 		service = new AgentRegistrationService(null, '/test/project', mockStorageService);
+	});
+
+	afterEach(() => {
+		if (savedModularEnv === undefined) {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+		} else {
+			process.env.CREWLY_USE_MODULAR_PROMPTS = savedModularEnv;
+		}
 	});
 
 	describe('initializeAgentWithRegistration', () => {
@@ -1151,18 +1162,20 @@ describe('AgentRegistrationService', () => {
 				}
 			});
 
-			it('should use legacy prompt when flag is not set', async () => {
+			it('should use modular prompt by default when flag is not set', async () => {
 				delete process.env.CREWLY_USE_MODULAR_PROMPTS;
-				const promptTemplate = 'Legacy prompt for {{SESSION_NAME}}';
-				mockReadFile.mockResolvedValue(promptTemplate);
+				mockReadFile.mockResolvedValue('Legacy prompt for {{SESSION_NAME}}');
 
 				const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
 				const result = await loadRegistrationPrompt('developer', 'test-session', 'member-123');
 
-				expect(result).toContain('Legacy prompt for test-session');
+				// Modular is now the default — should NOT contain legacy content
+				expect(typeof result).toBe('string');
+				expect(result.length).toBeGreaterThan(0);
+				expect(result).not.toContain('Legacy prompt for');
 			});
 
-			it('should use legacy prompt when flag is false', async () => {
+			it('should use legacy prompt when flag is explicitly false', async () => {
 				process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
 				const promptTemplate = 'Legacy prompt for {{SESSION_NAME}}';
 				mockReadFile.mockResolvedValue(promptTemplate);
@@ -1175,7 +1188,6 @@ describe('AgentRegistrationService', () => {
 
 			it('should use modular prompt when flag is true', async () => {
 				process.env.CREWLY_USE_MODULAR_PROMPTS = 'true';
-				// Legacy prompt still loaded (for the monolithic path up to the flag check)
 				mockReadFile.mockResolvedValue('Legacy prompt for {{SESSION_NAME}}');
 
 				const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
@@ -1184,7 +1196,6 @@ describe('AgentRegistrationService', () => {
 				// Should NOT contain legacy prompt content (modular path was taken)
 				expect(typeof result).toBe('string');
 				expect(result.length).toBeGreaterThan(0);
-				// Modular prompt does not go through template variable replacement
 				expect(result).not.toContain('Legacy prompt for');
 			});
 		});

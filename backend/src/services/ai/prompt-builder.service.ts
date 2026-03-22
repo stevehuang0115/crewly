@@ -233,8 +233,8 @@ Start all teams on Phase 1 simultaneously.`.trim();
 		config: TeamMemberSessionConfig,
 		options: PromptOptions = {}
 	): Promise<string> {
-		// Phase 5: Use modular prompt assembly when feature flag is enabled
-		if (process.env.CREWLY_USE_MODULAR_PROMPTS === 'true') {
+		// Phase 5: Use modular prompt assembly (enabled by default, disable with CREWLY_USE_MODULAR_PROMPTS=false)
+		if (process.env.CREWLY_USE_MODULAR_PROMPTS !== 'false') {
 			return this.buildModularPrompt(config, options);
 		}
 
@@ -297,7 +297,7 @@ Start all teams on Phase 1 simultaneously.`.trim();
 	/**
 	 * Build system prompt using the modular PromptAssemblyService.
 	 *
-	 * Called when CREWLY_USE_MODULAR_PROMPTS=true. The modular system handles
+	 * Called by default (disable with CREWLY_USE_MODULAR_PROMPTS=false). The modular system handles
 	 * all prompt sections (identity, skills, communication, recovery, lifecycle,
 	 * team-reference, memory, soul, learning) with proper token budget enforcement
 	 * and priority ordering.
