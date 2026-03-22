@@ -39,6 +39,11 @@ vi.mock('../contexts/TerminalContext', () => ({
   }),
 }));
 
+// Mock RelayHealthCard — self-contained component that polls APIs
+vi.mock('../components/Dashboard/RelayHealthCard', () => ({
+  RelayHealthCard: () => <div data-testid="relay-health-card">Cloud Relay</div>,
+}));
+
 const mockProjects = [
   {
     id: 'project-1',
@@ -110,6 +115,18 @@ describe('Dashboard Page', () => {
       await waitFor(() => {
         const headings = screen.getAllByText('Projects');
         expect(headings.length).toBeGreaterThanOrEqual(1);
+      });
+    });
+
+    it('should render the RelayHealthCard', async () => {
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('relay-health-card')).toBeInTheDocument();
       });
     });
 

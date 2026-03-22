@@ -232,7 +232,7 @@ export class SlackService extends EventEmitter {
         appToken: config.appToken,
         signingSecret: config.signingSecret,
         socketMode: config.socketMode,
-        logLevel: LogLevel.INFO,
+        logLevel: LogLevel?.INFO ?? 'info',
       }) as unknown as SlackApp;
 
       this.client = this.app.client;
@@ -576,7 +576,7 @@ export class SlackService extends EventEmitter {
         appToken: this.config.appToken,
         signingSecret: this.config.signingSecret,
         socketMode: this.config.socketMode,
-        logLevel: LogLevel.INFO,
+        logLevel: LogLevel?.INFO ?? 'info',
       }) as unknown as SlackApp;
 
       this.client = this.app.client;

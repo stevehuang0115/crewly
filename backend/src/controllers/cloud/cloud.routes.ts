@@ -8,6 +8,7 @@
  * - POST /disconnect           - Disconnect from CrewlyAI Cloud
  * - POST /validate             - Validate JWT (local verification + optional proxy)
  * - GET  /status               - Get connection status and subscription tier
+ * - GET  /device-id            - Get persistent device UUID and hostname
  * - GET  /devices              - Get device list from CloudSync (or fallback to legacy)
  * - GET  /templates            - Fetch premium templates (requires connection)
  * - POST /send                 - Send a message to another device via Cloud Sync
@@ -28,6 +29,7 @@ import {
   validateCloudToken,
   refreshCloudToken,
   sendCloudMessage,
+  getDeviceId,
 } from './cloud.controller.js';
 import { getDevicesFromSync } from './relay.controller.js';
 import {
@@ -50,6 +52,7 @@ export function createCloudRouter(): Router {
   router.post('/validate', validateCloudToken);
   router.post('/refresh', refreshCloudToken);
   router.get('/status', getCloudStatus);
+  router.get('/device-id', getDeviceId);
   router.get('/devices', getDevicesFromSync);
   router.post('/send', sendCloudMessage);
   router.get('/templates', getCloudTemplates);

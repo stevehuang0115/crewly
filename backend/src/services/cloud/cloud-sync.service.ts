@@ -24,6 +24,7 @@ import type {
   CloudSyncState,
   SyncDevice,
   SyncTeamSummary,
+  SyncAgentInfo,
   HeartbeatPayload,
   IncomingMessage,
   MessageType,
@@ -51,6 +52,7 @@ async function readVersion(): Promise<string> {
 
 /**
  * Gather active team summaries from StorageService.
+ * Includes agent session details for cross-device routing.
  *
  * @returns Array of team summaries for heartbeat payload
  */
@@ -58,12 +60,27 @@ async function gatherTeamSummaries(): Promise<SyncTeamSummary[]> {
   try {
     const storage = StorageService.getInstance();
     const teams = await storage.getTeams();
-    return teams.map((team) => ({
-      id: team.id,
-      name: team.name,
-      memberCount: team.members?.length ?? 0,
-      activeAgents: team.members?.filter((m: any) => m.agentStatus === 'active').length ?? 0,
-    }));
+    return teams.map((team) => {
+      const members = team.members ?? [];
+      const activeMembers = members.filter((m: any) => m.agentStatus === 'active');
+
+      // Include session details for active agents so remote devices can route messages
+      const agents: SyncAgentInfo[] = activeMembers
+        .filter((m: any) => m.sessionName)
+        .map((m: any) => ({
+          sessionName: m.sessionName as string,
+          role: (m.role as string) || 'agent',
+          workingStatus: (m.workingStatus as string) || 'idle',
+        }));
+
+      return {
+        id: team.id,
+        name: team.name,
+        memberCount: members.length,
+        activeAgents: activeMembers.length,
+        agents,
+      };
+    });
   } catch {
     return [];
   }
@@ -505,7 +522,30 @@ export class CloudSyncService extends EventEmitter {
         }
       }
 
-      this.devices = updatedDevices;
+      // Deduplicate by deviceId — the Cloud API may return multiple records
+      // for the same physical device (e.g., from relay handshake and device
+      // heartbeat endpoints). Keep the entry with the most recent heartbeat.
+      const deduped = new Map<string, SyncDevice>();
+      for (const device of updatedDevices) {
+        if (!device.deviceId) {
+          // No deviceId — cannot deduplicate, keep as-is with a generated key
+          deduped.set(`__no_id_${deduped.size}`, device);
+          continue;
+        }
+        const existing = deduped.get(device.deviceId);
+        if (!existing) {
+          deduped.set(device.deviceId, device);
+        } else {
+          // Keep the one with the more recent heartbeat, or prefer online status
+          const existingTime = new Date(existing.lastHeartbeatAt).getTime();
+          const newTime = new Date(device.lastHeartbeatAt).getTime();
+          if (newTime > existingTime || (device.status === 'online' && existing.status !== 'online')) {
+            deduped.set(device.deviceId, device);
+          }
+        }
+      }
+
+      this.devices = Array.from(deduped.values());
       this.devicePollFailures = 0;
       this.emit('devices_updated', this.getDevices());
     } catch (error) {

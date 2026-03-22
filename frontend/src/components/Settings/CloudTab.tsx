@@ -13,7 +13,7 @@
  * @module components/Settings/CloudTab
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap, Monitor, Cpu, Wifi, UserPlus, Link2 } from 'lucide-react';
 import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/cloud.constants';
 import { InviteDeviceModal } from './InviteDeviceModal';
@@ -103,6 +103,43 @@ const DEVICE_STATE_COLORS: Record<string, string> = {
   online: 'bg-emerald-400',
   offline: 'bg-gray-500',
 };
+
+/**
+ * Deduplicate devices by deviceId (or sessionId fallback).
+ *
+ * The Cloud API may return multiple records for the same physical device
+ * (e.g., from relay handshake and device heartbeat endpoints). This function
+ * keeps the entry with the most recent heartbeat timestamp and prefers
+ * online devices over offline ones.
+ *
+ * @param devices - Raw device list from the API
+ * @returns Deduplicated device list
+ */
+function deduplicateDevices(devices: CloudDevice[]): CloudDevice[] {
+  const seen = new Map<string, CloudDevice>();
+  for (const device of devices) {
+    const key = device.deviceId || device.sessionId;
+    if (!key) {
+      // No usable key — keep as-is
+      seen.set(`__unkeyed_${seen.size}`, device);
+      continue;
+    }
+    const existing = seen.get(key);
+    if (!existing) {
+      seen.set(key, device);
+    } else {
+      // Keep the one with the more recent heartbeat, or prefer online status
+      const existingTime = new Date(existing.lastHeartbeatAt || existing.registeredAt || '0').getTime();
+      const newTime = new Date(device.lastHeartbeatAt || device.registeredAt || '0').getTime();
+      const existingIsOnline = existing.status === 'online' || existing.state === 'paired' || existing.state === 'waiting';
+      const newIsOnline = device.status === 'online' || device.state === 'paired' || device.state === 'waiting';
+      if (newTime > existingTime || (newIsOnline && !existingIsOnline)) {
+        seen.set(key, device);
+      }
+    }
+  }
+  return Array.from(seen.values());
+}
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -233,6 +270,9 @@ const DeviceListSection: React.FC = () => {
     fetchDevices();
   }, [fetchDevices]);
 
+  /** Deduplicated device list — used for both count and rendering. */
+  const uniqueDevices = useMemo(() => deduplicateDevices(devices), [devices]);
+
   return (
     <div className="bg-surface-dark border border-border-dark rounded-lg p-5 space-y-3" data-testid="cloud-device-list-section">
       <div className="flex items-center justify-between">
@@ -240,7 +280,7 @@ const DeviceListSection: React.FC = () => {
           <Wifi className="w-4 h-4 text-text-secondary-dark" />
           <h3 className="text-sm font-semibold text-text-primary-dark">Connected Devices</h3>
           <span className="text-xs text-text-secondary-dark">
-            ({devices.length})
+            ({uniqueDevices.length})
           </span>
           {syncState && (
             <span
@@ -280,7 +320,7 @@ const DeviceListSection: React.FC = () => {
         </div>
       )}
 
-      {!loading && !error && !tokenExpired && devices.length === 0 && (
+      {!loading && !error && !tokenExpired && uniqueDevices.length === 0 && (
         <div className="text-center py-6">
           <Monitor className="w-8 h-8 text-text-secondary-dark/30 mx-auto mb-2" />
           <p className="text-xs text-text-secondary-dark">No devices connected yet</p>
@@ -290,10 +330,10 @@ const DeviceListSection: React.FC = () => {
         </div>
       )}
 
-      {devices.length > 0 && (
+      {uniqueDevices.length > 0 && (
         <div className="space-y-2">
-          {devices.map((device) => (
-            <DeviceCard key={device.sessionId || device.deviceId || Math.random().toString()} device={device} />
+          {uniqueDevices.map((device) => (
+            <DeviceCard key={device.deviceId || device.sessionId || device.name || device.deviceName} device={device} />
           ))}
         </div>
       )}

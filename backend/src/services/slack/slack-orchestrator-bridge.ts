@@ -505,6 +505,50 @@ Just type naturally to chat with the orchestrator!`;
           this.logger.info('Orchestrator offline — routing message to Auditor agent');
           return this.sendToAuditorFallback(message, context);
         }
+
+        // #247: Queue the message for replay when orchestrator comes back online,
+        // instead of silently dropping it. The queue processor defers delivery
+        // until the orchestrator registers (agentStatus === 'active').
+        if (this.messageQueueService) {
+          this.logger.info('Orchestrator offline — queuing message for replay when it comes back online');
+
+          // Enrich message with thread file path hint for orchestrator context
+          let enrichedMessage = message;
+          if (this.threadStore && context) {
+            const threadFilePath = this.threadStore.getThreadFilePath(context.channelId, context.threadTs);
+            enrichedMessage = `${message}\n\n[Thread context file: ${threadFilePath}]`;
+          }
+
+          // Store in chat service for persistence
+          const result = await this.chatService.sendMessage({
+            content: enrichedMessage,
+            conversationId: context?.conversationId,
+            metadata: {
+              source: 'slack',
+              userId: context?.userId,
+              channelId: context?.channelId,
+            },
+          });
+
+          try {
+            this.messageQueueService.enqueue({
+              content: enrichedMessage,
+              conversationId: result.conversation.id,
+              source: 'slack',
+              sourceMetadata: {
+                userId: context?.userId,
+                channelId: context?.channelId,
+                threadTs: context?.threadTs,
+              },
+            });
+            return 'The orchestrator is currently offline. Your message has been queued and will be processed when it comes back online.';
+          } catch (enqueueErr) {
+            this.logger.warn('Failed to queue message for offline orchestrator', {
+              error: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr),
+            });
+          }
+        }
+
         this.logger.info('Orchestrator is not active, returning offline message');
         return getOrchestratorOfflineMessage(true);
       }

@@ -14,6 +14,8 @@ import type { LucideIcon } from 'lucide-react';
 import { SlackTab } from './SlackTab';
 import { WhatsAppTab } from './WhatsAppTab';
 import { GoogleChatTab } from './GoogleChatTab';
+import { TelegramTab } from './TelegramTab';
+import { DiscordTab } from './DiscordTab';
 
 // =============================================================================
 // Types
@@ -71,14 +73,16 @@ const PLATFORMS: PlatformConfig[] = [
     name: 'Discord',
     description: 'Connect a Discord bot to communicate with the orchestrator via Discord server.',
     icon: MessageCircle,
-    available: false,
+    available: true,
+    component: DiscordTab,
   },
   {
     id: 'telegram',
     name: 'Telegram',
     description: 'Connect a Telegram bot for messaging the orchestrator via Telegram.',
     icon: Send,
-    available: false,
+    available: true,
+    component: TelegramTab,
   },
   {
     id: 'google-chat',

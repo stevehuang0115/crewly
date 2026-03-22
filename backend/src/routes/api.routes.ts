@@ -27,6 +27,7 @@ import { createPaymentRouter } from '../controllers/payment/payment.routes.js';
 import { createCloudRouter, createRelayRouter } from '../controllers/cloud/index.js';
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
+import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -107,6 +108,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Tool approval management routes for granular tool execution control
   router.use('/approvals', createApprovalsRouter());
+
+  // Browser Bridge routes for Chrome Extension remote browser control
+  router.use('/browser', createBrowserRouter());
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here

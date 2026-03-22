@@ -15,6 +15,7 @@ import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
 import { pairCommand } from './commands/pair.js';
+import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion } from './utils/version-check.js';
 
@@ -130,6 +131,26 @@ program
   .option('--disconnect', 'Disconnect from active relay session')
   .option('--devices', 'List paired devices')
   .action(pairCommand);
+
+const cloudCmd = program
+  .command('cloud')
+  .description('Manage CrewlyAI Cloud connection (login, status, logout)');
+
+cloudCmd
+  .command('login')
+  .description('Login to CrewlyAI Cloud via Google OAuth or direct token')
+  .option('--token <token>', 'Login with a token directly (skip browser OAuth)')
+  .action(loginCommand);
+
+cloudCmd
+  .command('status')
+  .description('Show CrewlyAI Cloud connection status')
+  .action(cloudStatusCommand);
+
+cloudCmd
+  .command('logout')
+  .description('Disconnect from CrewlyAI Cloud')
+  .action(logoutCommand);
 
 // Error handling
 program.exitOverride();

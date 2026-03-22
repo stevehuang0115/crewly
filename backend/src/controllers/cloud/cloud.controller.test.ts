@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } 
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { connectToCloud, disconnectFromCloud, getCloudStatus, getCloudTemplates, validateCloudToken, refreshCloudToken } from './cloud.controller.js';
+import { connectToCloud, disconnectFromCloud, getCloudStatus, getCloudTemplates, validateCloudToken, refreshCloudToken, getDeviceId } from './cloud.controller.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -351,9 +351,9 @@ describe('Cloud Controller', () => {
       // Allow the async handshake to fire
       await new Promise((r) => setTimeout(r, 50));
 
-      // Handshake should be called via fetch
+      // Handshake should be called via fetch (now uses /api/v1/relay/handshake)
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/devices/heartbeat'),
+        expect.stringContaining('/api/v1/relay/handshake'),
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
@@ -364,7 +364,7 @@ describe('Cloud Controller', () => {
 
       // Verify the payload structure
       const callArgs = mockFetch.mock.calls.find(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('/devices/heartbeat'),
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('/relay/handshake'),
       );
       expect(callArgs).toBeDefined();
       const body = JSON.parse(callArgs![1].body);
@@ -660,6 +660,40 @@ describe('Cloud Controller', () => {
           expiresIn: expect.any(Number),
         },
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getDeviceId
+  // -------------------------------------------------------------------------
+
+  describe('getDeviceId', () => {
+    it('should return deviceId and deviceName from DeviceIdentityService', async () => {
+      const req = mockReq();
+      const res = mockRes();
+
+      await getDeviceId(req, res, mockNext);
+
+      expect(mockGetOrCreateIdentity).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          deviceId: 'test-device-uuid',
+          deviceName: 'test-hostname',
+        },
+      });
+    });
+
+    it('should call next on error', async () => {
+      mockGetOrCreateIdentity.mockRejectedValueOnce(new Error('disk error'));
+      const req = mockReq();
+      const res = mockRes();
+      const next = vi.fn();
+
+      await getDeviceId(req, res, next);
+
+      expect(next).toHaveBeenCalledWith(expect.any(Error));
+      expect(res.json).not.toHaveBeenCalled();
     });
   });
 });

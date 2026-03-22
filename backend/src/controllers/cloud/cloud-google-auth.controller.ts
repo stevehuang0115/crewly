@@ -17,6 +17,7 @@ import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { GOOGLE_OAUTH_CONSTANTS, AUTH_CONSTANTS, CLOUD_AUTH_CONSTANTS } from '../../constants.js';
 import { UserIdentityService } from '../../services/user/user-identity.service.js';
+import { DeviceIdentityService } from '../../services/cloud/device-identity.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudGoogleAuth');
@@ -286,6 +287,15 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
       return;
     }
 
+    // Resolve device ID for JWT (enables Cloud-side auto-registration on poll/send)
+    let deviceId: string | undefined;
+    try {
+      const identity = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+      deviceId = identity.deviceId;
+    } catch {
+      logger.debug('Could not resolve deviceId for JWT (non-fatal)');
+    }
+
     // Issue JWT access token
     const now = Math.floor(Date.now() / 1000);
     const accessToken = signJwt({
@@ -293,6 +303,7 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
       email: result.profile.email,
       name: result.profile.name || '',
       plan: DEFAULT_USER_PLAN,
+      ...(deviceId && { deviceId }),
       iat: now,
       exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
       iss: AUTH_CONSTANTS.JWT.ISSUER,
@@ -305,6 +316,7 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
       email: result.profile.email,
       name: result.profile.name || '',
       plan: DEFAULT_USER_PLAN,
+      ...(deviceId && { deviceId }),
       iat: now,
       exp: now + AUTH_CONSTANTS.JWT.REFRESH_TOKEN_EXPIRY_S,
       iss: AUTH_CONSTANTS.JWT.ISSUER,
@@ -382,6 +394,15 @@ export async function cloudGoogleCallbackPost(req: Request, res: Response, next:
 
     const result = await exchangeCodeAndCreateUser(code, req);
 
+    // Resolve device ID for JWT (enables Cloud-side auto-registration on poll/send)
+    let deviceIdForJwt: string | undefined;
+    try {
+      const identity = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+      deviceIdForJwt = identity.deviceId;
+    } catch {
+      logger.debug('Could not resolve deviceId for JWT (non-fatal)');
+    }
+
     // Issue access token
     const now = Math.floor(Date.now() / 1000);
     const accessToken = signJwt({
@@ -389,6 +410,7 @@ export async function cloudGoogleCallbackPost(req: Request, res: Response, next:
       email: result.profile.email,
       name: result.profile.name || '',
       plan: DEFAULT_USER_PLAN,
+      ...(deviceIdForJwt && { deviceId: deviceIdForJwt }),
       iat: now,
       exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
       iss: AUTH_CONSTANTS.JWT.ISSUER,
@@ -401,6 +423,7 @@ export async function cloudGoogleCallbackPost(req: Request, res: Response, next:
       email: result.profile.email,
       name: result.profile.name || '',
       plan: DEFAULT_USER_PLAN,
+      ...(deviceIdForJwt && { deviceId: deviceIdForJwt }),
       iat: now,
       exp: now + AUTH_CONSTANTS.JWT.REFRESH_TOKEN_EXPIRY_S,
       iss: AUTH_CONSTANTS.JWT.ISSUER,

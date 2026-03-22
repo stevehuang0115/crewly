@@ -11,6 +11,7 @@ import {
   isSyncDevice,
   isIncomingMessage,
   isCloudSyncConfig,
+  isAgentMessagePayload,
   CLOUD_SYNC_STATES,
   MESSAGE_TYPES,
 } from './cloud-sync.types.js';
@@ -155,6 +156,54 @@ describe('cloud-sync.types', () => {
     it('should return false for non-objects', () => {
       expect(isCloudSyncConfig(null)).toBe(false);
       expect(isCloudSyncConfig('string')).toBe(false);
+    });
+  });
+
+  describe('isAgentMessagePayload', () => {
+    const validPayload = {
+      targetSession: 'crewly-product-leo-member-n',
+      message: 'Hello Leo, build feature X',
+      fromDevice: 'device-123',
+      fromDeviceName: 'MacBook.local',
+    };
+
+    it('should return true for valid payload', () => {
+      expect(isAgentMessagePayload(validPayload)).toBe(true);
+    });
+
+    it('should return true with optional fields', () => {
+      expect(isAgentMessagePayload({
+        ...validPayload,
+        priority: 'high',
+        correlationId: 'corr-1',
+      })).toBe(true);
+    });
+
+    it('should return false for missing required fields', () => {
+      expect(isAgentMessagePayload({ targetSession: 'x' })).toBe(false);
+      expect(isAgentMessagePayload({ ...validPayload, message: undefined })).toBe(false);
+      expect(isAgentMessagePayload({ ...validPayload, fromDevice: undefined })).toBe(false);
+      expect(isAgentMessagePayload({ ...validPayload, fromDeviceName: undefined })).toBe(false);
+    });
+
+    it('should return false for non-string fields', () => {
+      expect(isAgentMessagePayload({ ...validPayload, targetSession: 123 })).toBe(false);
+    });
+
+    it('should return false for non-objects', () => {
+      expect(isAgentMessagePayload(null)).toBe(false);
+      expect(isAgentMessagePayload(undefined)).toBe(false);
+      expect(isAgentMessagePayload('string')).toBe(false);
+    });
+  });
+
+  describe('agent_message type', () => {
+    it('should be a valid MessageType', () => {
+      expect(isMessageType('agent_message')).toBe(true);
+    });
+
+    it('should be included in MESSAGE_TYPES', () => {
+      expect(MESSAGE_TYPES).toContain('agent_message');
     });
   });
 });

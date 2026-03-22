@@ -22,6 +22,14 @@ vi.mock('./GoogleChatTab', () => ({
   GoogleChatTab: () => <div data-testid="google-chat-tab-content">Google Chat Config</div>,
 }));
 
+vi.mock('./TelegramTab', () => ({
+  TelegramTab: () => <div data-testid="telegram-tab-content">Telegram Config</div>,
+}));
+
+vi.mock('./DiscordTab', () => ({
+  DiscordTab: () => <div data-testid="discord-tab-content">Discord Config</div>,
+}));
+
 describe('IntegrationsTab', () => {
   describe('Rendering', () => {
     it('should render header', () => {
@@ -41,11 +49,10 @@ describe('IntegrationsTab', () => {
       expect(screen.getByText('Google Chat')).toBeInTheDocument();
     });
 
-    it('should show Coming Soon badge for unavailable platforms', () => {
+    it('should not show Coming Soon badge for any platform', () => {
       render(<IntegrationsTab />);
 
-      const badges = screen.getAllByText('Coming Soon');
-      expect(badges.length).toBe(2); // Discord, Telegram
+      expect(screen.queryByText('Coming Soon')).not.toBeInTheDocument();
     });
 
     it('should have data-testid on platform cards', () => {
@@ -117,12 +124,22 @@ describe('IntegrationsTab', () => {
       expect(screen.getByTestId('google-chat-tab-content')).toBeInTheDocument();
     });
 
-    it('should not expand unavailable platforms', () => {
+    it('should expand Discord card when clicked', () => {
       render(<IntegrationsTab />);
 
       fireEvent.click(screen.getByTestId('platform-toggle-discord'));
 
-      expect(screen.queryByTestId('platform-content-discord')).not.toBeInTheDocument();
+      expect(screen.getByTestId('platform-content-discord')).toBeInTheDocument();
+      expect(screen.getByTestId('discord-tab-content')).toBeInTheDocument();
+    });
+
+    it('should expand Telegram card when clicked', () => {
+      render(<IntegrationsTab />);
+
+      fireEvent.click(screen.getByTestId('platform-toggle-telegram'));
+
+      expect(screen.getByTestId('platform-content-telegram')).toBeInTheDocument();
+      expect(screen.getByTestId('telegram-tab-content')).toBeInTheDocument();
     });
   });
 });

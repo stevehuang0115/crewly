@@ -17,7 +17,7 @@
  *   The service sources the user's shell profile for NVM/PATH consistency.
  */
 
-import { exec, spawn } from 'child_process';
+import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -672,6 +672,15 @@ while true; do
 
   ${NATIVE_MODULE_CHECK}
 
+  # Check if port is already in use before starting (prevents restart loop
+  # when another instance grabbed the port after a graceful shutdown)
+  WEB_PORT=\${CREWLY_WEB_PORT:-8787}
+  if lsof -iTCP:"\$WEB_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
+    echo "$(date): Port \$WEB_PORT already in use — another instance is running. Exiting wrapper." | tee -a "$LOG_DIR/service.log"
+    rm -f "$PIDFILE"
+    exit 0
+  fi
+
   node dist/cli/cli/src/index.js start >> "$LOG_DIR/service.log" 2>&1 &
   NODE_PID=$!
   echo "$NODE_PID" > "$PIDFILE"
@@ -783,10 +792,13 @@ async function migrateLegacyLaunchAgent(): Promise<void> {
 // ===========================================================================
 
 /**
- * Restarts the Crewly service by killing the node process.
+ * Restarts the Crewly service by killing the node process and re-launching.
  *
- * On macOS, the wrapper's `while true` loop detects the exit and
- * automatically restarts the node process after 5 seconds.
+ * On macOS, checks whether the service wrapper (while-true loop) is the
+ * parent of the running node process. If so, the wrapper auto-restarts.
+ * If the process was started via `npm run dev` or another method (parent is
+ * PID 1 / launchd), kills it and launches via the .command wrapper directly.
+ *
  * On Linux, uses `systemctl --user restart`.
  */
 async function restartService(): Promise<void> {
@@ -803,19 +815,49 @@ async function restartService(): Promise<void> {
 		return;
 	}
 
-	// macOS: kill the node process; the wrapper loop auto-restarts in 5s
+	// macOS: kill the node process, then ensure it comes back up
 	const pid = getRunningPid();
 	if (!pid) {
-		console.log(chalk.yellow('Crewly service is not running.'));
+		console.log(chalk.yellow('Crewly service is not running. Starting it...'));
+		await startService();
 		return;
+	}
+
+	// Check if the wrapper loop is the parent (PPID > 1 means a shell wrapper)
+	let hasWrapper = false;
+	try {
+		const { stdout } = await execAsync(`ps -o ppid= -p ${pid}`);
+		const ppid = parseInt(stdout.trim(), 10);
+		hasWrapper = !isNaN(ppid) && ppid > 1;
+	} catch {
+		// Could not determine parent
 	}
 
 	try {
 		process.kill(pid, 'SIGTERM');
 		console.log(chalk.green(`Sent SIGTERM to node process (PID ${pid}).`));
-		console.log(chalk.gray('The service wrapper will auto-restart in ~5 seconds.'));
 	} catch {
 		console.log(chalk.red('Failed to send signal to the process.'));
+		return;
+	}
+
+	if (hasWrapper) {
+		console.log(chalk.gray('The service wrapper will auto-restart in ~5 seconds.'));
+	} else {
+		// No wrapper — wait for process to die, then start via .command or directly
+		console.log(chalk.gray('No service wrapper detected. Re-launching...'));
+
+		// Wait up to 10s for the process to exit
+		for (let i = 0; i < 20; i++) {
+			try {
+				process.kill(pid, 0); // Check if still alive
+				await new Promise(r => setTimeout(r, 500));
+			} catch {
+				break; // Process exited
+			}
+		}
+
+		await startService();
 	}
 }
 
@@ -1224,22 +1266,44 @@ export function findProjectRoot(): string | null {
 
 /**
  * Reads the PID file and verifies the process is still alive.
+ * Falls back to detecting the process by port if the PID file is stale
+ * (e.g. when Crewly was started via `npm run dev` instead of the service wrapper).
  *
  * @returns The PID if the process is running, or null
  */
 export function getRunningPid(): number | null {
-	if (!fs.existsSync(PID_FILE)) {
-		return null;
+	// 1. Try PID file first
+	if (fs.existsSync(PID_FILE)) {
+		try {
+			const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
+			if (!isNaN(pid)) {
+				process.kill(pid, 0);
+				return pid;
+			}
+		} catch {
+			// PID file is stale — fall through to port detection
+		}
 	}
 
-	try {
-		const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
-		if (isNaN(pid)) {
-			return null;
-		}
+	// 2. Fall back to detecting by port (covers npm run dev, manual starts, etc.)
+	return getRunningPidByPort();
+}
 
-		process.kill(pid, 0);
-		return pid;
+/**
+ * Detects the PID of a process listening on the Crewly web port.
+ * Uses `lsof` to find the listener, which works for any start method.
+ *
+ * @returns The PID if a process is listening on the port, or null
+ */
+export function getRunningPidByPort(): number | null {
+	const port = process.env.CREWLY_WEB_PORT || '8787';
+	try {
+		const result = execSync(
+			`lsof -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null`,
+			{ encoding: 'utf-8', timeout: 5000 },
+		).trim();
+		const pid = parseInt(result.split('\n')[0], 10);
+		return isNaN(pid) ? null : pid;
 	} catch {
 		return null;
 	}

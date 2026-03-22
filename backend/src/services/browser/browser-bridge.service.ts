@@ -111,8 +111,11 @@ export class BrowserBridgeService {
 
 	/**
 	 * Attach the WebSocket server to an existing HTTP server.
-	 * Uses a path-based approach so the WS server shares the same port
-	 * as the main Express HTTP server.
+	 * Uses noServer mode to avoid conflicting with Socket.IO's upgrade handler.
+	 * When two WebSocketServer instances both use `server: httpServer`, they both
+	 * register 'upgrade' event handlers. The ws library sends a 400 Bad Request
+	 * for non-matching paths, which corrupts the Socket.IO WebSocket connection
+	 * (the raw "HTTP/1.1 400" bytes appear as an invalid frame with RSV1 set).
 	 *
 	 * @param httpServer - The HTTP server to attach to
 	 */
@@ -123,9 +126,20 @@ export class BrowserBridgeService {
 		}
 
 		this.wss = new WebSocketServer({
-			server: httpServer,
-			path: BROWSER_BRIDGE_CONSTANTS.WS_PATH,
+			noServer: true,
 			perMessageDeflate: false,
+		});
+
+		// Manually handle HTTP upgrade requests — only intercept our path
+		httpServer.on('upgrade', (request, socket, head) => {
+			const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
+			if (pathname === BROWSER_BRIDGE_CONSTANTS.WS_PATH) {
+				this.wss!.handleUpgrade(request, socket, head, (ws) => {
+					this.wss!.emit('connection', ws, request);
+				});
+			}
+			// Do NOT destroy the socket for non-matching paths —
+			// let other handlers (Socket.IO) process them
 		});
 
 		this.wss.on('connection', (ws, req) => {

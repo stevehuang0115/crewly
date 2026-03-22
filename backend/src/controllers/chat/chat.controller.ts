@@ -88,11 +88,39 @@ export async function sendMessage(
       const backend = getSessionBackendSync();
       const sessionExists = backend?.sessionExists(ORCHESTRATOR_SESSION_NAME) ?? false;
 
-      if (!sessionExists) {
+      if (!sessionExists && !messageQueueService) {
+        // #247: Only fail if both orchestrator is down AND queue is unavailable.
+        // If the queue is available, enqueue the message for replay when
+        // the orchestrator comes back online.
         orchestratorStatus = {
           forwarded: false,
           error: 'Orchestrator is not running. Please start the orchestrator first.',
         };
+      } else if (!sessionExists && messageQueueService) {
+        // #247: Orchestrator is offline but queue is available — queue for later delivery.
+        // The queue processor defers delivery until the orchestrator registers as active.
+        try {
+          const queued = messageQueueService.enqueue({
+            content,
+            conversationId: result.conversation.id,
+            source: 'web_chat',
+          });
+          orchestratorStatus = {
+            forwarded: true,
+            queued: true,
+            queueId: queued.id,
+            error: 'Orchestrator is currently offline. Message queued for delivery when it comes back online.',
+          };
+          logger.info('Message queued for offline orchestrator (#247)', {
+            conversationId: result.conversation.id,
+            queueId: queued.id,
+          });
+        } catch (enqueueErr) {
+          orchestratorStatus = {
+            forwarded: false,
+            error: `Orchestrator offline and queue failed: ${enqueueErr instanceof Error ? enqueueErr.message : 'Unknown error'}`,
+          };
+        }
       } else if (!messageQueueService) {
         orchestratorStatus = {
           forwarded: false,

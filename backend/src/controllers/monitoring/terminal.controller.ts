@@ -762,6 +762,49 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			}
 		}
 
+		// Check if the session exists locally (PTY or in-process) before attempting delivery.
+		// If not found locally, try remote routing via CloudSync before returning 404.
+		const localBackend = getSessionBackendSync();
+		const inProcessRuntimeCheck = this.agentRegistrationService.getInProcessRuntime(sessionName);
+		const hasLocalSession = !!(localBackend?.sessionExists(sessionName)) || !!inProcessRuntimeCheck;
+
+		if (!hasLocalSession) {
+			// Session not found locally — attempt remote routing via Cloud
+			try {
+				const { MessageRouterService } = await import('../../services/messaging/message-router.service.js');
+				const router = MessageRouterService.getInstance();
+				const routeResult = await router.routeRemote(sessionName, message);
+				if (routeResult.routed) {
+					logger.info('Message routed to remote device', {
+						sessionName,
+						deviceId: routeResult.deviceId,
+						deviceName: routeResult.deviceName,
+						messageLength: message.length,
+					});
+					res.json({
+						success: true,
+						remote: true,
+						deviceId: routeResult.deviceId,
+						deviceName: routeResult.deviceName,
+					} as ApiResponse);
+					return;
+				}
+				// Remote routing also failed — fall through to 404
+			} catch (routeError) {
+				logger.warn('Remote routing attempt failed', {
+					sessionName,
+					error: routeError instanceof Error ? routeError.message : String(routeError),
+				});
+			}
+
+			// Neither local nor remote — return 404
+			res.status(404).json({
+				success: false,
+				error: `Session '${sessionName}' not found (local or remote)`,
+			} as ApiResponse);
+			return;
+		}
+
 		// Force mode: write directly to PTY, skipping waitForReady and verification.
 		// Use when the agent is busy and waitForReady would time out (#113).
 		if (force) {

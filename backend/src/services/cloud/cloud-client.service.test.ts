@@ -4,8 +4,11 @@
  * @module services/cloud/cloud-client.service.test
  */
 
-import { CloudClientService } from './cloud-client.service.js';
+import { CloudClientService, type PersistedCloudConfig } from './cloud-client.service.js';
 import { CLOUD_CONSTANTS } from '../../constants.js';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
 
 // ---------------------------------------------------------------------------
 // Mock LoggerService
@@ -23,6 +26,22 @@ jest.mock('../core/logger.service.js', () => ({
     }),
   },
 }));
+
+// ---------------------------------------------------------------------------
+// Mock fs/promises for persistence tests
+// ---------------------------------------------------------------------------
+
+jest.mock('fs/promises', () => ({
+  readFile: jest.fn(),
+  writeFile: jest.fn().mockResolvedValue(undefined),
+  mkdir: jest.fn().mockResolvedValue(undefined),
+  unlink: jest.fn().mockResolvedValue(undefined),
+}));
+
+const mockReadFile = fs.readFile as jest.MockedFunction<typeof fs.readFile>;
+const mockWriteFile = fs.writeFile as jest.MockedFunction<typeof fs.writeFile>;
+const mockMkdir = fs.mkdir as jest.MockedFunction<typeof fs.mkdir>;
+const mockUnlink = fs.unlink as jest.MockedFunction<typeof fs.unlink>;
 
 // ---------------------------------------------------------------------------
 // Mock fetch
@@ -462,6 +481,183 @@ describe('CloudClientService', () => {
       mockFetch.mockClear();
       await expect(service.getTemplateDetail('tpl-1')).rejects.toThrow(/Cloud token expired/);
       expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  // ----- Config Persistence ------------------------------------------------
+
+  describe('config persistence', () => {
+    const expectedConfigPath = path.join(os.homedir(), '.crewly', 'cloud', 'config.json');
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockWriteFile.mockResolvedValue(undefined);
+      mockMkdir.mockResolvedValue(undefined as any);
+      mockUnlink.mockResolvedValue(undefined);
+    });
+
+    describe('persistConfig (via connect)', () => {
+      it('should persist config with refreshToken after connect()', async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'pro' }));
+
+        await service.connect(CLOUD_URL, TOKEN, 'refresh-token-xyz');
+
+        // Wait for async persistConfig
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        expect(mockMkdir).toHaveBeenCalledWith(
+          path.dirname(expectedConfigPath),
+          { recursive: true },
+        );
+        expect(mockWriteFile).toHaveBeenCalledWith(
+          expectedConfigPath,
+          expect.any(String),
+          'utf-8',
+        );
+
+        // Verify the written JSON includes refreshToken
+        const writtenJson = JSON.parse(mockWriteFile.mock.calls[0]![1] as string) as PersistedCloudConfig;
+        expect(writtenJson.cloudUrl).toBe(CLOUD_URL);
+        expect(writtenJson.token).toBe(TOKEN);
+        expect(writtenJson.tier).toBe('pro');
+        expect(writtenJson.refreshToken).toBe('refresh-token-xyz');
+        expect(writtenJson.connectedAt).toBeTruthy();
+      });
+
+      it('should persist config without refreshToken when not provided', async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'free' }));
+
+        await service.connect(CLOUD_URL, TOKEN);
+
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        expect(mockWriteFile).toHaveBeenCalled();
+        const writtenJson = JSON.parse(mockWriteFile.mock.calls[0]![1] as string) as PersistedCloudConfig;
+        expect(writtenJson.refreshToken).toBeUndefined();
+      });
+    });
+
+    describe('persistConfig (via connectLocal)', () => {
+      it('should persist config with refreshToken after connectLocal()', async () => {
+        service.connectLocal(CLOUD_URL, TOKEN, 'pro' as any, 'local-refresh-token');
+
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        expect(mockWriteFile).toHaveBeenCalled();
+        const writtenJson = JSON.parse(mockWriteFile.mock.calls[0]![1] as string) as PersistedCloudConfig;
+        expect(writtenJson.cloudUrl).toBe(CLOUD_URL);
+        expect(writtenJson.token).toBe(TOKEN);
+        expect(writtenJson.tier).toBe('pro');
+        expect(writtenJson.refreshToken).toBe('local-refresh-token');
+      });
+    });
+
+    describe('persistConfig (via setRefreshToken)', () => {
+      it('should re-persist config when setRefreshToken is called', async () => {
+        // First connect without refreshToken
+        mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'pro' }));
+        await service.connect(CLOUD_URL, TOKEN);
+        await new Promise(resolve => setTimeout(resolve, 50));
+        mockWriteFile.mockClear();
+        mockMkdir.mockClear();
+
+        // Now set refresh token
+        service.setRefreshToken('late-refresh-token');
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        expect(mockWriteFile).toHaveBeenCalled();
+        const writtenJson = JSON.parse(mockWriteFile.mock.calls[0]![1] as string) as PersistedCloudConfig;
+        expect(writtenJson.refreshToken).toBe('late-refresh-token');
+      });
+    });
+
+    describe('loadPersistedConfig', () => {
+      it('should load valid config with refreshToken', async () => {
+        const config: PersistedCloudConfig = {
+          cloudUrl: CLOUD_URL,
+          token: TOKEN,
+          tier: 'pro',
+          connectedAt: '2026-01-01T00:00:00.000Z',
+          refreshToken: 'stored-refresh-token',
+        };
+        mockReadFile.mockResolvedValueOnce(JSON.stringify(config));
+
+        const result = await service.loadPersistedConfig();
+
+        expect(result).toEqual(config);
+        expect(result!.refreshToken).toBe('stored-refresh-token');
+      });
+
+      it('should load valid config without refreshToken', async () => {
+        const config: PersistedCloudConfig = {
+          cloudUrl: CLOUD_URL,
+          token: TOKEN,
+          tier: 'free',
+          connectedAt: '2026-01-01T00:00:00.000Z',
+        };
+        mockReadFile.mockResolvedValueOnce(JSON.stringify(config));
+
+        const result = await service.loadPersistedConfig();
+
+        expect(result).toEqual(config);
+        expect(result!.refreshToken).toBeUndefined();
+      });
+
+      it('should return null for missing config file', async () => {
+        mockReadFile.mockRejectedValueOnce(new Error('ENOENT'));
+
+        const result = await service.loadPersistedConfig();
+
+        expect(result).toBeNull();
+      });
+
+      it('should return null for invalid JSON', async () => {
+        mockReadFile.mockResolvedValueOnce('not valid json');
+
+        const result = await service.loadPersistedConfig();
+
+        expect(result).toBeNull();
+      });
+
+      it('should return null for config missing required fields', async () => {
+        mockReadFile.mockResolvedValueOnce(JSON.stringify({ cloudUrl: CLOUD_URL }));
+
+        const result = await service.loadPersistedConfig();
+
+        expect(result).toBeNull();
+      });
+    });
+
+    describe('removePersistedConfig (via disconnect)', () => {
+      it('should delete config file on disconnect', async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'pro' }));
+        await service.connect(CLOUD_URL, TOKEN, 'refresh-xyz');
+        await new Promise(resolve => setTimeout(resolve, 50));
+        mockUnlink.mockClear();
+
+        service.disconnect();
+
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        expect(mockUnlink).toHaveBeenCalledWith(expectedConfigPath);
+      });
+
+      it('should not throw when config file does not exist on disconnect', async () => {
+        mockUnlink.mockRejectedValueOnce(new Error('ENOENT'));
+
+        service.connectLocal(CLOUD_URL, TOKEN, 'pro' as any);
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        // Should not throw
+        expect(() => service.disconnect()).not.toThrow();
+      });
+    });
+
+    describe('getConfigPath', () => {
+      it('should return path under ~/.crewly/cloud/', () => {
+        const configPath = CloudClientService.getConfigPath();
+        expect(configPath).toBe(expectedConfigPath);
+      });
     });
   });
 });

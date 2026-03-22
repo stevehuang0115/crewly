@@ -81,6 +81,14 @@ export const AGENT_TIMEOUTS = {
 	STARTING_WATCHDOG: 300000, // 5 minutes
 } as const;
 
+// Browser Bridge constants for Chrome Extension WebSocket bridge
+export const BROWSER_BRIDGE_CONSTANTS = {
+	/** WebSocket server path for Chrome Extension connections */
+	WS_PATH: '/ws/browser',
+	/** Default timeout for commands sent to Chrome Extension (ms) */
+	COMMAND_TIMEOUT_MS: 30000,
+} as const;
+
 // Agent runtime types
 export const RUNTIME_TYPES = {
 	CLAUDE_CODE: 'claude-code',
@@ -323,6 +331,23 @@ export const MESSAGE_QUEUE_CONSTANTS = {
 		/** Emitted with full queue status update */
 		STATUS_UPDATE: 'queue:status_update',
 	},
+} as const;
+
+/**
+ * Message replay constants for replaying pending messages after orchestrator restarts (#247).
+ * Used by the MessageReplayService to scan chat history for unreplied user messages
+ * that arrived while the orchestrator was offline, and replay them into the queue.
+ */
+export const MESSAGE_REPLAY_CONSTANTS = {
+	/** Maximum age of messages to consider for replay (ms). Default: 24 hours */
+	MAX_REPLAY_WINDOW_MS: 24 * 60 * 60 * 1000,
+	/** Minimum age of the persisted queue state before replaying (ms).
+	 *  Prevents replaying on quick restarts where no messages were likely missed. */
+	MIN_OFFLINE_DURATION_MS: 30_000,
+	/** Maximum number of messages to replay in a single startup cycle */
+	MAX_REPLAY_COUNT: 20,
+	/** Prefix added to replayed messages for orchestrator awareness */
+	REPLAY_PREFIX: '[REPLAYED]',
 } as const;
 
 /**
@@ -875,7 +900,7 @@ export const SLACK_RECONNECT_CONSTANTS = {
 	/** Backoff multiplier applied after each failed attempt */
 	BACKOFF_MULTIPLIER: 2,
 	/** Maximum number of consecutive reconnection attempts before giving up (0 = unlimited) */
-	MAX_ATTEMPTS: 0,
+	MAX_ATTEMPTS: 50,
 	/** Grace period after a disconnect before starting reconnection (ms).
 	 *  Gives Bolt's built-in reconnect a chance to recover first. */
 	GRACE_PERIOD_MS: 10_000,
@@ -1166,20 +1191,21 @@ export const CLOUD_SYNC_CONSTANTS = {
 	BACKOFF_BASE_MS: 1_000,
 	/** Maximum backoff delay (ms) */
 	BACKOFF_MAX_MS: 60_000,
-	/** Cloud Sync API endpoints (relative to cloudUrl) */
+	/** Interval between error recovery attempts after entering error state (ms).
+	 *  Periodically retries a heartbeat to check if Cloud is reachable again. */
+	ERROR_RECOVERY_INTERVAL_MS: 60_000,
+	/** Cloud Sync API endpoints (relative to cloudUrl) — must match web project routes at /api/v1/relay/* */
 	ENDPOINTS: {
-		/** Device heartbeat — POST to Cloud Auth service device registry */
-		HEARTBEAT: '/api/devices/heartbeat',
-		/** Device heartbeat — POST to Cloud Relay sync handler (registers device for messaging) */
-		HEARTBEAT_SYNC: '/api/v1/sync/heartbeat',
-		/** List all devices for account */
-		DEVICES: '/api/devices',
-		/** Send a message to another device via Cloud Sync message queue */
-		MESSAGES: '/api/v1/sync/messages',
-		/** Poll for incoming messages (GET with ?deviceId=) */
-		MESSAGES_POLL: '/api/v1/sync/messages',
+		/** Device heartbeat/handshake — POST to Cloud Relay (registers device + updates metadata) */
+		HEARTBEAT: '/api/v1/relay/handshake',
+		/** List all devices for account (auto-registers caller on GET) */
+		DEVICES: '/api/v1/relay/devices',
+		/** Send a message to another device via Cloud message queue */
+		MESSAGES: '/api/v1/relay/queue/send',
+		/** Poll for incoming messages (GET with ?queueId= or uses JWT deviceId) */
+		MESSAGES_POLL: '/api/v1/relay/queue/poll',
 		/** Acknowledge processed messages */
-		MESSAGES_ACK: '/api/v1/sync/messages/ack',
+		MESSAGES_ACK: '/api/v1/relay/queue/ack',
 	},
 } as const;
 

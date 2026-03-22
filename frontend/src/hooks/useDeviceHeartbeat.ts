@@ -83,6 +83,10 @@ export function useDeviceHeartbeat(
   const isMountedRef = useRef(true);
   /** Consecutive failure count for exponential backoff */
   const failCountRef = useRef(0);
+  /** Persistent device UUID from backend DeviceIdentityService */
+  const deviceIdRef = useRef<string | null>(null);
+  /** Whether we've attempted to fetch the device ID */
+  const deviceIdFetchedRef = useRef(false);
   // Store latest values in refs so timer callback always has fresh data
   const tokenRef = useRef(accessToken);
   const teamsRef = useRef(localTeams);
@@ -119,11 +123,34 @@ export function useDeviceHeartbeat(
   }, [getNextInterval]);
 
   /**
+   * Fetch the persistent device UUID from the local backend.
+   * Called once on first tick to ensure heartbeats include the correct
+   * deviceId, preventing duplicate device registrations on the Cloud.
+   */
+  const fetchDeviceId = useCallback(async (): Promise<void> => {
+    if (deviceIdFetchedRef.current) return;
+    deviceIdFetchedRef.current = true;
+
+    try {
+      const res = await fetch('/api/cloud/device-id');
+      const data = await res.json();
+      if (data.success && data.data?.deviceId) {
+        deviceIdRef.current = data.data.deviceId;
+      }
+    } catch {
+      // Non-fatal — heartbeat will still work, just without deviceId
+    }
+  }, []);
+
+  /**
    * Send a heartbeat and fetch device list.
    */
   const tick = useCallback(async () => {
     const token = tokenRef.current;
     if (!token || !isMountedRef.current) return;
+
+    // Ensure we have the backend device UUID before first heartbeat
+    await fetchDeviceId();
 
     const headers = {
       'Content-Type': 'application/json',
@@ -131,14 +158,19 @@ export function useDeviceHeartbeat(
     };
 
     try {
-      // Send heartbeat to Cloud API
+      // Send heartbeat to Cloud API with backend deviceId to prevent duplicates
+      const heartbeatBody: Record<string, unknown> = {
+        deviceName: nameRef.current,
+        teams: teamsRef.current,
+      };
+      if (deviceIdRef.current) {
+        heartbeatBody.deviceId = deviceIdRef.current;
+      }
+
       await fetch(`${CLOUD_API_BASE}/devices/heartbeat`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          deviceName: nameRef.current,
-          teams: teamsRef.current,
-        }),
+        body: JSON.stringify(heartbeatBody),
       });
 
       // Fetch online devices from Cloud API
@@ -159,7 +191,7 @@ export function useDeviceHeartbeat(
 
     // Schedule next tick with backoff
     scheduleNext();
-  }, [scheduleNext]);
+  }, [scheduleNext, fetchDeviceId]);
 
   /**
    * Manually refresh the device list.

@@ -42,6 +42,16 @@ export interface CloudSyncConfig {
 // Device Types
 // ---------------------------------------------------------------------------
 
+/** Summary of an agent running on a device, included in heartbeat payloads. */
+export interface SyncAgentInfo {
+  /** Agent PTY session name (e.g. "crewly-product-leo-member-n") */
+  sessionName: string;
+  /** Agent role (e.g. "developer", "orchestrator") */
+  role: string;
+  /** Agent working status */
+  workingStatus: string;
+}
+
 /** Summary of a team on a device, included in heartbeat payloads. */
 export interface SyncTeamSummary {
   /** Team identifier */
@@ -52,11 +62,13 @@ export interface SyncTeamSummary {
   memberCount: number;
   /** Number of currently active agents */
   activeAgents: number;
+  /** Active agent session details (for cross-device routing) */
+  agents?: SyncAgentInfo[];
 }
 
 /**
  * A device visible in the same Cloud account.
- * Populated by polling GET /api/v1/sync/devices.
+ * Populated by polling GET /api/v1/relay/devices.
  */
 export interface SyncDevice {
   /** Unique device identifier (UUID) */
@@ -122,7 +134,8 @@ export type MessageType =
   | 'notification'
   | 'relay'
   | 'ping'
-  | 'task_update';
+  | 'task_update'
+  | 'agent_message';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -133,6 +146,7 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'relay',
   'ping',
   'task_update',
+  'agent_message',
 ] as const;
 
 /**
@@ -197,6 +211,44 @@ export interface TaskUpdatePayload {
   progress: number;
   /** Summary of what was done */
   summary?: string;
+}
+
+/**
+ * Payload for an agent_message sent between devices for transparent
+ * cross-device agent communication. The orchestrator's send-message /
+ * delegate-task skills remain unchanged — the message router transparently
+ * wraps undeliverable local messages into this payload and routes via Cloud.
+ */
+export interface AgentMessagePayload {
+  /** Target agent session name on the remote device */
+  targetSession: string;
+  /** The message content to deliver */
+  message: string;
+  /** Source device ID */
+  fromDevice: string;
+  /** Human-readable source device name */
+  fromDeviceName: string;
+  /** Delivery priority */
+  priority?: 'high' | 'normal';
+  /** Optional correlation ID for request-response patterns */
+  correlationId?: string;
+}
+
+/**
+ * Check if an object satisfies the AgentMessagePayload interface shape.
+ *
+ * @param value - Value to check
+ * @returns True if the value has the required AgentMessagePayload fields
+ */
+export function isAgentMessagePayload(value: unknown): value is AgentMessagePayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.targetSession === 'string' &&
+    typeof obj.message === 'string' &&
+    typeof obj.fromDevice === 'string' &&
+    typeof obj.fromDeviceName === 'string'
+  );
 }
 
 // ---------------------------------------------------------------------------

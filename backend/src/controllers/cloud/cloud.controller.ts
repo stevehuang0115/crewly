@@ -258,6 +258,14 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
         deviceName: identity.deviceName,
       });
       logger.info('CloudSyncService started after cloud connect', { deviceId: identity.deviceId });
+
+      // Start MessageRouterService for cross-device agent communication
+      try {
+        const { startMessageRouter } = await import('../../services/cloud/cloud-initializer.js');
+        startMessageRouter();
+      } catch {
+        logger.debug('MessageRouterService start deferred (non-fatal)');
+      }
     } catch (syncErr) {
       logger.warn('CloudSyncService start failed (non-fatal)', {
         error: syncErr instanceof Error ? syncErr.message : String(syncErr),
@@ -423,6 +431,38 @@ export async function validateCloudToken(req: Request, res: Response, next: Next
 }
 
 /**
+ * GET /api/cloud/device-id
+ *
+ * Return the persistent device identity (UUID + hostname) from
+ * DeviceIdentityService. The frontend uses this to include the
+ * correct deviceId in heartbeats to the Cloud API, preventing
+ * duplicate device registrations.
+ *
+ * @param req - Express request (no params required)
+ * @param res - Response returning { success, data: { deviceId, deviceName } }
+ * @param next - Next function for error propagation
+ */
+export async function getDeviceId(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const identityService = DeviceIdentityService.getInstance();
+    const identity = await identityService.getOrCreateIdentity();
+
+    res.json({
+      success: true,
+      data: {
+        deviceId: identity.deviceId,
+        deviceName: identity.deviceName,
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to get device identity', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    next(error);
+  }
+}
+
+/**
  * POST /api/cloud/refresh
  *
  * Exchange a valid refresh token for a new access token.
@@ -445,12 +485,24 @@ export async function refreshCloudToken(req: Request, res: Response, next: NextF
       return;
     }
 
+    // Carry forward deviceId from refresh token, or resolve from DeviceIdentityService
+    let deviceId: string | undefined = payload.deviceId as string | undefined;
+    if (!deviceId) {
+      try {
+        const identity = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+        deviceId = identity.deviceId;
+      } catch {
+        // Non-fatal — token still works without deviceId
+      }
+    }
+
     const now = Math.floor(Date.now() / 1000);
     const accessToken = signJwt({
       sub: payload.sub,
       email: payload.email || '',
       name: payload.name || '',
       plan: payload.plan || 'free',
+      ...(deviceId && { deviceId }),
       iat: now,
       exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
       iss: AUTH_CONSTANTS.JWT.ISSUER,

@@ -15,6 +15,7 @@ import { CreateCard } from '@/components/Cards/CreateCard';
 import { Team, Project } from '@/types';
 import { Factory } from 'lucide-react';
 import { apiService } from '@/services/api.service';
+import { RelayHealthCard } from '@/components/Dashboard/RelayHealthCard';
 
 
 interface ProjectProgress {
@@ -224,6 +225,11 @@ export const Dashboard: React.FC = () => {
             </div>
           </div>
         </button>
+      </div>
+
+      {/* Cloud Relay Health */}
+      <div className="mb-10">
+        <RelayHealthCard />
       </div>
 
       <div className="space-y-10">

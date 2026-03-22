@@ -20,6 +20,7 @@ vi.mock('./cloud.controller.js', () => ({
   getCloudStatus: vi.fn((_req, res) => res.status(200).json({ success: true })),
   getCloudTemplates: vi.fn((_req, res) => res.status(200).json({ success: true })),
   sendCloudMessage: vi.fn((_req, res) => res.status(200).json({ success: true })),
+  getDeviceId: vi.fn((_req, res) => res.status(200).json({ success: true })),
 }));
 
 vi.mock('./relay.controller.js', () => ({
@@ -121,7 +122,11 @@ describe('Cloud Routes', () => {
     expect(routes).toContainEqual({ method: 'POST', path: '/send' });
   });
 
-  it('should register exactly 12 routes', () => {
-    expect(routes).toHaveLength(12);
+  it('should register GET /device-id route', () => {
+    expect(routes).toContainEqual({ method: 'GET', path: '/device-id' });
+  });
+
+  it('should register exactly 13 routes', () => {
+    expect(routes).toHaveLength(13);
   });
 });

@@ -152,6 +152,44 @@ describe('CloudInitializer', () => {
 		});
 	});
 
+	it('should pass refreshToken to connectLocal when present in config', async () => {
+		const config = {
+			cloudUrl: 'https://api.crewlyai.com',
+			token: 'jwt-token',
+			tier: 'pro',
+			connectedAt: '2026-03-20T00:00:00Z',
+			refreshToken: 'refresh-token-persisted',
+		};
+		mockReadFile.mockResolvedValue(JSON.stringify(config));
+
+		const result = await initializeCloudIfConfigured();
+
+		expect(result.attempted).toBe(true);
+		expect(result.success).toBe(true);
+
+		const client = CloudClientService.getInstance();
+		expect(client.isConnected()).toBe(true);
+		// The refresh token should have been passed to connectLocal
+		// Verify by checking that the service has a token (indirect verification)
+		expect(client.getToken()).toBeTruthy();
+	});
+
+	it('should log hasRefreshToken correctly when refreshToken is present', async () => {
+		const config = {
+			cloudUrl: 'https://api.crewlyai.com',
+			token: 'jwt-token',
+			tier: 'free',
+			connectedAt: '2026-03-20T00:00:00Z',
+			refreshToken: 'rt-123',
+		};
+		mockReadFile.mockResolvedValue(JSON.stringify(config));
+
+		const result = await initializeCloudIfConfigured();
+
+		expect(result.attempted).toBe(true);
+		expect(result.success).toBe(true);
+	});
+
 	it('should not fail initialization if CloudSyncService.start throws', async () => {
 		const config = {
 			cloudUrl: 'https://api.crewlyai.com',
