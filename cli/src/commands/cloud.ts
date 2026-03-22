@@ -28,19 +28,22 @@ import { DEFAULT_WEB_PORT } from '../constants.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Backend base URL */
+/** Backend base URL (local Crewly backend for connect/status/disconnect) */
 const BACKEND_URL = `http://localhost:${DEFAULT_WEB_PORT}`;
 
-/** Cloud connect endpoint */
+/** CrewlyAI Cloud API base URL (where OAuth happens — NOT local backend) */
+const CLOUD_API_URL = process.env['CREWLY_CLOUD_URL'] || 'https://api.crewlyai.com';
+
+/** Cloud connect endpoint (local backend) */
 const CLOUD_CONNECT_ENDPOINT = '/api/cloud/connect';
 
-/** Cloud disconnect endpoint */
+/** Cloud disconnect endpoint (local backend) */
 const CLOUD_DISCONNECT_ENDPOINT = '/api/cloud/disconnect';
 
-/** Cloud status endpoint */
+/** Cloud status endpoint (local backend) */
 const CLOUD_STATUS_ENDPOINT = '/api/cloud/status';
 
-/** Google OAuth start endpoint */
+/** Google OAuth start endpoint (on Cloud API, NOT local backend) */
 const GOOGLE_OAUTH_START_ENDPOINT = '/api/cloud/google/start';
 
 /** Timeout for backend API requests (ms) */
@@ -61,11 +64,18 @@ interface LoginOptions {
   token?: string;
 }
 
-/** Shape of the credentials saved to config.json */
+/**
+ * Shape of the credentials saved to config.json.
+ *
+ * Must match PersistedCloudConfig in cloud-client.service.ts so the backend
+ * can load credentials saved by the CLI (and vice versa).
+ */
 interface CloudCredentials {
+  cloudUrl: string;
   token: string;
   refreshToken?: string;
-  savedAt: string;
+  tier: string;
+  connectedAt: string;
 }
 
 /** Shape of the cloud status response data */
@@ -88,14 +98,38 @@ interface CloudStatusData {
  * @param token - JWT access token
  * @param refreshToken - Optional refresh token
  */
+/**
+ * Save cloud credentials to ~/.crewly/cloud/config.json.
+ *
+ * Creates the directory hierarchy if it does not exist. The format matches
+ * PersistedCloudConfig so the backend's loadPersistedConfig() can read it.
+ *
+ * @param token - JWT access token
+ * @param refreshToken - Optional refresh token for auto-renewal
+ */
 export function saveCloudCredentials(token: string, refreshToken?: string): void {
   if (!existsSync(CLOUD_CONFIG_DIR)) {
     mkdirSync(CLOUD_CONFIG_DIR, { recursive: true });
   }
+
+  // Merge with existing config to preserve fields the backend may have written
+  let existing: Partial<CloudCredentials> = {};
+  try {
+    if (existsSync(CLOUD_CONFIG_FILE)) {
+      existing = JSON.parse(readFileSync(CLOUD_CONFIG_FILE, 'utf-8'));
+    }
+  } catch {
+    // Ignore parse errors — overwrite with new credentials
+  }
+
   const credentials: CloudCredentials = {
+    cloudUrl: existing.cloudUrl || CLOUD_API_URL,
     token,
-    refreshToken,
-    savedAt: new Date().toISOString(),
+    tier: existing.tier || 'pro',
+    connectedAt: new Date().toISOString(),
+    ...(refreshToken && { refreshToken }),
+    // Preserve existing refreshToken if new one not provided
+    ...(!refreshToken && existing.refreshToken && { refreshToken: existing.refreshToken }),
   };
   writeFileSync(CLOUD_CONFIG_FILE, JSON.stringify(credentials, null, 2), 'utf-8');
 }
@@ -248,28 +282,40 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     return;
   }
 
-  // Browser-based OAuth flow
+  // Browser-based OAuth flow — redirects to crewlyai.com (Cloud), NOT local backend.
+  // The Cloud server handles Google OAuth and redirects back to our local callback
+  // with token + refreshToken as query parameters.
   console.log('');
   console.log(chalk.blue('CrewlyAI Cloud Login'));
   console.log(chalk.gray('─'.repeat(40)));
   console.log('');
-  console.log(chalk.white('Opening browser for Google OAuth...'));
 
   const { server, port: portPromise, credentials } = startCallbackServer();
 
   try {
     const port = await portPromise;
     const redirectUrl = `http://localhost:${port}/callback`;
-    const oauthUrl = `${BACKEND_URL}${GOOGLE_OAUTH_START_ENDPOINT}?redirect=${encodeURIComponent(redirectUrl)}`;
 
+    // Build OAuth URL pointing to Cloud API (crewlyai.com), not local backend.
+    // The Cloud server has Google OAuth credentials configured — local backend does not.
+    const oauthUrl = `${CLOUD_API_URL}${GOOGLE_OAUTH_START_ENDPOINT}?redirect=${encodeURIComponent(redirectUrl)}`;
+
+    console.log(chalk.white('Opening browser for Google OAuth...'));
+    console.log(chalk.gray(`  Auth server: ${CLOUD_API_URL}`));
+    console.log(chalk.gray(`  Callback:    http://localhost:${port}/callback`));
     openBrowser(oauthUrl);
-    console.log(chalk.gray(`  Callback server listening on port ${port}`));
     console.log(chalk.gray('  Waiting for OAuth callback...'));
     console.log('');
 
     const creds = await credentials;
     saveCloudCredentials(creds.token, creds.refreshToken);
     console.log(chalk.green('  ✓ Credentials saved'));
+
+    if (creds.refreshToken) {
+      console.log(chalk.green('  ✓ Refresh token saved (enables auto-renewal)'));
+    } else {
+      console.log(chalk.yellow('  ⚠ No refresh token received — token will expire without auto-renewal'));
+    }
 
     await connectWithToken(creds.token, creds.refreshToken);
   } catch (error) {
@@ -288,7 +334,19 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
  * @param token - JWT access token
  * @param refreshToken - Optional refresh token
  */
+/**
+ * Connect to CrewlyAI Cloud by calling POST /api/cloud/connect on the local backend.
+ *
+ * If the local backend is not running, saves credentials locally and informs the user
+ * that the connection will be established on next `crewly start`.
+ *
+ * @param token - JWT access token
+ * @param refreshToken - Optional refresh token for auto-renewal
+ */
 async function connectWithToken(token: string, refreshToken?: string): Promise<void> {
+  // Always save credentials first — even if backend is down, next start will use them
+  saveCloudCredentials(token, refreshToken);
+
   try {
     const response = await axios.post(
       `${BACKEND_URL}${CLOUD_CONNECT_ENDPOINT}`,
@@ -300,15 +358,23 @@ async function connectWithToken(token: string, refreshToken?: string): Promise<v
       console.log(chalk.green('  ✓ Connected to CrewlyAI Cloud'));
       const tier = response.data.data?.tier || response.data.tier || 'unknown';
       console.log(chalk.green(`  ✓ Tier: ${tier}`));
-      saveCloudCredentials(token, refreshToken);
-      console.log(chalk.green('  ✓ Credentials saved'));
     } else {
       const msg = response.data?.error || 'Unknown error';
-      console.log(chalk.red(`  ✗ Failed to connect: ${msg}`));
-      process.exit(1);
+      console.log(chalk.yellow(`  ⚠ Backend connect returned: ${msg}`));
+      console.log(chalk.gray('  Credentials saved — connection will activate on next crewly start'));
     }
   } catch (error) {
-    handleApiError(error, 'login to CrewlyAI Cloud');
+    if (axios.isAxiosError(error) && error.code === 'ECONNREFUSED') {
+      // Backend not running — this is OK, credentials are saved
+      console.log(chalk.green('  ✓ Credentials saved to ~/.crewly/cloud/config.json'));
+      console.log(chalk.gray('  Backend not running — Cloud will connect automatically on next crewly start'));
+    } else {
+      const msg = axios.isAxiosError(error)
+        ? (error.response?.data?.error || error.message)
+        : (error instanceof Error ? error.message : String(error));
+      console.log(chalk.yellow(`  ⚠ Backend connect failed: ${msg}`));
+      console.log(chalk.gray('  Credentials saved — connection will activate on next crewly start'));
+    }
   }
 }
 

@@ -5,17 +5,17 @@
  * logout, and error handling for all three subcommands.
  */
 
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
-jest.mock('../constants.js', () => ({
+vi.mock('../constants.js', () => ({
   DEFAULT_WEB_PORT: 3000,
 }));
 
-jest.mock('chalk', () => ({
+vi.mock('chalk', () => ({
   __esModule: true,
   default: new Proxy({}, {
     get: () => {
@@ -25,11 +25,11 @@ jest.mock('chalk', () => ({
   }),
 }));
 
-const mockAxiosPost = jest.fn<any>();
-const mockAxiosGet = jest.fn<any>();
-const mockIsAxiosError = jest.fn<any>();
+const mockAxiosPost = vi.fn<any>();
+const mockAxiosGet = vi.fn<any>();
+const mockIsAxiosError = vi.fn<any>();
 
-jest.mock('axios', () => ({
+vi.mock('axios', () => ({
   __esModule: true,
   default: {
     post: (...args: any[]) => mockAxiosPost(...args),
@@ -38,28 +38,28 @@ jest.mock('axios', () => ({
   },
 }));
 
-const mockExec = jest.fn<any>();
-jest.mock('child_process', () => ({
+const mockExec = vi.fn<any>();
+vi.mock('child_process', () => ({
   exec: (...args: any[]) => mockExec(...args),
 }));
 
-const mockExistsSync = jest.fn<any>();
-const mockMkdirSync = jest.fn<any>();
-const mockWriteFileSync = jest.fn<any>();
-const mockReadFileSync = jest.fn<any>();
+const mockExistsSync = vi.fn<any>();
+const mockMkdirSync = vi.fn<any>();
+const mockWriteFileSync = vi.fn<any>();
+const mockReadFileSync = vi.fn<any>();
 
-jest.mock('fs', () => ({
+vi.mock('fs', () => ({
   existsSync: (...args: any[]) => mockExistsSync(...args),
   mkdirSync: (...args: any[]) => mockMkdirSync(...args),
   writeFileSync: (...args: any[]) => mockWriteFileSync(...args),
   readFileSync: (...args: any[]) => mockReadFileSync(...args),
 }));
 
-jest.mock('http', () => {
-  const actualHttp = jest.requireActual('http') as any;
+vi.mock('http', async () => {
+  const actualHttp = await vi.importActual('http') as any;
   return {
     ...actualHttp,
-    createServer: jest.fn(),
+    createServer: vi.fn(),
   };
 });
 
@@ -76,13 +76,13 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-let consoleLogSpy: jest.SpiedFunction<typeof console.log>;
-let processExitSpy: jest.SpiedFunction<typeof process.exit>;
+let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+let processExitSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
-  jest.clearAllMocks();
-  consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-  processExitSpy = jest.spyOn(process, 'exit').mockImplementation((() => {
+  vi.clearAllMocks();
+  consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  processExitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
     throw new Error('process.exit');
   }) as never);
   mockIsAxiosError.mockReturnValue(false);
@@ -119,7 +119,9 @@ describe('saveCloudCredentials', () => {
     const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
     expect(written.token).toBe('tok-123');
     expect(written.refreshToken).toBe('ref-456');
-    expect(written.savedAt).toBeDefined();
+    expect(written.connectedAt).toBeDefined();
+    expect(written.cloudUrl).toBeDefined();
+    expect(written.tier).toBeDefined();
   });
 
   it('skips mkdir when directory already exists', () => {
@@ -213,31 +215,34 @@ describe('loginCommand — direct token', () => {
     expect(written.token).toBe('save-me');
   });
 
-  it('exits on connect failure response', async () => {
+  it('shows warning on connect failure response but saves credentials', async () => {
     mockAxiosPost.mockResolvedValue({
       data: { success: false, error: 'invalid token' },
     });
 
-    await expect(loginCommand({ token: 'bad-token' })).rejects.toThrow('process.exit');
-    expect(processExitSpy).toHaveBeenCalledWith(1);
+    await loginCommand({ token: 'bad-token' });
 
     const output = getOutput();
     expect(output).toContain('invalid token');
+    // Credentials are still saved for retry on next start
+    expect(mockWriteFileSync).toHaveBeenCalled();
   });
 
-  it('handles ECONNREFUSED (backend not running)', async () => {
+  it('saves credentials even when backend is not running (ECONNREFUSED)', async () => {
     const axiosErr = new Error('ECONNREFUSED');
     (axiosErr as any).code = 'ECONNREFUSED';
     mockAxiosPost.mockRejectedValue(axiosErr);
     mockIsAxiosError.mockReturnValue(true);
 
-    await expect(loginCommand({ token: 'tok' })).rejects.toThrow('process.exit');
+    await loginCommand({ token: 'tok' });
 
     const output = getOutput();
-    expect(output).toContain('not running');
+    expect(output).toContain('Credentials saved');
+    expect(output).toContain('next crewly start');
+    expect(mockWriteFileSync).toHaveBeenCalled();
   });
 
-  it('handles server error responses', async () => {
+  it('saves credentials on server error and shows warning', async () => {
     const axiosErr = new Error('Request failed');
     (axiosErr as any).response = {
       data: { error: 'unauthorized' },
@@ -246,10 +251,11 @@ describe('loginCommand — direct token', () => {
     mockAxiosPost.mockRejectedValue(axiosErr);
     mockIsAxiosError.mockReturnValue(true);
 
-    await expect(loginCommand({ token: 'tok' })).rejects.toThrow('process.exit');
+    await loginCommand({ token: 'tok' });
 
     const output = getOutput();
-    expect(output).toContain('unauthorized');
+    expect(output).toContain('Credentials saved');
+    expect(mockWriteFileSync).toHaveBeenCalled();
   });
 });
 
