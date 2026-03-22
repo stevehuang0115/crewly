@@ -29,6 +29,7 @@ export { TeamsJsonWatcherService } from './monitoring/teams-json-watcher.service
 // WorkflowService removed - project orchestration now handled via scheduled messages
 export { SchedulerService } from './workflow/scheduler.service.js';
 export { MessageSchedulerService } from './workflow/message-scheduler.service.js';
+export { UnifiedSchedulerService } from './workflow/unified-scheduler.service.js';
 
 // AI Services
 export { ContextLoaderService } from './ai/context-loader.service.js';
