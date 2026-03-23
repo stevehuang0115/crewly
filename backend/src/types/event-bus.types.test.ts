@@ -114,11 +114,14 @@ describe('Event Bus Types', () => {
       expect(CRITICAL_EVENT_TYPES.has('hierarchy:escalation')).toBe(true);
     });
 
-    it('should classify idle/busy toggles as info (not critical)', () => {
-      expect(CRITICAL_EVENT_TYPES.has('agent:idle' as EventType)).toBe(false);
+    it('should classify agent:idle as critical (worker completion is time-sensitive)', () => {
+      expect(CRITICAL_EVENT_TYPES.has('agent:idle' as EventType)).toBe(true);
+      expect(INFO_EVENT_TYPES.has('agent:idle' as EventType)).toBe(false);
+    });
+
+    it('should classify busy/status_changed toggles as info (not critical)', () => {
       expect(CRITICAL_EVENT_TYPES.has('agent:busy' as EventType)).toBe(false);
       expect(CRITICAL_EVENT_TYPES.has('agent:status_changed' as EventType)).toBe(false);
-      expect(INFO_EVENT_TYPES.has('agent:idle')).toBe(true);
       expect(INFO_EVENT_TYPES.has('agent:busy')).toBe(true);
     });
   });
@@ -133,7 +136,6 @@ describe('Event Bus Types', () => {
     });
 
     it('should return false for info event types', () => {
-      expect(isCriticalEventType('agent:idle')).toBe(false);
       expect(isCriticalEventType('agent:busy')).toBe(false);
       expect(isCriticalEventType('agent:status_changed')).toBe(false);
       expect(isCriticalEventType('agent:active')).toBe(false);

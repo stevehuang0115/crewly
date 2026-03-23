@@ -62,8 +62,14 @@ bash ${skillsPath}/core/recall/execute.sh '{"agentId":"${agentId}","context":"${
 bash ${skillsPath}/core/get-my-context/execute.sh '{"agentId":"${agentId}","agentRole":"${role}","projectPath":"${projectPath}"}'
 \`\`\`
 
-### Step 3: Assess and report
-After reviewing the results from Steps 1 and 2:
+### Step 3: Register yourself as active
+**CRITICAL:** You MUST call register-self to transition your status from "started" to "active". The system will NOT deliver any messages (Slack, tasks, etc.) to you until you register. Run this BEFORE reporting status:
+\`\`\`bash
+bash ${skillsPath}/core/register-self/execute.sh '{"sessionName":"${agentId}","role":"${role}"}'
+\`\`\`
+
+### Step 4: Assess and report
+After reviewing the results from Steps 1-3:
 1. **Check for unfinished work** — If you find tasks that were in progress but not completed, note them
 2. **Check for pending blockers** — If previous sessions recorded blockers, note them
 3. **Report status** — Include a brief summary of recovered context in your first status message

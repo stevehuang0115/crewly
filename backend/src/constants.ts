@@ -374,8 +374,13 @@ export const EVENT_BUS_CONSTANTS = {
 	 *  Events within this window are deduplicated per agent and delivered
 	 *  as a single combined message to reduce orchestrator context consumption. */
 	EVENT_DEBOUNCE_WINDOW_MS: 5000,
-	/** Default subscription time-to-live in minutes (2 hours) */
-	DEFAULT_SUBSCRIPTION_TTL_MINUTES: 120,
+	/** Maximum wait time before forcing a flush of buffered notifications (ms).
+	 *  Prevents indefinite deferral when new events keep resetting the debounce timer.
+	 *  Set to 30 seconds — a reasonable ceiling for non-critical event delivery. */
+	MAX_BATCH_WAIT_MS: 30_000,
+	/** Default subscription time-to-live in minutes (8 hours).
+	 *  Increased from 2h to handle long-running tasks without subscription expiry. */
+	DEFAULT_SUBSCRIPTION_TTL_MINUTES: 480,
 	/** Maximum allowed subscription TTL in minutes (24 hours) */
 	MAX_SUBSCRIPTION_TTL_MINUTES: 1440,
 	/** Maximum subscriptions per subscriber session */

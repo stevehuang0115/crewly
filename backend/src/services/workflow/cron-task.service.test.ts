@@ -1,4 +1,4 @@
-import { CronTaskService, getNextRunTime } from './cron-task.service.js';
+import { CronTaskService, getNextRunTime, getDatePartsInTimezone, parseCronField } from './cron-task.service.js';
 import type { CronTask } from '../../types/cron-task.types.js';
 
 // Mock logger
@@ -39,11 +39,47 @@ describe('CronTaskService', () => {
 		service.stop();
 	});
 
+	describe('parseCronField', () => {
+		it('should return null for wildcard', () => {
+			expect(parseCronField('*', 0, 59)).toBeNull();
+		});
+
+		it('should parse single number', () => {
+			const result = parseCronField('5', 0, 59);
+			expect(result).toEqual(new Set([5]));
+		});
+
+		it('should parse range (1-5)', () => {
+			const result = parseCronField('1-5', 0, 6);
+			expect(result).toEqual(new Set([1, 2, 3, 4, 5]));
+		});
+
+		it('should parse list (1,3,5)', () => {
+			const result = parseCronField('1,3,5', 0, 6);
+			expect(result).toEqual(new Set([1, 3, 5]));
+		});
+
+		it('should parse step values (*/15)', () => {
+			const result = parseCronField('*/15', 0, 59);
+			expect(result).toEqual(new Set([0, 15, 30, 45]));
+		});
+
+		it('should parse range with step (10-30/5)', () => {
+			const result = parseCronField('10-30/5', 0, 59);
+			expect(result).toEqual(new Set([10, 15, 20, 25, 30]));
+		});
+
+		it('should parse combined list and range (1-3,5)', () => {
+			const result = parseCronField('1-3,5', 0, 6);
+			expect(result).toEqual(new Set([1, 2, 3, 5]));
+		});
+	});
+
 	describe('getNextRunTime', () => {
 		it('should calculate next run for daily cron', () => {
 			const result = getNextRunTime('0 9 * * *', 'UTC', new Date('2026-03-20T08:00:00Z'));
-			expect(new Date(result).getHours()).toBe(9);
-			expect(new Date(result).getMinutes()).toBe(0);
+			expect(new Date(result).getUTCHours()).toBe(9);
+			expect(new Date(result).getUTCMinutes()).toBe(0);
 		});
 
 		it('should calculate next run for hourly cron', () => {
@@ -59,6 +95,114 @@ describe('CronTaskService', () => {
 			const now = new Date('2026-03-20T09:00:00Z');
 			const result = getNextRunTime('0 9 * * *', 'UTC', now);
 			expect(new Date(result).getTime()).toBeGreaterThan(now.getTime());
+		});
+
+		it('should use timezone for field matching (Asia/Shanghai = UTC+8)', () => {
+			const after = new Date('2026-03-20T00:00:00Z');
+			const result = getNextRunTime('0 9 * * *', 'Asia/Shanghai', after);
+			const resultDate = new Date(result);
+
+			expect(resultDate.getUTCHours()).toBe(1);
+			expect(resultDate.getUTCMinutes()).toBe(0);
+			expect(resultDate.toISOString()).toBe('2026-03-20T01:00:00.000Z');
+		});
+
+		it('should give different UTC times for same cron in different timezones', () => {
+			const after = new Date('2026-03-20T00:00:00Z');
+			const utcResult = getNextRunTime('0 9 * * *', 'UTC', after);
+			const shanghaiResult = getNextRunTime('0 9 * * *', 'Asia/Shanghai', after);
+
+			expect(new Date(utcResult).getUTCHours()).toBe(9);
+			expect(new Date(shanghaiResult).getUTCHours()).toBe(1);
+			expect(utcResult).not.toBe(shanghaiResult);
+		});
+
+		it('should handle America/New_York timezone (UTC-5 in March, EDT)', () => {
+			const after = new Date('2026-03-20T00:00:00Z');
+			const result = getNextRunTime('30 14 * * *', 'America/New_York', after);
+			const resultDate = new Date(result);
+
+			expect(resultDate.getUTCHours()).toBe(18);
+			expect(resultDate.getUTCMinutes()).toBe(30);
+		});
+
+		it('should handle day-of-week in timezone (Monday in Asia/Shanghai)', () => {
+			const after = new Date('2026-03-22T20:00:00Z');
+			const result = getNextRunTime('0 9 * * 1', 'Asia/Shanghai', after);
+			const resultDate = new Date(result);
+
+			expect(resultDate.toISOString()).toBe('2026-03-23T01:00:00.000Z');
+		});
+
+		it('should handle day-of-week range 1-5 (weekdays)', () => {
+			// 2026-03-20 is a Friday UTC. "45 8 * * 1-5" after Friday 09:00 should go to Monday.
+			const after = new Date('2026-03-20T09:00:00Z');
+			const result = getNextRunTime('45 8 * * 1-5', 'UTC', after);
+			const resultDate = new Date(result);
+
+			// Monday 2026-03-23 at 08:45 UTC
+			expect(resultDate.getUTCHours()).toBe(8);
+			expect(resultDate.getUTCMinutes()).toBe(45);
+			expect(resultDate.getUTCDay()).toBe(1); // Monday
+			expect(resultDate.getUTCDate()).toBe(23);
+		});
+
+		it('should handle day-of-week range with timezone (1-5 in Asia/Shanghai)', () => {
+			// "45 8 * * 1-5" in Asia/Shanghai, after Fri 2026-03-20T09:00:00Z
+			// Fri Shanghai = 2026-03-20 17:00. Next weekday 08:45 CST is Mon 2026-03-23.
+			// Mon 08:45 CST = Mon 00:45 UTC
+			const after = new Date('2026-03-20T09:00:00Z');
+			const result = getNextRunTime('45 8 * * 1-5', 'Asia/Shanghai', after);
+			const resultDate = new Date(result);
+
+			expect(resultDate.getUTCHours()).toBe(0);
+			expect(resultDate.getUTCMinutes()).toBe(45);
+			expect(resultDate.getUTCDate()).toBe(23);
+		});
+
+		it('should handle step values in minutes (*/15)', () => {
+			const after = new Date('2026-03-20T08:00:00Z');
+			const result = getNextRunTime('*/15 * * * *', 'UTC', after);
+			const resultDate = new Date(result);
+
+			// Next 15-minute mark after 08:00 is 08:15
+			expect(resultDate.getUTCMinutes() % 15).toBe(0);
+		});
+	});
+
+	describe('getDatePartsInTimezone', () => {
+		it('should return UTC parts for UTC timezone', () => {
+			const date = new Date('2026-03-20T14:30:00Z');
+			const parts = getDatePartsInTimezone(date, 'UTC');
+
+			expect(parts.hour).toBe(14);
+			expect(parts.minute).toBe(30);
+			expect(parts.month).toBe(3);
+			expect(parts.dayOfMonth).toBe(20);
+		});
+
+		it('should return Shanghai parts (UTC+8)', () => {
+			const date = new Date('2026-03-20T14:30:00Z');
+			const parts = getDatePartsInTimezone(date, 'Asia/Shanghai');
+
+			expect(parts.hour).toBe(22);
+			expect(parts.minute).toBe(30);
+			expect(parts.month).toBe(3);
+			expect(parts.dayOfMonth).toBe(20);
+		});
+
+		it('should handle date rollover across timezone boundary', () => {
+			const date = new Date('2026-03-20T23:00:00Z');
+			const parts = getDatePartsInTimezone(date, 'Asia/Shanghai');
+
+			expect(parts.hour).toBe(7);
+			expect(parts.dayOfMonth).toBe(21);
+		});
+
+		it('should return correct dayOfWeek', () => {
+			const date = new Date('2026-03-20T12:00:00Z');
+			const parts = getDatePartsInTimezone(date, 'UTC');
+			expect(parts.dayOfWeek).toBe(5); // Friday
 		});
 	});
 
@@ -113,7 +257,6 @@ describe('CronTaskService', () => {
 		it('should return all tasks', async () => {
 			await service.create({ cronExpression: '0 9 * * *', targetAgent: 'a1', targetTeamId: 't1', taskDescription: 'Task 1' });
 
-			// Mock readFile to return what was written
 			const lastWrite = JSON.parse(mockWriteFile.mock.calls[mockWriteFile.mock.calls.length - 1][1]);
 			mockReadFile.mockResolvedValueOnce(JSON.stringify(lastWrite));
 
@@ -322,12 +465,158 @@ describe('CronTaskService', () => {
 			};
 			mockReadFile.mockResolvedValueOnce(JSON.stringify(store));
 
-			// Should not throw
 			await service.evaluateTasks();
 
-			// Should still update run times
 			const saved = JSON.parse(mockWriteFile.mock.calls[mockWriteFile.mock.calls.length - 1][1]);
 			expect(saved.tasks[0].lastRunAt).toBeTruthy();
+		});
+
+		it('should check agent status before executing', async () => {
+			const executedTasks: CronTask[] = [];
+			const mockStatus = jest.fn().mockResolvedValue(false); // agent offline
+
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+			service.setAgentStatusCallback(mockStatus);
+
+			const pastTime = new Date(Date.now() - 60000).toISOString();
+			const store = {
+				tasks: [{
+					id: 'cron-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+					targetAgent: 'a1', targetTeamId: 't1', taskDescription: 'Run',
+					enabled: true, nextRunAt: pastTime, lastRunAt: null,
+					createdBy: 'user' as const, createdAt: '2026-01-01',
+				}],
+			};
+			mockReadFile.mockResolvedValueOnce(JSON.stringify(store));
+
+			await service.evaluateTasks();
+
+			// Agent offline, no start callback → skip execution
+			expect(executedTasks.length).toBe(0);
+			expect(mockStatus).toHaveBeenCalledWith('a1', 't1');
+
+			// But nextRunAt should still be advanced
+			const saved = JSON.parse(mockWriteFile.mock.calls[mockWriteFile.mock.calls.length - 1][1]);
+			expect(saved.tasks[0].nextRunAt).not.toBe(pastTime);
+			// lastRunAt should NOT be set (task was skipped)
+			expect(saved.tasks[0].lastRunAt).toBeNull();
+		});
+
+		it('should auto-start offline agent when agentStartCallback is set', async () => {
+			const executedTasks: CronTask[] = [];
+			const mockStatus = jest.fn().mockResolvedValue(false);
+			const mockStart = jest.fn().mockResolvedValue(true);
+
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+			service.setAgentStatusCallback(mockStatus);
+			service.setAgentStartCallback(mockStart);
+
+			const pastTime = new Date(Date.now() - 60000).toISOString();
+			const store = {
+				tasks: [{
+					id: 'cron-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+					targetAgent: 'a1', targetTeamId: 't1', taskDescription: 'Run',
+					enabled: true, nextRunAt: pastTime, lastRunAt: null,
+					createdBy: 'user' as const, createdAt: '2026-01-01',
+				}],
+			};
+			mockReadFile.mockResolvedValueOnce(JSON.stringify(store));
+
+			await service.evaluateTasks();
+
+			// Agent was started and task executed
+			expect(mockStart).toHaveBeenCalledWith('a1', 't1');
+			expect(executedTasks.length).toBe(1);
+		});
+
+		it('should skip execution if auto-start fails', async () => {
+			const executedTasks: CronTask[] = [];
+			const mockStatus = jest.fn().mockResolvedValue(false);
+			const mockStart = jest.fn().mockResolvedValue(false);
+
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+			service.setAgentStatusCallback(mockStatus);
+			service.setAgentStartCallback(mockStart);
+
+			const pastTime = new Date(Date.now() - 60000).toISOString();
+			const store = {
+				tasks: [{
+					id: 'cron-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+					targetAgent: 'a1', targetTeamId: 't1', taskDescription: 'Run',
+					enabled: true, nextRunAt: pastTime, lastRunAt: null,
+					createdBy: 'user' as const, createdAt: '2026-01-01',
+				}],
+			};
+			mockReadFile.mockResolvedValueOnce(JSON.stringify(store));
+
+			await service.evaluateTasks();
+
+			expect(executedTasks.length).toBe(0);
+		});
+	});
+
+	describe('recalculateAllNextRunTimes', () => {
+		it('should recalculate stale nextRunAt values', async () => {
+			// Simulate a task with wrong nextRunAt (computed in server timezone)
+			// "0 9 * * *" in Asia/Shanghai, correct next should be 01:00 UTC
+			// but stored as 09:00 UTC (server local)
+			const store = {
+				tasks: [{
+					id: 'cron-1', cronExpression: '0 9 * * *', timezone: 'Asia/Shanghai',
+					targetAgent: 'a1', targetTeamId: 't1', taskDescription: 'Report',
+					enabled: true, lastRunAt: null,
+					nextRunAt: '2026-03-24T09:00:00.000Z', // WRONG — server local
+					createdBy: 'user' as const, createdAt: '2026-01-01',
+				}],
+			};
+			mockReadFile.mockResolvedValueOnce(JSON.stringify(store));
+
+			const updated = await service.recalculateAllNextRunTimes();
+
+			expect(updated).toBe(1);
+			const saved = JSON.parse(mockWriteFile.mock.calls[0][1]);
+			const newNextRun = new Date(saved.tasks[0].nextRunAt);
+			// 09:00 Shanghai = 01:00 UTC, so hour should be 1
+			expect(newNextRun.getUTCHours()).toBe(1);
+		});
+
+		it('should skip disabled tasks', async () => {
+			const store = {
+				tasks: [{
+					id: 'cron-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+					enabled: false, lastRunAt: null, nextRunAt: '2026-03-24T09:00:00.000Z',
+					targetAgent: 'a1', targetTeamId: 't1', taskDescription: 'X',
+					createdBy: 'user' as const, createdAt: '2026-01-01',
+				}],
+			};
+			mockReadFile.mockResolvedValueOnce(JSON.stringify(store));
+
+			const updated = await service.recalculateAllNextRunTimes();
+
+			expect(updated).toBe(0);
+			expect(mockWriteFile).not.toHaveBeenCalled();
+		});
+
+		it('should use lastRunAt as the after parameter when available', async () => {
+			const lastRun = '2026-03-23T01:00:00.000Z';
+			const store = {
+				tasks: [{
+					id: 'cron-1', cronExpression: '0 9 * * *', timezone: 'Asia/Shanghai',
+					enabled: true, lastRunAt: lastRun,
+					nextRunAt: '2026-03-23T09:00:00.000Z', // stale
+					targetAgent: 'a1', targetTeamId: 't1', taskDescription: 'X',
+					createdBy: 'user' as const, createdAt: '2026-01-01',
+				}],
+			};
+			mockReadFile.mockResolvedValueOnce(JSON.stringify(store));
+
+			const updated = await service.recalculateAllNextRunTimes();
+
+			expect(updated).toBe(1);
+			const saved = JSON.parse(mockWriteFile.mock.calls[0][1]);
+			const newNextRun = new Date(saved.tasks[0].nextRunAt);
+			// After 2026-03-23T01:00:00Z, next 09:00 Shanghai = 2026-03-24T01:00:00Z
+			expect(newNextRun.getUTCHours()).toBe(1);
 		});
 	});
 

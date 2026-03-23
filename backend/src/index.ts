@@ -90,6 +90,7 @@ import { LogRotationService } from './services/session/log-rotation.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
 import { AddonLoaderService } from './services/addon/addon-loader.service.js';
+import { CronTaskService } from './services/workflow/cron-task.service.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -814,6 +815,56 @@ export class CrewlyServer {
 			// Start message queue processor
 			this.logger.info('Starting message queue processor...');
 			this.queueProcessorService.start();
+
+			// #286: Start cron task service with agent status/start callbacks
+			try {
+				const cronTaskService = CronTaskService.getInstance();
+				const storageRef = this.storageService;
+				const registrationRef = this.apiController.agentRegistrationService;
+
+				cronTaskService.setExecutionCallback(async (task) => {
+					this.logger.info('Executing cron task', { id: task.id, target: task.targetAgent });
+					await registrationRef.sendMessageToAgent(
+						task.targetAgent,
+						`[CRON_TASK:${task.id}] ${task.taskDescription}`,
+					);
+				});
+				cronTaskService.setAgentStatusCallback(async (sessionName, teamId) => {
+					const teams = await storageRef.getTeams();
+					const team = teams.find((t) => t.id === teamId);
+					if (!team) return false;
+					const member = team.members.find((m) => m.sessionName === sessionName);
+					if (!member) return false;
+					// #286 Root Cause C: treat both 'active' and 'started' as online
+					return member.agentStatus === 'active' || member.agentStatus === 'started';
+				});
+				cronTaskService.setAgentStartCallback(async (sessionName, teamId) => {
+					try {
+						const teams = await storageRef.getTeams();
+						const team = teams.find((t) => t.id === teamId);
+						if (!team) return false;
+						const member = team.members.find((m) => m.sessionName === sessionName);
+						if (!member) return false;
+						await registrationRef.createAgentSession({
+							sessionName: member.sessionName,
+							role: member.role,
+							teamId,
+							memberId: member.id,
+						});
+						return true;
+					} catch {
+						return false;
+					}
+				});
+				// Self-heal stale nextRunAt values from pre-timezone-fix versions
+				await cronTaskService.recalculateAllNextRunTimes();
+				cronTaskService.start();
+				this.logger.info('CronTaskService started');
+			} catch (cronErr) {
+				this.logger.warn('CronTaskService initialization failed (non-critical)', {
+					error: cronErr instanceof Error ? cronErr.message : String(cronErr),
+				});
+			}
 
 			// Start Slack image cleanup (download temp files)
 			try {

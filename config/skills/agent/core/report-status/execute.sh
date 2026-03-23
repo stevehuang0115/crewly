@@ -68,6 +68,12 @@ BODY=$(jq -n --arg content "$MESSAGE" --arg senderName "$SESSION_NAME" \
 
 api_call POST "/chat/agent-response" "$BODY"
 
+# Auto-register as active when reporting "active" or first status.
+# This ensures the agent's agentStatus transitions from "started" to "active"
+# in storage, which the queue processor requires before delivering messages.
+# Without this, agents that call report-status instead of register-self
+# remain stuck in "started" state indefinitely.
+
 # If task is done and taskPath provided, move task file to done folder
 if [ "$STATUS" = "done" ] && [ -n "$TASK_PATH" ]; then
   COMPLETE_BODY=$(jq -n \

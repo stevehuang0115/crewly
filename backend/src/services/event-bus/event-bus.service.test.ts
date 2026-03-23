@@ -27,15 +27,15 @@ jest.mock('../core/logger.service.js', () => ({
 function createTestEvent(overrides?: Partial<AgentEvent>): AgentEvent {
   return {
     id: crypto.randomUUID(),
-    type: 'agent:idle',
+    type: 'agent:busy',
     timestamp: new Date().toISOString(),
     teamId: 'team-1',
     teamName: 'Web Team',
     memberId: 'member-1',
     memberName: 'Joe',
     sessionName: 'agent-joe',
-    previousValue: 'in_progress',
-    newValue: 'idle',
+    previousValue: 'idle',
+    newValue: 'in_progress',
     changedField: 'workingStatus',
     ...overrides,
   };
@@ -46,7 +46,7 @@ function createTestEvent(overrides?: Partial<AgentEvent>): AgentEvent {
  */
 function createTestSubscriptionInput(overrides?: Partial<CreateSubscriptionInput>): CreateSubscriptionInput {
   return {
-    eventType: 'agent:idle',
+    eventType: 'agent:busy',
     filter: { sessionName: 'agent-joe' },
     subscriberSession: 'crewly-orc',
     ...overrides,
@@ -76,7 +76,7 @@ describe('EventBusService', () => {
       const sub = eventBus.subscribe(createTestSubscriptionInput());
 
       expect(sub.id).toBeDefined();
-      expect(sub.eventType).toBe('agent:idle');
+      expect(sub.eventType).toBe('agent:busy');
       expect(sub.filter.sessionName).toBe('agent-joe');
       expect(sub.subscriberSession).toBe('crewly-orc');
       expect(sub.oneShot).toBe(true);
@@ -158,7 +158,7 @@ describe('EventBusService', () => {
       expect(mockQueueService.enqueue).toHaveBeenCalledTimes(1);
       const call = mockQueueService.enqueue.mock.calls[0][0];
       expect(call.content).toContain('[EVENT:');
-      expect(call.content).toContain('agent:idle');
+      expect(call.content).toContain('agent:busy');
       expect(call.content).toContain('Joe');
       expect(call.conversationId).toBe('system');
       expect(call.source).toBe('system_event');
@@ -269,7 +269,7 @@ describe('EventBusService', () => {
       jest.advanceTimersByTime(5000);
 
       const call = mockQueueService.enqueue.mock.calls[0][0];
-      expect(call.content).toBe('Hey! Joe on agent-joe went idle');
+      expect(call.content).toBe('Hey! Joe on agent-joe went in_progress');
     });
 
     it('should emit event_delivered when notification is sent', () => {
@@ -282,7 +282,7 @@ describe('EventBusService', () => {
       expect(handler).toHaveBeenCalledTimes(1);
       expect(handler).toHaveBeenCalledWith(
         expect.objectContaining({
-          eventType: 'agent:idle',
+          eventType: 'agent:busy',
         })
       );
     });
@@ -319,11 +319,11 @@ describe('EventBusService', () => {
       eventBus.subscribe(createTestSubscriptionInput({
         oneShot: false,
         filter: {}, // Match all agents
-        eventType: ['agent:idle', 'agent:active'],
+        eventType: ['agent:busy', 'agent:active'],
       }));
 
-      eventBus.publish(createTestEvent({ sessionName: 'agent-joe', newValue: 'idle' }));
-      eventBus.publish(createTestEvent({ sessionName: 'agent-sam', newValue: 'active' }));
+      eventBus.publish(createTestEvent({ sessionName: 'agent-joe', type: 'agent:busy', newValue: 'in_progress' }));
+      eventBus.publish(createTestEvent({ sessionName: 'agent-sam', type: 'agent:active', newValue: 'active' }));
 
       jest.advanceTimersByTime(5000);
 
@@ -506,18 +506,18 @@ describe('EventBusService', () => {
       expect(mockQueueService.enqueue).toHaveBeenCalledTimes(1);
     });
 
-    it('should still debounce info events (agent:idle)', () => {
+    it('should still debounce info events (agent:busy)', () => {
       eventBus.subscribe(createTestSubscriptionInput({
         oneShot: false,
         filter: {},
-        eventType: ['agent:idle'],
+        eventType: ['agent:busy'],
       }));
 
       eventBus.publish(createTestEvent({
-        type: 'agent:idle',
+        type: 'agent:busy',
         sessionName: 'agent-sam',
         memberName: 'Sam',
-        newValue: 'idle',
+        newValue: 'in_progress',
       }));
 
       // NOT delivered yet — still in debounce buffer
@@ -547,6 +547,49 @@ describe('EventBusService', () => {
       // But should have been delivered
       expect(mockQueueService.enqueue).toHaveBeenCalledTimes(1);
     });
+
+    it('should deliver agent:idle immediately as critical event', () => {
+      eventBus.subscribe(createTestSubscriptionInput({
+        oneShot: false,
+        filter: {},
+        eventType: ['agent:idle'],
+      }));
+
+      eventBus.publish(createTestEvent({
+        type: 'agent:idle',
+        sessionName: 'agent-sam',
+        memberName: 'Sam',
+        newValue: 'idle',
+        changedField: 'workingStatus',
+      }));
+
+      // agent:idle is now critical — delivered immediately, not buffered
+      expect((eventBus as any).pendingNotifications.size).toBe(0);
+      expect(mockQueueService.enqueue).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('MAX_BATCH_WAIT hard deadline', () => {
+    it('should force flush when MAX_BATCH_WAIT_MS is reached even if debounce keeps resetting', () => {
+      eventBus.subscribe(createTestSubscriptionInput({
+        oneShot: false,
+        filter: {},
+        eventType: ['agent:busy'],
+      }));
+
+      // Publish events every 4s (within 5s debounce window), so debounce timer keeps resetting
+      for (let i = 0; i < 7; i++) {
+        eventBus.publish(createTestEvent({ sessionName: `agent-${i}`, type: 'agent:busy' }));
+        jest.advanceTimersByTime(4000);
+      }
+      // After 7*4s = 28s, still under MAX_BATCH_WAIT_MS (30s) but debounce hasn't flushed
+      // because timer keeps resetting. But the maxWaitTimer was set at first event.
+
+      // Advance to 30s total (2s more) — MAX_BATCH_WAIT forces flush
+      jest.advanceTimersByTime(2000);
+
+      expect(mockQueueService.enqueue).toHaveBeenCalled();
+    });
   });
 
   describe('publish dedup and flush', () => {
@@ -554,8 +597,8 @@ describe('EventBusService', () => {
       eventBus.subscribe(createTestSubscriptionInput({ oneShot: false }));
 
       // Publish same event (same type + sessionName) twice within 5s
-      eventBus.publish(createTestEvent({ type: 'agent:idle', sessionName: 'agent-joe' }));
-      eventBus.publish(createTestEvent({ type: 'agent:idle', sessionName: 'agent-joe' }));
+      eventBus.publish(createTestEvent({ type: 'agent:busy', sessionName: 'agent-joe' }));
+      eventBus.publish(createTestEvent({ type: 'agent:busy', sessionName: 'agent-joe' }));
 
       jest.advanceTimersByTime(5000);
 
@@ -567,14 +610,14 @@ describe('EventBusService', () => {
       eventBus.subscribe(createTestSubscriptionInput({ oneShot: false }));
 
       // First publish
-      eventBus.publish(createTestEvent({ type: 'agent:idle', sessionName: 'agent-joe' }));
+      eventBus.publish(createTestEvent({ type: 'agent:busy', sessionName: 'agent-joe' }));
 
       // Advance past debounce window — flushes the first notification
       jest.advanceTimersByTime(5001);
       expect(mockQueueService.enqueue).toHaveBeenCalledTimes(1);
 
       // Publish same event again — allowed because debounce window has expired
-      eventBus.publish(createTestEvent({ type: 'agent:idle', sessionName: 'agent-joe' }));
+      eventBus.publish(createTestEvent({ type: 'agent:busy', sessionName: 'agent-joe' }));
 
       // Flush the second notification
       jest.advanceTimersByTime(5000);
@@ -585,7 +628,7 @@ describe('EventBusService', () => {
       eventBus.subscribe(createTestSubscriptionInput({
         oneShot: false,
         filter: {},
-        eventType: 'agent:idle',
+        eventType: 'agent:busy',
       }));
 
       // Publish 100 events with unique sessionNames

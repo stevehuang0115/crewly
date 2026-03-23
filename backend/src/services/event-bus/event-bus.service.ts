@@ -73,6 +73,9 @@ export class EventBusService extends EventEmitter {
   /** Debounce timer for batching event notifications */
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Hard-deadline timer that forces a flush even if debounce keeps resetting */
+  private maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
+
   /**
    * Dedup guard for publish(): ignores duplicate events for the same
    * (type, sessionName) within EVENT_DEBOUNCE_WINDOW_MS (5s).
@@ -314,6 +317,10 @@ export class EventBusService extends EventEmitter {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;
     }
+    if (this.maxWaitTimer) {
+      clearTimeout(this.maxWaitTimer);
+      this.maxWaitTimer = null;
+    }
     if (this.pendingNotifications.size > 0) {
       this.flushNotifications();
     }
@@ -360,6 +367,16 @@ export class EventBusService extends EventEmitter {
     this.batchTimer = setTimeout(() => {
       this.flushNotifications();
     }, EVENT_BUS_CONSTANTS.EVENT_DEBOUNCE_WINDOW_MS);
+
+    // Hard deadline: ensure notifications are flushed within MAX_BATCH_WAIT_MS
+    // even if new events keep resetting the debounce timer. Only start the
+    // hard-deadline timer once (when first event enters the buffer).
+    if (!this.maxWaitTimer) {
+      this.maxWaitTimer = setTimeout(() => {
+        this.logger.info('MAX_BATCH_WAIT reached, forcing flush');
+        this.flushNotifications();
+      }, EVENT_BUS_CONSTANTS.MAX_BATCH_WAIT_MS);
+    }
   }
 
   /**
@@ -398,7 +415,14 @@ export class EventBusService extends EventEmitter {
    * Groups by subscriber session and delivers one enqueue per subscriber.
    */
   private flushNotifications(): void {
-    this.batchTimer = null;
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
+    if (this.maxWaitTimer) {
+      clearTimeout(this.maxWaitTimer);
+      this.maxWaitTimer = null;
+    }
 
     if (this.pendingNotifications.size === 0) {
       return;
@@ -567,6 +591,14 @@ export class EventBusService extends EventEmitter {
 
     for (const [id, sub] of this.subscriptions) {
       if (sub.expiresAt && new Date(sub.expiresAt) < now) {
+        this.logger.info('Subscription expired without matching events', {
+          subscriptionId: id,
+          eventType: sub.eventType,
+          subscriber: sub.subscriberSession,
+          filter: sub.filter,
+          createdAt: sub.createdAt,
+          expiresAt: sub.expiresAt,
+        });
         this.subscriptions.delete(id);
         removed++;
       }

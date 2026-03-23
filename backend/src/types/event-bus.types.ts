@@ -64,6 +64,7 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   'task:failed',
   'task:cancelled',
   'task:input_required',
+  'agent:idle',
   'agent:inactive',
   'agent:context_critical',
   'hierarchy:escalation',
@@ -76,7 +77,6 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
  */
 export const INFO_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   'agent:status_changed',
-  'agent:idle',
   'agent:busy',
   'agent:active',
   'agent:context_warning',
