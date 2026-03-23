@@ -189,6 +189,12 @@ export class SlackService extends EventEmitter {
   };
   private conversationContexts: Map<string, SlackConversationContext> = new Map();
 
+  /** Cached Bolt App constructor from the first successful dynamic import */
+  private cachedAppConstructor: (new (opts: Record<string, unknown>) => unknown) | null = null;
+
+  /** Cached Bolt LogLevel enum from the first successful dynamic import */
+  private cachedLogLevelEnum: Record<string, unknown> | null = null;
+
   /**
    * Message deduplication tracker.
    * Maps a fingerprint (channelId:threadTs:textHash) to the timestamp it was sent.
@@ -223,17 +229,21 @@ export class SlackService extends EventEmitter {
     this.reconnectAttempts = 0;
 
     try {
-      // Dynamic import of @slack/bolt (CJS module requires default import handling)
-      const boltModule = await import('@slack/bolt') as any;
-      const App = boltModule.App ?? boltModule.default?.App;
-      const LogLevel = boltModule.LogLevel ?? boltModule.default?.LogLevel;
+      // Dynamic import of @slack/bolt (CJS module requires default import handling).
+      // Cache the constructor and LogLevel on first import for reuse in reconnect.
+      const boltModule = await import('@slack/bolt') as Record<string, unknown>;
+      const defaultExport = boltModule.default as Record<string, unknown> | undefined;
+      const App = (boltModule.App ?? defaultExport?.App) as new (opts: Record<string, unknown>) => unknown;
+      const LogLevel = (boltModule.LogLevel ?? defaultExport?.LogLevel) as Record<string, unknown> | undefined;
+      this.cachedAppConstructor = App;
+      this.cachedLogLevelEnum = LogLevel ?? null;
 
       this.app = new App({
         token: config.botToken,
         appToken: config.appToken,
         signingSecret: config.signingSecret,
         socketMode: config.socketMode,
-        logLevel: LogLevel?.INFO ?? 'info',
+        logLevel: (LogLevel as Record<string, unknown>)?.INFO ?? 'info',
       }) as unknown as SlackApp;
 
       this.client = this.app.client;
@@ -562,6 +572,11 @@ export class SlackService extends EventEmitter {
     }
 
     try {
+      // Guard: cached App constructor must be available from initialize()
+      if (!this.cachedAppConstructor) {
+        throw new Error('App constructor not cached — initialize() must be called before reconnect');
+      }
+
       // Tear down existing app
       if (this.app) {
         try {
@@ -573,17 +588,16 @@ export class SlackService extends EventEmitter {
         this.client = null;
       }
 
-      // Re-initialize
-      const boltModule = await import('@slack/bolt') as any;
-      const App = boltModule.App ?? boltModule.default?.App;
-      const LogLevel = boltModule.LogLevel ?? boltModule.default?.LogLevel;
+      // Re-initialize using cached constructor (avoids stale dynamic import issues)
+      const App = this.cachedAppConstructor;
+      const LogLevel = this.cachedLogLevelEnum;
 
       this.app = new App({
         token: this.config.botToken,
         appToken: this.config.appToken,
         signingSecret: this.config.signingSecret,
         socketMode: this.config.socketMode,
-        logLevel: LogLevel?.INFO ?? 'info',
+        logLevel: (LogLevel as Record<string, unknown>)?.INFO ?? 'info',
       }) as unknown as SlackApp;
 
       this.client = this.app.client;
@@ -602,17 +616,58 @@ export class SlackService extends EventEmitter {
       this.logger.info('Successfully reconnected to Slack Socket Mode');
     } catch (error) {
       this.reconnecting = false;
-      this.status.lastError = `Reconnect failed: ${error instanceof Error ? error.message : String(error)}`;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.status.lastError = `Reconnect failed: ${errorMessage}`;
       this.status.lastErrorAt = new Date().toISOString();
-      this.logger.error('Reconnection attempt failed', {
+
+      // Classify error: fatal errors stop the loop, transient errors retry
+      if (this.isFatalReconnectError(error)) {
+        this.logger.error('Fatal reconnection error — stopping retry loop', {
+          attempt: this.reconnectAttempts,
+          error: errorMessage,
+        });
+        this.emit('error', error instanceof Error ? error : new Error(errorMessage));
+        return;
+      }
+
+      this.logger.error('Transient reconnection error — will retry', {
         attempt: this.reconnectAttempts,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
       });
       // Schedule next attempt — the health check will also retry if this doesn't fire
       if (!this.intentionalDisconnect) {
         this.scheduleReconnect();
       }
     }
+  }
+
+  /**
+   * Classify whether a reconnection error is fatal (non-recoverable)
+   * or transient (may succeed on retry).
+   *
+   * Fatal errors: missing constructor, invalid config, auth errors.
+   * Transient errors: network timeouts, temporary server errors.
+   *
+   * @param error - The error caught during reconnection
+   * @returns True if the error is fatal and retrying would be futile
+   */
+  private isFatalReconnectError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    const lowerMessage = message.toLowerCase();
+
+    /** Patterns that indicate a non-recoverable configuration or code error */
+    const fatalPatterns = [
+      'not a constructor',
+      'is not a function',
+      'constructor not cached',
+      'invalid_auth',
+      'token_revoked',
+      'account_inactive',
+      'missing required',
+      'config',
+    ];
+
+    return fatalPatterns.some(pattern => lowerMessage.includes(pattern));
   }
 
   /**

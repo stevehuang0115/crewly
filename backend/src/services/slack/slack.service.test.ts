@@ -847,4 +847,198 @@ describe('SlackService', () => {
       expect(ts).toBe('123.456');
     });
   });
+
+  describe('cached App constructor and reconnect error classification', () => {
+    it('should cache cachedAppConstructor and cachedLogLevelEnum on initialize', async () => {
+      const service = new SlackService();
+      await service.initialize(mockConfig);
+
+      // cachedAppConstructor should be cached (either direct or via default export)
+      const cachedApp = (service as any).cachedAppConstructor;
+      expect(cachedApp).toBeDefined();
+      expect(typeof cachedApp).toBe('function');
+
+      const cachedLogLevel = (service as any).cachedLogLevelEnum;
+      expect(cachedLogLevel).toBeDefined();
+      expect(cachedLogLevel.INFO).toBe('info');
+    });
+
+    it('should reuse cached constructor during reconnect instead of re-importing', async () => {
+      const service = new SlackService();
+      await service.initialize(mockConfig);
+
+      const bolt = require('@slack/bolt');
+      const AppMock = bolt.App as jest.Mock;
+      const callCountAfterInit = AppMock.mock.calls.length;
+
+      // Simulate disconnect state so attemptReconnect proceeds
+      (service as any).status.connected = false;
+      (service as any).reconnecting = false;
+      (service as any).reconnectAttempts = 0;
+      (service as any).intentionalDisconnect = false;
+
+      // Call attemptReconnect — should use cached constructor
+      await (service as any).attemptReconnect();
+
+      // App constructor should have been called again (for new instance)
+      expect(AppMock.mock.calls.length).toBe(callCountAfterInit + 1);
+      // Verify it was called with correct config
+      const lastCallArgs = AppMock.mock.calls[AppMock.mock.calls.length - 1][0];
+      expect(lastCallArgs.token).toBe(mockConfig.botToken);
+      expect(lastCallArgs.appToken).toBe(mockConfig.appToken);
+    });
+
+    it('should throw if cachedAppConstructor is not cached when reconnecting', async () => {
+      const service = new SlackService();
+      // Set up config but don't call initialize — cachedAppConstructor stays null
+      (service as any).config = mockConfig;
+      (service as any).status.connected = false;
+      (service as any).reconnecting = false;
+      (service as any).reconnectAttempts = 0;
+      (service as any).intentionalDisconnect = false;
+      (service as any).cachedAppConstructor = null;
+
+      const errorHandler = jest.fn();
+      service.on('error', errorHandler);
+
+      await (service as any).attemptReconnect();
+
+      // Should emit error event for the fatal error
+      expect(errorHandler).toHaveBeenCalled();
+      expect(errorHandler.mock.calls[0][0].message).toContain('constructor not cached');
+      // Should NOT schedule further reconnect (fatal error stops the loop)
+      expect((service as any).reconnecting).toBe(false);
+    });
+
+    it('should classify "not a constructor" as fatal and stop reconnect loop', async () => {
+      const service = new SlackService();
+      await service.initialize(mockConfig);
+
+      // Replace cached constructor with something that throws the bug
+      (service as any).cachedAppConstructor = function NotApp() {
+        throw new Error('App is not a constructor');
+      };
+      (service as any).status.connected = false;
+      (service as any).reconnecting = false;
+      (service as any).reconnectAttempts = 0;
+      (service as any).intentionalDisconnect = false;
+
+      const errorHandler = jest.fn();
+      service.on('error', errorHandler);
+
+      await (service as any).attemptReconnect();
+
+      // Should emit error (fatal)
+      expect(errorHandler).toHaveBeenCalled();
+      expect(errorHandler.mock.calls[0][0].message).toContain('not a constructor');
+      // reconnecting should be false — loop stopped
+      expect((service as any).reconnecting).toBe(false);
+    });
+
+    it('should classify "invalid_auth" as fatal and stop reconnect loop', async () => {
+      const service = new SlackService();
+      await service.initialize(mockConfig);
+
+      // Make start() throw invalid_auth
+      const bolt = require('@slack/bolt');
+      const AppMock = bolt.App as jest.Mock;
+      AppMock.mockImplementationOnce(() => ({
+        client: {
+          chat: { postMessage: jest.fn(), update: jest.fn() },
+          reactions: { add: jest.fn() },
+          users: { info: jest.fn() },
+          files: { uploadV2: jest.fn(), info: jest.fn() },
+        },
+        receiver: { client: new EventEmitter() },
+        message: jest.fn(),
+        event: jest.fn(),
+        error: jest.fn(),
+        start: jest.fn().mockRejectedValue(new Error('invalid_auth')),
+        stop: jest.fn().mockResolvedValue(undefined),
+      }));
+
+      (service as any).status.connected = false;
+      (service as any).reconnecting = false;
+      (service as any).reconnectAttempts = 0;
+      (service as any).intentionalDisconnect = false;
+
+      const errorHandler = jest.fn();
+      service.on('error', errorHandler);
+
+      await (service as any).attemptReconnect();
+
+      expect(errorHandler).toHaveBeenCalled();
+      expect(errorHandler.mock.calls[0][0].message).toContain('invalid_auth');
+      // Should NOT have scheduled further reconnect
+      expect((service as any).reconnecting).toBe(false);
+    });
+
+    it('should classify transient network errors as non-fatal and schedule retry', async () => {
+      const service = new SlackService();
+      await service.initialize(mockConfig);
+
+      // Make start() throw a transient network error
+      const bolt = require('@slack/bolt');
+      const AppMock = bolt.App as jest.Mock;
+      AppMock.mockImplementationOnce(() => ({
+        client: {
+          chat: { postMessage: jest.fn(), update: jest.fn() },
+          reactions: { add: jest.fn() },
+          users: { info: jest.fn() },
+          files: { uploadV2: jest.fn(), info: jest.fn() },
+        },
+        receiver: { client: new EventEmitter() },
+        message: jest.fn(),
+        event: jest.fn(),
+        error: jest.fn(),
+        start: jest.fn().mockRejectedValue(new Error('ETIMEDOUT')),
+        stop: jest.fn().mockResolvedValue(undefined),
+      }));
+
+      (service as any).status.connected = false;
+      (service as any).reconnecting = false;
+      (service as any).reconnectAttempts = 0;
+      (service as any).intentionalDisconnect = false;
+
+      const errorHandler = jest.fn();
+      service.on('error', errorHandler);
+
+      // Spy on scheduleReconnect
+      const scheduleSpy = jest.spyOn(service as any, 'scheduleReconnect');
+
+      await (service as any).attemptReconnect();
+
+      // Should NOT emit error (transient, will retry)
+      expect(errorHandler).not.toHaveBeenCalled();
+      // Should schedule next reconnect attempt
+      expect(scheduleSpy).toHaveBeenCalled();
+      expect((service as any).reconnecting).toBe(false);
+
+      // Clean up scheduled timers
+      (service as any).cancelReconnectGrace();
+      scheduleSpy.mockRestore();
+    });
+
+    it('should classify "token_revoked" as fatal', () => {
+      const service = new SlackService();
+      const isFatal = (service as any).isFatalReconnectError.bind(service);
+
+      expect(isFatal(new Error('token_revoked'))).toBe(true);
+      expect(isFatal(new Error('account_inactive'))).toBe(true);
+      expect(isFatal(new Error('App is not a constructor'))).toBe(true);
+      expect(isFatal(new Error('constructor not cached'))).toBe(true);
+      expect(isFatal(new Error('is not a function'))).toBe(true);
+    });
+
+    it('should classify transient errors as non-fatal', () => {
+      const service = new SlackService();
+      const isFatal = (service as any).isFatalReconnectError.bind(service);
+
+      expect(isFatal(new Error('ETIMEDOUT'))).toBe(false);
+      expect(isFatal(new Error('ECONNRESET'))).toBe(false);
+      expect(isFatal(new Error('socket hang up'))).toBe(false);
+      expect(isFatal(new Error('network error'))).toBe(false);
+      expect(isFatal(new Error('ENOTFOUND'))).toBe(false);
+    });
+  });
 });
