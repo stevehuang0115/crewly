@@ -3165,4 +3165,136 @@ describe('Teams Handlers', () => {
       expect(savedTeam.qualityGate).toEqual({ autoApprove: true, minQualityScore: 90 });
     });
   });
+
+  describe('startTeamMember watchdog (#288)', () => {
+    /**
+     * Tests for the #252 watchdog timer that detects agents stuck in STARTING state.
+     * Fix #288: watchdog must NOT reset agents in STARTED or ACTIVE state.
+     */
+    let mockTeam: Team;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+
+      mockTeam = {
+        id: 'team-1',
+        name: 'Test Team',
+        description: 'Test',
+        members: [{
+          id: 'member-1',
+          name: 'Agent A',
+          sessionName: '',
+          role: 'developer',
+          systemPrompt: 'Test',
+          agentStatus: 'inactive',
+          workingStatus: 'idle',
+          runtimeType: 'claude-code',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }],
+        projectIds: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      mockRequest = {
+        params: { teamId: 'team-1', memberId: 'member-1' },
+        body: {},
+      };
+      mockResponse = responseMock as any;
+
+      mockStorageService.getProjects.mockResolvedValue([]);
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>().mockResolvedValue({
+          success: true,
+          sessionName: 'test-session',
+          message: 'ok',
+        }),
+      } as any;
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('should reset agent stuck in STARTING state after watchdog timeout', async () => {
+      // Return base team for all pre-watchdog calls, then STARTING team for watchdog
+      const startingTeam = JSON.parse(JSON.stringify(mockTeam));
+      startingTeam.members[0].agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.STARTING;
+      startingTeam.members[0].sessionName = 'test-session';
+
+      // Use default return for normal flow, watchdog will get same mock
+      mockStorageService.getTeams.mockResolvedValue([mockTeam]);
+      mockStorageService.saveTeam.mockResolvedValue(undefined);
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      // Now switch mock to return STARTING state for the watchdog check
+      mockStorageService.getTeams.mockResolvedValue([startingTeam]);
+
+      // Advance past the watchdog timeout (5 minutes) and flush async callbacks
+      await jest.advanceTimersByTimeAsync(300_001);
+
+      // Watchdog should have saved the team with INACTIVE status
+      const watchdogSave = mockStorageService.saveTeam.mock.calls.find(
+        (call: any[]) => call[0]?.members?.[0]?.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+          && call[0]?.members?.[0]?.dropoutReason === 'startup_timeout'
+      );
+      expect(watchdogSave).toBeDefined();
+    });
+
+    it('should NOT reset agent in STARTED state after watchdog timeout (#288)', async () => {
+      mockStorageService.getTeams.mockResolvedValue([mockTeam]);
+      mockStorageService.saveTeam.mockResolvedValue(undefined);
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      // Switch to STARTED state for watchdog check
+      const startedTeam = JSON.parse(JSON.stringify(mockTeam));
+      startedTeam.members[0].agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.STARTED;
+      startedTeam.members[0].sessionName = 'test-session';
+      mockStorageService.getTeams.mockResolvedValue([startedTeam]);
+
+      const saveCallsBefore = mockStorageService.saveTeam.mock.calls.length;
+
+      await jest.advanceTimersByTimeAsync(300_001);
+
+      // Watchdog should NOT have saved — agent in STARTED state is left alone
+      const saveCallsAfter = mockStorageService.saveTeam.mock.calls.length;
+      expect(saveCallsAfter).toBe(saveCallsBefore);
+    });
+
+    it('should NOT reset agent in ACTIVE state after watchdog timeout', async () => {
+      mockStorageService.getTeams.mockResolvedValue([mockTeam]);
+      mockStorageService.saveTeam.mockResolvedValue(undefined);
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      // Switch to ACTIVE state for watchdog check
+      const activeTeam = JSON.parse(JSON.stringify(mockTeam));
+      activeTeam.members[0].agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+      activeTeam.members[0].sessionName = 'test-session';
+      mockStorageService.getTeams.mockResolvedValue([activeTeam]);
+
+      const saveCallsBefore = mockStorageService.saveTeam.mock.calls.length;
+
+      await jest.advanceTimersByTimeAsync(300_001);
+
+      // Watchdog should NOT have saved — agent in ACTIVE state is left alone
+      const saveCallsAfter = mockStorageService.saveTeam.mock.calls.length;
+      expect(saveCallsAfter).toBe(saveCallsBefore);
+    });
+  });
 });

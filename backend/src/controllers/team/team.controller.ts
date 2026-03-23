@@ -458,17 +458,18 @@ async function _startTeamMemberCore(
         logger.warn('Failed to initialize memory', { sessionName, error: memError instanceof Error ? memError.message : String(memError) });
       }
 
-      // #252: Start a watchdog timer to detect agents stuck in 'starting' state
-      // If agent hasn't registered (reached 'active') within STARTING_WATCHDOG timeout,
+      // #252: Start a watchdog timer to detect agents stuck in 'starting' state.
+      // If agent hasn't registered (reached 'active' or 'started') within STARTING_WATCHDOG timeout,
       // reset to 'inactive' with a dropout reason so the orchestrator can take action.
+      // NOTE (#288): Only STARTING agents are reset. STARTED means the agent process
+      // launched and registered successfully — it should NOT be forcibly killed.
       setTimeout(async () => {
         try {
           const watchdogTeams = await context.storageService.getTeams();
           const watchdogTeam = watchdogTeams.find(t => t.id === team.id);
           const watchdogMember = watchdogTeam?.members.find(m => m.id === member.id) as MutableTeamMember | undefined;
           if (watchdogTeam && watchdogMember &&
-              (watchdogMember.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.STARTING ||
-               watchdogMember.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.STARTED)) {
+              watchdogMember.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.STARTING) {
             logger.warn('Agent stuck in starting state — watchdog triggering reset (#252)', {
               sessionName,
               memberId: member.id,
