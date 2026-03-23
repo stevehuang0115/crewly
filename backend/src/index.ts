@@ -72,7 +72,7 @@ import { setEventBusServiceForTaskCleanup } from './controllers/task-management/
 import { setTeamControllerEventBusService } from './controllers/team/team.controller.js';
 import { SkillCatalogService } from './services/skill/skill-catalog.service.js';
 import { createEventBusRouter } from './controllers/event-bus/event-bus.routes.js';
-import { setMessageQueueService as setChatMessageQueueService } from './controllers/chat/chat.controller.js';
+import { setMessageQueueService as setChatMessageQueueService, setThreadStatusQueueService as setChatThreadStatusQueueService } from './controllers/chat/chat.controller.js';
 import { setMessageQueueService as setMessagingControllerQueueService } from './controllers/messaging/messaging.controller.js';
 import { createMessagingRouter } from './controllers/messaging/messaging.routes.js';
 import { SystemResourceAlertService } from './services/monitoring/system-resource-alert.service.js';
@@ -295,8 +295,13 @@ export class CrewlyServer {
 		responseRouter.setThreadStatusQueue(this.threadStatusQueueService);
 		this.queueProcessorService.setThreadStatusQueue(this.threadStatusQueueService);
 
+		// Wire thread status queue with scheduler and event bus for follow-up tracking
+		this.threadStatusQueueService.setSchedulerService(this.schedulerService);
+		this.threadStatusQueueService.setEventBusService(this.eventBusService);
+
 		// Wire queue service into controllers
 		setChatMessageQueueService(this.messageQueueService);
+		setChatThreadStatusQueueService(this.threadStatusQueueService);
 		setMessagingControllerQueueService(this.messageQueueService);
 
 		// Initialize system resource alert service for proactive monitoring
@@ -844,46 +849,26 @@ export class CrewlyServer {
 
 			// Thread Status Queue: load persisted state and recover pending threads
 			try {
-				await this.threadStatusQueueService.loadPersistedState();
-				const pending = this.threadStatusQueueService.getPendingThreads();
-				if (pending.length > 0) {
-					this.logger.info('Recovering pending thread status entries', { count: pending.length });
-					for (const entry of pending) {
-						if (entry.status === 'enqueued' || entry.status === 'error') {
-							// Re-enqueue the message for delivery
-							this.messageQueueService.enqueue({
-								content: `[RECOVERY] Unreplied thread from ${entry.receivedAt}: ${entry.messagePreview}`,
-								conversationId: entry.conversationId,
-								source: entry.source,
-								sourceMetadata: entry.sourceMetadata as Record<string, unknown> | undefined,
-							});
-						} else if (entry.status === 'delivered') {
-							// Was delivered but no reply before restart — re-deliver
-							this.messageQueueService.enqueue({
-								content: `[RECOVERY] Thread delivered but no reply before restart: ${entry.messagePreview}`,
-								conversationId: entry.conversationId,
-								source: entry.source,
-								sourceMetadata: entry.sourceMetadata as Record<string, unknown> | undefined,
-							});
-						} else if (entry.status === 'replied_waiting_actions') {
-							// Orchestrator replied but agents haven't finished — notify
-							this.messageQueueService.enqueue({
-								content: `[RECOVERY] Thread ${entry.threadKey} is waiting for agents: ${entry.delegatedAgents?.join(', ') || 'unknown'}. Check their status.`,
-								conversationId: 'system',
-								source: 'system_event',
-								targetSession: ORCHESTRATOR_SESSION_NAME,
-							});
-						}
+				const recoveryResult = await this.threadStatusQueueService.recoverPendingThreads(
+					this.messageQueueService,
+					{
+						agentStatusChecker: {
+							getAgentWorkingStatus: async (sessionName: string) => {
+								const status = await this.activityMonitorService.getWorkingStatusForSession(sessionName);
+								if (status === null) return 'unknown';
+								return status;
+							},
+						},
 					}
-					this.logger.info('Thread status queue recovery complete', {
-						recovered: pending.length,
-					});
+				);
+				if (recoveryResult.reEnqueued > 0 || recoveryResult.followUpRestored > 0 || recoveryResult.delegationsCompleted > 0) {
+					this.logger.info('Thread status queue recovery complete', recoveryResult);
 				}
-				// Expire stale threads and clean up old terminal entries
-				const expired = this.threadStatusQueueService.expireStale();
-				const cleaned = this.threadStatusQueueService.cleanup();
-				if (expired > 0 || cleaned > 0) {
-					this.logger.info('Thread status queue maintenance', { expired, cleaned });
+				if (recoveryResult.expired > 0 || recoveryResult.cleaned > 0) {
+					this.logger.info('Thread status queue maintenance', {
+						expired: recoveryResult.expired,
+						cleaned: recoveryResult.cleaned,
+					});
 				}
 			} catch (err) {
 				this.logger.warn('Thread status queue recovery failed (non-critical)', {

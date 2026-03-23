@@ -23,6 +23,9 @@ import {
   clearConversation,
   getStatistics,
   agentResponse,
+  getThreadStatusList,
+  getThreadStatusStats,
+  getThreadStatusByKey,
 } from './chat.controller.js';
 
 /**
@@ -45,6 +48,11 @@ export function createChatRouter(context?: ApiContext): Router {
 
   // Statistics
   router.get('/statistics', getStatistics);
+
+  // Thread status endpoints (specific routes before parameterized)
+  router.get('/thread-status/stats', getThreadStatusStats);
+  router.get('/thread-status/:threadKey', getThreadStatusByKey);
+  router.get('/thread-status', getThreadStatusList);
 
   // Conversation endpoints - specific routes first
   router.get('/conversations/current', getCurrentConversation);

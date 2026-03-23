@@ -22,4 +22,8 @@ export {
   clearConversation,
   getStatistics,
   setMessageQueueService,
+  setThreadStatusQueueService,
+  getThreadStatusList,
+  getThreadStatusStats,
+  getThreadStatusByKey,
 } from './chat.controller.js';

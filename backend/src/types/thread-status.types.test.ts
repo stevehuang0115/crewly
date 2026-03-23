@@ -37,7 +37,6 @@ describe('THREAD_STATUS_VALUES', () => {
 describe('TERMINAL_STATUSES', () => {
   it('contains only terminal statuses', () => {
     expect(TERMINAL_STATUSES).toContain('replied_completed');
-    expect(TERMINAL_STATUSES).toContain('replied_to_follow_up');
     expect(TERMINAL_STATUSES).toContain('expired');
   });
 
@@ -45,6 +44,7 @@ describe('TERMINAL_STATUSES', () => {
     expect(TERMINAL_STATUSES).not.toContain('enqueued');
     expect(TERMINAL_STATUSES).not.toContain('delivered');
     expect(TERMINAL_STATUSES).not.toContain('replied_waiting_actions');
+    expect(TERMINAL_STATUSES).not.toContain('replied_to_follow_up');
     expect(TERMINAL_STATUSES).not.toContain('error');
   });
 });
@@ -84,7 +84,6 @@ describe('isThreadStatus', () => {
 describe('isTerminalStatus', () => {
   it('returns true for terminal statuses', () => {
     expect(isTerminalStatus('replied_completed')).toBe(true);
-    expect(isTerminalStatus('replied_to_follow_up')).toBe(true);
     expect(isTerminalStatus('expired')).toBe(true);
   });
 
@@ -92,6 +91,7 @@ describe('isTerminalStatus', () => {
     expect(isTerminalStatus('enqueued')).toBe(false);
     expect(isTerminalStatus('delivered')).toBe(false);
     expect(isTerminalStatus('replied_waiting_actions')).toBe(false);
+    expect(isTerminalStatus('replied_to_follow_up')).toBe(false);
     expect(isTerminalStatus('error')).toBe(false);
   });
 });

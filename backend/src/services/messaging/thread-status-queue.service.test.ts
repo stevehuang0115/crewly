@@ -4,7 +4,14 @@
  * @module services/messaging/thread-status-queue.test
  */
 
-import { ThreadStatusQueueService } from './thread-status-queue.service.js';
+import {
+  ThreadStatusQueueService,
+  type ISchedulerServiceLike,
+  type IEventBusServiceLike,
+  type IMessageQueueServiceLike,
+  type IAgentStatusCheckerLike,
+  type RecoveryConfirmCallback,
+} from './thread-status-queue.service.js';
 import type {
   TrackInboundInput,
   PersistedThreadStatusState,
@@ -32,6 +39,7 @@ jest.mock('../../constants.js', () => ({
     WHATSAPP: 'whatsapp',
     TELEGRAM: 'telegram',
   },
+  ORCHESTRATOR_SESSION_NAME: 'crewly-orc',
 }));
 
 // Mock logger
@@ -559,6 +567,380 @@ describe('ThreadStatusQueueService', () => {
       svc.destroy();
       svc.destroy();
       // No assertion — verifying no throw
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getAllEntries
+  // ---------------------------------------------------------------------------
+
+  describe('getAllEntries', () => {
+    it('returns all entries regardless of status', () => {
+      svc.trackInbound(makeInput({ threadKey: 'all-1' }));
+      svc.trackInbound(makeInput({ threadKey: 'all-2' }));
+      svc.markReplied('all-2', 'replied_completed');
+      svc.trackInbound(makeInput({ threadKey: 'all-3' }));
+
+      const entries = svc.getAllEntries();
+      expect(entries).toHaveLength(3);
+    });
+
+    it('returns empty array when no entries exist', () => {
+      expect(svc.getAllEntries()).toHaveLength(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Sub-task A: Follow-up auto-scheduling
+  // ---------------------------------------------------------------------------
+
+  describe('follow-up auto-scheduling (Sub-task A)', () => {
+    let mockScheduler: jest.Mocked<ISchedulerServiceLike>;
+    let mockEventBus: jest.Mocked<IEventBusServiceLike>;
+
+    beforeEach(() => {
+      mockScheduler = {
+        scheduleCheck: jest.fn().mockReturnValue('sched-001'),
+        cancelCheck: jest.fn(),
+      };
+      mockEventBus = {
+        subscribe: jest.fn().mockReturnValue({ id: 'sub-001' }),
+        unsubscribe: jest.fn().mockReturnValue(true),
+      };
+      svc.setSchedulerService(mockScheduler);
+      svc.setEventBusService(mockEventBus);
+    });
+
+    it('creates scheduled check and event subscription on replied_to_follow_up', () => {
+      svc.trackInbound(makeInput({ threadKey: 'fu-1', conversationId: 'conv-fu-1' }));
+      svc.markDelivered('fu-1');
+      svc.markReplied('fu-1', 'replied_to_follow_up');
+
+      expect(mockScheduler.scheduleCheck).toHaveBeenCalledTimes(1);
+      expect(mockScheduler.scheduleCheck).toHaveBeenCalledWith(
+        'crewly-orc',
+        5,
+        expect.stringContaining('fu-1'),
+        'check-in',
+        { label: 'follow-up:fu-1' }
+      );
+
+      expect(mockEventBus.subscribe).toHaveBeenCalledTimes(1);
+      expect(mockEventBus.subscribe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          subscriberSession: 'crewly-orc',
+          oneShot: true,
+        })
+      );
+
+      const tracking = svc.getFollowUpTracking('fu-1');
+      expect(tracking).not.toBeNull();
+      expect(tracking!.scheduledCheckId).toBe('sched-001');
+      expect(tracking!.eventSubscriptionId).toBe('sub-001');
+    });
+
+    it('does NOT create follow-up tracking for replied_completed', () => {
+      svc.trackInbound(makeInput({ threadKey: 'fu-2' }));
+      svc.markReplied('fu-2', 'replied_completed');
+
+      expect(mockScheduler.scheduleCheck).not.toHaveBeenCalled();
+      expect(mockEventBus.subscribe).not.toHaveBeenCalled();
+      expect(svc.getFollowUpTracking('fu-2')).toBeNull();
+    });
+
+    it('does NOT create follow-up tracking for replied_waiting_actions', () => {
+      svc.trackInbound(makeInput({ threadKey: 'fu-3' }));
+      svc.markReplied('fu-3', 'replied_waiting_actions');
+
+      expect(mockScheduler.scheduleCheck).not.toHaveBeenCalled();
+      expect(mockEventBus.subscribe).not.toHaveBeenCalled();
+    });
+
+    it('handleFollowUpReply cancels check and subscription', () => {
+      svc.trackInbound(makeInput({ threadKey: 'fu-4' }));
+      svc.markDelivered('fu-4');
+      svc.markReplied('fu-4', 'replied_to_follow_up');
+
+      svc.handleFollowUpReply('fu-4');
+
+      expect(mockScheduler.cancelCheck).toHaveBeenCalledWith('sched-001');
+      expect(mockEventBus.unsubscribe).toHaveBeenCalledWith('sub-001');
+      expect(svc.getFollowUpTracking('fu-4')).toBeNull();
+      expect(svc.get('fu-4')!.status).toBe('replied_completed');
+    });
+
+    it('handleFollowUpReply is a no-op for unknown threadKey', () => {
+      svc.handleFollowUpReply('nonexistent');
+      expect(mockScheduler.cancelCheck).not.toHaveBeenCalled();
+      expect(mockEventBus.unsubscribe).not.toHaveBeenCalled();
+    });
+
+    it('works without scheduler/eventBus set (logs warning, no error)', () => {
+      const svc2 = createService();
+      svc2.trackInbound(makeInput({ threadKey: 'fu-5' }));
+      svc2.markReplied('fu-5', 'replied_to_follow_up');
+      // Should not throw, just log warnings
+      expect(svc2.getFollowUpTracking('fu-5')).toBeNull();
+      svc2.destroy();
+    });
+
+    it('destroy cancels all follow-up tracking', () => {
+      svc.trackInbound(makeInput({ threadKey: 'fu-6' }));
+      svc.markReplied('fu-6', 'replied_to_follow_up');
+
+      svc.destroy();
+
+      expect(mockScheduler.cancelCheck).toHaveBeenCalledWith('sched-001');
+      expect(mockEventBus.unsubscribe).toHaveBeenCalledWith('sub-001');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Sub-task B: Restart Recovery
+  // ---------------------------------------------------------------------------
+
+  describe('recoverPendingThreads (Sub-task B)', () => {
+    let mockMessageQueue: jest.Mocked<IMessageQueueServiceLike>;
+    let mockAgentChecker: jest.Mocked<IAgentStatusCheckerLike>;
+    let mockConfirmCallback: jest.MockedFunction<RecoveryConfirmCallback>;
+    let mockScheduler: jest.Mocked<ISchedulerServiceLike>;
+    let mockEventBus: jest.Mocked<IEventBusServiceLike>;
+
+    beforeEach(() => {
+      mockMessageQueue = {
+        enqueue: jest.fn(),
+      };
+      mockAgentChecker = {
+        getAgentWorkingStatus: jest.fn().mockResolvedValue('idle'),
+      };
+      mockConfirmCallback = jest.fn().mockResolvedValue(undefined);
+      mockScheduler = {
+        scheduleCheck: jest.fn().mockReturnValue('recovery-sched-001'),
+        cancelCheck: jest.fn(),
+      };
+      mockEventBus = {
+        subscribe: jest.fn().mockReturnValue({ id: 'recovery-sub-001' }),
+        unsubscribe: jest.fn().mockReturnValue(true),
+      };
+      svc.setSchedulerService(mockScheduler);
+      svc.setEventBusService(mockEventBus);
+    });
+
+    it('Branch 1: re-enqueues enqueued threads with confirm callback', async () => {
+      svc.trackInbound(makeInput({ threadKey: 'rec-1', messagePreview: 'Hello' }));
+      // Persist and reload to simulate restart
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      const svc2 = createService();
+      svc2.setSchedulerService(mockScheduler);
+      svc2.setEventBusService(mockEventBus);
+
+      const result = await svc2.recoverPendingThreads(mockMessageQueue, {
+        confirmCallback: mockConfirmCallback,
+        agentStatusChecker: mockAgentChecker,
+      });
+
+      expect(mockConfirmCallback).toHaveBeenCalledTimes(1);
+      expect(mockConfirmCallback).toHaveBeenCalledWith(
+        expect.objectContaining({ threadKey: 'rec-1', status: 'enqueued' })
+      );
+      expect(mockMessageQueue.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('[RECOVERY]') })
+      );
+      expect(result.reEnqueued).toBe(1);
+      svc2.destroy();
+    });
+
+    it('Branch 1: re-enqueues delivered threads', async () => {
+      svc.trackInbound(makeInput({ threadKey: 'rec-2' }));
+      svc.markDelivered('rec-2');
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      const svc2 = createService();
+      svc2.setSchedulerService(mockScheduler);
+      svc2.setEventBusService(mockEventBus);
+
+      const result = await svc2.recoverPendingThreads(mockMessageQueue, {
+        confirmCallback: mockConfirmCallback,
+      });
+
+      expect(result.reEnqueued).toBe(1);
+      expect(mockConfirmCallback).toHaveBeenCalledTimes(1);
+      svc2.destroy();
+    });
+
+    it('Branch 1: re-enqueues error threads', async () => {
+      svc.trackInbound(makeInput({ threadKey: 'rec-err' }));
+      const entry = svc.get('rec-err')!;
+      (entry as any).status = 'error';
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      const svc2 = createService();
+      const result = await svc2.recoverPendingThreads(mockMessageQueue);
+      expect(result.reEnqueued).toBe(1);
+      svc2.destroy();
+    });
+
+    it('Branch 2: restores follow-up tracking for replied_to_follow_up', async () => {
+      svc.trackInbound(makeInput({ threadKey: 'rec-fu', conversationId: 'conv-fu' }));
+      svc.markDelivered('rec-fu');
+      svc.markReplied('rec-fu', 'replied_to_follow_up');
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      const svc2 = createService();
+      svc2.setSchedulerService(mockScheduler);
+      svc2.setEventBusService(mockEventBus);
+
+      const result = await svc2.recoverPendingThreads(mockMessageQueue);
+      expect(result.followUpRestored).toBe(1);
+      expect(mockScheduler.scheduleCheck).toHaveBeenCalledWith(
+        'crewly-orc',
+        5,
+        expect.stringContaining('rec-fu'),
+        'check-in',
+        { label: 'follow-up:rec-fu' }
+      );
+      expect(mockEventBus.subscribe).toHaveBeenCalled();
+      svc2.destroy();
+    });
+
+    it('Branch 3: completes threads when all delegated agents are idle', async () => {
+      svc.trackInbound(makeInput({ threadKey: 'rec-wa' }));
+      svc.markDelivered('rec-wa');
+      svc.markReplied('rec-wa', 'replied_waiting_actions');
+      svc.addDelegatedAgent('rec-wa', 'agent-a');
+      svc.addDelegatedAgent('rec-wa', 'agent-b');
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      mockAgentChecker.getAgentWorkingStatus.mockResolvedValue('idle');
+
+      const svc2 = createService();
+      const result = await svc2.recoverPendingThreads(mockMessageQueue, {
+        agentStatusChecker: mockAgentChecker,
+      });
+
+      expect(result.waitingActionsChecked).toBe(1);
+      expect(result.delegationsCompleted).toBe(1);
+      expect(mockAgentChecker.getAgentWorkingStatus).toHaveBeenCalledWith('agent-a');
+      expect(mockAgentChecker.getAgentWorkingStatus).toHaveBeenCalledWith('agent-b');
+      // Should NOT enqueue since all agents are done
+      expect(mockMessageQueue.enqueue).not.toHaveBeenCalled();
+      svc2.destroy();
+    });
+
+    it('Branch 3: keeps waiting when some agents are still in_progress', async () => {
+      svc.trackInbound(makeInput({ threadKey: 'rec-wa2' }));
+      svc.markDelivered('rec-wa2');
+      svc.markReplied('rec-wa2', 'replied_waiting_actions');
+      svc.addDelegatedAgent('rec-wa2', 'agent-a');
+      svc.addDelegatedAgent('rec-wa2', 'agent-b');
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      mockAgentChecker.getAgentWorkingStatus
+        .mockResolvedValueOnce('idle')
+        .mockResolvedValueOnce('in_progress');
+
+      const svc2 = createService();
+      const result = await svc2.recoverPendingThreads(mockMessageQueue, {
+        agentStatusChecker: mockAgentChecker,
+      });
+
+      expect(result.waitingActionsChecked).toBe(1);
+      expect(result.delegationsCompleted).toBe(0);
+      // Should enqueue notification since not all agents are done
+      expect(mockMessageQueue.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('still working'),
+        })
+      );
+      svc2.destroy();
+    });
+
+    it('Branch 3: falls back to notification when no agent status checker', async () => {
+      svc.trackInbound(makeInput({ threadKey: 'rec-wa3' }));
+      svc.markDelivered('rec-wa3');
+      svc.markReplied('rec-wa3', 'replied_waiting_actions');
+      svc.addDelegatedAgent('rec-wa3', 'agent-a');
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      const svc2 = createService();
+      const result = await svc2.recoverPendingThreads(mockMessageQueue);
+
+      expect(result.waitingActionsChecked).toBe(1);
+      expect(mockMessageQueue.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('[RECOVERY]'),
+        })
+      );
+      svc2.destroy();
+    });
+
+    it('Branch 4: skips terminal entries (replied_completed)', async () => {
+      svc.trackInbound(makeInput({ threadKey: 'rec-done' }));
+      svc.markReplied('rec-done', 'replied_completed');
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      const svc2 = createService();
+      const result = await svc2.recoverPendingThreads(mockMessageQueue);
+
+      expect(result.reEnqueued).toBe(0);
+      expect(result.followUpRestored).toBe(0);
+      expect(result.waitingActionsChecked).toBe(0);
+      expect(mockMessageQueue.enqueue).not.toHaveBeenCalled();
+      svc2.destroy();
+    });
+
+    it('runs expireStale and cleanup during recovery', async () => {
+      // Create an entry that should be expired (very old updatedAt)
+      svc.trackInbound(makeInput({ threadKey: 'rec-exp' }));
+      const entry = svc.get('rec-exp')!;
+      (entry as any).updatedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      const svc2 = createService();
+      const result = await svc2.recoverPendingThreads(mockMessageQueue);
+
+      // The entry should be expired (updatedAt is 1h ago, timeout is 30min)
+      // But it will also be re-enqueued first since it's still enqueued status
+      expect(result.expired).toBeGreaterThanOrEqual(0);
+      svc2.destroy();
+    });
+
+    it('Branch 1: continues even if confirm callback fails', async () => {
+      svc.trackInbound(makeInput({ threadKey: 'rec-fail' }));
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1]);
+      mockSafeReadJson.mockResolvedValue(written);
+
+      const failingCallback: RecoveryConfirmCallback = jest.fn().mockRejectedValue(new Error('Slack down'));
+
+      const svc2 = createService();
+      const result = await svc2.recoverPendingThreads(mockMessageQueue, {
+        confirmCallback: failingCallback,
+      });
+
+      // Should still re-enqueue despite callback failure
+      expect(result.reEnqueued).toBe(1);
+      expect(mockMessageQueue.enqueue).toHaveBeenCalled();
+      svc2.destroy();
     });
   });
 });

@@ -13,7 +13,7 @@
 
 import { randomUUID } from 'crypto';
 import path from 'path';
-import { THREAD_STATUS_CONSTANTS } from '../../constants.js';
+import { THREAD_STATUS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { atomicWriteFile, safeReadJson } from '../../utils/file-io.utils.js';
 import {
@@ -30,6 +30,75 @@ import type {
   PersistedThreadStatusState,
   ReplyStatus,
 } from '../../types/thread-status.types.js';
+
+/**
+ * Minimal interface for SchedulerService to avoid circular imports.
+ * Used to create follow-up checks when a thread is marked as replied_to_follow_up.
+ */
+export interface ISchedulerServiceLike {
+  scheduleCheck(
+    targetSession: string,
+    minutes: number,
+    message: string,
+    type?: string,
+    options?: { label?: string }
+  ): string;
+  cancelCheck(checkId: string): void;
+}
+
+/**
+ * Minimal interface for EventBusService to avoid circular imports.
+ * Uses unknown for eventType/filter to avoid importing event-bus types.
+ */
+export interface IEventBusServiceLike {
+  subscribe(input: unknown): { id: string };
+  unsubscribe(subscriptionId: string): boolean;
+}
+
+/**
+ * Minimal interface for MessageQueueService to avoid circular imports.
+ * Used during restart recovery to re-enqueue pending threads.
+ */
+export interface IMessageQueueServiceLike {
+  enqueue(input: {
+    content: string;
+    conversationId: string;
+    source: string;
+    sourceMetadata?: Record<string, unknown>;
+    targetSession?: string;
+  }): unknown;
+}
+
+/**
+ * Minimal interface for checking agent working status.
+ * Used during recovery to determine if delegated agents have completed.
+ */
+export interface IAgentStatusCheckerLike {
+  getAgentWorkingStatus(sessionName: string): Promise<'idle' | 'in_progress' | 'unknown'>;
+}
+
+/**
+ * Callback for sending platform-specific confirmation messages during recovery.
+ * e.g., "I am back online. I see your message: {preview}. Let me handle it now."
+ *
+ * @param entry - The thread entry to confirm
+ * @returns Promise resolving when the confirmation is sent
+ */
+export type RecoveryConfirmCallback = (entry: ThreadStatusEntry) => Promise<void>;
+
+/** Default follow-up check delay in minutes */
+const FOLLOW_UP_CHECK_DELAY_MINUTES = 5;
+
+/**
+ * Tracks active follow-up subscriptions so they can be cancelled
+ * when the user replies before the scheduled check fires.
+ */
+interface FollowUpTracking {
+  /** ID of the scheduled check */
+  scheduledCheckId: string;
+  /** ID of the event bus subscription */
+  eventSubscriptionId: string;
+}
 
 /**
  * Service that maintains a persistent queue of thread statuses.
@@ -71,6 +140,15 @@ export class ThreadStatusQueueService {
 
   /** ISO timestamp of last cleanup run */
   private lastCleanupAt: string = new Date().toISOString();
+
+  /** Scheduler service for creating follow-up checks */
+  private schedulerService: ISchedulerServiceLike | null = null;
+
+  /** Event bus for subscribing to message:received events */
+  private eventBusService: IEventBusServiceLike | null = null;
+
+  /** Tracks active follow-up subscriptions keyed by threadKey */
+  private followUpTracking: Map<string, FollowUpTracking> = new Map();
 
   /**
    * Creates a new ThreadStatusQueueService.
@@ -211,8 +289,33 @@ export class ThreadStatusQueueService {
   }
 
   /**
+   * Set the SchedulerService instance for creating follow-up checks.
+   * Called during server initialization.
+   *
+   * @param service - The SchedulerService instance (or compatible interface)
+   */
+  setSchedulerService(service: ISchedulerServiceLike): void {
+    this.schedulerService = service;
+  }
+
+  /**
+   * Set the EventBusService instance for subscribing to message events.
+   * Called during server initialization.
+   *
+   * @param service - The EventBusService instance (or compatible interface)
+   */
+  setEventBusService(service: IEventBusServiceLike): void {
+    this.eventBusService = service;
+  }
+
+  /**
    * Transitions a thread to one of the replied_* statuses.
    * Sets the repliedAt timestamp.
+   *
+   * When status is `replied_to_follow_up`, automatically:
+   * 1. Creates a scheduled check (default 5 min) to verify user replied
+   * 2. Subscribes to message:received events for this thread's conversation
+   * 3. On user reply: cancels the scheduled check and transitions to replied_completed
    *
    * @param threadKey - Platform-specific thread identifier
    * @param status - One of: replied_completed, replied_waiting_actions, replied_to_follow_up
@@ -235,6 +338,59 @@ export class ThreadStatusQueueService {
     this.schedulePersist();
 
     this.logger.info('Marked replied', { threadKey, status });
+
+    // Sub-task A: Auto-schedule follow-up check and event subscription
+    if (status === 'replied_to_follow_up') {
+      this.setupFollowUpTracking(threadKey, entry);
+    }
+  }
+
+  /**
+   * Handles a user reply to a follow-up thread.
+   * Cancels the scheduled check, removes the event subscription,
+   * and transitions the thread to replied_completed (or re-enqueues).
+   *
+   * @param threadKey - Platform-specific thread identifier
+   */
+  handleFollowUpReply(threadKey: string): void {
+    const tracking = this.followUpTracking.get(threadKey);
+    if (!tracking) {
+      this.logger.debug('No follow-up tracking found for thread', { threadKey });
+      return;
+    }
+
+    // Cancel the scheduled check
+    if (this.schedulerService) {
+      this.schedulerService.cancelCheck(tracking.scheduledCheckId);
+    }
+
+    // Remove the event subscription
+    if (this.eventBusService) {
+      this.eventBusService.unsubscribe(tracking.eventSubscriptionId);
+    }
+
+    this.followUpTracking.delete(threadKey);
+
+    // Transition thread to replied_completed
+    const entry = this.entries.get(threadKey);
+    if (entry && entry.status === 'replied_to_follow_up') {
+      entry.status = 'replied_completed';
+      entry.updatedAt = new Date().toISOString();
+      this.schedulePersist();
+
+      this.logger.info('Follow-up reply received, thread completed', { threadKey });
+    }
+  }
+
+  /**
+   * Returns the active follow-up tracking for a thread, if any.
+   * Useful for testing and debugging.
+   *
+   * @param threadKey - Platform-specific thread identifier
+   * @returns The follow-up tracking info, or null
+   */
+  getFollowUpTracking(threadKey: string): FollowUpTracking | null {
+    return this.followUpTracking.get(threadKey) ?? null;
   }
 
   /**
@@ -468,13 +624,170 @@ export class ThreadStatusQueueService {
   }
 
   /**
-   * Cleans up timers. Call on shutdown.
+   * Returns all entries in the queue. Used for the thread-status API.
+   *
+   * @returns Array of all ThreadStatusEntry objects
+   */
+  getAllEntries(): ThreadStatusEntry[] {
+    return Array.from(this.entries.values());
+  }
+
+  /**
+   * Recovers pending threads after an orchestrator restart.
+   * Loads persisted state and handles each thread based on its status:
+   *
+   * 1. **enqueued/delivered/error** — Send a "I'm back online" confirmation
+   *    via the platform, then re-enqueue for orchestrator processing.
+   * 2. **replied_to_follow_up** — Re-setup follow-up tracking (scheduled
+   *    check + event subscription) to continue waiting for user reply.
+   * 3. **replied_waiting_actions** — Check delegated agent statuses. If all
+   *    agents are done, transition to replied_completed. Otherwise keep waiting.
+   * 4. **replied_completed/expired** — Already terminal, skip.
+   *
+   * @param messageQueueService - The message queue service for re-enqueuing
+   * @param options - Optional callbacks for agent status checking and platform confirmations
+   * @returns Summary of recovery actions taken
+   */
+  async recoverPendingThreads(
+    messageQueueService: IMessageQueueServiceLike,
+    options?: {
+      agentStatusChecker?: IAgentStatusCheckerLike;
+      confirmCallback?: RecoveryConfirmCallback;
+    }
+  ): Promise<{
+    loaded: number;
+    reEnqueued: number;
+    followUpRestored: number;
+    waitingActionsChecked: number;
+    delegationsCompleted: number;
+    expired: number;
+    cleaned: number;
+  }> {
+    await this.loadPersistedState();
+
+    const pending = this.getPendingThreads();
+    let reEnqueued = 0;
+    let followUpRestored = 0;
+    let waitingActionsChecked = 0;
+    let delegationsCompleted = 0;
+
+    for (const entry of pending) {
+      // Branch 1: enqueued / delivered / error — confirm + re-enqueue
+      if (entry.status === 'enqueued' || entry.status === 'delivered' || entry.status === 'error') {
+        // Send platform confirmation if callback provided
+        if (options?.confirmCallback) {
+          try {
+            await options.confirmCallback(entry);
+          } catch (err) {
+            this.logger.warn('Recovery confirm callback failed', {
+              threadKey: entry.threadKey,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
+        // Re-enqueue for orchestrator processing
+        messageQueueService.enqueue({
+          content: `[RECOVERY] Unreplied thread from ${entry.receivedAt}: ${entry.messagePreview}`,
+          conversationId: entry.conversationId,
+          source: entry.source,
+          sourceMetadata: entry.sourceMetadata as Record<string, unknown> | undefined,
+        });
+        reEnqueued++;
+      }
+      // Branch 2: replied_to_follow_up — re-setup follow-up tracking
+      else if (entry.status === 'replied_to_follow_up') {
+        this.setupFollowUpTracking(entry.threadKey, entry);
+        followUpRestored++;
+      }
+      // Branch 3: replied_waiting_actions — check delegated agents
+      else if (entry.status === 'replied_waiting_actions') {
+        waitingActionsChecked++;
+
+        if (options?.agentStatusChecker && entry.delegatedAgents && entry.delegatedAgents.length > 0) {
+          const statuses = await Promise.all(
+            entry.delegatedAgents.map((agent) => options.agentStatusChecker!.getAgentWorkingStatus(agent))
+          );
+          const allDone = statuses.every((status) => status === 'idle' || status === 'unknown');
+
+          if (allDone) {
+            entry.status = 'replied_completed';
+            entry.updatedAt = new Date().toISOString();
+            delegationsCompleted++;
+            this.logger.info('All delegated agents done on recovery, completing thread', {
+              threadKey: entry.threadKey,
+              agents: entry.delegatedAgents,
+            });
+          } else {
+            // Agents still working — notify orchestrator to keep watching
+            messageQueueService.enqueue({
+              content: `[RECOVERY] Thread ${entry.threadKey} is waiting for agents: ${entry.delegatedAgents.join(', ')}. Some are still working.`,
+              conversationId: 'system',
+              source: 'system_event',
+              targetSession: ORCHESTRATOR_SESSION_NAME,
+            });
+          }
+        } else {
+          // No agent status checker or no delegated agents — notify orchestrator
+          messageQueueService.enqueue({
+            content: `[RECOVERY] Thread ${entry.threadKey} is waiting for agents: ${entry.delegatedAgents?.join(', ') || 'unknown'}. Check their status.`,
+            conversationId: 'system',
+            source: 'system_event',
+            targetSession: ORCHESTRATOR_SESSION_NAME,
+          });
+        }
+      }
+      // Branch 4: replied_completed / expired — skip (already terminal)
+      // These are filtered out by getPendingThreads(), but defensive check
+    }
+
+    if (reEnqueued > 0 || followUpRestored > 0 || delegationsCompleted > 0) {
+      this.schedulePersist();
+    }
+
+    const expired = this.expireStale();
+    const cleaned = this.cleanup();
+
+    this.logger.info('Pending thread recovery complete', {
+      loaded: this.entries.size,
+      reEnqueued,
+      followUpRestored,
+      waitingActionsChecked,
+      delegationsCompleted,
+      expired,
+      cleaned,
+    });
+
+    return {
+      loaded: this.entries.size,
+      reEnqueued,
+      followUpRestored,
+      waitingActionsChecked,
+      delegationsCompleted,
+      expired,
+      cleaned,
+    };
+  }
+
+  /**
+   * Cleans up timers and follow-up tracking. Call on shutdown.
    */
   destroy(): void {
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
+
+    // Cancel all active follow-up tracking
+    for (const [threadKey, tracking] of this.followUpTracking) {
+      if (this.schedulerService) {
+        this.schedulerService.cancelCheck(tracking.scheduledCheckId);
+      }
+      if (this.eventBusService) {
+        this.eventBusService.unsubscribe(tracking.eventSubscriptionId);
+      }
+    }
+    this.followUpTracking.clear();
   }
 
   // ===========================================================================
@@ -495,6 +808,62 @@ export class ThreadStatusQueueService {
       throw new Error(`${caller}: thread not found — threadKey=${threadKey}`);
     }
     return entry;
+  }
+
+  /**
+   * Sets up follow-up tracking for a replied_to_follow_up thread.
+   * Creates a scheduled check and an event subscription so that if
+   * the user replies, the check is cancelled and the thread is completed.
+   *
+   * @param threadKey - Platform-specific thread identifier
+   * @param entry - The thread status entry
+   */
+  private setupFollowUpTracking(threadKey: string, entry: ThreadStatusEntry): void {
+    // Schedule a check to verify user replied
+    let scheduledCheckId = '';
+    if (this.schedulerService) {
+      scheduledCheckId = this.schedulerService.scheduleCheck(
+        ORCHESTRATOR_SESSION_NAME,
+        FOLLOW_UP_CHECK_DELAY_MINUTES,
+        `[FOLLOW-UP CHECK] Thread ${threadKey} (conv: ${entry.conversationId}) asked user for clarification ${FOLLOW_UP_CHECK_DELAY_MINUTES}m ago. Preview: "${entry.messagePreview}". Check if user has replied.`,
+        'check-in',
+        { label: `follow-up:${threadKey}` }
+      );
+      this.logger.info('Scheduled follow-up check', {
+        threadKey,
+        scheduledCheckId,
+        delayMinutes: FOLLOW_UP_CHECK_DELAY_MINUTES,
+      });
+    } else {
+      this.logger.warn('SchedulerService not set, skipping follow-up check scheduling', { threadKey });
+    }
+
+    // Subscribe to message events for this thread's conversation
+    let eventSubscriptionId = '';
+    if (this.eventBusService) {
+      const sub = this.eventBusService.subscribe({
+        eventType: ['message:received', 'agent:idle'],
+        filter: { conversationId: entry.conversationId },
+        subscriberSession: ORCHESTRATOR_SESSION_NAME,
+        oneShot: true,
+        ttlMinutes: FOLLOW_UP_CHECK_DELAY_MINUTES + 5,
+        messageTemplate: `[FOLLOW-UP REPLY] User replied to thread ${threadKey}. Original: "${entry.messagePreview}"`,
+      });
+      eventSubscriptionId = sub.id;
+      this.logger.info('Subscribed to follow-up reply events', {
+        threadKey,
+        subscriptionId: eventSubscriptionId,
+      });
+    } else {
+      this.logger.warn('EventBusService not set, skipping follow-up event subscription', { threadKey });
+    }
+
+    if (scheduledCheckId || eventSubscriptionId) {
+      this.followUpTracking.set(threadKey, {
+        scheduledCheckId,
+        eventSubscriptionId,
+      });
+    }
   }
 
   /**

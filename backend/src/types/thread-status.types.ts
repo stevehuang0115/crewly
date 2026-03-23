@@ -51,10 +51,13 @@ export const THREAD_STATUS_VALUES = [
 /**
  * Terminal statuses that require no further orchestrator action.
  * Used by getPendingThreads() to filter out completed threads.
+ *
+ * Note: replied_to_follow_up is NOT terminal — it is waiting for user reply,
+ * and on restart the follow-up tracking (scheduled check + event subscription)
+ * must be re-established.
  */
 export const TERMINAL_STATUSES: readonly ThreadStatus[] = [
   'replied_completed',
-  'replied_to_follow_up',
   'expired',
 ] as const;
 

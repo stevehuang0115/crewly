@@ -30,6 +30,9 @@ import { isValidChannelType } from '../../types/chat.types.js';
 // Module-level message queue service instance
 let messageQueueService: MessageQueueService | null = null;
 
+// Module-level thread status queue service instance
+let threadStatusQueueService: import('../../services/messaging/thread-status-queue.service.js').ThreadStatusQueueService | null = null;
+
 // Logger instance for chat controller
 const logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('ChatController');
 
@@ -41,6 +44,18 @@ const logger: ComponentLogger = LoggerService.getInstance().createComponentLogge
  */
 export function setMessageQueueService(service: MessageQueueService): void {
   messageQueueService = service;
+}
+
+/**
+ * Set the thread status queue service for thread status API endpoints.
+ * Called during server initialization.
+ *
+ * @param service - The ThreadStatusQueueService instance
+ */
+export function setThreadStatusQueueService(
+  service: import('../../services/messaging/thread-status-queue.service.js').ThreadStatusQueueService
+): void {
+  threadStatusQueueService = service;
 }
 
 // =============================================================================
@@ -766,6 +781,123 @@ export async function getStatistics(
     res.json({
       success: true,
       data: statistics,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// =============================================================================
+// Thread Status Endpoints
+// =============================================================================
+
+/**
+ * GET /api/chat/thread-status
+ *
+ * Returns all thread status entries. Supports optional status filter.
+ *
+ * @param req - Request with optional query: { status?: ThreadStatus }
+ * @param res - Response with array of ThreadStatusEntry
+ */
+export function getThreadStatusList(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  try {
+    if (!threadStatusQueueService) {
+      res.status(503).json({
+        success: false,
+        error: 'Thread status queue service not initialized',
+      });
+      return;
+    }
+
+    const { status } = req.query;
+
+    const entries = status
+      ? threadStatusQueueService.getByStatus(status as string as import('../../types/thread-status.types.js').ThreadStatus)
+      : threadStatusQueueService.getAllEntries();
+
+    res.json({
+      success: true,
+      data: entries,
+      count: entries.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * GET /api/chat/thread-status/stats
+ *
+ * Returns thread status queue statistics.
+ *
+ * @param req - Request
+ * @param res - Response with ThreadStatusStats
+ */
+export function getThreadStatusStats(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  try {
+    if (!threadStatusQueueService) {
+      res.status(503).json({
+        success: false,
+        error: 'Thread status queue service not initialized',
+      });
+      return;
+    }
+
+    const stats = threadStatusQueueService.getStats();
+
+    res.json({
+      success: true,
+      data: stats,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * GET /api/chat/thread-status/:threadKey
+ *
+ * Returns a single thread status entry by threadKey.
+ *
+ * @param req - Request with threadKey param
+ * @param res - Response with ThreadStatusEntry
+ */
+export function getThreadStatusByKey(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  try {
+    if (!threadStatusQueueService) {
+      res.status(503).json({
+        success: false,
+        error: 'Thread status queue service not initialized',
+      });
+      return;
+    }
+
+    const { threadKey } = req.params;
+    const entry = threadStatusQueueService.get(decodeURIComponent(threadKey));
+
+    if (!entry) {
+      res.status(404).json({
+        success: false,
+        error: `Thread not found: ${threadKey}`,
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: entry,
     });
   } catch (error) {
     next(error);
