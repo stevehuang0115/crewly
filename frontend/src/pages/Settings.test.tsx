@@ -36,6 +36,10 @@ vi.mock('../components/Settings/CloudTab', () => ({
   CloudTab: () => <div data-testid="cloud-tab">Cloud Tab Content</div>,
 }));
 
+vi.mock('../components/Settings/SystemTab', () => ({
+  SystemTab: () => <div data-testid="system-tab">System Tab Content</div>,
+}));
+
 describe('Settings Page', () => {
   beforeEach(() => {
     mockSearchParams = new URLSearchParams('');
@@ -57,6 +61,7 @@ describe('Settings Page', () => {
       expect(screen.getByText('Skills')).toBeInTheDocument();
       expect(screen.getByText('Integrations')).toBeInTheDocument();
       expect(screen.getByText('Cloud')).toBeInTheDocument();
+      expect(screen.getByText('System')).toBeInTheDocument();
     });
   });
 
@@ -69,6 +74,16 @@ describe('Settings Page', () => {
       expect(screen.queryByTestId('skills-tab')).not.toBeInTheDocument();
       expect(screen.queryByTestId('integrations-tab')).not.toBeInTheDocument();
       expect(screen.queryByTestId('cloud-tab')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('system-tab')).not.toBeInTheDocument();
+    });
+
+    it('should switch to System tab when clicked', () => {
+      render(<Settings />);
+
+      fireEvent.click(screen.getByText('System'));
+
+      expect(screen.getByTestId('system-tab')).toBeInTheDocument();
+      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
     });
 
     it('should switch to Cloud tab when clicked', () => {
@@ -132,7 +147,7 @@ describe('Settings Page', () => {
       render(<Settings />);
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs).toHaveLength(5);
+      expect(tabs).toHaveLength(7);
     });
 
     it('should set aria-selected on active tab', () => {
@@ -172,6 +187,14 @@ describe('Settings Page', () => {
       render(<Settings />);
 
       expect(screen.getByTestId('integrations-tab')).toBeInTheDocument();
+      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
+    });
+
+    it('should open System tab when tab=system is in URL', () => {
+      mockSearchParams = new URLSearchParams('?tab=system');
+      render(<Settings />);
+
+      expect(screen.getByTestId('system-tab')).toBeInTheDocument();
       expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
     });
 
