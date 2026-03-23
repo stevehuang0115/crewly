@@ -139,6 +139,8 @@ export class CloudSyncService extends EventEmitter {
   private messagePollFailures = 0;
   /** Error recovery timer handle */
   private errorRecoveryTimer: ReturnType<typeof setInterval> | null = null;
+  /** Consecutive error recovery attempts (reset on success or stop) */
+  private errorRecoveryAttempts = 0;
 
   private constructor() {
     super();
@@ -245,6 +247,7 @@ export class CloudSyncService extends EventEmitter {
     this.heartbeatFailures = 0;
     this.devicePollFailures = 0;
     this.messagePollFailures = 0;
+    this.errorRecoveryAttempts = 0;
   }
 
   /**
@@ -717,16 +720,18 @@ export class CloudSyncService extends EventEmitter {
    *
    * Tries a single heartbeat every ERROR_RECOVERY_INTERVAL_MS (60s by default).
    * If the heartbeat succeeds, resets all failure counters and resumes normal
-   * polling. This prevents permanent sync loss from transient network issues.
+   * polling. After MAX_ERROR_RECOVERY_ATTEMPTS consecutive auth failures (401/403),
+   * transitions to 'auth_expired' terminal state and emits 'auth_expired'.
    */
   private scheduleErrorRecovery(): void {
     if (this.errorRecoveryTimer) return; // Already scheduled
 
+    this.errorRecoveryAttempts = 0;
     const recoveryInterval = CLOUD_SYNC_CONSTANTS.ERROR_RECOVERY_INTERVAL_MS ?? 60_000;
+    const maxAttempts = CLOUD_SYNC_CONSTANTS.MAX_ERROR_RECOVERY_ATTEMPTS ?? 5;
 
     this.errorRecoveryTimer = setInterval(async () => {
       if (this.state !== 'error' || !this.config) {
-        // Already recovered or stopped — cancel recovery timer
         if (this.errorRecoveryTimer) {
           clearInterval(this.errorRecoveryTimer);
           this.errorRecoveryTimer = null;
@@ -734,7 +739,11 @@ export class CloudSyncService extends EventEmitter {
         return;
       }
 
-      this.logger.info('Attempting Cloud Sync error recovery...');
+      this.errorRecoveryAttempts++;
+      this.logger.info('Attempting Cloud Sync error recovery...', {
+        attempt: this.errorRecoveryAttempts,
+        maxAttempts,
+      });
 
       try {
         const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT}`;
@@ -762,23 +771,28 @@ export class CloudSyncService extends EventEmitter {
           this.heartbeatFailures = 0;
           this.devicePollFailures = 0;
           this.messagePollFailures = 0;
+          this.errorRecoveryAttempts = 0;
           this.state = 'syncing';
 
-          // Cancel recovery timer
           if (this.errorRecoveryTimer) {
             clearInterval(this.errorRecoveryTimer);
             this.errorRecoveryTimer = null;
           }
 
-          // Do an immediate device poll to refresh cached devices
           this.pollDevices().catch(() => {});
         } else if (response.status === 401 || response.status === 403) {
-          // Try token refresh
           const refreshed = await this.handleAuthError(response.status);
           if (refreshed) {
             this.logger.info('Token refreshed during recovery — will retry next cycle');
+            this.errorRecoveryAttempts--;
+          } else if (this.errorRecoveryAttempts >= maxAttempts) {
+            this.enterAuthExpiredState();
           } else {
-            this.logger.warn('Recovery heartbeat auth failed, will retry', { status: response.status });
+            this.logger.warn('Recovery heartbeat auth failed, will retry', {
+              status: response.status,
+              attempt: this.errorRecoveryAttempts,
+              remaining: maxAttempts - this.errorRecoveryAttempts,
+            });
           }
         } else {
           this.logger.warn('Recovery heartbeat failed, will retry', { status: response.status });
@@ -790,8 +804,26 @@ export class CloudSyncService extends EventEmitter {
       }
     }, recoveryInterval);
 
-    // Unref so the timer doesn't keep the process alive
     if (this.errorRecoveryTimer.unref) this.errorRecoveryTimer.unref();
+  }
+
+  /**
+   * Transition to the terminal auth_expired state.
+   * Clears all timers and emits 'auth_expired' for frontend notification.
+   */
+  private enterAuthExpiredState(): void {
+    this.logger.error(
+      'Cloud Sync authentication permanently failed — user must re-login',
+      { attempts: this.errorRecoveryAttempts },
+    );
+
+    if (this.errorRecoveryTimer) { clearInterval(this.errorRecoveryTimer); this.errorRecoveryTimer = null; }
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+    if (this.devicePollTimer) { clearInterval(this.devicePollTimer); this.devicePollTimer = null; }
+    if (this.messagePollTimer) { clearInterval(this.messagePollTimer); this.messagePollTimer = null; }
+
+    this.state = 'auth_expired';
+    this.emit('auth_expired');
   }
 
   /** Guard to prevent concurrent token refresh attempts */

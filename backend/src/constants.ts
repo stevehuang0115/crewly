@@ -1204,6 +1204,8 @@ export const CLOUD_SYNC_CONSTANTS = {
 	/** Interval between error recovery attempts after entering error state (ms).
 	 *  Periodically retries a heartbeat to check if Cloud is reachable again. */
 	ERROR_RECOVERY_INTERVAL_MS: 60_000,
+	/** Maximum error recovery attempts before entering auth_expired terminal state */
+	MAX_ERROR_RECOVERY_ATTEMPTS: 5,
 	/** Cloud Sync API endpoints (relative to cloudUrl) — must match web project routes at /api/v1/relay/* */
 	ENDPOINTS: {
 		/** Device heartbeat/handshake — POST to Cloud Relay (registers device + updates metadata) */

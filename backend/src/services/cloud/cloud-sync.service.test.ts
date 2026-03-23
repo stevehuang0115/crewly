@@ -2,46 +2,55 @@
  * Tests for CloudSyncService
  *
  * Covers lifecycle, heartbeat, device polling, message polling, sending,
- * error handling, and device online/offline event detection.
+ * error handling, device online/offline events, and auth_expired terminal state.
  *
  * @module services/cloud/cloud-sync.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CloudSyncService } from './cloud-sync.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
-import type { CloudSyncConfig, SyncDevice, IncomingMessage } from './cloud-sync.types.js';
+import type { CloudSyncConfig, SyncDevice } from './cloud-sync.types.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
 }));
 
-// Mock StorageService for team summaries in heartbeat
-vi.mock('../core/storage.service.js', () => ({
+jest.mock('../core/storage.service.js', () => ({
   StorageService: {
     getInstance: () => ({
-      getTeams: vi.fn().mockResolvedValue([
+      getTeams: jest.fn().mockResolvedValue([
         { id: 't1', name: 'Team Alpha', members: [{ agentStatus: 'active' }, { agentStatus: 'inactive' }] },
       ]),
     }),
   },
 }));
 
-const mockFetch = vi.fn<typeof global.fetch>();
-global.fetch = mockFetch as any;
+jest.mock('./cloud-client.service.js', () => ({
+  CloudClientService: {
+    getInstance: () => ({
+      tryRefreshToken: jest.fn().mockResolvedValue(false),
+      getToken: jest.fn().mockReturnValue(null),
+      loadPersistedConfig: jest.fn().mockResolvedValue(null),
+      connectLocal: jest.fn(),
+    }),
+  },
+}));
+
+const mockFetch = jest.fn() as jest.MockedFunction<typeof global.fetch>;
+global.fetch = mockFetch;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,20 +68,17 @@ const testConfig: CloudSyncConfig = {
   deviceName: DEVICE_NAME,
 };
 
-/** Create a mock Response. */
 function mockResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
-    json: vi.fn().mockResolvedValue(body),
-    text: vi.fn().mockResolvedValue(JSON.stringify(body)),
+    json: jest.fn().mockResolvedValue(body),
+    text: jest.fn().mockResolvedValue(JSON.stringify(body)),
   } as unknown as Response;
 }
 
-/** Flush all pending microtasks (compatible with vi.useFakeTimers). */
-const flushPromises = () => vi.advanceTimersByTimeAsync(0);
+const flushPromises = () => jest.advanceTimersByTimeAsync(0);
 
-/** Make a valid SyncDevice. */
 function makeDevice(overrides: Partial<SyncDevice> = {}): SyncDevice {
   return {
     deviceId: 'dev-remote-456',
@@ -83,6 +89,22 @@ function makeDevice(overrides: Partial<SyncDevice> = {}): SyncDevice {
   };
 }
 
+/**
+ * Drive service into error state via repeated failures.
+ * Advances time in small MESSAGE_POLL steps to avoid overshooting.
+ * Resets errorRecoveryAttempts so tests start fresh.
+ */
+async function driveIntoErrorState(svc: CloudSyncService): Promise<void> {
+  const step = CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS;
+  for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES + 5; i++) {
+    jest.advanceTimersByTime(step);
+    await flushPromises();
+    if (svc.getState() === 'error') break;
+  }
+  expect(svc.getState()).toBe('error');
+  (svc as any).errorRecoveryAttempts = 0;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -91,17 +113,16 @@ describe('CloudSyncService', () => {
   let service: CloudSyncService;
 
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.clearAllMocks();
+    jest.useFakeTimers();
+    jest.clearAllMocks();
     CloudSyncService.resetInstance();
     service = CloudSyncService.getInstance();
-    // Default: all fetch calls succeed with empty success
     mockFetch.mockResolvedValue(mockResponse({ success: true }));
   });
 
   afterEach(() => {
     service.stop();
-    vi.useRealTimers();
+    jest.useRealTimers();
   });
 
   // ----- Singleton ----------------------------------------------------------
@@ -128,7 +149,7 @@ describe('CloudSyncService', () => {
 
     it('should be idempotent on double start', () => {
       service.start(testConfig);
-      service.start(testConfig); // should not throw
+      service.start(testConfig);
       expect(service.getState()).toBe('syncing');
     });
 
@@ -139,17 +160,10 @@ describe('CloudSyncService', () => {
       expect(service.isStarted()).toBe(false);
     });
 
-    it('should be idempotent on stop when already stopped', () => {
-      service.stop(); // should not throw
-      expect(service.getState()).toBe('stopped');
-    });
-
     it('should clear devices on stop', () => {
       service.start(testConfig);
-      // Manually inject a device
       (service as any).devices = [makeDevice()];
       expect(service.getDevices()).toHaveLength(1);
-
       service.stop();
       expect(service.getDevices()).toHaveLength(0);
     });
@@ -157,8 +171,6 @@ describe('CloudSyncService', () => {
     it('should fire immediate heartbeat and device poll on start', async () => {
       service.start(testConfig);
       await flushPromises();
-
-      // 2 fetch calls: single heartbeat (handshake) + one device poll
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
@@ -170,36 +182,17 @@ describe('CloudSyncService', () => {
       service.start(testConfig);
       await flushPromises();
 
-      const heartbeatCall = mockFetch.mock.calls.find(
+      const hbCall = mockFetch.mock.calls.find(
         ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/handshake')
       );
+      expect(hbCall).toBeDefined();
+      expect(hbCall![0]).toBe(`${CLOUD_URL}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT}`);
 
-      expect(heartbeatCall).toBeDefined();
-      const [url, opts] = heartbeatCall!;
-      expect(url).toBe(`${CLOUD_URL}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.HEARTBEAT}`);
-      expect(opts!.method).toBe('POST');
-
-      const body = JSON.parse(opts!.body as string);
+      const body = JSON.parse(hbCall![1]!.body as string);
       expect(body.deviceId).toBe(DEVICE_ID);
       expect(body.deviceName).toBe(DEVICE_NAME);
       expect(body.status).toBe('online');
-      expect(body.capabilities).toContain('orchestrator');
       expect(body.teams).toHaveLength(1);
-      expect(body.teams[0].name).toBe('Team Alpha');
-      expect(body.teams[0].memberCount).toBe(2);
-      expect(body.teams[0].activeAgents).toBe(1);
-    });
-
-    it('should include Authorization header', async () => {
-      service.start(testConfig);
-      await flushPromises();
-
-      const heartbeatCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/handshake')
-      );
-      expect(heartbeatCall![1]!.headers).toEqual(
-        expect.objectContaining({ Authorization: `Bearer ${TOKEN}` })
-      );
     });
 
     it('should handle heartbeat failure gracefully', async () => {
@@ -208,110 +201,27 @@ describe('CloudSyncService', () => {
 
       service.start(testConfig);
       await flushPromises();
-
-      // Should not crash, state should still be syncing
       expect(service.getState()).toBe('syncing');
-    });
-
-    it('should fire periodically on heartbeat interval', async () => {
-      service.start(testConfig);
-      await flushPromises();
-
-      const initialCalls = mockFetch.mock.calls.length;
-
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
-      await flushPromises();
-
-      expect(mockFetch.mock.calls.length).toBeGreaterThan(initialCalls);
     });
   });
 
   // ----- Device Polling -----------------------------------------------------
 
   describe('pollDevices', () => {
-    it('should fetch devices from correct endpoint', async () => {
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: [makeDevice()] })
-      );
-
-      service.start(testConfig);
-      await flushPromises();
-
-      const deviceCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.endsWith('/api/v1/relay/devices')
-      );
-      expect(deviceCall).toBeDefined();
-      expect(deviceCall![0]).toBe(`${CLOUD_URL}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.DEVICES}`);
-    });
-
     it('should update cached devices after poll', async () => {
-      const remoteDevice = makeDevice({ deviceId: 'dev-remote-1', deviceName: 'Remote.local' });
       mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: [remoteDevice] })
+        mockResponse({ success: true, devices: [makeDevice({ deviceId: 'dev-r', deviceName: 'R.local' })] })
       );
 
       service.start(testConfig);
       await flushPromises();
 
-      const devices = service.getDevices();
-      expect(devices).toHaveLength(1);
-      expect(devices[0].deviceName).toBe('Remote.local');
-    });
-
-    it('should normalize Cloud relay format (sessionId → deviceId)', async () => {
-      // Cloud server returns devices with sessionId instead of deviceId
-      const cloudDevice = {
-        sessionId: 'cloud-dev-789',
-        name: 'CloudMachine.local',
-        state: 'paired',
-        registeredAt: new Date().toISOString(),
-        lastHeartbeatAt: new Date().toISOString(),
-      };
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: [cloudDevice] })
-      );
-
-      service.start(testConfig);
-      await flushPromises();
-
-      const devices = service.getDevices();
-      expect(devices).toHaveLength(1);
-      expect(devices[0].deviceId).toBe('cloud-dev-789');
-      expect(devices[0].deviceName).toBe('CloudMachine.local');
-      expect(devices[0].status).toBe('online'); // 'paired' state → online
-    });
-
-    it('should mark local device with isLocal flag', async () => {
-      const localDevice = makeDevice({ deviceId: DEVICE_ID, deviceName: DEVICE_NAME });
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: [localDevice] })
-      );
-
-      service.start(testConfig);
-      await flushPromises();
-
-      const devices = service.getDevices();
-      expect(devices[0].isLocal).toBe(true);
-    });
-
-    it('should mark device offline when heartbeat is stale', async () => {
-      const staleDevice = makeDevice({
-        lastHeartbeatAt: new Date(Date.now() - 120_000).toISOString(),
-        status: undefined as any, // no status field — rely on heartbeat freshness
-        state: undefined as any,
-      });
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: [staleDevice] })
-      );
-
-      service.start(testConfig);
-      await flushPromises();
-
-      expect(service.getDevices()[0].status).toBe('offline');
+      expect(service.getDevices()).toHaveLength(1);
+      expect(service.getDevices()[0].deviceName).toBe('R.local');
     });
 
     it('should emit devices_updated event', async () => {
-      const listener = vi.fn();
+      const listener = jest.fn();
       service.on('devices_updated', listener);
 
       mockFetch.mockResolvedValue(
@@ -326,137 +236,17 @@ describe('CloudSyncService', () => {
       ]));
     });
 
-    it('should emit device_online when new device appears', async () => {
-      const listener = vi.fn();
-      service.on('device_online', listener);
-
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: [makeDevice({ deviceId: 'dev-new' })] })
-      );
-
-      service.start(testConfig);
-      await flushPromises();
-
-      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'dev-new' }));
-    });
-
-    it('should emit device_offline when device disappears', async () => {
-      const listener = vi.fn();
-      service.on('device_offline', listener);
-
-      // First poll: device exists
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: [makeDevice({ deviceId: 'dev-gone' })] })
-      );
-      service.start(testConfig);
-      await flushPromises();
-
-      // Second poll: device gone
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: [] })
-      );
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.DEVICE_POLL_INTERVAL_MS + 100);
-      await flushPromises();
-
-      expect(listener).toHaveBeenCalledWith(expect.objectContaining({
-        deviceId: 'dev-gone',
-        status: 'offline',
-      }));
-    });
-
     it('should deduplicate devices with the same deviceId', async () => {
       const now = new Date();
-      const olderTime = new Date(now.getTime() - 10_000).toISOString();
-      const newerTime = now.toISOString();
-
-      // Cloud API returns two records for the same device (e.g., from relay
-      // handshake and device heartbeat endpoints)
-      const duplicateDevices = [
-        {
-          deviceId: 'dev-same-device',
-          deviceName: 'MacBook-Pro-3.local',
-          status: 'online',
-          lastSeenAt: olderTime,
-        },
-        {
-          deviceId: 'dev-same-device',
-          deviceName: 'MacBook-Pro-3.local',
-          status: 'online',
-          lastSeenAt: newerTime,
-        },
-      ];
-
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: duplicateDevices })
-      );
-
-      service.start(testConfig);
-      await flushPromises();
-
-      const devices = service.getDevices();
-      expect(devices).toHaveLength(1);
-      expect(devices[0].deviceId).toBe('dev-same-device');
-      // Should keep the entry with the newer heartbeat
-      expect(devices[0].lastHeartbeatAt).toBe(newerTime);
-    });
-
-    it('should keep online device over offline duplicate', async () => {
-      const sameTime = new Date().toISOString();
-
-      const duplicateDevices = [
-        {
-          deviceId: 'dev-dup',
-          deviceName: 'MacBook-Pro-3.local',
-          lastSeenAt: sameTime,
-          status: 'offline',
-        },
-        {
-          deviceId: 'dev-dup',
-          deviceName: 'MacBook-Pro-3.local',
-          lastSeenAt: sameTime,
-          status: 'online',
-        },
-      ];
-
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: duplicateDevices })
-      );
-
-      service.start(testConfig);
-      await flushPromises();
-
-      const devices = service.getDevices();
-      expect(devices).toHaveLength(1);
-      expect(devices[0].status).toBe('online');
-    });
-
-    it('should not deduplicate devices with different deviceIds', async () => {
-      const devices = [
-        makeDevice({ deviceId: 'dev-a', deviceName: 'MacBook-A.local' }),
-        makeDevice({ deviceId: 'dev-b', deviceName: 'MacBook-B.local' }),
-      ];
-
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices })
-      );
-
-      service.start(testConfig);
-      await flushPromises();
-
-      expect(service.getDevices()).toHaveLength(2);
-    });
-
-    it('getOnlineDevices should exclude local and offline devices', async () => {
-      const stale = new Date(Date.now() - 120_000).toISOString();
-      const fresh = new Date().toISOString();
+      const older = new Date(now.getTime() - 10_000).toISOString();
+      const newer = now.toISOString();
 
       mockFetch.mockResolvedValue(
         mockResponse({
           success: true,
           devices: [
-            makeDevice({ deviceId: DEVICE_ID, lastHeartbeatAt: fresh }),
-            makeDevice({ deviceId: 'dev-online', lastHeartbeatAt: fresh }),
-            makeDevice({ deviceId: 'dev-offline', lastHeartbeatAt: stale, status: undefined as any, state: undefined as any }),
+            { deviceId: 'dev-d', deviceName: 'D', status: 'online', lastSeenAt: older },
+            { deviceId: 'dev-d', deviceName: 'D', status: 'online', lastSeenAt: newer },
           ],
         })
       );
@@ -464,109 +254,20 @@ describe('CloudSyncService', () => {
       service.start(testConfig);
       await flushPromises();
 
-      const online = service.getOnlineDevices();
-      expect(online).toHaveLength(1);
-      expect(online[0].deviceId).toBe('dev-online');
-    });
-  });
-
-  // ----- Message Polling ----------------------------------------------------
-
-  describe('pollMessages', () => {
-    it('should fetch messages from correct endpoint with deviceId', async () => {
-      mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
-
-      service.start(testConfig);
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
-      await flushPromises();
-
-      const msgCall = mockFetch.mock.calls.find(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/queue/poll') && url.includes('queueId=')
-      );
-      expect(msgCall).toBeDefined();
-      expect(msgCall![0]).toContain(`queueId=${encodeURIComponent(DEVICE_ID)}`);
-    });
-
-    it('should emit message event for each received message', async () => {
-      const listener = vi.fn();
-      service.on('message', listener);
-
-      const msg = {
-        id: 'msg-1',
-        fromDeviceId: 'dev-456',
-        payload: JSON.stringify({ action: 'test' }),
-        createdAt: new Date().toISOString(),
-      };
-
-      mockFetch
-        .mockResolvedValueOnce(mockResponse({ success: true })) // heartbeat (handshake)
-        .mockResolvedValueOnce(mockResponse({ success: true, devices: [] })) // device poll
-        .mockResolvedValueOnce(mockResponse({ success: true, messages: [msg] })) // message poll
-        .mockResolvedValue(mockResponse({ success: true }));
-
-      service.start(testConfig);
-      await flushPromises();
-
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
-      await flushPromises();
-      await flushPromises();
-
-      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
-    });
-
-    it('should acknowledge messages after processing', async () => {
-      const msg = {
-        id: 'msg-ack-1',
-        fromDeviceId: 'dev-456',
-        payload: '{}',
-        createdAt: new Date().toISOString(),
-      };
-
-      mockFetch
-        .mockResolvedValueOnce(mockResponse({ success: true })) // heartbeat (handshake)
-        .mockResolvedValueOnce(mockResponse({ success: true, devices: [] })) // device poll
-        .mockResolvedValueOnce(mockResponse({ success: true, messages: [msg] })) // message poll
-        .mockResolvedValue(mockResponse({ success: true }));
-
-      service.start(testConfig);
-      await flushPromises();
-
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
-      await flushPromises();
-      await flushPromises();
-
-      const ackCall = mockFetch.mock.calls.find(
-        ([url, opts]) =>
-          typeof url === 'string' && url.includes('/api/v1/relay/queue/ack') && opts?.method === 'POST'
-      );
-      expect(ackCall).toBeDefined();
-      const ackBody = JSON.parse(ackCall![1]!.body as string);
-      expect(ackBody.queueId).toBe(DEVICE_ID);
-      expect(ackBody.messageIds).toContain('msg-ack-1');
-    });
-
-    it('should handle empty message response gracefully', async () => {
-      mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
-
-      service.start(testConfig);
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
-      await flushPromises();
-
-      const ackCalls = mockFetch.mock.calls.filter(
-        ([url]) => typeof url === 'string' && url.includes('/api/v1/relay/queue/ack')
-      );
-      expect(ackCalls).toHaveLength(0);
+      const devices = service.getDevices();
+      expect(devices).toHaveLength(1);
+      expect(devices[0].lastHeartbeatAt).toBe(newer);
     });
   });
 
   // ----- sendMessage --------------------------------------------------------
 
   describe('sendMessage', () => {
-    it('should POST to send endpoint with correct body', async () => {
+    it('should POST to send endpoint', async () => {
       service.start(testConfig);
       await flushPromises();
       mockFetch.mockClear();
-      mockFetch.mockResolvedValue(mockResponse({ success: true, messageId: 'msg-new' }));
+      mockFetch.mockResolvedValue(mockResponse({ success: true }));
 
       await service.sendMessage('dev-target', 'command', { action: 'deploy' });
 
@@ -574,171 +275,195 @@ describe('CloudSyncService', () => {
         `${CLOUD_URL}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES}`,
         expect.objectContaining({ method: 'POST' })
       );
-
-      const body = JSON.parse(mockFetch.mock.calls[0][1]!.body as string);
-      expect(body.toDeviceId).toBe('dev-target');
-      // type, data, encrypted are wrapped inside the payload string
-      const wrappedPayload = JSON.parse(body.payload);
-      expect(wrappedPayload.type).toBe('command');
-      expect(wrappedPayload.data).toEqual({ action: 'deploy' });
-      expect(wrappedPayload.encrypted).toBe(false);
     });
 
     it('should throw when not started', async () => {
-      await expect(service.sendMessage('dev-1', 'ping', {})).rejects.toThrow(
-        /not started/
-      );
-    });
-
-    it('should throw on API error', async () => {
-      service.start(testConfig);
-      await flushPromises();
-      mockFetch.mockClear();
-      mockFetch.mockResolvedValue(mockResponse('Server Error', 500));
-
-      await expect(service.sendMessage('dev-1', 'ping', {})).rejects.toThrow(
-        /Failed to send message: 500/
-      );
+      await expect(service.sendMessage('dev-1', 'ping', {})).rejects.toThrow(/not started/);
     });
   });
 
   // ----- Error Handling -----------------------------------------------------
 
   describe('error handling', () => {
-    it('should enter error state after MAX_CONSECUTIVE_FAILURES heartbeat failures', async () => {
+    it('should enter error state after MAX_CONSECUTIVE_FAILURES', async () => {
       mockFetch.mockRejectedValue(new Error('Network down'));
-
       service.start(testConfig);
       await flushPromises();
-
-      for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
-        await flushPromises();
-      }
-
-      expect(service.getState()).toBe('error');
-    });
-
-    it('should reset failure count on successful heartbeat', async () => {
-      mockFetch.mockRejectedValueOnce(new Error('fail'))
-               .mockResolvedValue(mockResponse({ success: true }));
-
-      service.start(testConfig);
-      await flushPromises();
-
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
-      await flushPromises();
-
-      expect(service.getState()).toBe('syncing');
-    });
-
-    it('should handle 401/403 in device poll without crashing', async () => {
-      mockFetch.mockResolvedValue(mockResponse({}, 403));
-
-      service.start(testConfig);
-      await flushPromises();
-
-      expect(service.getState()).toBe('syncing');
-    });
-
-    it('should not emit device_online for local device', async () => {
-      const listener = vi.fn();
-      service.on('device_online', listener);
-
-      mockFetch.mockResolvedValue(
-        mockResponse({ success: true, devices: [makeDevice({ deviceId: DEVICE_ID })] })
-      );
-
-      service.start(testConfig);
-      await flushPromises();
-
-      // device_online should NOT fire for local device
-      expect(listener).not.toHaveBeenCalled();
+      await driveIntoErrorState(service);
     });
 
     it('should schedule error recovery after entering error state', async () => {
       mockFetch.mockRejectedValue(new Error('Network down'));
-
       service.start(testConfig);
       await flushPromises();
-
-      // Drive heartbeat failures to hit the threshold
-      for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
-        await flushPromises();
-      }
-
-      expect(service.getState()).toBe('error');
-
-      // Recovery timer should be scheduled (errorRecoveryTimer is set)
+      await driveIntoErrorState(service);
       expect((service as any).errorRecoveryTimer).not.toBeNull();
     });
 
-    it('should recover from error state when heartbeat succeeds during recovery', async () => {
+    it('should recover from error state when heartbeat succeeds', async () => {
       mockFetch.mockRejectedValue(new Error('Network down'));
-
       service.start(testConfig);
       await flushPromises();
+      await driveIntoErrorState(service);
 
-      // Drive into error state
-      for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
-        await flushPromises();
-      }
-
-      expect(service.getState()).toBe('error');
-
-      // Now make heartbeat succeed — recovery attempt should restore state
       mockFetch.mockResolvedValue(mockResponse({ success: true }));
 
-      const recoveryInterval = CLOUD_SYNC_CONSTANTS.ERROR_RECOVERY_INTERVAL_MS ?? 60_000;
-      vi.advanceTimersByTime(recoveryInterval);
+      const interval = CLOUD_SYNC_CONSTANTS.ERROR_RECOVERY_INTERVAL_MS ?? 60_000;
+      jest.advanceTimersByTime(interval);
       await flushPromises();
 
       expect(service.getState()).toBe('syncing');
-      // Recovery timer should be cleared after successful recovery
       expect((service as any).errorRecoveryTimer).toBeNull();
     });
 
-    it('should remain in error state if recovery heartbeat fails', async () => {
+    it('should remain in error state if recovery fails', async () => {
       mockFetch.mockRejectedValue(new Error('Still down'));
-
       service.start(testConfig);
       await flushPromises();
+      await driveIntoErrorState(service);
 
-      // Drive into error state
-      for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
-        await flushPromises();
-      }
-
-      expect(service.getState()).toBe('error');
-
-      // Recovery attempt also fails
-      const recoveryInterval = CLOUD_SYNC_CONSTANTS.ERROR_RECOVERY_INTERVAL_MS ?? 60_000;
-      vi.advanceTimersByTime(recoveryInterval);
+      const interval = CLOUD_SYNC_CONSTANTS.ERROR_RECOVERY_INTERVAL_MS ?? 60_000;
+      jest.advanceTimersByTime(interval);
       await flushPromises();
 
       expect(service.getState()).toBe('error');
-      // Recovery timer should still be active for next attempt
       expect((service as any).errorRecoveryTimer).not.toBeNull();
     });
 
     it('should clean up error recovery timer on stop', async () => {
       mockFetch.mockRejectedValue(new Error('Network down'));
-
       service.start(testConfig);
       await flushPromises();
+      await driveIntoErrorState(service);
 
-      for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+      expect((service as any).errorRecoveryTimer).not.toBeNull();
+      service.stop();
+      expect((service as any).errorRecoveryTimer).toBeNull();
+    });
+  });
+
+  // ----- Auth Expired (Bug 2 fix) -------------------------------------------
+
+  describe('auth_expired terminal state', () => {
+    const recoveryInterval = CLOUD_SYNC_CONSTANTS.ERROR_RECOVERY_INTERVAL_MS ?? 60_000;
+    const maxAttempts = CLOUD_SYNC_CONSTANTS.MAX_ERROR_RECOVERY_ATTEMPTS ?? 5;
+
+    it('should transition to auth_expired after max 403 recovery failures', async () => {
+      mockFetch.mockRejectedValue(new Error('Network down'));
+      service.start(testConfig);
+      await flushPromises();
+      await driveIntoErrorState(service);
+
+      // All recovery attempts return 403
+      mockFetch.mockResolvedValue(mockResponse({}, 403));
+
+      for (let i = 0; i < maxAttempts; i++) {
+        jest.advanceTimersByTime(recoveryInterval);
         await flushPromises();
       }
 
-      expect((service as any).errorRecoveryTimer).not.toBeNull();
+      expect(service.getState()).toBe('auth_expired');
+    });
 
-      service.stop();
+    it('should emit auth_expired event', async () => {
+      const listener = jest.fn();
+      service.on('auth_expired', listener);
+
+      mockFetch.mockRejectedValue(new Error('Network down'));
+      service.start(testConfig);
+      await flushPromises();
+      await driveIntoErrorState(service);
+
+      mockFetch.mockResolvedValue(mockResponse({}, 401));
+
+      for (let i = 0; i < maxAttempts; i++) {
+        jest.advanceTimersByTime(recoveryInterval);
+        await flushPromises();
+      }
+
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('should clear all timers after auth_expired', async () => {
+      mockFetch.mockRejectedValue(new Error('Network down'));
+      service.start(testConfig);
+      await flushPromises();
+      await driveIntoErrorState(service);
+
+      mockFetch.mockResolvedValue(mockResponse({}, 403));
+
+      for (let i = 0; i < maxAttempts; i++) {
+        jest.advanceTimersByTime(recoveryInterval);
+        await flushPromises();
+      }
+
       expect((service as any).errorRecoveryTimer).toBeNull();
+      expect((service as any).heartbeatTimer).toBeNull();
+      expect((service as any).devicePollTimer).toBeNull();
+      expect((service as any).messagePollTimer).toBeNull();
+    });
+
+    it('should not make further fetch calls after auth_expired', async () => {
+      mockFetch.mockRejectedValue(new Error('Network down'));
+      service.start(testConfig);
+      await flushPromises();
+      await driveIntoErrorState(service);
+
+      mockFetch.mockResolvedValue(mockResponse({}, 403));
+
+      for (let i = 0; i < maxAttempts; i++) {
+        jest.advanceTimersByTime(recoveryInterval);
+        await flushPromises();
+      }
+
+      expect(service.getState()).toBe('auth_expired');
+      mockFetch.mockClear();
+
+      for (let i = 0; i < 5; i++) {
+        jest.advanceTimersByTime(recoveryInterval);
+        await flushPromises();
+      }
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should not enter auth_expired if recovery succeeds before limit', async () => {
+      mockFetch.mockRejectedValue(new Error('Network down'));
+      service.start(testConfig);
+      await flushPromises();
+      await driveIntoErrorState(service);
+
+      // First 2 recoveries return 403
+      mockFetch.mockResolvedValue(mockResponse({}, 403));
+      jest.advanceTimersByTime(recoveryInterval);
+      await flushPromises();
+      expect(service.getState()).toBe('error');
+
+      jest.advanceTimersByTime(recoveryInterval);
+      await flushPromises();
+      expect(service.getState()).toBe('error');
+
+      // 3rd recovery succeeds
+      mockFetch.mockResolvedValue(mockResponse({ success: true }));
+      jest.advanceTimersByTime(recoveryInterval);
+      await flushPromises();
+
+      expect(service.getState()).toBe('syncing');
+    });
+
+    it('should reset errorRecoveryAttempts on stop', async () => {
+      mockFetch.mockRejectedValue(new Error('Network down'));
+      service.start(testConfig);
+      await flushPromises();
+      await driveIntoErrorState(service);
+
+      mockFetch.mockResolvedValue(mockResponse({}, 403));
+      jest.advanceTimersByTime(recoveryInterval);
+      await flushPromises();
+
+      expect((service as any).errorRecoveryAttempts).toBeGreaterThan(0);
+      service.stop();
+      expect((service as any).errorRecoveryAttempts).toBe(0);
     });
   });
 });

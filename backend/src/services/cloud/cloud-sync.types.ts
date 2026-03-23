@@ -14,10 +14,10 @@
 // ---------------------------------------------------------------------------
 
 /** Possible states of the CloudSyncService lifecycle. */
-export type CloudSyncState = 'stopped' | 'syncing' | 'error';
+export type CloudSyncState = 'stopped' | 'syncing' | 'error' | 'auth_expired';
 
 /** Valid cloud sync state values for runtime validation. */
-export const CLOUD_SYNC_STATES = ['stopped', 'syncing', 'error'] as const;
+export const CLOUD_SYNC_STATES = ['stopped', 'syncing', 'error', 'auth_expired'] as const;
 
 // ---------------------------------------------------------------------------
 // Configuration

@@ -4,7 +4,6 @@
  * @module services/cloud/cloud-sync.types.test
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   isCloudSyncState,
   isMessageType,

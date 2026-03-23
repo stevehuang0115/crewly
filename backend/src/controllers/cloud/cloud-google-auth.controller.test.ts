@@ -7,7 +7,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { cloudGoogleStart, cloudGoogleCallback } from './cloud-google-auth.controller.js';
+import { cloudGoogleStart, cloudGoogleCallback, cloudGoogleCallbackPost } from './cloud-google-auth.controller.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -34,6 +34,24 @@ jest.mock('../../services/user/user-identity.service.js', () => ({
     getInstance: () => ({
       createOrUpdateUser: mockCreateOrUpdateUser,
       connectService: mockConnectService,
+    }),
+  },
+}));
+
+const mockConnectLocal = jest.fn();
+
+jest.mock('../../services/cloud/cloud-client.service.js', () => ({
+  CloudClientService: {
+    getInstance: () => ({
+      connectLocal: mockConnectLocal,
+    }),
+  },
+}));
+
+jest.mock('../../services/cloud/device-identity.service.js', () => ({
+  DeviceIdentityService: {
+    getInstance: () => ({
+      getOrCreateIdentity: jest.fn().mockResolvedValue({ deviceId: 'dev-test-123' }),
     }),
   },
 }));
@@ -378,6 +396,113 @@ describe('Cloud Google Auth Controller', () => {
 
       const redirectUrl = (res.redirect as jest.Mock).mock.calls[0][0] as string;
       expect(redirectUrl).toContain('console.example.com');
+    });
+
+    it('should call CloudClientService.connectLocal with refresh token on success', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ access_token: 'at-123', refresh_token: 'rt-456' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ email: 'user@example.com', name: 'Test User' }),
+        });
+
+      mockCreateOrUpdateUser.mockResolvedValue({ id: 'user-005', email: 'user@example.com' });
+      mockConnectService.mockResolvedValue(undefined);
+
+      const req = mockReq({ query: { code: 'valid-code' } });
+      const res = mockRes();
+
+      await cloudGoogleCallback(req, res, mockNext);
+
+      expect(mockConnectLocal).toHaveBeenCalledWith(
+        'https://api.crewlyai.com',
+        expect.any(String),
+        'free',
+        expect.any(String),
+      );
+
+      // Verify the 4th argument is a refresh token JWT
+      const refreshTokenArg = mockConnectLocal.mock.calls[0][3] as string;
+      const parts = refreshTokenArg.split('.');
+      expect(parts).toHaveLength(3);
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      expect(payload.type).toBe('refresh');
+    });
+  });
+
+  // ----- cloudGoogleCallbackPost -------------------------------------------
+
+  describe('cloudGoogleCallbackPost()', () => {
+    it('should call CloudClientService.connectLocal with refresh token on success', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ access_token: 'at-post', refresh_token: 'rt-post' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ email: 'post@example.com', name: 'Post User' }),
+        });
+
+      mockCreateOrUpdateUser.mockResolvedValue({ id: 'user-post-001', email: 'post@example.com' });
+      mockConnectService.mockResolvedValue(undefined);
+
+      const req = mockReq({ body: { code: 'valid-code' } });
+      const res = mockRes();
+
+      await cloudGoogleCallbackPost(req, res, mockNext);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          data: expect.objectContaining({
+            accessToken: expect.any(String),
+            refreshToken: expect.any(String),
+          }),
+        }),
+      );
+
+      expect(mockConnectLocal).toHaveBeenCalledWith(
+        'https://api.crewlyai.com',
+        expect.any(String),
+        'free',
+        expect.any(String),
+      );
+    });
+
+    it('should return 400 when code is missing', async () => {
+      const req = mockReq({ body: {} });
+      const res = mockRes();
+
+      await cloudGoogleCallbackPost(req, res, mockNext);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should not fail if connectLocal throws (non-fatal)', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ access_token: 'at-123', refresh_token: 'rt-456' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ email: 'user@example.com', name: 'Test' }),
+        });
+
+      mockCreateOrUpdateUser.mockResolvedValue({ id: 'user-006', email: 'user@example.com' });
+      mockConnectService.mockResolvedValue(undefined);
+      mockConnectLocal.mockImplementationOnce(() => { throw new Error('connectLocal failed'); });
+
+      const req = mockReq({ body: { code: 'valid-code' } });
+      const res = mockRes();
+
+      await cloudGoogleCallbackPost(req, res, mockNext);
+
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
   });
 });
