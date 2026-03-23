@@ -7,6 +7,7 @@
 
 import axios from 'axios';
 import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, KnowledgeDocument, KnowledgeDocumentSummary, KnowledgeScope, CloudStatus, CloudConnectResult } from '../types';
+import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
 
 /** Base URL for all API requests */
@@ -805,6 +806,81 @@ class ApiService {
     });
     if (!response.data.success || !response.data.data) {
       throw new Error(response.data.error || 'Failed to get license status');
+    }
+    return response.data.data;
+  }
+
+  // ============ Cron Task Methods ============
+
+  /**
+   * Fetches all cron tasks, optionally filtered by target agent or enabled status.
+   *
+   * @param filter - Optional filters for targetAgent and enabled
+   * @returns Promise resolving to array of cron tasks
+   */
+  async getCronTasks(filter?: { targetAgent?: string; enabled?: boolean }): Promise<CronTask[]> {
+    const params: Record<string, string> = {};
+    if (filter?.targetAgent) params.targetAgent = filter.targetAgent;
+    if (filter?.enabled !== undefined) params.enabled = String(filter.enabled);
+
+    const response = await axios.get<ApiResponse<CronTask[]>>(`${API_BASE}/cron-tasks`, { params });
+    return response.data.data || [];
+  }
+
+  /**
+   * Creates a new cron task.
+   *
+   * @param request - Cron task creation data
+   * @returns Promise resolving to the created cron task
+   * @throws Error if creation fails
+   */
+  async createCronTask(request: CreateCronTaskRequest): Promise<CronTask> {
+    const response = await axios.post<ApiResponse<CronTask>>(`${API_BASE}/cron-tasks`, request);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to create cron task');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Updates an existing cron task.
+   *
+   * @param id - Cron task ID
+   * @param updates - Fields to update
+   * @returns Promise resolving to the updated cron task
+   * @throws Error if update fails
+   */
+  async updateCronTask(id: string, updates: UpdateCronTaskRequest): Promise<CronTask> {
+    const response = await axios.patch<ApiResponse<CronTask>>(`${API_BASE}/cron-tasks/${id}`, updates);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to update cron task');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Deletes a cron task.
+   *
+   * @param id - Cron task ID to delete
+   * @throws Error if deletion fails
+   */
+  async deleteCronTask(id: string): Promise<void> {
+    const response = await axios.delete<ApiResponse<void>>(`${API_BASE}/cron-tasks/${id}`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete cron task');
+    }
+  }
+
+  /**
+   * Fetches agent heartbeat status from the team agent status file.
+   *
+   * @returns Promise resolving to the team agent status data
+   * @throws Error if the request fails
+   */
+  async getAgentHeartbeats(): Promise<TeamAgentStatusFile> {
+    const response = await axios.get<ApiResponse<TeamAgentStatusFile>>(`${API_BASE}/system/agent-status`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to get agent heartbeats');
     }
     return response.data.data;
   }

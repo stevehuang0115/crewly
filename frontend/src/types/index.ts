@@ -276,6 +276,9 @@ export interface CloudConnectResult {
   cloudUrl: string;
 }
 
+// Re-export cron task types
+export * from './cron-task.types';
+
 // Re-export auth types
 export * from './auth.types';
 
