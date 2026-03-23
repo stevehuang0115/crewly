@@ -34,10 +34,11 @@ import {
 import { getSlackImageService } from './slack-image.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
-import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { getCrossMachineMessageService } from './cross-machine-message.service.js';
+import type { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 
 /**
  * Bridge configuration
@@ -94,6 +95,7 @@ export class SlackOrchestratorBridge extends EventEmitter {
   private slackService: SlackService;
   private chatService: ChatService;
   private messageQueueService: MessageQueueService | null = null;
+  private threadStatusQueue: ThreadStatusQueueService | null = null;
   private threadStore: SlackThreadStoreService | null = null;
   private config: SlackBridgeConfig;
   private initialized = false;
@@ -173,6 +175,16 @@ export class SlackOrchestratorBridge extends EventEmitter {
    */
   setMessageQueueService(service: MessageQueueService): void {
     this.messageQueueService = service;
+  }
+
+  /**
+   * Set the thread status queue service for tracking inbound message lifecycle.
+   * Called during server initialization.
+   *
+   * @param service - The ThreadStatusQueueService instance
+   */
+  setThreadStatusQueue(service: ThreadStatusQueueService): void {
+    this.threadStatusQueue = service;
   }
 
   /**
@@ -619,6 +631,31 @@ Just type naturally to chat with the orchestrator!`;
                 threadTs: context?.threadTs,
               },
             });
+
+            // Track inbound thread for offline message recovery
+            if (this.threadStatusQueue && context?.channelId) {
+              try {
+                const threadKey = context.threadTs
+                  ? `${context.channelId}:${context.threadTs}`
+                  : `${context.channelId}:${Date.now()}`;
+                this.threadStatusQueue.trackInbound({
+                  source: 'slack',
+                  threadKey,
+                  conversationId: result.conversation.id,
+                  messagePreview: message.slice(0, THREAD_STATUS_CONSTANTS.MAX_PREVIEW_LENGTH),
+                  sourceMetadata: {
+                    channelId: context.channelId,
+                    threadTs: context.threadTs,
+                    userId: context.userId,
+                  },
+                });
+              } catch (trackErr) {
+                this.logger.warn('Failed to track inbound thread status (offline path)', {
+                  error: trackErr instanceof Error ? trackErr.message : String(trackErr),
+                });
+              }
+            }
+
             return 'The orchestrator is currently offline. Your message has been queued and will be processed when it comes back online.';
           } catch (enqueueErr) {
             this.logger.warn('Failed to queue message for offline orchestrator', {
@@ -686,6 +723,30 @@ Just type naturally to chat with the orchestrator!`;
               threadTs: context?.threadTs,
             },
           });
+
+          // Track inbound thread for lifecycle monitoring and restart recovery
+          if (this.threadStatusQueue && context?.channelId) {
+            try {
+              const threadKey = context.threadTs
+                ? `${context.channelId}:${context.threadTs}`
+                : `${context.channelId}:${Date.now()}`;
+              this.threadStatusQueue.trackInbound({
+                source: 'slack',
+                threadKey,
+                conversationId: result.conversation.id,
+                messagePreview: message.slice(0, THREAD_STATUS_CONSTANTS.MAX_PREVIEW_LENGTH),
+                sourceMetadata: {
+                  channelId: context.channelId,
+                  threadTs: context.threadTs,
+                  userId: context.userId,
+                },
+              });
+            } catch (trackErr) {
+              this.logger.warn('Failed to track inbound thread status', {
+                error: trackErr instanceof Error ? trackErr.message : String(trackErr),
+              });
+            }
+          }
         } catch (enqueueErr) {
           if (!resolved) {
             resolved = true;

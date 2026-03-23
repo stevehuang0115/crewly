@@ -351,6 +351,31 @@ export const MESSAGE_REPLAY_CONSTANTS = {
 } as const;
 
 /**
+ * Thread Status Queue constants for tracking inbound message thread lifecycle.
+ * Used by ThreadStatusQueueService for persistence, expiry, and recovery.
+ */
+export const THREAD_STATUS_CONSTANTS = {
+	/** Persisted JSON filename under crewly home directory */
+	STORAGE_FILE: 'thread-status-queue.json',
+	/** Maximum number of entries to retain (oldest terminal entries pruned first) */
+	MAX_ENTRIES: 500,
+	/** Timeout in minutes before a non-terminal thread is marked as expired */
+	STALE_TIMEOUT_MINUTES: 30,
+	/** Retention period in hours for terminal entries before cleanup */
+	CLEANUP_RETENTION_HOURS: 24,
+	/** Debounce interval in ms for persisting state to disk */
+	PERSIST_DEBOUNCE_MS: 100,
+	/** Maximum number of delivery retries before marking as error */
+	MAX_RETRY_COUNT: 3,
+	/** Maximum length of the message preview stored with each entry */
+	MAX_PREVIEW_LENGTH: 200,
+	/** Markers in orchestrator replies that indicate delegation occurred */
+	DELEGATION_MARKERS: ['[DELEGATED]', '[ASSIGNED]', 'delegate-task', 'delegated to'],
+	/** Markers in orchestrator replies that indicate a follow-up question */
+	FOLLOW_UP_MARKERS: ['?', 'please clarify', 'could you', 'can you elaborate'],
+} as const;
+
+/**
  * Activity monitor constants for agent idle/busy detection.
  * Used by ActivityMonitorService for terminal output polling.
  */

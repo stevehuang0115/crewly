@@ -10,7 +10,10 @@
 
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { formatError } from '../../utils/format-error.js';
+import { THREAD_STATUS_CONSTANTS } from '../../constants.js';
 import type { QueuedMessage } from '../../types/messaging.types.js';
+import type { ReplyStatus } from '../../types/thread-status.types.js';
+import type { ThreadStatusQueueService } from './thread-status-queue.service.js';
 
 /**
  * ResponseRouterService routes orchestrator responses to the appropriate
@@ -25,8 +28,52 @@ import type { QueuedMessage } from '../../types/messaging.types.js';
 export class ResponseRouterService {
   private logger: ComponentLogger;
 
+  /** Thread status queue for tracking reply outcomes */
+  private threadStatusQueue: ThreadStatusQueueService | null = null;
+
   constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ResponseRouter');
+  }
+
+  /**
+   * Set the thread status queue service for tracking reply outcomes.
+   *
+   * @param service - The ThreadStatusQueueService instance
+   */
+  setThreadStatusQueue(service: ThreadStatusQueueService): void {
+    this.threadStatusQueue = service;
+  }
+
+  /**
+   * Determine the reply status based on orchestrator response content.
+   * Checks for delegation markers and follow-up question patterns.
+   *
+   * @param response - The orchestrator's reply text
+   * @returns The appropriate ReplyStatus for this response
+   */
+  detectReplyStatus(response: string): ReplyStatus {
+    if (!response || response.length === 0) {
+      return 'replied_completed';
+    }
+
+    const lowerResponse = response.toLowerCase();
+
+    // Check for delegation markers
+    for (const marker of THREAD_STATUS_CONSTANTS.DELEGATION_MARKERS) {
+      if (lowerResponse.includes(marker.toLowerCase())) {
+        return 'replied_waiting_actions';
+      }
+    }
+
+    // Check for follow-up question markers (only if response ends with question-like text)
+    const lastSentence = response.trim().split(/[.!]\s+/).pop() || '';
+    for (const marker of THREAD_STATUS_CONSTANTS.FOLLOW_UP_MARKERS) {
+      if (lastSentence.toLowerCase().includes(marker.toLowerCase())) {
+        return 'replied_to_follow_up';
+      }
+    }
+
+    return 'replied_completed';
   }
 
   /**
@@ -59,6 +106,30 @@ export class ResponseRouterService {
           messageId: message.id,
           source: message.source,
         });
+    }
+
+    // Track reply status in the thread status queue (skip empty responses
+    // from fire-and-forget delivery — actual reply comes via reply-* skills)
+    if (this.threadStatusQueue && response && response.length > 0 && message.sourceMetadata) {
+      try {
+        const channelId = message.sourceMetadata.channelId as string | undefined;
+        const threadTs = message.sourceMetadata.threadTs as string | undefined;
+        if (channelId) {
+          const threadKey = threadTs ? `${channelId}:${threadTs}` : `${channelId}:${message.enqueuedAt}`;
+          const replyStatus = this.detectReplyStatus(response);
+          this.threadStatusQueue.markReplied(threadKey, replyStatus);
+          this.logger.debug('Thread status marked as replied', {
+            messageId: message.id,
+            threadKey,
+            replyStatus,
+          });
+        }
+      } catch (err) {
+        this.logger.warn('Failed to mark thread as replied', {
+          messageId: message.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 

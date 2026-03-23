@@ -353,3 +353,6 @@ export * from './chat.types.js';
 
 // Re-export task output types
 export * from './task-output.types.js';
+
+// Re-export thread status types
+export * from './thread-status.types.js';

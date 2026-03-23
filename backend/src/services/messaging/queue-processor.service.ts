@@ -34,6 +34,7 @@ import {
 } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { StorageService } from '../core/storage.service.js';
+import type { ThreadStatusQueueService } from './thread-status-queue.service.js';
 
 /**
  * QueueProcessorService dequeues messages one-at-a-time and delivers them
@@ -110,6 +111,9 @@ export class QueueProcessorService extends EventEmitter {
    */
   private pendingAckMessages: Map<string, PendingAckEntry> = new Map();
 
+  /** Thread status queue for tracking message lifecycle across restarts */
+  private threadStatusQueue: ThreadStatusQueueService | null = null;
+
   constructor(
     queueService: MessageQueueService,
     responseRouter: ResponseRouterService,
@@ -120,6 +124,15 @@ export class QueueProcessorService extends EventEmitter {
     this.queueService = queueService;
     this.responseRouter = responseRouter;
     this.agentRegistrationService = agentRegistrationService;
+  }
+
+  /**
+   * Set the thread status queue service for tracking message delivery lifecycle.
+   *
+   * @param service - The ThreadStatusQueueService instance
+   */
+  setThreadStatusQueue(service: ThreadStatusQueueService): void {
+    this.threadStatusQueue = service;
   }
 
   /**
@@ -562,6 +575,23 @@ export class QueueProcessorService extends EventEmitter {
         }
 
         return;
+      }
+
+      // Mark thread as delivered in the status queue for lifecycle tracking
+      if (this.threadStatusQueue && message.sourceMetadata) {
+        try {
+          const channelId = message.sourceMetadata.channelId as string | undefined;
+          const threadTs = message.sourceMetadata.threadTs as string | undefined;
+          if (channelId) {
+            const threadKey = threadTs ? `${channelId}:${threadTs}` : `${channelId}:${message.enqueuedAt}`;
+            this.threadStatusQueue.markDelivered(threadKey);
+          }
+        } catch (err) {
+          this.logger.warn('Failed to mark thread as delivered', {
+            messageId: message.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
 
       // #239: For force-delivered user messages, add to pending-ack list

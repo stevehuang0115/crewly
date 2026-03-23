@@ -61,6 +61,7 @@ import { initializeGoogleChatIfConfigured } from './services/messaging/google-ch
 import { initializeTelegramIfConfigured, shutdownTelegram } from './services/telegram/index.js';
 import { initializeCloudIfConfigured } from './services/cloud/cloud-initializer.js';
 import { MessageQueueService, QueueProcessorService, ResponseRouterService } from './services/messaging/index.js';
+import { ThreadStatusQueueService } from './services/messaging/thread-status-queue.service.js';
 import { EventBusService } from './services/event-bus/index.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
@@ -155,6 +156,7 @@ export class CrewlyServer {
 	private terminalGateway!: TerminalGateway;
 	private messageQueueService!: MessageQueueService;
 	private queueProcessorService!: QueueProcessorService;
+	private threadStatusQueueService!: ThreadStatusQueueService;
 	private eventBusService!: EventBusService;
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
@@ -288,6 +290,11 @@ export class CrewlyServer {
 			this.apiController.agentRegistrationService
 		);
 
+		// Initialize thread status queue for tracking inbound message lifecycle
+		this.threadStatusQueueService = new ThreadStatusQueueService(this.config.crewlyHome);
+		responseRouter.setThreadStatusQueue(this.threadStatusQueueService);
+		this.queueProcessorService.setThreadStatusQueue(this.threadStatusQueueService);
+
 		// Wire queue service into controllers
 		setChatMessageQueueService(this.messageQueueService);
 		setMessagingControllerQueueService(this.messageQueueService);
@@ -316,6 +323,25 @@ export class CrewlyServer {
 		// Initialize Slack image service for downloading images from Slack messages
 		const slackImageService = new SlackImageService(this.config.crewlyHome);
 		setSlackImageService(slackImageService);
+
+		// Wire agent:idle events to thread status queue for delegation completion
+		this.eventBusService.on('eventPublished', (event: { type: string; sessionName?: string }) => {
+			if (event.type === 'agent:idle' && event.sessionName) {
+				try {
+					const waitingThreads = this.threadStatusQueueService.getByStatus('replied_waiting_actions');
+					for (const entry of waitingThreads) {
+						if (entry.delegatedAgents?.includes(event.sessionName)) {
+							this.threadStatusQueueService.markDelegationsComplete(entry.threadKey);
+						}
+					}
+				} catch (err) {
+					this.logger.warn('Failed to check thread delegation completion on agent:idle', {
+						sessionName: event.sessionName,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			}
+		});
 
 		// Broadcast queue events via Socket.IO
 		this.messageQueueService.on('enqueued', (msg) => {
@@ -816,6 +842,55 @@ export class CrewlyServer {
 			this.logger.info('Starting message queue processor...');
 			this.queueProcessorService.start();
 
+			// Thread Status Queue: load persisted state and recover pending threads
+			try {
+				await this.threadStatusQueueService.loadPersistedState();
+				const pending = this.threadStatusQueueService.getPendingThreads();
+				if (pending.length > 0) {
+					this.logger.info('Recovering pending thread status entries', { count: pending.length });
+					for (const entry of pending) {
+						if (entry.status === 'enqueued' || entry.status === 'error') {
+							// Re-enqueue the message for delivery
+							this.messageQueueService.enqueue({
+								content: `[RECOVERY] Unreplied thread from ${entry.receivedAt}: ${entry.messagePreview}`,
+								conversationId: entry.conversationId,
+								source: entry.source,
+								sourceMetadata: entry.sourceMetadata as Record<string, unknown> | undefined,
+							});
+						} else if (entry.status === 'delivered') {
+							// Was delivered but no reply before restart — re-deliver
+							this.messageQueueService.enqueue({
+								content: `[RECOVERY] Thread delivered but no reply before restart: ${entry.messagePreview}`,
+								conversationId: entry.conversationId,
+								source: entry.source,
+								sourceMetadata: entry.sourceMetadata as Record<string, unknown> | undefined,
+							});
+						} else if (entry.status === 'replied_waiting_actions') {
+							// Orchestrator replied but agents haven't finished — notify
+							this.messageQueueService.enqueue({
+								content: `[RECOVERY] Thread ${entry.threadKey} is waiting for agents: ${entry.delegatedAgents?.join(', ') || 'unknown'}. Check their status.`,
+								conversationId: 'system',
+								source: 'system_event',
+								targetSession: ORCHESTRATOR_SESSION_NAME,
+							});
+						}
+					}
+					this.logger.info('Thread status queue recovery complete', {
+						recovered: pending.length,
+					});
+				}
+				// Expire stale threads and clean up old terminal entries
+				const expired = this.threadStatusQueueService.expireStale();
+				const cleaned = this.threadStatusQueueService.cleanup();
+				if (expired > 0 || cleaned > 0) {
+					this.logger.info('Thread status queue maintenance', { expired, cleaned });
+				}
+			} catch (err) {
+				this.logger.warn('Thread status queue recovery failed (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+
 			// #286: Start cron task service with agent status/start callbacks
 			try {
 				const cronTaskService = CronTaskService.getInstance();
@@ -1054,7 +1129,9 @@ export class CrewlyServer {
 				const threadStore = getSlackThreadStore();
 				if (threadStore) {
 					const { getSlackOrchestratorBridge } = await import('./services/slack/slack-orchestrator-bridge.js');
-					getSlackOrchestratorBridge().setSlackThreadStore(threadStore);
+					const bridge = getSlackOrchestratorBridge();
+					bridge.setSlackThreadStore(threadStore);
+					bridge.setThreadStatusQueue(this.threadStatusQueueService);
 				}
 				this.logger.info('Slack integration initialized successfully');
 			} else if (result.attempted) {
@@ -1629,6 +1706,15 @@ export class CrewlyServer {
 				await this.messageQueueService.flushPersist();
 			} catch (error) {
 				this.logger.warn('Failed to flush message queue', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Flush thread status queue to disk
+			try {
+				await this.threadStatusQueueService.persist();
+			} catch (error) {
+				this.logger.warn('Failed to flush thread status queue', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
