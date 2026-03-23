@@ -17,7 +17,9 @@ export type InProgressTaskStatus =
   | 'input_required'
   | 'verifying'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  // Architecture Upgrade: formal task acceptance
+  | 'accepted';
 
 /**
  * Structured artifact produced by a task.
@@ -122,6 +124,13 @@ export interface InProgressTask {
   };
 
   // === Quality Scoring (#174) ===
+
+  // === Architecture Upgrade: Task Acceptance fields ===
+
+  /** ISO timestamp when the agent accepted this task */
+  acceptedAt?: string;
+  /** Agent's structured understanding of the task (from accept handshake) */
+  acceptanceNote?: string;
 
   /** Quality score (0-100) assigned by the auditor after task completion. */
   qualityScore?: number;

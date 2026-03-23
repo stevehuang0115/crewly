@@ -922,5 +922,71 @@ describe('RelayClientService', () => {
 
       expect(client.getState()).toBe('error');
     });
+
+    it('should treat 401 poll response as a poll failure', async () => {
+      // Register ok
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Poll returns 401
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ error: 'Unauthorized' }, false, 401),
+      );
+
+      vi.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      // Should be tracked as a poll failure
+      expect(client.getConsecutivePollFailures()).toBe(1);
+      // But state should not immediately change to error (needs MAX failures)
+      expect(client.getState()).toBe('registered');
+    });
+
+    it('should treat 403 poll response as a poll failure', async () => {
+      // Register ok
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // Poll returns 403
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ error: 'Forbidden' }, false, 403),
+      );
+
+      vi.advanceTimersByTime(5000);
+      await flushMicrotasks();
+
+      expect(client.getConsecutivePollFailures()).toBe(1);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // getAuthToken token preference
+  // -----------------------------------------------------------------------
+
+  describe('getAuthToken fallback', () => {
+    it('should use config token when CloudClientService returns null token', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
+      );
+
+      const client = RelayClientService.getInstance();
+      client.connect(makeConfig());
+      await flushMicrotasks();
+
+      // The register call should use the config token (CloudClientService mock
+      // returns null token, so fallback kicks in)
+      const registerCall = mockFetch.mock.calls[0];
+      expect(registerCall[1].headers['Authorization']).toBe('Bearer test-token');
+    });
   });
 });

@@ -64,6 +64,15 @@ export interface TeamMember {
 
   /** #235: Reason the agent last went inactive */
   dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected' | 'startup_timeout';
+
+  // === Architecture Upgrade fields ===
+
+  /** Autonomy level: directed (default), bounded, or domain_autonomous */
+  autonomyLevel?: 'directed' | 'bounded' | 'domain_autonomous';
+  /** Domain SOP name — loads config/domain-sops/{domainSOP}.sop.md */
+  domainSOP?: string;
+  /** Risk policy name — loads config/risk-policies/{riskPolicy}.policy.md */
+  riskPolicy?: string;
 }
 
 export interface Team {
@@ -283,6 +292,15 @@ export interface TeamMemberSessionConfig {
 
   /** Resolved subordinate details for prompt injection. */
   subordinates?: SubordinateInfo[];
+
+  // === Architecture Upgrade fields ===
+
+  /** Autonomy level: directed (default), bounded, or domain_autonomous */
+  autonomyLevel?: 'directed' | 'bounded' | 'domain_autonomous';
+  /** Domain SOP name — loads config/domain-sops/{domainSOP}.sop.md */
+  domainSOP?: string;
+  /** Risk policy name — loads config/risk-policies/{riskPolicy}.policy.md */
+  riskPolicy?: string;
 }
 
 export interface TerminalOutput {

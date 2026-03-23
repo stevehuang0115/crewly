@@ -12,6 +12,20 @@
  * Configuration passed to each prompt module during assembly.
  * Contains all the context needed to build module-specific content.
  */
+/**
+ * Organizational role derived from team hierarchy.
+ * Determines role boundary rules and event subscriptions.
+ */
+export type OrgRole = 'orchestrator' | 'team-lead' | 'executor';
+
+/**
+ * Autonomy level controls the decision rights matrix.
+ * - directed: Execute assigned tasks only, escalate all ambiguity.
+ * - bounded: Make decisions within task/domain scope, log rationale.
+ * - domain_autonomous: Monitor domain continuously, make approved decisions without waiting.
+ */
+export type AutonomyLevel = 'directed' | 'bounded' | 'domain_autonomous';
+
 export interface ModuleConfig {
 	/** Agent's session name (e.g. 'crewly-product-sam-217bfbbf') */
 	sessionName: string;
@@ -35,6 +49,19 @@ export interface ModuleConfig {
 	tlSkillsPath: string;
 	/** Absolute path to the project root (where config/ lives) */
 	projectRoot: string;
+
+	// === Architecture Upgrade fields ===
+
+	/** Organizational role derived from team hierarchy (orchestrator, team-lead, executor) */
+	orgRole?: OrgRole;
+	/** Autonomy level controlling the decision rights matrix */
+	autonomyLevel?: AutonomyLevel;
+	/** Capability flags (e.g., ['can-decide', 'can-verify']) */
+	capabilities?: string[];
+	/** Domain SOP name — loads config/domain-sops/{domainSOP}.sop.md */
+	domainSOP?: string;
+	/** Risk policy name — loads config/risk-policies/{riskPolicy}.policy.md */
+	riskPolicy?: string;
 }
 
 /**

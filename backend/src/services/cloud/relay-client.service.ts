@@ -268,6 +268,10 @@ export class RelayClientService extends EventEmitter {
       });
 
       if (!response.ok) {
+        // On 401/403, trigger token refresh so the next reconnect attempt uses a fresh token
+        if (response.status === 401 || response.status === 403) {
+          this.triggerTokenRefresh();
+        }
         throw new Error(`Registration failed with HTTP ${response.status}`);
       }
 
@@ -355,6 +359,14 @@ export class RelayClientService extends EventEmitter {
       });
 
       if (!response.ok) {
+        // On 401/403, trigger a background token refresh before counting the failure.
+        // The next poll cycle will pick up the refreshed token via getAuthToken().
+        if (response.status === 401 || response.status === 403) {
+          this.logger.warn('Poll received auth error — triggering token refresh', {
+            status: response.status,
+          });
+          this.triggerTokenRefresh();
+        }
         this.handlePollFailure(`Poll request failed with HTTP ${response.status}`);
         return;
       }
@@ -605,6 +617,10 @@ export class RelayClientService extends EventEmitter {
    * auto-refresh). Falls back to the token stored in config if CloudClientService
    * is not connected or unavailable.
    *
+   * Unlike the previous implementation, this method returns the CloudClientService
+   * token regardless of connection status. The token may have been refreshed by a
+   * background task even when the status is TOKEN_EXPIRED.
+   *
    * @returns Bearer token string
    */
   private getAuthToken(): string {
@@ -613,14 +629,34 @@ export class RelayClientService extends EventEmitter {
       // CloudClientService.getToken() returns the latest (possibly refreshed) token
       const { CloudClientService } = require('./cloud-client.service.js');
       const cloudClient = CloudClientService.getInstance();
-      if (cloudClient.isConnected()) {
-        const freshToken = cloudClient.getToken();
-        if (freshToken) return freshToken;
-      }
+      // Return the latest token regardless of connection status — it may have
+      // been refreshed in the background even when status is TOKEN_EXPIRED.
+      const freshToken = cloudClient.getToken();
+      if (freshToken) return freshToken;
     } catch {
       // CloudClientService not available — use config token
     }
     return this.config?.token ?? '';
+  }
+
+  /**
+   * Attempt to trigger a token refresh via CloudClientService.
+   *
+   * Called when a 401/403 is received during polling or registration.
+   * Fire-and-forget — result is logged but does not block the caller.
+   */
+  private triggerTokenRefresh(): void {
+    try {
+      const { CloudClientService } = require('./cloud-client.service.js');
+      const cloudClient = CloudClientService.getInstance();
+      cloudClient.tryRefreshToken().then((refreshed: boolean) => {
+        if (refreshed) {
+          this.logger.info('Token auto-refreshed after relay auth failure');
+        }
+      }).catch(() => {});
+    } catch {
+      // CloudClientService not available — cannot refresh
+    }
   }
 
   /**

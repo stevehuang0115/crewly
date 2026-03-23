@@ -1541,6 +1541,14 @@ export class AgentRegistrationService {
 					agentSkillsPath,
 					tlSkillsPath,
 					projectRoot: this.projectRoot,
+					// Architecture Upgrade: derive orgRole from team hierarchy
+					orgRole: role === 'orchestrator' ? 'orchestrator'
+						: foundMember?.canDelegate ? 'team-lead'
+						: 'executor',
+					autonomyLevel: foundMember?.autonomyLevel ?? 'directed',
+					capabilities: foundMember?.capabilities,
+					domainSOP: foundMember?.domainSOP,
+					riskPolicy: foundMember?.riskPolicy,
 				};
 
 				const assembler = new PromptAssemblyService();

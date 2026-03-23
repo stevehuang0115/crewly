@@ -590,8 +590,15 @@ export class CloudClientService {
 
       const payload = verifyJwt(this.refreshToken);
       if (!payload || payload.type !== 'refresh') {
-        this.logger.warn('Refresh token invalid or expired — cannot auto-refresh');
-        this.refreshToken = null;
+        this.logger.warn('Refresh token verification failed — cannot auto-refresh', {
+          hasPayload: !!payload,
+          type: payload?.type,
+        });
+        // IMPORTANT: Do NOT clear this.refreshToken here. The refresh token may
+        // still be valid on the Cloud side (which only checks exp, not signature).
+        // Clearing it would permanently lose the ability to refresh, requiring
+        // the user to re-authenticate via OAuth. The token is only cleared on
+        // explicit disconnect().
         return false;
       }
 
