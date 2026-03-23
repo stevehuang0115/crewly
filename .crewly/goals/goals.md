@@ -27,15 +27,15 @@ Phase 1→2 触发：3+ 差异化核心功能 + 完整 demo flow + 用户确认 
 
 O3 [推广]: 建立市场存在感 (Luna/Ella/Mila/Grace)
 - KR1: 每周1篇技术博客/教程（Nano Banana 配图）
-- KR2: 制作 Demo 视频 +宣传素材（Veo/Flopost）
+- KR2: 制作 Demo 视频 +宣传素材（Veo/Flopost） — **IN PROGRESS** (Teaser ready)
 - KR3: 提交 HN / Product Hunt / 开发者目录
-- KR4: 3 个预设团队模板作为 onboarding 钩子 — **DONE**
+- KR4: 3 个预设团队模板作为 onboarding 钩子 — **DONE** (4 templates ready)
 
 **[NEW] O3.5: OpenClaw Competitive Response (March 2026 Focus)**
 - KR1: 发布 v1.5 Roadmap & GTM 计划 (Mia) — **DONE**
 - KR2: 完成 Messenger Hub (Slack/Telegram) 全打通 (Sam) — **DONE**
 - KR3: 开发 Safe-Switch 迁移 CLI 工具 (Leo) — **DONE**
-- KR4: 发布 "The Security Moat" 系列技术博客 (Luna) — **IN PROGRESS**
+- KR4: 发布 "The Security Moat" 系列技术博客 (Luna) — **DONE** (v1.0 finalized)
 
 Phase 2→3 触发：首次公开发布 + 有外部用户 + 用户确认
 

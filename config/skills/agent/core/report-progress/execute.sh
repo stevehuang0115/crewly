@@ -20,6 +20,8 @@ BODY=$(echo "$INPUT" | jq '{
   progress: (.progress | tonumber),
   current: .current
 } +
+  (if .projectPath then {projectPath: .projectPath} else {} end) +
+  (if .taskGroup then {taskGroup: .taskGroup} else {} end) +
   (if .completed then {completed: .completed} else {} end) +
   (if .nextSteps then {nextSteps: .nextSteps} else {} end) +
   (if .blockers then {blockers: .blockers} else {} end) +

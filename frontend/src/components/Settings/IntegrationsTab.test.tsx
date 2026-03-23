@@ -49,7 +49,7 @@ describe('IntegrationsTab', () => {
       expect(screen.getByText('Google Chat')).toBeInTheDocument();
     });
 
-    it('should not show Coming Soon badge for any platform', () => {
+    it('should not show Coming Soon badges when all platforms are available', () => {
       render(<IntegrationsTab />);
 
       expect(screen.queryByText('Coming Soon')).not.toBeInTheDocument();

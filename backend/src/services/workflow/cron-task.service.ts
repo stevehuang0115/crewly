@@ -28,13 +28,68 @@ import type {
 const CRON_CHECK_INTERVAL_MS = 60_000;
 
 /**
+ * Get the components (hour, minute, day, etc.) of a UTC Date in a given IANA timezone.
+ * Uses Intl.DateTimeFormat for zero-dependency timezone support.
+ *
+ * @param date - A Date object (interpreted as UTC instant)
+ * @param timezone - IANA timezone string (e.g. 'Asia/Shanghai')
+ * @returns Object with zoned hour, minute, dayOfWeek, dayOfMonth, month
+ */
+function getZonedComponents(date: Date, timezone: string): {
+	hour: number; minute: number; dayOfWeek: number; dayOfMonth: number; month: number;
+} {
+	const fmt = new Intl.DateTimeFormat('en-US', {
+		timeZone: timezone,
+		hour: 'numeric', minute: 'numeric',
+		day: 'numeric', month: 'numeric', weekday: 'short',
+		hour12: false,
+	});
+	const partsMap: Record<string, string> = {};
+	for (const part of fmt.formatToParts(date)) {
+		partsMap[part.type] = part.value;
+	}
+	const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+	return {
+		hour: parseInt(partsMap['hour'], 10) % 24, // Intl returns 24 for midnight in some locales
+		minute: parseInt(partsMap['minute'], 10),
+		dayOfWeek: weekdayMap[partsMap['weekday']] ?? 0,
+		dayOfMonth: parseInt(partsMap['day'], 10),
+		month: parseInt(partsMap['month'], 10),
+	};
+}
+
+/**
+ * Parse a cron day-of-week field that may contain ranges (e.g. "1-5").
+ *
+ * @param spec - Cron day-of-week field
+ * @returns Set of matching day numbers, or null for wildcard
+ */
+function parseDowSpec(spec: string): Set<number> | null {
+	if (spec === '*') return null;
+	const values = new Set<number>();
+	for (const part of spec.split(',')) {
+		if (part.includes('-')) {
+			const [start, end] = part.split('-').map(Number);
+			for (let d = start; d <= end; d++) values.add(d);
+		} else {
+			values.add(parseInt(part, 10));
+		}
+	}
+	return values;
+}
+
+/**
  * Parse a cron expression and calculate the next run time.
  * Supports standard 5-field cron: minute hour day-of-month month day-of-week.
  *
+ * All time matching is performed in the given timezone (#268), ensuring cron
+ * expressions like "45 8 * * 1-5" with timezone "Asia/Shanghai" fire at
+ * 08:45 CST, not 08:45 UTC.
+ *
  * @param cronExpression - Standard 5-field cron expression
- * @param timezone - IANA timezone
+ * @param timezone - IANA timezone (e.g. 'Asia/Shanghai', 'America/New_York')
  * @param after - Calculate next run after this date (defaults to now)
- * @returns ISO string of next run time
+ * @returns ISO string of next run time (UTC)
  */
 export function getNextRunTime(cronExpression: string, timezone: string, after?: Date): string {
 	const now = after || new Date();
@@ -45,10 +100,9 @@ export function getNextRunTime(cronExpression: string, timezone: string, after?:
 
 	const [minuteSpec, hourSpec] = parts;
 
-	// Simple implementation: parse minute and hour for common daily/hourly crons
-	// For complex expressions, iterate minute-by-minute up to 48 hours
 	const minute = minuteSpec === '*' ? -1 : parseInt(minuteSpec, 10);
 	const hour = hourSpec === '*' ? -1 : parseInt(hourSpec, 10);
+	const dowSet = parseDowSpec(parts[4]);
 
 	const candidate = new Date(now.getTime());
 	// Advance by 1 minute minimum to avoid re-triggering
@@ -57,17 +111,14 @@ export function getNextRunTime(cronExpression: string, timezone: string, after?:
 
 	// Try up to 48 hours of minutes
 	for (let i = 0; i < 48 * 60; i++) {
-		const m = candidate.getMinutes();
-		const h = candidate.getHours();
-		const dayOfWeek = candidate.getDay(); // 0=Sun
-		const dayOfMonth = candidate.getDate();
-		const month = candidate.getMonth() + 1;
+		// #268: Use timezone-aware components instead of UTC getHours()/getMinutes()
+		const zoned = getZonedComponents(candidate, timezone);
 
-		const minuteMatch = minute === -1 || m === minute;
-		const hourMatch = hour === -1 || h === hour;
-		const domMatch = parts[2] === '*' || parseInt(parts[2], 10) === dayOfMonth;
-		const monthMatch = parts[3] === '*' || parseInt(parts[3], 10) === month;
-		const dowMatch = parts[4] === '*' || parseInt(parts[4], 10) === dayOfWeek;
+		const minuteMatch = minute === -1 || zoned.minute === minute;
+		const hourMatch = hour === -1 || zoned.hour === hour;
+		const domMatch = parts[2] === '*' || parseInt(parts[2], 10) === zoned.dayOfMonth;
+		const monthMatch = parts[3] === '*' || parseInt(parts[3], 10) === zoned.month;
+		const dowMatch = dowSet === null || dowSet.has(zoned.dayOfWeek);
 
 		if (minuteMatch && hourMatch && domMatch && monthMatch && dowMatch) {
 			return candidate.toISOString();
@@ -89,6 +140,8 @@ export class CronTaskService {
 	private storeFile: string;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private executionCallback: ((task: CronTask) => Promise<void>) | null = null;
+	private agentStatusCallback: ((sessionName: string) => Promise<boolean>) | null = null;
+	private agentStartCallback: ((sessionName: string, teamId: string) => Promise<boolean>) | null = null;
 
 	constructor(crewlyHome?: string) {
 		this.logger = LoggerService.getInstance().createComponentLogger('CronTaskService');
@@ -127,13 +180,79 @@ export class CronTaskService {
 	}
 
 	/**
+	 * Set the callback to check whether a target agent is online.
+	 *
+	 * @param callback - Returns true if the agent is online/active
+	 */
+	setAgentStatusCallback(callback: (sessionName: string) => Promise<boolean>): void {
+		this.agentStatusCallback = callback;
+	}
+
+	/**
+	 * Set the callback to auto-start an offline agent before dispatching a cron task.
+	 *
+	 * @param callback - Attempts to start the agent, returns true on success
+	 */
+	setAgentStartCallback(callback: (sessionName: string, teamId: string) => Promise<boolean>): void {
+		this.agentStartCallback = callback;
+	}
+
+	/**
+	 * Recalculate nextRunAt for all enabled tasks using their stored timezone.
+	 *
+	 * On backend startup, existing tasks may have stale nextRunAt values computed
+	 * with a different server timezone (e.g. 12h off for Asia/Shanghai vs EDT).
+	 * This self-heal step ensures every task's nextRunAt is correct for its timezone.
+	 *
+	 * @returns Number of tasks whose nextRunAt was updated
+	 */
+	async recalculateAllNextRunTimes(): Promise<number> {
+		const store = await this.loadStore();
+		let updated = 0;
+		const now = new Date();
+
+		for (const task of store.tasks) {
+			if (!task.enabled) continue;
+
+			const correctedNextRun = getNextRunTime(task.cronExpression, task.timezone, now);
+			if (task.nextRunAt !== correctedNextRun) {
+				this.logger.info('Recalculated nextRunAt for cron task', {
+					id: task.id,
+					oldNextRunAt: task.nextRunAt,
+					newNextRunAt: correctedNextRun,
+					timezone: task.timezone,
+				});
+				task.nextRunAt = correctedNextRun;
+				updated++;
+			}
+		}
+
+		if (updated > 0) {
+			await this.saveStore(store);
+			this.logger.info('Recalculated nextRunAt for cron tasks on startup', { count: updated });
+		}
+
+		return updated;
+	}
+
+	/**
 	 * Start the cron task evaluation loop.
 	 * Checks every minute for tasks whose nextRunAt has passed.
+	 *
+	 * On startup, recalculates nextRunAt for all tasks to self-heal stale
+	 * timezone-dependent values (#286).
 	 */
 	start(): void {
 		if (this.timer) return;
 
 		this.logger.info('Starting cron task service', { intervalMs: CRON_CHECK_INTERVAL_MS });
+
+		// #286: Self-heal stale nextRunAt values on startup
+		this.recalculateAllNextRunTimes().catch((error) => {
+			this.logger.warn('Failed to recalculate cron task nextRunAt on startup', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 
 		this.timer = setInterval(async () => {
 			try {
@@ -279,6 +398,11 @@ export class CronTaskService {
 
 	/**
 	 * Evaluate all enabled tasks and execute those whose nextRunAt has passed.
+	 *
+	 * #268: Before dispatching, checks whether the target agent is online.
+	 * If offline and an agentStartCallback is configured, attempts to auto-start
+	 * the agent. If still offline, skips the task and logs a warning instead of
+	 * silently dropping it.
 	 */
 	async evaluateTasks(): Promise<void> {
 		const store = await this.loadStore();
@@ -291,13 +415,66 @@ export class CronTaskService {
 			const nextRun = new Date(task.nextRunAt);
 			if (nextRun > now) continue;
 
-			// Task is due — execute it
-			this.logger.info('Cron task due, executing', {
+			// Task is due — check agent status before dispatching (#268)
+			this.logger.info('Cron task due', {
 				id: task.id,
 				target: task.targetAgent,
 				nextRunAt: task.nextRunAt,
 			});
 
+			// #268: Check if target agent is online
+			let agentOnline = true;
+			if (this.agentStatusCallback) {
+				try {
+					agentOnline = await this.agentStatusCallback(task.targetAgent);
+				} catch (error) {
+					this.logger.warn('Agent status check failed, assuming online', {
+						id: task.id,
+						target: task.targetAgent,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+
+			// #268: Auto-start offline agent
+			if (!agentOnline && this.agentStartCallback) {
+				this.logger.info('Auto-starting offline agent for cron task', {
+					id: task.id,
+					target: task.targetAgent,
+					teamId: task.targetTeamId,
+				});
+				try {
+					const started = await this.agentStartCallback(task.targetAgent, task.targetTeamId);
+					if (started) {
+						agentOnline = true;
+					} else {
+						this.logger.warn('Failed to auto-start agent for cron task', {
+							id: task.id,
+							target: task.targetAgent,
+						});
+					}
+				} catch (error) {
+					this.logger.warn('Agent auto-start threw error', {
+						id: task.id,
+						target: task.targetAgent,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+
+			if (!agentOnline) {
+				this.logger.warn('Cron task skipped: target agent offline and could not be started', {
+					id: task.id,
+					target: task.targetAgent,
+				});
+				// Don't update lastRunAt — task was not actually executed
+				// Advance nextRunAt so the same task isn't retried every minute
+				task.nextRunAt = getNextRunTime(task.cronExpression, task.timezone, now);
+				updated = true;
+				continue;
+			}
+
+			// Execute the task
 			try {
 				if (this.executionCallback) {
 					await this.executionCallback(task);
@@ -309,7 +486,7 @@ export class CronTaskService {
 				});
 			}
 
-			// Update run times regardless of execution success
+			// Update run times
 			task.lastRunAt = now.toISOString();
 			task.nextRunAt = getNextRunTime(task.cronExpression, task.timezone, now);
 			updated = true;

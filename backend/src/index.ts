@@ -90,6 +90,7 @@ import { LogRotationService } from './services/session/log-rotation.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
 import { AddonLoaderService } from './services/addon/addon-loader.service.js';
+import { CronTaskService } from './services/workflow/cron-task.service.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -725,6 +726,84 @@ export class CrewlyServer {
 				});
 			}
 
+			// Start CronTaskService for scheduled recurring tasks (#283)
+			try {
+				const cronTaskService = CronTaskService.getInstance();
+
+				// Wire execution callback: send task description to target agent via message queue
+				cronTaskService.setExecutionCallback(async (task) => {
+					this.messageQueueService.enqueue({
+						content: `[CRON] ${task.taskDescription}`,
+						conversationId: `cron-${task.id}`,
+						source: 'system' as any,
+						targetSession: task.targetAgent,
+					});
+					this.logger.info('Cron task dispatched to agent', {
+						taskId: task.id,
+						target: task.targetAgent,
+					});
+				});
+
+				// Wire agent status callback: check if target agent is active or started (#286)
+				cronTaskService.setAgentStatusCallback(async (sessionName) => {
+					const teams = await this.storageService.getTeams();
+					for (const team of teams) {
+						for (const member of team.members || []) {
+							if (member.sessionName === sessionName) {
+								// #286: Treat both 'active' and 'started' as online
+								return member.agentStatus === 'active' || member.agentStatus === 'started';
+							}
+						}
+					}
+					return false;
+				});
+
+				// #286: Wire agent start callback to auto-start offline agents for cron tasks
+				// Uses a local HTTP request to the server's own start-member endpoint,
+				// reusing all existing start logic (session creation, status updates, etc.)
+				cronTaskService.setAgentStartCallback(async (sessionName, teamId) => {
+					try {
+						const teams = await this.storageService.getTeams();
+						const team = teams.find(t => t.id === teamId);
+						if (!team) {
+							this.logger.warn('Cron auto-start: team not found', { teamId, sessionName });
+							return false;
+						}
+						const member = (team.members || []).find(m => m.sessionName === sessionName);
+						if (!member) {
+							this.logger.warn('Cron auto-start: member not found', { teamId, sessionName });
+							return false;
+						}
+
+						const url = `http://localhost:${this.config.webPort}/api/teams/${teamId}/members/${member.id}/start`;
+						const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+						const result = await response.json() as { success?: boolean };
+
+						if (result.success) {
+							this.logger.info('Cron auto-start: agent started via API', { teamId, sessionName });
+							return true;
+						} else {
+							this.logger.warn('Cron auto-start: API returned failure', { teamId, sessionName, result });
+							return false;
+						}
+					} catch (error) {
+						this.logger.error('Cron auto-start failed', {
+							sessionName,
+							teamId,
+							error: error instanceof Error ? error.message : String(error),
+						});
+						return false;
+					}
+				});
+
+				cronTaskService.start();
+				this.logger.info('CronTaskService started');
+			} catch (error) {
+				this.logger.warn('Failed to start CronTaskService (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Start Browser Bridge WebSocket server for Chrome Extension
 			try {
 				const { BrowserBridgeService } = await import('./services/browser/browser-bridge.service.js');
@@ -973,7 +1052,7 @@ export class CrewlyServer {
 					});
 				}
 			} else {
-				this.logger.info('Auditor disabled (set CREWLY_ENABLE_AUDITOR=true to enable)');
+				this.logger.warn('⚠ Auditor is disabled by default. Set CREWLY_ENABLE_AUDITOR=true to enable audit scheduling and compliance checks.');
 			}
 
 		} catch (error) {
@@ -1636,6 +1715,9 @@ export class CrewlyServer {
 
 			// Stop log rotation service
 			LogRotationService.getInstance().stop();
+
+			// Stop cron task service
+			CronTaskService.getInstance().stop();
 
 			// Stop auditor scheduler
 			AuditorSchedulerService.getInstance().stop();

@@ -281,6 +281,16 @@ export const Dashboard: React.FC = () => {
             />
           </div>
         </section>
+
+        {/* Cloud Relay Health */}
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-xl font-semibold">Cloud Relay</h3>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            <RelayHealthCard />
+          </div>
+        </section>
       </div>
     </div>
   );
