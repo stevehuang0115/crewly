@@ -29,7 +29,10 @@ import { createCloudRouter, createRelayRouter } from '../controllers/cloud/index
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
+import { createWeChatRouter } from '../services/wechat/wechat.controller.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
+import * as taskMgmtHandlers from '../controllers/task-management/task-management.controller.js';
+import * as terminalHandlers from '../controllers/monitoring/terminal.controller.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -117,6 +120,9 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Cross-machine communication routes for Slack-based inter-machine messaging
   router.use('/cross-machine', createCrossMachineRouter());
 
+  // WeChat iLink Bot integration routes (QR login, status, disconnect)
+  router.use('/wechat', createWeChatRouter());
+
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here
   registerTaskManagementRoutes(router, apiController);
@@ -132,6 +138,32 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Unified Scheduler (cron + interval + idle — consolidation)
   router.use('/unified-scheduler', createUnifiedSchedulerRoutes());
+
+  // #262: Convenience alias routes for common resource access
+  router.get('/tasks', (req, res) => taskMgmtHandlers.listTasks.call(apiController, req, res));
+
+  router.get('/goals', async (req, res) => {
+    try {
+      const { getGoals } = await import('../controllers/memory/memory.controller.js');
+      return getGoals(req, res, () => { /* noop next */ });
+    } catch (error) {
+      res.status(500).json({ success: false, error: 'Failed to fetch goals' });
+    }
+  });
+
+  router.get('/agent-logs', (req, res) => terminalHandlers.listTerminalSessions(req, res));
+
+  router.get('/members', async (req, res) => {
+    try {
+      const teams = await context.storageService.getTeams();
+      const members = teams.flatMap(team =>
+        (team.members || []).map(m => ({ ...m, teamId: team.id, teamName: team.name }))
+      );
+      res.json({ success: true, data: members });
+    } catch (error) {
+      res.status(500).json({ success: false, error: 'Failed to list members' });
+    }
+  });
 
   return router;
 }

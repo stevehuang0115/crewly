@@ -5,7 +5,6 @@
  * stats, and formatting.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
 import { ContentApprovalService } from './content-approval.service.js';
 import {
   ContentApprovalRequest,

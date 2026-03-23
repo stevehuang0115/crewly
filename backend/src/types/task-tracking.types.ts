@@ -17,7 +17,8 @@ export type InProgressTaskStatus =
   | 'input_required'
   | 'verifying'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'abandoned';
 
 /**
  * Structured artifact produced by a task.

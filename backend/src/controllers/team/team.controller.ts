@@ -608,7 +608,7 @@ async function _stopTeamMemberCore(
     // Update team member status
     const oldSessionName = member.sessionName;
     const mutableMember = member as MutableTeamMember;
-    mutableMember.sessionName = '';
+    mutableMember.sessionName = null as unknown as string;
     mutableMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE;
     mutableMember.workingStatus = CREWLY_CONSTANTS.WORKING_STATUSES.IDLE;
     // #235: Record manual stop as dropout reason

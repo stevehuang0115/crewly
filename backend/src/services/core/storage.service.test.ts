@@ -408,4 +408,138 @@ describe('StorageService', () => {
       expect(storageService.getCrewlyHome()).toBe(testHome);
     });
   });
+
+  describe('updateAgentStatus (#261)', () => {
+    test('should skip members with null sessionName', async () => {
+      const team: Team = {
+        id: 'team-1',
+        name: 'Test Team',
+        description: '',
+        projectIds: [],
+        members: [
+          {
+            id: 'member-null',
+            name: 'Stopped Member',
+            sessionName: null as unknown as string,
+            role: 'developer',
+            systemPrompt: '',
+            agentStatus: 'inactive',
+            workingStatus: 'idle',
+            runtimeType: 'claude-code',
+            createdAt: '2023-01-01T00:00:00.000Z',
+            updatedAt: '2023-01-01T00:00:00.000Z',
+          },
+          {
+            id: 'member-active',
+            name: 'Active Member',
+            sessionName: 'test-session-active',
+            role: 'developer',
+            systemPrompt: '',
+            agentStatus: 'active',
+            workingStatus: 'idle',
+            runtimeType: 'claude-code',
+            createdAt: '2023-01-01T00:00:00.000Z',
+            updatedAt: '2023-01-01T00:00:00.000Z',
+          },
+        ],
+        createdAt: '2023-01-01T00:00:00.000Z',
+        updatedAt: '2023-01-01T00:00:00.000Z',
+      };
+
+      mockFsPromises.readdir.mockResolvedValue([{ name: 'team-1', isDirectory: () => true }]);
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(team));
+
+      await storageService.updateAgentStatus('test-session-active', 'inactive' as any);
+
+      // Should have written the team with updated status for the active member
+      expect(mockFsPromises.writeFile).toHaveBeenCalled();
+    });
+
+    test('should skip members with empty string sessionName', async () => {
+      const team: Team = {
+        id: 'team-1',
+        name: 'Test Team',
+        description: '',
+        projectIds: [],
+        members: [
+          {
+            id: 'member-empty',
+            name: 'Empty Session Member',
+            sessionName: '',
+            role: 'developer',
+            systemPrompt: '',
+            agentStatus: 'inactive',
+            workingStatus: 'idle',
+            runtimeType: 'claude-code',
+            createdAt: '2023-01-01T00:00:00.000Z',
+            updatedAt: '2023-01-01T00:00:00.000Z',
+          },
+        ],
+        createdAt: '2023-01-01T00:00:00.000Z',
+        updatedAt: '2023-01-01T00:00:00.000Z',
+      };
+
+      mockFsPromises.readdir.mockResolvedValue([{ name: 'team-1', isDirectory: () => true }]);
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(team));
+
+      // Searching for a real session should not match the empty-string member
+      await storageService.updateAgentStatus('some-session', 'inactive' as any);
+
+      // No team save should happen since no member was found
+      // writeFile is only called during saveTeam
+      const configWrites = mockFsPromises.writeFile.mock.calls.filter(
+        (call: unknown[]) => String(call[0]).includes('config.json')
+      );
+      expect(configWrites.length).toBe(0);
+    });
+  });
+
+  describe('updateTeamMemberRuntimeType (#263)', () => {
+    test('should log when runtimeType changes', async () => {
+      const team: Team = {
+        id: 'team-rt',
+        name: 'Runtime Team',
+        description: '',
+        projectIds: [],
+        members: [
+          {
+            id: 'member-rt',
+            name: 'RT Member',
+            sessionName: 'rt-session',
+            role: 'developer',
+            systemPrompt: '',
+            agentStatus: 'active',
+            workingStatus: 'idle',
+            runtimeType: 'claude-code',
+            createdAt: '2023-01-01T00:00:00.000Z',
+            updatedAt: '2023-01-01T00:00:00.000Z',
+          },
+        ],
+        createdAt: '2023-01-01T00:00:00.000Z',
+        updatedAt: '2023-01-01T00:00:00.000Z',
+      };
+
+      mockFsPromises.readdir.mockResolvedValue([{ name: 'team-rt', isDirectory: () => true }]);
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(team));
+
+      await storageService.updateTeamMemberRuntimeType('team-rt', 'member-rt', 'gemini-cli' as any);
+
+      // Verify the team was saved with the new runtime type
+      expect(mockFsPromises.writeFile).toHaveBeenCalled();
+      const writeCall = mockFsPromises.writeFile.mock.calls.find(
+        (call: unknown[]) => String(call[0]).includes('team-rt')
+      );
+      expect(writeCall).toBeDefined();
+      const saved = JSON.parse(writeCall![1] as string);
+      expect(saved.members[0].runtimeType).toBe('gemini-cli');
+    });
+
+    test('should throw when team not found', async () => {
+      mockFsPromises.readdir.mockResolvedValue([]);
+
+      await expect(
+        storageService.updateTeamMemberRuntimeType('nonexistent', 'member-1', 'gemini-cli' as any)
+      ).rejects.toThrow('Team not found');
+    });
+  });
 });

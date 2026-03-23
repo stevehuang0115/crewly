@@ -211,33 +211,27 @@ export class QueueProcessorService extends EventEmitter {
   }
 
   /**
-   * Process the next message in the queue.
-   * This is the core processing loop.
+   * Process all pending messages in the queue (#253).
+   * Drains the queue in a loop instead of processing one message per cycle.
+   * This prevents the setTimeout overhead between messages that caused
+   * only one message to be delivered per poll cycle.
    */
   private async processNext(): Promise<void> {
     if (!this.running || this.processing) {
       return;
     }
 
-    // Don't process messages until orchestrator has finished initialization.
-    // 'started' means runtime is running but init prompt is still being processed.
-    // Only deliver when 'active' (agent registered via register-self skill).
-    const orchestratorInfo = await StorageService.getInstance().getOrchestratorStatus();
-    const agentStatus = orchestratorInfo?.agentStatus;
-    if (agentStatus !== 'active') {
-      this.logger.debug('Orchestrator not active yet, deferring message delivery', {
-        agentStatus: agentStatus || 'unknown',
-      });
-      this.scheduleProcessNext(EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL);
-      return;
+    // #253: Loop to drain all pending messages per cycle
+    while (this.running && this.queueService.hasPending()) {
+      const shouldContinue = await this.processOneMessage();
+      if (!shouldContinue) break;
     }
 
-    const message = this.queueService.dequeue();
-    if (!message) {
-      // #239: Even with no new messages, flush any pending-ack entries
-      // when the agent is potentially idle. This handles the case where
-      // the queue is empty but force-delivered messages need verification.
-      if (this.pendingAckMessages.size > 0) {
+    // After draining, check if pending-ack entries need flushing
+    if (this.running && !this.processing && this.pendingAckMessages.size > 0) {
+      const orchestratorInfo = await StorageService.getInstance().getOrchestratorStatus();
+      const agentStatus = orchestratorInfo?.agentStatus;
+      if (agentStatus === 'active' || agentStatus === 'started') {
         const storedRuntimeType = orchestratorInfo?.runtimeType as RuntimeType | undefined;
         const rt: RuntimeType = storedRuntimeType || RUNTIME_TYPES.CLAUDE_CODE;
         const isReady = await this.agentRegistrationService.waitForAgentReady(
@@ -248,12 +242,36 @@ export class QueueProcessorService extends EventEmitter {
         if (isReady) {
           await this.flushPendingAcks(ORCHESTRATOR_SESSION_NAME, rt);
         }
-        // Schedule another check if there are still pending acks
         if (this.pendingAckMessages.size > 0) {
           this.scheduleProcessNext(EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL);
         }
       }
-      return;
+    }
+  }
+
+  /**
+   * Process a single message from the queue.
+   * Returns true if the caller should continue draining, false to stop.
+   */
+  private async processOneMessage(): Promise<boolean> {
+    if (!this.running) {
+      return false;
+    }
+
+    // Don't process messages until orchestrator runtime is running.
+    const orchestratorInfo = await StorageService.getInstance().getOrchestratorStatus();
+    const agentStatus = orchestratorInfo?.agentStatus;
+    if (agentStatus !== 'active' && agentStatus !== 'started') {
+      this.logger.debug('Orchestrator not active yet, deferring message delivery', {
+        agentStatus: agentStatus || 'unknown',
+      });
+      this.scheduleProcessNext(EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL);
+      return false;
+    }
+
+    const message = this.queueService.dequeue();
+    if (!message) {
+      return false;
     }
 
     this.processing = true;
@@ -332,7 +350,7 @@ export class QueueProcessorService extends EventEmitter {
           messageId: message.id,
         });
         clearInterval(keepaliveInterval);
-        return;
+        return true;
       }
 
       // #239: Track whether this delivery was forced (agent not at prompt).
@@ -392,7 +410,7 @@ export class QueueProcessorService extends EventEmitter {
               }
             }
             clearInterval(keepaliveInterval);
-            return;
+            return true;
           }
 
           this.logger.warn('Agent not ready, re-queuing message for retry', {
@@ -406,12 +424,10 @@ export class QueueProcessorService extends EventEmitter {
           this.queueService.requeue(message);
 
           // Use a longer delay before retrying to give the orchestrator more time.
-          // Mark as already scheduled so the finally block doesn't overwrite with
-          // a shorter INTER_MESSAGE_DELAY.
           this.scheduleProcessNext(EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL);
           this.nextAlreadyScheduled = true;
           clearInterval(keepaliveInterval);
-          return;
+          return false;
         }
       }
 
@@ -490,7 +506,7 @@ export class QueueProcessorService extends EventEmitter {
           this.queueService.markBatchCompleted(batchedMessages);
         }
         clearInterval(keepaliveInterval);
-        return;
+        return true;
       }
 
       const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
@@ -530,7 +546,7 @@ export class QueueProcessorService extends EventEmitter {
           this.scheduleProcessNext(EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL);
           this.nextAlreadyScheduled = true;
           clearInterval(keepaliveInterval);
-          return;
+          return false;
         }
 
         this.logger.warn('Message delivery failed', {
@@ -561,7 +577,7 @@ export class QueueProcessorService extends EventEmitter {
           }
         }
 
-        return;
+        return true;
       }
 
       // #239: For force-delivered user messages, add to pending-ack list
@@ -594,6 +610,7 @@ export class QueueProcessorService extends EventEmitter {
         // Normal path: mark as completed immediately after delivery.
         // Responses are handled asynchronously by the orchestrator through
         // reply-* skills (reply-slack, reply-chat, reply-gchat).
+        this.deliveredMessageIds.set(message.id, Date.now());
         this.queueService.markCompleted(message.id, '');
         // Mark all batched system event messages as completed too
         if (batchedMessages.length > 0) {
@@ -634,12 +651,14 @@ export class QueueProcessorService extends EventEmitter {
     } finally {
       clearInterval(keepaliveInterval);
       this.processing = false;
+      // #253: nextAlreadyScheduled is still respected for requeue delays
       if (this.nextAlreadyScheduled) {
         this.nextAlreadyScheduled = false;
-      } else {
-        this.scheduleNextIfPending();
+        return false; // Stop draining — a delayed schedule was set
       }
     }
+
+    return true;
   }
 
   /**

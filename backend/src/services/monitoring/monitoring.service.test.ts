@@ -383,6 +383,29 @@ describe('MonitoringService', () => {
       });
     });
 
+    it('should compare heapUsedMB against memoryThreshold in MB (#258)', async () => {
+      // heapUsed = 100MB (mock), memoryThreshold = 80MB (mock config)
+      // Before fix: compared percentage (1.25%) against 80 → always healthy
+      // After fix: compares heapUsedMB (95.4MB) against 80MB → degraded
+      const result = await (service as any).checkMemoryHealth();
+      expect(result.details.heapUsedMB).toBeCloseTo(95.37, 0);
+      expect(result.status).toBe('degraded');
+    });
+
+    it('should report memory healthy when heapUsed is below threshold (#258)', async () => {
+      // Set heap to 50MB (below 80MB threshold)
+      (process.memoryUsage as unknown as jest.Mock).mockReturnValue({
+        rss: 60000000,
+        heapUsed: 50000000,
+        heapTotal: 120000000,
+        external: 10000000,
+        arrayBuffers: 5000000,
+      });
+      const result = await (service as any).checkMemoryHealth();
+      expect(result.details.heapUsedMB).toBeCloseTo(47.68, 0);
+      expect(result.status).toBe('healthy');
+    });
+
     it('should check CPU health', async () => {
       const result = await (service as any).checkCpuHealth();
 
@@ -401,6 +424,9 @@ describe('MonitoringService', () => {
     it('should determine overall health status', () => {
       // Move startTime back so grace period doesn't apply
       (service as any).startTime = Date.now() - 120000;
+
+      // Clear any health checks populated by the constructor's initial runHealthChecks()
+      (service as any).healthChecks.clear();
 
       (service as any).healthChecks.set('service1', { status: 'healthy' });
       (service as any).healthChecks.set('service2', { status: 'healthy' });

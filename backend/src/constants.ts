@@ -612,6 +612,27 @@ export const CLAUDE_FATAL_PATTERNS: RegExp[] = [
 	/thinking.*blocks.*cannot be modified/i,
 	// Redacted thinking block corruption (same root cause)
 	/redacted_thinking.*blocks.*cannot be modified/i,
+	// NOTE: OAuth token expiration patterns removed (#284) — restart loops.
+	// OAuth expiry is handled by OAuthReloginMonitorService which sends /login
+	// instead of restarting the session.
+];
+
+/**
+ * Claude Code auto-update banner patterns that can pollute PTY context
+ * during initialization, causing timeout failures (#264, #266) and
+ * silently dropped messages (#257).
+ *
+ * These patterns are NOT fatal — the session can still be used after
+ * the banner disappears — but they interfere with readiness detection.
+ * Used to filter noise from PTY output before checking readiness state.
+ */
+export const CLAUDE_AUTO_UPDATE_NOISE_PATTERNS: RegExp[] = [
+	/Update available/i,
+	/Updating Claude/i,
+	/claude.*update.*available/i,
+	/new version.*available/i,
+	/Run.*npm.*update/i,
+	/Downloading update/i,
 ];
 
 /**
@@ -771,12 +792,18 @@ export const OAUTH_RELOGIN_CONSTANTS = {
  * All patterns must be present (AND logic) within the rolling buffer.
  */
 export const OAUTH_ERROR_PATTERN_SETS: string[][] = [
+	// Combined patterns (both must match in the same chunk)
 	['authentication_error', 'OAuth token has expired'],
 	['authentication_error', 'oauth token expired'],
 	['401', 'OAuth token has expired'],
 	['invalid_api_key', 'OAuth token has expired'],
 	['authentication_error', 'Invalid authentication credentials'],
 	['401', 'Invalid authentication credentials'],
+	// #284: Standalone patterns for PTY-displayed errors (no API error prefix)
+	// Claude Code shows "OAuth token has expired. Please run /login" directly
+	['OAuth token has expired'],
+	['Please run /login'],
+	['token expired', 'refresh your existing token'],
 ];
 
 /**
@@ -807,7 +834,7 @@ export const SYSTEM_RESOURCE_ALERT_CONSTANTS = {
 		DISK_CRITICAL: 95,    // 95% used
 		MEMORY_WARNING: 85,   // 85% used
 		MEMORY_CRITICAL: 95,  // 95% used
-		CPU_WARNING: 80,      // load avg 80% of cores
+		CPU_WARNING: 90,      // load avg 90% of cores (#260)
 		CPU_CRITICAL: 95,     // load avg 95% of cores
 	},
 } as const;
@@ -967,6 +994,7 @@ export const MESSAGE_SOURCES = {
 	GOOGLE_CHAT: 'google_chat',
 	TELEGRAM: 'telegram',
 	CROSS_MACHINE: 'cross-machine',
+	WECHAT: 'wechat',
 } as const;
 
 /**
@@ -1137,9 +1165,9 @@ export const CLOUD_CONSTANTS = {
 		QUEUE_POLL: '/api/v1/relay/queue/poll',
 		/** Queue: acknowledge (delete) processed messages */
 		QUEUE_ACK: '/api/v1/relay/queue/ack',
-		/** Device discovery */
+		/** Device discovery — uses Cloud relay device list */
 		DEVICES: '/api/v1/relay/devices',
-		/** Cloud handshake: send device metadata + active teams on connect */
+		/** Cloud handshake: send device metadata + active teams on connect — uses Cloud relay handshake */
 		HANDSHAKE: '/api/v1/relay/handshake',
 	},
 	/** Relay configuration (Cloud Message Queue — HTTP polling) */
@@ -1204,11 +1232,11 @@ export const CLOUD_SYNC_CONSTANTS = {
 	/** Interval between error recovery attempts after entering error state (ms).
 	 *  Periodically retries a heartbeat to check if Cloud is reachable again. */
 	ERROR_RECOVERY_INTERVAL_MS: 60_000,
-	/** Cloud Sync API endpoints (relative to cloudUrl) — must match web project routes at /api/v1/relay/* */
+	/** Cloud Sync API endpoints (relative to cloudUrl) — must match CloudSyncHandler routes on crewly-api */
 	ENDPOINTS: {
-		/** Device heartbeat/handshake — POST to Cloud Relay (registers device + updates metadata) */
+		/** Device heartbeat — POST to Cloud relay handshake (registers/updates device record with teams, version) */
 		HEARTBEAT: '/api/v1/relay/handshake',
-		/** List all devices for account (auto-registers caller on GET) */
+		/** List all devices for account — GET from Cloud relay devices (returns all user devices with online/offline) */
 		DEVICES: '/api/v1/relay/devices',
 		/** Send a message to another device via Cloud message queue */
 		MESSAGES: '/api/v1/relay/queue/send',

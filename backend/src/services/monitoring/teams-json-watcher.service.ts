@@ -454,6 +454,25 @@ export class TeamsJsonWatcherService extends EventEmitter {
 
           this.eventBusService.publish(workingEvent);
         }
+
+        // #263: Detect runtimeType changes
+        if (oldMember.runtimeType !== newMember.runtimeType) {
+          const runtimeEvent: AgentEvent = {
+            id: crypto.randomUUID(),
+            type: 'agent:status_changed',
+            timestamp: new Date().toISOString(),
+            teamId: newTeam.id,
+            teamName: newTeam.name,
+            memberId: newMember.id,
+            memberName: newMember.name,
+            sessionName: newMember.sessionName,
+            previousValue: oldMember.runtimeType || '',
+            newValue: newMember.runtimeType || '',
+            changedField: 'runtimeType',
+          };
+
+          this.eventBusService.publish(runtimeEvent);
+        }
       }
     }
   }

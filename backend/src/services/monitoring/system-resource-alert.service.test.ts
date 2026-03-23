@@ -242,9 +242,9 @@ describe('SystemResourceAlertService', () => {
 
 	describe('CPU alerts', () => {
 		it('should send warning when CPU load exceeds warning threshold', async () => {
-			// 4 cores, load avg = 3.4 → 85% of capacity → exceeds 80% warning
+			// 4 cores, load avg = 3.7 → 92.5% of capacity → exceeds 90% warning (#260)
 			mockMonitoringInstance.getSystemMetrics.mockReturnValue(
-				buildMetrics({ cpuLoadAvg: 3.4, cpuCores: 4 })
+				buildMetrics({ cpuLoadAvg: 3.7, cpuCores: 4 })
 			);
 			service.startMonitoring();
 

@@ -627,7 +627,9 @@ export async function getProjectFiles(
 							);
 						}
 						tree.push(node);
-					} catch {}
+					} catch (statError) {
+						logger.debug('Failed to stat file in tree traversal', { path: fullPath, error: statError instanceof Error ? statError.message : String(statError) });
+					}
 				}
 				return tree.sort((a, b) => {
 					if (a.name === '.crewly') return -1;
@@ -777,7 +779,9 @@ export async function getAgentmuxMarkdownFiles(
 					if (entry.isDirectory()) await scanDirectory(fullPath, relativeFilePath);
 					else if (entry.name.endsWith('.md')) files.push(relativeFilePath);
 				}
-			} catch {}
+			} catch (scanError) {
+				logger.debug('Failed to scan directory', { path: dirPath, error: scanError instanceof Error ? scanError.message : String(scanError) });
+			}
 		};
 		await scanDirectory(crewlyPath);
 		res.json({ success: true, data: { files } } as ApiResponse<{ files: string[] }>);
@@ -940,7 +944,9 @@ export async function getProjectStats(
 						if (file === 'initial_goal.md') hasInitialGoalMd = true;
 						if (file === 'initial_user_journey.md') hasInitialUserJourneyMd = true;
 					}
-				} catch {}
+				} catch (fileStatError) {
+					logger.debug('Failed to stat spec file', { path: filePath, error: fileStatError instanceof Error ? fileStatError.message : String(fileStatError) });
+				}
 			}
 		} catch {
 			// specs folder missing; keep defaults

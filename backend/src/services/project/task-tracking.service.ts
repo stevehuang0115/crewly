@@ -481,6 +481,41 @@ export class TaskTrackingService extends EventEmitter {
     return report;
   }
 
+  /**
+   * Transition all in-progress/assigned/working tasks for a session to 'abandoned'.
+   * Called when an agent session exits unexpectedly (#255).
+   *
+   * @param sessionName - The agent session name that exited
+   * @returns Number of tasks abandoned
+   */
+  async abandonTasksForSession(sessionName: string): Promise<number> {
+    const data = await this.loadTaskData();
+    const activeStatuses: InProgressTask['status'][] = ['assigned', 'active', 'working', 'submitted'];
+    let abandonedCount = 0;
+
+    for (const task of data.tasks) {
+      if (
+        task.assignedSessionName === sessionName &&
+        activeStatuses.includes(task.status)
+      ) {
+        task.status = 'abandoned';
+        task.lastCheckedAt = new Date().toISOString();
+        task.blockReason = `Agent session '${sessionName}' exited unexpectedly`;
+        abandonedCount++;
+      }
+    }
+
+    if (abandonedCount > 0) {
+      await this.saveTaskData(data);
+      this.logger.info('Abandoned in-progress tasks for exited session (#255)', {
+        sessionName,
+        abandonedCount,
+      });
+    }
+
+    return abandonedCount;
+  }
+
   private extractTaskNameFromFile(filename: string): string {
     // Remove extension and number prefix
     return filename

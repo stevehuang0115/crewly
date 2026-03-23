@@ -30,7 +30,9 @@ export async function getSystemHealth(this: ApiContext, req: Request, res: Respo
     const systemMetrics = monitoring.getSystemMetrics();
     const performanceMetrics = monitoring.getPerformanceMetrics();
     const environmentInfo = config.getEnvironmentInfo();
-    res.json({ success: true, data: { status: overallHealth, timestamp: new Date().toISOString(), services: Object.fromEntries(healthStatus), metrics: { system: systemMetrics, performance: performanceMetrics }, environment: environmentInfo } } as ApiResponse);
+    // #254: Include auditor enabled/disabled status in health response
+    const auditorEnabled = process.env['CREWLY_ENABLE_AUDITOR']?.toLowerCase() === 'true';
+    res.json({ success: true, data: { status: overallHealth, timestamp: new Date().toISOString(), services: Object.fromEntries(healthStatus), metrics: { system: systemMetrics, performance: performanceMetrics }, environment: environmentInfo, auditorEnabled } } as ApiResponse);
   } catch (error) {
     logger.error('Error getting system health', { error: error instanceof Error ? error.message : String(error) });
     res.status(500).json({ success: false, error: 'Failed to get system health' } as ApiResponse);

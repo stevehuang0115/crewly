@@ -70,6 +70,8 @@ export interface OAuthMonitorState {
 	captureTimeoutTimer: ReturnType<typeof setTimeout> | null;
 	/** Last captured OAuth URL (for debugging/testing) */
 	lastCapturedUrl: string | null;
+	/** Whether the login method menu has been auto-selected */
+	menuSelected: boolean;
 }
 
 /**
@@ -247,6 +249,7 @@ export class OAuthReloginMonitorService {
 			captureBuffer: '',
 			captureTimeoutTimer: null,
 			lastCapturedUrl: null,
+			menuSelected: false,
 		};
 
 		this.sessions.set(sessionName, state);
@@ -330,6 +333,9 @@ export class OAuthReloginMonitorService {
 		// Strip ANSI codes
 		const clean = stripAnsiCodes(data);
 
+		// Always check for "Login successful. Press Enter to continue" regardless of mode
+		this.detectLoginSuccess(state, clean);
+
 		// If in capture mode, look for OAuth URL
 		if (state.captureMode === 'capturing') {
 			this.handleCaptureData(state, clean);
@@ -396,9 +402,23 @@ export class OAuthReloginMonitorService {
 			state.captureBuffer = state.captureBuffer.slice(-OAUTH_RELOGIN_CONSTANTS.URL_CAPTURE_BUFFER_SIZE);
 		}
 
-		// Try to extract an OAuth URL from the capture buffer.
-		// OAuth URLs typically contain oauth, authorize, login, or auth in the path.
-		// We use a simple approach: find any https:// URL and check for auth-related paths.
+		// Step 1: Detect "Select login method" menu and auto-select option 1
+		// (Claude account with subscription). This menu appears before the OAuth URL.
+		if (!state.menuSelected && this.detectLoginMenu(state.captureBuffer)) {
+			this.logger.info('Login method menu detected, auto-selecting option 1 (Claude subscription)', {
+				sessionName: state.sessionName,
+			});
+			const backend = getSessionBackendSync();
+			const session = backend?.getSession(state.sessionName);
+			if (session) {
+				session.write('1\r');
+				state.menuSelected = true;
+				state.captureBuffer = ''; // Clear buffer to look for URL in fresh output
+			}
+			return;
+		}
+
+		// Step 2: Try to extract an OAuth URL from the capture buffer.
 		const url = this.extractOAuthUrl(state.captureBuffer);
 		if (!url) {
 			return;
@@ -408,6 +428,7 @@ export class OAuthReloginMonitorService {
 		state.captureMode = 'idle';
 		state.captureBuffer = '';
 		state.lastCapturedUrl = url;
+		state.menuSelected = false;
 
 		if (state.captureTimeoutTimer) {
 			clearTimeout(state.captureTimeoutTimer);
@@ -421,6 +442,40 @@ export class OAuthReloginMonitorService {
 
 		// Emit event and invoke callback
 		this.emitOAuthUrlEvent(state.sessionName, url);
+	}
+
+	/**
+	 * Detect the "Select login method" menu in Claude Code's /login output.
+	 *
+	 * @param buffer - Terminal output buffer
+	 * @returns true if the login method menu is detected
+	 */
+	private detectLoginMenu(buffer: string): boolean {
+		return buffer.includes('Select login method') || buffer.includes('select login method');
+	}
+
+	/**
+	 * Detect "Login successful. Press Enter to continue" and auto-press Enter.
+	 * Called from the main PTY data handler (not just capture mode) so it works
+	 * even after capture mode has ended.
+	 *
+	 * @param state - Session monitoring state
+	 * @param data - Cleaned PTY data chunk
+	 */
+	private detectLoginSuccess(state: OAuthMonitorState, data: string): void {
+		if (data.includes('Login successful') && data.includes('Enter to continue')) {
+			this.logger.info('Login successful detected, auto-pressing Enter to continue', {
+				sessionName: state.sessionName,
+			});
+			const backend = getSessionBackendSync();
+			const session = backend?.getSession(state.sessionName);
+			if (session) {
+				// Small delay to ensure the prompt is ready
+				setTimeout(() => {
+					session.write('\r');
+				}, 500);
+			}
+		}
 	}
 
 	/**
@@ -603,9 +658,16 @@ export class OAuthReloginMonitorService {
 				attemptNumber: state.attemptTimestamps.length + 1,
 			});
 
-			// Send Escape to clear any in-progress input (skip for Gemini — Escape cancels request)
+			// Send Ctrl+C then Escape to abort any in-progress operation and clear
+			// input before sending /login. Escape alone doesn't interrupt a running
+			// API call or error screen — Ctrl+C is needed to return to the prompt.
+			// (Skip for Gemini — Escape cancels request there.)
 			if (state.runtimeType !== RUNTIME_TYPES.GEMINI_CLI) {
-				session.write('\x1b');
+				session.write('\x03'); // Ctrl+C to abort current operation
+				await new Promise(resolve => setTimeout(resolve, 500));
+				session.write('\x03'); // Second Ctrl+C in case first wasn't enough
+				await new Promise(resolve => setTimeout(resolve, 500));
+				session.write('\x1b'); // Escape to clear any partial input
 				await new Promise(resolve => setTimeout(resolve, OAUTH_RELOGIN_CONSTANTS.PRE_COMMAND_DELAY_MS));
 			}
 
@@ -633,6 +695,25 @@ export class OAuthReloginMonitorService {
 					state.captureMode = 'idle';
 					state.captureBuffer = '';
 					state.captureTimeoutTimer = null;
+
+					// Active retry: schedule another /login attempt after cooldown.
+					// The passive detection relies on new PTY output, but after a
+					// failed /login the session may go idle with no new output,
+					// leaving the monitor stuck. This ensures we retry up to
+					// MAX_ATTEMPTS_PER_WINDOW times.
+					const retryDelay = OAUTH_RELOGIN_CONSTANTS.RELOGIN_COOLDOWN_MS + 1000;
+					setTimeout(() => {
+						this.triggerRelogin(sessionName).catch((err) => {
+							this.logger.error('OAuth relogin retry after timeout failed', {
+								sessionName,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						});
+					}, retryDelay);
+					this.logger.info('Scheduled OAuth relogin retry after URL capture timeout', {
+						sessionName,
+						retryInMs: retryDelay,
+					});
 				}
 			}, OAUTH_RELOGIN_CONSTANTS.URL_CAPTURE_TIMEOUT_MS);
 

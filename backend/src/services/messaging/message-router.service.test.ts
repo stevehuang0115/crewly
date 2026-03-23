@@ -7,7 +7,6 @@
  * @module services/messaging/message-router.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MessageRouterService, MESSAGE_ROUTER_CONSTANTS } from './message-router.service.js';
 import { CloudSyncService } from '../cloud/cloud-sync.service.js';
 import type { SyncDevice, IncomingMessage, AgentMessagePayload } from '../cloud/cloud-sync.types.js';
@@ -16,28 +15,28 @@ import type { SyncDevice, IncomingMessage, AgentMessagePayload } from '../cloud/
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
 }));
 
 // Mock CloudSyncService
-const mockSendMessage = vi.fn();
-const mockIsStarted = vi.fn().mockReturnValue(true);
-const mockGetOnlineDevices = vi.fn().mockReturnValue([]);
-const mockGetDevices = vi.fn().mockReturnValue([]);
-const mockOn = vi.fn();
-const mockRemoveListener = vi.fn();
+const mockSendMessage = jest.fn();
+const mockIsStarted = jest.fn().mockReturnValue(true);
+const mockGetOnlineDevices = jest.fn().mockReturnValue([]);
+const mockGetDevices = jest.fn().mockReturnValue([]);
+const mockOn = jest.fn();
+const mockRemoveListener = jest.fn();
 
-vi.mock('../cloud/cloud-sync.service.js', () => ({
+jest.mock('../cloud/cloud-sync.service.js', () => ({
   CloudSyncService: {
     getInstance: () => ({
       isStarted: mockIsStarted,
@@ -101,7 +100,7 @@ describe('MessageRouterService', () => {
   beforeEach(() => {
     MessageRouterService.resetInstance();
     router = MessageRouterService.getInstance();
-    vi.clearAllMocks();
+    jest.clearAllMocks();
     mockIsStarted.mockReturnValue(true);
     mockGetOnlineDevices.mockReturnValue([]);
     mockGetDevices.mockReturnValue([]);
@@ -273,7 +272,7 @@ describe('MessageRouterService', () => {
 
   describe('handleIncomingMessage', () => {
     it('delivers agent_message to local session via handler', async () => {
-      const handler = vi.fn().mockResolvedValue({ success: true });
+      const handler = jest.fn().mockResolvedValue({ success: true });
       router.setLocalDeliveryHandler(handler);
 
       const msg = createAgentMessage({
@@ -289,7 +288,7 @@ describe('MessageRouterService', () => {
     });
 
     it('ignores non-agent_message types', async () => {
-      const handler = vi.fn();
+      const handler = jest.fn();
       router.setLocalDeliveryHandler(handler);
 
       const msg: IncomingMessage = {
@@ -307,7 +306,7 @@ describe('MessageRouterService', () => {
     });
 
     it('warns on invalid agent_message payload', async () => {
-      const handler = vi.fn();
+      const handler = jest.fn();
       router.setLocalDeliveryHandler(handler);
 
       const msg: IncomingMessage = {
@@ -325,7 +324,7 @@ describe('MessageRouterService', () => {
     });
 
     it('handles delivery handler failure gracefully', async () => {
-      const handler = vi.fn().mockResolvedValue({ success: false, error: 'Session not found' });
+      const handler = jest.fn().mockResolvedValue({ success: false, error: 'Session not found' });
       router.setLocalDeliveryHandler(handler);
 
       const msg = createAgentMessage({
@@ -341,7 +340,7 @@ describe('MessageRouterService', () => {
     });
 
     it('handles delivery handler exception gracefully', async () => {
-      const handler = vi.fn().mockRejectedValue(new Error('PTY crashed'));
+      const handler = jest.fn().mockRejectedValue(new Error('PTY crashed'));
       router.setLocalDeliveryHandler(handler);
 
       const msg = createAgentMessage({

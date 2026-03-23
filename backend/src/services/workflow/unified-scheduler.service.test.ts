@@ -5,7 +5,6 @@
  * auto-start, auto-pause, persistence, and health reporting.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { UnifiedSchedulerService } from './unified-scheduler.service.js';
@@ -283,7 +282,7 @@ describe('UnifiedSchedulerService', () => {
 
   describe('interval evaluation', () => {
     it('triggers when interval has elapsed', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
       service.setMessageCallback(mockSend);
 
       const schedule = service.create({
@@ -304,7 +303,7 @@ describe('UnifiedSchedulerService', () => {
     });
 
     it('does not trigger before interval elapses', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
       service.setMessageCallback(mockSend);
 
       service.create(INTERVAL_SCHEDULE); // 30 min interval, just created
@@ -321,8 +320,8 @@ describe('UnifiedSchedulerService', () => {
 
   describe('idle evaluation', () => {
     it('triggers when agent is idle past threshold', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
-      const mockIdle = vi.fn().mockResolvedValue({ idle: true, idleMinutes: 20 });
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
+      const mockIdle = jest.fn().mockResolvedValue({ idle: true, idleMinutes: 20 });
       service.setMessageCallback(mockSend);
       service.setIdleCheckCallback(mockIdle);
 
@@ -335,8 +334,8 @@ describe('UnifiedSchedulerService', () => {
     });
 
     it('does not trigger when agent is not idle enough', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
-      const mockIdle = vi.fn().mockResolvedValue({ idle: true, idleMinutes: 5 });
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
+      const mockIdle = jest.fn().mockResolvedValue({ idle: true, idleMinutes: 5 });
       service.setMessageCallback(mockSend);
       service.setIdleCheckCallback(mockIdle);
 
@@ -348,8 +347,8 @@ describe('UnifiedSchedulerService', () => {
     });
 
     it('does not trigger when agent is active', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
-      const mockIdle = vi.fn().mockResolvedValue({ idle: false, idleMinutes: 0 });
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
+      const mockIdle = jest.fn().mockResolvedValue({ idle: false, idleMinutes: 0 });
       service.setMessageCallback(mockSend);
       service.setIdleCheckCallback(mockIdle);
 
@@ -367,9 +366,9 @@ describe('UnifiedSchedulerService', () => {
 
   describe('auto-start', () => {
     it('auto-starts offline agent when autoStart=true', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
-      const mockStatus = vi.fn().mockResolvedValue(false); // offline
-      const mockStart = vi.fn().mockResolvedValue(true); // start succeeds
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
+      const mockStatus = jest.fn().mockResolvedValue(false); // offline
+      const mockStart = jest.fn().mockResolvedValue(true); // start succeeds
       service.setMessageCallback(mockSend);
       service.setAgentStatusCallback(mockStatus);
       service.setAgentStartCallback(mockStart);
@@ -384,9 +383,9 @@ describe('UnifiedSchedulerService', () => {
     });
 
     it('skips trigger when auto-start fails', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
-      const mockStatus = vi.fn().mockResolvedValue(false);
-      const mockStart = vi.fn().mockResolvedValue(false); // start fails
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
+      const mockStatus = jest.fn().mockResolvedValue(false);
+      const mockStart = jest.fn().mockResolvedValue(false); // start fails
       service.setMessageCallback(mockSend);
       service.setAgentStatusCallback(mockStatus);
       service.setAgentStartCallback(mockStart);
@@ -400,9 +399,9 @@ describe('UnifiedSchedulerService', () => {
     });
 
     it('does not auto-start when autoStart=false', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
-      const mockStatus = vi.fn().mockResolvedValue(false);
-      const mockStart = vi.fn().mockResolvedValue(true);
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
+      const mockStatus = jest.fn().mockResolvedValue(false);
+      const mockStart = jest.fn().mockResolvedValue(true);
       service.setMessageCallback(mockSend);
       service.setAgentStatusCallback(mockStatus);
       service.setAgentStartCallback(mockStart);
@@ -423,7 +422,7 @@ describe('UnifiedSchedulerService', () => {
 
   describe('auto-pause', () => {
     it('auto-pauses after maxConsecutiveTriggers', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
       service.setMessageCallback(mockSend);
 
       const schedule = service.create({
@@ -461,7 +460,7 @@ describe('UnifiedSchedulerService', () => {
 
   describe('triggerNow', () => {
     it('triggers immediately regardless of timing', async () => {
-      const mockSend = vi.fn().mockResolvedValue({ success: true });
+      const mockSend = jest.fn().mockResolvedValue({ success: true });
       service.setMessageCallback(mockSend);
 
       const schedule = service.create(INTERVAL_SCHEDULE); // 30 min interval, just created

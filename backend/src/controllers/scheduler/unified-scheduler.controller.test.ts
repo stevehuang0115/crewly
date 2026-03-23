@@ -7,28 +7,25 @@
  * @module controllers/scheduler/unified-scheduler.controller.test
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
 // ---------------------------------------------------------------------------
 // Hoisted service mock — must be hoisted so the vi.mock factory can reference it
 // ---------------------------------------------------------------------------
-const { mockService } = vi.hoisted(() => ({
-	mockService: {
-		list: vi.fn(),
-		create: vi.fn(),
-		get: vi.fn(),
-		update: vi.fn(),
-		delete: vi.fn(),
-		pause: vi.fn(),
-		resume: vi.fn(),
-		triggerNow: vi.fn(),
-		getHealth: vi.fn(),
-	},
-}));
+const mockService = {
+	list: jest.fn(),
+	create: jest.fn(),
+	get: jest.fn(),
+	update: jest.fn(),
+	delete: jest.fn(),
+	pause: jest.fn(),
+	resume: jest.fn(),
+	triggerNow: jest.fn(),
+	getHealth: jest.fn(),
+};
 
-vi.mock('../../services/workflow/unified-scheduler.service.js', () => ({
+jest.mock('../../services/workflow/unified-scheduler.service.js', () => ({
 	UnifiedSchedulerService: {
 		getInstance: () => mockService,
 	},
@@ -65,7 +62,7 @@ const sampleSchedule = {
 
 describe('Unified Scheduler Controller', () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		jest.clearAllMocks();
 	});
 
 	// -----------------------------------------------------------------------

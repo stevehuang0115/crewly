@@ -7,19 +7,18 @@
  * @module routes/modules/unified-scheduler.routes.test
  */
 
-import { describe, it, expect, vi } from 'vitest';
 
 // Mock the controller to avoid service initialization
-vi.mock('../../controllers/scheduler/unified-scheduler.controller.js', () => ({
-	listSchedules: vi.fn(),
-	createSchedule: vi.fn(),
-	getSchedule: vi.fn(),
-	updateSchedule: vi.fn(),
-	deleteSchedule: vi.fn(),
-	pauseSchedule: vi.fn(),
-	resumeSchedule: vi.fn(),
-	triggerSchedule: vi.fn(),
-	getHealth: vi.fn(),
+jest.mock('../../controllers/scheduler/unified-scheduler.controller.js', () => ({
+	listSchedules: jest.fn(),
+	createSchedule: jest.fn(),
+	getSchedule: jest.fn(),
+	updateSchedule: jest.fn(),
+	deleteSchedule: jest.fn(),
+	pauseSchedule: jest.fn(),
+	resumeSchedule: jest.fn(),
+	triggerSchedule: jest.fn(),
+	getHealth: jest.fn(),
 }));
 
 import { createUnifiedSchedulerRoutes } from './unified-scheduler.routes.js';

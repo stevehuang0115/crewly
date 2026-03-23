@@ -8,16 +8,13 @@
  * @module services/cloud/relay-client.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks — vi.mock factories are hoisted above imports, so any
-// variables they reference must also be hoisted via vi.hoisted().
+// variables they reference must also be hoisted via jest.fn().
 // ---------------------------------------------------------------------------
 
-const { mockFetch } = vi.hoisted(() => ({
-  mockFetch: vi.fn(),
-}));
+const mockFetch = jest.fn();
 
 // Assign mockFetch to global.fetch before any imports use it
 global.fetch = mockFetch as any;
@@ -29,38 +26,38 @@ import type { RelayClientConfig } from './relay.types.js';
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
 }));
 
 // Mock crypto service
-vi.mock('./relay-crypto.service.js', () => ({
+jest.mock('./relay-crypto.service.js', () => ({
   generateSalt: () => Buffer.from('test-salt'),
   deriveKey: () => Buffer.from('test-key-32-bytes-long-enough!!!'),
-  encrypt: vi.fn(() => ({ iv: 'aXY=', ciphertext: 'Y2lwaGVy', authTag: 'dGFn' })),
-  decrypt: vi.fn(() => 'decrypted-plaintext'),
-  serializeEnvelope: vi.fn(() => 'serialized-envelope'),
-  deserializeEnvelope: vi.fn(() => ({ iv: 'aXY=', ciphertext: 'Y2lwaGVy', authTag: 'dGFn' })),
+  encrypt: jest.fn(() => ({ iv: 'aXY=', ciphertext: 'Y2lwaGVy', authTag: 'dGFn' })),
+  decrypt: jest.fn(() => 'decrypted-plaintext'),
+  serializeEnvelope: jest.fn(() => 'serialized-envelope'),
+  deserializeEnvelope: jest.fn(() => ({ iv: 'aXY=', ciphertext: 'Y2lwaGVy', authTag: 'dGFn' })),
 }));
 
 // Note: CloudClientService is loaded via require() inside getAuthToken().
 // In vitest ESM mode, require() is not intercepted by vi.mock, so
 // getAuthToken() always falls back to the config token. The token refresh
 // tests below verify this fallback path.
-vi.mock('./cloud-client.service.js', () => ({
+jest.mock('./cloud-client.service.js', () => ({
   CloudClientService: {
     getInstance: () => ({
-      isConnected: vi.fn().mockReturnValue(false),
-      getToken: vi.fn().mockReturnValue(null),
+      isConnected: jest.fn().mockReturnValue(false),
+      getToken: jest.fn().mockReturnValue(null),
     }),
   },
 }));
@@ -92,7 +89,7 @@ function mockResponse(data: unknown, ok = true, status = 200): Response {
   return {
     ok,
     status,
-    json: vi.fn().mockResolvedValue(data),
+    json: jest.fn().mockResolvedValue(data),
   } as unknown as Response;
 }
 
@@ -115,8 +112,8 @@ async function flushMicrotasks(): Promise<void> {
 
 describe('RelayClientService', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.clearAllMocks();
+    jest.useFakeTimers();
+    jest.clearAllMocks();
     RelayClientService.resetInstance();
     mockFetch.mockReset();
   });
@@ -125,7 +122,7 @@ describe('RelayClientService', () => {
     // Clean up: disconnect to stop polling before restoring real timers
     try { RelayClientService.getInstance().disconnect(); } catch { /* ignore */ }
     RelayClientService.resetInstance();
-    vi.useRealTimers();
+    jest.useRealTimers();
   });
 
   // -----------------------------------------------------------------------
@@ -191,7 +188,7 @@ describe('RelayClientService', () => {
 
     // Trigger a poll to increment pollCount
     mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
-    vi.advanceTimersByTime(5000);
+    jest.advanceTimersByTime(5000);
     await flushMicrotasks();
 
     expect(client.getPollCount()).toBe(1);
@@ -254,7 +251,7 @@ describe('RelayClientService', () => {
       );
 
       const client = RelayClientService.getInstance();
-      const pairedSpy = vi.fn();
+      const pairedSpy = jest.fn();
       client.on('paired', pairedSpy);
 
       client.connect(makeConfig());
@@ -301,7 +298,7 @@ describe('RelayClientService', () => {
       );
 
       // Advance by poll interval
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       // Should have made a GET poll request
@@ -324,13 +321,13 @@ describe('RelayClientService', () => {
 
       // First poll
       mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
       expect(client.getPollCount()).toBe(1);
 
       // Second poll
       mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
       expect(client.getPollCount()).toBe(2);
     });
@@ -342,7 +339,7 @@ describe('RelayClientService', () => {
       );
 
       const client = RelayClientService.getInstance();
-      const messageSpy = vi.fn();
+      const messageSpy = jest.fn();
       client.on('message', messageSpy);
 
       client.connect(makeConfig());
@@ -360,7 +357,7 @@ describe('RelayClientService', () => {
       // Ack response
       mockFetch.mockResolvedValueOnce(mockResponse({ success: true }));
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       expect(messageSpy).toHaveBeenCalledTimes(2);
@@ -388,7 +385,7 @@ describe('RelayClientService', () => {
       // Ack response
       mockFetch.mockResolvedValueOnce(mockResponse({ success: true }));
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       // Check ack call uses RELAY_ENDPOINTS.QUEUE_ACK constant path
@@ -420,13 +417,13 @@ describe('RelayClientService', () => {
       );
       mockFetch.mockResolvedValueOnce(mockResponse({ success: true })); // ack
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       // Second poll should include since parameter
       mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       const secondPoll = mockFetch.mock.calls[3];
@@ -449,7 +446,7 @@ describe('RelayClientService', () => {
       expect(client.getState()).toBe('disconnected');
 
       // Advance by multiple poll intervals — no new fetch calls
-      vi.advanceTimersByTime(20000);
+      jest.advanceTimersByTime(20000);
       await flushMicrotasks();
 
       expect(mockFetch.mock.calls.length).toBe(callCountAfterRegister);
@@ -468,7 +465,7 @@ describe('RelayClientService', () => {
       );
 
       const client = RelayClientService.getInstance();
-      const pairedSpy = vi.fn();
+      const pairedSpy = jest.fn();
       client.on('paired', pairedSpy);
 
       client.connect(makeConfig());
@@ -481,7 +478,7 @@ describe('RelayClientService', () => {
         mockResponse({ messages: [], peerQueueId: 'q-peer-late' }),
       );
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       expect(client.getState()).toBe('paired');
@@ -495,7 +492,7 @@ describe('RelayClientService', () => {
       );
 
       const client = RelayClientService.getInstance();
-      const pairedSpy = vi.fn();
+      const pairedSpy = jest.fn();
       client.on('paired', pairedSpy);
 
       client.connect(makeConfig());
@@ -508,7 +505,7 @@ describe('RelayClientService', () => {
         mockResponse({ messages: [], peerQueueId: 'q-peer' }),
       );
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       // Still only one paired call (from registration)
@@ -535,7 +532,7 @@ describe('RelayClientService', () => {
       // Fail 3 polls
       for (let i = 0; i < 3; i++) {
         mockFetch.mockRejectedValueOnce(new Error('network error'));
-        vi.advanceTimersByTime(5000);
+        jest.advanceTimersByTime(5000);
         await flushMicrotasks();
       }
 
@@ -553,18 +550,18 @@ describe('RelayClientService', () => {
 
       // Fail 2 polls
       mockFetch.mockRejectedValueOnce(new Error('fail'));
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       mockFetch.mockRejectedValueOnce(new Error('fail'));
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       expect(client.getConsecutivePollFailures()).toBe(2);
 
       // Successful poll
       mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       expect(client.getConsecutivePollFailures()).toBe(0);
@@ -576,7 +573,7 @@ describe('RelayClientService', () => {
       );
 
       const client = RelayClientService.getInstance();
-      const errorSpy = vi.fn();
+      const errorSpy = jest.fn();
       client.on('error', errorSpy);
 
       client.connect(makeConfig());
@@ -585,7 +582,7 @@ describe('RelayClientService', () => {
       // Fail 5 polls (MAX_CONSECUTIVE_POLL_FAILURES)
       for (let i = 0; i < 5; i++) {
         mockFetch.mockRejectedValueOnce(new Error('network error'));
-        vi.advanceTimersByTime(5000);
+        jest.advanceTimersByTime(5000);
         await flushMicrotasks();
       }
 
@@ -616,7 +613,7 @@ describe('RelayClientService', () => {
         mockResponse({ error: 'server error' }, false, 500),
       );
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       expect(client.getConsecutivePollFailures()).toBe(1);
@@ -630,7 +627,7 @@ describe('RelayClientService', () => {
   describe('token refresh integration', () => {
     // Note: getAuthToken() uses a dynamic require() to load CloudClientService,
     // which avoids circular dependencies at module load time. In vitest's ESM
-    // environment, require() is not intercepted by vi.mock(), so getAuthToken()
+    // environment, require() is not intercepted by jest.mock(), so getAuthToken()
     // always falls back to the config token. These tests verify the fallback path.
 
     it('should use config token for register requests', async () => {
@@ -669,7 +666,7 @@ describe('RelayClientService', () => {
       await flushMicrotasks();
 
       mockFetch.mockResolvedValueOnce(mockResponse({ messages: [] }));
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       const pollCall = mockFetch.mock.calls[1];
@@ -738,7 +735,7 @@ describe('RelayClientService', () => {
 
       // Second attempt after base delay (1000ms)
       mockFetch.mockRejectedValueOnce(new Error('Still down'));
-      vi.advanceTimersByTime(1000);
+      jest.advanceTimersByTime(1000);
       await flushMicrotasks();
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -747,7 +744,7 @@ describe('RelayClientService', () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse({ success: true, queueId: 'q-1', peerQueueId: null }),
       );
-      vi.advanceTimersByTime(2000);
+      jest.advanceTimersByTime(2000);
       await flushMicrotasks();
 
       expect(mockFetch).toHaveBeenCalledTimes(3);
@@ -766,7 +763,7 @@ describe('RelayClientService', () => {
 
       // Run through all 10 retry attempts
       for (let i = 0; i < 12; i++) {
-        vi.advanceTimersByTime(30000);
+        jest.advanceTimersByTime(30000);
         await flushMicrotasks();
       }
 
@@ -785,7 +782,7 @@ describe('RelayClientService', () => {
 
       // Advance past reconnect delay — no new fetch calls
       const callCount = mockFetch.mock.calls.length;
-      vi.advanceTimersByTime(30000);
+      jest.advanceTimersByTime(30000);
       await flushMicrotasks();
 
       expect(mockFetch.mock.calls.length).toBe(callCount);
@@ -834,7 +831,7 @@ describe('RelayClientService', () => {
       );
       mockFetch.mockResolvedValueOnce(mockResponse({ success: true })); // ack
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       const { deserializeEnvelope, decrypt } = await import('./relay-crypto.service.js');
@@ -848,7 +845,7 @@ describe('RelayClientService', () => {
       );
 
       const client = RelayClientService.getInstance();
-      const errorSpy = vi.fn();
+      const errorSpy = jest.fn();
       client.on('error', errorSpy);
 
       client.connect(makeConfig());
@@ -866,7 +863,7 @@ describe('RelayClientService', () => {
       );
       mockFetch.mockResolvedValueOnce(mockResponse({ success: true })); // ack
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       // Should NOT have emitted error event — logged only
@@ -904,7 +901,7 @@ describe('RelayClientService', () => {
       // Poll fails
       mockFetch.mockRejectedValueOnce(new Error('timeout'));
 
-      vi.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(5000);
       await flushMicrotasks();
 
       // Client should still be in registered state (poll failure doesn't change state)

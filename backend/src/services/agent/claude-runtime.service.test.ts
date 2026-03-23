@@ -396,4 +396,121 @@ describe('ClaudeRuntimeService', () => {
 		});
 	});
 
+	describe('isClaudeTrustPrompt (#267)', () => {
+		it('should detect v2.1.81 trust dialog text', () => {
+			const dialogOutput = `Accessing workspace: /usr/local/lib/node_modules/crewly
+
+Quick safety check: Is this a project you created or one you trust?
+Claude Code'll be able to read, edit, and execute files here.
+
+❯ 1. Yes, I trust this folder
+  2. No, exit
+
+Enter to confirm · Esc to cancel`;
+
+			expect(service['isClaudeTrustPrompt'](dialogOutput)).toBe(true);
+		});
+
+		it('should detect "Quick safety check" text', () => {
+			expect(service['isClaudeTrustPrompt']('Quick safety check')).toBe(true);
+		});
+
+		it('should detect "Yes, I trust this folder" text', () => {
+			expect(service['isClaudeTrustPrompt']('Yes, I trust this folder')).toBe(true);
+		});
+
+		it('should detect "Enter to confirm" text', () => {
+			expect(service['isClaudeTrustPrompt']('Enter to confirm · Esc to cancel')).toBe(true);
+		});
+
+		it('should detect legacy "Do you trust the files" text', () => {
+			expect(service['isClaudeTrustPrompt']('Do you trust the files in this folder?')).toBe(true);
+		});
+
+		it('should detect legacy "Is this a project you trust" text', () => {
+			expect(service['isClaudeTrustPrompt']('Is this a project you trust?')).toBe(true);
+		});
+
+		it('should not match normal output', () => {
+			expect(service['isClaudeTrustPrompt']('Welcome to Claude Code!')).toBe(false);
+			expect(service['isClaudeTrustPrompt']('Ready to assist')).toBe(false);
+			expect(service['isClaudeTrustPrompt']('')).toBe(false);
+		});
+
+		it('should detect space-stripped PTY output (ESTestNode #267)', () => {
+			// PTY output strips spaces between words
+			const strippedOutput = 'Yes,Itrustthisfolder';
+			expect(service['isClaudeTrustPrompt'](strippedOutput)).toBe(true);
+		});
+
+		it('should detect full space-stripped trust dialog from PTY', () => {
+			const strippedDialog = [
+				'Quicksafetycheck:Isthisaprojectyoucreatedoroneyoutrust?',
+				'ClaudeCode\'llbeabletoread,edit,andexecutefileshere.',
+				'❯1.Yes,Itrustthisfolder',
+				'2.No,exit',
+				'Entertoconfirm·Esctocancel',
+			].join('\r\r\n');
+			expect(service['isClaudeTrustPrompt'](strippedDialog)).toBe(true);
+		});
+
+		it('should detect mixed case space-stripped output', () => {
+			expect(service['isClaudeTrustPrompt']('QUICKSAFETYCHECK')).toBe(true);
+			expect(service['isClaudeTrustPrompt']('entertoconfirm')).toBe(true);
+		});
+
+		it('should not false-positive on space-stripped normal output', () => {
+			expect(service['isClaudeTrustPrompt']('WelcometoClaudeCode!')).toBe(false);
+			expect(service['isClaudeTrustPrompt']('Readytoassist')).toBe(false);
+		});
+	});
+
+	describe('waitForRuntimeReady trust prompt auto-accept (#267)', () => {
+		beforeEach(() => {
+			jest.useFakeTimers();
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		it('should auto-accept trust prompt and then detect ready', async () => {
+			// First call: return trust dialog, second call: return ready signal
+			mockSessionHelper.capturePane
+				.mockReturnValueOnce('Quick safety check: Is this a project you created or one you trust?')
+				.mockReturnValueOnce('✻ Welcome to Claude');
+
+			const promise = service.waitForRuntimeReady('test-session', 30000, 100);
+
+			// Advance through the trust prompt delay (1000ms) + check interval
+			await jest.advanceTimersByTimeAsync(1100);
+			await jest.advanceTimersByTimeAsync(200);
+
+			const result = await promise;
+
+			expect(result).toBe(true);
+			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('test-session');
+		});
+
+		it('should fail after max trust prompt attempts', async () => {
+			// Always return trust dialog
+			mockSessionHelper.capturePane.mockReturnValue(
+				'Quick safety check: Is this a project you created or one you trust?'
+			);
+
+			const promise = service.waitForRuntimeReady('test-session', 60000, 100);
+
+			// Advance enough time for 6 trust attempts (max is 5)
+			for (let i = 0; i < 7; i++) {
+				await jest.advanceTimersByTimeAsync(1200);
+			}
+
+			const result = await promise;
+
+			expect(result).toBe(false);
+			// Should have tried sendEnter exactly MAX_TRUST_ATTEMPTS (5) times
+			expect(mockSessionHelper.sendEnter).toHaveBeenCalledTimes(5);
+		});
+	});
+
 });

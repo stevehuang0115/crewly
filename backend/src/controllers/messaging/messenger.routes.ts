@@ -8,10 +8,11 @@ import { SlackMessengerAdapter } from '../../services/messaging/adapters/slack-m
 import { TelegramMessengerAdapter } from '../../services/messaging/adapters/telegram-messenger.adapter.js';
 import { DiscordMessengerAdapter } from '../../services/messaging/adapters/discord-messenger.adapter.js';
 import { GoogleChatMessengerAdapter } from '../../services/messaging/adapters/google-chat-messenger.adapter.js';
+import { WeChatMessengerAdapter } from '../../services/messaging/adapters/wechat-messenger.adapter.js';
 import type { MessengerPlatform } from '../../services/messaging/messenger-adapter.interface.js';
 
 /** Known messenger platforms for input validation. */
-const VALID_PLATFORMS: ReadonlySet<string> = new Set<MessengerPlatform>(['slack', 'telegram', 'discord', 'google-chat']);
+const VALID_PLATFORMS: ReadonlySet<string> = new Set<MessengerPlatform>(['slack', 'telegram', 'discord', 'google-chat', 'wechat']);
 
 /**
  * Validate that a string is a known messenger platform.
@@ -43,6 +44,7 @@ function registerDefaultAdapters(registry: MessengerRegistryService): void {
   if (!registry.get('telegram')) registry.register(new TelegramMessengerAdapter());
   if (!registry.get('discord')) registry.register(new DiscordMessengerAdapter());
   if (!registry.get('google-chat')) registry.register(new GoogleChatMessengerAdapter());
+  if (!registry.get('wechat')) registry.register(new WeChatMessengerAdapter());
 }
 
 /**

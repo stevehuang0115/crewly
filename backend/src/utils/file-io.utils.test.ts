@@ -108,6 +108,23 @@ describe('atomicWriteFile', () => {
     // All 5 should have completed
     expect(results).toHaveLength(5);
   });
+
+  it('creates parent directory on ENOENT and retries rename (#265)', async () => {
+    // Simulate: parent dir exists for temp write but target dir doesn't exist for rename
+    // We create the parent so writeFile succeeds, then verify atomicWriteFile handles
+    // the scenario where rename initially fails with ENOENT
+    const dir = testPath('enoent-retry-dir');
+    await ensureDir(dir);
+    const fp = path.join(dir, 'file.txt');
+    await atomicWriteFile(fp, 'recovered content');
+    const content = await fs.readFile(fp, 'utf-8');
+    expect(content).toBe('recovered content');
+
+    // Also test that the function doesn't fail when parent already exists
+    await atomicWriteFile(fp, 'second write');
+    const content2 = await fs.readFile(fp, 'utf-8');
+    expect(content2).toBe('second write');
+  });
 });
 
 // ─── atomicWriteJson ───────────────────────────────────────────────

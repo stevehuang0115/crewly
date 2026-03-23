@@ -111,7 +111,7 @@ export function getCriticalEventTypes(): EventType[] {
 /**
  * Fields that can trigger events when changed
  */
-export type ChangedField = 'agentStatus' | 'workingStatus' | 'contextUsage' | 'oauthUrl' | 'taskStatus' | 'hierarchyAction';
+export type ChangedField = 'agentStatus' | 'workingStatus' | 'contextUsage' | 'oauthUrl' | 'taskStatus' | 'hierarchyAction' | 'runtimeType';
 
 // =============================================================================
 // Event Interfaces

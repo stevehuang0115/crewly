@@ -274,7 +274,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Status SHOULD be updated (grace period is 0, so no delay)
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -300,7 +301,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -523,7 +525,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			service.stopMonitoring('test-agent');
@@ -645,7 +648,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Should have set status to inactive (no tasks to restart for)
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 			expect(mockCreateAgentSession).not.toHaveBeenCalled();
 
@@ -667,10 +671,11 @@ describe('RuntimeExitMonitorService', () => {
 			// Should have attempted orchestrator restart
 			expect(mockAttemptRestart).toHaveBeenCalled();
 			// Should have set inactive BEFORE restart to prevent queue processor
-			// from delivering messages during postInitialize
+			// from delivering messages during postInitialize (#270)
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				ORCHESTRATOR_SESSION_NAME,
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				'crash'
 			);
 			// Should have captured session memory before restart
 			expect(mockOnSessionEnd).toHaveBeenCalledWith(ORCHESTRATOR_SESSION_NAME, 'orchestrator', expect.any(String));
@@ -694,10 +699,11 @@ describe('RuntimeExitMonitorService', () => {
 
 			// Should have attempted restart
 			expect(mockAttemptRestart).toHaveBeenCalled();
-			// Restart failed, so should set inactive
+			// Restart failed, so should set inactive (#270)
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				ORCHESTRATOR_SESSION_NAME,
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				'crash'
 			);
 
 			jest.useRealTimers();
@@ -724,7 +730,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Restart failed, so should fall back to setting inactive
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -804,7 +811,8 @@ describe('RuntimeExitMonitorService', () => {
 			expect(mockCreateAgentSession).not.toHaveBeenCalled();
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -944,7 +952,8 @@ describe('RuntimeExitMonitorService', () => {
 			// After MAX_RETRIES exhausted, should mark inactive
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'gemini-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -1034,7 +1043,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'gemini-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -1059,7 +1069,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'gemini-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -1085,7 +1096,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'gemini-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -1106,7 +1118,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'codex-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -1231,7 +1244,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Should still have updated status despite EventBus failure
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();
@@ -1512,7 +1526,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Should set status to inactive (no task restart path since no tasks configured)
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'claude-dev',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.anything()
 			);
 
 			jest.useRealTimers();

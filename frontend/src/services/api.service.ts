@@ -712,12 +712,14 @@ class ApiService {
    *
    * @param token - Cloud API authentication token
    * @param cloudUrl - Optional custom cloud API URL
+   * @param refreshToken - Optional refresh token for auto-renewal after access token expiry
    * @returns Promise resolving to connection result with tier info
    * @throws Error if connection fails (invalid token, network error)
    */
-  async connectToCloud(token: string, cloudUrl?: string): Promise<CloudConnectResult> {
-    const body: { token: string; cloudUrl?: string } = { token };
+  async connectToCloud(token: string, cloudUrl?: string, refreshToken?: string): Promise<CloudConnectResult> {
+    const body: { token: string; cloudUrl?: string; refreshToken?: string } = { token };
     if (cloudUrl) body.cloudUrl = cloudUrl;
+    if (refreshToken) body.refreshToken = refreshToken;
 
     const response = await axios.post<ApiResponse<CloudConnectResult>>(`${API_BASE}/cloud/connect`, body);
     if (!response.data.success || !response.data.data) {

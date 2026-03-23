@@ -624,7 +624,9 @@ export class ActivityMonitorService {
       // Clean up temp file if something went wrong
       try {
         await unlink(tempFile);
-      } catch {}
+      } catch (unlinkError) {
+        this.logger.debug('Failed to clean up temp file', { tempFile, error: unlinkError instanceof Error ? unlinkError.message : String(unlinkError) });
+      }
       throw error;
     }
   }

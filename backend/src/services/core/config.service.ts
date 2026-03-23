@@ -175,7 +175,7 @@ export class ConfigService {
 				healthCheckInterval: parseInt(process.env.HEALTH_CHECK_INTERVAL || '30000', 10),
 				performanceTrackingEnabled: process.env.PERF_TRACKING === 'true',
 				memoryThreshold: parseInt(process.env.MEMORY_THRESHOLD || '512', 10), // MB
-				cpuThreshold: parseInt(process.env.CPU_THRESHOLD || '80', 10), // %
+				cpuThreshold: parseInt(process.env.CPU_THRESHOLD || '90', 10), // %
 			},
 
 			security: {

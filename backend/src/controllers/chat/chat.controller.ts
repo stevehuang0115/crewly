@@ -190,14 +190,24 @@ export async function getMessages(
       return;
     }
 
+    // #271: Validate and clamp numeric params to prevent DoS / NaN propagation
+    const parsedLimit = limit ? parseInt(limit as string, 10) : undefined;
+    const parsedOffset = offset ? parseInt(offset as string, 10) : undefined;
+    const safeLimit = parsedLimit !== undefined && !isNaN(parsedLimit)
+      ? Math.min(Math.max(parsedLimit, 1), 1000)
+      : undefined;
+    const safeOffset = parsedOffset !== undefined && !isNaN(parsedOffset)
+      ? Math.max(parsedOffset, 0)
+      : undefined;
+
     const filter: ChatMessageFilter = {
       conversationId: conversationId as string,
       senderType: senderType as ChatSenderType | undefined,
       contentType: contentType as ChatContentType | undefined,
       after: after as string | undefined,
       before: before as string | undefined,
-      limit: limit ? parseInt(limit as string, 10) : undefined,
-      offset: offset ? parseInt(offset as string, 10) : undefined,
+      limit: safeLimit,
+      offset: safeOffset,
     };
 
     const chatService = getChatService();

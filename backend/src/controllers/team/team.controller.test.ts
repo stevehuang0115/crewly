@@ -3165,4 +3165,45 @@ describe('Teams Handlers', () => {
       expect(savedTeam.qualityGate).toEqual({ autoApprove: true, minQualityScore: 90 });
     });
   });
+
+  describe('stopTeamMember sets sessionName to null (#261)', () => {
+    it('should set sessionName to null instead of empty string when stopping a member', async () => {
+      const testTeam = {
+        id: 'team-stop-test',
+        name: 'Stop Test Team',
+        members: [
+          {
+            id: 'member-stop',
+            name: 'Dev To Stop',
+            sessionName: 'dev-session-to-stop',
+            role: 'developer',
+            agentStatus: 'active',
+            workingStatus: 'idle',
+            runtimeType: 'claude-code',
+          },
+        ],
+      };
+
+      mockStorageService.getTeams.mockResolvedValue([testTeam]);
+      mockRequest.params = { teamId: 'team-stop-test', memberId: 'member-stop' };
+
+      (mockApiContext.agentRegistrationService as any).terminateAgentSession = jest.fn<any>().mockResolvedValue({
+        success: true,
+      });
+
+      await teamsHandlers.stopTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // Verify that saveTeam was called with sessionName as null, not empty string
+      const savedTeam = mockStorageService.saveTeam.mock.calls[0]?.[0];
+      if (savedTeam) {
+        const stoppedMember = savedTeam.members.find((m: any) => m.id === 'member-stop');
+        expect(stoppedMember.sessionName).toBeNull();
+        expect(stoppedMember.sessionName).not.toBe('');
+      }
+    });
+  });
 });

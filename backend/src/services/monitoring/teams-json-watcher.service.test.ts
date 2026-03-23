@@ -367,4 +367,81 @@ describe('TeamsJsonWatcherService', () => {
       expect(stopSpy).toHaveBeenCalled();
     });
   });
+
+  describe('runtimeType change detection (#263)', () => {
+    it('should emit agent:status_changed event when runtimeType changes', async () => {
+      const mockEventBus = {
+        publish: jest.fn(),
+      };
+      // Access private eventBusService field
+      (service as any).eventBusService = mockEventBus;
+
+      const oldTeams = [{
+        id: 'team-1',
+        name: 'Team 1',
+        members: [{
+          id: 'm1',
+          name: 'Dev 1',
+          sessionName: 'dev-1',
+          agentStatus: 'active',
+          workingStatus: 'idle',
+          runtimeType: 'claude-code',
+        }],
+      }];
+
+      const newTeams = [{
+        id: 'team-1',
+        name: 'Team 1',
+        members: [{
+          id: 'm1',
+          name: 'Dev 1',
+          sessionName: 'dev-1',
+          agentStatus: 'active',
+          workingStatus: 'idle',
+          runtimeType: 'gemini-cli',
+        }],
+      }];
+
+      // Call the private method that detects changes
+      (service as any).publishAgentEvents(oldTeams, newTeams);
+
+      // Should have published a runtimeType change event
+      const runtimeCall = mockEventBus.publish.mock.calls.find(
+        (call: unknown[]) => (call[0] as { changedField: string }).changedField === 'runtimeType'
+      );
+      expect(runtimeCall).toBeDefined();
+      const evt = runtimeCall![0] as { type: string; previousValue: string; newValue: string };
+      expect(evt.type).toBe('agent:status_changed');
+      expect(evt.previousValue).toBe('claude-code');
+      expect(evt.newValue).toBe('gemini-cli');
+    });
+
+    it('should not emit event when runtimeType stays the same', async () => {
+      const mockEventBus = {
+        publish: jest.fn(),
+      };
+      (service as any).eventBusService = mockEventBus;
+
+      const teams = [{
+        id: 'team-1',
+        name: 'Team 1',
+        members: [{
+          id: 'm1',
+          name: 'Dev 1',
+          sessionName: 'dev-1',
+          agentStatus: 'active',
+          workingStatus: 'idle',
+          runtimeType: 'claude-code',
+        }],
+      }];
+
+      (service as any).publishAgentEvents(teams, teams);
+
+      const runtimeCall = mockEventBus.publish.mock.calls.find(
+        (call: unknown[]) => (call[0] as { changedField: string }).changedField === 'runtimeType'
+      );
+      expect(runtimeCall).toBeUndefined();
+    });
+  });
 });
+

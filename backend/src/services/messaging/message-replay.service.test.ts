@@ -5,7 +5,6 @@
  * orchestrator restarts.
  */
 
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { MessageReplayService, type ReplayResult } from './message-replay.service.js';
 import type { MessageQueueService } from './message-queue.service.js';
 import type { ChatService } from '../chat/chat.service.js';
@@ -13,19 +12,19 @@ import type { ChatMessage, ChatConversation } from '../../types/chat.types.js';
 import { MESSAGE_REPLAY_CONSTANTS } from '../../constants.js';
 
 // Mock safeReadJson
-vi.mock('../../utils/file-io.utils.js', () => ({
-  safeReadJson: vi.fn(),
+jest.mock('../../utils/file-io.utils.js', () => ({
+  safeReadJson: jest.fn(),
 }));
 
 // Mock LoggerService
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
@@ -44,8 +43,6 @@ function createMockMessage(overrides: Partial<ChatMessage> & { from: ChatMessage
     content: 'Test message',
     contentType: 'text',
     status: 'sent',
-    timestamp: overrides.timestamp,
-    from: overrides.from,
     ...overrides,
   } as ChatMessage;
 }
@@ -71,25 +68,25 @@ function createMockConversation(id: string): ChatConversation {
 describe('MessageReplayService', () => {
   let service: MessageReplayService;
   let mockQueue: {
-    getPendingMessages: Mock;
-    enqueue: Mock;
+    getPendingMessages: jest.Mock;
+    enqueue: jest.Mock;
   };
   let mockChatService: {
-    getConversations: Mock;
-    getMessages: Mock;
+    getConversations: jest.Mock;
+    getMessages: jest.Mock;
   };
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
 
     mockQueue = {
-      getPendingMessages: vi.fn().mockReturnValue([]),
-      enqueue: vi.fn().mockReturnValue({ id: 'q-1' }),
+      getPendingMessages: jest.fn().mockReturnValue([]),
+      enqueue: jest.fn().mockReturnValue({ id: 'q-1' }),
     };
 
     mockChatService = {
-      getConversations: vi.fn().mockResolvedValue([]),
-      getMessages: vi.fn().mockResolvedValue([]),
+      getConversations: jest.fn().mockResolvedValue([]),
+      getMessages: jest.fn().mockResolvedValue([]),
     };
 
     service = new MessageReplayService(
@@ -102,7 +99,7 @@ describe('MessageReplayService', () => {
   describe('replayPendingMessages', () => {
     it('should skip replay when no persisted state exists', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
-      (safeReadJson as Mock).mockResolvedValue(null);
+      (safeReadJson as jest.Mock).mockResolvedValue(null);
 
       const result = await service.replayPendingMessages();
 
@@ -114,7 +111,7 @@ describe('MessageReplayService', () => {
     it('should skip replay when offline duration is below minimum threshold', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       // Set savedAt to 5 seconds ago (below MIN_OFFLINE_DURATION_MS)
-      (safeReadJson as Mock).mockResolvedValue({
+      (safeReadJson as jest.Mock).mockResolvedValue({
         savedAt: new Date(Date.now() - 5000).toISOString(),
       });
 
@@ -128,7 +125,7 @@ describe('MessageReplayService', () => {
     it('should find and replay unreplied user messages', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 120_000).toISOString(); // 2 min ago
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       const conversation = createMockConversation('conv-1');
       mockChatService.getConversations.mockResolvedValue([conversation]);
@@ -155,7 +152,7 @@ describe('MessageReplayService', () => {
     it('should not replay messages that already have an orchestrator reply', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 120_000).toISOString();
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
 
@@ -186,7 +183,7 @@ describe('MessageReplayService', () => {
     it('should replay only messages after the last orchestrator reply', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 300_000).toISOString();
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
 
@@ -231,7 +228,7 @@ describe('MessageReplayService', () => {
     it('should skip messages already in the restored queue', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 120_000).toISOString();
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
 
@@ -259,7 +256,7 @@ describe('MessageReplayService', () => {
     it('should respect MAX_REPLAY_COUNT limit', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 120_000).toISOString();
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
 
@@ -284,7 +281,7 @@ describe('MessageReplayService', () => {
     it('should scan multiple conversations', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 120_000).toISOString();
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       mockChatService.getConversations.mockResolvedValue([
         createMockConversation('conv-1'),
@@ -319,7 +316,7 @@ describe('MessageReplayService', () => {
     it('should infer source from message metadata', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 120_000).toISOString();
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
 
@@ -342,7 +339,7 @@ describe('MessageReplayService', () => {
     it('should handle enqueue errors gracefully', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 120_000).toISOString();
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
       mockChatService.getMessages.mockResolvedValue([
@@ -368,7 +365,7 @@ describe('MessageReplayService', () => {
     it('should handle chat service errors gracefully', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 120_000).toISOString();
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       mockChatService.getConversations.mockRejectedValue(new Error('Storage error'));
 
@@ -381,7 +378,7 @@ describe('MessageReplayService', () => {
     it('should not replay system messages', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = new Date(Date.now() - 120_000).toISOString();
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
       mockChatService.getMessages.mockResolvedValue([
@@ -489,7 +486,7 @@ describe('MessageReplayService', () => {
     it('should return savedAt from persisted state', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
       const savedAt = '2026-03-21T12:00:00.000Z';
-      (safeReadJson as Mock).mockResolvedValue({ savedAt });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
       const result = await service.getLastPersistedTimestamp();
       expect(result).toBe(savedAt);
@@ -497,7 +494,7 @@ describe('MessageReplayService', () => {
 
     it('should return null when no persisted state exists', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
-      (safeReadJson as Mock).mockResolvedValue(null);
+      (safeReadJson as jest.Mock).mockResolvedValue(null);
 
       const result = await service.getLastPersistedTimestamp();
       expect(result).toBeNull();
@@ -505,7 +502,7 @@ describe('MessageReplayService', () => {
 
     it('should return null when savedAt is not a string', async () => {
       const { safeReadJson } = await import('../../utils/file-io.utils.js');
-      (safeReadJson as Mock).mockResolvedValue({ savedAt: 123 });
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt: 123 });
 
       const result = await service.getLastPersistedTimestamp();
       expect(result).toBeNull();

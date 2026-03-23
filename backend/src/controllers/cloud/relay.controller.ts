@@ -266,14 +266,26 @@ export async function getCloudDevices(req: Request, res: Response, _next: NextFu
     }
 
     // Mark the current device (this OSS instance)
+    // Compare by both relay sessionId (legacy) and device UUID (Cloud Sync)
     const relayClient = RelayClientService.getInstance();
     const localSessionId = relayClient.getSessionId();
+
+    let localDeviceId: string | null = null;
+    try {
+      const { DeviceIdentityService: DevIdService } = await import('../../services/cloud/device-identity.service.js');
+      const identity = await DevIdService.getInstance().getOrCreateIdentity();
+      localDeviceId = identity.deviceId;
+    } catch {
+      logger.debug('Could not resolve local device ID for legacy isLocal check');
+    }
 
     const devicesWithLocal = devices.map((device) => ({
       ...device,
       // Cloud API returns `deviceName` but frontend expects `name` — normalize
       name: (device as any).deviceName || device.name,
-      isLocal: localSessionId ? device.sessionId === localSessionId : false,
+      isLocal:
+        (localSessionId ? device.sessionId === localSessionId : false) ||
+        (localDeviceId ? (device as any).deviceId === localDeviceId : false),
     }));
 
     res.json({

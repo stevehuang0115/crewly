@@ -1,37 +1,36 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { initializeCloudIfConfigured } from './cloud-initializer.js';
 import { CloudClientService } from './cloud-client.service.js';
 
 // Mock logger
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
-		getInstance: vi.fn().mockReturnValue({
-			createComponentLogger: vi.fn().mockReturnValue({
-				info: vi.fn(),
-				debug: vi.fn(),
-				warn: vi.fn(),
-				error: vi.fn(),
+		getInstance: jest.fn().mockReturnValue({
+			createComponentLogger: jest.fn().mockReturnValue({
+				info: jest.fn(),
+				debug: jest.fn(),
+				warn: jest.fn(),
+				error: jest.fn(),
 			}),
 		}),
 	},
 }));
 
 // Mock fs/promises
-vi.mock('fs/promises', () => ({
-	readFile: vi.fn(),
-	writeFile: vi.fn().mockResolvedValue(undefined),
-	mkdir: vi.fn().mockResolvedValue(undefined),
-	unlink: vi.fn().mockResolvedValue(undefined),
+jest.mock('fs/promises', () => ({
+	readFile: jest.fn(),
+	writeFile: jest.fn().mockResolvedValue(undefined),
+	mkdir: jest.fn().mockResolvedValue(undefined),
+	unlink: jest.fn().mockResolvedValue(undefined),
 }));
 
 // Mock the controller auto-connect (dynamic import)
-vi.mock('../../controllers/cloud/cloud.controller.js', () => ({
-	autoConnectRelayFromToken: vi.fn(),
+jest.mock('../../controllers/cloud/cloud.controller.js', () => ({
+	autoConnectRelayFromToken: jest.fn(),
 }));
 
-const mockSyncStart = vi.fn();
+const mockSyncStart = jest.fn();
 
-vi.mock('./cloud-sync.service.js', () => ({
+jest.mock('./cloud-sync.service.js', () => ({
 	CloudSyncService: {
 		getInstance: () => ({
 			start: mockSyncStart,
@@ -39,12 +38,12 @@ vi.mock('./cloud-sync.service.js', () => ({
 	},
 }));
 
-const mockGetOrCreateIdentity = vi.fn().mockResolvedValue({
+const mockGetOrCreateIdentity = jest.fn().mockResolvedValue({
 	deviceId: 'test-device-uuid',
 	deviceName: 'test-hostname',
 });
 
-vi.mock('./device-identity.service.js', () => ({
+jest.mock('./device-identity.service.js', () => ({
 	DeviceIdentityService: {
 		getInstance: () => ({
 			getOrCreateIdentity: mockGetOrCreateIdentity,
@@ -53,11 +52,11 @@ vi.mock('./device-identity.service.js', () => ({
 }));
 
 import { readFile } from 'fs/promises';
-const mockReadFile = vi.mocked(readFile);
+const mockReadFile = jest.mocked(readFile);
 
 describe('CloudInitializer', () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		jest.clearAllMocks();
 		CloudClientService.resetInstance();
 	});
 

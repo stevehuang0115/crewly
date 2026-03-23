@@ -270,8 +270,33 @@ export class AgentHeartbeatMonitorService {
 					continue;
 				}
 
-				// Skip suspended or rehydrating agents
+				// #278: Even suspended/rehydrating agents get a basic session-exists check.
+				// Previously, suspended agents were completely skipped, meaning a dead
+				// session was never detected until the agent was un-suspended.
 				if (suspendService.isSuspended(member.sessionName) || suspendService.isRehydrating(member.sessionName)) {
+					// Quick liveness check: if session is gone, clean up immediately
+					if (!this.sessionBackend.sessionExists(member.sessionName)) {
+						this.agentStates.delete(member.sessionName);
+						try {
+							await this.storageService.updateAgentStatus(
+								member.sessionName,
+								CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+							);
+							this.logger.warn('Suspended agent session gone, marked inactive (#278)', {
+								sessionName: member.sessionName,
+							});
+							const gateway = getTerminalGateway();
+							if (gateway) {
+								gateway.broadcastTeamMemberStatus({
+									teamId: team.id,
+									memberId: member.id,
+									agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+								});
+							}
+						} catch {
+							// Non-critical
+						}
+					}
 					continue;
 				}
 

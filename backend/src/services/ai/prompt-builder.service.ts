@@ -233,71 +233,14 @@ Start all teams on Phase 1 simultaneously.`.trim();
 		config: TeamMemberSessionConfig,
 		options: PromptOptions = {}
 	): Promise<string> {
-		// Phase 5: Use modular prompt assembly (enabled by default, disable with CREWLY_USE_MODULAR_PROMPTS=false)
-		if (process.env.CREWLY_USE_MODULAR_PROMPTS !== 'false') {
-			return this.buildModularPrompt(config, options);
-		}
-
-		const includeMemory = options.includeMemory !== false;
-		const includeSOPs = options.includeSOPs !== false;
-
-		// Get base prompt
-		const basePrompt = await this.buildSystemPrompt(config);
-
-		// Build memory context if enabled
-		let memoryContext = '';
-		if (includeMemory && config.projectPath && config.memberId) {
-			memoryContext = await this.buildMemoryContext(
-				config.memberId,
-				config.projectPath,
-				options
-			);
-		}
-
-		// Build SOP context if enabled
-		let sopContext = '';
-		if (includeSOPs) {
-			sopContext = await this.buildSOPContext(
-				config.role,
-				options.taskContext,
-				options.taskType,
-				options.sopLimit
-			);
-		}
-
-		// Build Team Lead section if applicable (loads tl-addon.md when available)
-		const teamLeadContext = await this.buildTeamLeadSection(config);
-
-		// Build Team Norms section (from template norms/*.md)
-		const teamNormsContext = await this.buildTeamNormsSection(
-			config.teamId || '',
-			config.role
-		);
-
-		// Compose final prompt with memory, SOPs, TL context, and norms
-		if (memoryContext || sopContext || teamLeadContext || teamNormsContext) {
-			return this.composePromptWithMemory({
-				basePrompt,
-				memoryContext,
-				sopContext,
-				teamLeadContext,
-				teamNormsContext,
-				sessionName: config.name,
-				memberId: config.memberId,
-				role: config.role,
-				projectPath: config.projectPath,
-				teamId: config.teamId,
-				runtimeType: config.runtimeType,
-			});
-		}
-
-		return basePrompt;
+		// Modular prompt assembly (always enabled — feature flag removed)
+		return this.buildModularPrompt(config, options);
 	}
 
 	/**
 	 * Build system prompt using the modular PromptAssemblyService.
 	 *
-	 * Called by default (disable with CREWLY_USE_MODULAR_PROMPTS=false). The modular system handles
+	 * Always used for prompt assembly. The modular system handles
 	 * all prompt sections (identity, skills, communication, recovery, lifecycle,
 	 * team-reference, memory, soul, learning) with proper token budget enforcement
 	 * and priority ordering.

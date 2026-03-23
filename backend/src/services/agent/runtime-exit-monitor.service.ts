@@ -678,9 +678,12 @@ export class RuntimeExitMonitorService {
 		// doesn't deliver messages during postInitialize.
 		try {
 			const storageService = StorageService.getInstance();
-			await storageService.updateAgentStatus(sessionName, CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE);
-		} catch {
-			// Best-effort — continue with restart
+			await storageService.updateAgentStatus(sessionName, CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE, 'crash');
+		} catch (statusError) {
+			this.logger.debug('Best-effort status update before restart failed', {
+				sessionName,
+				error: statusError instanceof Error ? statusError.message : String(statusError),
+			});
 		}
 
 		// Capture session memory before restart
@@ -774,6 +777,24 @@ export class RuntimeExitMonitorService {
 				sessionName,
 				error: error instanceof Error ? error.message : String(error),
 			});
+		}
+
+		// #255: Abandon in-progress tasks for this session
+		if (this.taskTrackingService) {
+			try {
+				const abandonedCount = await this.taskTrackingService.abandonTasksForSession(sessionName);
+				if (abandonedCount > 0) {
+					this.logger.info('Abandoned in-progress tasks for exited session (#255)', {
+						sessionName,
+						abandonedCount,
+					});
+				}
+			} catch (taskError) {
+				this.logger.warn('Failed to abandon tasks for exited session (#255)', {
+					sessionName,
+					error: taskError instanceof Error ? taskError.message : String(taskError),
+				});
+			}
 		}
 
 		// Capture session memory (skip for orchestrator — already captured above)

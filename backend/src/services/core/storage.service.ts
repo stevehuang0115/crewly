@@ -1402,6 +1402,8 @@ This is a foundational task that should be completed first before other developm
 
       for (const team of teams) {
         for (const member of team.members || []) {
+          // Skip members with null or empty sessionName (#261)
+          if (!member.sessionName) continue;
           if (member.sessionName === sessionName) {
             member.agentStatus = status;
             if (dropoutReason) {
@@ -1444,20 +1446,33 @@ This is a foundational task that should be completed first before other developm
     try {
       const teams = await this.getTeams();
       const team = teams.find(t => t.id === teamId);
-      
+
       if (!team) {
         throw new Error(`Team not found: ${teamId}`);
       }
-      
+
       const member = team.members.find(m => m.id === memberId);
       if (!member) {
         throw new Error(`Team member not found: ${memberId} in team ${teamId}`);
       }
-      
+
+      const previousRuntimeType = member.runtimeType;
       member.runtimeType = runtimeType;
       member.updatedAt = new Date().toISOString();
-      
+
       await this.saveTeam(team);
+
+      // #263: Log and notify when runtimeType changes
+      if (previousRuntimeType !== runtimeType) {
+        this.logger.info('Team member runtimeType changed', {
+          teamId,
+          memberId,
+          memberName: member.name,
+          sessionName: member.sessionName,
+          previousRuntimeType,
+          newRuntimeType: runtimeType,
+        });
+      }
     } catch (error) {
       this.logger.error('Error updating team member runtime type', { teamId, memberId, error: error instanceof Error ? error.message : String(error) });
       throw error;

@@ -336,7 +336,7 @@ describe('QueueProcessorService', () => {
       expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
     });
 
-    it('should process messages sequentially with delay', async () => {
+    it('should process all pending messages in one cycle (#253)', async () => {
       const routeResponseSpy = jest.spyOn(responseRouter, 'routeResponse');
 
       processor.start();
@@ -352,21 +352,17 @@ describe('QueueProcessorService', () => {
         source: 'web_chat',
       });
 
-      // Process first message (fire-and-forget: completes immediately after delivery)
+      // #253: Both messages should be processed in a single cycle
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
       await flushPromises();
       await flushPromises();
-
-      expect(routeResponseSpy).toHaveBeenCalledTimes(1);
-
-      // Advance past INTER_MESSAGE_DELAY (10ms in mock)
-      jest.advanceTimersByTime(20);
       await flushPromises();
       await flushPromises();
 
-      // Second message should now be processing
+      // Both messages delivered without needing INTER_MESSAGE_DELAY
+      expect(routeResponseSpy).toHaveBeenCalledTimes(2);
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(2);
     });
 
@@ -576,7 +572,7 @@ describe('QueueProcessorService', () => {
     });
 
     it('should defer message delivery when orchestrator is not active', async () => {
-      mockOrchestratorStatus = { agentStatus: 'started', runtimeType: 'claude-code' };
+      mockOrchestratorStatus = { agentStatus: 'inactive', runtimeType: 'claude-code' };
 
       processor.start();
 
@@ -600,7 +596,7 @@ describe('QueueProcessorService', () => {
 
     it('should deliver deferred message after orchestrator becomes active', async () => {
       // Start with orchestrator not active
-      mockOrchestratorStatus = { agentStatus: 'started', runtimeType: 'claude-code' };
+      mockOrchestratorStatus = { agentStatus: 'inactive', runtimeType: 'claude-code' };
 
       processor.start();
 
@@ -968,16 +964,23 @@ describe('QueueProcessorService', () => {
         source: 'system_event',
       });
 
-      // First processing: user message prioritized
+      // #253: Both messages processed in one drain cycle
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
 
-      // The first call should be the user message (prioritized)
-      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+      // Both should be delivered — user message first (prioritized), system event second
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(2);
       const firstContent = mockAgentRegistrationService.sendMessageToAgent.mock.calls[0][1];
       expect(firstContent).toContain('[CHAT:conv-1]');
       expect(firstContent).not.toContain('[EVENT:status]');
+      // System event delivered separately (not batched with user message)
+      const secondContent = mockAgentRegistrationService.sendMessageToAgent.mock.calls[1][1];
+      expect(secondContent).toContain('[EVENT:status]');
     });
 
     it('should respect MAX_SYSTEM_EVENT_BATCH limit', async () => {
@@ -992,8 +995,12 @@ describe('QueueProcessorService', () => {
         });
       }
 
-      // Process first batch
+      // #253: Drain loop processes all batches in one cycle
       jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
       await flushPromises();
       await flushPromises();
 
@@ -1002,8 +1009,14 @@ describe('QueueProcessorService', () => {
       const eventCount = (firstContent.match(/\[EVENT:/g) || []).length;
       expect(eventCount).toBe(5);
 
-      // 3 events should remain pending
-      expect(queueService.pendingCount).toBe(3);
+      // Second delivery should contain the remaining 3
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(2);
+      const secondContent = mockAgentRegistrationService.sendMessageToAgent.mock.calls[1][1];
+      const secondEventCount = (secondContent.match(/\[EVENT:/g) || []).length;
+      expect(secondEventCount).toBe(3);
+
+      // All events processed
+      expect(queueService.pendingCount).toBe(0);
     });
   });
 
@@ -1572,12 +1585,11 @@ describe('QueueProcessorService', () => {
     });
 
     it('should mark pending-ack message as completed when conversationId found in PTY output', async () => {
-      // First message: force-deliver (agent not ready)
-      // Second processNext: agent ready, flush finds conversationId in PTY output
+      // Force-deliver (agent not ready), then drain loop flushes pending-ack inline (#253)
       mockAgentRegistrationService.waitForAgentReady
         .mockResolvedValueOnce(false)   // pre-delivery: not ready -> force-deliver
         .mockResolvedValueOnce(false)   // post-delivery idle wait: not ready
-        .mockResolvedValueOnce(true);   // empty-queue pending-ack poll: ready
+        .mockResolvedValueOnce(true);   // drain-loop pending-ack poll: ready
 
       // PTY output contains the conversationId -> message was processed
       mockAgentRegistrationService.captureAgentOutput
@@ -1591,23 +1603,16 @@ describe('QueueProcessorService', () => {
         source: 'slack',
       });
 
-      // Process: force-deliver, add to pending-ack
+      // #253: Drain loop processes message AND flushes pending-acks inline
       jest.advanceTimersByTime(0);
       await flushPromises();
       await flushPromises();
       await flushPromises();
       await flushPromises();
-
-      expect(processor.getPendingAckCount()).toBe(1);
-
-      // Advance past poll interval to trigger pending-ack flush
-      jest.advanceTimersByTime(600);
-      await flushPromises();
-      await flushPromises();
       await flushPromises();
       await flushPromises();
 
-      // Pending-ack should be flushed (message found in PTY output)
+      // Pending-ack should be flushed (message found in PTY output) within same cycle
       expect(processor.getPendingAckCount()).toBe(0);
     });
 
@@ -1825,10 +1830,11 @@ describe('QueueProcessorService', () => {
     });
 
     it('should match [GCHAT:id] prefix for google_chat messages', async () => {
+      // #253: drain loop processes message and flushes pending-acks inline
       mockAgentRegistrationService.waitForAgentReady
         .mockResolvedValueOnce(false)   // pre-delivery: force
         .mockResolvedValueOnce(false)   // post-delivery idle
-        .mockResolvedValueOnce(true);   // flush poll: ready
+        .mockResolvedValueOnce(true);   // drain-loop pending-ack poll: ready
 
       mockAgentRegistrationService.captureAgentOutput
         .mockResolvedValue('[GCHAT:conv-gchat-1] Hello from Chat');
@@ -1846,16 +1852,10 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
       await flushPromises();
-
-      expect(processor.getPendingAckCount()).toBe(1);
-
-      jest.advanceTimersByTime(600);
-      await flushPromises();
-      await flushPromises();
       await flushPromises();
       await flushPromises();
 
-      // Should be marked completed — [GCHAT:id] prefix matched
+      // Should be flushed inline — [GCHAT:id] prefix matched
       expect(processor.getPendingAckCount()).toBe(0);
     });
   });
@@ -1941,13 +1941,14 @@ describe('QueueProcessorService', () => {
 
   describe('#239 multiple concurrent pending-ack messages', () => {
     it('should track and flush multiple pending-ack messages independently', async () => {
-      // Pre-delivery: not ready for both, then ready for flush
+      // #253: drain loop flushes pending-acks inline after processing
+      // Pre-delivery: not ready for both, then ready for inline flush
       mockAgentRegistrationService.waitForAgentReady
         .mockResolvedValueOnce(false)   // msg1 pre-delivery
         .mockResolvedValueOnce(false)   // msg1 post-delivery idle
         .mockResolvedValueOnce(false)   // msg2 pre-delivery
         .mockResolvedValueOnce(false)   // msg2 post-delivery idle
-        .mockResolvedValue(true);       // flush polls: ready
+        .mockResolvedValue(true);       // inline flush after drain: ready
 
       // PTY output contains msg1 but NOT msg2
       mockAgentRegistrationService.captureAgentOutput
@@ -1974,33 +1975,27 @@ describe('QueueProcessorService', () => {
         source: 'web_chat',
       });
 
-      // Process second message (skip INTER_MESSAGE_DELAY for user message)
+      // Process second message + inline flush
       jest.advanceTimersByTime(10);
       await flushPromises();
       await flushPromises();
       await flushPromises();
       await flushPromises();
-
-      expect(processor.getPendingAckCount()).toBe(2);
-
-      // Trigger flush — msg1 found, msg2 not found
-      jest.advanceTimersByTime(600);
-      await flushPromises();
-      await flushPromises();
       await flushPromises();
       await flushPromises();
 
-      // msg1 should be completed, msg2 should remain (and get redelivered)
+      // msg1 flushed (found in PTY), msg2 redelivered (not found) → still pending
       expect(processor.getPendingAckCount()).toBe(1);
     });
 
     it('should handle all messages completing on flush', async () => {
+      // #253: drain loop flushes pending-acks inline after processing
       mockAgentRegistrationService.waitForAgentReady
         .mockResolvedValueOnce(false)   // msg1 pre-delivery
         .mockResolvedValueOnce(false)   // msg1 post-delivery
         .mockResolvedValueOnce(false)   // msg2 pre-delivery
         .mockResolvedValueOnce(false)   // msg2 post-delivery
-        .mockResolvedValue(true);       // flush polls
+        .mockResolvedValue(true);       // inline flush: ready
 
       // PTY output contains both messages
       mockAgentRegistrationService.captureAgentOutput
@@ -2026,22 +2021,76 @@ describe('QueueProcessorService', () => {
         source: 'web_chat',
       });
 
+      // Process second + inline flush (both found in PTY output)
       jest.advanceTimersByTime(10);
       await flushPromises();
       await flushPromises();
-      await flushPromises();
-      await flushPromises();
-
-      expect(processor.getPendingAckCount()).toBe(2);
-
-      // Trigger flush — both found
-      jest.advanceTimersByTime(600);
       await flushPromises();
       await flushPromises();
       await flushPromises();
       await flushPromises();
 
       expect(processor.getPendingAckCount()).toBe(0);
+    });
+  });
+
+  describe('drain all pending messages per cycle (#253)', () => {
+    it('should process all pending messages in one cycle without inter-message setTimeout', async () => {
+      processor.start();
+
+      // Enqueue 3 messages at once
+      queueService.enqueue({ content: 'Msg 1', conversationId: 'c1', source: 'web_chat' });
+      queueService.enqueue({ content: 'Msg 2', conversationId: 'c2', source: 'web_chat' });
+      queueService.enqueue({ content: 'Msg 3', conversationId: 'c3', source: 'web_chat' });
+
+      // Single timer advance + promise flush should drain all 3
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(3);
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc', expect.stringContaining('Msg 1'), 'claude-code'
+      );
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc', expect.stringContaining('Msg 2'), 'claude-code'
+      );
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc', expect.stringContaining('Msg 3'), 'claude-code'
+      );
+    });
+
+    it('should stop draining when orchestrator becomes unavailable', async () => {
+      let callCount = 0;
+      mockAgentRegistrationService.sendMessageToAgent.mockImplementation(() => {
+        callCount++;
+        if (callCount >= 2) {
+          // After 2 deliveries, orchestrator goes inactive
+          mockOrchestratorStatus = { agentStatus: 'inactive', runtimeType: 'claude-code' };
+        }
+        return Promise.resolve({ success: true });
+      });
+
+      processor.start();
+
+      queueService.enqueue({ content: 'A', conversationId: 'c1', source: 'web_chat' });
+      queueService.enqueue({ content: 'B', conversationId: 'c2', source: 'web_chat' });
+      queueService.enqueue({ content: 'C', conversationId: 'c3', source: 'web_chat' });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      // Should have delivered 2 then stopped (3rd deferred because orchestrator inactive)
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(2);
     });
   });
 });

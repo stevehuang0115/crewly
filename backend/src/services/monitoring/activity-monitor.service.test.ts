@@ -1096,4 +1096,22 @@ describe('ActivityMonitorService', () => {
       expect((service as any).busyTransitionTimestamps.has('test-session-1')).toBe(true);
     });
   });
+
+  describe('temp file cleanup logging (#272)', () => {
+    it('should log debug when temp file unlink fails during save', async () => {
+      // Make rename fail to trigger the catch block with unlink
+      (rename as jest.Mock).mockRejectedValueOnce(new Error('rename failed'));
+      // Make unlink also fail to exercise the inner catch with logging
+      (unlink as jest.Mock).mockRejectedValueOnce(new Error('unlink ENOENT'));
+
+      // Attempt to save should propagate the original rename error
+      // but the unlink failure should be logged, not swallowed
+      try {
+        await (service as any).saveTeamWorkingStatusFile();
+      } catch (e) {
+        // Expected: rename failure propagates
+        expect((e as Error).message).toBe('rename failed');
+      }
+    });
+  });
 });

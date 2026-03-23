@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 /**
  * Tests for Cloud Controller
  *
@@ -12,35 +11,35 @@ import { connectToCloud, disconnectFromCloud, getCloudStatus, getCloudTemplates,
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockVerifyJwt = vi.fn();
-const mockSignJwt = vi.fn();
+const mockVerifyJwt = jest.fn();
+const mockSignJwt = jest.fn();
 
-vi.mock('./cloud-google-auth.controller.js', () => ({
+jest.mock('./cloud-google-auth.controller.js', () => ({
   verifyJwt: (...args: unknown[]) => mockVerifyJwt(...args),
   signJwt: (...args: unknown[]) => mockSignJwt(...args),
 }));
 
-vi.mock('../../services/core/logger.service.js', () => ({
+jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
 }));
 
-const mockConnect = vi.fn();
-const mockConnectLocal = vi.fn();
-const mockDisconnect = vi.fn();
-const mockGetStatus = vi.fn();
-const mockGetTemplates = vi.fn();
-const mockIsConnected = vi.fn();
+const mockConnect = jest.fn();
+const mockConnectLocal = jest.fn();
+const mockDisconnect = jest.fn();
+const mockGetStatus = jest.fn();
+const mockGetTemplates = jest.fn();
+const mockIsConnected = jest.fn();
 
-vi.mock('../../services/cloud/cloud-client.service.js', () => ({
+jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
     getInstance: () => ({
       connect: mockConnect,
@@ -49,33 +48,33 @@ vi.mock('../../services/cloud/cloud-client.service.js', () => ({
       getStatus: mockGetStatus,
       getTemplates: mockGetTemplates,
       isConnected: mockIsConnected,
-      getCloudUrl: vi.fn().mockReturnValue(null),
-      getToken: vi.fn().mockReturnValue('test-token'),
-      setRefreshToken: vi.fn(),
+      getCloudUrl: jest.fn().mockReturnValue(null),
+      getToken: jest.fn().mockReturnValue('test-token'),
+      setRefreshToken: jest.fn(),
     }),
   },
 }));
 
-const mockRelayConnect = vi.fn();
-const mockRelayDisconnect = vi.fn();
-const mockRelayGetState = vi.fn().mockReturnValue('disconnected');
+const mockRelayConnect = jest.fn();
+const mockRelayDisconnect = jest.fn();
+const mockRelayGetState = jest.fn().mockReturnValue('disconnected');
 
-vi.mock('../../services/cloud/relay-client.service.js', () => ({
+jest.mock('../../services/cloud/relay-client.service.js', () => ({
   RelayClientService: {
     getInstance: () => ({
       connect: mockRelayConnect,
       disconnect: mockRelayDisconnect,
       getState: mockRelayGetState,
-      listenerCount: vi.fn().mockReturnValue(0),
-      on: vi.fn().mockReturnThis(),
+      listenerCount: jest.fn().mockReturnValue(0),
+      on: jest.fn().mockReturnThis(),
     }),
   },
 }));
 
-const mockSyncStart = vi.fn();
-const mockSyncStop = vi.fn();
+const mockSyncStart = jest.fn();
+const mockSyncStop = jest.fn();
 
-vi.mock('../../services/cloud/cloud-sync.service.js', () => ({
+jest.mock('../../services/cloud/cloud-sync.service.js', () => ({
   CloudSyncService: {
     getInstance: () => ({
       start: mockSyncStart,
@@ -84,12 +83,12 @@ vi.mock('../../services/cloud/cloud-sync.service.js', () => ({
   },
 }));
 
-const mockGetOrCreateIdentity = vi.fn().mockResolvedValue({
+const mockGetOrCreateIdentity = jest.fn().mockResolvedValue({
   deviceId: 'test-device-uuid',
   deviceName: 'test-hostname',
 });
 
-vi.mock('../../services/cloud/device-identity.service.js', () => ({
+jest.mock('../../services/cloud/device-identity.service.js', () => ({
   DeviceIdentityService: {
     getInstance: () => ({
       getOrCreateIdentity: mockGetOrCreateIdentity,
@@ -97,10 +96,10 @@ vi.mock('../../services/cloud/device-identity.service.js', () => ({
   },
 }));
 
-vi.mock('../../services/core/storage.service.js', () => ({
+jest.mock('../../services/core/storage.service.js', () => ({
   StorageService: {
     getInstance: () => ({
-      getTeams: vi.fn().mockResolvedValue([
+      getTeams: jest.fn().mockResolvedValue([
         { id: 'team-1', name: 'Product', members: [{ agentStatus: 'active' }, { agentStatus: 'inactive' }] },
         { id: 'team-2', name: 'Marketing', members: [{ agentStatus: 'active' }] },
       ]),
@@ -125,20 +124,20 @@ function mockReq(overrides: Partial<Request> = {}): Request {
 /** Build a mock Express Response with chainable status/json. */
 function mockRes(): Response {
   const res = {
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
   };
   return res as unknown as Response;
 }
 
-const mockNext: NextFunction = vi.fn();
+const mockNext: NextFunction = jest.fn();
 
 const originalFetch = global.fetch;
-const mockFetch = vi.fn().mockResolvedValue({
+const mockFetch = jest.fn().mockResolvedValue({
   ok: true,
   status: 200,
   json: async () => ({ success: true }),
-}) as vi.Mock;
+}) as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -146,7 +145,7 @@ const mockFetch = vi.fn().mockResolvedValue({
 
 describe('Cloud Controller', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
     global.fetch = mockFetch as unknown as typeof fetch;
   });
 
@@ -270,7 +269,7 @@ describe('Cloud Controller', () => {
       await connectToCloud(req, res, mockNext);
       const firstCall = mockRelayConnect.mock.calls[0][0];
 
-      vi.clearAllMocks();
+      jest.clearAllMocks();
       mockConnect.mockResolvedValue({ success: true, tier: 'pro' });
       mockVerifyJwt.mockReturnValue({ sub: 'user-123' });
       mockRelayGetState.mockReturnValue('disconnected');
@@ -351,7 +350,7 @@ describe('Cloud Controller', () => {
       // Allow the async handshake to fire
       await new Promise((r) => setTimeout(r, 50));
 
-      // Handshake should be called via fetch (now uses /api/v1/relay/handshake)
+      // Heartbeat should be called via fetch (uses /api/v1/relay/handshake)
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/v1/relay/handshake'),
         expect.objectContaining({
@@ -579,7 +578,7 @@ describe('Cloud Controller', () => {
       process.env['CREWLY_CLOUD_API_BASE'] = 'https://api.crewlyai.com/api';
 
       const cloudResponse = { success: true, data: { id: 'u1', email: 'test@test.com', plan: 'pro' } };
-      global.fetch = vi.fn().mockResolvedValue({
+      global.fetch = jest.fn().mockResolvedValue({
         ok: true,
         status: 200,
         json: () => Promise.resolve(cloudResponse),
@@ -688,7 +687,7 @@ describe('Cloud Controller', () => {
       mockGetOrCreateIdentity.mockRejectedValueOnce(new Error('disk error'));
       const req = mockReq();
       const res = mockRes();
-      const next = vi.fn();
+      const next = jest.fn();
 
       await getDeviceId(req, res, next);
 

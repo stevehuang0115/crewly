@@ -222,8 +222,8 @@ export class PtySessionBackend implements ISessionBackend {
 		const terminalBuffer = this.terminalBuffers.get(name);
 
 		if (session) {
-			this.logger.info('Killing session', { name });
-			session.kill();
+			this.logger.info('Killing session and descendants', { name });
+			await session.forceKill();
 			this.sessions.delete(name);
 		}
 

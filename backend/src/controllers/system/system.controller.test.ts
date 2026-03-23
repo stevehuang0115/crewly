@@ -155,9 +155,62 @@ describe('System Handlers', () => {
             system: mockSystemMetrics,
             performance: mockPerformanceMetrics
           },
-          environment: mockEnvironmentInfo
+          environment: mockEnvironmentInfo,
+          auditorEnabled: expect.any(Boolean),
         }
       });
+    });
+
+    it('should include auditorEnabled=true when env var is set (#254)', async () => {
+      const originalEnv = process.env['CREWLY_ENABLE_AUDITOR'];
+      process.env['CREWLY_ENABLE_AUDITOR'] = 'true';
+
+      const mockHealthStatus = new Map([['api', { status: 'healthy' }]]);
+      mockMonitoringService.getHealthStatus.mockReturnValue(mockHealthStatus);
+      mockMonitoringService.getOverallHealth.mockReturnValue('healthy');
+      mockMonitoringService.getSystemMetrics.mockReturnValue({});
+      mockMonitoringService.getPerformanceMetrics.mockReturnValue({});
+      mockConfigService.getEnvironmentInfo.mockReturnValue({});
+
+      await systemHandlers.getSystemHealth.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const responseData = (mockResponse.json as jest.Mock).mock.calls[0][0] as { data: { auditorEnabled: boolean } };
+      expect(responseData.data.auditorEnabled).toBe(true);
+
+      if (originalEnv === undefined) {
+        delete process.env['CREWLY_ENABLE_AUDITOR'];
+      } else {
+        process.env['CREWLY_ENABLE_AUDITOR'] = originalEnv;
+      }
+    });
+
+    it('should include auditorEnabled=false when env var is not set (#254)', async () => {
+      const originalEnv = process.env['CREWLY_ENABLE_AUDITOR'];
+      delete process.env['CREWLY_ENABLE_AUDITOR'];
+
+      const mockHealthStatus = new Map([['api', { status: 'healthy' }]]);
+      mockMonitoringService.getHealthStatus.mockReturnValue(mockHealthStatus);
+      mockMonitoringService.getOverallHealth.mockReturnValue('healthy');
+      mockMonitoringService.getSystemMetrics.mockReturnValue({});
+      mockMonitoringService.getPerformanceMetrics.mockReturnValue({});
+      mockConfigService.getEnvironmentInfo.mockReturnValue({});
+
+      await systemHandlers.getSystemHealth.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const responseData = (mockResponse.json as jest.Mock).mock.calls[0][0] as { data: { auditorEnabled: boolean } };
+      expect(responseData.data.auditorEnabled).toBe(false);
+
+      if (originalEnv !== undefined) {
+        process.env['CREWLY_ENABLE_AUDITOR'] = originalEnv;
+      }
     });
 
     it('should handle monitoring service errors', async () => {

@@ -132,7 +132,17 @@ export async function atomicWriteFile(filePath: string, content: string): Promis
       await handle.sync();
       await handle.close();
 
-      await fs.rename(tempPath, filePath);
+      try {
+        await fs.rename(tempPath, filePath);
+      } catch (renameError: unknown) {
+        // #265: If rename fails with ENOENT, ensure parent dir exists and retry
+        if (renameError instanceof Error && 'code' in renameError && (renameError as NodeJS.ErrnoException).code === 'ENOENT') {
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.rename(tempPath, filePath);
+        } else {
+          throw renameError;
+        }
+      }
     } catch (error) {
       // Clean up temp file on failure
       try {

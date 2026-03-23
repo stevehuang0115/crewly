@@ -120,13 +120,15 @@ export class MonitoringService {
     const memoryThreshold = this.config.get('monitoring').memoryThreshold;
     const cpuThreshold = this.config.get('monitoring').cpuThreshold;
 
+    // memoryThreshold is in MB (default 512). Alert conditions use system
+    // memory percentage (0-100), so use standard % thresholds (#258).
     this.alertConditions = [
       {
         id: 'high-memory-usage',
         name: 'High Memory Usage',
         metric: 'memory.percentage',
         operator: 'greater_than',
-        threshold: memoryThreshold,
+        threshold: 85,
         duration: 60,
         severity: 'warning',
         enabled: true
@@ -136,7 +138,7 @@ export class MonitoringService {
         name: 'Critical Memory Usage',
         metric: 'memory.percentage',
         operator: 'greater_than',
-        threshold: memoryThreshold * 1.2,
+        threshold: 95,
         duration: 30,
         severity: 'critical',
         enabled: true
@@ -449,20 +451,24 @@ export class MonitoringService {
     const start = Date.now();
     const memoryUsage = process.memoryUsage();
     const totalMem = os.totalmem();
-    const usedPercent = (memoryUsage.heapUsed / totalMem) * 100;
-    
+
+    // memoryThreshold is configured in MB (default 512).
+    // Compare Node.js heap usage in MB against the MB threshold (#258).
+    const heapUsedMB = memoryUsage.heapUsed / (1024 * 1024);
     const memoryThreshold = this.config.get('monitoring').memoryThreshold;
-    
+    const heapUsedPercent = (memoryUsage.heapUsed / totalMem) * 100;
+
     return {
       service: 'memory',
-      status: usedPercent > memoryThreshold * 1.2 ? 'unhealthy' : 
-              usedPercent > memoryThreshold ? 'degraded' : 'healthy',
+      status: heapUsedMB > memoryThreshold * 1.2 ? 'unhealthy' :
+              heapUsedMB > memoryThreshold ? 'degraded' : 'healthy',
       responseTime: Date.now() - start,
       details: {
         heapUsed: memoryUsage.heapUsed,
         heapTotal: memoryUsage.heapTotal,
+        heapUsedMB: Math.round(heapUsedMB * 100) / 100,
         external: memoryUsage.external,
-        usedPercent: Math.round(usedPercent * 100) / 100
+        usedPercent: Math.round(heapUsedPercent * 100) / 100
       }
     };
   }

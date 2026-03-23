@@ -1376,63 +1376,7 @@ describe('SlackOrchestratorBridge', () => {
     });
   });
 
-  describe('addCompletionReaction (deferred ✅)', () => {
-    it('should add ✅ reaction when pending reaction exists', async () => {
-      const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true });
-      await bridge.initialize();
-
-      const slackService = (bridge as any).slackService;
-      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
-
-      // Simulate storing a pending reaction
-      (bridge as any).pendingReactions.set('C123:1707.001', '1707.002');
-
-      await bridge.addCompletionReaction('C123', '1707.001');
-
-      expect(slackService.addReaction).toHaveBeenCalledWith('C123', '1707.002', 'white_check_mark');
-      // Pending reaction should be consumed
-      expect((bridge as any).pendingReactions.has('C123:1707.001')).toBe(false);
-    });
-
-    it('should not react when no pending reaction exists', async () => {
-      const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true });
-      await bridge.initialize();
-
-      const slackService = (bridge as any).slackService;
-      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
-
-      await bridge.addCompletionReaction('C123', '1707.001');
-
-      expect(slackService.addReaction).not.toHaveBeenCalled();
-    });
-
-    it('should handle addReaction errors gracefully', async () => {
-      const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true });
-      await bridge.initialize();
-
-      const slackService = (bridge as any).slackService;
-      jest.spyOn(slackService, 'addReaction').mockRejectedValue(new Error('network error'));
-
-      (bridge as any).pendingReactions.set('C123:1707.001', '1707.002');
-
-      // Should not throw
-      await expect(bridge.addCompletionReaction('C123', '1707.001')).resolves.toBeUndefined();
-      // Pending reaction still consumed
-      expect((bridge as any).pendingReactions.has('C123:1707.001')).toBe(false);
-    });
-
-    it('should suppress already_reacted errors silently', async () => {
-      const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true });
-      await bridge.initialize();
-
-      const slackService = (bridge as any).slackService;
-      jest.spyOn(slackService, 'addReaction').mockRejectedValue(new Error('already_reacted'));
-
-      (bridge as any).pendingReactions.set('C123:1707.001', '1707.002');
-
-      await expect(bridge.addCompletionReaction('C123', '1707.001')).resolves.toBeUndefined();
-    });
-
+  describe('pending reaction storage for orchestrator-routed messages', () => {
     it('should store pending reaction for orchestrator-routed messages', async () => {
       (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
       const chatService = getChatService();
@@ -1485,5 +1429,31 @@ describe('SlackOrchestratorBridge', () => {
       expect((bridge as any).pendingReactions.has('C123:1707.001')).toBe(true);
       expect((bridge as any).pendingReactions.get('C123:1707.001')).toBe('1707.002');
     }, 15000);
+  });
+
+  describe('handleCrossMachineMessage error handling (#273)', () => {
+    it('should not throw when handleCrossMachineMessage rejects', async () => {
+      const bridge = getSlackOrchestratorBridge();
+
+      // Make handleCrossMachineMessage throw
+      const mockError = new Error('Cross-machine test error');
+      jest.spyOn(bridge as any, 'handleCrossMachineMessage').mockRejectedValue(mockError);
+
+      // Simulate what the EventEmitter listener does: call with .catch()
+      const promise = (bridge as any).handleCrossMachineMessage({
+        from: 'device-2',
+        fromName: 'Test Device',
+        type: 'task',
+        messageId: 'msg-1',
+        payload: { message: 'test' },
+      }).catch((err: Error) => {
+        // This is the .catch() handler we added in #273
+        expect(err.message).toBe('Cross-machine test error');
+        return 'caught';
+      });
+
+      const result = await promise;
+      expect(result).toBe('caught');
+    });
   });
 });

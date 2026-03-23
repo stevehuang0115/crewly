@@ -189,6 +189,16 @@ export abstract class RuntimeAgentService {
 				this.logger.info('Injected GEMINI_NO_UPDATE=1 to prevent auto-update kills', { sessionName });
 			}
 
+			// #264/#266/#257: Suppress Claude Code auto-updates that show banners
+			// in the PTY during initialization, causing timeout failures and
+			// silently dropped messages.
+			if (this.getRuntimeType() === 'claude-code') {
+				finalCommands = finalCommands.map(cmd =>
+					cmd.includes('DISABLE_AUTOUPDATER=') ? cmd : `DISABLE_AUTOUPDATER=1 ${cmd}`
+				);
+				this.logger.info('Injected DISABLE_AUTOUPDATER=1 to prevent Claude Code auto-update banners', { sessionName });
+			}
+
 			// #234: Codex needs approval bypass for non-interactive operation.
 			// #243: Removed --no-update-check — not a valid codex flag, causes startup failure.
 			// #246: Do NOT inject --full-auto when -a is already present — the newer

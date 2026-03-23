@@ -705,9 +705,35 @@ export class CrewlyServer {
 				});
 			}
 
-			// Wire OAuthReloginMonitorService EventBus dependency
+			// Wire OAuthReloginMonitorService EventBus dependency + Slack notification
 			try {
-				OAuthReloginMonitorService.getInstance().setEventBusService(this.eventBusService);
+				const oauthMonitor = OAuthReloginMonitorService.getInstance();
+				oauthMonitor.setEventBusService(this.eventBusService);
+
+				// When an OAuth URL is captured, send it to the user via Slack
+				oauthMonitor.setOnOAuthUrlCallback(async (sessionName: string, url: string) => {
+					try {
+						const { getSlackOrchestratorBridge } = await import('./services/slack/slack-orchestrator-bridge.js');
+						const bridge = getSlackOrchestratorBridge();
+						const slackService = (bridge as any).slackService;
+						if (slackService?.isConnected?.()) {
+							// Send to the user's DM channel (same channel the bridge uses)
+							const channelId = (bridge as any).config?.defaultChannelId;
+							if (channelId) {
+								await slackService.sendMessage({
+									channelId,
+									text: `:key: *OAuth Login Required* for \`${sessionName}\`\n\nOpen this URL to authenticate:\n${url}\n\nAfter login, paste the code here and I'll complete the authentication.`,
+								});
+								this.logger.info('Sent OAuth URL to Slack', { sessionName, channelId });
+							}
+						}
+					} catch (err) {
+						this.logger.warn('Failed to send OAuth URL to Slack (non-critical)', {
+							sessionName,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+				});
 			} catch (error) {
 				this.logger.warn('Failed to wire OAuthReloginMonitorService EventBus (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),

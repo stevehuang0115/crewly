@@ -7,7 +7,6 @@
  * @module services/cloud/cloud-sync.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CloudSyncService } from './cloud-sync.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type { CloudSyncConfig, SyncDevice, IncomingMessage } from './cloud-sync.types.js';
@@ -16,31 +15,31 @@ import type { CloudSyncConfig, SyncDevice, IncomingMessage } from './cloud-sync.
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
 }));
 
 // Mock StorageService for team summaries in heartbeat
-vi.mock('../core/storage.service.js', () => ({
+jest.mock('../core/storage.service.js', () => ({
   StorageService: {
     getInstance: () => ({
-      getTeams: vi.fn().mockResolvedValue([
+      getTeams: jest.fn().mockResolvedValue([
         { id: 't1', name: 'Team Alpha', members: [{ agentStatus: 'active' }, { agentStatus: 'inactive' }] },
       ]),
     }),
   },
 }));
 
-const mockFetch = vi.fn<typeof global.fetch>();
+const mockFetch = jest.fn<typeof global.fetch>();
 global.fetch = mockFetch as any;
 
 // ---------------------------------------------------------------------------
@@ -64,13 +63,13 @@ function mockResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
-    json: vi.fn().mockResolvedValue(body),
-    text: vi.fn().mockResolvedValue(JSON.stringify(body)),
+    json: jest.fn().mockResolvedValue(body),
+    text: jest.fn().mockResolvedValue(JSON.stringify(body)),
   } as unknown as Response;
 }
 
 /** Flush all pending microtasks (compatible with vi.useFakeTimers). */
-const flushPromises = () => vi.advanceTimersByTimeAsync(0);
+const flushPromises = () => new Promise(process.nextTick);
 
 /** Make a valid SyncDevice. */
 function makeDevice(overrides: Partial<SyncDevice> = {}): SyncDevice {
@@ -91,8 +90,8 @@ describe('CloudSyncService', () => {
   let service: CloudSyncService;
 
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.clearAllMocks();
+    jest.useFakeTimers();
+    jest.clearAllMocks();
     CloudSyncService.resetInstance();
     service = CloudSyncService.getInstance();
     // Default: all fetch calls succeed with empty success
@@ -101,7 +100,7 @@ describe('CloudSyncService', () => {
 
   afterEach(() => {
     service.stop();
-    vi.useRealTimers();
+    jest.useRealTimers();
   });
 
   // ----- Singleton ----------------------------------------------------------
@@ -219,7 +218,7 @@ describe('CloudSyncService', () => {
 
       const initialCalls = mockFetch.mock.calls.length;
 
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
       await flushPromises();
 
       expect(mockFetch.mock.calls.length).toBeGreaterThan(initialCalls);
@@ -311,7 +310,7 @@ describe('CloudSyncService', () => {
     });
 
     it('should emit devices_updated event', async () => {
-      const listener = vi.fn();
+      const listener = jest.fn();
       service.on('devices_updated', listener);
 
       mockFetch.mockResolvedValue(
@@ -327,7 +326,7 @@ describe('CloudSyncService', () => {
     });
 
     it('should emit device_online when new device appears', async () => {
-      const listener = vi.fn();
+      const listener = jest.fn();
       service.on('device_online', listener);
 
       mockFetch.mockResolvedValue(
@@ -341,7 +340,7 @@ describe('CloudSyncService', () => {
     });
 
     it('should emit device_offline when device disappears', async () => {
-      const listener = vi.fn();
+      const listener = jest.fn();
       service.on('device_offline', listener);
 
       // First poll: device exists
@@ -355,7 +354,7 @@ describe('CloudSyncService', () => {
       mockFetch.mockResolvedValue(
         mockResponse({ success: true, devices: [] })
       );
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.DEVICE_POLL_INTERVAL_MS + 100);
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.DEVICE_POLL_INTERVAL_MS + 100);
       await flushPromises();
 
       expect(listener).toHaveBeenCalledWith(expect.objectContaining({
@@ -477,7 +476,7 @@ describe('CloudSyncService', () => {
       mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
 
       service.start(testConfig);
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
       await flushPromises();
 
       const msgCall = mockFetch.mock.calls.find(
@@ -488,7 +487,7 @@ describe('CloudSyncService', () => {
     });
 
     it('should emit message event for each received message', async () => {
-      const listener = vi.fn();
+      const listener = jest.fn();
       service.on('message', listener);
 
       const msg = {
@@ -507,7 +506,7 @@ describe('CloudSyncService', () => {
       service.start(testConfig);
       await flushPromises();
 
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
       await flushPromises();
       await flushPromises();
 
@@ -531,7 +530,7 @@ describe('CloudSyncService', () => {
       service.start(testConfig);
       await flushPromises();
 
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
       await flushPromises();
       await flushPromises();
 
@@ -549,7 +548,7 @@ describe('CloudSyncService', () => {
       mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
 
       service.start(testConfig);
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS + 100);
       await flushPromises();
 
       const ackCalls = mockFetch.mock.calls.filter(
@@ -612,7 +611,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+        jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
         await flushPromises();
       }
 
@@ -626,7 +625,7 @@ describe('CloudSyncService', () => {
       service.start(testConfig);
       await flushPromises();
 
-      vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
       await flushPromises();
 
       expect(service.getState()).toBe('syncing');
@@ -642,7 +641,7 @@ describe('CloudSyncService', () => {
     });
 
     it('should not emit device_online for local device', async () => {
-      const listener = vi.fn();
+      const listener = jest.fn();
       service.on('device_online', listener);
 
       mockFetch.mockResolvedValue(
@@ -664,7 +663,7 @@ describe('CloudSyncService', () => {
 
       // Drive heartbeat failures to hit the threshold
       for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+        jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
         await flushPromises();
       }
 
@@ -682,7 +681,7 @@ describe('CloudSyncService', () => {
 
       // Drive into error state
       for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+        jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
         await flushPromises();
       }
 
@@ -692,7 +691,7 @@ describe('CloudSyncService', () => {
       mockFetch.mockResolvedValue(mockResponse({ success: true }));
 
       const recoveryInterval = CLOUD_SYNC_CONSTANTS.ERROR_RECOVERY_INTERVAL_MS ?? 60_000;
-      vi.advanceTimersByTime(recoveryInterval);
+      jest.advanceTimersByTime(recoveryInterval);
       await flushPromises();
 
       expect(service.getState()).toBe('syncing');
@@ -708,7 +707,7 @@ describe('CloudSyncService', () => {
 
       // Drive into error state
       for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+        jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
         await flushPromises();
       }
 
@@ -716,7 +715,7 @@ describe('CloudSyncService', () => {
 
       // Recovery attempt also fails
       const recoveryInterval = CLOUD_SYNC_CONSTANTS.ERROR_RECOVERY_INTERVAL_MS ?? 60_000;
-      vi.advanceTimersByTime(recoveryInterval);
+      jest.advanceTimersByTime(recoveryInterval);
       await flushPromises();
 
       expect(service.getState()).toBe('error');
@@ -731,7 +730,7 @@ describe('CloudSyncService', () => {
       await flushPromises();
 
       for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
-        vi.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
+        jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS);
         await flushPromises();
       }
 

@@ -866,4 +866,91 @@ describe('TaskTrackingService', () => {
       expect(updatedTask.status).toBe('active');
     });
   });
+
+  describe('abandonTasksForSession (#255)', () => {
+    it('should abandon all active tasks for a session', async () => {
+      const taskData: TaskTrackingData = {
+        tasks: [
+          { ...mockTask, id: 't1', assignedSessionName: 'agent-1', status: 'assigned' },
+          { ...mockTask, id: 't2', assignedSessionName: 'agent-1', status: 'active' },
+          { ...mockTask, id: 't3', assignedSessionName: 'agent-1', status: 'working' },
+          { ...mockTask, id: 't4', assignedSessionName: 'agent-1', status: 'completed' },
+          { ...mockTask, id: 't5', assignedSessionName: 'agent-2', status: 'assigned' },
+        ],
+        lastUpdated: '2023-01-01T00:00:00.000Z',
+        version: '1.0.0',
+      };
+
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      const saveSpy = jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      const count = await service.abandonTasksForSession('agent-1');
+
+      expect(count).toBe(3);
+      expect(taskData.tasks[0].status).toBe('abandoned');
+      expect(taskData.tasks[1].status).toBe('abandoned');
+      expect(taskData.tasks[2].status).toBe('abandoned');
+      // completed task should NOT be abandoned
+      expect(taskData.tasks[3].status).toBe('completed');
+      // other agent's task should NOT be abandoned
+      expect(taskData.tasks[4].status).toBe('assigned');
+      expect(saveSpy).toHaveBeenCalledWith(taskData);
+    });
+
+    it('should return 0 and not save when no active tasks exist for session', async () => {
+      const taskData: TaskTrackingData = {
+        tasks: [
+          { ...mockTask, id: 't1', assignedSessionName: 'agent-1', status: 'completed' },
+          { ...mockTask, id: 't2', assignedSessionName: 'agent-2', status: 'assigned' },
+        ],
+        lastUpdated: '2023-01-01T00:00:00.000Z',
+        version: '1.0.0',
+      };
+
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      const saveSpy = jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      const count = await service.abandonTasksForSession('agent-1');
+
+      expect(count).toBe(0);
+      expect(saveSpy).not.toHaveBeenCalled();
+    });
+
+    it('should set blockReason on abandoned tasks', async () => {
+      const taskData: TaskTrackingData = {
+        tasks: [
+          { ...mockTask, id: 't1', assignedSessionName: 'my-session', status: 'active' },
+        ],
+        lastUpdated: '2023-01-01T00:00:00.000Z',
+        version: '1.0.0',
+      };
+
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      await service.abandonTasksForSession('my-session');
+
+      expect(taskData.tasks[0].blockReason).toContain('my-session');
+      expect(taskData.tasks[0].blockReason).toContain('exited unexpectedly');
+      expect(taskData.tasks[0].lastCheckedAt).toBeDefined();
+    });
+
+    it('should also abandon submitted tasks', async () => {
+      const taskData: TaskTrackingData = {
+        tasks: [
+          { ...mockTask, id: 't1', assignedSessionName: 'agent-x', status: 'submitted' },
+        ],
+        lastUpdated: '2023-01-01T00:00:00.000Z',
+        version: '1.0.0',
+      };
+
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      const count = await service.abandonTasksForSession('agent-x');
+
+      expect(count).toBe(1);
+      expect(taskData.tasks[0].status).toBe('abandoned');
+    });
+  });
 });

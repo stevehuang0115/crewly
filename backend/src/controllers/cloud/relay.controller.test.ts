@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 /**
  * Tests for Relay Controller (Client-side only)
  *
@@ -21,13 +20,13 @@ import {
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockClientConnect = vi.fn();
-const mockClientDisconnect = vi.fn();
-const mockClientSend = vi.fn();
-const mockClientGetState = vi.fn();
-const mockClientGetSessionId = vi.fn();
+const mockClientConnect = jest.fn();
+const mockClientDisconnect = jest.fn();
+const mockClientSend = jest.fn();
+const mockClientGetState = jest.fn();
+const mockClientGetSessionId = jest.fn();
 
-vi.mock('../../services/cloud/relay-client.service.js', () => ({
+jest.mock('../../services/cloud/relay-client.service.js', () => ({
   RelayClientService: {
     getInstance: () => ({
       connect: mockClientConnect,
@@ -39,11 +38,11 @@ vi.mock('../../services/cloud/relay-client.service.js', () => ({
   },
 }));
 
-const mockFetchCloudDevices = vi.fn();
-const mockIsConnected = vi.fn();
-const mockIsTokenExpired = vi.fn().mockReturnValue(false);
+const mockFetchCloudDevices = jest.fn();
+const mockIsConnected = jest.fn();
+const mockIsTokenExpired = jest.fn().mockReturnValue(false);
 
-vi.mock('../../services/cloud/cloud-client.service.js', () => ({
+jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
     getInstance: () => ({
       fetchCloudDevices: mockFetchCloudDevices,
@@ -53,11 +52,11 @@ vi.mock('../../services/cloud/cloud-client.service.js', () => ({
   },
 }));
 
-const mockSyncGetState = vi.fn().mockReturnValue('stopped');
-const mockSyncIsStarted = vi.fn().mockReturnValue(false);
-const mockSyncGetDevices = vi.fn().mockReturnValue([]);
+const mockSyncGetState = jest.fn().mockReturnValue('stopped');
+const mockSyncIsStarted = jest.fn().mockReturnValue(false);
+const mockSyncGetDevices = jest.fn().mockReturnValue([]);
 
-vi.mock('../../services/cloud/cloud-sync.service.js', () => ({
+jest.mock('../../services/cloud/cloud-sync.service.js', () => ({
   CloudSyncService: {
     getInstance: () => ({
       getState: mockSyncGetState,
@@ -67,12 +66,12 @@ vi.mock('../../services/cloud/cloud-sync.service.js', () => ({
   },
 }));
 
-const mockGetOrCreateIdentity = vi.fn().mockResolvedValue({
+const mockGetOrCreateIdentity = jest.fn().mockResolvedValue({
   deviceId: 'local-device-1',
   deviceName: 'test-host',
 });
 
-vi.mock('../../services/cloud/device-identity.service.js', () => ({
+jest.mock('../../services/cloud/device-identity.service.js', () => ({
   DeviceIdentityService: {
     getInstance: () => ({
       getOrCreateIdentity: mockGetOrCreateIdentity,
@@ -80,14 +79,14 @@ vi.mock('../../services/cloud/device-identity.service.js', () => ({
   },
 }));
 
-vi.mock('../../services/core/logger.service.js', () => ({
+jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
@@ -101,14 +100,14 @@ function mockReq(body: Record<string, unknown> = {}): Request {
   return {
     body,
     secure: false,
-    get: vi.fn().mockReturnValue('localhost:3000'),
+    get: jest.fn().mockReturnValue('localhost:3000'),
   } as unknown as Request;
 }
 
 function mockRes(): Response {
   const res = {
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
   } as unknown as Response;
   return res;
 }
@@ -118,10 +117,10 @@ function mockRes(): Response {
 // ---------------------------------------------------------------------------
 
 describe('Relay Controller', () => {
-  const next: NextFunction = vi.fn();
+  const next: NextFunction = jest.fn();
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
     mockIsTokenExpired.mockReturnValue(false);
   });
 

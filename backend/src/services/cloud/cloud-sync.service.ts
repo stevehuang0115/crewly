@@ -357,7 +357,7 @@ export class CloudSyncService extends EventEmitter {
    * Send a heartbeat to the Cloud server with current device state.
    * Called periodically by the heartbeat timer.
    *
-   * Posts to the Cloud Relay handshake endpoint (/api/v1/relay/handshake)
+   * Posts to the Cloud Sync heartbeat endpoint (/api/v1/relay/handshake)
    * which registers/updates the device with enriched metadata.
    */
   async sendHeartbeat(): Promise<void> {
@@ -814,6 +814,7 @@ export class CloudSyncService extends EventEmitter {
       const { CloudClientService } = await import('./cloud-client.service.js');
       const client = CloudClientService.getInstance();
 
+      // First attempt: use the refresh token to get a new access token
       const refreshed = await client.tryRefreshToken();
       if (refreshed) {
         const newToken = client.getToken();
@@ -822,6 +823,30 @@ export class CloudSyncService extends EventEmitter {
           this.logger.info('CloudSyncService token refreshed after auth error');
         }
         return true;
+      }
+
+      // #256: Second attempt: re-read persisted credentials from disk.
+      // The CLI or frontend may have written updated credentials to
+      // ~/.crewly/cloud/config.json since the service started.
+      try {
+        const persistedConfig = await client.loadPersistedConfig();
+        if (persistedConfig && persistedConfig.token && this.config) {
+          // Check if the persisted token is different from our current one
+          if (persistedConfig.token !== this.config.token) {
+            this.config = { ...this.config, token: persistedConfig.token };
+            // Also update the client's token so other services benefit
+            client.connectLocal(
+              persistedConfig.cloudUrl || this.config.cloudUrl,
+              persistedConfig.token,
+              (persistedConfig.tier || 'free') as any,
+              persistedConfig.refreshToken,
+            );
+            this.logger.info('CloudSyncService loaded updated token from disk after auth failure (#256)');
+            return true;
+          }
+        }
+      } catch {
+        // Non-fatal — disk read failed, no alternative token available
       }
 
       this.logger.warn('CloudSyncService token refresh failed — API returned auth error', { status });

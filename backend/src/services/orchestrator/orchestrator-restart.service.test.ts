@@ -36,6 +36,32 @@ jest.mock('../slack/slack.service.js', () => ({
 	}),
 }));
 
+// Mock message replay service (#247)
+const mockReplayPendingMessages = jest.fn().mockResolvedValue({
+	foundCount: 0,
+	replayedCount: 0,
+	skippedDuplicate: 0,
+	offlineSince: '',
+	offlineDurationMs: 0,
+});
+jest.mock('../messaging/message-replay.service.js', () => ({
+	MessageReplayService: jest.fn().mockImplementation(() => ({
+		replayPendingMessages: mockReplayPendingMessages,
+	})),
+}));
+
+// Mock message queue service (#247)
+jest.mock('../messaging/message-queue.service.js', () => ({
+	MessageQueueService: jest.fn().mockImplementation(() => ({
+		loadPersistedState: jest.fn().mockResolvedValue(undefined),
+	})),
+}));
+
+// Mock chat service (#247)
+jest.mock('../chat/chat.service.js', () => ({
+	getChatService: () => ({}),
+}));
+
 const mockClearSession = jest.fn();
 jest.mock('../agent/pty-activity-tracker.service.js', () => ({
 	PtyActivityTrackerService: {
@@ -302,6 +328,54 @@ describe('OrchestratorRestartService', () => {
 			expect(stats.totalRestarts).toBe(1);
 			expect(stats.restartsInWindow).toBe(1);
 			expect(stats.lastRestartAt).not.toBeNull();
+		});
+	});
+
+	describe('message replay after restart (#247)', () => {
+		beforeEach(() => {
+			jest.useFakeTimers();
+			mockReplayPendingMessages.mockClear();
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		it('should call replayPendingMessages during restart', async () => {
+			const resultPromise = service.attemptRestart();
+			await jest.advanceTimersByTimeAsync(6000);
+			const result = await resultPromise;
+
+			expect(result).toBe(true);
+			expect(mockReplayPendingMessages).toHaveBeenCalledTimes(1);
+		});
+
+		it('should succeed even if replay fails', async () => {
+			mockReplayPendingMessages.mockRejectedValueOnce(new Error('replay failed'));
+
+			const resultPromise = service.attemptRestart();
+			await jest.advanceTimersByTimeAsync(6000);
+			const result = await resultPromise;
+
+			// Restart should still succeed — replay failure is non-critical
+			expect(result).toBe(true);
+		});
+
+		it('should log replayed count when messages are replayed', async () => {
+			mockReplayPendingMessages.mockResolvedValueOnce({
+				foundCount: 3,
+				replayedCount: 2,
+				skippedDuplicate: 1,
+				offlineSince: '2023-01-01T00:00:00.000Z',
+				offlineDurationMs: 60000,
+			});
+
+			const resultPromise = service.attemptRestart();
+			await jest.advanceTimersByTimeAsync(6000);
+			const result = await resultPromise;
+
+			expect(result).toBe(true);
+			expect(mockReplayPendingMessages).toHaveBeenCalledTimes(1);
 		});
 	});
 });

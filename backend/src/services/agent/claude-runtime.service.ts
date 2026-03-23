@@ -58,27 +58,51 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 	 * Claude Code shows "Is this a project you trust?" on first launch
 	 * for untrusted workspaces. This blocks agent initialization.
 	 *
-	 * @param output - Terminal output text
+	 * PTY output may strip spaces between words (e.g. "Yes,Itrustthisfolder"
+	 * instead of "Yes, I trust this folder"), so we normalize by removing all
+	 * whitespace before matching.
+	 *
+	 * @param output - Terminal output text (may have stripped spaces)
 	 * @returns True if trust prompt is detected
 	 * @see https://github.com/stevehuang0115/crewly/issues/144
+	 * @see https://github.com/stevehuang0115/crewly/issues/267
 	 */
 	private isClaudeTrustPrompt(output: string): boolean {
 		const trustPatterns = [
+			// Legacy patterns
 			'Do you trust the files',
 			'Is this a project you trust',
 			'Yes, proceed',
 			'Trust this folder',
 			'trust this project',
+			// Claude Code v2.1.81+ dialog text (#267)
+			'Is this a project you created or one you trust',
+			'Yes, I trust this folder',
+			'Enter to confirm',
+			'Quick safety check',
 		];
-		return trustPatterns.some(p => output.includes(p));
+
+		// First try exact matching (fast path for normal output)
+		if (trustPatterns.some(p => output.includes(p))) {
+			return true;
+		}
+
+		// PTY output may strip spaces between words (#267 ESTestNode).
+		// Normalize by removing all whitespace and matching lowercase.
+		const normalizedOutput = output.replace(/\s+/g, '').toLowerCase();
+		return trustPatterns.some(p => normalizedOutput.includes(p.replace(/\s+/g, '').toLowerCase()));
 	}
 
 	/**
-	 * Override waitForRuntimeReady to auto-accept workspace trust prompt (#144).
+	 * Override waitForRuntimeReady to auto-accept workspace trust prompt (#144, #267).
 	 *
 	 * Claude Code shows an interactive trust gate on first launch for
-	 * untrusted workspaces. Without auto-acceptance, the agent hangs
-	 * and enters a crash-restart loop.
+	 * untrusted workspaces (e.g. after `npm install -g crewly` replaces the
+	 * directory inode). Without auto-acceptance, the agent hangs and the
+	 * orchestrator times out after ~115s.
+	 *
+	 * Max trust prompt attempts is capped to prevent infinite retry loops
+	 * if the dialog format changes and Enter no longer dismisses it.
 	 */
 	async waitForRuntimeReady(
 		sessionName: string,
@@ -87,6 +111,7 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 	): Promise<boolean> {
 		const startTime = Date.now();
 		let trustPromptAttempts = 0;
+		const MAX_TRUST_ATTEMPTS = 5;
 
 		this.logger.info('Waiting for Claude Code to be ready (with trust prompt detection)', {
 			sessionName,
@@ -98,10 +123,17 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 			try {
 				const output = this.sessionHelper.capturePane(sessionName);
 
-				// #144: Auto-accept workspace trust prompt
+				// #144 / #267: Auto-accept workspace trust prompt
 				if (this.isClaudeTrustPrompt(output)) {
 					trustPromptAttempts++;
-					this.logger.info('Claude Code trust prompt detected, auto-accepting', {
+					if (trustPromptAttempts > MAX_TRUST_ATTEMPTS) {
+						this.logger.error('Trust prompt still showing after max attempts — dialog format may have changed', {
+							sessionName,
+							attempts: trustPromptAttempts,
+						});
+						return false;
+					}
+					this.logger.info('Claude Code trust prompt detected, auto-accepting (#267)', {
 						sessionName,
 						attempt: trustPromptAttempts,
 					});

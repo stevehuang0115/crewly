@@ -2,7 +2,6 @@
  * Tests for Unified Scheduler type validators and constants.
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   UNIFIED_SCHEDULER_CONSTANTS,
   VALID_SCHEDULE_TYPES,

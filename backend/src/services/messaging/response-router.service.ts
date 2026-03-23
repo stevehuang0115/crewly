@@ -3,7 +3,7 @@
  *
  * Routes orchestrator responses back to the correct source.
  * - Web chat: no-op (existing TerminalGateway -> ChatGateway -> WebSocket pipeline handles it)
- * - Slack: resolves the blocking promise via the slackResolve callback
+ * - Slack: resolves via slackResolve callback, or falls back to direct Slack API reply
  *
  * @module services/messaging/response-router
  */
@@ -79,14 +79,80 @@ export class ResponseRouterService {
   }
 
   /**
-   * Route response to Slack by calling the slackResolve callback.
-   * This unblocks the Slack bridge's promise that is waiting for a response.
+   * Route response to Slack.
+   *
+   * First tries the slackResolve callback (blocking promise pattern).
+   * If no callback exists (fire-and-forget orchestrator path), falls back
+   * to sending directly via the Slack API using channelId/threadTs from
+   * sourceMetadata. This ensures orchestrator replies always reach Slack
+   * even when the fire-and-forget enqueue pattern is used.
    *
    * @param message - The completed QueuedMessage
    * @param response - The response content
    */
   private routeToSlack(message: QueuedMessage, response: string): void {
-    this.resolveCallback(message, response, 'slackResolve', 'Slack');
+    const resolve = message.sourceMetadata?.['slackResolve'];
+    if (typeof resolve === 'function') {
+      this.resolveCallback(message, response, 'slackResolve', 'Slack');
+      return;
+    }
+
+    // Fallback: send directly via Slack API using channelId + threadTs
+    const channelId = message.sourceMetadata?.['channelId'] as string | undefined;
+    const threadTs = message.sourceMetadata?.['threadTs'] as string | undefined;
+
+    if (channelId) {
+      this.sendSlackDirectReply(message.id, channelId, response, threadTs).catch((err) => {
+        this.logger.error('Failed to send direct Slack reply fallback', {
+          messageId: message.id,
+          channelId,
+          error: formatError(err),
+        });
+      });
+    } else {
+      this.logger.warn('Slack message has no slackResolve callback and no channelId for fallback', {
+        messageId: message.id,
+        conversationId: message.conversationId,
+      });
+    }
+  }
+
+  /**
+   * Send a reply directly to Slack using the Slack API.
+   *
+   * Used as a fallback when the fire-and-forget enqueue pattern
+   * doesn't include a slackResolve callback. Dynamically imports
+   * SlackService to avoid circular dependencies.
+   *
+   * @param messageId - Message ID for logging
+   * @param channelId - Slack channel to reply in
+   * @param text - Reply text
+   * @param threadTs - Optional thread timestamp for threaded reply
+   */
+  private async sendSlackDirectReply(messageId: string, channelId: string, text: string, threadTs?: string): Promise<void> {
+    try {
+      const { getSlackService } = await import('../slack/index.js');
+      const slackService = getSlackService();
+
+      if (!slackService?.isConnected()) {
+        this.logger.warn('Slack not connected, cannot send direct reply', { messageId });
+        return;
+      }
+
+      await slackService.sendMessage({ channelId, text, threadTs });
+      this.logger.info('Slack direct reply sent (fallback)', {
+        messageId,
+        channelId,
+        responseLength: text.length,
+        threaded: !!threadTs,
+      });
+    } catch (error) {
+      this.logger.error('Slack direct reply failed', {
+        messageId,
+        channelId,
+        error: formatError(error),
+      });
+    }
   }
 
   /**
@@ -161,7 +227,7 @@ export class ResponseRouterService {
         });
         break;
       case 'slack':
-        this.resolveCallback(message, `Error: ${error}`, 'slackResolve', 'Slack');
+        this.routeToSlack(message, `Error: ${error}`);
         break;
       case 'google_chat':
         this.resolveCallback(message, `Error: ${error}`, 'googleChatResolve', 'Google Chat');

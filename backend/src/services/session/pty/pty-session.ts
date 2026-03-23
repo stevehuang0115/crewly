@@ -304,6 +304,18 @@ export class PtySession implements ISession {
 
 		this.logger.info('Force-killing session', { name: this.name, pid });
 
+		// Step 0: Collect the full descendant process tree BEFORE sending signals,
+		// because child processes (e.g. jest, node) may create their own process
+		// groups and survive shell termination, becoming zombies.
+		const descendantPids = this.getDescendantPids(pid);
+		if (descendantPids.length > 0) {
+			this.logger.debug('Collected descendant PIDs for cleanup', {
+				name: this.name,
+				shellPid: pid,
+				descendants: descendantPids,
+			});
+		}
+
 		// Step 1: Send SIGTERM via node-pty
 		if (!this.killed) {
 			this.killed = true;
@@ -313,6 +325,15 @@ export class PtySession implements ISession {
 				this.logger.debug('Error sending SIGTERM via node-pty (process may already be dead)', {
 					error: err instanceof Error ? err.message : String(err),
 				});
+			}
+		}
+
+		// SIGTERM all descendants so they can clean up gracefully
+		for (const childPid of descendantPids) {
+			try {
+				process.kill(childPid, 'SIGTERM');
+			} catch {
+				// ESRCH = already gone
 			}
 		}
 
@@ -335,9 +356,52 @@ export class PtySession implements ISession {
 			// ESRCH = process group already gone, which is fine
 		}
 
+		// SIGKILL all descendants that may have survived (different process groups)
+		for (const childPid of descendantPids) {
+			try {
+				process.kill(childPid, 'SIGKILL');
+			} catch {
+				// ESRCH = already gone
+			}
+		}
+
 		// Clear all listeners to prevent memory leaks
 		this.dataListeners.clear();
 		this.exitListeners.clear();
+	}
+
+	/**
+	 * Recursively collect all descendant PIDs of a given process.
+	 * Uses `pgrep -P` to walk the process tree. This catches child processes
+	 * that may have created their own process groups (e.g. jest workers).
+	 *
+	 * @param parentPid - The root PID to enumerate descendants for
+	 * @returns Array of descendant PIDs (deepest children first for bottom-up kill)
+	 */
+	private getDescendantPids(parentPid: number): number[] {
+		const descendants: number[] = [];
+		const queue = [parentPid];
+
+		while (queue.length > 0) {
+			const current = queue.shift()!;
+			try {
+				const output = execSync(`pgrep -P ${current}`, {
+					encoding: 'utf-8',
+					stdio: ['pipe', 'pipe', 'pipe'],
+					timeout: 3000,
+				}).trim();
+				if (output) {
+					const childPids = output.split('\n').map(s => parseInt(s, 10)).filter(n => !isNaN(n));
+					descendants.push(...childPids);
+					queue.push(...childPids);
+				}
+			} catch {
+				// pgrep returns exit code 1 when no children found
+			}
+		}
+
+		// Reverse so deepest descendants are killed first (bottom-up)
+		return descendants.reverse();
 	}
 
 	/**

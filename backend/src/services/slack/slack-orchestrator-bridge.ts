@@ -143,7 +143,12 @@ export class SlackOrchestratorBridge extends EventEmitter {
       const crossMachineService = getCrossMachineMessageService();
       await crossMachineService.initialize();
       crossMachineService.on('message', (msg) => {
-        this.handleCrossMachineMessage(msg);
+        this.handleCrossMachineMessage(msg).catch((err) => {
+          this.logger.error('Cross-machine message handling failed (#273)', {
+            error: err instanceof Error ? err.message : String(err),
+            from: msg?.fromName,
+          });
+        });
       });
       this.logger.info('Cross-machine message listener registered');
     } catch (err) {
@@ -270,6 +275,40 @@ export class SlackOrchestratorBridge extends EventEmitter {
       // Override message text with enriched version for downstream processing
       message.text = enrichedText;
 
+      // OAuth code routing — if user replies with an auth code for a pending login,
+      // paste it into the agent's PTY to complete authentication.
+      // Matches patterns like: "oauth <code>" or "login <code>" or just a long alphanumeric code
+      const oauthCodeMatch = enrichedText.match(/^(?:oauth|login|code)[\s:]+(\S+)/i)
+        || (enrichedText.match(/^([a-zA-Z0-9_-]{20,})$/) && enrichedText.match(/^(\S+)$/));
+      if (oauthCodeMatch) {
+        const code = (oauthCodeMatch[1] || enrichedText).trim();
+        try {
+          const { OAuthReloginMonitorService } = await import('../agent/oauth-relogin-monitor.service.js');
+          // Try submitting to any session that has a pending OAuth URL
+          const monitor = OAuthReloginMonitorService.getInstance();
+          const sessions = (monitor as any).sessions as Map<string, any>;
+          let submitted = false;
+          for (const [sessionName, state] of sessions) {
+            if (state.lastCapturedUrl) {
+              const success = OAuthReloginMonitorService.submitOAuthCode(sessionName, code);
+              if (success) {
+                this.logger.info('OAuth code submitted via Slack', { sessionName, codeLength: code.length });
+                await this.slackService.sendMessage({
+                  channelId: message.channelId,
+                  text: `:white_check_mark: Auth code submitted to \`${sessionName}\`. Login should complete shortly.`,
+                  threadTs: message.threadTs || message.ts,
+                });
+                submitted = true;
+                break;
+              }
+            }
+          }
+          if (submitted) return;
+        } catch {
+          // Not an OAuth code, fall through to normal processing
+        }
+      }
+
       // Auditor prefix routing — intercept "auditor ...", "/auditor ...", or "@auditor ..." messages
       const auditorMatch = enrichedText.match(/^[/@]?auditor[\s:]+(.+)/is);
       if (auditorMatch) {
@@ -353,19 +392,21 @@ export class SlackOrchestratorBridge extends EventEmitter {
           isOrchestratorRoute = true;
       }
 
-      // Send response back to Slack
-      await this.sendSlackResponse(message, response);
-
-      // For orchestrator-routed messages, defer ✅ until reply-slack delivers
-      // the actual response. Store pending reaction keyed by channel+thread
-      // so addCompletionReaction() can find it when the reply arrives.
-      if (isOrchestratorRoute && this.config.showTypingIndicator) {
-        const threadTs = message.threadTs || message.ts;
-        const key = `${message.channelId}:${threadTs}`;
-        this.pendingReactions.set(key, message.ts);
-      } else if (this.config.showTypingIndicator) {
-        // Non-orchestrator commands complete immediately
-        await this.markComplete(message);
+      // For orchestrator-routed messages, the orc replies asynchronously via
+      // reply-slack skill — don't send an intermediate response to Slack.
+      // Store the pending reaction so markComplete can find it when the reply arrives.
+      if (isOrchestratorRoute) {
+        if (this.config.showTypingIndicator) {
+          const threadTs = message.threadTs || message.ts;
+          const key = `${message.channelId}:${threadTs}`;
+          this.pendingReactions.set(key, message.ts);
+        }
+      } else {
+        // Non-orchestrator commands: send response immediately
+        await this.sendSlackResponse(message, response);
+        if (this.config.showTypingIndicator) {
+          await this.markComplete(message);
+        }
       }
 
       this.emit('message_handled', { message, response });
@@ -655,47 +696,34 @@ Just type naturally to chat with the orchestrator!`;
         },
       });
 
-      // Enqueue the message with a resolve callback for response routing.
-      // The QueueProcessorService will call slackResolve() when the
-      // orchestrator responds, unblocking this promise.
-      const response = await new Promise<string>((resolve) => {
-        let resolved = false;
+      // Fire-and-forget: enqueue the message and return immediately.
+      // The orchestrator will reply asynchronously via the reply-slack skill.
+      // Previous design blocked for up to 125s waiting for a response, which
+      // stalled Slack Socket Mode and prevented all subsequent messages from
+      // being dispatched.
+      try {
+        this.messageQueueService!.enqueue({
+          content: enrichedMessage,
+          conversationId: result.conversation.id,
+          source: 'slack',
+          sourceMetadata: {
+            userId: context?.userId,
+            channelId: context?.channelId,
+            threadTs: context?.threadTs,
+          },
+        });
+        this.logger.info('Message enqueued for orchestrator', {
+          conversationId: result.conversation.id,
+        });
+      } catch (enqueueErr) {
+        this.logger.error('Failed to enqueue message for orchestrator', {
+          error: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr),
+        });
+        return `Failed to enqueue message: ${enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr)}`;
+      }
 
-        const timeoutId = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            resolve('The orchestrator is still processing your request. It will reply here when ready — no need to resend.');
-          }
-        }, this.config.responseTimeoutMs);
-
-        try {
-          this.messageQueueService!.enqueue({
-            content: enrichedMessage,
-            conversationId: result.conversation.id,
-            source: 'slack',
-            sourceMetadata: {
-              slackResolve: (resp: string) => {
-                if (!resolved) {
-                  resolved = true;
-                  clearTimeout(timeoutId);
-                  resolve(resp);
-                }
-              },
-              userId: context?.userId,
-              channelId: context?.channelId,
-              threadTs: context?.threadTs,
-            },
-          });
-        } catch (enqueueErr) {
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeoutId);
-            resolve(`Failed to enqueue message: ${enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr)}`);
-          }
-        }
-      });
-
-      return response;
+      // Return empty string — the orchestrator will reply via reply-slack skill
+      return '';
     } catch (error) {
       this.logger.error('Error sending to orchestrator', { error: error instanceof Error ? error.message : String(error) });
       throw error;

@@ -6,28 +6,27 @@
  * @module controllers/browser/browser.routes.test
  */
 
-import { describe, it, expect, vi } from 'vitest';
 import { createBrowserRouter } from './browser.routes.js';
 
 // Mock logger
-vi.mock('../../services/core/logger.service.js', () => ({
+jest.mock('../../services/core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
 			createComponentLogger: () => ({
-				info: vi.fn(),
-				warn: vi.fn(),
-				error: vi.fn(),
-				debug: vi.fn(),
+				info: jest.fn(),
+				warn: jest.fn(),
+				error: jest.fn(),
+				debug: jest.fn(),
 			}),
 		}),
 	},
 }));
 
 // Mock ws module
-vi.mock('ws', () => ({
-	WebSocketServer: vi.fn(() => ({
-		on: vi.fn(),
-		close: vi.fn(),
+jest.mock('ws', () => ({
+	WebSocketServer: jest.fn(() => ({
+		on: jest.fn(),
+		close: jest.fn(),
 	})),
 	WebSocket: { OPEN: 1, CLOSED: 3 },
 }));

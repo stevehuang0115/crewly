@@ -262,6 +262,37 @@ export class OrchestratorRestartService {
 				});
 			}
 
+			// Step 6b: Replay pending messages from offline period (#247).
+			// After the orchestrator re-registers, check for any undelivered
+			// user messages that arrived while it was offline and replay them.
+			try {
+				const { MessageReplayService } = await import('../messaging/message-replay.service.js');
+				const { getChatService } = await import('../chat/chat.service.js');
+				const os = await import('os');
+				const path = await import('path');
+				const crewlyHome = path.join(os.homedir(), '.crewly');
+				const { MessageQueueService } = await import('../messaging/message-queue.service.js');
+				// Use the singleton queue service from the global registry if available,
+				// otherwise create a temporary one pointing to the same persistence dir.
+				const queueService = new MessageQueueService(crewlyHome);
+				await queueService.loadPersistedState();
+				const chatService = getChatService();
+				const replayService = new MessageReplayService(queueService, chatService, crewlyHome);
+				const replayResult = await replayService.replayPendingMessages();
+				if (replayResult.replayedCount > 0) {
+					this.logger.info('Replayed pending messages after orchestrator restart (#247)', {
+						replayed: replayResult.replayedCount,
+						found: replayResult.foundCount,
+						skipped: replayResult.skippedDuplicate,
+						offlineSince: replayResult.offlineSince,
+					});
+				}
+			} catch (replayErr) {
+				this.logger.warn('Failed to replay pending messages after restart (non-critical)', {
+					error: replayErr instanceof Error ? replayErr.message : String(replayErr),
+				});
+			}
+
 			// Step 7: Notify via Slack (fire-and-forget)
 			this.notifySlack().catch(() => {
 				// Slack notification is best-effort

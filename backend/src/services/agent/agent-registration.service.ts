@@ -1508,12 +1508,11 @@ export class AgentRegistrationService {
 				}
 			}
 
-			// Phase 5: Use modular prompt assembly (enabled by default, disable with CREWLY_USE_MODULAR_PROMPTS=false).
-			// Replaces the entire monolithic template with PromptAssemblyService — handling identity,
-			// skills, communication, recovery, lifecycle, memory, soul, and team-reference modules
-			// with token budget enforcement.
-			if (process.env.CREWLY_USE_MODULAR_PROMPTS !== 'false') {
-				this.logger.info('Using modular prompt assembly (Phase 5)', { sessionName, role });
+			// Phase 5: Modular prompt assembly (always enabled — feature flag removed).
+			// PromptAssemblyService handles identity, skills, communication, recovery,
+			// lifecycle, memory, soul, and team-reference modules with token budget enforcement.
+			{
+				this.logger.info('Using modular prompt assembly', { sessionName, role });
 
 				const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
 				const tlSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'team-leader');
@@ -1557,8 +1556,6 @@ export class AgentRegistrationService {
 
 				return modularPrompt;
 			}
-
-			return prompt;
 		} catch (error) {
 			// Fallback to inline prompt if file doesn't exist
 			const attemptedPath = await this.getPromptFileForRole(role);
