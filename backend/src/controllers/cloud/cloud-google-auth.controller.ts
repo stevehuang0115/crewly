@@ -15,9 +15,10 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { GOOGLE_OAUTH_CONSTANTS, AUTH_CONSTANTS, CLOUD_AUTH_CONSTANTS } from '../../constants.js';
+import { GOOGLE_OAUTH_CONSTANTS, AUTH_CONSTANTS, CLOUD_AUTH_CONSTANTS, type CloudTier } from '../../constants.js';
 import { UserIdentityService } from '../../services/user/user-identity.service.js';
 import { DeviceIdentityService } from '../../services/cloud/device-identity.service.js';
+import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudGoogleAuth');
@@ -337,6 +338,18 @@ export async function cloudGoogleCallback(req: Request, res: Response, next: Nex
     const finalRedirect = postLoginRedirect || consoleUrl;
     const separator = finalRedirect.includes('?') ? '&' : '?';
 
+    // Persist tokens to CloudClientService immediately so the refresh token
+    // is written to ~/.crewly/cloud/config.json before the frontend calls /connect.
+    try {
+      const cloudUrl = `${req.protocol}://${req.get('host')}`;
+      const client = CloudClientService.getInstance();
+      client.connectLocal(cloudUrl, accessToken, DEFAULT_USER_PLAN as CloudTier, refreshToken);
+    } catch (connectErr) {
+      logger.warn('Failed to connect CloudClientService during OAuth callback (non-fatal)', {
+        error: connectErr instanceof Error ? connectErr.message : String(connectErr),
+      });
+    }
+
     logger.info('Cloud Google OAuth login successful', { email: result.profile.email, userId: result.user.id });
     res.redirect(`${finalRedirect}${separator}token=${accessToken}&refreshToken=${refreshToken}`);
   } catch (error) {
@@ -429,6 +442,18 @@ export async function cloudGoogleCallbackPost(req: Request, res: Response, next:
       iss: AUTH_CONSTANTS.JWT.ISSUER,
       type: 'refresh',
     });
+
+    // Persist tokens to CloudClientService immediately so the refresh token
+    // is written to ~/.crewly/cloud/config.json before the frontend calls /connect.
+    try {
+      const cloudUrl = `${req.protocol}://${req.get('host')}`;
+      const client = CloudClientService.getInstance();
+      client.connectLocal(cloudUrl, accessToken, DEFAULT_USER_PLAN as CloudTier, refreshToken);
+    } catch (connectErr) {
+      logger.warn('Failed to connect CloudClientService during OAuth POST callback (non-fatal)', {
+        error: connectErr instanceof Error ? connectErr.message : String(connectErr),
+      });
+    }
 
     logger.info('Cloud Google OAuth login successful (POST)', { email: result.profile.email, userId: result.user.id });
     res.json({
