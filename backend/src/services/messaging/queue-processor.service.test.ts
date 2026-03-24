@@ -88,6 +88,8 @@ jest.mock('../../constants.js', () => ({
     WEB_CHAT: 'web_chat',
     GOOGLE_CHAT: 'google_chat',
     SYSTEM_EVENT: 'system_event',
+    REMOTE: 'remote',
+    TELEGRAM: 'telegram',
   },
 }));
 
@@ -2073,6 +2075,104 @@ describe('QueueProcessorService', () => {
       await flushPromises();
 
       expect(processor.getPendingAckCount()).toBe(0);
+    });
+  });
+
+  describe('cross-machine (remote) message handling', () => {
+    it('should inject [REMOTE:deviceId:deviceName] marker in delivery content for remote messages', async () => {
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Hello from laptop',
+        conversationId: 'conv-remote-1',
+        source: 'remote',
+        sourceMetadata: {
+          fromDeviceId: 'device-abc',
+          fromDeviceName: 'My Laptop',
+        },
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc',
+        expect.stringContaining('[REMOTE:device-abc:My Laptop]'),
+        'claude-code'
+      );
+    });
+
+    it('should classify remote source as isUserMessage (force-delivery behavior)', async () => {
+      // Make agent not ready so force-delivery kicks in
+      mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(false);
+
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Remote task',
+        conversationId: 'conv-remote-2',
+        source: 'remote',
+        sourceMetadata: {
+          fromDeviceId: 'device-xyz',
+          fromDeviceName: 'Office PC',
+        },
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      // Remote messages are user messages, so USER_MESSAGE_FORCE_DELIVER applies.
+      // The message should still be delivered (not requeued) because force-deliver is on.
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc',
+        expect.stringContaining('[REMOTE:device-xyz:Office PC]'),
+        'claude-code'
+      );
+    });
+
+    it('should not inject REMOTE marker when sourceMetadata.fromDeviceId is absent', async () => {
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Remote without device id',
+        conversationId: 'conv-remote-3',
+        source: 'remote',
+        sourceMetadata: {},
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+
+      const deliveredContent = mockAgentRegistrationService.sendMessageToAgent.mock.calls[0]?.[1] as string;
+      expect(deliveredContent).not.toContain('[REMOTE:');
+    });
+
+    it('should use fromDeviceId as fallback name when fromDeviceName is missing', async () => {
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Remote no name',
+        conversationId: 'conv-remote-4',
+        source: 'remote',
+        sourceMetadata: {
+          fromDeviceId: 'device-no-name',
+        },
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
+        'crewly-orc',
+        expect.stringContaining('[REMOTE:device-no-name:device-no-name]'),
+        'claude-code'
+      );
     });
   });
 });

@@ -2,42 +2,41 @@
  * Tests for MessageRouterService
  *
  * Covers: remote routing, session discovery, incoming message handling,
- * local delivery, graceful degradation, and lifecycle management.
+ * local delivery, graceful degradation, lifecycle management,
+ * cross-machine message handling, and message enqueue handler.
  *
  * @module services/messaging/message-router.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MessageRouterService, MESSAGE_ROUTER_CONSTANTS } from './message-router.service.js';
-import { CloudSyncService } from '../cloud/cloud-sync.service.js';
 import type { SyncDevice, IncomingMessage, AgentMessagePayload } from '../cloud/cloud-sync.types.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
 }));
 
 // Mock CloudSyncService
-const mockSendMessage = vi.fn();
-const mockIsStarted = vi.fn().mockReturnValue(true);
-const mockGetOnlineDevices = vi.fn().mockReturnValue([]);
-const mockGetDevices = vi.fn().mockReturnValue([]);
-const mockOn = vi.fn();
-const mockRemoveListener = vi.fn();
+const mockSendMessage = jest.fn();
+const mockIsStarted = jest.fn().mockReturnValue(true);
+const mockGetOnlineDevices = jest.fn().mockReturnValue([]);
+const mockGetDevices = jest.fn().mockReturnValue([]);
+const mockOn = jest.fn();
+const mockRemoveListener = jest.fn();
 
-vi.mock('../cloud/cloud-sync.service.js', () => ({
+jest.mock('../cloud/cloud-sync.service.js', () => ({
   CloudSyncService: {
     getInstance: () => ({
       isStarted: mockIsStarted,
@@ -78,7 +77,7 @@ function createDevice(overrides: Partial<SyncDevice> = {}): SyncDevice {
   };
 }
 
-/** Create a mock IncomingMessage */
+/** Create a mock IncomingMessage for agent_message type */
 function createAgentMessage(payload: AgentMessagePayload): IncomingMessage {
   return {
     id: 'msg-1',
@@ -88,6 +87,27 @@ function createAgentMessage(payload: AgentMessagePayload): IncomingMessage {
     payload,
     encrypted: false,
     sentAt: new Date().toISOString(),
+  };
+}
+
+/** Create a mock cross-machine IncomingMessage */
+function createCrossMachineMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
+  return {
+    id: 'cm-msg-1',
+    from: 'device-abc-123',
+    fromDeviceName: 'Sams Laptop',
+    type: 'cross-machine',
+    payload: {
+      from: 'device-abc-123',
+      fromName: 'Sam',
+      type: 'task-update',
+      payload: {
+        message: 'Feature X is complete',
+      },
+    },
+    encrypted: false,
+    sentAt: new Date().toISOString(),
+    ...overrides,
   };
 }
 
@@ -101,7 +121,7 @@ describe('MessageRouterService', () => {
   beforeEach(() => {
     MessageRouterService.resetInstance();
     router = MessageRouterService.getInstance();
-    vi.clearAllMocks();
+    jest.clearAllMocks();
     mockIsStarted.mockReturnValue(true);
     mockGetOnlineDevices.mockReturnValue([]);
     mockGetDevices.mockReturnValue([]);
@@ -273,7 +293,7 @@ describe('MessageRouterService', () => {
 
   describe('handleIncomingMessage', () => {
     it('delivers agent_message to local session via handler', async () => {
-      const handler = vi.fn().mockResolvedValue({ success: true });
+      const handler = jest.fn().mockResolvedValue({ success: true });
       router.setLocalDeliveryHandler(handler);
 
       const msg = createAgentMessage({
@@ -288,8 +308,8 @@ describe('MessageRouterService', () => {
       expect(handler).toHaveBeenCalledWith('crewly-product-sam', 'Build feature X');
     });
 
-    it('ignores non-agent_message types', async () => {
-      const handler = vi.fn();
+    it('ignores non-agent_message types (except cross-machine)', async () => {
+      const handler = jest.fn();
       router.setLocalDeliveryHandler(handler);
 
       const msg: IncomingMessage = {
@@ -307,7 +327,7 @@ describe('MessageRouterService', () => {
     });
 
     it('warns on invalid agent_message payload', async () => {
-      const handler = vi.fn();
+      const handler = jest.fn();
       router.setLocalDeliveryHandler(handler);
 
       const msg: IncomingMessage = {
@@ -325,7 +345,7 @@ describe('MessageRouterService', () => {
     });
 
     it('handles delivery handler failure gracefully', async () => {
-      const handler = vi.fn().mockResolvedValue({ success: false, error: 'Session not found' });
+      const handler = jest.fn().mockResolvedValue({ success: false, error: 'Session not found' });
       router.setLocalDeliveryHandler(handler);
 
       const msg = createAgentMessage({
@@ -341,7 +361,7 @@ describe('MessageRouterService', () => {
     });
 
     it('handles delivery handler exception gracefully', async () => {
-      const handler = vi.fn().mockRejectedValue(new Error('PTY crashed'));
+      const handler = jest.fn().mockRejectedValue(new Error('PTY crashed'));
       router.setLocalDeliveryHandler(handler);
 
       const msg = createAgentMessage({
@@ -366,6 +386,268 @@ describe('MessageRouterService', () => {
 
       // Should not throw
       await router.handleIncomingMessage(msg);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // handleCrossMachineMessage (via handleIncomingMessage with type 'cross-machine')
+  // -----------------------------------------------------------------------
+
+  describe('handleCrossMachineMessage', () => {
+    it('enqueues message with correct conversationId format (remote-{deviceId})', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg = createCrossMachineMessage();
+      await router.handleIncomingMessage(msg);
+
+      expect(enqueueHandler).toHaveBeenCalledTimes(1);
+      expect(enqueueHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: 'remote-device-abc-123',
+        }),
+      );
+    });
+
+    it('extracts fromName from payload.fromName', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg = createCrossMachineMessage({
+        from: 'dev-fallback',
+        fromDeviceName: 'Fallback Device',
+        payload: {
+          from: 'dev-xyz',
+          fromName: 'Alice',
+          type: 'status',
+          payload: { message: 'Done' },
+        },
+      });
+
+      await router.handleIncomingMessage(msg);
+
+      const call = enqueueHandler.mock.calls[0][0];
+      expect(call.content).toContain('[REMOTE from Alice]');
+    });
+
+    it('falls back to fromDeviceName when payload.fromName is absent', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg = createCrossMachineMessage({
+        fromDeviceName: 'Bobs Desktop',
+        payload: {
+          from: 'dev-bob',
+          // no fromName
+          type: 'ping',
+          payload: { message: 'Hello' },
+        },
+      });
+
+      await router.handleIncomingMessage(msg);
+
+      const call = enqueueHandler.mock.calls[0][0];
+      expect(call.content).toContain('[REMOTE from Bobs Desktop]');
+    });
+
+    it('falls back to msg.from when both fromName and fromDeviceName are falsy', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg: IncomingMessage = {
+        id: 'cm-2',
+        from: 'device-fallback-id',
+        fromDeviceName: '',
+        type: 'cross-machine',
+        payload: {
+          from: 'device-fallback-id',
+          // no fromName
+          type: 'info',
+          payload: { message: 'test' },
+        },
+        encrypted: false,
+        sentAt: new Date().toISOString(),
+      };
+
+      await router.handleIncomingMessage(msg);
+
+      const call = enqueueHandler.mock.calls[0][0];
+      // Empty fromDeviceName is falsy, so falls through to msg.from
+      expect(call.content).toContain('[REMOTE from device-fallback-id]');
+    });
+
+    it('extracts fromDeviceId from payload.from', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg = createCrossMachineMessage({
+        from: 'msg-level-from',
+        payload: {
+          from: 'payload-device-id',
+          fromName: 'Test',
+          type: 'update',
+          payload: { message: 'content' },
+        },
+      });
+
+      await router.handleIncomingMessage(msg);
+
+      const call = enqueueHandler.mock.calls[0][0];
+      expect(call.conversationId).toBe('remote-payload-device-id');
+      expect(call.sourceMetadata).toEqual(
+        expect.objectContaining({ fromDeviceId: 'payload-device-id' }),
+      );
+    });
+
+    it('formats content as [REMOTE from {name}] ({type}) {content}', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg = createCrossMachineMessage();
+      await router.handleIncomingMessage(msg);
+
+      const call = enqueueHandler.mock.calls[0][0];
+      expect(call.content).toBe(
+        '[REMOTE from Sam] (task-update) Feature X is complete',
+      );
+    });
+
+    it('falls back to localDeliveryHandler when enqueueHandler is null', async () => {
+      // Do NOT set enqueueHandler
+      const deliveryHandler = jest.fn().mockResolvedValue({ success: true });
+      router.setLocalDeliveryHandler(deliveryHandler);
+
+      const msg = createCrossMachineMessage();
+      await router.handleIncomingMessage(msg);
+
+      expect(deliveryHandler).toHaveBeenCalledTimes(1);
+      expect(deliveryHandler).toHaveBeenCalledWith(
+        'crewly-orc',
+        '[REMOTE from Sam] (task-update) Feature X is complete',
+      );
+    });
+
+    it('handles missing payload gracefully (undefined payload)', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg: IncomingMessage = {
+        id: 'cm-empty',
+        from: 'device-x',
+        fromDeviceName: 'Device X',
+        type: 'cross-machine',
+        payload: undefined,
+        encrypted: false,
+        sentAt: new Date().toISOString(),
+      };
+
+      // Should not throw
+      await router.handleIncomingMessage(msg);
+
+      expect(enqueueHandler).toHaveBeenCalledTimes(1);
+      const call = enqueueHandler.mock.calls[0][0];
+      // fromName falls back to fromDeviceName since payload is undefined
+      expect(call.content).toContain('[REMOTE from Device X]');
+      expect(call.conversationId).toBe('remote-device-x');
+    });
+
+    it('extracts message from inner payload.payload.message', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg = createCrossMachineMessage({
+        payload: {
+          from: 'dev-1',
+          fromName: 'Test',
+          type: 'nested',
+          payload: { message: 'inner message content' },
+        },
+      });
+
+      await router.handleIncomingMessage(msg);
+
+      const call = enqueueHandler.mock.calls[0][0];
+      expect(call.content).toBe('[REMOTE from Test] (nested) inner message content');
+    });
+
+    it('falls back to payload.message when inner payload has no message', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg = createCrossMachineMessage({
+        payload: {
+          from: 'dev-1',
+          fromName: 'Test',
+          type: 'flat',
+          message: 'top-level message',
+          payload: { other: 'data' },
+        },
+      });
+
+      await router.handleIncomingMessage(msg);
+
+      const call = enqueueHandler.mock.calls[0][0];
+      expect(call.content).toBe('[REMOTE from Test] (flat) top-level message');
+    });
+
+    it('does nothing when neither enqueueHandler nor localDeliveryHandler is set', async () => {
+      // Neither handler set -- should not throw
+      const msg = createCrossMachineMessage();
+      await router.handleIncomingMessage(msg);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // setMessageEnqueueHandler
+  // -----------------------------------------------------------------------
+
+  describe('setMessageEnqueueHandler', () => {
+    it('handler is called when cross-machine message arrives', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg = createCrossMachineMessage();
+      await router.handleIncomingMessage(msg);
+
+      expect(enqueueHandler).toHaveBeenCalledTimes(1);
+    });
+
+    it('source metadata includes fromDeviceId, fromDeviceName, messageType', async () => {
+      const enqueueHandler = jest.fn();
+      router.setMessageEnqueueHandler(enqueueHandler);
+
+      const msg = createCrossMachineMessage({
+        payload: {
+          from: 'device-meta-test',
+          fromName: 'MetaUser',
+          type: 'delegation',
+          payload: { message: 'delegate this' },
+        },
+      });
+
+      await router.handleIncomingMessage(msg);
+
+      const call = enqueueHandler.mock.calls[0][0];
+      expect(call.source).toBe('remote');
+      expect(call.sourceMetadata).toEqual({
+        fromDeviceId: 'device-meta-test',
+        fromDeviceName: 'MetaUser',
+        messageType: 'delegation',
+      });
+    });
+
+    it('replaces previous handler when called again', async () => {
+      const firstHandler = jest.fn();
+      const secondHandler = jest.fn();
+
+      router.setMessageEnqueueHandler(firstHandler);
+      router.setMessageEnqueueHandler(secondHandler);
+
+      const msg = createCrossMachineMessage();
+      await router.handleIncomingMessage(msg);
+
+      expect(firstHandler).not.toHaveBeenCalled();
+      expect(secondHandler).toHaveBeenCalledTimes(1);
     });
   });
 

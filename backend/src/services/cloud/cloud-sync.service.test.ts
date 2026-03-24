@@ -90,6 +90,18 @@ function makeDevice(overrides: Partial<SyncDevice> = {}): SyncDevice {
 }
 
 /**
+ * Build a minimal JWT (unsigned) with the given payload claims.
+ *
+ * @param payload - Claims to encode in the JWT payload
+ * @returns A three-part dot-separated JWT string
+ */
+function buildJwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${header}.${body}.nosig`;
+}
+
+/**
  * Drive service into error state via repeated failures.
  * Advances time in small MESSAGE_POLL steps to avoid overshooting.
  * Resets errorRecoveryAttempts so tests start fresh.
@@ -464,6 +476,189 @@ describe('CloudSyncService', () => {
       expect((service as any).errorRecoveryAttempts).toBeGreaterThan(0);
       service.stop();
       expect((service as any).errorRecoveryAttempts).toBe(0);
+    });
+  });
+
+  // ----- registerQueue ------------------------------------------------------
+
+  describe('registerQueue', () => {
+    it('should store queueId on successful registration', async () => {
+      const validToken = buildJwt({ sub: 'user-abc-123' });
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: validToken };
+
+      mockFetch.mockResolvedValue(
+        mockResponse({ success: true, queueId: 'q-assigned-001', peerQueueId: null })
+      );
+
+      service.start(configWithJwt);
+      await flushPromises();
+
+      expect(service.getQueueId()).toBe('q-assigned-001');
+    });
+
+    it('should not crash when the registration API returns an error', async () => {
+      const validToken = buildJwt({ sub: 'user-abc-123' });
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: validToken };
+
+      // First call (registerQueue) fails with 500, rest succeed
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ error: 'Internal' }, 500))  // registerQueue
+        .mockResolvedValue(mockResponse({ success: true }));              // heartbeat + device poll
+
+      service.start(configWithJwt);
+      await flushPromises();
+
+      // Service should still be syncing (registration failure is non-fatal)
+      expect(service.getState()).toBe('syncing');
+      expect(service.getQueueId()).toBeNull();
+    });
+
+    it('should return null pairing code when JWT has no sub claim', async () => {
+      const noSubToken = buildJwt({ email: 'user@test.com' });
+      const configWithBadJwt: CloudSyncConfig = { ...testConfig, token: noSubToken };
+
+      mockFetch.mockResolvedValue(mockResponse({ success: true }));
+
+      service.start(configWithBadJwt);
+      await flushPromises();
+
+      // registerQueue should bail early (no pairing code) so no queue/register call
+      const registerCall = mockFetch.mock.calls.find(
+        ([url]) => typeof url === 'string' && url.includes('/queue/register')
+      );
+      expect(registerCall).toBeUndefined();
+      expect(service.getQueueId()).toBeNull();
+    });
+  });
+
+  // ----- derivePairingCode --------------------------------------------------
+
+  describe('derivePairingCode', () => {
+    it('should produce deterministic output for the same userId', async () => {
+      const token = buildJwt({ sub: 'user-deterministic-42' });
+      const configA: CloudSyncConfig = { ...testConfig, token };
+
+      // Access private method via any cast
+      (service as any).config = configA;
+      const code1 = await (service as any).derivePairingCode();
+      const code2 = await (service as any).derivePairingCode();
+
+      expect(code1).toBe(code2);
+      expect(typeof code1).toBe('string');
+      expect(code1).toHaveLength(12);
+    });
+
+    it('should return null when config has no token', async () => {
+      (service as any).config = { ...testConfig, token: '' };
+      const code = await (service as any).derivePairingCode();
+      expect(code).toBeNull();
+    });
+
+    it('should return null for an invalid JWT (not three parts)', async () => {
+      (service as any).config = { ...testConfig, token: 'not-a-jwt' };
+      const code = await (service as any).derivePairingCode();
+      expect(code).toBeNull();
+    });
+
+    it('should return null when config is null', async () => {
+      (service as any).config = null;
+      const code = await (service as any).derivePairingCode();
+      expect(code).toBeNull();
+    });
+  });
+
+  // ----- getQueueId ---------------------------------------------------------
+
+  describe('getQueueId', () => {
+    it('should return null before registration', () => {
+      expect(service.getQueueId()).toBeNull();
+    });
+
+    it('should return the queueId after successful registration', async () => {
+      const validToken = buildJwt({ sub: 'user-queue-test' });
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: validToken };
+
+      mockFetch.mockResolvedValue(
+        mockResponse({ success: true, queueId: 'q-test-789', peerQueueId: null })
+      );
+
+      service.start(configWithJwt);
+      await flushPromises();
+
+      expect(service.getQueueId()).toBe('q-test-789');
+    });
+  });
+
+  // ----- sendMessage (device resolution) ------------------------------------
+
+  describe('sendMessage (device resolution)', () => {
+    it('should resolve peerQueueId from device cache sessionId', async () => {
+      service.start(testConfig);
+      await flushPromises();
+
+      // Inject a device with sessionId into the cache
+      (service as any).devices = [
+        makeDevice({ deviceId: 'dev-peer-1', deviceName: 'Peer', sessionId: 'session-xyz' }),
+      ];
+
+      mockFetch.mockClear();
+      mockFetch.mockResolvedValue(mockResponse({ success: true }));
+
+      await service.sendMessage('dev-peer-1', 'command', { action: 'run' });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [, opts] = mockFetch.mock.calls[0];
+      const body = JSON.parse(opts!.body as string);
+      expect(body.peerQueueId).toBe('session-xyz');
+    });
+
+    it('should throw when device is not found in cache', async () => {
+      service.start(testConfig);
+      await flushPromises();
+
+      // Device cache is empty (or does not contain the target)
+      (service as any).devices = [];
+
+      await expect(
+        service.sendMessage('dev-nonexistent', 'ping', {})
+      ).rejects.toThrow(/Device not found in cache/);
+    });
+
+    it('should throw when device has no sessionId', async () => {
+      service.start(testConfig);
+      await flushPromises();
+
+      // Device exists but has no sessionId
+      (service as any).devices = [
+        makeDevice({ deviceId: 'dev-no-session', deviceName: 'NoSession' }),
+      ];
+
+      await expect(
+        service.sendMessage('dev-no-session', 'command', {})
+      ).rejects.toThrow(/no sessionId/);
+    });
+  });
+
+  // ----- pollMessages (queueId null skip) -----------------------------------
+
+  describe('pollMessages', () => {
+    it('should skip polling when queueId is null and not make any fetch call', async () => {
+      service.start(testConfig);
+      await flushPromises();
+
+      // Ensure queueId is null (no registration happened due to invalid token)
+      expect(service.getQueueId()).toBeNull();
+
+      mockFetch.mockClear();
+
+      // Directly invoke pollMessages
+      await service.pollMessages();
+
+      // No fetch call should be made for message polling when queueId is null
+      const pollCall = mockFetch.mock.calls.find(
+        ([url]) => typeof url === 'string' && url.includes('/queue/poll')
+      );
+      expect(pollCall).toBeUndefined();
     });
   });
 });

@@ -160,4 +160,70 @@ describe('ResponseRouterService', () => {
       expect(() => router.routeError(message, 'Error')).not.toThrow();
     });
   });
+
+  describe('remote device routing', () => {
+    it('should handle routeResponse with source=remote without throwing', () => {
+      const message = createMessage({
+        source: 'remote' as any,
+        sourceMetadata: {
+          fromDeviceId: 'device-123',
+          fromDeviceName: 'Home Server',
+        },
+      });
+
+      expect(() => router.routeResponse(message, 'Remote response')).not.toThrow();
+    });
+
+    it('should handle routeError with source=remote without throwing', () => {
+      const message = createMessage({
+        source: 'remote' as any,
+        sourceMetadata: {
+          fromDeviceId: 'device-456',
+          fromDeviceName: 'Work Laptop',
+        },
+      });
+
+      expect(() => router.routeError(message, 'Connection lost')).not.toThrow();
+    });
+
+    it('should handle routeResponse with source=remote and no sourceMetadata', () => {
+      const message = createMessage({
+        source: 'remote' as any,
+      });
+
+      expect(() => router.routeResponse(message, 'Response')).not.toThrow();
+    });
+
+    it('should log fromDeviceId and fromDeviceName from sourceMetadata via routeToRemoteDevice', () => {
+      // Access the private logger through the mock to verify log calls
+      const loggerMock = {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+      };
+
+      // Create a fresh router and override its logger via prototype access
+      const testRouter = new ResponseRouterService();
+      (testRouter as any).logger = loggerMock;
+
+      const message = createMessage({
+        source: 'remote' as any,
+        sourceMetadata: {
+          fromDeviceId: 'dev-abc-123',
+          fromDeviceName: 'My MacBook',
+        },
+      });
+
+      testRouter.routeResponse(message, 'Test reply');
+
+      expect(loggerMock.info).toHaveBeenCalledWith(
+        expect.stringContaining('Remote device response'),
+        expect.objectContaining({
+          fromDeviceId: 'dev-abc-123',
+          fromDeviceName: 'My MacBook',
+        })
+      );
+    });
+  });
 });
