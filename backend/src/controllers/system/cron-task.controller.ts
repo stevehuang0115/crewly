@@ -2,6 +2,7 @@
  * Cron Task API Controller
  *
  * Handlers for cron task CRUD operations.
+ * All responses follow standard ApiResponse format: { success, data?, error? }
  *
  * @module controllers/system/cron-task.controller
  */
@@ -18,6 +19,7 @@ export async function createCronTask(req: Request, res: Response): Promise<void>
 
 		if (!cronExpression || !targetAgent || !targetTeamId || !taskDescription) {
 			res.status(400).json({
+				success: false,
 				error: 'Missing required fields: cronExpression, targetAgent, targetTeamId, taskDescription',
 			});
 			return;
@@ -32,9 +34,10 @@ export async function createCronTask(req: Request, res: Response): Promise<void>
 			createdBy: createdBy || 'user',
 		});
 
-		res.status(201).json(task);
+		res.status(201).json({ success: true, data: task });
 	} catch (error) {
 		res.status(500).json({
+			success: false,
 			error: error instanceof Error ? error.message : 'Failed to create cron task',
 		});
 	}
@@ -51,9 +54,10 @@ export async function listCronTasks(req: Request, res: Response): Promise<void> 
 			: undefined;
 
 		const tasks = await CronTaskService.getInstance().list({ targetAgent, enabled });
-		res.json({ tasks });
+		res.json({ success: true, data: tasks });
 	} catch (error) {
 		res.status(500).json({
+			success: false,
 			error: error instanceof Error ? error.message : 'Failed to list cron tasks',
 		});
 	}
@@ -75,13 +79,14 @@ export async function updateCronTask(req: Request, res: Response): Promise<void>
 		});
 
 		if (!task) {
-			res.status(404).json({ error: `Cron task ${id} not found` });
+			res.status(404).json({ success: false, error: `Cron task ${id} not found` });
 			return;
 		}
 
-		res.json(task);
+		res.json({ success: true, data: task });
 	} catch (error) {
 		res.status(500).json({
+			success: false,
 			error: error instanceof Error ? error.message : 'Failed to update cron task',
 		});
 	}
@@ -96,13 +101,14 @@ export async function deleteCronTask(req: Request, res: Response): Promise<void>
 		const deleted = await CronTaskService.getInstance().delete(id);
 
 		if (!deleted) {
-			res.status(404).json({ error: `Cron task ${id} not found` });
+			res.status(404).json({ success: false, error: `Cron task ${id} not found` });
 			return;
 		}
 
-		res.json({ success: true, id });
+		res.json({ success: true, data: { id } });
 	} catch (error) {
 		res.status(500).json({
+			success: false,
 			error: error instanceof Error ? error.message : 'Failed to delete cron task',
 		});
 	}

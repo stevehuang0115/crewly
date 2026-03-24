@@ -911,6 +911,11 @@ export class CrewlyServer {
 					);
 				});
 				cronTaskService.setAgentStatusCallback(async (sessionName, teamId) => {
+					// Handle orchestrator separately — it's not in regular teams
+					if (sessionName === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME || teamId === 'orchestrator') {
+						const orchStatus = await storageRef.getOrchestratorStatus();
+						return orchStatus?.agentStatus === 'active' || orchStatus?.agentStatus === 'started';
+					}
 					const teams = await storageRef.getTeams();
 					const team = teams.find((t) => t.id === teamId);
 					if (!team) return false;
