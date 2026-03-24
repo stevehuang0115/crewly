@@ -4,7 +4,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter } from 'events';
-import { InProgressTask, TaskTrackingData, TaskFileInfo } from '../../types/task-tracking.types.js';
+import { InProgressTask, InProgressTaskStatus, TaskTrackingData, TaskFileInfo, BlockedReport } from '../../types/task-tracking.types.js';
+import type { OrgRole } from '../ai/prompt-modules/prompt-module.interface.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 
@@ -129,7 +130,7 @@ export class TaskTrackingService extends EventEmitter {
     sessionName: string
   ): Promise<InProgressTask> {
     const data = await this.loadTaskData();
-    
+
     const task: InProgressTask = {
       id: uuidv4(),
       projectId,
@@ -145,34 +146,254 @@ export class TaskTrackingService extends EventEmitter {
 
     data.tasks.push(task);
     await this.saveTaskData(data);
-    
+
     // Emit task assigned event
     this.emit('task_assigned', task);
-    
+
     return task;
   }
 
-  async updateTaskStatus(taskId: string, status: InProgressTask['status'], blockReason?: string): Promise<void> {
+  async updateTaskStatus(taskId: string, status: InProgressTask['status'], blockReason?: string, requestorOrgRole?: OrgRole): Promise<void> {
     const data = await this.loadTaskData();
     const task = data.tasks.find(t => t.id === taskId);
-    
+
     if (!task) {
       throw new Error(`Task with ID ${taskId} not found`);
     }
 
+    // Validate transition if requestor role is provided
+    if (requestorOrgRole) {
+      const validation = this.validateStatusTransition(task.status, status, requestorOrgRole);
+      if (!validation.valid) {
+        throw new Error(`Status transition rejected: ${validation.reason}`);
+      }
+    }
+
+    const previousStatus = task.status;
     task.status = status;
     task.lastCheckedAt = new Date().toISOString();
-    
+
     if (status === 'blocked' && blockReason) {
       task.blockReason = blockReason;
     }
 
+    // Clear working notes on terminal statuses — not long-term memory
+    if (status === 'completed' || status === 'verified') {
+      task.workingNotes = undefined;
+      task.workingNotesUpdatedAt = undefined;
+    }
+
     await this.saveTaskData(data);
-    
+
     // Emit task completed event if status is completed
     if (status === 'completed') {
       this.emit('task_completed', task);
     }
+
+    // Architecture Upgrade Phase 6: emit task workflow events for action trigger chain.
+    // These events drive the wake chain: done → TL verifies → verified → orc notified.
+    this.emitTaskWorkflowEvent(task, previousStatus, status, data);
+  }
+
+  /**
+   * Emit task workflow events that drive the action trigger chain.
+   * Only emits for transitions that require a different actor to wake up.
+   *
+   * @param task - The updated task
+   * @param fromStatus - Previous status
+   * @param toStatus - New status
+   * @param data - Current task tracking data (for team:all_tasks_done check)
+   */
+  private emitTaskWorkflowEvent(
+    task: InProgressTask,
+    fromStatus: InProgressTaskStatus,
+    toStatus: InProgressTaskStatus,
+    data: TaskTrackingData,
+  ): void {
+    // Map status transitions to event types
+    const eventMap: Partial<Record<InProgressTaskStatus, string>> = {
+      'assigned': 'task:assigned',
+      'done': 'task:done',
+      'verified': 'task:verified',
+      'blocked': 'task:blocked',
+      'failed': 'task:failed',
+      'needs_clarification': 'task:needs_clarification',
+    };
+
+    const eventType = eventMap[toStatus];
+    if (!eventType) return;
+
+    // Don't re-emit if status didn't actually change
+    if (fromStatus === toStatus) return;
+
+    const payload = {
+      taskId: task.id,
+      taskName: task.taskName,
+      taskStatus: toStatus,
+      assignedSessionName: task.assignedSessionName,
+      ownerMemberId: task.assignedTeamMemberId,
+      teamId: task.teamId,
+      parentTaskId: task.parentTaskId,
+      delegatedBySession: task.delegatedBySession,
+    };
+
+    this.logger.info('Task workflow event emitted', { eventType, ...payload });
+    this.emit('task_workflow_event', { type: eventType, ...payload });
+
+    // Check for team:all_tasks_done (with active execution task filter)
+    if (toStatus === 'verified' || toStatus === 'completed') {
+      const activeStatuses: InProgressTaskStatus[] = [
+        'assigned', 'accepted', 'active', 'working', 'blocked', 'done', 'verifying', 'submitted',
+      ];
+      const activeTeamTasks = data.tasks.filter(
+        t => t.teamId === task.teamId && activeStatuses.includes(t.status)
+      );
+      if (activeTeamTasks.length === 0) {
+        this.logger.info('All team tasks done — emitting team:all_tasks_done', { teamId: task.teamId });
+        this.emit('task_workflow_event', {
+          type: 'team:all_tasks_done',
+          teamId: task.teamId,
+          taskId: task.id,
+        });
+      }
+    }
+  }
+
+  /**
+   * Accept a task — transitions from 'assigned' to 'accepted'.
+   * Records the agent's structured understanding of the task.
+   *
+   * @param taskId - Task ID to accept
+   * @param sessionName - Session name of the accepting agent (must match assignee)
+   * @param understanding - Agent's structured understanding of the task scope
+   * @returns The updated task
+   * @throws If task not found, not in 'assigned' status, or session doesn't match
+   */
+  async acceptTask(taskId: string, sessionName: string, understanding: string): Promise<InProgressTask> {
+    const data = await this.loadTaskData();
+    const task = data.tasks.find(t => t.id === taskId);
+
+    if (!task) {
+      throw new Error(`Task with ID ${taskId} not found`);
+    }
+
+    if (task.status !== 'assigned') {
+      throw new Error(`Task ${taskId} is in '${task.status}' status, expected 'assigned'`);
+    }
+
+    if (task.assignedSessionName !== sessionName) {
+      throw new Error(`Session '${sessionName}' is not the assignee of task ${taskId}`);
+    }
+
+    task.status = 'accepted';
+    task.acceptedAt = new Date().toISOString();
+    task.acceptanceNote = understanding;
+    task.lastCheckedAt = new Date().toISOString();
+
+    await this.saveTaskData(data);
+    this.emit('task_accepted', task);
+    return task;
+  }
+
+  /**
+   * Request clarification on a task — transitions to 'needs_clarification'.
+   * Signals that the agent needs more info before starting work.
+   *
+   * @param taskId - Task ID to request clarification for
+   * @param sessionName - Session name of the requesting agent (must match assignee)
+   * @param question - What the agent needs clarified
+   * @returns The updated task
+   * @throws If task not found, not in valid status, or session doesn't match
+   */
+  async requestClarification(taskId: string, sessionName: string, question: string): Promise<InProgressTask> {
+    const data = await this.loadTaskData();
+    const task = data.tasks.find(t => t.id === taskId);
+
+    if (!task) {
+      throw new Error(`Task with ID ${taskId} not found`);
+    }
+
+    if (task.status !== 'assigned' && task.status !== 'accepted') {
+      throw new Error(`Task ${taskId} is in '${task.status}' status, expected 'assigned' or 'accepted'`);
+    }
+
+    if (task.assignedSessionName !== sessionName) {
+      throw new Error(`Session '${sessionName}' is not the assignee of task ${taskId}`);
+    }
+
+    task.status = 'needs_clarification';
+    task.clarificationRequest = question;
+    task.lastCheckedAt = new Date().toISOString();
+
+    await this.saveTaskData(data);
+    this.emit('task_needs_clarification', task);
+    return task;
+  }
+
+  /**
+   * Save working notes for a task — persists agent's current working state
+   * across session restarts. Not long-term memory; cleared on task completion.
+   *
+   * @param taskId - Task ID
+   * @param sessionName - Session name (must match assignee)
+   * @param notes - Working notes content
+   * @throws If task not found or session doesn't match assignee
+   */
+  async updateWorkingNotes(taskId: string, sessionName: string, notes: string): Promise<void> {
+    const data = await this.loadTaskData();
+    const task = data.tasks.find(t => t.id === taskId);
+    if (!task) throw new Error(`Task with ID ${taskId} not found`);
+    if (task.assignedSessionName !== sessionName) {
+      throw new Error(`Session '${sessionName}' is not the assignee of task ${taskId}`);
+    }
+    task.workingNotes = notes;
+    task.workingNotesUpdatedAt = new Date().toISOString();
+    await this.saveTaskData(data);
+  }
+
+  /**
+   * Validate that a status transition is allowed based on the Task State Ownership Matrix.
+   * Enforces who can write which status and which transitions are legal.
+   *
+   * @param currentStatus - Current task status
+   * @param newStatus - Requested new status
+   * @param requestorOrgRole - Organizational role of the requestor
+   * @returns Validation result with optional reason for rejection
+   */
+  validateStatusTransition(
+    currentStatus: InProgressTaskStatus,
+    newStatus: InProgressTaskStatus,
+    requestorOrgRole: OrgRole
+  ): { valid: boolean; reason?: string } {
+    // Status ownership matrix: who can write which status
+    const executorStatuses: InProgressTaskStatus[] = ['accepted', 'needs_clarification', 'active', 'blocked', 'done', 'working', 'submitted'];
+    const tlStatuses: InProgressTaskStatus[] = ['verifying', 'verified', 'failed', 'cancelled', 'assigned'];
+    const orcStatuses: InProgressTaskStatus[] = ['cancelled', 'assigned', 'ready', 'backlog', 'pending_assignment'];
+
+    // Check ownership
+    if (requestorOrgRole === 'executor') {
+      if (!executorStatuses.includes(newStatus)) {
+        return { valid: false, reason: `Executor cannot set status to '${newStatus}'. Allowed: ${executorStatuses.join(', ')}` };
+      }
+    } else if (requestorOrgRole === 'team-lead') {
+      if (!tlStatuses.includes(newStatus) && !executorStatuses.includes(newStatus)) {
+        return { valid: false, reason: `Team Lead cannot set status to '${newStatus}'` };
+      }
+    } else if (requestorOrgRole === 'orchestrator') {
+      if (!orcStatuses.includes(newStatus)) {
+        return { valid: false, reason: `Orchestrator cannot set status to '${newStatus}'. Allowed: ${orcStatuses.join(', ')}` };
+      }
+    }
+
+    // Illegal transitions
+    if (currentStatus === 'assigned' && newStatus === 'verified') {
+      return { valid: false, reason: 'Cannot skip execution: assigned → verified is illegal' };
+    }
+    if (currentStatus === 'done' && newStatus === 'assigned') {
+      return { valid: false, reason: 'Cannot reassign directly from done. Must go through failed first.' };
+    }
+
+    return { valid: true };
   }
 
   async removeTask(taskId: string): Promise<void> {
@@ -191,7 +412,7 @@ export class TaskTrackingService extends EventEmitter {
     createdAt: string;
   }): Promise<InProgressTask> {
     const data = await this.loadTaskData();
-    
+
     const task: InProgressTask = {
       id: uuidv4(),
       projectId: taskInfo.projectId,
@@ -208,7 +429,7 @@ export class TaskTrackingService extends EventEmitter {
 
     data.tasks.push(task);
     await this.saveTaskData(data);
-    
+
     return task;
   }
 
@@ -230,7 +451,7 @@ export class TaskTrackingService extends EventEmitter {
   // Utility method to scan project tasks and sync with file system
   async syncTasksWithFileSystem(projectPath: string, projectId: string): Promise<void> {
     const tasksPath = path.join(projectPath, '.crewly', 'tasks');
-    
+
     if (!fsSync.existsSync(tasksPath)) {
       return;
     }
@@ -242,15 +463,15 @@ export class TaskTrackingService extends EventEmitter {
     for (const task of projectTasks) {
       const expectedInProgressPath = task.taskFilePath.replace('/open/', '/in_progress/');
       const taskStillInProgress = fsSync.existsSync(expectedInProgressPath);
-      
+
       if (!taskStillInProgress) {
         // Task was moved manually, check where it went
         const baseName = path.basename(task.taskFilePath);
         const milestoneDir = path.dirname(path.dirname(task.taskFilePath));
-        
+
         const doneFile = path.join(milestoneDir, 'done', baseName);
         const blockedFile = path.join(milestoneDir, 'blocked', baseName);
-        
+
         if (fsSync.existsSync(doneFile)) {
           // Task was completed, remove from tracking
           await this.removeTask(task.id);
@@ -266,30 +487,30 @@ export class TaskTrackingService extends EventEmitter {
   async getOpenTasks(projectPath: string): Promise<TaskFileInfo[]> {
     const tasksPath = path.join(projectPath, '.crewly', 'tasks');
     const openTasks: TaskFileInfo[] = [];
-    
+
     if (!fsSync.existsSync(tasksPath)) {
       return openTasks;
     }
 
     const milestones = await fs.readdir(tasksPath);
-    
+
     for (const milestone of milestones) {
       if (!milestone.startsWith('m') || !milestone.includes('_')) continue;
-      
+
       const milestonePath = path.join(tasksPath, milestone);
       const openFolderPath = path.join(milestonePath, 'open');
-      
+
       if (fsSync.existsSync(openFolderPath)) {
         const openFiles = await fs.readdir(openFolderPath);
-        
+
         for (const file of openFiles) {
           if (file.endsWith('.md')) {
             const fullPath = path.join(openFolderPath, file);
-            
+
             // Parse role from filename (assumes format: NN_task_name_ROLE.md)
             const roleMatch = file.match(/_([a-z]+)\.md$/);
             const targetRole = roleMatch ? roleMatch[1] : 'unknown';
-            
+
             openTasks.push({
               filePath: fullPath,
               fileName: file,

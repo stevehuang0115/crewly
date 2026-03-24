@@ -25,6 +25,7 @@ import type {
   AgentPreferences,
   ProjectAgentsIndex,
 } from '../../types/memory.types.js';
+import type { TaskTrackingService } from '../project/task-tracking.service.js';
 
 /**
  * Categories for the unified remember operation
@@ -83,6 +84,19 @@ export interface RememberParams {
     relationshipType?: 'depends-on' | 'uses' | 'extends' | 'implements' | 'calls' | 'imported-by';
     /** Target component for relationships */
     targetComponent?: string;
+
+    // === v2: Task-linked provenance ===
+
+    /** Task ID where this knowledge was learned */
+    sourceTaskId?: string;
+    /** Objective/goal ID this knowledge relates to */
+    sourceObjectiveId?: string;
+    /** Outcome of the task where this was learned */
+    sourceOutcome?: string;
+    /** What contexts/domains this knowledge applies to */
+    appliesTo?: string[];
+    /** ID of entry being superseded by this one */
+    supersedes?: string;
   };
 }
 
@@ -114,6 +128,15 @@ export interface RecallResult {
   combined: string;
   /** Matching knowledge documents (optional, from knowledge base search) */
   knowledgeDocuments?: KnowledgeDocumentSummary[];
+
+  // === v2: Operational context (lightweight, always included when available) ===
+
+  /** Current project goals (if projectPath provided) */
+  activeGoals?: string[];
+  /** Current team focus (if projectPath provided) */
+  currentFocus?: string;
+  /** Active tasks for this agent */
+  activeTasks?: Array<{ id: string; name: string; status: string; hasWorkingNotes: boolean }>;
 }
 
 /**
@@ -179,6 +202,8 @@ export class MemoryService implements IMemoryService {
 
   private readonly agentMemory: AgentMemoryService;
   private readonly projectMemory: ProjectMemoryService;
+  /** Shared or lazily-cached TaskTrackingService instance for operational context enrichment */
+  private taskTrackingServiceRef: TaskTrackingService | null = null;
   private readonly logger = LoggerService.getInstance().createComponentLogger('MemoryService');
   private embeddingProvider: EmbeddingProvider | null = null;
   private embeddingProviderInitialized = false;
@@ -189,6 +214,32 @@ export class MemoryService implements IMemoryService {
   private constructor() {
     this.agentMemory = AgentMemoryService.getInstance();
     this.projectMemory = ProjectMemoryService.getInstance();
+  }
+
+  /**
+   * Set the shared TaskTrackingService instance to avoid creating
+   * disposable instances on every recall. Call during app startup.
+   *
+   * @param service - The application's shared TaskTrackingService
+   */
+  public setTaskTrackingService(service: TaskTrackingService): void {
+    this.taskTrackingServiceRef = service;
+  }
+
+  /**
+   * Get or lazily create a TaskTrackingService.
+   * Prefers the shared instance set via setTaskTrackingService().
+   *
+   * @returns TaskTrackingService instance
+   */
+  private async getTaskTrackingService(): Promise<TaskTrackingService> {
+    if (this.taskTrackingServiceRef) {
+      return this.taskTrackingServiceRef;
+    }
+    // Lazy fallback: create and cache one instance
+    const { TaskTrackingService: TTS } = await import('../project/task-tracking.service.js');
+    this.taskTrackingServiceRef = new TTS();
+    return this.taskTrackingServiceRef;
   }
 
   /**
@@ -567,6 +618,11 @@ export class MemoryService implements IMemoryService {
           content: params.content,
           learnedFrom: params.metadata?.taskId,
           confidence: 0.5,
+          // v2: Task-linked provenance
+          sourceTaskId: params.metadata?.sourceTaskId || params.metadata?.taskId,
+          sourceObjectiveId: params.metadata?.sourceObjectiveId,
+          sourceOutcome: params.metadata?.sourceOutcome as 'success' | 'failed' | 'partial' | undefined,
+          appliesTo: params.metadata?.appliesTo as string[] | undefined,
         });
 
       case 'preference':
@@ -598,6 +654,9 @@ export class MemoryService implements IMemoryService {
           example: params.metadata?.example,
           files: params.metadata?.files,
           discoveredBy: params.agentId,
+          // v2: provenance
+          sourceTaskId: params.metadata?.sourceTaskId || params.metadata?.taskId,
+          sourceOutcome: params.metadata?.sourceOutcome as 'success' | 'failed' | 'partial' | undefined,
         });
 
       case 'decision':
@@ -617,6 +676,9 @@ export class MemoryService implements IMemoryService {
           solution: params.metadata?.solution || '',
           severity: params.metadata?.severity || 'medium',
           discoveredBy: params.agentId,
+          // v2: provenance
+          sourceTaskId: params.metadata?.sourceTaskId || params.metadata?.taskId,
+          sourceOutcome: params.metadata?.sourceOutcome as 'success' | 'failed' | 'partial' | undefined,
         });
 
       case 'relationship':
@@ -734,8 +796,72 @@ export class MemoryService implements IMemoryService {
 
     await Promise.all(promises);
 
+    // v2: Enrich with operational context (goals, focus, active tasks)
+    await this.enrichWithOperationalContext(result, params);
+
     result.combined = this.combineMemories(result);
+
+    // v2: Append operational context to combined text
+    if (result.activeGoals?.length || result.currentFocus || result.activeTasks?.length) {
+      const opLines: string[] = ['\n### Operational Context'];
+      if (result.currentFocus) opLines.push(`**Current Focus:** ${result.currentFocus}`);
+      if (result.activeGoals?.length) opLines.push(`**Goals:** ${result.activeGoals.join('; ')}`);
+      if (result.activeTasks?.length) {
+        opLines.push('**Your Active Tasks:**');
+        for (const t of result.activeTasks) {
+          opLines.push(`- [${t.status}] ${t.name}${t.hasWorkingNotes ? ' (has working notes)' : ''}`);
+        }
+      }
+      result.combined += opLines.join('\n');
+    }
+
     return result;
+  }
+
+  /**
+   * Enrich recall result with operational context: goals, focus, active tasks.
+   * All lookups are non-fatal — missing data is silently skipped.
+   */
+  private async enrichWithOperationalContext(result: RecallResult, params: RecallParams): Promise<void> {
+    const opPromises: Promise<void>[] = [];
+
+    if (params.projectPath) {
+      opPromises.push(
+        (async () => {
+          try {
+            const { GoalTrackingService } = await import('./goal-tracking.service.js');
+            const gts = GoalTrackingService.getInstance();
+            const goalsText = await gts.getGoals(params.projectPath!);
+            if (goalsText) result.activeGoals = [goalsText];
+            const focus = await gts.getCurrentFocus(params.projectPath!);
+            if (focus) result.currentFocus = focus;
+          } catch { /* non-fatal — goal tracking may not be initialized */ }
+        })(),
+      );
+    }
+
+    if (params.agentId) {
+      opPromises.push(
+        (async () => {
+          try {
+            const tts = await this.getTaskTrackingService();
+            const tasks = await tts.getTasksBySessionName(params.agentId);
+            const terminalStatuses = ['completed', 'verified', 'cancelled'];
+            const active = tasks.filter((t) => !terminalStatuses.includes(t.status));
+            if (active.length) {
+              result.activeTasks = active.map((t) => ({
+                id: t.id,
+                name: t.taskName,
+                status: t.status,
+                hasWorkingNotes: !!t.workingNotes,
+              }));
+            }
+          } catch { /* non-fatal */ }
+        })(),
+      );
+    }
+
+    await Promise.all(opPromises);
   }
 
   /**

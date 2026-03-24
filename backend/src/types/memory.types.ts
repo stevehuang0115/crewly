@@ -48,6 +48,23 @@ export interface RoleKnowledgeEntry {
   lastUsed?: string;
   /** Tags for additional categorization */
   tags?: string[];
+
+  // === v2: Task-linked provenance ===
+
+  /** Task ID where this knowledge was learned */
+  sourceTaskId?: string;
+  /** Objective/goal ID this knowledge relates to */
+  sourceObjectiveId?: string;
+  /** Outcome of the task where this was learned */
+  sourceOutcome?: 'success' | 'failed' | 'partial';
+  /** What contexts/domains this knowledge applies to */
+  appliesTo?: string[];
+  /** ISO timestamp when this knowledge was last verified as still valid */
+  lastVerifiedAt?: string;
+  /** Whether this entry has been superseded by newer knowledge */
+  superseded?: boolean;
+  /** ID of the entry that supersedes this one */
+  supersededBy?: string;
 }
 
 /**
@@ -245,6 +262,15 @@ export interface PatternEntry {
   createdAt: string;
   /** Tags for searchability */
   tags?: string[];
+
+  // === v2: Task-linked provenance ===
+
+  /** Task ID where this pattern was discovered */
+  sourceTaskId?: string;
+  /** Outcome of the task where this was learned */
+  sourceOutcome?: 'success' | 'failed' | 'partial';
+  /** ISO timestamp when this pattern was last verified */
+  lastVerifiedAt?: string;
 }
 
 /**
@@ -335,6 +361,15 @@ export interface GotchaEntry {
   resolved?: boolean;
   /** ISO timestamp when resolved */
   resolvedAt?: string;
+
+  // === v2: Task-linked provenance ===
+
+  /** Task ID where this gotcha was discovered */
+  sourceTaskId?: string;
+  /** Outcome of the task where this was learned */
+  sourceOutcome?: 'success' | 'failed' | 'partial';
+  /** ISO timestamp when this gotcha was last verified */
+  lastVerifiedAt?: string;
 }
 
 /**
@@ -411,6 +446,36 @@ export interface ProjectMemory {
   relationships: RelationshipEntry[];
   /** Schema version for migration support */
   schemaVersion?: number;
+}
+
+// ========================= SHARED USER PROFILE =========================
+
+/**
+ * Shared user profile — preferences that apply across ALL agents.
+ * Stored once at ~/.crewly/user-profile.json, readable by all agents.
+ * Any agent can update it, but orchestrator is the primary writer.
+ */
+export interface SharedUserProfile {
+  /** Display language preference (e.g., 'zh-CN', 'en') */
+  language?: string;
+  /** Communication style: concise vs detailed */
+  reportingStyle?: 'concise' | 'detailed' | 'structured';
+  /** Risk tolerance for autonomous decisions */
+  riskTolerance?: 'conservative' | 'moderate' | 'aggressive';
+  /** Timezone for scheduling and reporting (e.g., 'Asia/Shanghai') */
+  timezone?: string;
+  /** Domain knowledge context (e.g., "fintech startup, Series A") */
+  domainContext?: string;
+  /** Things the user explicitly does NOT want */
+  prohibitions?: string[];
+  /** Preferred tools, frameworks, or approaches */
+  preferences?: Record<string, string>;
+  /** Free-form notes about working with this user */
+  notes?: string[];
+  /** ISO timestamp of last update */
+  updatedAt?: string;
+  /** Who last updated this profile (agentId or 'user') */
+  updatedBy?: string;
 }
 
 // ========================= LEARNING LOG TYPES =========================

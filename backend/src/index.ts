@@ -262,6 +262,9 @@ export class CrewlyServer {
 		// #167: Wire scheduler into agent registration for DLQ drain on activation
 		this.apiController.agentRegistrationService.setSchedulerService(this.schedulerService);
 
+		// Architecture Upgrade Phase 6: Wire EventBusService for standing task subscriptions
+		this.apiController.agentRegistrationService.setEventBusService(this.eventBusService);
+
 		this.terminalGateway = new TerminalGateway(this.io);
 
 		// Set terminal gateway singleton for chat integration
@@ -315,6 +318,24 @@ export class CrewlyServer {
 		setEventBusControllerService(this.eventBusService);
 		setTeamControllerEventBusService(this.eventBusService);
 		setEventBusServiceForTaskCleanup(this.eventBusService);
+
+		// Architecture Upgrade Phase 6: Bridge task workflow events to EventBus
+		this.taskTrackingService.on('task_workflow_event', (payload: { type: string; taskId?: string; teamId?: string; [key: string]: unknown }) => {
+			this.eventBusService.publish({
+				id: `task-workflow-${payload.taskId || 'team'}-${Date.now()}`,
+				type: payload.type as any,
+				timestamp: new Date().toISOString(),
+				teamId: (payload.teamId as string) || '',
+				teamName: '',
+				memberId: (payload.ownerMemberId as string) || '',
+				memberName: '',
+				sessionName: (payload.assignedSessionName as string) || '',
+				previousValue: '',
+				newValue: (payload.taskStatus as string) || payload.type,
+				changedField: 'taskStatus',
+				taskId: payload.taskId,
+			});
+		});
 
 		// Initialize Slack thread store for persistent thread conversations
 		const slackThreadStore = new SlackThreadStoreService(this.config.crewlyHome);

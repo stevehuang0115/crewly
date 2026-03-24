@@ -135,9 +135,9 @@ describe('Memory Routes', () => {
   // Route count and method restrictions
   // ---------------------------------------------------------------
 
-  it('should register exactly 12 routes', () => {
+  it('should register exactly 14 routes', () => {
     const routes = (router.stack as any[]).filter((layer: any) => layer.route);
-    expect(routes).toHaveLength(12);
+    expect(routes).toHaveLength(14);
   });
 
   it('should only use POST or GET methods', () => {
@@ -153,7 +153,7 @@ describe('Memory Routes', () => {
     const routes = (router.stack as any[]).filter((layer: any) => layer.route);
     const postRoutes = routes.filter((r: any) => r.route.methods.post);
     const getRoutes = routes.filter((r: any) => r.route.methods.get);
-    expect(postRoutes).toHaveLength(9);
-    expect(getRoutes).toHaveLength(3);
+    expect(postRoutes).toHaveLength(10);
+    expect(getRoutes).toHaveLength(4);
   });
 });

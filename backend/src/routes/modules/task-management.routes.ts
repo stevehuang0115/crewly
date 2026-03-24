@@ -48,6 +48,13 @@ export function registerTaskManagementRoutes(router: Router, apiController: ApiC
   // Task handoff (F12 — multi-agent A→B handoff)
   router.post('/task-management/handoff', (req, res) => taskMgmtHandlers.recordHandoff.call(apiController, req, res));
 
+  // Task acceptance handshake (Architecture Upgrade Phase 5)
+  router.post('/task-management/accept', (req, res) => taskMgmtHandlers.acceptTask.call(apiController, req, res));
+  router.post('/task-management/clarify', (req, res) => taskMgmtHandlers.requestClarification.call(apiController, req, res));
+
+  // Working memory (Memory v2 Phase 2)
+  router.post('/task-management/save-working-notes', (req, res) => taskMgmtHandlers.saveWorkingNotes.call(apiController, req, res));
+
   // In-Progress Tasks Routes
   router.get('/in-progress-tasks', (req, res) => inProgressHandlers.getInProgressTasks.call(apiController, req, res));
 }

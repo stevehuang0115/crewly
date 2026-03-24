@@ -866,4 +866,161 @@ describe('TaskTrackingService', () => {
       expect(updatedTask.status).toBe('active');
     });
   });
+
+  // ========================= v2: validateStatusTransition =========================
+
+  describe('validateStatusTransition', () => {
+    it('should allow executor to set accepted', () => {
+      const result = service.validateStatusTransition('assigned', 'accepted', 'executor');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should allow executor to set blocked', () => {
+      const result = service.validateStatusTransition('active', 'blocked', 'executor');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should allow executor to set done', () => {
+      const result = service.validateStatusTransition('active', 'done', 'executor');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should REJECT executor setting verified', () => {
+      const result = service.validateStatusTransition('done', 'verified', 'executor');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('Executor cannot set status');
+    });
+
+    it('should allow team-lead to set verified', () => {
+      const result = service.validateStatusTransition('done', 'verified', 'team-lead');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should allow team-lead to set failed', () => {
+      const result = service.validateStatusTransition('done', 'failed', 'team-lead');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should REJECT orchestrator setting done', () => {
+      const result = service.validateStatusTransition('active', 'done', 'orchestrator');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('Orchestrator cannot set status');
+    });
+
+    it('should allow orchestrator to set cancelled', () => {
+      const result = service.validateStatusTransition('assigned', 'cancelled', 'orchestrator');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should REJECT assigned → verified (skip execution)', () => {
+      const result = service.validateStatusTransition('assigned', 'verified', 'team-lead');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('skip execution');
+    });
+
+    it('should REJECT done → assigned (must go through failed)', () => {
+      const result = service.validateStatusTransition('done', 'assigned', 'team-lead');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('Must go through failed');
+    });
+
+    it('should allow team-lead to also set executor statuses', () => {
+      const result = service.validateStatusTransition('assigned', 'accepted', 'team-lead');
+      expect(result.valid).toBe(true);
+    });
+  });
+
+  describe('updateWorkingNotes', () => {
+    it('should save working notes for the assigned task', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{ ...mockTask, id: 'task-wn', assignedSessionName: 'session-abc', status: 'working' as const }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      await service.updateWorkingNotes('task-wn', 'session-abc', 'current hypothesis: auth bug in middleware');
+
+      expect(taskData.tasks[0].workingNotes).toBe('current hypothesis: auth bug in middleware');
+      expect(taskData.tasks[0].workingNotesUpdatedAt).toBeDefined();
+      expect(service.saveTaskData).toHaveBeenCalledWith(taskData);
+    });
+
+    it('should throw error if task not found', async () => {
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(mockTaskData);
+
+      await expect(service.updateWorkingNotes('nonexistent', 'session-abc', 'notes'))
+        .rejects.toThrow('Task with ID nonexistent not found');
+    });
+
+    it('should throw error if session does not match assignee', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{ ...mockTask, id: 'task-wn', assignedSessionName: 'session-abc' }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+
+      await expect(service.updateWorkingNotes('task-wn', 'wrong-session', 'notes'))
+        .rejects.toThrow("Session 'wrong-session' is not the assignee of task task-wn");
+    });
+  });
+
+  describe('updateTaskStatus clears workingNotes on completion', () => {
+    it('should clear workingNotes when status is completed', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{
+          ...mockTask,
+          id: 'task-clear',
+          workingNotes: 'some notes',
+          workingNotesUpdatedAt: '2026-03-23T00:00:00Z',
+        }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      await service.updateTaskStatus('task-clear', 'completed');
+
+      expect(taskData.tasks[0].workingNotes).toBeUndefined();
+      expect(taskData.tasks[0].workingNotesUpdatedAt).toBeUndefined();
+    });
+
+    it('should clear workingNotes when status is verified', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{
+          ...mockTask,
+          id: 'task-clear-v',
+          workingNotes: 'partial results here',
+          workingNotesUpdatedAt: '2026-03-23T00:00:00Z',
+        }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      await service.updateTaskStatus('task-clear-v', 'verified');
+
+      expect(taskData.tasks[0].workingNotes).toBeUndefined();
+      expect(taskData.tasks[0].workingNotesUpdatedAt).toBeUndefined();
+    });
+
+    it('should NOT clear workingNotes for non-terminal statuses', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{
+          ...mockTask,
+          id: 'task-keep',
+          workingNotes: 'keep these notes',
+          workingNotesUpdatedAt: '2026-03-23T00:00:00Z',
+        }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      await service.updateTaskStatus('task-keep', 'active');
+
+      expect(taskData.tasks[0].workingNotes).toBe('keep these notes');
+      expect(taskData.tasks[0].workingNotesUpdatedAt).toBe('2026-03-23T00:00:00Z');
+    });
+  });
 });

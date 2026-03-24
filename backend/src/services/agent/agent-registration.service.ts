@@ -120,6 +120,9 @@ export class AgentRegistrationService {
 	/** #167: Optional scheduler service for DLQ drain on agent activation. */
 	private schedulerService: { drainDeadLetterQueue(sessionName: string): Promise<number> } | null = null;
 
+	/** Architecture Upgrade Phase 6: EventBusService for standing task subscriptions. */
+	private eventBusService: { subscribe(input: import('../../types/event-bus.types.js').CreateSubscriptionInput): import('../../types/event-bus.types.js').EventSubscription } | null = null;
+
 
 	// Terminal patterns are now centralized in TERMINAL_PATTERNS constant
 	// Keeping prompt chars as static getter for backwards compatibility within the class
@@ -156,6 +159,15 @@ export class AgentRegistrationService {
 	 */
 	setSchedulerService(scheduler: { drainDeadLetterQueue(sessionName: string): Promise<number> }): void {
 		this.schedulerService = scheduler;
+	}
+
+	/**
+	 * Inject EventBusService for standing task workflow subscriptions at agent registration.
+	 *
+	 * @param eventBus - EventBusService instance with subscribe method
+	 */
+	setEventBusService(eventBus: { subscribe(input: import('../../types/event-bus.types.js').CreateSubscriptionInput): import('../../types/event-bus.types.js').EventSubscription }): void {
+		this.eventBusService = eventBus;
 	}
 
 	/**
@@ -1272,6 +1284,9 @@ export class AgentRegistrationService {
 						});
 					}
 
+					// Architecture Upgrade Phase 6: set up standing task event subscriptions
+					this.setupStandingSubscriptions(sessionName, member.canDelegate ? 'team-lead' : 'executor', team.id);
+
 					return true;
 				}
 			}
@@ -1283,6 +1298,72 @@ export class AgentRegistrationService {
 				error: error instanceof Error ? error.message : String(error),
 			});
 			return false;
+		}
+	}
+
+	/**
+	 * Set up standing event subscriptions for task workflow events based on org role.
+	 * Called once at agent registration. Subscriptions are long-lived (24h TTL)
+	 * and NOT oneShot — they persist for the agent's session lifetime.
+	 *
+	 * Orchestrator: task:verified, task:blocked, task:failed (all teams)
+	 * Team Lead: task:done, task:blocked, task:failed, task:needs_clarification (own team)
+	 * Executor: task:assigned (self scope)
+	 *
+	 * @param sessionName - Agent session name
+	 * @param orgRole - Organizational role (orchestrator, team-lead, executor)
+	 * @param teamId - Team ID for scoping (optional for orchestrator)
+	 */
+	private setupStandingSubscriptions(sessionName: string, orgRole: string, teamId?: string): void {
+		if (!this.eventBusService) {
+			this.logger.debug('EventBusService not available, skipping standing subscriptions', { sessionName });
+			return;
+		}
+
+		const TTL_MINUTES = 60 * 24; // 24 hours
+
+		try {
+			if (orgRole === 'orchestrator') {
+				// Orchestrator: awareness-only subscriptions for all teams
+				for (const eventType of ['task:verified', 'task:blocked', 'task:failed', 'team:all_tasks_done'] as const) {
+					this.eventBusService.subscribe({
+						eventType,
+						filter: {},
+						subscriberSession: sessionName,
+						oneShot: false,
+						ttlMinutes: TTL_MINUTES,
+					});
+				}
+				this.logger.info('Standing subscriptions set up for orchestrator', { sessionName });
+			} else if (orgRole === 'team-lead') {
+				// TL: own team scope
+				for (const eventType of ['task:done', 'task:blocked', 'task:failed', 'task:needs_clarification'] as const) {
+					this.eventBusService.subscribe({
+						eventType,
+						filter: teamId ? { teamId } : {},
+						subscriberSession: sessionName,
+						oneShot: false,
+						ttlMinutes: TTL_MINUTES,
+					});
+				}
+				this.logger.info('Standing subscriptions set up for team-lead', { sessionName, teamId });
+			} else {
+				// Executor: self scope only
+				this.eventBusService.subscribe({
+					eventType: 'task:assigned',
+					filter: { sessionName },
+					subscriberSession: sessionName,
+					oneShot: false,
+					ttlMinutes: TTL_MINUTES,
+				});
+				this.logger.info('Standing subscription set up for executor', { sessionName });
+			}
+		} catch (err) {
+			this.logger.warn('Failed to set up standing subscriptions (non-fatal)', {
+				sessionName,
+				orgRole,
+				error: err instanceof Error ? err.message : String(err),
+			});
 		}
 	}
 
@@ -3290,6 +3371,12 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				// processing on ALL attempts (not just retries). A previous
 				// write may have succeeded but verification failed. Re-writing
 				// the same message creates a duplicate in the input buffer.
+				//
+				// IMPORTANT: Only skip the write when we have a positive hash
+				// match (isRecentDuplicate). The `attempt > 1` condition was
+				// removed because the spinner could be from a DIFFERENT message
+				// that the agent is still processing — skipping the write for
+				// a new message causes silent message loss.
 				{
 					const preWriteCheck = sessionHelper.capturePane(sessionName);
 					const hasSpinner = containsSpinnerOrWorkingIndicator(preWriteCheck);
@@ -3303,13 +3390,24 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 							&& lastSent.hash === msgHash
 							&& (Date.now() - lastSent.sentAt) < 60000;
 
-						if (isRecentDuplicate || attempt > 1) {
+						if (isRecentDuplicate) {
 							this.logger.info('Agent already processing — skipping write to prevent duplicate (#128)', {
 								sessionName,
 								attempt,
-								isRecentDuplicate: !!isRecentDuplicate,
+								isRecentDuplicate: true,
 							});
 							return true;
+						}
+
+						// Agent is busy with a different message. On retries,
+						// log but still proceed to write — the message will be
+						// queued in the PTY input buffer for when the agent
+						// finishes its current work.
+						if (attempt > 1) {
+							this.logger.info('Agent busy with different message, proceeding with write on retry', {
+								sessionName,
+								attempt,
+							});
 						}
 					}
 

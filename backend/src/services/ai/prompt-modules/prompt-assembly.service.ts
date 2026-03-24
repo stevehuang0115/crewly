@@ -18,12 +18,18 @@ import { LearningReferenceModule } from './learning-reference.module.js';
 import { CommunicationModule } from './communication.module.js';
 import { RecoveryModule } from './recovery.module.js';
 import { LifecycleModule } from './lifecycle.module.js';
+import { RoleBoundaryModule } from './role-boundary.module.js';
+import { CapabilityOverlayModule } from './capability-overlay.module.js';
+import { DomainSOPModule } from './domain-sop.module.js';
+import { RiskPolicyModule } from './risk-policy.module.js';
 
 /**
  * Default total token budget for all prompt modules combined.
- * Modules exceeding this budget are truncated or skipped (compactable ones only).
+ * Increased from 25000 to 28000 for Architecture Upgrade modules.
+ * Role Boundary (~800 tokens, non-compactable) is the only guaranteed addition.
+ * SOP/Risk/Capability are conditional and compactable.
  */
-const DEFAULT_TOKEN_BUDGET = 25000;
+const DEFAULT_TOKEN_BUDGET = 28000;
 
 /**
  * Separator between prompt modules in assembled output.
@@ -89,14 +95,18 @@ export class PromptAssemblyService {
 		this.modules = [
 			new IdentityModule(),
 			new SoulModule(),
+			new RecoveryModule(),
+			new RoleBoundaryModule(),
 			new MemoryReferenceModule(),
 			new SkillsReferenceModule(),
 			new TeamReferenceModule(),
+			new CapabilityOverlayModule(),
 			new ProjectReferenceModule(),
 			new CommunicationModule(),
+			new DomainSOPModule(),
 			new UserProfileReferenceModule(),
+			new RiskPolicyModule(),
 			new LearningReferenceModule(),
-			new RecoveryModule(),
 			new LifecycleModule(),
 		];
 	}

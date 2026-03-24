@@ -8,4 +8,4 @@
  */
 
 export { createMemoryRouter } from './memory.routes.js';
-export { remember, recall, recordLearning } from './memory.controller.js';
+export { remember, recall, recordLearning, getUserProfile, updateUserProfile } from './memory.controller.js';

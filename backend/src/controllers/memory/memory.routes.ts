@@ -21,6 +21,8 @@ import {
   recordSuccess,
   recordFailure,
   getMyContext,
+  getUserProfile,
+  updateUserProfile,
 } from './memory.controller.js';
 
 /**
@@ -39,6 +41,8 @@ import {
  * - POST /record-success  - Record a successful pattern or approach
  * - POST /record-failure  - Record a failed approach or pitfall
  * - POST /my-context      - Get combined agent context (memories, goals, focus, logs, learnings)
+ * - GET  /user-profile    - Get the shared user profile
+ * - POST /user-profile    - Update the shared user profile (partial merge)
  *
  * @returns Express router configured with memory routes
  */
@@ -57,6 +61,8 @@ export function createMemoryRouter(): Router {
   router.post('/record-success', recordSuccess);
   router.post('/record-failure', recordFailure);
   router.post('/my-context', getMyContext);
+  router.get('/user-profile', getUserProfile);
+  router.post('/user-profile', updateUserProfile);
 
   return router;
 }

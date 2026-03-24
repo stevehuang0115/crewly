@@ -13,6 +13,28 @@ import { existsSync, mkdirSync } from 'fs';
 import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
+
+/** Constants for memory scoring and decay (v2) */
+const DECAY_CONSTANTS = {
+  /** Recency tiers in days */
+  RECENCY_TIERS_DAYS: { RECENT: 30, MEDIUM: 90, OLD: 180 } as const,
+  /** Score multipliers per recency tier */
+  RECENCY_FACTORS: { RECENT: 1.0, MEDIUM: 0.75, OLD: 0.5, ANCIENT: 0.25 } as const,
+  /** Score multiplier for superseded entries */
+  SUPERSEDED_PENALTY: 0.3,
+  /** Score multiplier for entries never verified */
+  UNVERIFIED_FACTOR: 0.8,
+  /** Minimum effective score to be included in prompt injection */
+  MIN_EFFECTIVE_SCORE: 0.4,
+  /** Confidence threshold below which old entries are pruned */
+  PRUNE_CONFIDENCE_THRESHOLD: 0.3,
+  /** Confidence multiplier applied during decay */
+  DECAY_MULTIPLIER: 0.5,
+  /** Minimum confidence floor (never goes below this) */
+  MIN_CONFIDENCE_FLOOR: 0.1,
+  /** Milliseconds per day */
+  MS_PER_DAY: 86_400_000,
+} as const;
 import {
   AgentMemory,
   AgentPreferences,
@@ -573,16 +595,25 @@ export class AgentMemoryService implements IAgentMemoryService {
 
     const { roleKnowledge, preferences, performance } = memory;
 
-    // Filter to high-confidence knowledge
-    const relevantKnowledge = roleKnowledge
-      .filter(k => k.confidence >= 0.6)
-      .sort((a, b) => b.confidence - a.confidence)
+    // v2: Filter using effective score (confidence × recency × verification)
+    const scored = roleKnowledge
+      .filter(k => !k.superseded)
+      .map(k => ({ entry: k, score: this.calculateEffectiveScore(k) }))
+      .filter(s => s.score >= DECAY_CONSTANTS.MIN_EFFECTIVE_SCORE)
+      .sort((a, b) => b.score - a.score)
       .slice(0, 20);
 
-    const knowledgeSection = relevantKnowledge.length > 0
+    const knowledgeSection = scored.length > 0
       ? `## Your Role Knowledge
 
-${relevantKnowledge.map(k => `- [${k.category}] ${k.content}`).join('\n')}`
+${scored.map(s => {
+  const k = s.entry;
+  const outcomeHint = k.sourceOutcome === 'success' ? ' ✓'
+    : k.sourceOutcome === 'failed' ? ' ✗'
+    : k.sourceOutcome === 'partial' ? ' ~'
+    : '';
+  return `- [${k.category}] ${k.content}${outcomeHint}`;
+}).join('\n')}`
       : '';
 
     const preferencesSection = `## Your Preferences
@@ -658,5 +689,85 @@ ${performance.commonErrors.slice(0, 5).map(e => `- ${e.pattern} → ${e.resoluti
    */
   public async getAgentMemory(agentId: string): Promise<AgentMemory | null> {
     return this.getCachedMemory(agentId);
+  }
+
+  // ========================= v2: Memory Scoring & Decay =========================
+
+  /**
+   * Calculate effective score for a knowledge entry.
+   * Combines confidence, recency, and verification status.
+   *
+   * effectiveScore = confidence × recencyFactor × verificationFactor
+   *
+   * @param entry - The knowledge entry to score
+   * @returns Effective score (0-1)
+   */
+  public calculateEffectiveScore(entry: RoleKnowledgeEntry): number {
+    const now = Date.now();
+    const { RECENCY_TIERS_DAYS, RECENCY_FACTORS, SUPERSEDED_PENALTY, UNVERIFIED_FACTOR } = DECAY_CONSTANTS;
+
+    // Recency: based on lastVerifiedAt, lastUsed, or createdAt
+    const lastActive = entry.lastVerifiedAt || entry.lastUsed || entry.createdAt;
+    const daysSinceActive = (now - new Date(lastActive).getTime()) / DECAY_CONSTANTS.MS_PER_DAY;
+    const recencyFactor = daysSinceActive <= RECENCY_TIERS_DAYS.RECENT ? RECENCY_FACTORS.RECENT
+      : daysSinceActive <= RECENCY_TIERS_DAYS.MEDIUM ? RECENCY_FACTORS.MEDIUM
+      : daysSinceActive <= RECENCY_TIERS_DAYS.OLD ? RECENCY_FACTORS.OLD
+      : RECENCY_FACTORS.ANCIENT;
+
+    // Verification: superseded entries heavily penalized
+    const verificationFactor = entry.superseded ? SUPERSEDED_PENALTY
+      : entry.lastVerifiedAt ? 1.0
+      : UNVERIFIED_FACTOR;
+
+    return entry.confidence * recencyFactor * verificationFactor;
+  }
+
+  /**
+   * Run decay sweep: halve confidence of entries unused for 90+ days.
+   * Remove entries unused for 180+ days with very low confidence.
+   * Skip entries with lastVerifiedAt in last 30 days (recently validated).
+   *
+   * @param agentId - Agent's unique identifier
+   * @returns Count of decayed and pruned entries
+   */
+  public async runDecaySweep(agentId: string): Promise<{ decayed: number; pruned: number }> {
+    const memory = await this.getCachedMemory(agentId);
+    if (!memory) return { decayed: 0, pruned: 0 };
+
+    const now = Date.now();
+    let decayed = 0;
+    let pruned = 0;
+
+    const { RECENCY_TIERS_DAYS, PRUNE_CONFIDENCE_THRESHOLD, DECAY_MULTIPLIER, MIN_CONFIDENCE_FLOOR, MS_PER_DAY } = DECAY_CONSTANTS;
+
+    memory.roleKnowledge = memory.roleKnowledge.filter(entry => {
+      // Skip if recently verified
+      if (entry.lastVerifiedAt) {
+        const verifiedDaysAgo = (now - new Date(entry.lastVerifiedAt).getTime()) / MS_PER_DAY;
+        if (verifiedDaysAgo <= RECENCY_TIERS_DAYS.RECENT) return true;
+      }
+
+      const lastActive = entry.lastUsed || entry.createdAt;
+      const daysInactive = (now - new Date(lastActive).getTime()) / MS_PER_DAY;
+
+      if (daysInactive > RECENCY_TIERS_DAYS.OLD && entry.confidence < PRUNE_CONFIDENCE_THRESHOLD) {
+        pruned++;
+        return false; // remove
+      }
+
+      if (daysInactive > RECENCY_TIERS_DAYS.MEDIUM) {
+        entry.confidence = Math.max(MIN_CONFIDENCE_FLOOR, entry.confidence * DECAY_MULTIPLIER);
+        decayed++;
+      }
+
+      return true;
+    });
+
+    if (decayed > 0 || pruned > 0) {
+      await this.saveAgentMemory(agentId, memory);
+      this.logger.info('Decay sweep completed', { agentId, decayed, pruned });
+    }
+
+    return { decayed, pruned };
   }
 }

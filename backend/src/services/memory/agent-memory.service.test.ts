@@ -504,4 +504,187 @@ describe('AgentMemoryService', () => {
       expect(knowledge.length).toBe(5);
     });
   });
+
+  // ========================= v2: calculateEffectiveScore =========================
+
+  describe('calculateEffectiveScore', () => {
+    it('should return full score for recent, verified, high-confidence entry', () => {
+      const entry: RoleKnowledgeEntry = {
+        id: 'test-1',
+        category: 'best-practice',
+        content: 'test',
+        confidence: 1.0,
+        createdAt: new Date().toISOString(),
+        lastVerifiedAt: new Date().toISOString(),
+      };
+      const score = service.calculateEffectiveScore(entry);
+      expect(score).toBe(1.0); // 1.0 × 1.0 × 1.0
+    });
+
+    it('should apply recency decay for entries older than 30 days', () => {
+      const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+      const entry: RoleKnowledgeEntry = {
+        id: 'test-2',
+        category: 'best-practice',
+        content: 'test',
+        confidence: 1.0,
+        createdAt: sixtyDaysAgo,
+        lastUsed: sixtyDaysAgo,
+      };
+      const score = service.calculateEffectiveScore(entry);
+      // 1.0 × 0.75 (31-90 days) × 0.8 (never verified) = 0.6
+      expect(score).toBeCloseTo(0.6, 5);
+    });
+
+    it('should heavily penalize superseded entries', () => {
+      const entry: RoleKnowledgeEntry = {
+        id: 'test-3',
+        category: 'best-practice',
+        content: 'test',
+        confidence: 1.0,
+        createdAt: new Date().toISOString(),
+        superseded: true,
+      };
+      const score = service.calculateEffectiveScore(entry);
+      // 1.0 × 1.0 (recent) × 0.3 (superseded) = 0.3
+      expect(score).toBeCloseTo(0.3, 5);
+    });
+
+    it('should apply 0.8 verification factor for never-verified entries', () => {
+      const entry: RoleKnowledgeEntry = {
+        id: 'test-4',
+        category: 'workflow',
+        content: 'test',
+        confidence: 0.5,
+        createdAt: new Date().toISOString(),
+      };
+      const score = service.calculateEffectiveScore(entry);
+      // 0.5 × 1.0 × 0.8 = 0.4
+      expect(score).toBeCloseTo(0.4, 5);
+    });
+
+    it('should return very low score for old, superseded, low-confidence entry', () => {
+      const twoHundredDaysAgo = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000).toISOString();
+      const entry: RoleKnowledgeEntry = {
+        id: 'test-5',
+        category: 'anti-pattern',
+        content: 'test',
+        confidence: 0.3,
+        createdAt: twoHundredDaysAgo,
+        superseded: true,
+      };
+      const score = service.calculateEffectiveScore(entry);
+      // 0.3 × 0.25 (>180 days) × 0.3 (superseded) = 0.0225
+      expect(score).toBeCloseTo(0.0225, 3);
+    });
+
+    it('should use lastVerifiedAt for recency if more recent than lastUsed', () => {
+      const ninetyDaysAgo = new Date(Date.now() - 95 * 24 * 60 * 60 * 1000).toISOString();
+      const entry: RoleKnowledgeEntry = {
+        id: 'test-6',
+        category: 'best-practice',
+        content: 'test',
+        confidence: 0.8,
+        createdAt: ninetyDaysAgo,
+        lastUsed: ninetyDaysAgo,
+        lastVerifiedAt: new Date().toISOString(), // recently verified
+      };
+      const score = service.calculateEffectiveScore(entry);
+      // 0.8 × 1.0 (recent via lastVerifiedAt) × 1.0 (verified) = 0.8
+      expect(score).toBeCloseTo(0.8, 5);
+    });
+  });
+
+  // ========================= v2: runDecaySweep =========================
+
+  describe('runDecaySweep', () => {
+    it('should halve confidence for entries inactive > 90 days', async () => {
+      await service.initializeAgent(testAgentId, testRole);
+      const ninetyFiveDaysAgo = new Date(Date.now() - 95 * 24 * 60 * 60 * 1000).toISOString();
+
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Old entry that should decay in confidence score significantly',
+        confidence: 0.8,
+      });
+
+      // Manually backdate the entry
+      const memory = await service.getAgentMemory(testAgentId);
+      memory!.roleKnowledge[0].createdAt = ninetyFiveDaysAgo;
+      memory!.roleKnowledge[0].lastUsed = undefined;
+      const memPath = path.join(testDir, 'agents', testAgentId, 'memory.json');
+      await fs.writeFile(memPath, JSON.stringify(memory), 'utf-8');
+
+      // Clear cache
+      AgentMemoryService.clearInstance();
+      service = AgentMemoryService.getInstance(testDir);
+
+      const result = await service.runDecaySweep(testAgentId);
+      expect(result.decayed).toBe(1);
+
+      const knowledge = await service.getRoleKnowledge(testAgentId);
+      expect(knowledge[0].confidence).toBeCloseTo(0.4, 1); // 0.8 * 0.5
+    });
+
+    it('should prune entries inactive > 180 days with very low confidence', async () => {
+      await service.initializeAgent(testAgentId, testRole);
+      const twoHundredDaysAgo = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000).toISOString();
+
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'anti-pattern',
+        content: 'Very old entry with low confidence that should be pruned entirely',
+        confidence: 0.2,
+      });
+
+      // Backdate
+      const memory = await service.getAgentMemory(testAgentId);
+      memory!.roleKnowledge[0].createdAt = twoHundredDaysAgo;
+      memory!.roleKnowledge[0].lastUsed = undefined;
+      const memPath = path.join(testDir, 'agents', testAgentId, 'memory.json');
+      await fs.writeFile(memPath, JSON.stringify(memory), 'utf-8');
+
+      AgentMemoryService.clearInstance();
+      service = AgentMemoryService.getInstance(testDir);
+
+      const result = await service.runDecaySweep(testAgentId);
+      expect(result.pruned).toBe(1);
+
+      const knowledge = await service.getRoleKnowledge(testAgentId);
+      expect(knowledge.length).toBe(0);
+    });
+
+    it('should protect recently verified entries from decay', async () => {
+      await service.initializeAgent(testAgentId, testRole);
+      const ninetyFiveDaysAgo = new Date(Date.now() - 95 * 24 * 60 * 60 * 1000).toISOString();
+
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Old but recently verified entry should be protected from decay',
+        confidence: 0.8,
+      });
+
+      // Backdate creation but set recent lastVerifiedAt
+      const memory = await service.getAgentMemory(testAgentId);
+      memory!.roleKnowledge[0].createdAt = ninetyFiveDaysAgo;
+      memory!.roleKnowledge[0].lastUsed = undefined;
+      memory!.roleKnowledge[0].lastVerifiedAt = new Date().toISOString();
+      const memPath = path.join(testDir, 'agents', testAgentId, 'memory.json');
+      await fs.writeFile(memPath, JSON.stringify(memory), 'utf-8');
+
+      AgentMemoryService.clearInstance();
+      service = AgentMemoryService.getInstance(testDir);
+
+      const result = await service.runDecaySweep(testAgentId);
+      expect(result.decayed).toBe(0);
+      expect(result.pruned).toBe(0);
+
+      const knowledge = await service.getRoleKnowledge(testAgentId);
+      expect(knowledge[0].confidence).toBe(0.8); // unchanged
+    });
+
+    it('should return zeros for non-existent agent', async () => {
+      const result = await service.runDecaySweep('nonexistent-agent');
+      expect(result).toEqual({ decayed: 0, pruned: 0 });
+    });
+  });
 });

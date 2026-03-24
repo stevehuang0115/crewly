@@ -62,13 +62,21 @@ bash ${skillsPath}/core/recall/execute.sh '{"agentId":"${agentId}","context":"${
 bash ${skillsPath}/core/get-my-context/execute.sh '{"agentId":"${agentId}","agentRole":"${role}","projectPath":"${projectPath}"}'
 \`\`\`
 
-### Step 3: Register yourself as active
+### Step 3: Check for pending tasks
+\`\`\`bash
+bash ${skillsPath}/core/get-my-tasks/execute.sh '{"sessionName":"${agentId}"}'
+\`\`\`
+If you have assigned tasks from a previous session, review and accept them using the accept-task endpoint.
+If any task has workingNotes, read them carefully — they contain your previous working state
+(current hypothesis, what you've tried, where you left off). Resume from there, don't restart from scratch.
+
+### Step 4: Register yourself as active
 **CRITICAL:** You MUST call register-self to transition your status from "started" to "active". The system will NOT deliver any messages (Slack, tasks, etc.) to you until you register. Run this BEFORE reporting status:
 \`\`\`bash
 bash ${skillsPath}/core/register-self/execute.sh '{"sessionName":"${agentId}","role":"${role}"}'
 \`\`\`
 
-### Step 4: Assess and report
+### Step 5: Assess and report
 After reviewing the results from Steps 1-3:
 1. **Check for unfinished work** — If you find tasks that were in progress but not completed, note them
 2. **Check for pending blockers** — If previous sessions recorded blockers, note them

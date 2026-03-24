@@ -37,13 +37,15 @@ describe('RecoveryModule', () => {
 		expect(module.shouldInclude({ ...baseConfig, role: 'orchestrator' })).toBe(true);
 	});
 
-	it('should build recovery protocol with all three steps', async () => {
+	it('should build recovery protocol with all steps', async () => {
 		const result = await module.build(baseConfig);
 
 		expect(result).toContain('## Session Recovery Protocol (MANDATORY)');
 		expect(result).toContain('### Step 1: Recall previous knowledge');
 		expect(result).toContain('### Step 2: Load your full context');
-		expect(result).toContain('### Step 3: Assess and report');
+		expect(result).toContain('### Step 3: Check for pending tasks');
+		expect(result).toContain('### Step 4: Register yourself as active');
+		expect(result).toContain('### Step 5: Assess and report');
 	});
 
 	it('should include recall command with correct parameters', async () => {
@@ -112,6 +114,14 @@ describe('RecoveryModule', () => {
 		// Contains code blocks
 		expect(result).toContain('```bash');
 		expect(result).toContain('```');
+	});
+
+	it('should include workingNotes recovery instruction in Step 3', async () => {
+		const result = await module.build(baseConfig);
+
+		expect(result).toContain('workingNotes');
+		expect(result).toContain('previous working state');
+		expect(result).toContain('Resume from there');
 	});
 
 	describe('fragment loading', () => {

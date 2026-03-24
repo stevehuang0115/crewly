@@ -15,13 +15,14 @@ import { GoalTrackingService } from '../../services/memory/goal-tracking.service
 import { DailyLogService } from '../../services/memory/daily-log.service.js';
 import { LearningAccumulationService } from '../../services/memory/learning-accumulation.service.js';
 import { KnowledgeService } from '../../services/knowledge/knowledge.service.js';
+import { UserProfileService } from '../../services/memory/user-profile.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('MemoryController');
 
 /** Valid categories for the remember endpoint */
 const VALID_REMEMBER_CATEGORIES: ReadonlySet<string> = new Set([
-  'fact', 'pattern', 'decision', 'gotcha', 'preference', 'relationship',
+  'fact', 'pattern', 'decision', 'gotcha', 'preference', 'user_preference', 'relationship',
 ]);
 
 /** Valid scopes for the remember endpoint */
@@ -554,5 +555,64 @@ export async function getMyContext(req: Request, res: Response, next: NextFuncti
       error: error instanceof Error ? error.message : String(error),
     });
     next(error);
+  }
+}
+
+/**
+ * GET /api/memory/user-profile
+ *
+ * Get the shared user profile. Returns the full profile object,
+ * or an empty object if no profile has been created yet.
+ *
+ * @param req - Express request (no parameters required)
+ * @param res - Express response returning { success, data: SharedUserProfile }
+ */
+export async function getUserProfile(req: Request, res: Response): Promise<void> {
+  try {
+    const userProfileService = UserProfileService.getInstance();
+    const profile = await userProfileService.getProfile();
+    res.json({ success: true, data: profile });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to get user profile' });
+  }
+}
+
+/**
+ * POST /api/memory/user-profile
+ *
+ * Update the shared user profile with a partial merge.
+ * The `updatedBy` field is required to track who made the change.
+ *
+ * Merge strategy:
+ * - Top-level scalars are overwritten
+ * - `preferences` is shallow-merged
+ * - `notes` and `prohibitions` are appended (deduplicated)
+ *
+ * @param req - Express request with body: { updatedBy, ...profileFields }
+ * @param res - Express response returning { success, data: SharedUserProfile }
+ *
+ * @example
+ * ```
+ * POST /api/memory/user-profile
+ * {
+ *   "updatedBy": "crewly-orc",
+ *   "language": "zh-CN",
+ *   "reportingStyle": "detailed"
+ * }
+ * ```
+ */
+export async function updateUserProfile(req: Request, res: Response): Promise<void> {
+  try {
+    const { updatedBy, ...updates } = req.body;
+    if (!updatedBy) {
+      res.status(400).json({ success: false, error: 'updatedBy is required' });
+      return;
+    }
+    const userProfileService = UserProfileService.getInstance();
+    const profile = await userProfileService.updateProfile(updates, updatedBy);
+    res.json({ success: true, data: profile });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ success: false, error: msg });
   }
 }

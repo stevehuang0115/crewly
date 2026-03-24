@@ -232,7 +232,7 @@ describe('QueueProcessorService', () => {
 
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[CHAT:conv-1] Hello',
+        expect.stringMatching(/^\[CHAT:conv-1:[a-f0-9]{8}\] Hello$/),
         'claude-code'
       );
     });
@@ -508,7 +508,7 @@ describe('QueueProcessorService', () => {
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(2);
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[CHAT:conv-2] Second',
+        expect.stringMatching(/^\[CHAT:conv-2:[a-f0-9]{8}\] Second$/),
         'claude-code'
       );
     });
@@ -628,7 +628,7 @@ describe('QueueProcessorService', () => {
       // Should now have attempted delivery
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[CHAT:conv-1] Queued during init',
+        expect.stringMatching(/^\[CHAT:conv-1:[a-f0-9]{8}\] Queued during init$/),
         'claude-code'
       );
     });
@@ -838,7 +838,7 @@ describe('QueueProcessorService', () => {
       // web_chat messages should force-deliver even when agent is not ready
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[CHAT:conv-1] Urgent user message',
+        expect.stringMatching(/^\[CHAT:conv-1:[a-f0-9]{8}\] Urgent user message$/),
         'claude-code'
       );
       // Should NOT be re-queued
@@ -865,7 +865,7 @@ describe('QueueProcessorService', () => {
       // slack messages should force-deliver even when agent is not ready
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[CHAT:conv-1] Slack message',
+        expect.stringMatching(/^\[CHAT:conv-1:[a-f0-9]{8}\] Slack message$/),
         'claude-code'
       );
       // Should NOT be re-queued
@@ -976,7 +976,7 @@ describe('QueueProcessorService', () => {
       // The first call should be the user message (prioritized)
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
       const firstContent = mockAgentRegistrationService.sendMessageToAgent.mock.calls[0][1];
-      expect(firstContent).toContain('[CHAT:conv-1]');
+      expect(firstContent).toMatch(/\[CHAT:conv-1:[a-f0-9]{8}\]/);
       expect(firstContent).not.toContain('[EVENT:status]');
     });
 
@@ -1103,7 +1103,7 @@ describe('QueueProcessorService', () => {
       // google_chat messages should force-deliver even when agent is not ready
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[GCHAT:conv-gchat] Urgent Google Chat message',
+        expect.stringMatching(/^\[GCHAT:conv-gchat:[a-f0-9]{8}\] Urgent Google Chat message$/),
         'claude-code'
       );
       expect(requeueSpy).not.toHaveBeenCalled();
@@ -1132,7 +1132,7 @@ describe('QueueProcessorService', () => {
 
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[GCHAT:conv-gchat-hint thread=spaces/AAAA123/threads/BBB456] Hello from Chat',
+        expect.stringMatching(/^\[GCHAT:conv-gchat-hint:[a-f0-9]{8} thread=spaces\/AAAA123\/threads\/BBB456\] Hello from Chat$/),
         'claude-code'
       );
     });
@@ -1330,7 +1330,7 @@ describe('QueueProcessorService', () => {
 
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[CHAT:slack-C123-ts456] Hello from Slack [SLACK:C123:1234567890.123456]',
+        expect.stringMatching(/^\[CHAT:slack-C123-ts456:[a-f0-9]{8}\] Hello from Slack \[SLACK:C123:1234567890\.123456\]$/),
         'claude-code'
       );
     });
@@ -1354,7 +1354,7 @@ describe('QueueProcessorService', () => {
 
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[CHAT:slack-D999-ts111] Hello from Slack DM [SLACK:D999]',
+        expect.stringMatching(/^\[CHAT:slack-D999-ts111:[a-f0-9]{8}\] Hello from Slack DM \[SLACK:D999\]$/),
         'claude-code'
       );
     });
@@ -1374,7 +1374,7 @@ describe('QueueProcessorService', () => {
 
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[CHAT:conv-web] Hello from web',
+        expect.stringMatching(/^\[CHAT:conv-web:[a-f0-9]{8}\] Hello from web$/),
         'claude-code'
       );
     });
@@ -1399,8 +1399,12 @@ describe('QueueProcessorService', () => {
   });
 
   describe('message deduplication', () => {
-    it('should track delivered message IDs after successful delivery', async () => {
-      mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true });
+    it('should track delivered message IDs after AGENT_BUSY response', async () => {
+      // deliveredMessageIds is only set on AGENT_BUSY (not on success),
+      // because its purpose is to prevent duplicate delivery when the agent
+      // received the message but the result was reported as busy.
+      mockAgentRegistrationService.sendMessageToAgent
+        .mockResolvedValue({ success: false, error: '[AGENT_BUSY] Agent is processing' });
 
       processor.start();
 
@@ -1480,7 +1484,9 @@ describe('QueueProcessorService', () => {
     });
 
     it('should clean up dedup entries on stop', async () => {
-      mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true });
+      // Use AGENT_BUSY to populate the dedup set (only AGENT_BUSY sets it)
+      mockAgentRegistrationService.sendMessageToAgent
+        .mockResolvedValue({ success: false, error: '[AGENT_BUSY] Agent is processing' });
 
       processor.start();
 
@@ -1571,17 +1577,22 @@ describe('QueueProcessorService', () => {
       expect(queueService.getStatus().totalProcessed).toBe(1);
     });
 
-    it('should mark pending-ack message as completed when conversationId found in PTY output', async () => {
+    it('should mark pending-ack message as completed when fingerprint found in PTY output', async () => {
       // First message: force-deliver (agent not ready)
-      // Second processNext: agent ready, flush finds conversationId in PTY output
+      // Second processNext: agent ready, flush finds fingerprint in PTY output
       mockAgentRegistrationService.waitForAgentReady
         .mockResolvedValueOnce(false)   // pre-delivery: not ready -> force-deliver
         .mockResolvedValueOnce(false)   // post-delivery idle wait: not ready
         .mockResolvedValueOnce(true);   // empty-queue pending-ack poll: ready
 
-      // PTY output contains the conversationId -> message was processed
+      // PTY output mirrors what was actually delivered (captured from sendMessageToAgent).
+      // The delivery content includes [CHAT:conversationId:fingerprint] which the
+      // pending-ack check uses for per-message verification.
       mockAgentRegistrationService.captureAgentOutput
-        .mockResolvedValue('[CHAT:conv-slack-1] Force me [SLACK:C123]');
+        .mockImplementation(async () => {
+          const calls = mockAgentRegistrationService.sendMessageToAgent.mock.calls;
+          return calls.length > 0 ? calls[calls.length - 1][1] : '';
+        });
 
       processor.start();
 
@@ -1607,7 +1618,7 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
 
-      // Pending-ack should be flushed (message found in PTY output)
+      // Pending-ack should be flushed (fingerprint found in PTY output)
       expect(processor.getPendingAckCount()).toBe(0);
     });
 
@@ -1749,10 +1760,17 @@ describe('QueueProcessorService', () => {
         .mockResolvedValueOnce(true);   // flush poll: ready
 
       // First captureAgentOutput: empty (triggers redeliver path)
-      // Second captureAgentOutput (dedup re-check): contains conversationId
+      // Second captureAgentOutput (dedup re-check): contains the delivered content
+      // with fingerprint — simulates the agent processing the message between checks
+      let captureCallCount = 0;
       mockAgentRegistrationService.captureAgentOutput
-        .mockResolvedValueOnce('')
-        .mockResolvedValueOnce('[CHAT:conv-dedup] message content');
+        .mockImplementation(async () => {
+          captureCallCount++;
+          if (captureCallCount <= 1) return '';
+          // On re-check, return the actual delivery content (with fingerprint)
+          const calls = mockAgentRegistrationService.sendMessageToAgent.mock.calls;
+          return calls.length > 0 ? calls[calls.length - 1][1] : '';
+        });
 
       processor.start();
 
@@ -1778,7 +1796,7 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
 
-      // Should NOT have redelivered (dedup re-check found the conversationId)
+      // Should NOT have redelivered (dedup re-check found the fingerprint)
       expect(mockAgentRegistrationService.sendMessageToAgent.mock.calls.length).toBe(sendCountBefore);
       // Message marked completed via dedup path
       expect(processor.getPendingAckCount()).toBe(0);
@@ -1824,14 +1842,18 @@ describe('QueueProcessorService', () => {
       expect(processor.getPendingAckCount()).toBe(1);
     });
 
-    it('should match [GCHAT:id] prefix for google_chat messages', async () => {
+    it('should match [GCHAT:id:fingerprint] prefix for google_chat messages', async () => {
       mockAgentRegistrationService.waitForAgentReady
         .mockResolvedValueOnce(false)   // pre-delivery: force
         .mockResolvedValueOnce(false)   // post-delivery idle
         .mockResolvedValueOnce(true);   // flush poll: ready
 
+      // Return the actual delivery content (includes GCHAT prefix with fingerprint)
       mockAgentRegistrationService.captureAgentOutput
-        .mockResolvedValue('[GCHAT:conv-gchat-1] Hello from Chat');
+        .mockImplementation(async () => {
+          const calls = mockAgentRegistrationService.sendMessageToAgent.mock.calls;
+          return calls.length > 0 ? calls[calls.length - 1][1] : '';
+        });
 
       processor.start();
 
@@ -1949,9 +1971,14 @@ describe('QueueProcessorService', () => {
         .mockResolvedValueOnce(false)   // msg2 post-delivery idle
         .mockResolvedValue(true);       // flush polls: ready
 
-      // PTY output contains msg1 but NOT msg2
+      // PTY output contains msg1's delivery content (with fingerprint) but NOT msg2's.
+      // We capture the FIRST sendMessageToAgent call only.
       mockAgentRegistrationService.captureAgentOutput
-        .mockResolvedValue('[CHAT:conv-multi-1] First message');
+        .mockImplementation(async () => {
+          const calls = mockAgentRegistrationService.sendMessageToAgent.mock.calls;
+          // Return only the first message's delivery content
+          return calls.length > 0 ? calls[0][1] : '';
+        });
 
       processor.start();
 
@@ -1983,7 +2010,7 @@ describe('QueueProcessorService', () => {
 
       expect(processor.getPendingAckCount()).toBe(2);
 
-      // Trigger flush — msg1 found, msg2 not found
+      // Trigger flush — msg1 found (fingerprint match), msg2 not found
       jest.advanceTimersByTime(600);
       await flushPromises();
       await flushPromises();
@@ -2002,9 +2029,13 @@ describe('QueueProcessorService', () => {
         .mockResolvedValueOnce(false)   // msg2 post-delivery
         .mockResolvedValue(true);       // flush polls
 
-      // PTY output contains both messages
+      // PTY output contains BOTH messages' delivery content (with fingerprints)
       mockAgentRegistrationService.captureAgentOutput
-        .mockResolvedValue('[CHAT:conv-both-1] msg1\n[CHAT:conv-both-2] msg2');
+        .mockImplementation(async () => {
+          const calls = mockAgentRegistrationService.sendMessageToAgent.mock.calls;
+          // Return all delivered content concatenated (simulates PTY buffer)
+          return calls.map((c: any[]) => c[1]).join('\n');
+        });
 
       processor.start();
 
@@ -2034,7 +2065,7 @@ describe('QueueProcessorService', () => {
 
       expect(processor.getPendingAckCount()).toBe(2);
 
-      // Trigger flush — both found
+      // Trigger flush — both found (fingerprints match)
       jest.advanceTimersByTime(600);
       await flushPromises();
       await flushPromises();
