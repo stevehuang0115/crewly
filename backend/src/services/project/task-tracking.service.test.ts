@@ -867,6 +867,69 @@ describe('TaskTrackingService', () => {
     });
   });
 
+  // ========================= v2: validateStatusTransition =========================
+
+  describe('validateStatusTransition', () => {
+    it('should allow executor to set accepted', () => {
+      const result = service.validateStatusTransition('assigned', 'accepted', 'executor');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should allow executor to set blocked', () => {
+      const result = service.validateStatusTransition('active', 'blocked', 'executor');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should allow executor to set done', () => {
+      const result = service.validateStatusTransition('active', 'done', 'executor');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should REJECT executor setting verified', () => {
+      const result = service.validateStatusTransition('done', 'verified', 'executor');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('Executor cannot set status');
+    });
+
+    it('should allow team-lead to set verified', () => {
+      const result = service.validateStatusTransition('done', 'verified', 'team-lead');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should allow team-lead to set failed', () => {
+      const result = service.validateStatusTransition('done', 'failed', 'team-lead');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should REJECT orchestrator setting done', () => {
+      const result = service.validateStatusTransition('active', 'done', 'orchestrator');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('Orchestrator cannot set status');
+    });
+
+    it('should allow orchestrator to set cancelled', () => {
+      const result = service.validateStatusTransition('assigned', 'cancelled', 'orchestrator');
+      expect(result.valid).toBe(true);
+    });
+
+    it('should REJECT assigned → verified (skip execution)', () => {
+      const result = service.validateStatusTransition('assigned', 'verified', 'team-lead');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('skip execution');
+    });
+
+    it('should REJECT done → assigned (must go through failed)', () => {
+      const result = service.validateStatusTransition('done', 'assigned', 'team-lead');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('Must go through failed');
+    });
+
+    it('should allow team-lead to also set executor statuses', () => {
+      const result = service.validateStatusTransition('assigned', 'accepted', 'team-lead');
+      expect(result.valid).toBe(true);
+    });
+  });
+
   describe('updateWorkingNotes', () => {
     it('should save working notes for the assigned task', async () => {
       const taskData = {
