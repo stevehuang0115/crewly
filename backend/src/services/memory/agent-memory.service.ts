@@ -573,16 +573,25 @@ export class AgentMemoryService implements IAgentMemoryService {
 
     const { roleKnowledge, preferences, performance } = memory;
 
-    // Filter to high-confidence knowledge
-    const relevantKnowledge = roleKnowledge
-      .filter(k => k.confidence >= 0.6)
-      .sort((a, b) => b.confidence - a.confidence)
+    // v2: Filter using effective score (confidence × recency × verification)
+    const scored = roleKnowledge
+      .filter(k => !k.superseded)
+      .map(k => ({ entry: k, score: this.calculateEffectiveScore(k) }))
+      .filter(s => s.score >= 0.4)
+      .sort((a, b) => b.score - a.score)
       .slice(0, 20);
 
-    const knowledgeSection = relevantKnowledge.length > 0
+    const knowledgeSection = scored.length > 0
       ? `## Your Role Knowledge
 
-${relevantKnowledge.map(k => `- [${k.category}] ${k.content}`).join('\n')}`
+${scored.map(s => {
+  const k = s.entry;
+  const outcomeHint = k.sourceOutcome === 'success' ? ' ✓'
+    : k.sourceOutcome === 'failed' ? ' ✗'
+    : k.sourceOutcome === 'partial' ? ' ~'
+    : '';
+  return `- [${k.category}] ${k.content}${outcomeHint}`;
+}).join('\n')}`
       : '';
 
     const preferencesSection = `## Your Preferences
@@ -658,5 +667,82 @@ ${performance.commonErrors.slice(0, 5).map(e => `- ${e.pattern} → ${e.resoluti
    */
   public async getAgentMemory(agentId: string): Promise<AgentMemory | null> {
     return this.getCachedMemory(agentId);
+  }
+
+  // ========================= v2: Memory Scoring & Decay =========================
+
+  /**
+   * Calculate effective score for a knowledge entry.
+   * Combines confidence, recency, and verification status.
+   *
+   * effectiveScore = confidence × recencyFactor × verificationFactor
+   *
+   * @param entry - The knowledge entry to score
+   * @returns Effective score (0-1)
+   */
+  public calculateEffectiveScore(entry: RoleKnowledgeEntry): number {
+    const now = Date.now();
+
+    // Recency: based on lastVerifiedAt, lastUsed, or createdAt
+    const lastActive = entry.lastVerifiedAt || entry.lastUsed || entry.createdAt;
+    const daysSinceActive = (now - new Date(lastActive).getTime()) / (1000 * 60 * 60 * 24);
+    const recencyFactor = daysSinceActive <= 30 ? 1.0
+      : daysSinceActive <= 90 ? 0.75
+      : daysSinceActive <= 180 ? 0.5
+      : 0.25;
+
+    // Verification: superseded entries heavily penalized
+    const verificationFactor = entry.superseded ? 0.3
+      : entry.lastVerifiedAt ? 1.0
+      : 0.8;
+
+    return entry.confidence * recencyFactor * verificationFactor;
+  }
+
+  /**
+   * Run decay sweep: halve confidence of entries unused for 90+ days.
+   * Remove entries unused for 180+ days with very low confidence.
+   * Skip entries with lastVerifiedAt in last 30 days (recently validated).
+   *
+   * @param agentId - Agent's unique identifier
+   * @returns Count of decayed and pruned entries
+   */
+  public async runDecaySweep(agentId: string): Promise<{ decayed: number; pruned: number }> {
+    const memory = await this.getCachedMemory(agentId);
+    if (!memory) return { decayed: 0, pruned: 0 };
+
+    const now = Date.now();
+    let decayed = 0;
+    let pruned = 0;
+
+    memory.roleKnowledge = memory.roleKnowledge.filter(entry => {
+      // Skip if recently verified
+      if (entry.lastVerifiedAt) {
+        const verifiedDaysAgo = (now - new Date(entry.lastVerifiedAt).getTime()) / 86400000;
+        if (verifiedDaysAgo <= 30) return true;
+      }
+
+      const lastActive = entry.lastUsed || entry.createdAt;
+      const daysInactive = (now - new Date(lastActive).getTime()) / 86400000;
+
+      if (daysInactive > 180 && entry.confidence < 0.3) {
+        pruned++;
+        return false; // remove
+      }
+
+      if (daysInactive > 90) {
+        entry.confidence = Math.max(0.1, entry.confidence * 0.5);
+        decayed++;
+      }
+
+      return true;
+    });
+
+    if (decayed > 0 || pruned > 0) {
+      await this.saveAgentMemory(agentId, memory);
+      this.logger.info('Decay sweep completed', { agentId, decayed, pruned });
+    }
+
+    return { decayed, pruned };
   }
 }

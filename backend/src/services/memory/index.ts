@@ -13,6 +13,7 @@ export { SessionMemoryService } from './session-memory.service.js';
 export { DailyLogService } from './daily-log.service.js';
 export { GoalTrackingService } from './goal-tracking.service.js';
 export { LearningAccumulationService } from './learning-accumulation.service.js';
+export { UserProfileService } from './user-profile.service.js';
 
 // Re-export memory types for convenience
 export type {
@@ -40,4 +41,5 @@ export type {
   ProjectAgentsIndex,
   DailyLogEntry,
   LearningAccumulationEntry,
+  SharedUserProfile,
 } from '../../types/memory.types.js';

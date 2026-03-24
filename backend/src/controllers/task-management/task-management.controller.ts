@@ -2100,3 +2100,122 @@ export async function recordHandoff(this: ApiController, req: Request, res: Resp
 		res.status(500).json({ success: false, error: 'Failed to record handoff' });
 	}
 }
+
+/**
+ * Accept a task — agent acknowledges the task with a structured understanding.
+ * Transitions task from 'assigned' to 'accepted'.
+ *
+ * @param req - Request containing taskId, sessionName, and understanding
+ * @param res - Response with the updated task or error
+ */
+export async function acceptTask(this: ApiController, req: Request, res: Response): Promise<void> {
+	try {
+		const { taskId, sessionName, understanding } = req.body;
+
+		if (!taskId) {
+			res.status(400).json({ success: false, error: 'taskId is required' });
+			return;
+		}
+		if (!sessionName) {
+			res.status(400).json({ success: false, error: 'sessionName is required' });
+			return;
+		}
+		if (!understanding) {
+			res.status(400).json({ success: false, error: 'understanding is required — provide your interpretation of the task scope and deliverables' });
+			return;
+		}
+
+		const task = await this.taskTrackingService.acceptTask(taskId, sessionName, understanding);
+
+		logger.info('Task accepted', { taskId, sessionName, understanding: understanding.substring(0, 100) });
+
+		res.json({
+			success: true,
+			message: `Task '${task.taskName}' accepted`,
+			task,
+		});
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		logger.error('Error accepting task', { error: msg });
+		res.status(400).json({ success: false, error: msg });
+	}
+}
+
+/**
+ * Request clarification on a task — agent signals that the task description is unclear.
+ * Transitions task from 'assigned' or 'accepted' to 'needs_clarification'.
+ *
+ * @param req - Request containing taskId, sessionName, and question
+ * @param res - Response with the updated task or error
+ */
+export async function requestClarification(this: ApiController, req: Request, res: Response): Promise<void> {
+	try {
+		const { taskId, sessionName, question } = req.body;
+
+		if (!taskId) {
+			res.status(400).json({ success: false, error: 'taskId is required' });
+			return;
+		}
+		if (!sessionName) {
+			res.status(400).json({ success: false, error: 'sessionName is required' });
+			return;
+		}
+		if (!question) {
+			res.status(400).json({ success: false, error: 'question is required — describe what you need clarified' });
+			return;
+		}
+
+		const task = await this.taskTrackingService.requestClarification(taskId, sessionName, question);
+
+		logger.info('Task clarification requested', { taskId, sessionName, question: question.substring(0, 100) });
+
+		res.json({
+			success: true,
+			message: `Clarification requested for task '${task.taskName}'`,
+			task,
+		});
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		logger.error('Error requesting clarification', { error: msg });
+		res.status(400).json({ success: false, error: msg });
+	}
+}
+
+/**
+ * Save working notes for a task — persists agent's current working state
+ * across session restarts.
+ *
+ * @param req - Request containing taskId, sessionName, and notes
+ * @param res - Response with success status
+ */
+export async function saveWorkingNotes(this: ApiController, req: Request, res: Response): Promise<void> {
+	try {
+		const { taskId, sessionName, notes } = req.body;
+
+		if (!taskId) {
+			res.status(400).json({ success: false, error: 'taskId is required' });
+			return;
+		}
+		if (!sessionName) {
+			res.status(400).json({ success: false, error: 'sessionName is required' });
+			return;
+		}
+		if (notes === undefined || notes === null) {
+			res.status(400).json({ success: false, error: 'notes is required' });
+			return;
+		}
+
+		await this.taskTrackingService.updateWorkingNotes(taskId, sessionName, notes);
+
+		logger.info('Working notes saved', { taskId, sessionName, notesLength: notes.length });
+
+		res.json({
+			success: true,
+			message: 'Working notes saved',
+		});
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		logger.error('Error saving working notes', { error: msg });
+		res.status(400).json({ success: false, error: msg });
+	}
+}

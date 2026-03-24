@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { readFile, writeFile, mkdir, readdir, stat } from 'fs/promises';
 import { join, basename, dirname } from 'path';
 import * as taskManagementHandlers from './task-management.controller.js';
-import { assignTask, completeTask, completeTasksBySession, blockTask, takeNextTask, syncTaskStatus, getTeamProgress, createTask, getTaskOutput, addMonitoring, setEventBusServiceForTaskCleanup, scoreTask } from './task-management.controller.js';
+import { assignTask, completeTask, completeTasksBySession, blockTask, takeNextTask, syncTaskStatus, getTeamProgress, createTask, getTaskOutput, addMonitoring, setEventBusServiceForTaskCleanup, scoreTask, saveWorkingNotes } from './task-management.controller.js';
 import type { ApiController } from '../api.controller.js';
 import { TASK_OUTPUT_CONSTANTS } from '../../types/task-output.types.js';
 
@@ -59,7 +59,7 @@ describe('Task Management Handlers', () => {
     getTasksBySessionName: jest.fn<any>(),
     loadTaskData: jest.fn<any>(),
     saveTaskData: jest.fn<any>(),
-  };
+    updateWorkingNotes: jest.fn<any>(),  };
 
   const mockSchedulerService = {
     cancelCheck: jest.fn<any>(),
@@ -1281,6 +1281,75 @@ describe('Task Management Handlers', () => {
 
       expect(jsonSpy).toHaveBeenCalledWith(
         expect.objectContaining({ success: true, message: expect.stringContaining('already completed') })
+      );
+    });
+  });
+
+  describe('saveWorkingNotes', () => {
+    it('should save working notes successfully', async () => {
+      mockTaskTrackingService.updateWorkingNotes.mockResolvedValue(undefined);
+
+      const mockReq = { body: { taskId: 'task-1', sessionName: 'session-abc', notes: 'current state of work' } } as Partial<Request>;
+      const jsonSpy = jest.fn<any>();
+      const mockRes = { status: jest.fn<any>().mockReturnThis(), json: jsonSpy } as Partial<Response>;
+
+      await saveWorkingNotes.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+      expect(jsonSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true, message: 'Working notes saved' })
+      );
+      expect(mockTaskTrackingService.updateWorkingNotes).toHaveBeenCalledWith('task-1', 'session-abc', 'current state of work');
+    });
+
+    it('should reject missing taskId', async () => {
+      const mockReq = { body: { sessionName: 'session-abc', notes: 'notes' } } as Partial<Request>;
+      const statusSpy = jest.fn<any>().mockReturnThis();
+      const jsonSpy = jest.fn<any>();
+      const mockRes = { status: statusSpy, json: jsonSpy } as Partial<Response>;
+
+      await saveWorkingNotes.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(jsonSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: 'taskId is required' })
+      );
+    });
+
+    it('should reject missing sessionName', async () => {
+      const mockReq = { body: { taskId: 'task-1', notes: 'notes' } } as Partial<Request>;
+      const statusSpy = jest.fn<any>().mockReturnThis();
+      const jsonSpy = jest.fn<any>();
+      const mockRes = { status: statusSpy, json: jsonSpy } as Partial<Response>;
+
+      await saveWorkingNotes.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject missing notes', async () => {
+      const mockReq = { body: { taskId: 'task-1', sessionName: 'session-abc' } } as Partial<Request>;
+      const statusSpy = jest.fn<any>().mockReturnThis();
+      const jsonSpy = jest.fn<any>();
+      const mockRes = { status: statusSpy, json: jsonSpy } as Partial<Response>;
+
+      await saveWorkingNotes.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+    });
+
+    it('should handle service errors gracefully', async () => {
+      mockTaskTrackingService.updateWorkingNotes.mockRejectedValue(new Error('Task not found'));
+
+      const mockReq = { body: { taskId: 'bad-task', sessionName: 'session-abc', notes: 'notes' } } as Partial<Request>;
+      const statusSpy = jest.fn<any>().mockReturnThis();
+      const jsonSpy = jest.fn<any>();
+      const mockRes = { status: statusSpy, json: jsonSpy } as Partial<Response>;
+
+      await saveWorkingNotes.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(jsonSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: 'Task not found' })
       );
     });
   });

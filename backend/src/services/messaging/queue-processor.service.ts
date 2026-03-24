@@ -444,8 +444,13 @@ export class QueueProcessorService extends EventEmitter {
         }
       }
 
-      // Format message: system events use raw content, chat uses [CHAT:id] or [GCHAT:id] prefix
+      // Format message: system events use raw content, chat uses [CHAT:id] or [GCHAT:id] prefix.
+      // A short message fingerprint (last 8 chars of messageId) is embedded in the prefix
+      // so pending-ack verification can distinguish between different messages in the same
+      // conversation/thread. Without this, multiple messages sharing the same conversationId
+      // cause false-positive ack confirmations.
       let deliveryContent: string;
+      const msgFingerprint = message.id.slice(-8);
       if (isSystemEvent) {
         const allContents = [message.content, ...batchedMessages.map(m => m.content)];
         deliveryContent = allContents.join('\n');
@@ -453,9 +458,9 @@ export class QueueProcessorService extends EventEmitter {
         const prefix = CHAT_ROUTING_CONSTANTS.GOOGLE_CHAT_PREFIX;
         const threadId = message.sourceMetadata?.threadId as string | undefined;
         const threadSuffix = threadId ? ` thread=${threadId}` : '';
-        deliveryContent = `[${prefix}:${message.conversationId}${threadSuffix}] ${message.content}`;
+        deliveryContent = `[${prefix}:${message.conversationId}:${msgFingerprint}${threadSuffix}] ${message.content}`;
       } else {
-        deliveryContent = `[${CHAT_ROUTING_CONSTANTS.MESSAGE_PREFIX}:${message.conversationId}] ${message.content}`;
+        deliveryContent = `[${CHAT_ROUTING_CONSTANTS.MESSAGE_PREFIX}:${message.conversationId}:${msgFingerprint}] ${message.content}`;
       }
 
       // Inject [SLACK:channelId:threadTs] marker for Slack-sourced messages so
@@ -807,19 +812,43 @@ export class QueueProcessorService extends EventEmitter {
   /**
    * Check if a pending-ack message's fingerprint appears in PTY output.
    *
-   * Matches the full [CHAT:conversationId] or [GCHAT:conversationId] prefix
-   * rather than a bare conversationId to avoid false positives from short
-   * or common IDs appearing in unrelated output.
+   * Matches the full [CHAT:conversationId:fingerprint] or [GCHAT:conversationId:fingerprint]
+   * prefix. The fingerprint (last 8 chars of messageId) distinguishes between different
+   * messages in the same conversation/thread, preventing false-positive ack confirmations
+   * when a user sends multiple messages in quick succession.
+   *
+   * Falls back to conversationId-only matching for messages delivered before the
+   * fingerprint format was introduced (backward compat).
    *
    * @param output - Captured PTY output string
    * @param conversationId - The conversation ID to search for
+   * @param messageId - The unique message ID (last 8 chars used as fingerprint)
    * @returns true if the message fingerprint was found
    */
-  private isPendingAckInOutput(output: string, conversationId: string): boolean {
-    return output.includes(`[CHAT:${conversationId}]`)
-      || output.includes(`[GCHAT:${conversationId}]`)
-      || output.includes(`[CHAT:${conversationId} `)
-      || output.includes(`[GCHAT:${conversationId} `);
+  private isPendingAckInOutput(output: string, conversationId: string, messageId?: string): boolean {
+    // Primary check: match with message fingerprint for precise per-message ack
+    if (messageId) {
+      const fingerprint = messageId.slice(-8);
+      if (
+        output.includes(`[CHAT:${conversationId}:${fingerprint}]`)
+        || output.includes(`[GCHAT:${conversationId}:${fingerprint}]`)
+        || output.includes(`[CHAT:${conversationId}:${fingerprint} `)
+        || output.includes(`[GCHAT:${conversationId}:${fingerprint} `)
+      ) {
+        return true;
+      }
+    }
+
+    // Fallback: conversationId-only matching for backward compatibility
+    // (messages delivered before fingerprint format was added)
+    if (!messageId) {
+      return output.includes(`[CHAT:${conversationId}]`)
+        || output.includes(`[GCHAT:${conversationId}]`)
+        || output.includes(`[CHAT:${conversationId} `)
+        || output.includes(`[GCHAT:${conversationId} `);
+    }
+
+    return false;
   }
 
   /**
@@ -868,10 +897,10 @@ export class QueueProcessorService extends EventEmitter {
         continue;
       }
 
-      // Check if the delivery prefix [CHAT:conversationId] or [GCHAT:conversationId]
-      // appears in the PTY output. Using the full prefix avoids false positives from
-      // short or common conversationIds that might appear in unrelated output.
-      const wasProcessed = this.isPendingAckInOutput(ptyOutput, entry.conversationId);
+      // Check if the delivery prefix [CHAT:conversationId:fingerprint] appears in
+      // the PTY output. The fingerprint (from messageId) ensures we match THIS
+      // specific message, not a previous message in the same conversation thread.
+      const wasProcessed = this.isPendingAckInOutput(ptyOutput, entry.conversationId, entry.messageId);
 
       if (wasProcessed) {
         this.logger.info('Pending-ack message confirmed in PTY output', {
@@ -907,7 +936,7 @@ export class QueueProcessorService extends EventEmitter {
         sessionName,
         scanLines
       );
-      if (this.isPendingAckInOutput(freshOutput, entry.conversationId)) {
+      if (this.isPendingAckInOutput(freshOutput, entry.conversationId, entry.messageId)) {
         this.logger.info('Pending-ack message found on re-check, marking completed', {
           messageId: entry.messageId,
           conversationId: entry.conversationId,

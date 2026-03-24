@@ -97,6 +97,44 @@ describe('Task Tracking Types', () => {
         expect(task.priority).toBe(priority);
       });
     });
+
+    it('should accept optional workingNotes fields', () => {
+      const task: InProgressTask = {
+        id: 'task-wn',
+        projectId: 'p1',
+        teamId: 't1',
+        taskFilePath: '/path/to/task.md',
+        taskName: 'Working Notes Task',
+        targetRole: 'developer',
+        assignedTeamMemberId: 'member-1',
+        assignedSessionName: 'session-1',
+        assignedAt: '2026-03-23T00:00:00.000Z',
+        status: 'working',
+        workingNotes: 'Currently investigating auth flow. Tried approach A (failed). Next: try approach B.',
+        workingNotesUpdatedAt: '2026-03-23T10:30:00.000Z',
+      };
+
+      expect(task.workingNotes).toContain('auth flow');
+      expect(task.workingNotesUpdatedAt).toBe('2026-03-23T10:30:00.000Z');
+    });
+
+    it('should be backwards-compatible without workingNotes fields', () => {
+      const task: InProgressTask = {
+        id: 'task-no-wn',
+        projectId: 'p1',
+        teamId: 't1',
+        taskFilePath: '/path',
+        taskName: 'No Working Notes',
+        targetRole: 'dev',
+        assignedTeamMemberId: 'm1',
+        assignedSessionName: 's1',
+        assignedAt: '2026-01-01',
+        status: 'assigned',
+      };
+
+      expect(task.workingNotes).toBeUndefined();
+      expect(task.workingNotesUpdatedAt).toBeUndefined();
+    });
   });
 
   describe('TaskTrackingData', () => {

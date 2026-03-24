@@ -67,12 +67,17 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('lifecycle');
 			expect(names).toContain('user_profile_reference');
 			expect(names).toContain('learning_references');
-			expect(names.length).toBe(11);
+			// Architecture Upgrade modules
+			expect(names).toContain('role-boundary');
+			expect(names).toContain('capability-overlay');
+			expect(names).toContain('domain-sop');
+			expect(names).toContain('risk-policy');
+			expect(names.length).toBe(15);
 		});
 
-		it('should use default token budget of 25000', () => {
+		it('should use default token budget of 28000', () => {
 			const service = new PromptAssemblyService();
-			expect(service.tokenBudget()).toBe(25000);
+			expect(service.tokenBudget()).toBe(28000);
 		});
 
 		it('should accept custom token budget', () => {

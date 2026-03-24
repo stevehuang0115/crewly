@@ -866,4 +866,98 @@ describe('TaskTrackingService', () => {
       expect(updatedTask.status).toBe('active');
     });
   });
+
+  describe('updateWorkingNotes', () => {
+    it('should save working notes for the assigned task', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{ ...mockTask, id: 'task-wn', assignedSessionName: 'session-abc', status: 'working' as const }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      await service.updateWorkingNotes('task-wn', 'session-abc', 'current hypothesis: auth bug in middleware');
+
+      expect(taskData.tasks[0].workingNotes).toBe('current hypothesis: auth bug in middleware');
+      expect(taskData.tasks[0].workingNotesUpdatedAt).toBeDefined();
+      expect(service.saveTaskData).toHaveBeenCalledWith(taskData);
+    });
+
+    it('should throw error if task not found', async () => {
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(mockTaskData);
+
+      await expect(service.updateWorkingNotes('nonexistent', 'session-abc', 'notes'))
+        .rejects.toThrow('Task with ID nonexistent not found');
+    });
+
+    it('should throw error if session does not match assignee', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{ ...mockTask, id: 'task-wn', assignedSessionName: 'session-abc' }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+
+      await expect(service.updateWorkingNotes('task-wn', 'wrong-session', 'notes'))
+        .rejects.toThrow("Session 'wrong-session' is not the assignee of task task-wn");
+    });
+  });
+
+  describe('updateTaskStatus clears workingNotes on completion', () => {
+    it('should clear workingNotes when status is completed', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{
+          ...mockTask,
+          id: 'task-clear',
+          workingNotes: 'some notes',
+          workingNotesUpdatedAt: '2026-03-23T00:00:00Z',
+        }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      await service.updateTaskStatus('task-clear', 'completed');
+
+      expect(taskData.tasks[0].workingNotes).toBeUndefined();
+      expect(taskData.tasks[0].workingNotesUpdatedAt).toBeUndefined();
+    });
+
+    it('should clear workingNotes when status is verified', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{
+          ...mockTask,
+          id: 'task-clear-v',
+          workingNotes: 'partial results here',
+          workingNotesUpdatedAt: '2026-03-23T00:00:00Z',
+        }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      await service.updateTaskStatus('task-clear-v', 'verified');
+
+      expect(taskData.tasks[0].workingNotes).toBeUndefined();
+      expect(taskData.tasks[0].workingNotesUpdatedAt).toBeUndefined();
+    });
+
+    it('should NOT clear workingNotes for non-terminal statuses', async () => {
+      const taskData = {
+        ...mockTaskData,
+        tasks: [{
+          ...mockTask,
+          id: 'task-keep',
+          workingNotes: 'keep these notes',
+          workingNotesUpdatedAt: '2026-03-23T00:00:00Z',
+        }]
+      };
+      jest.spyOn(service, 'loadTaskData').mockResolvedValue(taskData);
+      jest.spyOn(service, 'saveTaskData').mockResolvedValue();
+
+      await service.updateTaskStatus('task-keep', 'active');
+
+      expect(taskData.tasks[0].workingNotes).toBe('keep these notes');
+      expect(taskData.tasks[0].workingNotesUpdatedAt).toBe('2026-03-23T00:00:00Z');
+    });
+  });
 });

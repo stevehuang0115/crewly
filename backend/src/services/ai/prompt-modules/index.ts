@@ -29,6 +29,7 @@ export { LearningReferenceModule } from './learning-reference.module.js';
 export { CommunicationModule } from './communication.module.js';
 export { RecoveryModule } from './recovery.module.js';
 export { LifecycleModule } from './lifecycle.module.js';
+export { RoleBoundaryModule } from './role-boundary.module.js';
 
 // Context loaders
 export {

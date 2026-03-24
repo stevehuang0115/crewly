@@ -1707,6 +1707,24 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
         // The orchestrator can read team status on-demand via get-agent-status skill
         // instead of receiving push notifications, which become spam with many agents.
 
+        // Architecture Upgrade Phase 6: Standing subscriptions for task workflow events
+        // Orchestrator subscribes to task:verified (awareness), task:blocked, task:failed, team:all_tasks_done
+        if (eventBusService) {
+          const TTL_MINUTES = 60 * 24;
+          for (const evtType of ['task:verified', 'task:blocked', 'task:failed', 'team:all_tasks_done'] as const) {
+            try {
+              eventBusService.subscribe({
+                eventType: evtType,
+                filter: {},
+                subscriberSession: sessionName,
+                oneShot: false,
+                ttlMinutes: TTL_MINUTES,
+              });
+            } catch { /* non-fatal */ }
+          }
+          logger.info('Standing task subscriptions set up for orchestrator', { sessionName });
+        }
+
         res.json({ success: true, message: `Orchestrator ${sessionName} registered as active`, sessionName } as ApiResponse);
 
         // Fire session handoff (summary + resume notification) after responding
@@ -1803,6 +1821,36 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
         // Non-fatal: resume just won't work on next restart
         logger.warn('Failed to persist claudeSessionId', { error: persistError instanceof Error ? persistError.message : String(persistError) });
       }
+    }
+
+    // Architecture Upgrade Phase 6: Standing subscriptions for team members
+    if (eventBusService && targetTeamId) {
+      const TTL_MINUTES = 60 * 24;
+      const member = freshTeam?.members.find(m => m.id === targetMemberId);
+      const isTeamLead = member?.canDelegate === true;
+      try {
+        if (isTeamLead) {
+          for (const evtType of ['task:done', 'task:blocked', 'task:failed', 'task:needs_clarification'] as const) {
+            eventBusService.subscribe({
+              eventType: evtType,
+              filter: { teamId: targetTeamId },
+              subscriberSession: sessionName,
+              oneShot: false,
+              ttlMinutes: TTL_MINUTES,
+            });
+          }
+          logger.info('Standing task subscriptions set up for team-lead', { sessionName, teamId: targetTeamId });
+        } else {
+          eventBusService.subscribe({
+            eventType: 'task:assigned' as any,
+            filter: { sessionName },
+            subscriberSession: sessionName,
+            oneShot: false,
+            ttlMinutes: TTL_MINUTES,
+          });
+          logger.info('Standing task subscription set up for executor', { sessionName });
+        }
+      } catch { /* non-fatal */ }
     }
 
     res.json({ success: true, message: `Agent ${sessionName} registered as active with role ${role}`, data: { sessionName, role, status: CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE, registeredAt: registeredAt || new Date().toISOString() } } as ApiResponse);

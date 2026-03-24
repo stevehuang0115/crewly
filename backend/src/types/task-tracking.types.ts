@@ -18,8 +18,28 @@ export type InProgressTaskStatus =
   | 'verifying'
   | 'failed'
   | 'cancelled'
-  // Architecture Upgrade: formal task acceptance
-  | 'accepted';
+  // Architecture Upgrade: task acceptance & clarification
+  | 'accepted'
+  | 'needs_clarification'
+  | 'backlog'
+  | 'ready'
+  | 'done'
+  | 'verified';
+
+/**
+ * Structured report required when an executor reports a task as blocked or failed.
+ * Enforces the Try-Before-Refuse protocol — a blocked report without attempt records is invalid.
+ */
+export interface BlockedReport {
+  /** What approaches the agent attempted before reporting blocked */
+  whatTried: string[];
+  /** Specific errors or obstacles encountered */
+  whatFailed: string;
+  /** What would unblock the agent */
+  whatNeeded: string;
+  /** Any partial solution that exists */
+  partialResult?: string;
+}
 
 /**
  * Structured artifact produced by a task.
@@ -131,6 +151,10 @@ export interface InProgressTask {
   acceptedAt?: string;
   /** Agent's structured understanding of the task (from accept handshake) */
   acceptanceNote?: string;
+  /** What the agent needs clarified (set when status is needs_clarification) */
+  clarificationRequest?: string;
+  /** Structured block report (required when status is blocked) */
+  blockedReport?: BlockedReport;
 
   /** Quality score (0-100) assigned by the auditor after task completion. */
   qualityScore?: number;
@@ -140,6 +164,15 @@ export interface InProgressTask {
 
   /** Member/session that scored this task. */
   scoredBy?: string;
+
+  // === Working Memory (Memory v2 Phase 2) ===
+
+  /** Free-form working notes persisted across sessions.
+   *  Agent saves current hypothesis, retry state, partial results here. */
+  workingNotes?: string;
+
+  /** ISO timestamp of last working notes update */
+  workingNotesUpdatedAt?: string;
 }
 
 export interface TaskTrackingData {

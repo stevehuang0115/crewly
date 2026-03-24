@@ -40,6 +40,13 @@ describe('Event Bus Types', () => {
         'task:completed',
         'task:failed',
         'task:cancelled',
+        // Architecture Upgrade: Task Event Chain (Phase 6)
+        'task:assigned',
+        'task:done',
+        'task:verified',
+        'task:blocked',
+        'task:needs_clarification',
+        'team:all_tasks_done',
         // Hierarchy communication events
         'hierarchy:escalation',
         'hierarchy:delegation',
