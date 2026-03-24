@@ -536,7 +536,7 @@ export async function getDevicesFromSync(req: Request, res: Response, _next: Nex
     if (!syncService.isStarted()) {
       res.json({
         success: true,
-        data: { devices: [], localSessionId: null, syncState },
+        data: { devices: [], localDeviceId: null, syncState },
       });
       return;
     }
@@ -560,7 +560,7 @@ export async function getDevicesFromSync(req: Request, res: Response, _next: Nex
       success: true,
       data: {
         devices: devicesWithLocal,
-        localSessionId: localDeviceId,
+        localDeviceId: localDeviceId,
         syncState,
       },
     });

@@ -16,7 +16,6 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { getSlackService, type SlackService } from './slack.service.js';
 import { DeviceIdentityService, type DeviceIdentity } from '../cloud/device-identity.service.js';
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
 import {
@@ -25,7 +24,6 @@ import {
   type CrossMachineConfig,
   type CrossMachineSendResult,
   parseCrossMachineMessage,
-  serializeCrossMachineMessage,
 } from '../../types/cross-machine.types.js';
 import { CROSS_MACHINE_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -51,9 +49,9 @@ let serviceInstance: CrossMachineMessageService | null = null;
 /**
  * CrossMachineMessageService
  *
- * Singleton service managing cross-machine communication via Slack.
- * On send: serializes a CrossMachineMessage with a recognizable prefix
- * and posts it to the configured Slack channel.
+ * Singleton service managing cross-machine communication via CloudSync.
+ * On send: constructs a CrossMachineMessage and posts it through the
+ * Cloud message queue (CloudSyncService.sendMessage).
  * On receive: the SlackOrchestratorBridge detects the prefix and calls
  * handleIncomingMessage(), which filters by target and emits events.
  *
@@ -76,7 +74,6 @@ let serviceInstance: CrossMachineMessageService | null = null;
  */
 export class CrossMachineMessageService extends EventEmitter {
   private readonly logger: ComponentLogger;
-  private slackService: SlackService;
   private deviceIdentity: DeviceIdentityService;
   private config: CrossMachineConfig | null = null;
   private identity: DeviceIdentity | null = null;
@@ -90,13 +87,11 @@ export class CrossMachineMessageService extends EventEmitter {
   /**
    * Create a new CrossMachineMessageService.
    *
-   * @param slackService - Optional SlackService override (for testing)
    * @param deviceIdentity - Optional DeviceIdentityService override (for testing)
    */
-  constructor(slackService?: SlackService, deviceIdentity?: DeviceIdentityService) {
+  constructor(deviceIdentity?: DeviceIdentityService) {
     super();
     this.logger = LoggerService.getInstance().createComponentLogger('CrossMachineMsg');
-    this.slackService = slackService || getSlackService();
     this.deviceIdentity = deviceIdentity || DeviceIdentityService.getInstance();
     this.maxTrackedMessages = CROSS_MACHINE_CONSTANTS.MAX_TRACKED_MESSAGE_IDS;
   }
@@ -125,10 +120,29 @@ export class CrossMachineMessageService extends EventEmitter {
   /**
    * Check if the service is initialized and enabled.
    *
+   * Returns true when initialized AND enabled, and either:
+   * - A Slack channelId is configured (legacy path), OR
+   * - CloudSyncService is started (new cloud transport path).
+   *
    * @returns True if ready to send/receive messages
    */
   isEnabled(): boolean {
-    return this.initialized && !!this.config?.enabled && !!this.config?.channelId;
+    if (!this.initialized || !this.config?.enabled) {
+      return false;
+    }
+
+    // Legacy path: Slack channel configured
+    if (this.config.channelId) {
+      return true;
+    }
+
+    // Cloud transport path: CloudSync is running
+    try {
+      const { CloudSyncService } = require('../cloud/cloud-sync.service.js');
+      return CloudSyncService.getInstance().isStarted();
+    } catch {
+      return false;
+    }
   }
 
   /**

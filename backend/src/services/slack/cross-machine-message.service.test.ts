@@ -2,7 +2,7 @@
  * Cross-Machine Message Service Tests
  *
  * Tests for the CrossMachineMessageService that enables
- * Slack-based cross-machine orchestrator communication.
+ * CloudSync-based cross-machine orchestrator communication.
  *
  * @module services/slack/cross-machine-message.service.test
  */
@@ -17,10 +17,6 @@ import type { SlackIncomingMessage } from '../../types/slack.types.js';
 import type { DeviceIdentity } from '../cloud/device-identity.service.js';
 
 // Mock dependencies
-jest.mock('./slack.service.js', () => ({
-  getSlackService: jest.fn(() => mockSlackService),
-}));
-
 jest.mock('../cloud/device-identity.service.js', () => ({
   DeviceIdentityService: {
     getInstance: jest.fn(() => mockDeviceIdentity),
@@ -55,12 +51,6 @@ jest.mock('fs/promises', () => ({
 jest.mock('fs', () => ({
   existsSync: jest.fn(() => false),
 }));
-
-const mockSlackService = {
-  sendMessage: jest.fn().mockResolvedValue('1234567890.123456'),
-  isConnected: jest.fn().mockReturnValue(true),
-  on: jest.fn(),
-};
 
 const localIdentity: DeviceIdentity = {
   deviceId: 'local-device-001',
@@ -115,7 +105,6 @@ describe('CrossMachineMessageService', () => {
     jest.clearAllMocks();
     CrossMachineMessageService.resetInstance();
     service = new CrossMachineMessageService(
-      mockSlackService as any,
       mockDeviceIdentity as any
     );
   });
@@ -143,7 +132,7 @@ describe('CrossMachineMessageService', () => {
       expect(service.isEnabled()).toBe(false);
     });
 
-    it('should return true when configured and enabled', async () => {
+    it('should return true when configured with channelId and enabled', async () => {
       await service.initialize();
       await service.configure({ channelId: 'C-XMACHINE', enabled: true });
       expect(service.isEnabled()).toBe(true);
@@ -153,6 +142,21 @@ describe('CrossMachineMessageService', () => {
       await service.initialize();
       await service.configure({ channelId: 'C-XMACHINE', enabled: false });
       expect(service.isEnabled()).toBe(false);
+    });
+
+    it('should return true when enabled without channelId but CloudSync is started', async () => {
+      // Mock CloudSyncService.isStarted() to return true
+      jest.mock('../cloud/cloud-sync.service.js', () => ({
+        CloudSyncService: {
+          getInstance: () => ({
+            isStarted: () => true,
+          }),
+        },
+      }));
+
+      await service.initialize();
+      await service.configure({ channelId: '', enabled: true });
+      expect(service.isEnabled()).toBe(true);
     });
   });
 

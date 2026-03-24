@@ -144,6 +144,14 @@ export class CloudSyncService extends EventEmitter {
   /** Our assigned queue ID from Cloud relay queue registration (for message polling) */
   private queueId: string | null = null;
 
+  /**
+   * Recently processed message IDs to prevent re-delivery when ackMessages fails.
+   * Keeps the last 500 IDs; pruned on overflow.
+   */
+  private processedMessageIds = new Set<string>();
+  /** Maximum size of the processedMessageIds dedup set */
+  private static readonly MAX_DEDUP_IDS = 500;
+
   private constructor() {
     super();
     this.logger = LoggerService.getInstance().createComponentLogger('CloudSyncService');
@@ -259,6 +267,7 @@ export class CloudSyncService extends EventEmitter {
     this.devicePollFailures = 0;
     this.messagePollFailures = 0;
     this.errorRecoveryAttempts = 0;
+    this.processedMessageIds.clear();
   }
 
   /**
@@ -739,8 +748,17 @@ export class CloudSyncService extends EventEmitter {
           // Not JSON or not our format — use raw payload as-is
         }
 
+        const msgId: string = raw.id;
+
+        // Dedup: skip messages we already processed (guards against ack failure re-delivery)
+        if (this.processedMessageIds.has(msgId)) {
+          this.logger.debug('Skipping already-processed message', { messageId: msgId });
+          messageIds.push(msgId); // Still ack so Cloud removes it
+          continue;
+        }
+
         const msg: IncomingMessage = {
-          id: raw.id,
+          id: msgId,
           from: raw.fromDeviceId || raw.from || '',
           fromDeviceName: msgFromDeviceName,
           type: msgType,
@@ -750,6 +768,18 @@ export class CloudSyncService extends EventEmitter {
         };
         this.emit('message', msg);
         messageIds.push(msg.id);
+
+        // Track processed ID for dedup
+        this.processedMessageIds.add(msgId);
+        if (this.processedMessageIds.size > CloudSyncService.MAX_DEDUP_IDS) {
+          // Prune oldest half (Set preserves insertion order)
+          const iter = this.processedMessageIds.values();
+          const pruneCount = Math.floor(CloudSyncService.MAX_DEDUP_IDS / 2);
+          for (let i = 0; i < pruneCount; i++) {
+            const val = iter.next().value;
+            if (val !== undefined) this.processedMessageIds.delete(val);
+          }
+        }
       }
 
       // Acknowledge processed messages

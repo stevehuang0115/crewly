@@ -1172,18 +1172,10 @@ export const CLOUD_SYNC_CONSTANTS = {
 	DEVICE_POLL_INTERVAL_MS: 30_000,
 	/** Device considered offline after this threshold (ms) */
 	OFFLINE_THRESHOLD_MS: 60_000,
-	/** Messages older than this are considered stale (ms) */
-	MESSAGE_TTL_MS: 300_000,
-	/** Maximum messages per device queue */
-	MAX_QUEUE_SIZE: 1_000,
 	/** HTTP request timeout for sync API calls (ms) */
 	REQUEST_TIMEOUT_MS: 15_000,
 	/** Maximum consecutive failures before entering error state */
 	MAX_CONSECUTIVE_FAILURES: 10,
-	/** Base delay for exponential backoff on failure (ms) */
-	BACKOFF_BASE_MS: 1_000,
-	/** Maximum backoff delay (ms) */
-	BACKOFF_MAX_MS: 60_000,
 	/** Interval between error recovery attempts after entering error state (ms).
 	 *  Periodically retries a heartbeat to check if Cloud is reachable again. */
 	ERROR_RECOVERY_INTERVAL_MS: 60_000,
