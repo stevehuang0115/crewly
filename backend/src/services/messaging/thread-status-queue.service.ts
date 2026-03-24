@@ -478,6 +478,27 @@ export class ThreadStatusQueueService {
   }
 
   /**
+   * Find a thread entry by its conversationId.
+   *
+   * Useful when the caller has a conversationId (e.g. from chat history)
+   * but not the threadKey. Scans all entries — O(n) but the set is small.
+   *
+   * @param conversationId - The conversation ID to search for
+   * @returns The most recently updated matching entry, or null
+   */
+  getByConversationId(conversationId: string): ThreadStatusEntry | null {
+    let best: ThreadStatusEntry | null = null;
+    for (const entry of this.entries.values()) {
+      if (entry.conversationId === conversationId) {
+        if (!best || entry.updatedAt > best.updatedAt) {
+          best = entry;
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
    * Expires entries that have been in a non-terminal status longer than maxAgeMinutes.
    * Transitions them to `expired`.
    *

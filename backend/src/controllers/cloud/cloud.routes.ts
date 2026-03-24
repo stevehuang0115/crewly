@@ -30,8 +30,8 @@ import {
   refreshCloudToken,
   sendCloudMessage,
   getDeviceId,
+  getDevicesFromSync,
 } from './cloud.controller.js';
-import { getDevicesFromSync } from './relay.controller.js';
 import {
   cloudGoogleStart,
   cloudGoogleCallback,

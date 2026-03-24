@@ -96,6 +96,9 @@ export class ResponseRouterService {
       case 'telegram':
         this.routeToTelegram(message, response);
         break;
+      case 'remote':
+        this.routeToRemoteDevice(message, response);
+        break;
       case 'system_event':
         this.logger.debug('System event response routed (no-op)', {
           messageId: message.id,
@@ -240,6 +243,12 @@ export class ResponseRouterService {
       case 'telegram':
         this.resolveCallback(message, `Error: ${error}`, 'telegramResolve', 'Telegram');
         break;
+      case 'remote':
+        this.logger.debug('Remote device error (fire-and-forget)', {
+          messageId: message.id,
+          error,
+        });
+        break;
       case 'system_event':
         this.logger.debug('System event error routed (no-op)', {
           messageId: message.id,
@@ -252,5 +261,28 @@ export class ResponseRouterService {
           source: message.source,
         });
     }
+  }
+
+  /**
+   * Route a response back to a remote device via CloudSync.
+   *
+   * Cross-machine messages are fire-and-forget on the response side —
+   * the orchestrator uses reply-remote skill for explicit replies.
+   * This handler is mainly for logging and future auto-reply support.
+   */
+  private routeToRemoteDevice(message: QueuedMessage, response: string): void {
+    const fromDeviceId = message.sourceMetadata?.fromDeviceId as string | undefined;
+    const fromDeviceName = message.sourceMetadata?.fromDeviceName as string | undefined;
+
+    this.logger.info('Remote device response routed (fire-and-forget)', {
+      messageId: message.id,
+      fromDeviceId,
+      fromDeviceName,
+      responseLength: response.length,
+    });
+
+    // Auto-reply is handled by the orchestrator via reply-remote skill,
+    // triggered by the [REMOTE:deviceId:deviceName] marker in the delivered content.
+    // The orchestrator's skills reference tells it to use reply-remote for these messages.
   }
 }

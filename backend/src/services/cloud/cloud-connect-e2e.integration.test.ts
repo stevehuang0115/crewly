@@ -19,7 +19,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CloudSyncService } from './cloud-sync.service.js';
-import { CLOUD_SYNC_CONSTANTS, CLOUD_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
+import { CLOUD_SYNC_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
 import type {
   CloudSyncConfig,
   SyncDevice,
@@ -206,22 +206,6 @@ describe('Cloud Connect E2E — Endpoint Path Consistency', () => {
     }
   });
 
-  it('RELAY_ENDPOINTS paths are consistent (no mixed prefixes)', () => {
-    // QUEUE_* endpoints must use /api/v1/ prefix
-    const { QUEUE_REGISTER, QUEUE_SEND, QUEUE_POLL, QUEUE_ACK, DEVICES, HANDSHAKE } =
-      CLOUD_CONSTANTS.RELAY_ENDPOINTS;
-
-    const queueEndpoints = [QUEUE_REGISTER, QUEUE_SEND, QUEUE_POLL, QUEUE_ACK, DEVICES, HANDSHAKE];
-    for (const ep of queueEndpoints) {
-      expect(ep).toMatch(/^\/api\/v1\/relay\//);
-    }
-  });
-
-  it('legacy REGISTER and STATUS still use /v1/ prefix (not /api/v1/)', () => {
-    // Legacy endpoints are kept for backward compat but should not be confused with new ones
-    expect(CLOUD_CONSTANTS.RELAY_ENDPOINTS.REGISTER).toBe('/v1/relay/register');
-    expect(CLOUD_CONSTANTS.RELAY_ENDPOINTS.STATUS).toBe('/v1/relay/status');
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -783,8 +767,7 @@ describe('Cloud Connect E2E — Frontend↔Backend Contract', () => {
     expect(frontendExpects.status).toBe('/api/cloud/status');
     expect(frontendExpects.devices).toBe('/api/cloud/devices');
 
-    // Legacy fallback endpoint (from relay.routes.ts, mounted at /api/relay)
-    expect(frontendExpects.legacyDevices).toBe('/api/relay/cloud-devices');
+    // Legacy relay endpoint removed — all device queries go through /api/cloud/devices
   });
 
   it('CloudSyncService URL construction produces valid full URLs matching Cloud Relay routes', () => {

@@ -997,6 +997,7 @@ export const MESSAGE_SOURCES = {
 	GOOGLE_CHAT: 'google_chat',
 	TELEGRAM: 'telegram',
 	CROSS_MACHINE: 'cross-machine',
+	REMOTE: 'remote',
 } as const;
 
 /**
@@ -1153,54 +1154,6 @@ export const CLOUD_CONSTANTS = {
 		/** Token expired or revoked — cloud API returned 401/403 */
 		TOKEN_EXPIRED: 'token_expired',
 	},
-	/** Relay-specific endpoints (Cloud Message Queue) */
-	RELAY_ENDPOINTS: {
-		/** Register a local instance as a relay node (legacy) */
-		REGISTER: '/v1/relay/register',
-		/** Get relay status (legacy) */
-		STATUS: '/v1/relay/status',
-		/** Queue: register and pair with peer */
-		QUEUE_REGISTER: '/api/v1/relay/queue/register',
-		/** Queue: send encrypted message to peer */
-		QUEUE_SEND: '/api/v1/relay/queue/send',
-		/** Queue: poll for incoming messages */
-		QUEUE_POLL: '/api/v1/relay/queue/poll',
-		/** Queue: acknowledge (delete) processed messages */
-		QUEUE_ACK: '/api/v1/relay/queue/ack',
-		/** Device discovery */
-		DEVICES: '/api/v1/relay/devices',
-		/** Cloud handshake: send device metadata + active teams on connect */
-		HANDSHAKE: '/api/v1/relay/handshake',
-	},
-	/** Relay configuration (Cloud Message Queue — HTTP polling) */
-	RELAY: {
-		/** Default backend port (legacy, kept for local dev) */
-		DEFAULT_PORT: 8787,
-		/** Polling interval for queue messages (ms) */
-		POLL_INTERVAL_MS: 5_000,
-		/** Delay before attempting reconnection after register failure (ms) */
-		RECONNECT_BASE_DELAY_MS: 1_000,
-		/** Maximum reconnection delay with exponential backoff (ms) */
-		RECONNECT_MAX_DELAY_MS: 30_000,
-		/** Maximum number of reconnection attempts before giving up */
-		MAX_RECONNECT_ATTEMPTS: 10,
-		/** HTTP request timeout for queue operations (ms) */
-		REQUEST_TIMEOUT_MS: 10_000,
-		/** Maximum message payload size (1 MB) */
-		MAX_PAYLOAD_BYTES: 1_048_576,
-		/** E2EE key derivation iterations (PBKDF2) */
-		KEY_DERIVATION_ITERATIONS: 100_000,
-		/** AES-GCM IV length (bytes) */
-		IV_LENGTH: 12,
-		/** AES-GCM auth tag length (bytes) */
-		AUTH_TAG_LENGTH: 16,
-		/** Encryption algorithm */
-		CIPHER_ALGORITHM: 'aes-256-gcm',
-		/** Key length (bytes) */
-		KEY_LENGTH: 32,
-		/** Default WebSocket relay URL for Cloud Relay auto-connect */
-		DEFAULT_WS_URL: 'wss://api.crewlyai.com/relay',
-	},
 } as const;
 
 /**
@@ -1219,18 +1172,10 @@ export const CLOUD_SYNC_CONSTANTS = {
 	DEVICE_POLL_INTERVAL_MS: 30_000,
 	/** Device considered offline after this threshold (ms) */
 	OFFLINE_THRESHOLD_MS: 60_000,
-	/** Messages older than this are considered stale (ms) */
-	MESSAGE_TTL_MS: 300_000,
-	/** Maximum messages per device queue */
-	MAX_QUEUE_SIZE: 1_000,
 	/** HTTP request timeout for sync API calls (ms) */
 	REQUEST_TIMEOUT_MS: 15_000,
 	/** Maximum consecutive failures before entering error state */
 	MAX_CONSECUTIVE_FAILURES: 10,
-	/** Base delay for exponential backoff on failure (ms) */
-	BACKOFF_BASE_MS: 1_000,
-	/** Maximum backoff delay (ms) */
-	BACKOFF_MAX_MS: 60_000,
 	/** Interval between error recovery attempts after entering error state (ms).
 	 *  Periodically retries a heartbeat to check if Cloud is reachable again. */
 	ERROR_RECOVERY_INTERVAL_MS: 60_000,
@@ -1297,7 +1242,6 @@ export const AUTH_CONSTANTS = {
 	/** Pro features list */
 	PRO_FEATURES: [
 		'template-marketplace',
-		'cloud-relay',
 		'premium-templates',
 		'priority-support',
 	],

@@ -25,7 +25,7 @@ import { createKnowledgeRouter } from '../controllers/knowledge/index.js';
 import { createTemplateRouter } from '../controllers/template/index.js';
 import { createAuditorRouter } from '../controllers/auditor/auditor.routes.js';
 import { createPaymentRouter } from '../controllers/payment/payment.routes.js';
-import { createCloudRouter, createRelayRouter } from '../controllers/cloud/index.js';
+import { createCloudRouter } from '../controllers/cloud/index.js';
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
@@ -102,8 +102,6 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Cloud routes for connect, disconnect, validate, status, templates, and Google OAuth
   router.use('/cloud', createCloudRouter());
 
-  // Relay routes for cloud relay client endpoints (connect, disconnect, devices, send)
-  router.use('/relay', createRelayRouter());
 
   // PR review routes for automated GitHub PR reviews via webhooks
   router.use('/pr-review', createPrReviewRouter());

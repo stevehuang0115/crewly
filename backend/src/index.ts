@@ -566,6 +566,10 @@ export class CrewlyServer {
 			const { TracingService } = await import('./services/core/tracing.service.js');
 			TracingService.getInstance().initialize();
 
+			// Expose queue instance for cross-machine message routing (used by MessageRouterService)
+			const { setMessageQueueInstance } = await import('./services/messaging/index.js');
+			setMessageQueueInstance(this.messageQueueService);
+
 			this.logger.info('Starting Crewly server...');
 			this.logger.info('Server startup info', {
 				pid: process.pid,
@@ -833,6 +837,15 @@ export class CrewlyServer {
 			} catch (error) {
 				this.logger.warn('Failed to load persisted queue state', {
 					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Load thread status queue from disk so replay can check terminal statuses
+			try {
+				await this.threadStatusQueueService.loadPersistedState();
+			} catch (err) {
+				this.logger.warn('Failed to load thread status queue state (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
 				});
 			}
 

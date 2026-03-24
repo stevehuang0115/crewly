@@ -64,7 +64,7 @@ const mockDevicesResponse = {
         isLocal: false,
       },
     ],
-    localSessionId: 'local-session-123',
+    localDeviceId: 'local-session-123',
   },
 };
 
@@ -73,7 +73,7 @@ const mockEmptyDevicesResponse = {
   success: true,
   data: {
     devices: [],
-    localSessionId: null,
+    localDeviceId: null,
   },
 };
 
@@ -223,7 +223,7 @@ describe('RelayHealthCard', () => {
             isLocal: true,
           },
         ],
-        localSessionId: 'local-session-123',
+        localDeviceId: 'local-session-123',
       },
     };
 

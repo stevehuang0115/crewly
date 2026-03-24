@@ -21,9 +21,6 @@ vi.mock('./cloud.controller.js', () => ({
   getCloudTemplates: vi.fn((_req, res) => res.status(200).json({ success: true })),
   sendCloudMessage: vi.fn((_req, res) => res.status(200).json({ success: true })),
   getDeviceId: vi.fn((_req, res) => res.status(200).json({ success: true })),
-}));
-
-vi.mock('./relay.controller.js', () => ({
   getDevicesFromSync: vi.fn((_req, res) => res.status(200).json({ success: true })),
 }));
 

@@ -77,7 +77,7 @@ function mockAuthenticatedWithDevices(devices: unknown[] = [], tier = 'pro', syn
         ok: true,
         json: async () => ({
           success: true,
-          data: { devices, localSessionId: 'local-session-1', syncState: syncState || undefined },
+          data: { devices, localDeviceId: 'local-session-1', syncState: syncState || undefined },
         }),
       };
     }
@@ -87,7 +87,7 @@ function mockAuthenticatedWithDevices(devices: unknown[] = [], tier = 'pro', syn
         ok: true,
         json: async () => ({
           success: true,
-          data: { devices, localSessionId: 'local-session-1' },
+          data: { devices, localDeviceId: 'local-session-1' },
         }),
       };
     }
@@ -115,7 +115,7 @@ function mockBackendOnlyConnection(tier = 'pro', devices: unknown[] = []) {
         ok: true,
         json: async () => ({
           success: true,
-          data: { devices, localSessionId: 'local-session-1' },
+          data: { devices, localDeviceId: 'local-session-1' },
         }),
       };
     }
@@ -125,7 +125,7 @@ function mockBackendOnlyConnection(tier = 'pro', devices: unknown[] = []) {
         ok: true,
         json: async () => ({
           success: true,
-          data: { devices, localSessionId: 'local-session-1' },
+          data: { devices, localDeviceId: 'local-session-1' },
         }),
       };
     }
@@ -493,7 +493,7 @@ describe('CloudTab', () => {
           ok: true,
           json: async () => ({
             success: true,
-            data: { devices: [], localSessionId: null, tokenExpired: true },
+            data: { devices: [], localDeviceId: null, tokenExpired: true },
           }),
         };
       }
