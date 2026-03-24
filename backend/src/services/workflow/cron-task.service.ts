@@ -320,10 +320,23 @@ export class CronTaskService {
 	 */
 	async recalculateAllNextRunTimes(): Promise<number> {
 		const store = await this.loadStore();
+		const now = new Date();
 		let updated = 0;
 
 		for (const task of store.tasks) {
 			if (!task.enabled) continue;
+
+			// If task has never run AND its nextRunAt is in the past, this is a missed first run.
+			// Keep the stale nextRunAt so evaluateTasks() picks it up and fires immediately,
+			// rather than silently advancing to the next occurrence.
+			if (!task.lastRunAt && task.nextRunAt && new Date(task.nextRunAt) <= now) {
+				this.logger.info('Missed first run detected — keeping stale nextRunAt for immediate execution', {
+					id: task.id,
+					nextRunAt: task.nextRunAt,
+					timezone: task.timezone,
+				});
+				continue;
+			}
 
 			const after = task.lastRunAt ? new Date(task.lastRunAt) : undefined;
 			const recalculated = getNextRunTime(task.cronExpression, task.timezone, after);

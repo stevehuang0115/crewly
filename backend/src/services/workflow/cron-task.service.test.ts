@@ -597,6 +597,29 @@ describe('CronTaskService', () => {
 			expect(mockWriteFile).not.toHaveBeenCalled();
 		});
 
+		it('should keep stale nextRunAt for missed first run (lastRunAt=null, nextRunAt in past)', async () => {
+			// Simulate: cron job was created for 08:45 Beijing but backend wasn't running.
+			// On restart at 08:48, nextRunAt is in the past and lastRunAt is null.
+			// The fix: keep stale nextRunAt so evaluateTasks() fires it immediately.
+			const pastTime = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 minutes ago
+			const store = {
+				tasks: [{
+					id: 'cron-missed', cronExpression: '45 8 * * *', timezone: 'Asia/Shanghai',
+					targetAgent: 'eve', targetTeamId: 't1', taskDescription: 'Morning report',
+					enabled: true, lastRunAt: null,
+					nextRunAt: pastTime, // in the past — missed first run
+					createdBy: 'user' as const, createdAt: '2026-01-01',
+				}],
+			};
+			mockReadFile.mockResolvedValueOnce(JSON.stringify(store));
+
+			const updated = await service.recalculateAllNextRunTimes();
+
+			// Should NOT update — keeps stale nextRunAt for immediate execution
+			expect(updated).toBe(0);
+			expect(mockWriteFile).not.toHaveBeenCalled();
+		});
+
 		it('should use lastRunAt as the after parameter when available', async () => {
 			const lastRun = '2026-03-23T01:00:00.000Z';
 			const store = {
