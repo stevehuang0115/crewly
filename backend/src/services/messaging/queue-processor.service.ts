@@ -313,7 +313,7 @@ export class QueueProcessorService extends EventEmitter {
       // User messages and system events get shorter timeouts and force-delivery
       // to reduce delay. System events are fire-and-forget so force-delivery is
       // lower risk — prevents the 5×120s=10min retry loop that blocks notifications.
-      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT || message.source === MESSAGE_SOURCES.WHATSAPP || message.source === MESSAGE_SOURCES.GOOGLE_CHAT;
+      const isUserMessage = message.source === MESSAGE_SOURCES.SLACK || message.source === MESSAGE_SOURCES.WEB_CHAT || message.source === MESSAGE_SOURCES.WHATSAPP || message.source === MESSAGE_SOURCES.GOOGLE_CHAT || message.source === MESSAGE_SOURCES.REMOTE;
       const readyTimeout = isUserMessage
         ? EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_TIMEOUT
         : isSystemEvent
@@ -461,6 +461,14 @@ export class QueueProcessorService extends EventEmitter {
         deliveryContent = `[${prefix}:${message.conversationId}:${msgFingerprint}${threadSuffix}] ${message.content}`;
       } else {
         deliveryContent = `[${CHAT_ROUTING_CONSTANTS.MESSAGE_PREFIX}:${message.conversationId}:${msgFingerprint}] ${message.content}`;
+      }
+
+      // Inject [REMOTE:deviceId:deviceName] marker for cross-machine messages so
+      // the orchestrator knows to use reply-remote skill for responses.
+      if (message.source === MESSAGE_SOURCES.REMOTE && message.sourceMetadata?.fromDeviceId) {
+        const fromDeviceId = message.sourceMetadata.fromDeviceId as string;
+        const fromDeviceName = (message.sourceMetadata.fromDeviceName as string) || fromDeviceId;
+        deliveryContent = `${deliveryContent} [REMOTE:${fromDeviceId}:${fromDeviceName}]`;
       }
 
       // Inject [SLACK:channelId:threadTs] marker for Slack-sourced messages so

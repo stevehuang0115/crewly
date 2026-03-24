@@ -135,7 +135,8 @@ export type MessageType =
   | 'relay'
   | 'ping'
   | 'task_update'
-  | 'agent_message';
+  | 'agent_message'
+  | 'cross-machine';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -147,6 +148,7 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'ping',
   'task_update',
   'agent_message',
+  'cross-machine',
 ] as const;
 
 /**

@@ -60,6 +60,8 @@ export class SkillsReferenceModule implements PromptModule {
 				'  - `schedule-check` — schedule future check-in reminders',
 				'  - `subscribe-event` — subscribe to agent lifecycle events',
 				'  - `reply-slack` / `reply-chat` — respond to user messages',
+				'  - `send-to-remote` / `reply-remote` — send/reply to other Crewly machines',
+				'  - `list-devices` — discover connected Crewly devices',
 				'  - `delegate-task` — assign work to agents',
 				'  - `get-team-status` / `get-agent-status` — monitor team state',
 			);

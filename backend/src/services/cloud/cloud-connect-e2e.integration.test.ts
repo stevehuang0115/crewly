@@ -783,8 +783,7 @@ describe('Cloud Connect E2E — Frontend↔Backend Contract', () => {
     expect(frontendExpects.status).toBe('/api/cloud/status');
     expect(frontendExpects.devices).toBe('/api/cloud/devices');
 
-    // Legacy fallback endpoint (from relay.routes.ts, mounted at /api/relay)
-    expect(frontendExpects.legacyDevices).toBe('/api/relay/cloud-devices');
+    // Legacy relay endpoint removed — all device queries go through /api/cloud/devices
   });
 
   it('CloudSyncService URL construction produces valid full URLs matching Cloud Relay routes', () => {

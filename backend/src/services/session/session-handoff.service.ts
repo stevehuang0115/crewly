@@ -846,16 +846,55 @@ export class SessionHandoffService {
     sessionName: string,
   ): Promise<void> {
     try {
-      const threads = await this.findRecentThreads();
+      const allThreads = await this.findRecentThreads();
 
-      if (threads.length === 0) {
+      if (allThreads.length === 0) {
         this.logger.debug('No recent threads for resume notification', { sessionName });
         return;
       }
 
+      // Filter out threads that are already completed in the Thread Status Queue.
+      // This prevents the orchestrator from re-engaging with threads it already
+      // handled before the restart (e.g. email processing, answered questions).
+      let threads = allThreads;
+      try {
+        const { ThreadStatusQueueService } = await import('../messaging/thread-status-queue.service.js');
+        const { isTerminalStatus } = await import('../../types/thread-status.types.js');
+        const tsq = ThreadStatusQueueService.getInstance();
+
+        threads = allThreads.filter(thread => {
+          // Build the threadKey the same way the Slack bridge does
+          const threadKey = `${thread.channelId}:${thread.threadId}`;
+          const entry = tsq.get(threadKey);
+          if (entry && isTerminalStatus(entry.status)) {
+            this.logger.debug('Filtering out terminal thread from resume', {
+              threadKey,
+              status: entry.status,
+            });
+            return false;
+          }
+          return true;
+        });
+
+        if (allThreads.length !== threads.length) {
+          this.logger.info('Filtered terminal threads from resume notification', {
+            total: allThreads.length,
+            kept: threads.length,
+            filtered: allThreads.length - threads.length,
+          });
+        }
+      } catch {
+        // Thread status queue not available — include all threads
+      }
+
+      if (threads.length === 0) {
+        this.logger.debug('All recent threads are terminal, skipping resume notification', { sessionName });
+        return;
+      }
+
       const lines: string[] = [
-        '[CHAT_RESUME] You just restarted. The following chat threads were active in the last 24 hours.',
-        'You MUST read the most recent thread and send a greeting message to prove you have recovered context.',
+        '[CHAT_RESUME] You just restarted. The following threads have PENDING or UNREPLIED messages.',
+        'Review them and reply where needed. Do NOT re-process threads that were already handled.',
         '',
       ];
 

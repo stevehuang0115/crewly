@@ -162,7 +162,10 @@ export class CrossMachineMessageService extends EventEmitter {
   }
 
   /**
-   * Send a cross-machine message via Slack.
+   * Send a cross-machine message via CloudSync API.
+   *
+   * All inter-device communication goes through the Cloud message queue.
+   * Devices are identified by deviceId — no pairing required.
    *
    * @param targetDeviceId - Target machine's device ID (or "*" for broadcast)
    * @param type - Message type
@@ -182,10 +185,6 @@ export class CrossMachineMessageService extends EventEmitter {
       return { success: false, error: 'Device identity not initialized' };
     }
 
-    if (!this.slackService.isConnected()) {
-      return { success: false, error: 'Slack is not connected' };
-    }
-
     const message: CrossMachineMessage = {
       protocol: 'crewly-x-machine',
       version: 1,
@@ -198,25 +197,53 @@ export class CrossMachineMessageService extends EventEmitter {
       messageId: uuidv4(),
     };
 
-    const serialized = serializeCrossMachineMessage(message);
-
     try {
-      const ts = await this.slackService.sendMessage({
-        channelId: this.config!.channelId,
-        text: serialized,
-      });
+      const { CloudSyncService } = await import('../cloud/cloud-sync.service.js');
+      const syncService = CloudSyncService.getInstance();
 
-      this.logger.info('Sent cross-machine message', {
+      if (!syncService.isStarted()) {
+        return { success: false, error: 'CloudSync is not started — cannot send cross-machine message' };
+      }
+
+      // For broadcasts, send to all known devices
+      if (targetDeviceId === '*') {
+        const devices = syncService.getDevices();
+        const selfId = this.identity.deviceId;
+        const targets = devices.filter(d => d.deviceId !== selfId && d.status === 'online');
+
+        if (targets.length === 0) {
+          return { success: false, error: 'No online remote devices found for broadcast' };
+        }
+
+        for (const device of targets) {
+          await syncService.sendMessage(device.deviceId, 'cross-machine', message);
+        }
+
+        this.logger.info('Broadcast cross-machine message via CloudSync', {
+          type,
+          messageId: message.messageId,
+          targetCount: targets.length,
+        });
+
+        return { success: true };
+      }
+
+      await syncService.sendMessage(targetDeviceId, 'cross-machine', message);
+
+      this.logger.info('Sent cross-machine message via CloudSync', {
         to: targetDeviceId,
         type,
         messageId: message.messageId,
-        slackTs: ts,
       });
 
-      return { success: true, slackTs: ts };
+      return { success: true };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      this.logger.error('Failed to send cross-machine message', { error: errorMsg, to: targetDeviceId, type });
+      this.logger.error('Failed to send cross-machine message', {
+        error: errorMsg,
+        to: targetDeviceId,
+        type,
+      });
       return { success: false, error: errorMsg };
     }
   }

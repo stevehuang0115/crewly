@@ -9,9 +9,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import crypto from 'crypto';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
-import { RelayClientService } from '../../services/cloud/relay-client.service.js';
 import { DeviceIdentityService } from '../../services/cloud/device-identity.service.js';
 import { CloudSyncService } from '../../services/cloud/cloud-sync.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
@@ -21,83 +19,6 @@ import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudController');
 
-/**
- * Cloud Message Queue API URL.
- *
- * Priority:
- * 1. CREWLY_RELAY_API_URL env var (explicit override, e.g. http://localhost:3000 for local dev)
- * 2. Default Cloud backend at https://api.crewlyai.com
- */
-const RELAY_API_URL = (): string => {
-  if (process.env['CREWLY_RELAY_API_URL']) {
-    return process.env['CREWLY_RELAY_API_URL'];
-  }
-  return 'https://api.crewlyai.com';
-};
-
-/**
- * Auto-connect to the Cloud Relay after a successful cloud login.
- *
- * Derives a deterministic pairing code and shared secret from the user's ID
- * so that all devices belonging to the same user auto-pair via the relay.
- * Best-effort — failures are logged but do not affect cloud connect.
- *
- * @param token - JWT access token from cloud login
- */
-/**
- * Auto-connect relay using a JWT token.
- * Exported as autoConnectRelayFromToken for use by cloud-initializer.
- *
- * @param token - JWT access token
- */
-export function autoConnectRelayFromToken(token: string): void {
-	autoConnectRelay(token);
-}
-
-function autoConnectRelay(token: string): void {
-  try {
-    const relay = RelayClientService.getInstance();
-    if (relay.getState() !== 'disconnected' && relay.getState() !== 'error') {
-      logger.info('Relay already connected or connecting, skipping auto-connect');
-      return;
-    }
-
-    const payload = verifyJwt(token);
-    if (!payload || !payload.sub) {
-      logger.warn('Cannot auto-connect relay: invalid token payload');
-      return;
-    }
-
-    const userId = String(payload.sub);
-    // Deterministic pairing code from user ID — both devices of the same user get the same code
-    const pairingCode = crypto.createHash('sha256').update(`crewly-pair-${userId}`).digest('hex').slice(0, 12);
-    // Shared secret incorporates the JWT secret so it can't be derived from user ID alone
-    const jwtSecret = AUTH_CONSTANTS.JWT.DEFAULT_SECRET;
-    const sharedSecret = crypto.createHash('sha256').update(`crewly-e2ee-${userId}-${jwtSecret}`).digest('hex');
-
-    // Defensive: attach error listener to prevent uncaught exception
-    // if any code path still emits 'error' on the EventEmitter
-    if (relay.listenerCount('error') === 0) {
-      relay.on('error', (err: Error) => {
-        logger.warn('Relay error (caught by autoConnectRelay fallback)', { error: err.message });
-      });
-    }
-
-    relay.connect({
-      apiUrl: RELAY_API_URL(),
-      pairingCode,
-      role: 'orchestrator',
-      token,
-      sharedSecret,
-    });
-
-    logger.info('Relay auto-connect initiated', { pairingCode: pairingCode.slice(0, 4) + '...' });
-  } catch (err) {
-    logger.warn('Relay auto-connect failed (non-fatal)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
 
 /** Payload sent to the Cloud during the handshake after connect. */
 export interface CloudHandshakePayload {
@@ -244,9 +165,6 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
     // Send device metadata + active teams to Cloud (best-effort, non-blocking)
     sendCloudHandshake(resolvedUrl, token).catch(() => {/* already logged inside */});
 
-    // Auto-initiate relay connection (best-effort, non-blocking)
-    autoConnectRelay(token);
-
     // Start Cloud Sync for device discovery and message polling (best-effort)
     try {
       const identityService = DeviceIdentityService.getInstance();
@@ -306,19 +224,6 @@ export async function disconnectFromCloud(req: Request, res: Response, next: Nex
     } catch (syncErr) {
       logger.warn('CloudSyncService stop failed (non-fatal)', {
         error: syncErr instanceof Error ? syncErr.message : String(syncErr),
-      });
-    }
-
-    // Also disconnect relay
-    try {
-      const relay = RelayClientService.getInstance();
-      if (relay.getState() !== 'disconnected') {
-        relay.disconnect();
-        logger.info('Relay disconnected as part of cloud disconnect');
-      }
-    } catch (err) {
-      logger.warn('Relay disconnect failed (non-fatal)', {
-        error: err instanceof Error ? err.message : String(err),
       });
     }
 
@@ -608,5 +513,62 @@ export async function sendCloudMessage(req: Request, res: Response, next: NextFu
       return;
     }
     next(error);
+  }
+}
+
+/**
+ * GET /api/cloud/devices
+ *
+ * List devices from CloudSyncService. Returns all devices visible to
+ * the current user's Cloud account with an `isLocal` flag for the
+ * current machine.
+ *
+ * @param req - Express request
+ * @param res - Response with device list
+ * @param _next - Express next function
+ */
+export async function getDevicesFromSync(req: Request, res: Response, _next: NextFunction): Promise<void> {
+  try {
+    const syncService = CloudSyncService.getInstance();
+    const syncState = syncService.getState();
+
+    if (!syncService.isStarted()) {
+      res.json({
+        success: true,
+        data: { devices: [], localSessionId: null, syncState },
+      });
+      return;
+    }
+
+    const devices = syncService.getDevices();
+
+    let localDeviceId: string | null = null;
+    try {
+      const identity = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+      localDeviceId = identity.deviceId;
+    } catch {
+      logger.debug('Could not resolve local device ID for isLocal flag');
+    }
+
+    const devicesWithLocal = devices.map((device) => ({
+      ...device,
+      isLocal: localDeviceId ? device.deviceId === localDeviceId : false,
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        devices: devicesWithLocal,
+        localSessionId: localDeviceId,
+        syncState,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error('Failed to get devices from sync', { error: message });
+    res.status(500).json({
+      success: false,
+      error: `Device fetch failed: ${message}`,
+    });
   }
 }

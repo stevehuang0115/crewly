@@ -141,6 +141,8 @@ export class CloudSyncService extends EventEmitter {
   private errorRecoveryTimer: ReturnType<typeof setInterval> | null = null;
   /** Consecutive error recovery attempts (reset on success or stop) */
   private errorRecoveryAttempts = 0;
+  /** Our assigned queue ID from Cloud relay queue registration (for message polling) */
+  private queueId: string | null = null;
 
   private constructor() {
     super();
@@ -201,6 +203,15 @@ export class CloudSyncService extends EventEmitter {
 
     // Read version once at startup
     readVersion().then((v) => { this.version = v; }).catch(() => {});
+
+    // Register with Cloud message queue for inter-device messaging.
+    // This gets us a queueId used for message polling and makes us
+    // discoverable by peer devices with the same pairing code.
+    this.registerQueue().catch((err) => {
+      this.logger.warn('Queue registration failed (non-fatal, messaging may not work)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
 
     // Perform initial sync immediately
     this.sendHeartbeat().catch(() => {});
@@ -322,11 +333,19 @@ export class CloudSyncService extends EventEmitter {
       throw new Error('CloudSyncService not started. Call start() first.');
     }
 
+    // Resolve the target device's sessionId (peerQueueId) from the cached
+    // device list. The Cloud API queue/send endpoint routes by sessionId,
+    // not deviceId.
+    const targetDevice = this.devices.find(d => d.deviceId === toDeviceId);
+    if (!targetDevice) {
+      throw new Error(`Device not found in cache: ${toDeviceId}. Available: ${this.devices.map(d => d.deviceName).join(', ')}`);
+    }
+    if (!targetDevice.sessionId) {
+      throw new Error(`Device ${targetDevice.deviceName} has no sessionId — cannot route message`);
+    }
+
     const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES}`;
 
-    // Cloud Relay queue/send expects { toDeviceId, payload }.
-    // We wrap type + encrypted + actual payload into the payload field so
-    // the receiver can reconstruct the full IncomingMessage shape on poll.
     const wrappedPayload = JSON.stringify({
       type,
       data: payload,
@@ -338,7 +357,7 @@ export class CloudSyncService extends EventEmitter {
       method: 'POST',
       headers: this.authHeaders(),
       body: JSON.stringify({
-        toDeviceId,
+        peerQueueId: targetDevice.sessionId,
         payload: wrappedPayload,
       }),
       signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
@@ -349,7 +368,90 @@ export class CloudSyncService extends EventEmitter {
       throw new Error(`Failed to send message: ${response.status} ${errorText}`);
     }
 
-    this.logger.info('Message sent via Cloud Sync', { to: toDeviceId, type });
+    this.logger.info('Message sent via Cloud Sync', { to: toDeviceId, type, peerSessionId: targetDevice.sessionId });
+  }
+
+  // -------------------------------------------------------------------------
+  // Internal: Queue Registration
+  // -------------------------------------------------------------------------
+
+  /**
+   * Register with the Cloud relay message queue.
+   *
+   * Calls POST /api/v1/relay/queue/register with a deterministic pairing code
+   * derived from the JWT user ID. This allows both devices of the same user
+   * to auto-discover each other's queueId for message routing.
+   *
+   * The assigned queueId is used for message polling. The peerQueueId
+   * (other device's queue) is used for sending.
+   */
+  private async registerQueue(): Promise<void> {
+    if (!this.config) return;
+
+    const url = `${this.config.cloudUrl}/api/v1/relay/queue/register`;
+
+    // Derive deterministic pairing code from JWT user ID
+    const pairingCode = await this.derivePairingCode();
+    if (!pairingCode) {
+      this.logger.warn('Cannot register queue: unable to derive pairing code from token');
+      return;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.authHeaders(),
+      body: JSON.stringify({
+        deviceId: this.config.deviceId,
+        deviceName: this.config.deviceName,
+        role: 'orchestrator',
+        pairingCode,
+      }),
+      signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`Queue registration failed: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json() as { success: boolean; queueId?: string; peerQueueId?: string | null };
+
+    if (data.queueId) {
+      this.queueId = data.queueId;
+      this.logger.info('Registered with Cloud message queue', {
+        queueId: this.queueId,
+        peerQueueId: data.peerQueueId ?? 'none (waiting for peer)',
+      });
+    }
+  }
+
+  /**
+   * Derive a deterministic pairing code from the JWT token's user ID.
+   * Both devices of the same user will produce the same code.
+   */
+  private async derivePairingCode(): Promise<string | null> {
+    if (!this.config?.token) return null;
+    try {
+      // Decode JWT payload without verification (we just need the sub claim)
+      const parts = this.config.token.split('.');
+      if (parts.length < 2) return null;
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+      const userId = payload.sub;
+      if (!userId) return null;
+
+      const crypto = await import('crypto');
+      return crypto.createHash('sha256').update(`crewly-pair-${userId}`).digest('hex').slice(0, 12);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get the queue ID assigned by Cloud registration.
+   * Returns null if not yet registered.
+   */
+  getQueueId(): string | null {
+    return this.queueId;
   }
 
   // -------------------------------------------------------------------------
@@ -576,8 +678,14 @@ export class CloudSyncService extends EventEmitter {
     if (!this.config || this.state === 'error') return;
 
     try {
-      // Cloud Relay queue/poll accepts ?queueId= query param (fallback when JWT has no deviceId)
-      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL}?queueId=${encodeURIComponent(this.config.deviceId)}`;
+      // Cloud Relay queue/poll requires the queueId assigned during queue registration.
+      // If we haven't registered yet, skip polling.
+      const pollQueueId = this.queueId || this.config.deviceId;
+      if (!this.queueId) {
+        // Not yet registered — skip silently (registration is async)
+        return;
+      }
+      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL}?queueId=${encodeURIComponent(pollQueueId)}`;
 
       const response = await fetch(url, {
         method: 'GET',
@@ -676,7 +784,7 @@ export class CloudSyncService extends EventEmitter {
         method: 'POST',
         headers: this.authHeaders(),
         body: JSON.stringify({
-          queueId: this.config.deviceId,
+          queueId: this.queueId || this.config.deviceId,
           messageIds,
         }),
         signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),

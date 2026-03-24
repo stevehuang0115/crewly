@@ -42,7 +42,7 @@ export interface CloudInitResult {
 export function startMessageRouter(): void {
 	try {
 		// Dynamic import to avoid circular dependency
-		import('../messaging/message-router.service.js').then(({ MessageRouterService }) => {
+		import('../messaging/message-router.service.js').then(async ({ MessageRouterService }) => {
 			const router = MessageRouterService.getInstance();
 
 			// Set up the local delivery handler — writes to agent PTY sessions
@@ -73,6 +73,22 @@ export function startMessageRouter(): void {
 				}
 			});
 
+			// Set up the message enqueue handler for cross-machine messages.
+			// This routes incoming remote messages through the standard queue
+			// pipeline so the orchestrator gets them with proper source metadata.
+			try {
+				const { getMessageQueueInstance } = await import('../messaging/index.js');
+				const queue = getMessageQueueInstance();
+				if (queue) {
+					router.setMessageEnqueueHandler((input) => {
+						queue.enqueue(input as any);
+					});
+					logger.info('MessageRouterService: message enqueue handler configured');
+				}
+			} catch {
+				logger.debug('Message enqueue handler not available (non-fatal)');
+			}
+
 			router.startListening();
 			logger.info('MessageRouterService started for cross-device agent communication');
 		}).catch((err) => {
@@ -92,7 +108,6 @@ export function startMessageRouter(): void {
  *
  * Called during backend startup. If ~/.crewly/cloud/config.json exists
  * and contains valid credentials, calls connectLocal() to restore state.
- * Also triggers relay auto-connect for device discovery.
  *
  * @returns Result indicating whether connection was restored
  */
@@ -169,14 +184,6 @@ export async function initializeCloudIfConfigured(): Promise<CloudInitResult> {
 			(config.tier as CloudTier) || CLOUD_CONSTANTS.TIERS.FREE,
 			config.refreshToken,
 		);
-
-		// Trigger relay auto-connect (same as in cloud.controller.ts connectToCloud)
-		try {
-			const { autoConnectRelayFromToken } = await import('../../controllers/cloud/cloud.controller.js');
-			autoConnectRelayFromToken(activeToken);
-		} catch {
-			logger.debug('Relay auto-connect not available during startup (non-fatal)');
-		}
 
 		// Start Cloud Sync for device discovery and message polling
 		try {

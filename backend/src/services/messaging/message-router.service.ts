@@ -97,6 +97,8 @@ export class MessageRouterService {
   private boundMessageHandler: ((msg: IncomingMessage) => void) | null = null;
   /** Handler for delivering messages to local agent sessions */
   private localDeliveryHandler: LocalDeliveryHandler | null = null;
+  /** Handler for enqueuing messages into the message queue */
+  private messageEnqueueHandler: ((input: { content: string; conversationId: string; source: string; sourceMetadata?: Record<string, unknown> }) => void) | null = null;
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger(
@@ -138,6 +140,15 @@ export class MessageRouterService {
    */
   setLocalDeliveryHandler(handler: LocalDeliveryHandler): void {
     this.localDeliveryHandler = handler;
+  }
+
+  /**
+   * Set the handler for enqueuing messages into the message queue.
+   * Used by cross-machine message handling to route messages through
+   * the standard queue pipeline (with source metadata for reply routing).
+   */
+  setMessageEnqueueHandler(handler: (input: { content: string; conversationId: string; source: string; sourceMetadata?: Record<string, unknown> }) => void): void {
+    this.messageEnqueueHandler = handler;
   }
 
   // -------------------------------------------------------------------------
@@ -300,7 +311,13 @@ export class MessageRouterService {
    * @param msg - The incoming message from another device
    */
   async handleIncomingMessage(msg: IncomingMessage): Promise<void> {
-    // Only handle agent_message type
+    // Handle cross-machine messages (device-to-device via CloudSync)
+    if (msg.type === 'cross-machine') {
+      await this.handleCrossMachineMessage(msg);
+      return;
+    }
+
+    // Only handle agent_message type beyond this point
     if (msg.type !== 'agent_message') return;
 
     const payload = msg.payload;
@@ -359,6 +376,71 @@ export class MessageRouterService {
    */
   isListening(): boolean {
     return this.listening;
+  }
+
+  /**
+   * Handle an incoming cross-machine message from CloudSync.
+   *
+   * Cross-machine messages wrap a CrossMachineMessage object in the payload.
+   * The message content is delivered to the orchestrator via the message queue,
+   * formatted similarly to a Slack/chat message so it appears in the
+   * orchestrator's conversation flow.
+   *
+   * @param msg - The incoming CloudSync message with type 'cross-machine'
+   */
+  private async handleCrossMachineMessage(msg: IncomingMessage): Promise<void> {
+    const payload = msg.payload as Record<string, unknown> | undefined;
+    const fromName = (payload?.fromName as string) || msg.fromDeviceName || msg.from;
+    const fromDeviceId = (payload?.from as string) || msg.from;
+    const msgType = (payload?.type as string) || 'unknown';
+    const innerPayload = (payload?.payload as Record<string, unknown>) || {};
+    const messageContent = (innerPayload?.message as string)
+      || (payload?.message as string)
+      || JSON.stringify(payload);
+
+    this.logger.info('Received cross-machine message via CloudSync', {
+      messageId: msg.id,
+      from: fromName,
+      fromDeviceId,
+      type: msgType,
+    });
+
+    // Enqueue through the message queue (same as Slack/Chat messages) so the
+    // orchestrator gets proper routing metadata. The [REMOTE:deviceId] prefix
+    // tells the orchestrator to use reply-remote skill for responses.
+    try {
+      const conversationId = `remote-${fromDeviceId}`;
+      const content = `[REMOTE from ${fromName}] (${msgType}) ${messageContent}`;
+
+      if (this.messageEnqueueHandler) {
+        this.messageEnqueueHandler({
+          content,
+          conversationId,
+          source: 'remote',
+          sourceMetadata: {
+            fromDeviceId,
+            fromDeviceName: fromName,
+            messageType: msgType,
+          },
+        });
+      } else {
+        // Fallback: deliver directly to orchestrator PTY
+        if (this.localDeliveryHandler) {
+          await this.localDeliveryHandler('crewly-orc', content);
+        }
+      }
+
+      this.logger.info('Cross-machine message enqueued for orchestrator', {
+        from: fromName,
+        fromDeviceId,
+        type: msgType,
+        conversationId,
+      });
+    } catch (error) {
+      this.logger.error('Failed to enqueue cross-machine message', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   // -------------------------------------------------------------------------

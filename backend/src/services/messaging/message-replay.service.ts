@@ -25,6 +25,8 @@ import type { ChatService } from '../chat/chat.service.js';
 import type { ChatMessage } from '../../types/chat.types.js';
 import { MESSAGE_REPLAY_CONSTANTS, MESSAGE_SOURCES, type MessageSource } from '../../constants.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
+import { ThreadStatusQueueService } from './thread-status-queue.service.js';
+import { isTerminalStatus } from '../../types/thread-status.types.js';
 import path from 'path';
 
 /**
@@ -180,8 +182,27 @@ export class MessageReplayService {
         count: unrepliedMessages.length,
       });
 
-      // Step 5: Enqueue unreplied messages (up to max replay count)
-      const toReplay = unrepliedMessages.slice(0, MESSAGE_REPLAY_CONSTANTS.MAX_REPLAY_COUNT);
+      // Step 5: Filter out messages whose threads are already in a terminal status
+      // in the Thread Status Queue (replied_completed, expired). This prevents
+      // re-processing messages that were already handled before the restart.
+      const threadStatusQueue = ThreadStatusQueueService.getInstance();
+      const filteredMessages = unrepliedMessages.filter(({ conversationId }) => {
+        // Extract thread key from conversationId (format: slack-CHANNEL-TS or similar)
+        const existingThread = threadStatusQueue.getByConversationId(conversationId);
+        if (existingThread && isTerminalStatus(existingThread.status)) {
+          this.logger.debug('Skipping replay — thread already in terminal status', {
+            conversationId,
+            threadKey: existingThread.threadKey,
+            status: existingThread.status,
+          });
+          result.skippedDuplicate++;
+          return false;
+        }
+        return true;
+      });
+
+      // Step 6: Enqueue unreplied messages (up to max replay count)
+      const toReplay = filteredMessages.slice(0, MESSAGE_REPLAY_CONSTANTS.MAX_REPLAY_COUNT);
 
       for (const { conversationId, message } of toReplay) {
         const contentKey = `${conversationId}::${message.content}`;

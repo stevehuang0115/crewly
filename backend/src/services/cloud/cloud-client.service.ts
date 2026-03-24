@@ -505,7 +505,7 @@ export class CloudClientService {
     if (this.isTokenExpired()) return [];
     this.ensureConnected();
 
-    const url = `${this.cloudUrl}${CLOUD_CONSTANTS.RELAY_ENDPOINTS.DEVICES}`;
+    const url = `${this.cloudUrl}/api/v1/relay/devices`;
 
     const response = await fetch(url, {
       method: 'GET',
@@ -585,50 +585,63 @@ export class CloudClientService {
 
     this.refreshInProgress = true;
     try {
-      // Dynamically import to avoid circular dependency
-      const { verifyJwt, signJwt } = await import('../../controllers/cloud/cloud-google-auth.controller.js');
+      // Try Cloud-side refresh first (gets a token signed with the Cloud's secret,
+      // which is accepted by all Cloud services without needing CREWLY_JWT_SECRET locally).
+      const cloudUrl = this.cloudUrl || CLOUD_CONSTANTS.DEFAULT_CLOUD_URL;
+      const cloudRefreshUrl = `${cloudUrl}/api/cloud/refresh`;
+      let newAccessToken: string | null = null;
 
-      const payload = verifyJwt(this.refreshToken);
-      if (!payload || payload.type !== 'refresh') {
-        this.logger.warn('Refresh token verification failed — cannot auto-refresh', {
-          hasPayload: !!payload,
-          type: payload?.type,
-        });
-        // IMPORTANT: Do NOT clear this.refreshToken here. The refresh token may
-        // still be valid on the Cloud side (which only checks exp, not signature).
-        // Clearing it would permanently lose the ability to refresh, requiring
-        // the user to re-authenticate via OAuth. The token is only cleared on
-        // explicit disconnect().
-        return false;
-      }
-
-      // Resolve device ID from the LOCAL device identity (always preferred).
-      // The refresh token may carry a stale deviceId from a different machine
-      // (e.g. when tokens are copied between machines via shared config).
-      // Using the local identity ensures the JWT identifies THIS machine.
-      let deviceId: string | undefined;
       try {
-        const { DeviceIdentityService } = await import('./device-identity.service.js');
-        const identity = await DeviceIdentityService.getInstance().getOrCreateIdentity();
-        deviceId = identity.deviceId;
+        const response = await fetch(cloudRefreshUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken: this.refreshToken }),
+          signal: AbortSignal.timeout(10_000),
+        });
+
+        if (response.ok) {
+          const data = await response.json() as { success?: boolean; accessToken?: string };
+          if (data.success && data.accessToken) {
+            newAccessToken = data.accessToken;
+            this.logger.info('Token refreshed via Cloud auth service');
+          }
+        }
       } catch {
-        // Fallback to refresh token's deviceId if local identity unavailable
-        deviceId = payload.deviceId as string | undefined;
+        this.logger.debug('Cloud refresh unavailable, falling back to local refresh');
       }
 
-      // Issue a new access token from the refresh token claims
-      const now = Math.floor(Date.now() / 1000);
-      const newAccessToken = signJwt({
-        sub: payload.sub,
-        email: payload.email || '',
-        name: payload.name || '',
-        plan: payload.plan || 'free',
-        ...(deviceId && { deviceId }),
-        iat: now,
-        exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
-        iss: AUTH_CONSTANTS.JWT.ISSUER,
-        type: 'access',
-      });
+      // Fallback: local refresh (requires CREWLY_JWT_SECRET to match Cloud)
+      if (!newAccessToken) {
+        const { verifyJwt, signJwt } = await import('../../controllers/cloud/cloud-google-auth.controller.js');
+        const payload = verifyJwt(this.refreshToken);
+        if (!payload || payload.type !== 'refresh') {
+          this.logger.warn('Refresh token verification failed — cannot auto-refresh');
+          return false;
+        }
+
+        let deviceId: string | undefined;
+        try {
+          const { DeviceIdentityService } = await import('./device-identity.service.js');
+          const identity = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+          deviceId = identity.deviceId;
+        } catch {
+          deviceId = payload.deviceId as string | undefined;
+        }
+
+        const now = Math.floor(Date.now() / 1000);
+        newAccessToken = signJwt({
+          sub: payload.sub,
+          email: payload.email || '',
+          name: payload.name || '',
+          plan: payload.plan || 'free',
+          ...(deviceId && { deviceId }),
+          iat: now,
+          exp: now + AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
+          iss: AUTH_CONSTANTS.JWT.ISSUER,
+          type: 'access',
+        });
+        this.logger.info('Token refreshed locally (fallback)');
+      }
 
       // Update service state
       this.token = newAccessToken;
@@ -652,10 +665,7 @@ export class CloudClientService {
         // CloudSyncService may not be available — non-fatal
       }
 
-      this.logger.info('Access token auto-refreshed successfully', {
-        sub: payload.sub,
-        expiresIn: AUTH_CONSTANTS.JWT.ACCESS_TOKEN_EXPIRY_S,
-      });
+      this.logger.info('Access token auto-refreshed successfully');
 
       return true;
     } catch (error) {
