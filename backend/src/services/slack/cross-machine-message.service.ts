@@ -2,9 +2,10 @@
  * Cross-Machine Message Service
  *
  * Enables Crewly instances on different machines to communicate
- * through a shared Slack channel. Uses Slack as the transport layer,
- * replacing the Cloud Relay WebSocket approach with a simpler HTTP-based
- * mechanism that leverages Slack's built-in auth, delivery, and persistence.
+ * via the CloudSync HTTP-polling transport layer. Messages are routed
+ * through the CrewlyAI Cloud message queue (heartbeat-based device
+ * discovery + HTTP-polled delivery), providing built-in auth, persistence,
+ * and offline tolerance without requiring WebSocket connections.
  *
  * @module services/slack/cross-machine-message
  */

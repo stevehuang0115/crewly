@@ -15,6 +15,7 @@ import { CloudSyncService } from '../../services/cloud/cloud-sync.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { CLOUD_CONSTANTS, CLOUD_SYNC_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
+import type { MessageType } from '../../services/cloud/cloud-sync.types.js';
 import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudController');
@@ -499,7 +500,7 @@ export async function sendCloudMessage(req: Request, res: Response, next: NextFu
       return;
     }
 
-    await syncService.sendMessage(toDeviceId, type as import('../../services/cloud/cloud-sync.types.js').MessageType, payload);
+    await syncService.sendMessage(toDeviceId, type as MessageType, payload);
 
     logger.info('Cloud message sent', { toDeviceId, type });
 

@@ -24,6 +24,7 @@ import type {
   AgentMessagePayload,
 } from '../cloud/cloud-sync.types.js';
 import { isAgentMessagePayload } from '../cloud/cloud-sync.types.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -426,7 +427,7 @@ export class MessageRouterService {
       } else {
         // Fallback: deliver directly to orchestrator PTY
         if (this.localDeliveryHandler) {
-          await this.localDeliveryHandler('crewly-orc', content);
+          await this.localDeliveryHandler(ORCHESTRATOR_SESSION_NAME, content);
         }
       }
 

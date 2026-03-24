@@ -15,6 +15,7 @@ import { CloudSyncService } from './cloud-sync.service.js';
 import { DeviceIdentityService } from './device-identity.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { CLOUD_CONSTANTS, type CloudTier } from '../../constants.js';
+import type { EnqueueMessageInput } from '../../types/messaging.types.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudInitializer');
 
@@ -81,7 +82,7 @@ export function startMessageRouter(): void {
 				const queue = getMessageQueueInstance();
 				if (queue) {
 					router.setMessageEnqueueHandler((input) => {
-						queue.enqueue(input as any);
+						queue.enqueue(input as EnqueueMessageInput);
 					});
 					logger.info('MessageRouterService: message enqueue handler configured');
 				}
