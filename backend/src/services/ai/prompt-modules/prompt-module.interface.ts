@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as path from 'path';
+
 /**
  * Interface for modular prompt components.
  *
@@ -163,8 +166,6 @@ export function loadRoleFragment(
 	fragmentName: string
 ): string | null {
 	try {
-		const fs = require('fs');
-		const path = require('path');
 		const fragmentPath = path.join(projectRoot, 'config', 'roles', role, 'fragments', `${fragmentName}.md`);
 		if (fs.existsSync(fragmentPath)) {
 			return fs.readFileSync(fragmentPath, 'utf-8');

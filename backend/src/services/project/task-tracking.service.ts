@@ -153,12 +153,20 @@ export class TaskTrackingService extends EventEmitter {
     return task;
   }
 
-  async updateTaskStatus(taskId: string, status: InProgressTask['status'], blockReason?: string): Promise<void> {
+  async updateTaskStatus(taskId: string, status: InProgressTask['status'], blockReason?: string, requestorOrgRole?: OrgRole): Promise<void> {
     const data = await this.loadTaskData();
     const task = data.tasks.find(t => t.id === taskId);
 
     if (!task) {
       throw new Error(`Task with ID ${taskId} not found`);
+    }
+
+    // Validate transition if requestor role is provided
+    if (requestorOrgRole) {
+      const validation = this.validateStatusTransition(task.status, status, requestorOrgRole);
+      if (!validation.valid) {
+        throw new Error(`Status transition rejected: ${validation.reason}`);
+      }
     }
 
     const previousStatus = task.status;

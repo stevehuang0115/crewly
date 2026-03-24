@@ -22,7 +22,7 @@ const logger = LoggerService.getInstance().createComponentLogger('MemoryControll
 
 /** Valid categories for the remember endpoint */
 const VALID_REMEMBER_CATEGORIES: ReadonlySet<string> = new Set([
-  'fact', 'pattern', 'decision', 'gotcha', 'preference', 'relationship',
+  'fact', 'pattern', 'decision', 'gotcha', 'preference', 'user_preference', 'relationship',
 ]);
 
 /** Valid scopes for the remember endpoint */

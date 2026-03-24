@@ -121,7 +121,7 @@ export class AgentRegistrationService {
 	private schedulerService: { drainDeadLetterQueue(sessionName: string): Promise<number> } | null = null;
 
 	/** Architecture Upgrade Phase 6: EventBusService for standing task subscriptions. */
-	private eventBusService: { subscribe(input: any): any } | null = null;
+	private eventBusService: { subscribe(input: import('../../types/event-bus.types.js').CreateSubscriptionInput): import('../../types/event-bus.types.js').EventSubscription } | null = null;
 
 
 	// Terminal patterns are now centralized in TERMINAL_PATTERNS constant
@@ -166,7 +166,7 @@ export class AgentRegistrationService {
 	 *
 	 * @param eventBus - EventBusService instance with subscribe method
 	 */
-	setEventBusService(eventBus: { subscribe(input: any): any }): void {
+	setEventBusService(eventBus: { subscribe(input: import('../../types/event-bus.types.js').CreateSubscriptionInput): import('../../types/event-bus.types.js').EventSubscription }): void {
 		this.eventBusService = eventBus;
 	}
 

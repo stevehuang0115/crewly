@@ -25,6 +25,7 @@ import type {
   AgentPreferences,
   ProjectAgentsIndex,
 } from '../../types/memory.types.js';
+import type { TaskTrackingService } from '../project/task-tracking.service.js';
 
 /**
  * Categories for the unified remember operation
@@ -201,6 +202,8 @@ export class MemoryService implements IMemoryService {
 
   private readonly agentMemory: AgentMemoryService;
   private readonly projectMemory: ProjectMemoryService;
+  /** Shared or lazily-cached TaskTrackingService instance for operational context enrichment */
+  private taskTrackingServiceRef: TaskTrackingService | null = null;
   private readonly logger = LoggerService.getInstance().createComponentLogger('MemoryService');
   private embeddingProvider: EmbeddingProvider | null = null;
   private embeddingProviderInitialized = false;
@@ -211,6 +214,32 @@ export class MemoryService implements IMemoryService {
   private constructor() {
     this.agentMemory = AgentMemoryService.getInstance();
     this.projectMemory = ProjectMemoryService.getInstance();
+  }
+
+  /**
+   * Set the shared TaskTrackingService instance to avoid creating
+   * disposable instances on every recall. Call during app startup.
+   *
+   * @param service - The application's shared TaskTrackingService
+   */
+  public setTaskTrackingService(service: TaskTrackingService): void {
+    this.taskTrackingServiceRef = service;
+  }
+
+  /**
+   * Get or lazily create a TaskTrackingService.
+   * Prefers the shared instance set via setTaskTrackingService().
+   *
+   * @returns TaskTrackingService instance
+   */
+  private async getTaskTrackingService(): Promise<TaskTrackingService> {
+    if (this.taskTrackingServiceRef) {
+      return this.taskTrackingServiceRef;
+    }
+    // Lazy fallback: create and cache one instance
+    const { TaskTrackingService: TTS } = await import('../project/task-tracking.service.js');
+    this.taskTrackingServiceRef = new TTS();
+    return this.taskTrackingServiceRef;
   }
 
   /**
@@ -815,17 +844,12 @@ export class MemoryService implements IMemoryService {
       opPromises.push(
         (async () => {
           try {
-            // TaskTrackingService is not a singleton — use lazy import of the shared instance
-            // The instance is created in index.ts; we access it via the global service registry
-            const { TaskTrackingService } = await import('../project/task-tracking.service.js');
-            // Create a temporary instance to query (reads from same file)
-            const tts = new TaskTrackingService();
+            const tts = await this.getTaskTrackingService();
             const tasks = await tts.getTasksBySessionName(params.agentId);
-            const active = tasks.filter((t: { status: string }) =>
-              !['completed', 'verified', 'cancelled'].includes(t.status)
-            );
+            const terminalStatuses = ['completed', 'verified', 'cancelled'];
+            const active = tasks.filter((t) => !terminalStatuses.includes(t.status));
             if (active.length) {
-              result.activeTasks = active.map((t: { id: string; taskName: string; status: string; workingNotes?: string }) => ({
+              result.activeTasks = active.map((t) => ({
                 id: t.id,
                 name: t.taskName,
                 status: t.status,
