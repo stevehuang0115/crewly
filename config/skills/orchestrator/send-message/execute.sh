@@ -1,15 +1,16 @@
 #!/bin/bash
-# Send a message to an agent's terminal session
+# Send a message to an agent's terminal session.
+# Supports: argument, stdin pipe, or @filepath for JSON input (#292, #293).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"agent-session\",\"message\":\"hello\"}'"
+INPUT=$(read_json_input "${1:-}")
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"agent-session\",\"message\":\"hello\"}' or echo '{...}' | execute.sh"
 
-SESSION_NAME=$(echo "$INPUT" | jq -r '.sessionName // empty')
-MESSAGE=$(echo "$INPUT" | jq -r '.message // empty')
-FORCE=$(echo "$INPUT" | jq -r '.force // empty')
+SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
+MESSAGE=$(printf '%s' "$INPUT" | jq -r '.message // empty')
+FORCE=$(printf '%s' "$INPUT" | jq -r '.force // empty')
 require_param "sessionName" "$SESSION_NAME"
 require_param "message" "$MESSAGE"
 

@@ -397,9 +397,9 @@ describe('TerminalController', () => {
 			await jest.advanceTimersByTimeAsync(6000);
 			await promise;
 
-			// Should write text first, then \r twice (Enter + backup Enter)
+			// Should write text in bracketed paste first, then \r twice (Enter + backup Enter)
 			expect(mockSession.write).toHaveBeenCalledTimes(3);
-			expect(mockSession.write).toHaveBeenNthCalledWith(1, 'hello');
+			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~hello\x1b[201~');
 			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\r');
 			expect(mockSession.write).toHaveBeenNthCalledWith(3, '\r');
 			expect(mockRes.json).toHaveBeenCalledWith({

@@ -97,18 +97,18 @@ describe('SessionCommandHelper', () => {
 	});
 
 	describe('sendMessage', () => {
-		it('should write message followed by separate Enter key', async () => {
+		it('should write message in bracketed paste mode followed by separate Enter key (#292, #293)', async () => {
 			await helper.sendMessage('test-session', 'hello world');
-			// First call: message text
-			expect(mockSession.write).toHaveBeenNthCalledWith(1, 'hello world');
+			// First call: message text wrapped in bracketed paste markers
+			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~hello world\x1b[201~');
 			// Second call: Enter key (after delay)
 			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\r');
 			expect(mockSession.write).toHaveBeenCalledTimes(2);
 		});
 
-		it('should handle multi-line messages', async () => {
+		it('should handle multi-line messages in bracketed paste mode', async () => {
 			await helper.sendMessage('test-session', 'line1\nline2\nline3');
-			expect(mockSession.write).toHaveBeenNthCalledWith(1, 'line1\nline2\nline3');
+			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~line1\nline2\nline3\x1b[201~');
 			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\r');
 		});
 
@@ -696,15 +696,15 @@ describe('SessionCommandHelper', () => {
 	});
 
 	describe('sendMessageGemini', () => {
-		it('should send Escape before writing message', async () => {
+		it('should send Escape before writing message in bracketed paste (#292, #293)', async () => {
 			mockBackend.captureOutput.mockReturnValue('Type your message');
 
 			await helper.sendMessageGemini('test-session', 'hello gemini');
 
 			// First write: Escape to exit sub-modes
 			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b');
-			// Second write: message text
-			expect(mockSession.write).toHaveBeenNthCalledWith(2, 'hello gemini');
+			// Second write: message text wrapped in bracketed paste markers
+			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\x1b[200~hello gemini\x1b[201~');
 			// Third write: Enter key
 			expect(mockSession.write).toHaveBeenNthCalledWith(3, '\r');
 		});
@@ -739,7 +739,7 @@ describe('SessionCommandHelper', () => {
 
 			const result = await helper.sendMessageGemini('test-session', longMessage);
 			expect(result).toBe(true);
-			expect(mockSession.write).toHaveBeenNthCalledWith(2, longMessage);
+			expect(mockSession.write).toHaveBeenNthCalledWith(2, `\x1b[200~${longMessage}\x1b[201~`);
 		});
 
 		it('should return true when capturePane throws (verification fails gracefully)', async () => {

@@ -28,6 +28,28 @@ import { InProcessLogBuffer } from '../../services/agent/crewly-agent/in-process
 import type { PendingWorkSummary, HeartbeatState } from '../../services/agent/adaptive-heartbeat.service.js';
 import { ADAPTIVE_HEARTBEAT_DEFAULTS } from '../../services/agent/adaptive-heartbeat.service.js';
 
+/**
+ * Bracketed paste mode markers.
+ * Wrapping terminal input in these markers tells TUI applications (Gemini CLI,
+ * Codex CLI, etc.) to treat the content as pasted text rather than typed input.
+ * This prevents special shell characters like (), $, `, etc. from triggering
+ * shell mode or being interpreted as key sequences (#293).
+ */
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
+
+/**
+ * Wrap a message in bracketed paste mode markers for safe delivery to TUI terminals.
+ * This ensures parentheses, quotes, dollar signs, and other shell metacharacters
+ * are treated as literal text by the receiving terminal application (#292, #293).
+ *
+ * @param text - The raw message text
+ * @returns The text wrapped in bracketed paste markers
+ */
+function wrapInBracketedPaste(text: string): string {
+	return `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`;
+}
+
 /** Logger instance for terminal controller */
 const logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('TerminalController');
 
@@ -354,8 +376,10 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 				}
 			}
 
-			// Two-step write: text first, then Enter separately
-			session.write(dataStr);
+			// Two-step write: text first (wrapped in bracketed paste), then Enter separately.
+			// Bracketed paste markers prevent TUI runtimes from interpreting special
+			// characters like (), $, ` as shell commands (#293).
+			session.write(wrapInBracketedPaste(dataStr));
 
 			// Scale delay based on message length for TUI paste processing
 			const enterDelay = Math.min(1000 + Math.ceil(dataStr.length / 10), 5000);
@@ -841,12 +865,13 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 				return;
 			}
 			// For TUI runtimes (Gemini CLI, Codex CLI), use two-step write:
-			// text first, then Enter separately. Bundling message+\r in a single
-			// write causes the \r to be consumed by bracketed paste mode (#130).
+			// text first (in bracketed paste mode), then Enter separately.
+			// Bracketed paste markers prevent TUI runtimes from interpreting
+			// special characters like (), $, ` as shell commands (#130, #293).
 			const isTuiRuntime = resolvedRuntimeType &&
 				resolvedRuntimeType !== RUNTIME_TYPES.CLAUDE_CODE;
 			if (isTuiRuntime) {
-				session.write(message);
+				session.write(wrapInBracketedPaste(message));
 				const enterDelay = Math.min(1000 + Math.ceil(message.length / 10), 5000);
 				await new Promise(resolve => setTimeout(resolve, enterDelay));
 				session.write('\r');
@@ -855,7 +880,7 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			} else {
 				// Claude Code also benefits from two-step write: bundling message+\r
 				// in a single write can be swallowed by bracketed paste mode.
-				session.write(message);
+				session.write(wrapInBracketedPaste(message));
 				const ccEnterDelay = Math.min(1000 + Math.ceil(message.length / 10), 5000);
 				await new Promise(resolve => setTimeout(resolve, ccEnterDelay));
 				session.write('\r');

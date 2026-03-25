@@ -6,17 +6,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"to\":\"worker-session\",\"task\":\"implement feature X\",\"priority\":\"high\",\"teamId\":\"team-123\",\"tlMemberId\":\"tl-member-id\",\"projectPath\":\"/path/to/project\"}'"
+INPUT=$(read_json_input "${1:-}")
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"to\":\"worker-session\",\"task\":\"...\"}' or echo '{...}' | execute.sh"
 
-TO=$(echo "$INPUT" | jq -r '.to // empty')
-TASK=$(echo "$INPUT" | jq -r '.task // empty')
-PRIORITY=$(echo "$INPUT" | jq -r '.priority // "normal"')
-CONTEXT=$(echo "$INPUT" | jq -r '.context // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // empty')
-TL_MEMBER_ID=$(echo "$INPUT" | jq -r '.tlMemberId // empty')
-FROM_SESSION=$(echo "$INPUT" | jq -r '.fromSession // empty')
+TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')
+TASK=$(printf '%s' "$INPUT" | jq -r '.task // empty')
+PRIORITY=$(printf '%s' "$INPUT" | jq -r '.priority // "normal"')
+CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
+TL_MEMBER_ID=$(printf '%s' "$INPUT" | jq -r '.tlMemberId // empty')
+FROM_SESSION=$(printf '%s' "$INPUT" | jq -r '.fromSession // empty')
 require_param "to" "$TO"
 require_param "task" "$TASK"
 
@@ -93,8 +93,8 @@ if [ -n "$PROJECT_PATH" ]; then
 fi
 
 # Set up idle event subscription for TL monitoring
-MONITOR_IDLE=$(echo "$INPUT" | jq -r 'if .monitor.idleEvent == null then true else .monitor.idleEvent end')
-MONITOR_FALLBACK_MINUTES=$(echo "$INPUT" | jq -r 'if .monitor.fallbackCheckMinutes == null then 5 else .monitor.fallbackCheckMinutes end')
+MONITOR_IDLE=$(printf '%s' "$INPUT" | jq -r 'if .monitor.idleEvent == null then true else .monitor.idleEvent end')
+MONITOR_FALLBACK_MINUTES=$(printf '%s' "$INPUT" | jq -r 'if .monitor.fallbackCheckMinutes == null then 5 else .monitor.fallbackCheckMinutes end')
 
 COLLECTED_SCHEDULE_IDS="[]"
 COLLECTED_SUBSCRIPTION_IDS="[]"

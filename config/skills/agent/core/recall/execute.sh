@@ -4,16 +4,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"agentId\":\"dev-1\",\"context\":\"authentication patterns\"}'"
+INPUT=$(read_json_input "${1:-}")
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"agentId\":\"dev-1\",\"context\":\"...\"}' or echo '{...}' | execute.sh"
 
-AGENT_ID=$(echo "$INPUT" | jq -r '.agentId // empty')
-CONTEXT=$(echo "$INPUT" | jq -r '.context // empty')
+AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agentId // empty')
+CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
 require_param "agentId" "$AGENT_ID"
 require_param "context" "$CONTEXT"
 
 # Build body with required and optional fields
-BODY=$(echo "$INPUT" | jq '{
+BODY=$(printf '%s' "$INPUT" | jq '{
   agentId: .agentId,
   context: .context
 } +

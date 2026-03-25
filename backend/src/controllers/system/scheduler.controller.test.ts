@@ -334,8 +334,8 @@ describe('Scheduler Handlers', () => {
   });
 
   describe('cancelScheduledCheck', () => {
-    it('should cancel scheduled check successfully', async () => {
-      mockSchedulerService.cancelCheck.mockReturnValue(undefined);
+    it('should cancel scheduled check successfully when found in memory', async () => {
+      mockSchedulerService.cancelCheck.mockReturnValue(true);
 
       await schedulerHandlers.cancelScheduledCheck.call(
         mockApiContext as ApiContext,
@@ -350,8 +350,25 @@ describe('Scheduler Handlers', () => {
       });
     });
 
+    it('should return success with fallback message when not found in memory (#290)', async () => {
+      mockSchedulerService.cancelCheck.mockReturnValue(false);
+
+      await schedulerHandlers.cancelScheduledCheck.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockSchedulerService.cancelCheck).toHaveBeenCalledWith('check-123');
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        message: 'Check-in not found in memory; persisted entry cleanup triggered'
+      });
+    });
+
     it('should handle missing check ID parameter', async () => {
       mockRequest.params = {};
+      mockSchedulerService.cancelCheck.mockReturnValue(false);
 
       await schedulerHandlers.cancelScheduledCheck.call(
         mockApiContext as ApiContext,
@@ -362,7 +379,7 @@ describe('Scheduler Handlers', () => {
       expect(mockSchedulerService.cancelCheck).toHaveBeenCalledWith(undefined);
       expect(mockResponse.json).toHaveBeenCalledWith({
         success: true,
-        message: 'Check-in cancelled successfully'
+        message: 'Check-in not found in memory; persisted entry cleanup triggered'
       });
     });
 
@@ -386,7 +403,7 @@ describe('Scheduler Handlers', () => {
 
     it('should handle empty string check ID', async () => {
       mockRequest.params = { id: '' };
-      mockSchedulerService.cancelCheck.mockReturnValue(undefined);
+      mockSchedulerService.cancelCheck.mockReturnValue(false);
 
       await schedulerHandlers.cancelScheduledCheck.call(
         mockApiContext as ApiContext,
@@ -397,7 +414,7 @@ describe('Scheduler Handlers', () => {
       expect(mockSchedulerService.cancelCheck).toHaveBeenCalledWith('');
       expect(mockResponse.json).toHaveBeenCalledWith({
         success: true,
-        message: 'Check-in cancelled successfully'
+        message: 'Check-in not found in memory; persisted entry cleanup triggered'
       });
     });
   });

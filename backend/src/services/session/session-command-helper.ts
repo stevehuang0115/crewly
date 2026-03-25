@@ -108,9 +108,15 @@ export class SessionCommandHelper {
 			isMultiLine: message.includes('\n'),
 		});
 
-		// For multi-line messages, terminal may enter bracketed paste mode
-		// Send text first, then Enter separately to ensure submission
-		session.write(message);
+		// Wrap message in bracketed paste mode markers (\x1b[200~ ... \x1b[201~).
+		// This tells TUI applications (Gemini CLI, Codex CLI, Claude Code) to treat
+		// the input as pasted text rather than typed keystrokes. Without this, special
+		// characters like (), $, `, and " can trigger shell mode or be interpreted as
+		// key sequences in Gemini CLI (#292, #293).
+		const bracketedMessage = `\x1b[200~${message}\x1b[201~`;
+
+		// Send text first (in bracketed paste), then Enter separately to ensure submission
+		session.write(bracketedMessage);
 
 		// Scale delay based on message size: large prompts (e.g. 409-line registration
 		// prompts) need more time for Claude Code to process the bracketed paste.
@@ -218,8 +224,9 @@ export class SessionCommandHelper {
 		session.write('\x1b');
 		await delay(200);
 
-		// Step 2: Write the message text
-		session.write(message);
+		// Step 2: Write the message text wrapped in bracketed paste markers.
+		// This prevents special characters from triggering shell mode (#292, #293).
+		session.write(`\x1b[200~${message}\x1b[201~`);
 
 		// Step 3: Longer delay for Ink TUI to process the paste
 		const scaledDelay = Math.min(

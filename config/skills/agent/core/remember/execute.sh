@@ -4,26 +4,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"agentId\":\"dev-1\",\"content\":\"The auth module uses JWT\",\"category\":\"architecture\",\"scope\":\"project\"}'"
+INPUT=$(read_json_input "${1:-}")
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"agentId\":\"dev-1\",\"content\":\"...\",\"category\":\"...\",\"scope\":\"...\"}' or echo '{...}' | execute.sh"
 
-AGENT_ID=$(echo "$INPUT" | jq -r '.agentId // empty')
-CONTENT=$(echo "$INPUT" | jq -r '.content // empty')
-CATEGORY=$(echo "$INPUT" | jq -r '.category // empty')
-SCOPE=$(echo "$INPUT" | jq -r '.scope // empty')
+AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agentId // empty')
+CONTENT=$(printf '%s' "$INPUT" | jq -r '.content // empty')
+CATEGORY=$(printf '%s' "$INPUT" | jq -r '.category // empty')
+SCOPE=$(printf '%s' "$INPUT" | jq -r '.scope // empty')
 require_param "agentId" "$AGENT_ID"
 require_param "content" "$CONTENT"
 require_param "category" "$CATEGORY"
 require_param "scope" "$SCOPE"
 
 # #187: Auto-inject projectPath from CREWLY_PROJECT_PATH env var when not provided
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 if [ -z "$PROJECT_PATH" ] && [ -n "${CREWLY_PROJECT_PATH:-}" ]; then
-  INPUT=$(echo "$INPUT" | jq --arg pp "$CREWLY_PROJECT_PATH" '. + {projectPath: $pp}')
+  INPUT=$(printf '%s' "$INPUT" | jq --arg pp "$CREWLY_PROJECT_PATH" '. + {projectPath: $pp}')
 fi
 
 # Build body with required and optional fields
-BODY=$(echo "$INPUT" | jq '{
+BODY=$(printf '%s' "$INPUT" | jq '{
   agentId: .agentId,
   content: .content,
   category: .category,

@@ -149,8 +149,15 @@ export async function getScheduledChecks(this: ApiContext, req: Request, res: Re
 export async function cancelScheduledCheck(this: ApiContext, req: Request, res: Response): Promise<void> {
   try {
     const { id } = req.params as any;
-    this.schedulerService.cancelCheck(id);
-    res.json({ success: true, message: 'Check-in cancelled successfully' } as ApiResponse);
+    const found = this.schedulerService.cancelCheck(id);
+    if (found) {
+      res.json({ success: true, message: 'Check-in cancelled successfully' } as ApiResponse);
+    } else {
+      // #290: Still return success because the fallback storage deletion was
+      // triggered. The entry will be removed from the persisted file even if
+      // it was not found in the in-memory maps (e.g. after a server restart).
+      res.json({ success: true, message: 'Check-in not found in memory; persisted entry cleanup triggered' } as ApiResponse);
+    }
   } catch (error) {
     logger.error('Error cancelling check', { error: error instanceof Error ? error.message : String(error) });
     res.status(500).json({ success: false, error: 'Failed to cancel check-in' } as ApiResponse);
