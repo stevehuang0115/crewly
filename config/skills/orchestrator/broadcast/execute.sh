@@ -4,10 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"message\":\"Team standup in 5 minutes\"}'"
 
-MESSAGE=$(echo "$INPUT" | jq -r '.message // empty')
+MESSAGE=$(printf '%s' "$INPUT" | jq -r '.message // empty')
 require_param "message" "$MESSAGE"
 
 # Get all active sessions

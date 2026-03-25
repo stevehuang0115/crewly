@@ -4,15 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"topic\":\"Topic text\",\"platforms\":\"twitter,linkedin,reddit\",\"url\":\"https://...\",\"hashtags\":\"tag1,tag2\",\"tone\":\"professional\"}'"
 
 # Parse parameters
-TOPIC=$(echo "$INPUT" | jq -r '.topic // empty')
-PLATFORMS=$(echo "$INPUT" | jq -r '.platforms // "twitter,linkedin,reddit"')
-URL=$(echo "$INPUT" | jq -r '.url // empty')
-HASHTAGS_INPUT=$(echo "$INPUT" | jq -r '.hashtags // empty')
-TONE=$(echo "$INPUT" | jq -r '.tone // "professional"')
+TOPIC=$(printf '%s' "$INPUT" | jq -r '.topic // empty')
+PLATFORMS=$(printf '%s' "$INPUT" | jq -r '.platforms // "twitter,linkedin,reddit"')
+URL=$(printf '%s' "$INPUT" | jq -r '.url // empty')
+HASHTAGS_INPUT=$(printf '%s' "$INPUT" | jq -r '.hashtags // empty')
+TONE=$(printf '%s' "$INPUT" | jq -r '.tone // "professional"')
 
 require_param "topic" "$TOPIC"
 

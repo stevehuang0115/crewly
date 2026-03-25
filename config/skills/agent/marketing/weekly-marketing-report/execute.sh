@@ -4,14 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"projectPath\":\"/path\",\"weekEndDate\":\"YYYY-MM-DD\",\"businessName\":\"...\"}'"
 
 # Parse parameters
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-WEEK_END=$(echo "$INPUT" | jq -r '.weekEndDate // empty')
-BUSINESS_NAME=$(echo "$INPUT" | jq -r '.businessName // empty')
-CALENDAR_PATH=$(echo "$INPUT" | jq -r '.calendarPath // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+WEEK_END=$(printf '%s' "$INPUT" | jq -r '.weekEndDate // empty')
+BUSINESS_NAME=$(printf '%s' "$INPUT" | jq -r '.businessName // empty')
+CALENDAR_PATH=$(printf '%s' "$INPUT" | jq -r '.calendarPath // empty')
 
 require_param "weekEndDate" "$WEEK_END"
 require_param "businessName" "$BUSINESS_NAME"

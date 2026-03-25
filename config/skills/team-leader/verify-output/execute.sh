@@ -12,16 +12,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"taskId\":\"...\",\"taskPath\":\"...\",\"workerId\":\"...\",\"teamId\":\"...\",\"projectPath\":\"...\",\"templateId\":\"dev-fullstack\",\"checks\":[...]}'"
 
-TASK_ID=$(echo "$INPUT" | jq -r '.taskId // empty')
-TASK_PATH=$(echo "$INPUT" | jq -r '.taskPath // empty')
-WORKER_ID=$(echo "$INPUT" | jq -r '.workerId // empty')
-TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-TEMPLATE_ID=$(echo "$INPUT" | jq -r '.templateId // empty')
-CHECKS=$(echo "$INPUT" | jq -c '.checks // []')
+TASK_ID=$(printf '%s' "$INPUT" | jq -r '.taskId // empty')
+TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.taskPath // empty')
+WORKER_ID=$(printf '%s' "$INPUT" | jq -r '.workerId // empty')
+TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+TEMPLATE_ID=$(printf '%s' "$INPUT" | jq -r '.templateId // empty')
+CHECKS=$(printf '%s' "$INPUT" | jq -c '.checks // []')
 
 # At least taskPath or taskId is needed
 if [ -z "$TASK_PATH" ] && [ -z "$TASK_ID" ]; then

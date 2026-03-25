@@ -4,19 +4,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"action\":\"add|list|update|next|stats\",\"calendarPath\":\"/path/to/calendar.json\",...}'"
 
 # Parse common parameters
-ACTION=$(echo "$INPUT" | jq -r '.action // empty')
-CALENDAR_PATH=$(echo "$INPUT" | jq -r '.calendarPath // empty')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // empty')
+CALENDAR_PATH=$(printf '%s' "$INPUT" | jq -r '.calendarPath // empty')
 
 require_param "action" "$ACTION"
 
 # Default calendar path
 if [ -z "$CALENDAR_PATH" ]; then
   # Try to find project .crewly directory
-  PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+  PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
   if [ -n "$PROJECT_PATH" ]; then
     CALENDAR_PATH="${PROJECT_PATH}/.crewly/content/calendar.json"
   else
@@ -42,16 +42,16 @@ case "$ACTION" in
   # ADD: Add a new content entry
   # ─────────────────────────────────────────────
   add)
-    TITLE=$(echo "$INPUT" | jq -r '.title // empty')
-    PLATFORM=$(echo "$INPUT" | jq -r '.platform // empty')
-    CONTENT_TYPE=$(echo "$INPUT" | jq -r '.type // "post"')
-    SCHEDULED_DATE=$(echo "$INPUT" | jq -r '.scheduledDate // empty')
-    STATUS=$(echo "$INPUT" | jq -r '.status // "draft"')
-    CONTENT_PATH=$(echo "$INPUT" | jq -r '.contentPath // empty')
-    LINE=$(echo "$INPUT" | jq -r '.line // "crewly"')
-    TOPIC=$(echo "$INPUT" | jq -r '.topic // empty')
-    NOTES=$(echo "$INPUT" | jq -r '.notes // empty')
-    TAGS=$(echo "$INPUT" | jq -r '.tags // "[]"')
+    TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
+    PLATFORM=$(printf '%s' "$INPUT" | jq -r '.platform // empty')
+    CONTENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.type // "post"')
+    SCHEDULED_DATE=$(printf '%s' "$INPUT" | jq -r '.scheduledDate // empty')
+    STATUS=$(printf '%s' "$INPUT" | jq -r '.status // "draft"')
+    CONTENT_PATH=$(printf '%s' "$INPUT" | jq -r '.contentPath // empty')
+    LINE=$(printf '%s' "$INPUT" | jq -r '.line // "crewly"')
+    TOPIC=$(printf '%s' "$INPUT" | jq -r '.topic // empty')
+    NOTES=$(printf '%s' "$INPUT" | jq -r '.notes // empty')
+    TAGS=$(printf '%s' "$INPUT" | jq -r '.tags // "[]"')
 
     require_param "title" "$TITLE"
     require_param "platform" "$PLATFORM"
@@ -126,13 +126,13 @@ case "$ACTION" in
   # LIST: List calendar entries with filters
   # ─────────────────────────────────────────────
   list)
-    FILTER_PLATFORM=$(echo "$INPUT" | jq -r '.platform // empty')
-    FILTER_STATUS=$(echo "$INPUT" | jq -r '.status // empty')
-    FILTER_DATE=$(echo "$INPUT" | jq -r '.date // empty')
-    FILTER_DATE_FROM=$(echo "$INPUT" | jq -r '.dateFrom // empty')
-    FILTER_DATE_TO=$(echo "$INPUT" | jq -r '.dateTo // empty')
-    FILTER_LINE=$(echo "$INPUT" | jq -r '.line // empty')
-    LIMIT=$(echo "$INPUT" | jq -r '.limit // "50"')
+    FILTER_PLATFORM=$(printf '%s' "$INPUT" | jq -r '.platform // empty')
+    FILTER_STATUS=$(printf '%s' "$INPUT" | jq -r '.status // empty')
+    FILTER_DATE=$(printf '%s' "$INPUT" | jq -r '.date // empty')
+    FILTER_DATE_FROM=$(printf '%s' "$INPUT" | jq -r '.dateFrom // empty')
+    FILTER_DATE_TO=$(printf '%s' "$INPUT" | jq -r '.dateTo // empty')
+    FILTER_LINE=$(printf '%s' "$INPUT" | jq -r '.line // empty')
+    LIMIT=$(printf '%s' "$INPUT" | jq -r '.limit // "50"')
 
     # Build jq filter
     JQ_FILTER=".entries"
@@ -173,7 +173,7 @@ case "$ACTION" in
   # UPDATE: Update an existing entry
   # ─────────────────────────────────────────────
   update)
-    ENTRY_ID=$(echo "$INPUT" | jq -r '.id // empty')
+    ENTRY_ID=$(printf '%s' "$INPUT" | jq -r '.id // empty')
     require_param "id" "$ENTRY_ID"
 
     # Check if entry exists
@@ -187,12 +187,12 @@ case "$ACTION" in
     # Build update fields dynamically
     UPDATE_FIELDS=".updatedAt = \"${NOW}\""
 
-    NEW_STATUS=$(echo "$INPUT" | jq -r '.status // empty')
-    NEW_TITLE=$(echo "$INPUT" | jq -r '.title // empty')
-    NEW_DATE=$(echo "$INPUT" | jq -r '.scheduledDate // empty')
-    NEW_CONTENT_PATH=$(echo "$INPUT" | jq -r '.contentPath // empty')
-    NEW_NOTES=$(echo "$INPUT" | jq -r '.notes // empty')
-    NEW_TOPIC=$(echo "$INPUT" | jq -r '.topic // empty')
+    NEW_STATUS=$(printf '%s' "$INPUT" | jq -r '.status // empty')
+    NEW_TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
+    NEW_DATE=$(printf '%s' "$INPUT" | jq -r '.scheduledDate // empty')
+    NEW_CONTENT_PATH=$(printf '%s' "$INPUT" | jq -r '.contentPath // empty')
+    NEW_NOTES=$(printf '%s' "$INPUT" | jq -r '.notes // empty')
+    NEW_TOPIC=$(printf '%s' "$INPUT" | jq -r '.topic // empty')
 
     [ -n "$NEW_STATUS" ] && UPDATE_FIELDS="${UPDATE_FIELDS} | .status = \"${NEW_STATUS}\""
     [ -n "$NEW_TITLE" ] && UPDATE_FIELDS="${UPDATE_FIELDS} | .title = \"${NEW_TITLE}\""
@@ -221,7 +221,7 @@ case "$ACTION" in
   # NEXT: Get the next content to publish
   # ─────────────────────────────────────────────
   next)
-    FILTER_PLATFORM=$(echo "$INPUT" | jq -r '.platform // empty')
+    FILTER_PLATFORM=$(printf '%s' "$INPUT" | jq -r '.platform // empty')
     TODAY=$(date -u +%Y-%m-%d)
 
     # Find entries that are ready/approved and scheduled for today or earlier

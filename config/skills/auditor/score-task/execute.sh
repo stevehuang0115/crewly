@@ -4,10 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-{}}"
-TASK_ID=$(echo "$INPUT" | jq -r '.taskId // empty')
-QUALITY_SCORE=$(echo "$INPUT" | jq -r '.qualityScore // empty')
-SESSION_NAME=$(echo "$INPUT" | jq -r '.sessionName // empty')
+INPUT=$(read_json_input "${1:-}")
+TASK_ID=$(printf '%s' "$INPUT" | jq -r '.taskId // empty')
+QUALITY_SCORE=$(printf '%s' "$INPUT" | jq -r '.qualityScore // empty')
+SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
 
 require_param "taskId" "$TASK_ID"
 require_param "qualityScore" "$QUALITY_SCORE"

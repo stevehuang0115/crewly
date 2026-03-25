@@ -4,13 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"title\":\"...\",\"body\":\"...\",\"labels\":\"self-evolution,auto-triage\",\"repo\":\"owner/repo\"}'"
 
-TITLE=$(echo "$INPUT" | jq -r '.title // empty')
-BODY=$(echo "$INPUT" | jq -r '.body // empty')
-LABELS=$(echo "$INPUT" | jq -r '.labels // "self-evolution,auto-triage"')
-REPO=$(echo "$INPUT" | jq -r '.repo // empty')
+TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
+BODY=$(printf '%s' "$INPUT" | jq -r '.body // empty')
+LABELS=$(printf '%s' "$INPUT" | jq -r '.labels // "self-evolution,auto-triage"')
+REPO=$(printf '%s' "$INPUT" | jq -r '.repo // empty')
 
 require_param "title" "$TITLE"
 require_param "body" "$BODY"

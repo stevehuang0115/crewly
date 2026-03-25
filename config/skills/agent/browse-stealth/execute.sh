@@ -14,15 +14,15 @@ CDP_PORT=9222
 VENV_DIR="${HOME}/.crewly/patchright-venv"
 PYTHON="${VENV_DIR}/bin/python3"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"url\":\"...\",\"action\":\"read|screenshot|interact\",\"selectors\":[...]}'"
 
-URL=$(echo "$INPUT" | jq -r '.url // empty')
-ACTION=$(echo "$INPUT" | jq -r '.action // "read"')
-SELECTORS_JSON=$(echo "$INPUT" | jq -c '.selectors // []')
-WAIT_FOR=$(echo "$INPUT" | jq -r '.waitFor // empty')
-WAIT_TIMEOUT=$(echo "$INPUT" | jq -r '.waitTimeout // empty')
-CDP_PORT_OVERRIDE=$(echo "$INPUT" | jq -r '.cdpPort // empty')
+URL=$(printf '%s' "$INPUT" | jq -r '.url // empty')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // "read"')
+SELECTORS_JSON=$(printf '%s' "$INPUT" | jq -c '.selectors // []')
+WAIT_FOR=$(printf '%s' "$INPUT" | jq -r '.waitFor // empty')
+WAIT_TIMEOUT=$(printf '%s' "$INPUT" | jq -r '.waitTimeout // empty')
+CDP_PORT_OVERRIDE=$(printf '%s' "$INPUT" | jq -r '.cdpPort // empty')
 
 require_param "url" "$URL"
 

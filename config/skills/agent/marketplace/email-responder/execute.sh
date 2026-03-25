@@ -4,16 +4,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"from\":\"sender@example.com\",\"subject\":\"Subject\",\"body\":\"Email body\",\"tone\":\"professional\",\"intent\":\"auto\",\"senderName\":\"Your Name\"}'"
 
 # Parse parameters
-FROM=$(echo "$INPUT" | jq -r '.from // empty')
-SUBJECT=$(echo "$INPUT" | jq -r '.subject // empty')
-BODY=$(echo "$INPUT" | jq -r '.body // empty')
-TONE=$(echo "$INPUT" | jq -r '.tone // "professional"')
-INTENT=$(echo "$INPUT" | jq -r '.intent // "auto"')
-SENDER_NAME=$(echo "$INPUT" | jq -r '.senderName // "The Team"')
+FROM=$(printf '%s' "$INPUT" | jq -r '.from // empty')
+SUBJECT=$(printf '%s' "$INPUT" | jq -r '.subject // empty')
+BODY=$(printf '%s' "$INPUT" | jq -r '.body // empty')
+TONE=$(printf '%s' "$INPUT" | jq -r '.tone // "professional"')
+INTENT=$(printf '%s' "$INPUT" | jq -r '.intent // "auto"')
+SENDER_NAME=$(printf '%s' "$INPUT" | jq -r '.senderName // "The Team"')
 
 require_param "from" "$FROM"
 require_param "subject" "$SUBJECT"

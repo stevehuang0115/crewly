@@ -23,10 +23,10 @@ source "${SCRIPT_DIR}/../../_common/lib.sh"
 APP_NAME="discover"
 MAX_DEPTH=28
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"action\":\"feed|scroll-feed|nav|raw|screenshot|search|tap|read-detail|goto-profile\"}'"
 
-ACTION=$(echo "$INPUT" | jq -r '.action // empty')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // empty')
 require_param "action" "$ACTION"
 
 # =============================================================================
@@ -201,7 +201,7 @@ SKIP_DESCS_JS="var skipDescs={'group':1,'button':1,'scroll area':1,'collection':
 # =============================================================================
 do_screenshot() {
   local output_path
-  output_path=$(echo "$INPUT" | jq -r '.outputPath // empty')
+  output_path=$(printf '%s' "$INPUT" | jq -r '.outputPath // empty')
   if [ -z "$output_path" ]; then
     output_path="/tmp/rednote-screenshot-$(date +%s).png"
   fi
@@ -234,8 +234,8 @@ do_screenshot() {
 # =============================================================================
 do_tap() {
   local tap_x tap_y
-  tap_x=$(echo "$INPUT" | jq -r '.x // empty')
-  tap_y=$(echo "$INPUT" | jq -r '.y // empty')
+  tap_x=$(printf '%s' "$INPUT" | jq -r '.x // empty')
+  tap_y=$(printf '%s' "$INPUT" | jq -r '.y // empty')
   require_param "x" "$tap_x"
   require_param "y" "$tap_y"
 
@@ -294,7 +294,7 @@ find_text_field() {
 # =============================================================================
 do_search() {
   local keyword
-  keyword=$(echo "$INPUT" | jq -r '.keyword // empty')
+  keyword=$(printf '%s' "$INPUT" | jq -r '.keyword // empty')
   require_param "keyword" "$keyword"
 
   check_app
@@ -468,7 +468,7 @@ do_read_detail() {
 
   # Extract text via Accessibility API
   local limit
-  limit=$(echo "$INPUT" | jq -r '.limit // 200')
+  limit=$(printf '%s' "$INPUT" | jq -r '.limit // 200')
 
   local text_result
   text_result=$(osascript -l JavaScript -e "
@@ -678,7 +678,7 @@ do_feed_internal() {
 # =============================================================================
 do_feed() {
   local limit
-  limit=$(echo "$INPUT" | jq -r '.limit // 50')
+  limit=$(printf '%s' "$INPUT" | jq -r '.limit // 50')
   check_app
   ensure_window
 
@@ -692,7 +692,7 @@ do_feed() {
 # =============================================================================
 do_scroll_feed() {
   local amount
-  amount=$(echo "$INPUT" | jq -r '.amount // 5')
+  amount=$(printf '%s' "$INPUT" | jq -r '.amount // 5')
   check_app
   ensure_window
   focus_app
@@ -784,7 +784,7 @@ do_nav() {
 # =============================================================================
 do_raw() {
   local limit
-  limit=$(echo "$INPUT" | jq -r '.limit // 50')
+  limit=$(printf '%s' "$INPUT" | jq -r '.limit // 50')
   check_app
   ensure_window
 
@@ -858,14 +858,14 @@ do_raw() {
 # =============================================================================
 do_goto_profile() {
   local username
-  username=$(echo "$INPUT" | jq -r '.username // empty')
+  username=$(printf '%s' "$INPUT" | jq -r '.username // empty')
   require_param "username" "$username"
   local max_retries
-  max_retries=$(echo "$INPUT" | jq -r '.retry // 1')
+  max_retries=$(printf '%s' "$INPUT" | jq -r '.retry // 1')
   local goto_timeout_sec
-  goto_timeout_sec=$(echo "$INPUT" | jq -r '.timeoutSec // 35')
+  goto_timeout_sec=$(printf '%s' "$INPUT" | jq -r '.timeoutSec // 35')
   local fallback_first_card
-  fallback_first_card=$(echo "$INPUT" | jq -r '.fallbackFirstCard // true')
+  fallback_first_card=$(printf '%s' "$INPUT" | jq -r '.fallbackFirstCard // true')
   local goto_started_epoch
   goto_started_epoch=$(date +%s 2>/dev/null || echo 0)
 

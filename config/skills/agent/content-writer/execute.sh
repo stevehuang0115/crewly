@@ -4,11 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"action\":\"draft|save|get|list\",\"topic\":\"...\",\"platform\":\"x-thread\",...}'"
 
-ACTION=$(echo "$INPUT" | jq -r '.action // "draft"')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // "draft"')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 
 # Resolve content directory
 if [ -n "$PROJECT_PATH" ]; then
@@ -24,15 +24,15 @@ case "$ACTION" in
   # DRAFT: Generate a writing brief / prompt for a content piece
   # ─────────────────────────────────────────────
   draft)
-    TOPIC=$(echo "$INPUT" | jq -r '.topic // empty')
-    PLATFORM=$(echo "$INPUT" | jq -r '.platform // empty')
-    LINE=$(echo "$INPUT" | jq -r '.line // "crewly"')
-    TONE=$(echo "$INPUT" | jq -r '.tone // "professional"')
-    LENGTH=$(echo "$INPUT" | jq -r '.length // "medium"')
-    AUDIENCE=$(echo "$INPUT" | jq -r '.audience // empty')
-    CONTEXT=$(echo "$INPUT" | jq -r '.context // empty')
-    REFERENCES=$(echo "$INPUT" | jq -r '.references // empty')
-    CTA=$(echo "$INPUT" | jq -r '.cta // empty')
+    TOPIC=$(printf '%s' "$INPUT" | jq -r '.topic // empty')
+    PLATFORM=$(printf '%s' "$INPUT" | jq -r '.platform // empty')
+    LINE=$(printf '%s' "$INPUT" | jq -r '.line // "crewly"')
+    TONE=$(printf '%s' "$INPUT" | jq -r '.tone // "professional"')
+    LENGTH=$(printf '%s' "$INPUT" | jq -r '.length // "medium"')
+    AUDIENCE=$(printf '%s' "$INPUT" | jq -r '.audience // empty')
+    CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
+    REFERENCES=$(printf '%s' "$INPUT" | jq -r '.references // empty')
+    CTA=$(printf '%s' "$INPUT" | jq -r '.cta // empty')
 
     require_param "topic" "$TOPIC"
     require_param "platform" "$PLATFORM"
@@ -175,12 +175,12 @@ case "$ACTION" in
   # SAVE: Save a completed content draft to disk
   # ─────────────────────────────────────────────
   save)
-    DRAFT_ID=$(echo "$INPUT" | jq -r '.draftId // empty')
-    TITLE=$(echo "$INPUT" | jq -r '.title // empty')
-    PLATFORM=$(echo "$INPUT" | jq -r '.platform // empty')
-    LINE=$(echo "$INPUT" | jq -r '.line // "crewly"')
-    CONTENT=$(echo "$INPUT" | jq -r '.content // empty')
-    CALENDAR_ID=$(echo "$INPUT" | jq -r '.calendarId // empty')
+    DRAFT_ID=$(printf '%s' "$INPUT" | jq -r '.draftId // empty')
+    TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
+    PLATFORM=$(printf '%s' "$INPUT" | jq -r '.platform // empty')
+    LINE=$(printf '%s' "$INPUT" | jq -r '.line // "crewly"')
+    CONTENT=$(printf '%s' "$INPUT" | jq -r '.content // empty')
+    CALENDAR_ID=$(printf '%s' "$INPUT" | jq -r '.calendarId // empty')
 
     require_param "title" "$TITLE"
     require_param "platform" "$PLATFORM"
@@ -234,8 +234,8 @@ DRAFT_EOF
   # GET: Read a saved draft
   # ─────────────────────────────────────────────
   get)
-    FILE_PATH=$(echo "$INPUT" | jq -r '.filePath // empty')
-    DRAFT_ID=$(echo "$INPUT" | jq -r '.draftId // empty')
+    FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.filePath // empty')
+    DRAFT_ID=$(printf '%s' "$INPUT" | jq -r '.draftId // empty')
 
     if [ -n "$FILE_PATH" ] && [ -f "$FILE_PATH" ]; then
       CONTENT=$(cat "$FILE_PATH")
@@ -267,8 +267,8 @@ DRAFT_EOF
   # LIST: List saved drafts
   # ─────────────────────────────────────────────
   list)
-    FILTER_PLATFORM=$(echo "$INPUT" | jq -r '.platform // empty')
-    LIMIT=$(echo "$INPUT" | jq -r '.limit // "20"')
+    FILTER_PLATFORM=$(printf '%s' "$INPUT" | jq -r '.platform // empty')
+    LIMIT=$(printf '%s' "$INPUT" | jq -r '.limit // "20"')
 
     DRAFTS="[]"
 

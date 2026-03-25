@@ -24,16 +24,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"to\":\"target-session\",\"taskPath\":\"/path/to/task.md\",\"reason\":\"...\",\"progress\":\"...\"}'"
 
-TO=$(echo "$INPUT" | jq -r '.to // empty')
-TASK_PATH=$(echo "$INPUT" | jq -r '.taskPath // empty')
-REASON=$(echo "$INPUT" | jq -r '.reason // "Task handoff"')
-PROGRESS=$(echo "$INPUT" | jq -r '.progress // empty')
-FINDINGS=$(echo "$INPUT" | jq -r '.findings // empty')
-BLOCKERS=$(echo "$INPUT" | jq -r '.blockers // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')
+TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.taskPath // empty')
+REASON=$(printf '%s' "$INPUT" | jq -r '.reason // "Task handoff"')
+PROGRESS=$(printf '%s' "$INPUT" | jq -r '.progress // empty')
+FINDINGS=$(printf '%s' "$INPUT" | jq -r '.findings // empty')
+BLOCKERS=$(printf '%s' "$INPUT" | jq -r '.blockers // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 FROM_SESSION="${CREWLY_SESSION_NAME:-unknown}"
 
 require_param "to" "$TO"

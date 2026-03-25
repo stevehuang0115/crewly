@@ -5,20 +5,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"workerId\":\"worker-1\",\"workerSession\":\"worker-session\",\"teamId\":\"team-123\",\"failureInfo\":{\"error\":\"tests failed\",\"failedSteps\":[\"tests\"],\"retries\":0,\"failureType\":\"verification\"},\"requiredRole\":\"developer\"}'"
 
-WORKER_ID=$(echo "$INPUT" | jq -r '.workerId // empty')
-WORKER_SESSION=$(echo "$INPUT" | jq -r '.workerSession // empty')
-TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // empty')
-REQUIRED_ROLE=$(echo "$INPUT" | jq -r '.requiredRole // empty')
-TASK_DESCRIPTION=$(echo "$INPUT" | jq -r '.taskDescription // empty')
+WORKER_ID=$(printf '%s' "$INPUT" | jq -r '.workerId // empty')
+WORKER_SESSION=$(printf '%s' "$INPUT" | jq -r '.workerSession // empty')
+TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
+REQUIRED_ROLE=$(printf '%s' "$INPUT" | jq -r '.requiredRole // empty')
+TASK_DESCRIPTION=$(printf '%s' "$INPUT" | jq -r '.taskDescription // empty')
 
 # Failure info
-RETRIES=$(echo "$INPUT" | jq -r '.failureInfo.retries // 0')
-FAILURE_TYPE=$(echo "$INPUT" | jq -r '.failureInfo.failureType // "unknown"')
-ERROR_MSG=$(echo "$INPUT" | jq -r '.failureInfo.error // "Unknown error"')
-FAILED_STEPS=$(echo "$INPUT" | jq -c '.failureInfo.failedSteps // []')
+RETRIES=$(printf '%s' "$INPUT" | jq -r '.failureInfo.retries // 0')
+FAILURE_TYPE=$(printf '%s' "$INPUT" | jq -r '.failureInfo.failureType // "unknown"')
+ERROR_MSG=$(printf '%s' "$INPUT" | jq -r '.failureInfo.error // "Unknown error"')
+FAILED_STEPS=$(printf '%s' "$INPUT" | jq -c '.failureInfo.failedSteps // []')
 
 require_param "workerId" "$WORKER_ID"
 

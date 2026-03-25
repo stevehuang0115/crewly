@@ -41,14 +41,14 @@ if [ -z "${GEMINI_API_KEY:-}" ]; then
 fi
 
 # --- Parse input ---
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit 'Usage: execute.sh '\''{"url":"https://youtu.be/xxx","prompt":"Summarize this video"}'\'' or {"file":"/path/to/video.mp4","prompt":"..."}'
 
-VIDEO_URL=$(echo "$INPUT" | jq -r '.url // empty')
-VIDEO_FILE=$(echo "$INPUT" | jq -r '.file // empty')
-USER_PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
-MODEL_CHOICE=$(echo "$INPUT" | jq -r '.model // "standard"')
-OUTPUT_FILE=$(echo "$INPUT" | jq -r '.output // empty')
+VIDEO_URL=$(printf '%s' "$INPUT" | jq -r '.url // empty')
+VIDEO_FILE=$(printf '%s' "$INPUT" | jq -r '.file // empty')
+USER_PROMPT=$(printf '%s' "$INPUT" | jq -r '.prompt // empty')
+MODEL_CHOICE=$(printf '%s' "$INPUT" | jq -r '.model // "standard"')
+OUTPUT_FILE=$(printf '%s' "$INPUT" | jq -r '.output // empty')
 
 # Validate: need either url or file
 if [ -z "$VIDEO_URL" ] && [ -z "$VIDEO_FILE" ]; then

@@ -5,13 +5,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"objective\":\"Build auth module\",\"projectPath\":\"/path/to/project\",\"tasks\":[{\"title\":\"...\",\"description\":\"...\",\"requiredRole\":\"developer\",\"acceptanceCriteria\":\"...\",\"priority\":\"high\"}]}'"
 
-OBJECTIVE=$(echo "$INPUT" | jq -r '.objective // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-TASKS=$(echo "$INPUT" | jq -c '.tasks // empty')
-MILESTONE=$(echo "$INPUT" | jq -r '.milestone // "delegated"')
+OBJECTIVE=$(printf '%s' "$INPUT" | jq -r '.objective // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+TASKS=$(printf '%s' "$INPUT" | jq -c '.tasks // empty')
+MILESTONE=$(printf '%s' "$INPUT" | jq -r '.milestone // "delegated"')
 require_param "objective" "$OBJECTIVE"
 require_param "tasks" "$TASKS"
 

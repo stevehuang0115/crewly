@@ -5,15 +5,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"teamId\":\"team-123\",\"objective\":\"Build auth module\",\"reportType\":\"final\",\"taskPaths\":[\"/path/to/task1.md\",\"/path/to/task2.md\"],\"projectPath\":\"/path/to/project\"}'"
 
-TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // empty')
-OBJECTIVE=$(echo "$INPUT" | jq -r '.objective // "Objective not specified"')
-REPORT_TYPE=$(echo "$INPUT" | jq -r '.reportType // "final"')
-TASK_PATHS=$(echo "$INPUT" | jq -c '.taskPaths // []')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-INCLUDE_VERIFICATION=$(echo "$INPUT" | jq -r '.includeVerification // "true"')
+TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
+OBJECTIVE=$(printf '%s' "$INPUT" | jq -r '.objective // "Objective not specified"')
+REPORT_TYPE=$(printf '%s' "$INPUT" | jq -r '.reportType // "final"')
+TASK_PATHS=$(printf '%s' "$INPUT" | jq -c '.taskPaths // []')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+INCLUDE_VERIFICATION=$(printf '%s' "$INPUT" | jq -r '.includeVerification // "true"')
 
 # Collect task data
 TASK_RESULTS="[]"

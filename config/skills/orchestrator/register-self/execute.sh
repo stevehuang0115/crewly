@@ -4,16 +4,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"role\":\"orchestrator\",\"sessionName\":\"crewly-orc\"}'"
 
-ROLE=$(echo "$INPUT" | jq -r '.role // empty')
-SESSION_NAME=$(echo "$INPUT" | jq -r '.sessionName // empty')
+ROLE=$(printf '%s' "$INPUT" | jq -r '.role // empty')
+SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
 require_param "role" "$ROLE"
 require_param "sessionName" "$SESSION_NAME"
 
 # Optional: claudeSessionId for resume support
-CLAUDE_SESSION_ID=$(echo "$INPUT" | jq -r '.claudeSessionId // empty')
+CLAUDE_SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.claudeSessionId // empty')
 
 BODY=$(jq -n \
   --arg role "$ROLE" \

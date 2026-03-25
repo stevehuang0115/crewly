@@ -2,12 +2,12 @@
 # Dependency Updater - Check for outdated npm packages
 set -euo pipefail
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && echo '{"error":"Usage: execute.sh \"{\\\"projectPath\\\":\\\".\\\",\\\"type\\\":\\\"all\\\"}\""}' >&2 && exit 1
 
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // "."')
-DEP_TYPE=$(echo "$INPUT" | jq -r '.type // "all"')
-UPDATE=$(echo "$INPUT" | jq -r '.update // "false"')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // "."')
+DEP_TYPE=$(printf '%s' "$INPUT" | jq -r '.type // "all"')
+UPDATE=$(printf '%s' "$INPUT" | jq -r '.update // "false"')
 
 PROJECT_PATH=$(cd "$PROJECT_PATH" && pwd)
 

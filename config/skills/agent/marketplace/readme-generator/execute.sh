@@ -2,12 +2,12 @@
 # README Generator - Auto-generate README.md from package.json and project structure
 set -euo pipefail
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && echo '{"error":"Usage: execute.sh \"{\\\"projectPath\\\":\\\"/path/to/project\\\",\\\"dryRun\\\":true}\""}' >&2 && exit 1
 
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // "."')
-DRY_RUN=$(echo "$INPUT" | jq -r '.dryRun // "false"')
-OUTPUT_PATH=$(echo "$INPUT" | jq -r '.outputPath // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // "."')
+DRY_RUN=$(printf '%s' "$INPUT" | jq -r '.dryRun // "false"')
+OUTPUT_PATH=$(printf '%s' "$INPUT" | jq -r '.outputPath // empty')
 
 PROJECT_PATH=$(cd "$PROJECT_PATH" && pwd)
 PKG_JSON="$PROJECT_PATH/package.json"

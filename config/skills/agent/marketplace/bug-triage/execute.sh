@@ -4,14 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"title\":\"Bug title\",\"description\":\"Bug description\",\"projectPath\":\"/path/to/project\",\"keywords\":\"login,auth\"}'"
 
 # Parse parameters
-TITLE=$(echo "$INPUT" | jq -r '.title // empty')
-DESCRIPTION=$(echo "$INPUT" | jq -r '.description // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // "."')
-KEYWORDS_INPUT=$(echo "$INPUT" | jq -r '.keywords // empty')
+TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
+DESCRIPTION=$(printf '%s' "$INPUT" | jq -r '.description // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // "."')
+KEYWORDS_INPUT=$(printf '%s' "$INPUT" | jq -r '.keywords // empty')
 
 require_param "title" "$TITLE"
 require_param "description" "$DESCRIPTION"

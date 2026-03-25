@@ -4,13 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"projectPath\":\"/path/to/project\",\"target\":\"staged\",\"branch\":\"main\"}'"
 
 # Parse parameters
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // "."')
-TARGET=$(echo "$INPUT" | jq -r '.target // "staged"')
-BRANCH=$(echo "$INPUT" | jq -r '.branch // "main"')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // "."')
+TARGET=$(printf '%s' "$INPUT" | jq -r '.target // "staged"')
+BRANCH=$(printf '%s' "$INPUT" | jq -r '.branch // "main"')
 
 # Validate project path has a git repo
 if [ ! -d "$PROJECT_PATH/.git" ]; then

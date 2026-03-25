@@ -4,14 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"action\":\"search\",\"query\":\"code review\"}'"
 
-ACTION=$(echo "$INPUT" | jq -r '.action // "search"')
-QUERY=$(echo "$INPUT" | jq -r '.query // empty')
-ITEM_ID=$(echo "$INPUT" | jq -r '.id // empty')
-TYPE_FILTER=$(echo "$INPUT" | jq -r '.type // empty')
-CATEGORY_FILTER=$(echo "$INPUT" | jq -r '.category // empty')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // "search"')
+QUERY=$(printf '%s' "$INPUT" | jq -r '.query // empty')
+ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.id // empty')
+TYPE_FILTER=$(printf '%s' "$INPUT" | jq -r '.type // empty')
+CATEGORY_FILTER=$(printf '%s' "$INPUT" | jq -r '.category // empty')
 
 case "$ACTION" in
   search)

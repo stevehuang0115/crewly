@@ -4,13 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 
 # Build query string from optional filters
 QUERY=""
 if [ -n "$INPUT" ]; then
-  SESSION=$(echo "$INPUT" | jq -r '.session // empty')
-  OLDER_THAN=$(echo "$INPUT" | jq -r '.olderThanMinutes // empty')
+  SESSION=$(printf '%s' "$INPUT" | jq -r '.session // empty')
+  OLDER_THAN=$(printf '%s' "$INPUT" | jq -r '.olderThanMinutes // empty')
 
   PARAMS=""
   [ -n "$SESSION" ] && PARAMS="session=${SESSION}"

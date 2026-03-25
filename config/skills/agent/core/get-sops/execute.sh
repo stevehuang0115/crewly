@@ -4,14 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"context\":\"deploying to production\"}'"
 
-CONTEXT=$(echo "$INPUT" | jq -r '.context // empty')
+CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
 require_param "context" "$CONTEXT"
 
-CATEGORY=$(echo "$INPUT" | jq -r '.category // empty')
-ROLE=$(echo "$INPUT" | jq -r '.role // empty')
+CATEGORY=$(printf '%s' "$INPUT" | jq -r '.category // empty')
+ROLE=$(printf '%s' "$INPUT" | jq -r '.role // empty')
 
 BODY=$(jq -n \
   --arg context "$CONTEXT" \

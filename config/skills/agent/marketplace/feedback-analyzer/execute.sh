@@ -4,13 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"feedback\":\"Feedback text\",\"source\":\"survey\",\"customerName\":\"John\"}'"
 
 # Parse parameters
-FEEDBACK=$(echo "$INPUT" | jq -r '.feedback // empty')
-SOURCE=$(echo "$INPUT" | jq -r '.source // "unknown"')
-CUSTOMER_NAME=$(echo "$INPUT" | jq -r '.customerName // "Anonymous"')
+FEEDBACK=$(printf '%s' "$INPUT" | jq -r '.feedback // empty')
+SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // "unknown"')
+CUSTOMER_NAME=$(printf '%s' "$INPUT" | jq -r '.customerName // "Anonymous"')
 
 require_param "feedback" "$FEEDBACK"
 

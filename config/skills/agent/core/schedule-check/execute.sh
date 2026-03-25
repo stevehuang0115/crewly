@@ -5,20 +5,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"minutes\":20,\"message\":\"Run supervision\",\"recurring\":true}'
   Time-based: '{\"message\":\"Supervise\",\"recurring\":true,\"marketHoursMinutes\":5,\"offHoursMinutes\":20,\"marketHours\":\"09:30-11:30,13:00-15:00\",\"timezone\":\"Asia/Shanghai\"}'"
 
-MINUTES=$(echo "$INPUT" | jq -r '.minutes // empty')
-MESSAGE=$(echo "$INPUT" | jq -r '.message // empty')
-RECURRING=$(echo "$INPUT" | jq -r '.recurring // false')
-MAX_OCCURRENCES=$(echo "$INPUT" | jq -r '.maxOccurrences // empty')
+MINUTES=$(printf '%s' "$INPUT" | jq -r '.minutes // empty')
+MESSAGE=$(printf '%s' "$INPUT" | jq -r '.message // empty')
+RECURRING=$(printf '%s' "$INPUT" | jq -r '.recurring // false')
+MAX_OCCURRENCES=$(printf '%s' "$INPUT" | jq -r '.maxOccurrences // empty')
 
 # #237: Time-based frequency parameters
-MARKET_HOURS_MIN=$(echo "$INPUT" | jq -r '.marketHoursMinutes // empty')
-OFF_HOURS_MIN=$(echo "$INPUT" | jq -r '.offHoursMinutes // empty')
-MARKET_HOURS=$(echo "$INPUT" | jq -r '.marketHours // empty')
-TIMEZONE=$(echo "$INPUT" | jq -r '.timezone // empty')
+MARKET_HOURS_MIN=$(printf '%s' "$INPUT" | jq -r '.marketHoursMinutes // empty')
+OFF_HOURS_MIN=$(printf '%s' "$INPUT" | jq -r '.offHoursMinutes // empty')
+MARKET_HOURS=$(printf '%s' "$INPUT" | jq -r '.marketHours // empty')
+TIMEZONE=$(printf '%s' "$INPUT" | jq -r '.timezone // empty')
 
 require_param "message" "$MESSAGE"
 

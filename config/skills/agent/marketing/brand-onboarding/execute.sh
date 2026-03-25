@@ -18,13 +18,13 @@ set -euo pipefail
 INPUT="${1:-"{}"}"
 
 # Parse input fields
-ACTION=$(echo "$INPUT" | jq -r '.action // "start"')
-TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // ""')
-TEMPLATE_ID=$(echo "$INPUT" | jq -r '.templateId // "marketing-team"')
-SESSION_ID=$(echo "$INPUT" | jq -r '.sessionId // ""')
-VALUE=$(echo "$INPUT" | jq -r '.value // ""')
-OUTPUT_DIR=$(echo "$INPUT" | jq -r '.outputDir // ""')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // ""')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // "start"')
+TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // ""')
+TEMPLATE_ID=$(printf '%s' "$INPUT" | jq -r '.templateId // "marketing-team"')
+SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.sessionId // ""')
+VALUE=$(printf '%s' "$INPUT" | jq -r '.value // ""')
+OUTPUT_DIR=$(printf '%s' "$INPUT" | jq -r '.outputDir // ""')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // ""')
 
 # Crewly API base URL
 API_BASE="${CREWLY_API_URL:-http://localhost:3000}"
@@ -242,7 +242,7 @@ case "$ACTION" in
     mkdir -p "$LOCAL_DIR"
 
     # Extract answers from input
-    ANSWERS=$(echo "$INPUT" | jq '.answers // {}')
+    ANSWERS=$(printf '%s' "$INPUT" | jq '.answers // {}')
 
     # Create completed session
     echo "$ANSWERS" | jq --arg id "$SESSION_ID" --arg teamId "$TEAM_ID" \

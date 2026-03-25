@@ -4,17 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"businessName\":\"...\",\"industry\":\"...\",\"platforms\":[\"x\",\"linkedin\"],\"weekStartDate\":\"YYYY-MM-DD\"}'"
 
 # Parse parameters
-BUSINESS_NAME=$(echo "$INPUT" | jq -r '.businessName // empty')
-INDUSTRY=$(echo "$INPUT" | jq -r '.industry // empty')
-PLATFORMS=$(echo "$INPUT" | jq -r '.platforms // empty')
-CONTENT_MIX=$(echo "$INPUT" | jq -r '.contentMix // "{\"educational\":40,\"engagement\":30,\"promotional\":20,\"community\":10}"')
-WEEK_START=$(echo "$INPUT" | jq -r '.weekStartDate // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-POST_COUNT=$(echo "$INPUT" | jq -r '.postCount // "5"')
+BUSINESS_NAME=$(printf '%s' "$INPUT" | jq -r '.businessName // empty')
+INDUSTRY=$(printf '%s' "$INPUT" | jq -r '.industry // empty')
+PLATFORMS=$(printf '%s' "$INPUT" | jq -r '.platforms // empty')
+CONTENT_MIX=$(printf '%s' "$INPUT" | jq -r '.contentMix // "{\"educational\":40,\"engagement\":30,\"promotional\":20,\"community\":10}"')
+WEEK_START=$(printf '%s' "$INPUT" | jq -r '.weekStartDate // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+POST_COUNT=$(printf '%s' "$INPUT" | jq -r '.postCount // "5"')
 
 require_param "businessName" "$BUSINESS_NAME"
 require_param "industry" "$INDUSTRY"

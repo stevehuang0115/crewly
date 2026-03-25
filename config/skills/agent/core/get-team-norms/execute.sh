@@ -7,12 +7,12 @@ source "${SCRIPT_DIR}/../../_common/lib.sh"
 
 CREWLY_HOME="${HOME}/.crewly"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"trigger\":\"before_commit\",\"teamId\":\"...\"}'"
 
-TRIGGER=$(echo "$INPUT" | jq -r '.trigger // empty')
-TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // empty')
-SESSION_NAME=$(echo "$INPUT" | jq -r '.sessionName // empty')
+TRIGGER=$(printf '%s' "$INPUT" | jq -r '.trigger // empty')
+TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
+SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
 
 # Resolve teamId: explicit param > lookup by sessionName > CREWLY_SESSION_NAME env
 resolve_team_id() {

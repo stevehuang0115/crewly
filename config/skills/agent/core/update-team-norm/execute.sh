@@ -7,17 +7,17 @@ source "${SCRIPT_DIR}/../../_common/lib.sh"
 
 CREWLY_HOME="${HOME}/.crewly"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"normId\":\"code-commit\",\"title\":\"Code Commit SOP\",\"content\":\"...\"}'"
 
-NORM_ID=$(echo "$INPUT" | jq -r '.normId // empty')
-TITLE=$(echo "$INPUT" | jq -r '.title // empty')
-TRIGGER=$(echo "$INPUT" | jq -r '.trigger // empty')
-CONTENT=$(echo "$INPUT" | jq -r '.content // empty')
-APPEND=$(echo "$INPUT" | jq -r '.append // "false"')
-TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // empty')
-SESSION_NAME=$(echo "$INPUT" | jq -r '.sessionName // empty')
-UPDATED_BY=$(echo "$INPUT" | jq -r '.updatedBy // empty')
+NORM_ID=$(printf '%s' "$INPUT" | jq -r '.normId // empty')
+TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
+TRIGGER=$(printf '%s' "$INPUT" | jq -r '.trigger // empty')
+CONTENT=$(printf '%s' "$INPUT" | jq -r '.content // empty')
+APPEND=$(printf '%s' "$INPUT" | jq -r '.append // "false"')
+TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
+SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
+UPDATED_BY=$(printf '%s' "$INPUT" | jq -r '.updatedBy // empty')
 
 require_param "normId" "$NORM_ID"
 require_param "content" "$CONTENT"

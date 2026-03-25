@@ -4,13 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"query\":\"deployment\",\"scope\":\"global\"}'"
 
-QUERY=$(echo "$INPUT" | jq -r '.query // empty')
-SCOPE=$(echo "$INPUT" | jq -r '.scope // "global"')
-CATEGORY=$(echo "$INPUT" | jq -r '.category // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+QUERY=$(printf '%s' "$INPUT" | jq -r '.query // empty')
+SCOPE=$(printf '%s' "$INPUT" | jq -r '.scope // "global"')
+CATEGORY=$(printf '%s' "$INPUT" | jq -r '.category // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 require_param "query" "$QUERY"
 
 # URL-encode the query parameters

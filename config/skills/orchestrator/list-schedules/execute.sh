@@ -4,12 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 
 # Optional session filter
 SESSION=""
 if [ -n "$INPUT" ]; then
-  SESSION=$(echo "$INPUT" | jq -r '.session // empty')
+  SESSION=$(printf '%s' "$INPUT" | jq -r '.session // empty')
 fi
 
 if [ -n "$SESSION" ]; then

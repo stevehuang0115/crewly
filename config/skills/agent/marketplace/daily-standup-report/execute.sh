@@ -4,14 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"projectPath\":\"/path/to/project\",\"days\":1,\"author\":\"\",\"includeTaskStatus\":true}'"
 
 # Parse parameters
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // "."')
-DAYS=$(echo "$INPUT" | jq -r '.days // 1')
-AUTHOR=$(echo "$INPUT" | jq -r '.author // empty')
-INCLUDE_TASKS=$(echo "$INPUT" | jq -r '.includeTaskStatus // true')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // "."')
+DAYS=$(printf '%s' "$INPUT" | jq -r '.days // 1')
+AUTHOR=$(printf '%s' "$INPUT" | jq -r '.author // empty')
+INCLUDE_TASKS=$(printf '%s' "$INPUT" | jq -r '.includeTaskStatus // true')
 
 # Validate project path has a git repo
 if [ ! -d "$PROJECT_PATH/.git" ]; then

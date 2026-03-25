@@ -4,14 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"topic\":\"Blog topic\",\"keywords\":\"keyword1,keyword2\",\"wordCount\":1500,\"outputPath\":\"/tmp/outline.md\"}'"
 
 # Parse parameters
-TOPIC=$(echo "$INPUT" | jq -r '.topic // empty')
-KEYWORDS=$(echo "$INPUT" | jq -r '.keywords // empty')
-WORD_COUNT=$(echo "$INPUT" | jq -r '.wordCount // 1500')
-OUTPUT_PATH=$(echo "$INPUT" | jq -r '.outputPath // empty')
+TOPIC=$(printf '%s' "$INPUT" | jq -r '.topic // empty')
+KEYWORDS=$(printf '%s' "$INPUT" | jq -r '.keywords // empty')
+WORD_COUNT=$(printf '%s' "$INPUT" | jq -r '.wordCount // 1500')
+OUTPUT_PATH=$(printf '%s' "$INPUT" | jq -r '.outputPath // empty')
 
 require_param "topic" "$TOPIC"
 require_param "keywords" "$KEYWORDS"

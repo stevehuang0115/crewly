@@ -5,12 +5,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"input\":\"/tmp/report.md\",\"output\":\"/tmp/report.pdf\",\"title\":\"My Report\"}'"
 
-MD_PATH=$(echo "$INPUT" | jq -r '.input // empty')
-PDF_PATH=$(echo "$INPUT" | jq -r '.output // empty')
-TITLE=$(echo "$INPUT" | jq -r '.title // empty')
+MD_PATH=$(printf '%s' "$INPUT" | jq -r '.input // empty')
+PDF_PATH=$(printf '%s' "$INPUT" | jq -r '.output // empty')
+TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
 
 require_param "input" "$MD_PATH"
 

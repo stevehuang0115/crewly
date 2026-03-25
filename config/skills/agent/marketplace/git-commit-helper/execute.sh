@@ -2,13 +2,13 @@
 # Git Commit Helper - Analyze staged changes and create a conventional commit
 set -euo pipefail
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && echo '{"error":"Usage: execute.sh \"{\\\"message\\\":\\\"feat: add login\\\",\\\"scope\\\":\\\"auth\\\",\\\"dryRun\\\":true}\""}' >&2 && exit 1
 
-MESSAGE=$(echo "$INPUT" | jq -r '.message // empty')
-SCOPE=$(echo "$INPUT" | jq -r '.scope // empty')
-DRY_RUN=$(echo "$INPUT" | jq -r '.dryRun // "false"')
-BODY=$(echo "$INPUT" | jq -r '.body // empty')
+MESSAGE=$(printf '%s' "$INPUT" | jq -r '.message // empty')
+SCOPE=$(printf '%s' "$INPUT" | jq -r '.scope // empty')
+DRY_RUN=$(printf '%s' "$INPUT" | jq -r '.dryRun // "false"')
+BODY=$(printf '%s' "$INPUT" | jq -r '.body // empty')
 
 # Check if inside a git repo
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

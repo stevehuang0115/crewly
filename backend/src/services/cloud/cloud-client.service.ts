@@ -611,11 +611,15 @@ export class CloudClientService {
       }
 
       // Fallback: local refresh (requires CREWLY_JWT_SECRET to match Cloud)
+      // NOTE: locally-signed tokens may not be accepted by Cloud relay if the
+      // JWT secret doesn't match. If Cloud refresh failed, warn the user.
       if (!newAccessToken) {
+        this.logger.warn('Cloud token refresh failed — locally-signed token may not work with Cloud relay. Re-login with `crewly cloud login` to get a Cloud-signed refresh token.');
+
         const { verifyJwt, signJwt } = await import('../../controllers/cloud/cloud-google-auth.controller.js');
         const payload = verifyJwt(this.refreshToken);
         if (!payload || payload.type !== 'refresh') {
-          this.logger.warn('Refresh token verification failed — cannot auto-refresh');
+          this.logger.warn('Refresh token verification failed — cannot auto-refresh. Please re-login with `crewly cloud login`.');
           return false;
         }
 

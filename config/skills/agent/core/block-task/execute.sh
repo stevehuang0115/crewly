@@ -4,13 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"absoluteTaskPath\":\"/path/to/task\",\"reason\":\"Missing API credentials\"}'"
 
-ABSOLUTE_TASK_PATH=$(echo "$INPUT" | jq -r '.absoluteTaskPath // empty')
-REASON=$(echo "$INPUT" | jq -r '.reason // empty')
-QUESTIONS=$(echo "$INPUT" | jq -r '.questions // empty')
-URGENCY=$(echo "$INPUT" | jq -r '.urgency // empty')
+ABSOLUTE_TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.absoluteTaskPath // empty')
+REASON=$(printf '%s' "$INPUT" | jq -r '.reason // empty')
+QUESTIONS=$(printf '%s' "$INPUT" | jq -r '.questions // empty')
+URGENCY=$(printf '%s' "$INPUT" | jq -r '.urgency // empty')
 require_param "absoluteTaskPath" "$ABSOLUTE_TASK_PATH"
 require_param "reason" "$REASON"
 

@@ -2,13 +2,13 @@
 # Test Runner - Detect test framework and run tests with coverage
 set -euo pipefail
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && echo '{"error":"Usage: execute.sh \"{\\\"projectPath\\\":\\\".\\\",\\\"pattern\\\":\\\"src/\\\",\\\"coverage\\\":true}\""}' >&2 && exit 1
 
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // "."')
-PATTERN=$(echo "$INPUT" | jq -r '.pattern // empty')
-COVERAGE=$(echo "$INPUT" | jq -r '.coverage // "false"')
-FRAMEWORK=$(echo "$INPUT" | jq -r '.framework // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // "."')
+PATTERN=$(printf '%s' "$INPUT" | jq -r '.pattern // empty')
+COVERAGE=$(printf '%s' "$INPUT" | jq -r '.coverage // "false"')
+FRAMEWORK=$(printf '%s' "$INPUT" | jq -r '.framework // empty')
 
 PROJECT_PATH=$(cd "$PROJECT_PATH" && pwd)
 

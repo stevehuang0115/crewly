@@ -4,17 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"source\":\"content text\",\"platforms\":\"x-thread,linkedin,xiaohongshu\",\"tone\":\"professional\",\"brand\":\"personal\",\"outputDir\":\"/path/to/output\"}'"
 
 # Parse parameters
-SOURCE=$(echo "$INPUT" | jq -r '.source // empty')
-SOURCE_FILE=$(echo "$INPUT" | jq -r '.sourceFile // empty')
-PLATFORMS=$(echo "$INPUT" | jq -r '.platforms // "x-thread,linkedin"')
-TONE=$(echo "$INPUT" | jq -r '.tone // "professional"')
-OUTPUT_DIR=$(echo "$INPUT" | jq -r '.outputDir // empty')
-BRAND=$(echo "$INPUT" | jq -r '.brand // "personal"')
-LANGUAGE=$(echo "$INPUT" | jq -r '.language // "auto"')
+SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty')
+SOURCE_FILE=$(printf '%s' "$INPUT" | jq -r '.sourceFile // empty')
+PLATFORMS=$(printf '%s' "$INPUT" | jq -r '.platforms // "x-thread,linkedin"')
+TONE=$(printf '%s' "$INPUT" | jq -r '.tone // "professional"')
+OUTPUT_DIR=$(printf '%s' "$INPUT" | jq -r '.outputDir // empty')
+BRAND=$(printf '%s' "$INPUT" | jq -r '.brand // "personal"')
+LANGUAGE=$(printf '%s' "$INPUT" | jq -r '.language // "auto"')
 
 # Load source content from file if sourceFile is provided
 if [ -n "$SOURCE_FILE" ]; then

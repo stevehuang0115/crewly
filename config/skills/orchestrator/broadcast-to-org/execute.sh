@@ -4,11 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"parentTeamId\":\"org-team-id\",\"message\":\"Please submit status reports\"}'"
 
-PARENT_TEAM_ID=$(echo "$INPUT" | jq -r '.parentTeamId // empty')
-MESSAGE=$(echo "$INPUT" | jq -r '.message // empty')
+PARENT_TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.parentTeamId // empty')
+MESSAGE=$(printf '%s' "$INPUT" | jq -r '.message // empty')
 require_param "parentTeamId" "$PARENT_TEAM_ID"
 require_param "message" "$MESSAGE"
 

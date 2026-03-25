@@ -16,16 +16,16 @@ set -euo pipefail
 INPUT="${1:-"{}"}"
 
 # Parse input fields
-ACTION=$(echo "$INPUT" | jq -r '.action // "submit"')
-PLATFORM=$(echo "$INPUT" | jq -r '.platform // ""')
-CONTENT_TYPE=$(echo "$INPUT" | jq -r '.contentType // "post"')
-CONTENT=$(echo "$INPUT" | jq -r '.content // ""')
-HASHTAGS=$(echo "$INPUT" | jq -r '.hashtags // [] | join(", ")')
-VISUAL_DIRECTION=$(echo "$INPUT" | jq -r '.visualDirection // ""')
-SCHEDULED_TIME=$(echo "$INPUT" | jq -r '.scheduledTime // ""')
-APPROVAL_ID=$(echo "$INPUT" | jq -r '.approvalId // ""')
-TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // ""')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // ""')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // "submit"')
+PLATFORM=$(printf '%s' "$INPUT" | jq -r '.platform // ""')
+CONTENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.contentType // "post"')
+CONTENT=$(printf '%s' "$INPUT" | jq -r '.content // ""')
+HASHTAGS=$(printf '%s' "$INPUT" | jq -r '.hashtags // [] | join(", ")')
+VISUAL_DIRECTION=$(printf '%s' "$INPUT" | jq -r '.visualDirection // ""')
+SCHEDULED_TIME=$(printf '%s' "$INPUT" | jq -r '.scheduledTime // ""')
+APPROVAL_ID=$(printf '%s' "$INPUT" | jq -r '.approvalId // ""')
+TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // ""')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // ""')
 
 # Crewly API base URL
 API_BASE="${CREWLY_API_URL:-http://localhost:3000}"

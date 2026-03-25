@@ -10,10 +10,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"action\":\"screenshot|move|click|type|list-apps|read-ui|get-text|scroll|focus-app|check-accessibility\", ...}'"
 
-ACTION=$(echo "$INPUT" | jq -r '.action // empty')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // empty')
 require_param "action" "$ACTION"
 
 # -----------------------------------------------------------------------------
@@ -53,7 +53,7 @@ do_check_accessibility() {
 # -----------------------------------------------------------------------------
 do_screenshot() {
   local output
-  output=$(echo "$INPUT" | jq -r '.output // "/tmp/screenshot.png"')
+  output=$(printf '%s' "$INPUT" | jq -r '.output // "/tmp/screenshot.png"')
 
   # Ensure output directory exists
   mkdir -p "$(dirname "$output")"
@@ -74,8 +74,8 @@ do_screenshot() {
 # -----------------------------------------------------------------------------
 do_move() {
   local x y
-  x=$(echo "$INPUT" | jq -r '.x // empty')
-  y=$(echo "$INPUT" | jq -r '.y // empty')
+  x=$(printf '%s' "$INPUT" | jq -r '.x // empty')
+  y=$(printf '%s' "$INPUT" | jq -r '.y // empty')
   require_param "x" "$x"
   require_param "y" "$y"
 
@@ -95,9 +95,9 @@ do_move() {
 # -----------------------------------------------------------------------------
 do_click() {
   local x y button
-  x=$(echo "$INPUT" | jq -r '.x // empty')
-  y=$(echo "$INPUT" | jq -r '.y // empty')
-  button=$(echo "$INPUT" | jq -r '.button // "left"')
+  x=$(printf '%s' "$INPUT" | jq -r '.x // empty')
+  y=$(printf '%s' "$INPUT" | jq -r '.y // empty')
+  button=$(printf '%s' "$INPUT" | jq -r '.button // "left"')
   require_param "x" "$x"
   require_param "y" "$y"
 
@@ -163,7 +163,7 @@ do_click() {
 # -----------------------------------------------------------------------------
 do_type() {
   local text
-  text=$(echo "$INPUT" | jq -r '.text // empty')
+  text=$(printf '%s' "$INPUT" | jq -r '.text // empty')
   require_param "text" "$text"
 
   osascript -e "tell application \"System Events\" to keystroke \"$text\"" 2>/dev/null
@@ -201,7 +201,7 @@ do_list_apps() {
 # -----------------------------------------------------------------------------
 do_focus_app() {
   local app_name
-  app_name=$(echo "$INPUT" | jq -r '.appName // empty')
+  app_name=$(printf '%s' "$INPUT" | jq -r '.appName // empty')
   require_param "appName" "$app_name"
 
   osascript -l JavaScript -e "
@@ -220,8 +220,8 @@ do_focus_app() {
 # -----------------------------------------------------------------------------
 do_read_ui() {
   local app_name max_depth
-  app_name=$(echo "$INPUT" | jq -r '.appName // empty')
-  max_depth=$(echo "$INPUT" | jq -r '.maxDepth // 8')
+  app_name=$(printf '%s' "$INPUT" | jq -r '.appName // empty')
+  max_depth=$(printf '%s' "$INPUT" | jq -r '.maxDepth // 8')
   require_param "appName" "$app_name"
   require_ax_permission
 
@@ -287,8 +287,8 @@ do_read_ui() {
 # -----------------------------------------------------------------------------
 do_get_text() {
   local app_name max_depth
-  app_name=$(echo "$INPUT" | jq -r '.appName // empty')
-  max_depth=$(echo "$INPUT" | jq -r '.maxDepth // 25')
+  app_name=$(printf '%s' "$INPUT" | jq -r '.appName // empty')
+  max_depth=$(printf '%s' "$INPUT" | jq -r '.maxDepth // 25')
   require_param "appName" "$app_name"
   require_ax_permission
 
@@ -366,9 +366,9 @@ do_get_text() {
 # -----------------------------------------------------------------------------
 do_scroll() {
   local direction amount app_name
-  direction=$(echo "$INPUT" | jq -r '.direction // "down"')
-  amount=$(echo "$INPUT" | jq -r '.amount // 3')
-  app_name=$(echo "$INPUT" | jq -r '.appName // empty')
+  direction=$(printf '%s' "$INPUT" | jq -r '.direction // "down"')
+  amount=$(printf '%s' "$INPUT" | jq -r '.amount // 3')
+  app_name=$(printf '%s' "$INPUT" | jq -r '.appName // empty')
 
   # Focus app first if specified
   if [ -n "$app_name" ]; then

@@ -4,12 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"action\":\"publish\",\"skillPath\":\"/path/to/skill\"}'"
 
-ACTION=$(echo "$INPUT" | jq -r '.action // "publish"')
-SKILL_PATH=$(echo "$INPUT" | jq -r '.skillPath // empty')
-REMOTE_URL=$(echo "$INPUT" | jq -r '.remoteUrl // "https://crewlyai.com"')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // "publish"')
+SKILL_PATH=$(printf '%s' "$INPUT" | jq -r '.skillPath // empty')
+REMOTE_URL=$(printf '%s' "$INPUT" | jq -r '.remoteUrl // "https://crewlyai.com"')
 
 case "$ACTION" in
   validate)
@@ -174,7 +174,7 @@ case "$ACTION" in
 
   list-submissions)
     # List pending/reviewed submissions
-    STATUS_FILTER=$(echo "$INPUT" | jq -r '.status // empty')
+    STATUS_FILTER=$(printf '%s' "$INPUT" | jq -r '.status // empty')
     ENDPOINT="/marketplace/submissions"
     [ -n "$STATUS_FILTER" ] && ENDPOINT="${ENDPOINT}?status=${STATUS_FILTER}"
     api_call GET "$ENDPOINT"

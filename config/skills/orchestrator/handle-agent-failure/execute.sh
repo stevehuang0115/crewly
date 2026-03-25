@@ -4,15 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"agentSession\":\"agent-dev-1\",\"reason\":\"runtime_exited\",\"hadActiveTasks\":true}'"
 
-AGENT_SESSION=$(echo "$INPUT" | jq -r '.agentSession // empty')
-REASON=$(echo "$INPUT" | jq -r '.reason // "unknown"')
-HAD_ACTIVE_TASKS=$(echo "$INPUT" | jq -r '.hadActiveTasks // false')
-TASK_SUMMARY=$(echo "$INPUT" | jq -r '.taskSummary // empty')
-RESTART_ATTEMPTED=$(echo "$INPUT" | jq -r '.restartAttempted // false')
-RESTART_SUCCEEDED=$(echo "$INPUT" | jq -r '.restartSucceeded // false')
+AGENT_SESSION=$(printf '%s' "$INPUT" | jq -r '.agentSession // empty')
+REASON=$(printf '%s' "$INPUT" | jq -r '.reason // "unknown"')
+HAD_ACTIVE_TASKS=$(printf '%s' "$INPUT" | jq -r '.hadActiveTasks // false')
+TASK_SUMMARY=$(printf '%s' "$INPUT" | jq -r '.taskSummary // empty')
+RESTART_ATTEMPTED=$(printf '%s' "$INPUT" | jq -r '.restartAttempted // false')
+RESTART_SUCCEEDED=$(printf '%s' "$INPUT" | jq -r '.restartSucceeded // false')
 require_param "agentSession" "$AGENT_SESSION"
 
 # Build a structured notification message for the orchestrator

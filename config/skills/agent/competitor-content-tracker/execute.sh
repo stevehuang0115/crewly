@@ -4,11 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"action\":\"save|list|compare|latest\",\"competitor\":\"crewai\",...}'"
 
-ACTION=$(echo "$INPUT" | jq -r '.action // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 
 require_param "action" "$ACTION"
 
@@ -34,9 +34,9 @@ case "$ACTION" in
   # SAVE: Store content items from a competitor scan
   # ─────────────────────────────────────────────
   save)
-    COMPETITOR=$(echo "$INPUT" | jq -r '.competitor // empty')
-    SOURCE_TYPE=$(echo "$INPUT" | jq -r '.sourceType // empty')
-    ITEMS=$(echo "$INPUT" | jq -r '.items // empty')
+    COMPETITOR=$(printf '%s' "$INPUT" | jq -r '.competitor // empty')
+    SOURCE_TYPE=$(printf '%s' "$INPUT" | jq -r '.sourceType // empty')
+    ITEMS=$(printf '%s' "$INPUT" | jq -r '.items // empty')
 
     require_param "competitor" "$COMPETITOR"
     require_param "sourceType" "$SOURCE_TYPE"
@@ -97,8 +97,8 @@ case "$ACTION" in
   # LIST: List tracked content by competitor
   # ─────────────────────────────────────────────
   list)
-    FILTER_COMP=$(echo "$INPUT" | jq -r '.competitor // empty')
-    LIMIT=$(echo "$INPUT" | jq -r '.limit // "20"')
+    FILTER_COMP=$(printf '%s' "$INPUT" | jq -r '.competitor // empty')
+    LIMIT=$(printf '%s' "$INPUT" | jq -r '.limit // "20"')
 
     RESULTS="[]"
 
@@ -137,9 +137,9 @@ case "$ACTION" in
   # LATEST: Get latest content from a competitor
   # ─────────────────────────────────────────────
   latest)
-    FILTER_COMP=$(echo "$INPUT" | jq -r '.competitor // empty')
-    FILTER_TYPE=$(echo "$INPUT" | jq -r '.sourceType // empty')
-    LIMIT=$(echo "$INPUT" | jq -r '.limit // "15"')
+    FILTER_COMP=$(printf '%s' "$INPUT" | jq -r '.competitor // empty')
+    FILTER_TYPE=$(printf '%s' "$INPUT" | jq -r '.sourceType // empty')
+    LIMIT=$(printf '%s' "$INPUT" | jq -r '.limit // "15"')
 
     require_param "competitor" "$FILTER_COMP"
     validate_competitor "$FILTER_COMP"
@@ -170,8 +170,8 @@ case "$ACTION" in
   # COMPARE: Compare content activity across competitors
   # ─────────────────────────────────────────────
   compare)
-    COMPETITORS_INPUT=$(echo "$INPUT" | jq -r '.competitors // "crewai,n8n,relevance-ai"')
-    DAYS=$(echo "$INPUT" | jq -r '.days // "7"')
+    COMPETITORS_INPUT=$(printf '%s' "$INPUT" | jq -r '.competitors // "crewai,n8n,relevance-ai"')
+    DAYS=$(printf '%s' "$INPUT" | jq -r '.days // "7"')
 
     IFS=',' read -ra COMP_ARRAY <<< "$COMPETITORS_INPUT"
 

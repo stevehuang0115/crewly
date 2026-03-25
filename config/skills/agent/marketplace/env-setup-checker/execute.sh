@@ -2,10 +2,10 @@
 # Environment Setup Checker - Validate runtime versions, deps, and env vars
 set -euo pipefail
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && echo '{"error":"Usage: execute.sh \"{\\\"projectPath\\\":\\\".\\\"}\""}' >&2 && exit 1
 
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // "."')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // "."')
 PROJECT_PATH=$(cd "$PROJECT_PATH" && pwd)
 
 CHECKS='[]'

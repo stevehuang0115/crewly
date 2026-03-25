@@ -43,7 +43,7 @@ if [ "$USE_STRUCTURED" = "true" ] && [ -n "$TASK_ID" ]; then
 
   # Add artifacts if provided
   if [ -n "$ARTIFACTS" ] && [ "$ARTIFACTS" != "" ]; then
-    ARTIFACT_LINES=$(echo "$ARTIFACTS" | jq -r '.[]? | "- **\(.name)** (\(.type)): \(.content)"' 2>/dev/null || true)
+    ARTIFACT_LINES=$(printf '%s' "$ARTIFACTS" | jq -r '.[]? | "- **\(.name)** (\(.type)): \(.content)"' 2>/dev/null || true)
     if [ -n "$ARTIFACT_LINES" ]; then
       MESSAGE="${MESSAGE}\n\n## Artifacts\n${ARTIFACT_LINES}"
     fi
@@ -51,7 +51,7 @@ if [ "$USE_STRUCTURED" = "true" ] && [ -n "$TASK_ID" ]; then
 
   # Add blockers if provided
   if [ -n "$BLOCKERS" ] && [ "$BLOCKERS" != "" ]; then
-    BLOCKER_LINES=$(echo "$BLOCKERS" | jq -r '.[]? // empty' 2>/dev/null | while read -r b; do echo "- ${b}"; done)
+    BLOCKER_LINES=$(printf '%s' "$BLOCKERS" | jq -r '.[]? // empty' 2>/dev/null | while read -r b; do printf '%s\n' "- ${b}"; done)
     if [ -n "$BLOCKER_LINES" ]; then
       MESSAGE="${MESSAGE}\n\n## Blockers\n${BLOCKER_LINES}"
     fi

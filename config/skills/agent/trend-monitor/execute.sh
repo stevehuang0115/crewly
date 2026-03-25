@@ -4,11 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"action\":\"save|list|latest|suggest\",\"projectPath\":\"/path/to/project\",...}'"
 
-ACTION=$(echo "$INPUT" | jq -r '.action // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+ACTION=$(printf '%s' "$INPUT" | jq -r '.action // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 
 require_param "action" "$ACTION"
 
@@ -26,8 +26,8 @@ case "$ACTION" in
   # SAVE: Store a batch of trends from a browser scan
   # ─────────────────────────────────────────────
   save)
-    SOURCE=$(echo "$INPUT" | jq -r '.source // empty')
-    TRENDS=$(echo "$INPUT" | jq -r '.trends // empty')
+    SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty')
+    TRENDS=$(printf '%s' "$INPUT" | jq -r '.trends // empty')
 
     require_param "source" "$SOURCE"
     require_param "trends" "$TRENDS"
@@ -82,9 +82,9 @@ case "$ACTION" in
   # LIST: List available trend scans
   # ─────────────────────────────────────────────
   list)
-    FILTER_SOURCE=$(echo "$INPUT" | jq -r '.source // empty')
-    FILTER_DATE=$(echo "$INPUT" | jq -r '.date // empty')
-    LIMIT=$(echo "$INPUT" | jq -r '.limit // "10"')
+    FILTER_SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty')
+    FILTER_DATE=$(printf '%s' "$INPUT" | jq -r '.date // empty')
+    LIMIT=$(printf '%s' "$INPUT" | jq -r '.limit // "10"')
 
     FILES="[]"
     for f in "$TRENDS_DIR"/*.json; do
@@ -127,8 +127,8 @@ case "$ACTION" in
   # LATEST: Get the latest trends from a specific source
   # ─────────────────────────────────────────────
   latest)
-    FILTER_SOURCE=$(echo "$INPUT" | jq -r '.source // empty')
-    LIMIT=$(echo "$INPUT" | jq -r '.limit // "20"')
+    FILTER_SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty')
+    LIMIT=$(printf '%s' "$INPUT" | jq -r '.limit // "20"')
 
     # Find most recent file(s)
     ALL_ITEMS="[]"
@@ -159,8 +159,8 @@ case "$ACTION" in
   # SUGGEST: Generate topic suggestions from recent trends
   # ─────────────────────────────────────────────
   suggest)
-    CONTENT_LINE=$(echo "$INPUT" | jq -r '.line // "crewly"')
-    LIMIT=$(echo "$INPUT" | jq -r '.limit // "5"')
+    CONTENT_LINE=$(printf '%s' "$INPUT" | jq -r '.line // "crewly"')
+    LIMIT=$(printf '%s' "$INPUT" | jq -r '.limit // "5"')
 
     # Gather all recent trend items (last 3 days)
     ALL_ITEMS="[]"

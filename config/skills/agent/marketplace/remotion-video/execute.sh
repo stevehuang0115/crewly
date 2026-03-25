@@ -17,16 +17,16 @@ DEFAULT_HEIGHT=1080
 DEFAULT_FPS=30
 
 # --- Parse input ---
-INPUT="${1:-}"
+INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit 'Usage: execute.sh '\''{"template":"launch","props":{...},"output":"/tmp/video.mp4"}'\'''
 
-TEMPLATE=$(echo "$INPUT" | jq -r '.template // empty')
-PROPS=$(echo "$INPUT" | jq -c '.props // {}')
-OUTPUT_PATH=$(echo "$INPUT" | jq -r '.output // empty')
-DURATION_SEC=$(echo "$INPUT" | jq -r '.duration // empty')
-WIDTH=$(echo "$INPUT" | jq -r '.width // empty')
-HEIGHT=$(echo "$INPUT" | jq -r '.height // empty')
-FPS=$(echo "$INPUT" | jq -r '.fps // empty')
+TEMPLATE=$(printf '%s' "$INPUT" | jq -r '.template // empty')
+PROPS=$(printf '%s' "$INPUT" | jq -c '.props // {}')
+OUTPUT_PATH=$(printf '%s' "$INPUT" | jq -r '.output // empty')
+DURATION_SEC=$(printf '%s' "$INPUT" | jq -r '.duration // empty')
+WIDTH=$(printf '%s' "$INPUT" | jq -r '.width // empty')
+HEIGHT=$(printf '%s' "$INPUT" | jq -r '.height // empty')
+FPS=$(printf '%s' "$INPUT" | jq -r '.fps // empty')
 
 # Validate template
 if [ -z "$TEMPLATE" ]; then
