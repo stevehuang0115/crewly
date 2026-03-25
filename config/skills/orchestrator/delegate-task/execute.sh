@@ -6,19 +6,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT="${1:-}"
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"to\":\"agent-session\",\"task\":\"implement feature X\",\"priority\":\"high\",\"projectPath\":\"/path/to/project\",\"monitor\":{\"idleEvent\":true,\"fallbackCheckMinutes\":5}}'"
+INPUT=$(read_json_input "${1:-}")
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"to\":\"agent-session\",\"task\":\"...\"}' or echo '{...}' | execute.sh"
 
-TO=$(echo "$INPUT" | jq -r '.to // empty')
-TASK=$(echo "$INPUT" | jq -r '.task // empty')
-PRIORITY=$(echo "$INPUT" | jq -r '.priority // "normal"')
-CONTEXT=$(echo "$INPUT" | jq -r '.context // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')
+TASK=$(printf '%s' "$INPUT" | jq -r '.task // empty')
+PRIORITY=$(printf '%s' "$INPUT" | jq -r '.priority // "normal"')
+CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 # #150: Task type classification — 'technical' tasks can bypass PM routing
-TASK_TYPE=$(echo "$INPUT" | jq -r '.taskType // "general"')
+TASK_TYPE=$(printf '%s' "$INPUT" | jq -r '.taskType // "general"')
 # #180: Cross-team validation
-TEAM_ID=$(echo "$INPUT" | jq -r '.teamId // empty')
-FORCE_CROSS_TEAM=$(echo "$INPUT" | jq -r '.forceCrossTeam // "false"')
+TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
+FORCE_CROSS_TEAM=$(printf '%s' "$INPUT" | jq -r '.forceCrossTeam // "false"')
 require_param "to" "$TO"
 require_param "task" "$TASK"
 
@@ -47,18 +47,18 @@ if [ "$TASK_TYPE" = "technical" ] && [ -n "$TEAM_ID" ]; then
 fi
 
 # Structured message parameters (for hierarchical teams)
-TITLE=$(echo "$INPUT" | jq -r '.title // empty')
-PARENT_TASK_ID=$(echo "$INPUT" | jq -r '.parentTaskId // empty')
-EXPECTED_ARTIFACTS=$(echo "$INPUT" | jq -c '.expectedArtifacts // empty')
-CONTEXT_FILES=$(echo "$INPUT" | jq -c '.contextFiles // empty')
-DEADLINE_HINT=$(echo "$INPUT" | jq -r '.deadlineHint // empty')
-USE_STRUCTURED=$(echo "$INPUT" | jq -r '.structured // "false"')
+TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
+PARENT_TASK_ID=$(printf '%s' "$INPUT" | jq -r '.parentTaskId // empty')
+EXPECTED_ARTIFACTS=$(printf '%s' "$INPUT" | jq -c '.expectedArtifacts // empty')
+CONTEXT_FILES=$(printf '%s' "$INPUT" | jq -c '.contextFiles // empty')
+DEADLINE_HINT=$(printf '%s' "$INPUT" | jq -r '.deadlineHint // empty')
+USE_STRUCTURED=$(printf '%s' "$INPUT" | jq -r '.structured // "false"')
 
 # Monitor parameters — enabled by default to ensure proactive progress notifications.
 # Use explicit null-check so that `false` / `0` are respected as opt-out values,
 # while omitted fields default to enabled (idleEvent=true, fallbackCheckMinutes=5).
-MONITOR_IDLE=$(echo "$INPUT" | jq -r 'if .monitor.idleEvent == null then true else .monitor.idleEvent end')
-MONITOR_FALLBACK_MINUTES=$(echo "$INPUT" | jq -r 'if .monitor.fallbackCheckMinutes == null then 5 else .monitor.fallbackCheckMinutes end')
+MONITOR_IDLE=$(printf '%s' "$INPUT" | jq -r 'if .monitor.idleEvent == null then true else .monitor.idleEvent end')
+MONITOR_FALLBACK_MINUTES=$(printf '%s' "$INPUT" | jq -r 'if .monitor.fallbackCheckMinutes == null then 5 else .monitor.fallbackCheckMinutes end')
 
 # Resolve Crewly root from this script path:
 # config/skills/orchestrator/delegate-task/execute.sh -> project root

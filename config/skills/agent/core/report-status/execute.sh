@@ -4,23 +4,23 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"dev-1\",\"status\":\"done\",\"summary\":\"Finished implementing auth module\",\"taskPath\":\"/path/to/task.md\"}'"
+INPUT=$(read_json_input "${1:-}")
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"dev-1\",\"status\":\"done\",\"summary\":\"...\"}' or echo '{...}' | execute.sh"
 
-SESSION_NAME=$(echo "$INPUT" | jq -r '.sessionName // empty')
-STATUS=$(echo "$INPUT" | jq -r '.status // empty')
-SUMMARY=$(echo "$INPUT" | jq -r '.summary // empty')
-TASK_PATH=$(echo "$INPUT" | jq -r '.taskPath // empty')
+SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
+STATUS=$(printf '%s' "$INPUT" | jq -r '.status // empty')
+SUMMARY=$(printf '%s' "$INPUT" | jq -r '.summary // empty')
+TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.taskPath // empty')
 require_param "sessionName" "$SESSION_NAME"
 require_param "status" "$STATUS"
 require_param "summary" "$SUMMARY"
 
 # Optional structured StatusReport fields (for hierarchical workflows)
-TASK_ID=$(echo "$INPUT" | jq -r '.taskId // empty')
-PROGRESS=$(echo "$INPUT" | jq -r '.progress // empty')
-ARTIFACTS=$(echo "$INPUT" | jq -c '.artifacts // empty')
-BLOCKERS=$(echo "$INPUT" | jq -c '.blockers // empty')
-USE_STRUCTURED=$(echo "$INPUT" | jq -r '.structured // "false"')
+TASK_ID=$(printf '%s' "$INPUT" | jq -r '.taskId // empty')
+PROGRESS=$(printf '%s' "$INPUT" | jq -r '.progress // empty')
+ARTIFACTS=$(printf '%s' "$INPUT" | jq -c '.artifacts // empty')
+BLOCKERS=$(printf '%s' "$INPUT" | jq -c '.blockers // empty')
+USE_STRUCTURED=$(printf '%s' "$INPUT" | jq -r '.structured // "false"')
 
 # Map simple status strings to InProgressTaskStatus values
 map_status_to_state() {
@@ -93,6 +93,6 @@ fi
 # Use [COMPLETED] prefix so recall can distinguish completed tasks from other patterns.
 # This prevents PM from re-delegating tasks that were already done.
 if [ "$STATUS" = "done" ] && [ -n "$SUMMARY" ]; then
-  PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
+  PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
   auto_remember "$SESSION_NAME" "[COMPLETED] Task completed by ${SESSION_NAME}: ${SUMMARY}" "decision" "project" "$PROJECT_PATH"
 fi

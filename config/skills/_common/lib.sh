@@ -8,6 +8,53 @@
 CREWLY_API_URL="${CREWLY_API_URL:-http://localhost:8787}"
 
 # -----------------------------------------------------------------------------
+# read_json_input [arg]
+#
+# Reads JSON input from either:
+#   1. The provided command-line argument ($1)
+#   2. A file path prefixed with @ (e.g. @/tmp/input.json)
+#   3. Standard input (stdin) — for piped or heredoc usage
+#
+# This solves Gemini CLI's run_shell_command escaping issues (#292, #293):
+# special characters in JSON (parentheses, quotes, newlines) are mangled
+# when passed as shell arguments. Piping via stdin bypasses shell parsing.
+#
+# Usage in skill scripts:
+#   INPUT=$(read_json_input "${1:-}")
+# -----------------------------------------------------------------------------
+read_json_input() {
+  local arg="${1:-}"
+
+  # Option 1: Direct argument provided (non-empty)
+  if [ -n "$arg" ]; then
+    # Support @filepath syntax: read JSON from file
+    if [[ "$arg" == @* ]]; then
+      local filepath="${arg:1}"
+      if [ -f "$filepath" ]; then
+        cat "$filepath"
+      else
+        echo '{}' >&2
+        echo "File not found: $filepath" >&2
+        return 1
+      fi
+    else
+      printf '%s' "$arg"
+    fi
+    return 0
+  fi
+
+  # Option 2: Read from stdin (pipe or heredoc)
+  if [ ! -t 0 ]; then
+    cat
+    return 0
+  fi
+
+  # Option 3: No input available
+  echo ''
+  return 0
+}
+
+# -----------------------------------------------------------------------------
 # api_call METHOD endpoint [json_body]
 #
 # Makes an HTTP request to the Crewly backend API.

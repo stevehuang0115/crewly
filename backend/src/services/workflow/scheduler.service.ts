@@ -898,11 +898,17 @@ export class SchedulerService extends EventEmitter {
   }
 
   /**
-   * Cancel a scheduled check-in
+   * Cancel a scheduled check-in.
+   *
+   * When a check is found in memory, it is cleared from both the in-memory
+   * maps and the persisted JSON file. When NOT found in memory (e.g. after a
+   * server restart), the method still attempts to remove the entry from the
+   * persisted file as a fallback (#290).
    *
    * @param checkId - Check ID to cancel
+   * @returns true if the check was found and cancelled (in-memory or on disk)
    */
-  cancelCheck(checkId: string): void {
+  cancelCheck(checkId: string): boolean {
     // Cancel one-time check
     const timeout = this.scheduledChecks.get(checkId);
     if (timeout) {
@@ -919,7 +925,7 @@ export class SchedulerService extends EventEmitter {
       });
       this.emit('check_cancelled', { checkId, type: 'one-time' });
       this.logger.info('Cancelled one-time check-in', { checkId });
-      return;
+      return true;
     }
 
     // Cancel recurring check
@@ -947,7 +953,7 @@ export class SchedulerService extends EventEmitter {
       });
       this.emit('check_cancelled', { checkId, type: 'recurring' });
       this.logger.info('Cancelled recurring check-in', { checkId });
-      return;
+      return true;
     }
 
     // Cancel continuation check
@@ -959,13 +965,31 @@ export class SchedulerService extends EventEmitter {
       this.recurringIdleStreak.delete(checkId);
       this.emit('check_cancelled', { checkId, type: 'continuation' });
       this.logger.info('Cancelled continuation check', { checkId });
-      return;
+      return true;
     }
 
     // Remove from adaptive checks if present
-    this.adaptiveChecks.delete(checkId);
+    if (this.adaptiveChecks.delete(checkId)) {
+      this.logger.info('Cancelled adaptive check', { checkId });
+      return true;
+    }
 
-    this.logger.warn('Check-in not found', { checkId });
+    // #290: Fallback — check not found in memory (e.g. after server restart),
+    // but may still exist in persisted files. Attempt direct file deletion.
+    this.logger.warn('Check-in not found in memory, attempting storage fallback', { checkId });
+    this.storageService.deleteRecurringCheck(checkId).catch(err => {
+      this.logger.error('Fallback delete of persisted recurring check failed', {
+        checkId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    this.storageService.deleteOneTimeCheck(checkId).catch(err => {
+      this.logger.error('Fallback delete of persisted one-time check failed', {
+        checkId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return false;
   }
 
   /**

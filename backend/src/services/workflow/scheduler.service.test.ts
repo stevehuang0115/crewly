@@ -583,10 +583,11 @@ describe('SchedulerService', () => {
       expect(service.getStats().continuationChecks).toBe(0);
     });
 
-    it('should log warning if check not found', () => {
-      service.cancelCheck('nonexistent-id');
+    it('should log warning and attempt storage fallback if check not found in memory (#290)', () => {
+      const result = service.cancelCheck('nonexistent-id');
 
-      expect(mockLogger.warn).toHaveBeenCalledWith('Check-in not found', {
+      expect(result).toBe(false);
+      expect(mockLogger.warn).toHaveBeenCalledWith('Check-in not found in memory, attempting storage fallback', {
         checkId: 'nonexistent-id',
       });
     });
