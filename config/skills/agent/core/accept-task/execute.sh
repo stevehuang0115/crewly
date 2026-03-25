@@ -4,15 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-INPUT="${1:-}"
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"dev-1\"}'"
+INPUT=$(read_json_input "${1:-}")
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"dev-1\"}' or echo '{...}' | execute.sh"
 
-SESSION_NAME=$(echo "$INPUT" | jq -r '.sessionName // empty')
+SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
 require_param "sessionName" "$SESSION_NAME"
 
-TEAM_MEMBER_ID=$(echo "$INPUT" | jq -r '.teamMemberId // empty')
-PROJECT_PATH=$(echo "$INPUT" | jq -r '.projectPath // empty')
-TASK_GROUP=$(echo "$INPUT" | jq -r '.taskGroup // empty')
+TEAM_MEMBER_ID=$(printf '%s' "$INPUT" | jq -r '.teamMemberId // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+TASK_GROUP=$(printf '%s' "$INPUT" | jq -r '.taskGroup // empty')
 
 BODY=$(jq -n \
   --arg sessionName "$SESSION_NAME" \
