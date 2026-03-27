@@ -68,7 +68,7 @@ export function KnowledgeScopeToggle({
           value={selectedProjectPath || ''}
           onChange={(e) => onProjectChange(e.target.value)}
           aria-label="Select project"
-          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
+          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-primary"
         >
           <option value="" disabled>Select a project...</option>
           {projects.map((p) => (

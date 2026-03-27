@@ -7,6 +7,8 @@
  */
 
 import React, { useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import { Archive, Trash2, FolderOpen, Users, Settings as SettingsIcon, MoreVertical } from 'lucide-react';
 import { useChat } from '../../contexts/ChatContext';
 import { ChatConversation } from '../../types/chat.types';
 import { formatRelativeTime } from '../../utils/time';
@@ -134,7 +136,7 @@ export const ChatSidebar: React.FC = () => {
           aria-label="Conversation options"
           data-testid={`menu-trigger-${conversation.id}`}
         >
-          ⋮
+          <MoreVertical size={14} />
         </button>
 
         {showMenu === conversation.id && (
@@ -143,13 +145,13 @@ export const ChatSidebar: React.FC = () => {
             data-testid={`context-menu-${conversation.id}`}
           >
             <button onClick={() => handleArchive(conversation.id)}>
-              📁 Archive
+              <Archive size={14} /> Archive
             </button>
             <button
               className="danger"
               onClick={() => handleDelete(conversation.id)}
             >
-              🗑️ Delete
+              <Trash2 size={14} /> Delete
             </button>
           </div>
         )}
@@ -201,9 +203,9 @@ export const ChatSidebar: React.FC = () => {
 
       <div className="sidebar-footer">
         <nav className="quick-links">
-          <a href="/projects">📁 Projects</a>
-          <a href="/teams">👥 Teams</a>
-          <a href="/settings">⚙️ Settings</a>
+          <Link to="/projects"><FolderOpen size={14} /> Projects</Link>
+          <Link to="/teams"><Users size={14} /> Teams</Link>
+          <Link to="/settings"><SettingsIcon size={14} /> Settings</Link>
         </nav>
       </div>
     </aside>

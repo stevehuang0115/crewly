@@ -12,8 +12,8 @@ export const ProjectInfoPanel: React.FC<ProjectInfoPanelProps> = ({
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center space-x-3">
           <div className="flex-shrink-0">
-            <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
-              <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center">
+              <svg className="w-6 h-6 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path 
                   strokeLinecap="round" 
                   strokeLinejoin="round" 
@@ -55,7 +55,7 @@ export const ProjectInfoPanel: React.FC<ProjectInfoPanelProps> = ({
         <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
           <div>
             <label className="block text-sm font-medium text-gray-700">Teams</label>
-            <p className="text-2xl font-bold text-blue-600">{teamsCount}</p>
+            <p className="text-2xl font-bold text-primary">{teamsCount}</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700">Total Members</label>

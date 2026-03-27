@@ -11,9 +11,12 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { AlertTriangle, CheckCircle, Download, RefreshCw, Send, Unlink, X } from 'lucide-react';
+import { Download, RefreshCw, Send, Unlink } from 'lucide-react';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
 import { Button } from '../UI/Button';
-import { FormInput, FormLabel } from '../UI/Form';
+import { FormInput, FormLabel, FormTextarea } from '../UI/Form';
+import { Card } from '../UI/Card';
+import { Alert } from '../UI/Alert';
 
 // =============================================================================
 // Types
@@ -301,9 +304,8 @@ export const GoogleChatTab: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center py-8">
-        <div className="w-8 h-8 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-3" />
-        <p className="text-sm text-text-secondary-dark">Loading Google Chat status...</p>
+      <div className="flex justify-center py-8">
+        <LoadingSpinner size="md" text="Loading Google Chat status..." />
       </div>
     );
   }
@@ -312,26 +314,19 @@ export const GoogleChatTab: React.FC = () => {
     <div className="space-y-5">
       {/* Error Banner */}
       {error && (
-        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-3 rounded-lg flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5" />
-            <span className="text-sm">{error}</span>
-          </div>
-          <button onClick={() => setError(null)} className="text-rose-400 hover:text-rose-300 p-1">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <Alert variant="error" onClose={() => setError(null)}>
+          <span className="text-sm">{error}</span>
+        </Alert>
       )}
 
       {status.connected ? (
         /* Connected State */
         <div className="space-y-5">
-          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-4 flex items-center gap-3">
-            <CheckCircle className="w-5 h-5 text-emerald-400" />
-            <span className="text-emerald-400 font-medium text-sm">Connected to Google Chat</span>
-          </div>
+          <Alert variant="success">
+            <span className="font-medium text-sm">Connected to Google Chat</span>
+          </Alert>
 
-          <div className="bg-background-dark border border-border-dark rounded-lg p-5">
+          <Card padding="lg" className="bg-background-dark">
             <h3 className="text-xs font-semibold text-text-secondary-dark uppercase tracking-wide mb-3">
               Connection Details
             </h3>
@@ -386,7 +381,7 @@ export const GoogleChatTab: React.FC = () => {
                 </>
               )}
             </div>
-          </div>
+          </Card>
 
           <div className="flex items-center gap-3 flex-wrap">
             {status.mode === 'pubsub' && (
@@ -463,10 +458,9 @@ export const GoogleChatTab: React.FC = () => {
       ) : (
         /* Setup State */
         <div className="space-y-5">
-          <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 flex items-center gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-400" />
-            <span className="text-amber-400 font-medium text-sm">Not connected to Google Chat</span>
-          </div>
+          <Alert variant="warning">
+            <span className="font-medium text-sm">Not connected to Google Chat</span>
+          </Alert>
 
           {/* Connection Mode Toggle */}
           <div className="flex gap-2">
@@ -617,7 +611,7 @@ export const GoogleChatTab: React.FC = () => {
                         required
                         autoComplete="off"
                       />
-                      <p className="mt-1 text-xs text-text-secondary-dark/70">
+                      <p className="mt-1 text-xs text-text-secondary-dark">
                         Just the subscription name, not the full resource path
                       </p>
                     </div>
@@ -649,7 +643,7 @@ export const GoogleChatTab: React.FC = () => {
                         autoComplete="off"
                         data-testid="sa-email-input"
                       />
-                      <p className="mt-1 text-xs text-text-secondary-dark/70">
+                      <p className="mt-1 text-xs text-text-secondary-dark">
                         Required for sending messages. Your user needs the Service Account Token Creator IAM role.
                       </p>
                     </div>
@@ -657,7 +651,7 @@ export const GoogleChatTab: React.FC = () => {
                 ) : (
                   <div>
                     <FormLabel htmlFor="gchat-sa-key" required>Service Account Key (JSON)</FormLabel>
-                    <textarea
+                    <FormTextarea
                       id="gchat-sa-key"
                       name="serviceAccountKey"
                       value={serviceAccountKey}
@@ -665,7 +659,7 @@ export const GoogleChatTab: React.FC = () => {
                       placeholder='{"type": "service_account", "project_id": "...", ...}'
                       required
                       rows={6}
-                      className="w-full px-3 py-2 bg-background-dark border border-border-dark rounded-lg text-sm text-text-primary-dark placeholder:text-text-secondary-dark/50 focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
+                      className="font-mono"
                     />
                   </div>
                 )}

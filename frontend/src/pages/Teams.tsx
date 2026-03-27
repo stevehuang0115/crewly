@@ -1,22 +1,26 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Grid, List, Monitor, RefreshCw } from 'lucide-react';
+import { Plus, Grid, List, Monitor, RefreshCw, GitBranch } from 'lucide-react';
 import { useAlert } from '../components/UI/Dialog';
 import TeamsGridCard from '@/components/Teams/TeamsGridCard';
 import { TeamModal } from '../components/Modals/TeamModal';
 import { TeamMemberModal } from '../components/Modals/TeamMemberModal';
 import { Team, TeamMember, TeamMemberStatusChangeEvent } from '../types';
 import TeamListItem from '@/components/Teams/TeamListItem';
+import { TeamsTreeView } from '@/components/Teams/TeamsTreeView';
 import { apiService } from '@/services/api.service';
 import { logSilentError } from '@/utils/error-handling';
 import { webSocketService } from '../services/websocket.service';
 import { useDeviceHeartbeat } from '../hooks/useDeviceHeartbeat';
 import { useCloudConnection } from '../hooks/useCloudConnection';
+import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
+import { usePinnedFavorites } from '../hooks/usePinnedFavorites';
 import { useAuth } from '../contexts/AuthContext';
 import { assignDefaultAvatars } from '../utils/team.utils';
 
 export const Teams: React.FC = () => {
   const navigate = useNavigate();
+  const { isPinned, togglePin } = usePinnedFavorites();
   const [teams, setTeams] = useState<Team[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
@@ -24,7 +28,7 @@ export const Teams: React.FC = () => {
   const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'grid' | 'list'>('grid');
+  const [view, setView] = useState<'grid' | 'list' | 'tree'>('grid');
   const [projectsForFilter, setProjectsForFilter] = useState<{ id: string; name: string }[]>([]);
   const { showError, AlertComponent } = useAlert();
   const projectMap = Object.fromEntries(projectsForFilter.map(p => [p.id, p.name]));
@@ -168,28 +172,40 @@ export const Teams: React.FC = () => {
 
   const handleCreateTeam = async (teamData: any) => {
     try {
-      const response = await fetch('/api/teams', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(teamData),
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        const newTeam = result.success ? result.data : result;
-        if (newTeam) {
-          setTeams(prev => [...prev, newTeam]);
-          setIsModalOpen(false);
-        }
-      } else {
-        const errorResult = await response.json();
-        showError('Error creating team: ' + (errorResult.error || 'Unknown error'));
-      }
+      const newTeam = await apiService.createTeam(teamData);
+      setTeams(prev => [...prev, newTeam]);
+      setIsModalOpen(false);
     } catch (error) {
       logSilentError(error, { context: 'handleCreateTeam' });
       showError('Error creating team: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
+  /**
+   * Start all agents in a team.
+   *
+   * @param teamId - The team ID to start
+   */
+  const handleStartTeam = async (teamId: string) => {
+    try {
+      await apiService.startTeam(teamId);
+    } catch (error) {
+      logSilentError(error, { context: 'handleStartTeam' });
+      showError('Failed to start team: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
+  /**
+   * Stop all agents in a team.
+   *
+   * @param teamId - The team ID to stop
+   */
+  const handleStopTeam = async (teamId: string) => {
+    try {
+      await apiService.stopTeam(teamId);
+    } catch (error) {
+      logSilentError(error, { context: 'handleStopTeam' });
+      showError('Failed to stop team: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
   };
 
@@ -210,10 +226,7 @@ export const Teams: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4 mx-auto"></div>
-          <p className="text-text-secondary-dark">Loading teams...</p>
-        </div>
+        <LoadingSpinner size="xl" text="Loading teams..." />
       </div>
     );
   }
@@ -282,6 +295,13 @@ export const Teams: React.FC = () => {
           >
             <List className="w-4 h-4" />
           </button>
+          <button
+            onClick={() => setView('tree')}
+            className={`inline-flex items-center justify-center w-9 h-9 rounded-lg border border-border-dark ${view === 'tree' ? 'bg-primary/10 text-primary' : 'text-text-secondary-dark hover:text-text-primary-dark hover:border-primary/50'}`}
+            title="Tree view"
+          >
+            <GitBranch className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
@@ -306,8 +326,7 @@ export const Teams: React.FC = () => {
 
           {devicesLoading ? (
             <div className="bg-surface-dark border border-border-dark rounded-lg p-6 text-center">
-              <div className="w-5 h-5 border-2 border-primary/20 border-t-primary rounded-full animate-spin mx-auto mb-2" />
-              <p className="text-xs text-text-secondary-dark">Discovering devices...</p>
+              <LoadingSpinner size="sm" text="Discovering devices..." />
             </div>
           ) : remoteDevices.length === 0 ? (
             <div className="bg-surface-dark border border-border-dark rounded-lg p-6 text-center">
@@ -357,10 +376,16 @@ export const Teams: React.FC = () => {
         </div>
       )}
 
-      {/* All teams in a flat grid */}
-      {filteredTeams.length > 0 && (
+      {/* All teams */}
+      {(view === 'tree' ? teams.length > 0 : filteredTeams.length > 0) && (
         <>
-          {view === 'grid' ? (
+          {view === 'tree' ? (
+            <TeamsTreeView
+              teams={teams}
+              projectMap={projectMap}
+              onTeamClick={(teamId) => navigate(`/teams/${teamId}`)}
+            />
+          ) : view === 'grid' ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredTeams.map(team => (
                 <TeamsGridCard
@@ -371,6 +396,10 @@ export const Teams: React.FC = () => {
                   onClick={() => handleTeamClick(team)}
                   onViewTeam={(teamId) => navigate(`/teams/${teamId}`)}
                   onEditTeam={(teamId) => navigate(`/teams/${teamId}?edit=true`)}
+                  onStartTeam={handleStartTeam}
+                  onStopTeam={handleStopTeam}
+                  isPinned={isPinned(team.id)}
+                  onTogglePin={() => togglePin({ id: team.id, name: team.name, type: 'team' })}
                 />
               ))}
               <div

@@ -12,6 +12,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Monitor, Cpu, RefreshCw, Shield, Wifi, WifiOff, Activity } from 'lucide-react';
+import { formatRelativeTimeCompact } from '../../utils/time';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,22 +59,6 @@ type CardState = 'loading' | 'disconnected' | 'connected' | 'error';
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Format an ISO timestamp to a human-readable relative time string.
- *
- * @param iso - ISO timestamp string
- * @returns Relative time string (e.g., "2s ago", "5m ago")
- */
-function formatRelativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-
-  if (diffSec < 5) return 'Just now';
-  if (diffSec < 60) return `${diffSec}s ago`;
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
-  return `${Math.floor(diffSec / 86400)}d ago`;
-}
 
 /** Map device state to status dot color CSS class. */
 const DEVICE_STATE_COLORS: Record<string, string> = {
@@ -154,7 +139,7 @@ const DeviceRow: React.FC<{ device: CloudDevice }> = ({ device }) => {
             )}
           </div>
           <span className="text-[10px] text-text-secondary-dark">
-            {formatRelativeTime(device.lastHeartbeatAt)}
+            {formatRelativeTimeCompact(device.lastHeartbeatAt)}
           </span>
         </div>
       </div>
@@ -195,9 +180,19 @@ export const RelayHealthCard: React.FC = () => {
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const deviceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  /** Stop polling when endpoint is unavailable (e.g. 404). */
+  const endpointUnavailableRef = useRef(false);
+
+  /** Clear all polling intervals. */
+  const stopPolling = useCallback(() => {
+    if (pingIntervalRef.current) { clearInterval(pingIntervalRef.current); pingIntervalRef.current = null; }
+    if (deviceIntervalRef.current) { clearInterval(deviceIntervalRef.current); deviceIntervalRef.current = null; }
+  }, []);
+
   /**
    * Fetch relay status and cloud devices.
    * Determines overall card state from the relay client state.
+   * Stops polling if the endpoint returns 404 (not registered).
    */
   const fetchData = useCallback(async () => {
     try {
@@ -205,6 +200,16 @@ export const RelayHealthCard: React.FC = () => {
 
       // Fetch local relay status
       const statusRes = await fetch(RELAY_STATUS_URL);
+
+      // Stop polling if the relay endpoint doesn't exist
+      if (statusRes.status === 404) {
+        endpointUnavailableRef.current = true;
+        stopPolling();
+        setCardState('disconnected');
+        setDevices([]);
+        return;
+      }
+
       const statusData = await statusRes.json();
 
       if (!statusRes.ok || !statusData.success) {
@@ -236,22 +241,31 @@ export const RelayHealthCard: React.FC = () => {
       setCardState('error');
       setError('Could not reach the server');
     }
-  }, []);
+  }, [stopPolling]);
 
   /**
-   * Ping for latency measurement.
+   * Ping for latency measurement. Skips when endpoint is unavailable.
    */
   const pingLatency = useCallback(async () => {
+    if (endpointUnavailableRef.current) return;
     const ms = await measureLatency();
     setLatencyMs(ms);
   }, []);
 
   /**
    * Manual refresh handler — fetches data and measures latency.
+   * Re-enables polling if the endpoint has become available again.
    */
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
+    endpointUnavailableRef.current = false;
     await Promise.all([fetchData(), pingLatency()]);
+
+    // Restart polling if the endpoint is now available
+    if (!endpointUnavailableRef.current) {
+      if (!pingIntervalRef.current) pingIntervalRef.current = setInterval(pingLatency, PING_INTERVAL_MS);
+      if (!deviceIntervalRef.current) deviceIntervalRef.current = setInterval(fetchData, DEVICE_REFRESH_INTERVAL_MS);
+    }
     setRefreshing(false);
   }, [fetchData, pingLatency]);
 
@@ -268,10 +282,9 @@ export const RelayHealthCard: React.FC = () => {
     deviceIntervalRef.current = setInterval(fetchData, DEVICE_REFRESH_INTERVAL_MS);
 
     return () => {
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      if (deviceIntervalRef.current) clearInterval(deviceIntervalRef.current);
+      stopPolling();
     };
-  }, [fetchData, pingLatency]);
+  }, [fetchData, pingLatency, stopPolling]);
 
   // -------------------------------------------------------------------------
   // Derived values

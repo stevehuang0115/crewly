@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, KnowledgeDocument, KnowledgeDocumentSummary, KnowledgeScope, CloudStatus, CloudConnectResult } from '../types';
+import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, KnowledgeDocument, KnowledgeDocumentSummary, KnowledgeScope, CloudStatus, CloudConnectResult, SessionUsageSummary } from '../types';
 import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
 
@@ -276,6 +276,32 @@ class ApiService {
    */
   async startTeam(teamId: string): Promise<void> {
     await axios.post(`${API_BASE}/teams/${teamId}/start`, {});
+  }
+
+  /**
+   * Stops all agents in a team.
+   *
+   * @param teamId - ID of the team to stop
+   * @throws Error if the stop request fails
+   */
+  async stopTeam(teamId: string): Promise<void> {
+    await axios.post(`${API_BASE}/teams/${teamId}/stop`, {});
+  }
+
+  /**
+   * Updates an existing project's properties.
+   *
+   * @param id - Project ID
+   * @param updates - Partial project data to update (e.g., status, name)
+   * @returns Promise resolving to the updated project
+   * @throws Error if update fails
+   */
+  async updateProject(id: string, updates: Partial<Omit<Project, 'id'>>): Promise<Project> {
+    const response = await axios.patch<ApiResponse<Project>>(`${API_BASE}/projects/${id}`, updates);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to update project');
+    }
+    return response.data.data;
   }
 
   // ============ Orchestrator Methods ============
@@ -885,6 +911,68 @@ class ApiService {
     return response.data.data;
   }
 
+  // ============ Payment Methods ============
+
+  /**
+   * Creates a Stripe Checkout Session for upgrading to a paid plan.
+   *
+   * @param planId - Plan to subscribe to ('solo', 'pro', 'team', 'enterprise')
+   * @param interval - Billing interval ('month' or 'year')
+   * @param successUrl - URL to redirect to after successful payment
+   * @param cancelUrl - URL to redirect to if payment is cancelled
+   * @returns Checkout session URL and session ID
+   * @throws Error if the request fails
+   */
+  async createCheckoutSession(
+    planId: string,
+    interval: 'month' | 'year',
+    successUrl: string,
+    cancelUrl: string
+  ): Promise<{ checkoutUrl: string; sessionId: string }> {
+    const response = await axios.post<ApiResponse<{ checkoutUrl: string; sessionId: string }>>(
+      `${API_BASE}/payment/checkout`,
+      { planId, interval, successUrl, cancelUrl }
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to create checkout session');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Fetches the current subscription status for the authenticated user.
+   *
+   * @returns Subscription info including plan, status, and period
+   * @throws Error if the request fails
+   */
+  async getSubscription(): Promise<{ plan: string; status: string; currentPeriodEnd: string | null }> {
+    const response = await axios.get<ApiResponse<{ plan: string; status: string; currentPeriodEnd: string | null }>>(
+      `${API_BASE}/payment/subscription`
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to get subscription');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Creates a Stripe Customer Portal session for managing subscriptions.
+   *
+   * @param returnUrl - URL to redirect back to after portal session
+   * @returns Portal session URL
+   * @throws Error if the request fails
+   */
+  async createPortalSession(returnUrl: string): Promise<{ portalUrl: string }> {
+    const response = await axios.post<ApiResponse<{ portalUrl: string }>>(
+      `${API_BASE}/payment/portal`,
+      { returnUrl }
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to create portal session');
+    }
+    return response.data.data;
+  }
+
   // ============ Relay Methods ============
 
   /**
@@ -899,6 +987,30 @@ class ApiService {
       throw new Error(response.data.error || 'Failed to get relay status');
     }
     return response.data.data.client;
+  }
+
+  // ============ Monitoring Methods ============
+
+  /**
+   * Fetches token usage data for all active agent sessions.
+   *
+   * @returns Promise resolving to array of session usage summaries
+   */
+  async getTokenUsage(): Promise<SessionUsageSummary[]> {
+    const response = await axios.get<ApiResponse<SessionUsageSummary[]>>(`${API_BASE}/monitoring/token-usage`);
+    return response.data.data || [];
+  }
+
+  /**
+   * Resets all token usage counters to zero.
+   *
+   * @throws Error if the reset request fails
+   */
+  async resetTokenUsage(): Promise<void> {
+    const response = await axios.post<ApiResponse<void>>(`${API_BASE}/monitoring/token-usage/reset`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to reset token usage');
+    }
   }
 }
 

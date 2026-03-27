@@ -22,6 +22,7 @@ import {
   handleListSubmissions,
   handleGetSubmission,
   handleReviewSubmission,
+  handleGetItemReadme,
 } from './marketplace.controller.js';
 import { createTemplateMarketplaceRouter } from './template-marketplace.routes.js';
 
@@ -63,6 +64,7 @@ export function createMarketplaceRouter(): Router {
 
   // Parameterized routes after static routes
   router.get('/:id', handleGetItem);
+  router.get('/:id/readme', handleGetItemReadme);
   router.post('/:id/install', handleInstall);
   router.post('/:id/uninstall', handleUninstall);
   router.post('/:id/update', handleUpdate);

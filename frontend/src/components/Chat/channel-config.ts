@@ -13,7 +13,7 @@ import type { ChatChannelType } from '../../types/chat.types';
  * Display configuration for a chat channel type
  */
 export interface ChannelDisplayConfig {
-  /** Emoji icon for the channel */
+  /** Text-based icon label for the channel (no emoji) */
   icon: string;
   /** Human-readable label */
   label: string;
@@ -22,11 +22,12 @@ export interface ChannelDisplayConfig {
 }
 
 /**
- * Channel display configuration map
+ * Channel display configuration map.
+ * Uses single-letter text icons instead of emoji for consistency.
  */
 export const CHANNEL_CONFIG: Record<ChatChannelType, ChannelDisplayConfig> = {
-  slack: { icon: '\uD83D\uDD37', label: 'Slack', className: 'channel-slack' },
-  crewly_chat: { icon: '\uD83D\uDCAC', label: 'Crewly', className: 'channel-crewly' },
-  telegram: { icon: '\u2709\uFE0F', label: 'Telegram', className: 'channel-telegram' },
-  api: { icon: '\uD83D\uDD0C', label: 'API', className: 'channel-api' },
+  slack: { icon: 'S', label: 'Slack', className: 'channel-slack' },
+  crewly_chat: { icon: 'C', label: 'Crewly', className: 'channel-crewly' },
+  telegram: { icon: 'T', label: 'Telegram', className: 'channel-telegram' },
+  api: { icon: 'A', label: 'API', className: 'channel-api' },
 };

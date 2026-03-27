@@ -15,9 +15,13 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap, Monitor, Cpu, Wifi, UserPlus, Link2 } from 'lucide-react';
+import { formatRelativeTimeCompact } from '../../utils/time';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
 import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/cloud.constants';
 import { InviteDeviceModal } from './InviteDeviceModal';
 import { JoinRelayModal } from './JoinRelayModal';
+import { Card } from '../UI/Card';
+import { Alert } from '../UI/Alert';
 
 /**
  * Cloud API validation endpoint — proxied through the local OSS backend
@@ -69,22 +73,6 @@ interface CloudDevice {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Format an ISO timestamp to a human-readable relative time string.
- *
- * @param iso - ISO timestamp string
- * @returns Relative time string (e.g., "2 分钟前")
- */
-function formatRelativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-
-  if (diffSec < 5) return 'Just now';
-  if (diffSec < 60) return `${diffSec}s ago`;
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
-  return `${Math.floor(diffSec / 86400)}d ago`;
-}
 
 /** Map device state to status label (supports both legacy relay and cloud sync). */
 const DEVICE_STATE_LABELS: Record<string, string> = {
@@ -184,7 +172,7 @@ const DeviceCard: React.FC<{ device: CloudDevice }> = ({ device }) => {
             )}
           </div>
           <span className="text-xs text-text-secondary-dark">
-            {device.lastHeartbeatAt ? `Last seen: ${formatRelativeTime(device.lastHeartbeatAt)}` : `Registered: ${formatRelativeTime(device.registeredAt)}`}
+            {device.lastHeartbeatAt ? `Last seen: ${formatRelativeTimeCompact(device.lastHeartbeatAt)}` : `Registered: ${formatRelativeTimeCompact(device.registeredAt)}`}
           </span>
         </div>
       </div>
@@ -309,15 +297,15 @@ const DeviceListSection: React.FC = () => {
       </div>
 
       {error && (
-        <div className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded px-3 py-2">
+        <Alert variant="error" className="text-xs">
           {error}
-        </div>
+        </Alert>
       )}
 
       {tokenExpired && !error && (
-        <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2" data-testid="token-expired-warning">
+        <Alert variant="warning" className="text-xs" data-testid="token-expired-warning">
           Cloud session expired. Please disconnect and sign in again to refresh your token.
-        </div>
+        </Alert>
       )}
 
       {!loading && !error && !tokenExpired && uniqueDevices.length === 0 && (
@@ -511,7 +499,7 @@ export const CloudTab: React.FC = () => {
    */
   const getPlanBadgeClass = (plan: string): string => {
     switch (plan) {
-      case 'pro': return 'bg-indigo-500/10 text-indigo-400 border-indigo-500/30';
+      case 'pro': return 'bg-primary/10 text-primary border-primary/30';
       case 'enterprise': return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
       default: return 'bg-gray-500/10 text-gray-400 border-gray-500/30';
     }
@@ -519,8 +507,8 @@ export const CloudTab: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="w-6 h-6 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
+      <div className="flex justify-center py-12">
+        <LoadingSpinner size="sm" />
       </div>
     );
   }
@@ -539,9 +527,9 @@ export const CloudTab: React.FC = () => {
       </div>
 
       {error && (
-        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-3 rounded-lg text-sm">
+        <Alert variant="error">
           {error}
-        </div>
+        </Alert>
       )}
 
       {/* Connected State — show when backend reports connected OR user profile is validated */}
@@ -626,7 +614,7 @@ export const CloudTab: React.FC = () => {
         </>
       ) : (
         /* Disconnected State */
-        <div className="bg-surface-dark border border-border-dark rounded-lg p-6 text-center space-y-4">
+        <Card padding="lg" className="text-center space-y-4">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-primary/10">
             <Zap className="w-6 h-6 text-primary" />
           </div>
@@ -649,7 +637,7 @@ export const CloudTab: React.FC = () => {
             <ExternalLink className="w-4 h-4" />
             Sign in with CrewlyAI
           </button>
-        </div>
+        </Card>
       )}
     </div>
   );

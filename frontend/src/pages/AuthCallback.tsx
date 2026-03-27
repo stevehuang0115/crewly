@@ -11,6 +11,7 @@
 import React, { useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { CLOUD_TOKEN_KEY } from '../constants/cloud.constants';
+import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
 
 /**
  * AuthCallback component that processes the OAuth redirect.
@@ -59,10 +60,7 @@ export const AuthCallback: React.FC = () => {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background-dark">
-      <div className="text-center">
-        <div className="w-8 h-8 border-2 border-primary/20 border-t-primary rounded-full animate-spin mx-auto" />
-        <p className="text-sm text-text-secondary-dark mt-4">Completing sign-in...</p>
-      </div>
+      <LoadingSpinner size="md" text="Completing sign-in..." />
     </div>
   );
 };

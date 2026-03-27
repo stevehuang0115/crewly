@@ -1,8 +1,8 @@
 /**
  * Queue Status Bar Styles
  *
- * Collapsible bar showing message queue status in the chat panel.
- * Uses design token CSS variables for consistent dark theming.
+ * Layout and animation styles only.
+ * Buttons and badges are handled by UI library components.
  */
 
 /* Container - hidden when empty */
@@ -48,30 +48,6 @@
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
   line-height: var(--line-height-tight);
-}
-
-/* Clear All button in summary row */
-.queue-clear-all-btn {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  background: none;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background-color var(--transition-fast), color var(--transition-fast);
-}
-
-.queue-clear-all-btn:hover {
-  color: var(--color-error);
-  border-color: var(--color-error);
-  background-color: var(--color-error-light);
-}
-
-.queue-clear-all-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 /* Chevron toggle */
@@ -162,38 +138,10 @@
   margin-top: 2px;
 }
 
-/* Source badge */
-.queue-source-badge {
-  display: inline-block;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  background-color: var(--color-bg-tertiary);
-  padding: 1px 6px;
-  border-radius: var(--radius-full);
-  line-height: var(--line-height-tight);
-}
-
 /* Timestamp */
 .queue-item-time {
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
-}
-
-/* Cancel button */
-.queue-cancel-btn {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  font-size: var(--font-size-xs);
-  color: var(--color-error);
-  background: none;
-  border: 1px solid var(--color-error);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background-color var(--transition-fast);
-}
-
-.queue-cancel-btn:hover {
-  background-color: var(--color-error-light);
 }
 
 /* Mobile responsive */
@@ -209,9 +157,5 @@
 
   .queue-item-content {
     width: calc(100% - 60px);
-  }
-
-  .queue-cancel-btn {
-    margin-left: auto;
   }
 }

@@ -1,7 +1,8 @@
 /**
  * Chat Message Styles
  *
- * Uses design token CSS variables for consistent dark theming.
+ * Layout and message-variant styles only.
+ * Primitives (badges, buttons, avatars) are handled by UI library components.
  */
 
 .chat-message {
@@ -53,10 +54,6 @@
   margin-bottom: 0.5rem;
 }
 
-.sender-icon {
-  font-size: 1rem;
-}
-
 .sender-name {
   font-weight: 600;
   font-size: 0.875rem;
@@ -67,21 +64,6 @@
   font-size: 0.75rem;
   color: var(--color-text-muted);
   margin-left: auto;
-}
-
-.toggle-raw-btn {
-  background: none;
-  border: none;
-  padding: 0.25rem;
-  cursor: pointer;
-  font-size: 0.875rem;
-  opacity: 0.7;
-  transition: opacity 0.2s;
-  color: var(--color-text-secondary);
-}
-
-.toggle-raw-btn:hover {
-  opacity: 1;
 }
 
 /* Content */
@@ -145,33 +127,12 @@
   overflow-y: auto;
 }
 
-/* Metadata */
+/* Metadata row */
 .message-metadata {
   display: flex;
   gap: 0.5rem;
   margin-top: 0.5rem;
   flex-wrap: wrap;
-}
-
-.skill-badge,
-.task-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  background-color: var(--color-bg-tertiary);
-  border-radius: 1rem;
-  font-size: 0.75rem;
-  color: var(--color-text-secondary);
-}
-
-.skill-badge {
-  background-color: var(--color-primary-light);
-  color: var(--color-primary);
-}
-
-.task-badge {
-  background-color: var(--color-warning-light);
-  color: var(--color-warning);
 }
 
 /* Error state */

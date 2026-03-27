@@ -99,7 +99,7 @@ export const VisibilityToggles: React.FC = () => {
                 <button
                   onClick={() => toggle.onToggle(!toggle.isVisible)}
                   className={`relative w-10 h-5 rounded-full transition-colors ${
-                    toggle.isVisible ? 'bg-blue-600' : 'bg-gray-600'
+                    toggle.isVisible ? 'bg-primary' : 'bg-gray-600'
                   }`}
                 >
                   <span

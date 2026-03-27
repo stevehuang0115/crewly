@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { CheckCircle, XCircle, AlertTriangle, Info } from 'lucide-react';
-import { Popup } from './Popup';
+import { Modal, ModalFooter } from './Modal';
 import { Button } from './Button';
 
 export type AlertType = 'success' | 'error' | 'warning' | 'info';
@@ -46,7 +46,7 @@ const IconForType = ({ type }: { type: AlertType }) => {
   );
 };
 
-// Alert Dialog Component (prototype-styled via Popup)
+// Alert Dialog Component (uses shared Modal)
 export const AlertDialog: React.FC<AlertDialogProps> = ({
   isOpen,
   onClose,
@@ -56,17 +56,12 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
   confirmText = 'OK'
 }) => {
   return (
-    <Popup
+    <Modal
       isOpen={isOpen}
       onClose={onClose}
       title={title}
       size="sm"
       closable={true}
-      footer={
-        <Button variant="primary" onClick={onClose} fullWidth>
-          {confirmText}
-        </Button>
-      }
     >
       <div className="text-center">
         <IconForType type={type} />
@@ -74,11 +69,16 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
           {message}
         </div>
       </div>
-    </Popup>
+      <ModalFooter align="center">
+        <Button variant="primary" onClick={onClose} fullWidth>
+          {confirmText}
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 };
 
-// Confirm Dialog Component (prototype-styled via Popup)
+// Confirm Dialog Component (uses shared Modal)
 export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   isOpen,
   onConfirm,
@@ -91,22 +91,12 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   loading = false
 }) => {
   return (
-    <Popup
+    <Modal
       isOpen={isOpen}
       onClose={onCancel}
       title={title}
       size="sm"
       closable={!loading}
-      footer={
-        <div className="flex gap-3 w-full justify-end">
-          <Button variant="secondary" onClick={onCancel} disabled={loading}>
-            {cancelText}
-          </Button>
-          <Button variant={type === 'error' ? 'danger' : 'primary'} onClick={onConfirm} loading={loading}>
-            {confirmText}
-          </Button>
-        </div>
-      }
     >
       <div className="text-center">
         <IconForType type={type} />
@@ -114,7 +104,15 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
           {message}
         </div>
       </div>
-    </Popup>
+      <ModalFooter>
+        <Button variant="secondary" onClick={onCancel} disabled={loading}>
+          {cancelText}
+        </Button>
+        <Button variant={type === 'error' ? 'danger' : 'primary'} onClick={onConfirm} loading={loading}>
+          {confirmText}
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 };
 

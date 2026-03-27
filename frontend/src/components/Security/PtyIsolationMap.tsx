@@ -11,6 +11,10 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, Monitor, X as XIcon } from 'lucide-react';
 import type { PtySessionInfo } from '../../hooks/usePtyStatus';
+import { Card } from '../UI/Card';
+import { StatusDot } from '../UI/StatusDot';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
+import type { DotStatus } from '../UI/StatusDot';
 
 /** Props for PtyIsolationMap */
 export interface PtyIsolationMapProps {
@@ -20,13 +24,13 @@ export interface PtyIsolationMapProps {
   loading: boolean;
 }
 
-/** Agent border colors — cycles through blue, purple, pink per spec */
+/** Agent border colors — primary blue variants for consistency */
 const AGENT_COLORS = [
-  'border-blue-500',
-  'border-purple-500',
-  'border-pink-500',
-  'border-cyan-500',
-  'border-amber-500',
+  'border-primary',
+  'border-primary/80',
+  'border-primary/60',
+  'border-primary/50',
+  'border-primary/40',
 ];
 
 /**
@@ -78,7 +82,7 @@ export const PtyIsolationMap: React.FC<PtyIsolationMapProps> = ({ sessions, load
   };
 
   return (
-    <section aria-labelledby="pty-map-heading" className="border border-border-dark rounded-lg bg-surface-dark">
+    <Card padding="none" aria-labelledby="pty-map-heading" role="region">
       {/* Header */}
       <button
         type="button"
@@ -88,7 +92,7 @@ export const PtyIsolationMap: React.FC<PtyIsolationMapProps> = ({ sessions, load
         aria-controls="pty-map-content"
       >
         <h2 id="pty-map-heading" className="text-lg font-semibold text-text-primary-dark flex items-center gap-2">
-          <Monitor size={20} aria-hidden="true" className="text-blue-400" />
+          <Monitor size={20} aria-hidden="true" className="text-primary" />
           PTY Isolation Map
         </h2>
         {isExpanded ? (
@@ -102,7 +106,7 @@ export const PtyIsolationMap: React.FC<PtyIsolationMapProps> = ({ sessions, load
       {isExpanded && (
         <div id="pty-map-content" className="px-6 pb-6">
           {loading ? (
-            <div className="text-text-secondary-dark text-sm py-4" role="status">Loading PTY sessions...</div>
+            <LoadingSpinner size="sm" text="Loading PTY sessions..." />
           ) : sessions.length === 0 ? (
             <div className="text-text-secondary-dark text-sm py-4">No active agent sessions</div>
           ) : (
@@ -129,18 +133,14 @@ export const PtyIsolationMap: React.FC<PtyIsolationMapProps> = ({ sessions, load
                           {session.agentName}
                         </span>
                         <span className="text-xs text-text-secondary-dark">({session.role})</span>
-                        <span
-                          className={`inline-flex items-center gap-1 text-xs ${
-                            session.agentStatus === 'active' ? 'text-emerald-400' : 'text-text-secondary-dark'
-                          }`}
-                        >
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              session.agentStatus === 'active' ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-500'
-                            }`}
-                            aria-hidden="true"
+                        <span className="inline-flex items-center gap-1 text-xs">
+                          <StatusDot
+                            status={session.agentStatus === 'active' ? 'active' : 'inactive'}
+                            size="sm"
                           />
-                          {session.agentStatus === 'active' ? 'Active' : session.agentStatus}
+                          <span className={session.agentStatus === 'active' ? 'text-emerald-400' : 'text-text-secondary-dark'}>
+                            {session.agentStatus === 'active' ? 'Active' : session.agentStatus}
+                          </span>
                         </span>
                       </div>
                       <div className="text-xs text-text-secondary-dark">
@@ -187,11 +187,11 @@ export const PtyIsolationMap: React.FC<PtyIsolationMapProps> = ({ sessions, load
               {/* Legend */}
               <div className="flex items-center gap-4 mt-4 pt-3 border-t border-border-dark text-xs text-text-secondary-dark">
                 <span className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
+                  <StatusDot status="active" size="sm" />
                   Active
                 </span>
                 <span className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" aria-hidden="true" />
+                  <StatusDot status="inactive" size="sm" />
                   Inactive
                 </span>
                 <span className="flex items-center gap-1">
@@ -203,7 +203,7 @@ export const PtyIsolationMap: React.FC<PtyIsolationMapProps> = ({ sessions, load
           )}
         </div>
       )}
-    </section>
+    </Card>
   );
 };
 

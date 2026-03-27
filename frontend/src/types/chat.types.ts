@@ -177,6 +177,9 @@ export interface ChatConversation {
 
   /** Channel type (slack, crewly_chat, etc.) */
   channelType?: ChatChannelType;
+
+  /** Number of unread messages (derived from last-viewed timestamp or localStorage) */
+  unreadCount?: number;
 }
 
 /**

@@ -634,6 +634,127 @@ describe('Teams Handlers', () => {
     });
   });
 
+  describe('lastActivity field', () => {
+    it('should include lastActivity in getTeams response', async () => {
+      const teamUpdatedAt = '2026-03-25T10:00:00.000Z';
+      const memberUpdatedAt = '2026-03-26T05:00:00.000Z';
+      const mockTeams = [
+        {
+          id: 'team-1',
+          name: 'Team 1',
+          members: [
+            {
+              id: 'm1', name: 'Alice', sessionName: 'team-1-alice',
+              role: 'developer', runtimeType: 'claude-code', systemPrompt: 'T',
+              agentStatus: 'active', workingStatus: 'idle',
+              createdAt: '2026-03-20T00:00:00.000Z',
+              updatedAt: memberUpdatedAt,
+            }
+          ],
+          createdAt: '2026-03-20T00:00:00.000Z',
+          updatedAt: teamUpdatedAt,
+        }
+      ];
+
+      mockStorageService.getTeams.mockResolvedValue(mockTeams);
+      mockStorageService.getOrchestratorStatus.mockResolvedValue(null);
+
+      await teamsHandlers.getTeams.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const responseData = responseMock.json.mock.calls[0][0] as any;
+      const regularTeam = responseData.data[1];
+      expect(regularTeam.lastActivity).toBe(memberUpdatedAt);
+    });
+
+    it('should use team updatedAt when no member is more recent', async () => {
+      const teamUpdatedAt = '2026-03-26T12:00:00.000Z';
+      const mockTeams = [
+        {
+          id: 'team-2',
+          name: 'Team 2',
+          members: [
+            {
+              id: 'm2', name: 'Bob', sessionName: 'team-2-bob',
+              role: 'developer', runtimeType: 'claude-code', systemPrompt: 'T',
+              agentStatus: 'inactive', workingStatus: 'idle',
+              createdAt: '2026-03-20T00:00:00.000Z',
+              updatedAt: '2026-03-25T00:00:00.000Z',
+            }
+          ],
+          createdAt: '2026-03-20T00:00:00.000Z',
+          updatedAt: teamUpdatedAt,
+        }
+      ];
+
+      mockStorageService.getTeams.mockResolvedValue(mockTeams);
+      mockStorageService.getOrchestratorStatus.mockResolvedValue(null);
+
+      await teamsHandlers.getTeams.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const responseData = responseMock.json.mock.calls[0][0] as any;
+      const regularTeam = responseData.data[1];
+      expect(regularTeam.lastActivity).toBe(teamUpdatedAt);
+    });
+
+    it('should include lastActivity in getTeam response', async () => {
+      const memberUpdatedAt = '2026-03-26T08:00:00.000Z';
+      const mockTeam = {
+        id: 'team-3',
+        name: 'Team 3',
+        members: [
+          {
+            id: 'm3', name: 'Carol', sessionName: 'team-3-carol',
+            role: 'developer', runtimeType: 'claude-code', systemPrompt: 'T',
+            agentStatus: 'active', workingStatus: 'idle',
+            createdAt: '2026-03-20T00:00:00.000Z',
+            updatedAt: memberUpdatedAt,
+          }
+        ],
+        createdAt: '2026-03-20T00:00:00.000Z',
+        updatedAt: '2026-03-24T00:00:00.000Z',
+      };
+
+      mockRequest.params = { id: 'team-3' };
+      mockStorageService.getTeams.mockResolvedValue([mockTeam]);
+
+      await teamsHandlers.getTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const responseData = responseMock.json.mock.calls[0][0] as any;
+      expect(responseData.data.lastActivity).toBe(memberUpdatedAt);
+    });
+
+    it('should include lastActivity for orchestrator team', async () => {
+      mockRequest.params = { id: 'orchestrator' };
+      mockStorageService.getOrchestratorStatus.mockResolvedValue({
+        agentStatus: 'active',
+        updatedAt: '2026-03-26T09:00:00.000Z',
+        createdAt: '2026-03-20T00:00:00.000Z',
+      });
+
+      await teamsHandlers.getTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const responseData = responseMock.json.mock.calls[0][0] as any;
+      expect(responseData.data.lastActivity).toBeDefined();
+      expect(typeof responseData.data.lastActivity).toBe('string');
+    });
+  });
+
   describe('deleteTeam', () => {
     it('should delete team successfully', async () => {
       const mockTeam = {

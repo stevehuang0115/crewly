@@ -10,6 +10,8 @@
 
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
+import { Card } from '../UI/Card';
+import { Button } from '../UI/Button';
 
 /** Pillar identifier for the three security pillars */
 export type PillarId = 'pty' | 'storage' | 'approval';
@@ -79,8 +81,9 @@ export const SecurityPillarCard: React.FC<SecurityPillarCardProps> = ({
   };
 
   return (
-    <div
-      className={`rounded-lg border p-6 bg-zinc-900 transition-all duration-200 ${borderClass}`}
+    <Card
+      padding="lg"
+      className={`bg-zinc-900 transition-all duration-200 ${borderClass}`}
       data-testid={`pillar-card-${id}`}
     >
       {/* Icon */}
@@ -95,18 +98,19 @@ export const SecurityPillarCard: React.FC<SecurityPillarCardProps> = ({
       <p className="text-sm text-zinc-400 mb-4 leading-relaxed">{description}</p>
 
       {/* See how link */}
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={handleClick}
         onKeyDown={handleKeyDown}
-        className="text-sm font-medium text-emerald-400 hover:text-emerald-300 transition-colors inline-flex items-center gap-1"
+        className="text-sm font-medium text-emerald-400 hover:text-emerald-300 !p-0 !h-auto"
         aria-expanded={isActive}
         aria-controls="security-arch-diagram"
       >
         See how
         <span aria-hidden="true">&rarr;</span>
-      </button>
-    </div>
+      </Button>
+    </Card>
   );
 };
 

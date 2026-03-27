@@ -18,7 +18,7 @@ const statusStyles: Record<StatusType, string> = {
   blocked: 'bg-red-500/10 text-red-400 border-red-500/20',
   pending: 'bg-gray-500/10 text-gray-400 border-gray-500/20',
   error: 'bg-red-500/10 text-red-400 border-red-500/20',
-  suspended: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+  suspended: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
 };
 
 export const StatusBadge: React.FC<StatusBadgeProps> = ({

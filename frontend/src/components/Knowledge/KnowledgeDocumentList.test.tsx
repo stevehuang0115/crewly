@@ -346,12 +346,12 @@ describe('KnowledgeDocumentList', () => {
         />,
       );
 
-      // The selected document button should have the indigo highlight class
+      // The selected document button should have the primary highlight class
       const selectedButton = screen.getByText('Selected Doc').closest('button');
-      expect(selectedButton).toHaveClass('bg-indigo-600/20');
+      expect(selectedButton).toHaveClass('bg-primary/20');
 
       const otherButton = screen.getByText('Other Doc').closest('button');
-      expect(otherButton).not.toHaveClass('bg-indigo-600/20');
+      expect(otherButton).not.toHaveClass('bg-primary/20');
     });
   });
 });

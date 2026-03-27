@@ -7,7 +7,10 @@
  */
 
 import React, { useState, useRef, useEffect, KeyboardEvent } from 'react';
+import { Send } from 'lucide-react';
 import { useChat } from '../../contexts/ChatContext';
+import { Button } from '../UI/Button';
+import { Alert } from '../UI/Alert';
 import './ChatInput.css';
 
 // =============================================================================
@@ -105,15 +108,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   return (
     <div className="chat-input-container" data-testid="chat-input-container">
       {error && (
-        <div className="input-error" role="alert" data-testid="chat-input-error">
-          <span>Error: {error}</span>
-          <button
-            className="dismiss-error"
-            onClick={clearError}
-            aria-label="Dismiss error"
-          >
-            ×
-          </button>
+        <div data-testid="chat-input-error">
+          <Alert variant="error" onClose={clearError} className="mx-1 mb-1">
+            {error}
+          </Alert>
         </div>
       )}
 
@@ -135,24 +133,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           aria-label="Message input"
         />
 
-        <button
+        <Button
+          variant="primary"
+          size="icon"
+          icon={Send}
+          loading={isSending}
           onClick={handleSubmit}
           disabled={!input.trim() || isDisabled}
-          className="send-button"
           title={disabled ? 'Orchestrator offline' : 'Send message'}
           data-testid="chat-send-button"
           aria-label={isSending ? 'Sending message' : disabled ? 'Orchestrator offline' : 'Send message'}
-        >
-          {isSending ? (
-            <span className="sending-indicator" aria-hidden="true">
-              ⏳
-            </span>
-          ) : (
-            <span className="send-icon" aria-hidden="true">
-              ➤
-            </span>
-          )}
-        </button>
+        />
       </div>
 
       <div className="input-hints">

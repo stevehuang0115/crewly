@@ -386,6 +386,40 @@ export function getInstallPath(type: MarketplaceItemType, id: string): string {
 }
 
 /**
+ * Retrieves the README.md content for a marketplace item.
+ *
+ * Looks for a README.md file in the item's install directory. Tries multiple
+ * filenames (README.md, readme.md, SKILL.md) for flexibility.
+ *
+ * @param id - The marketplace item ID
+ * @returns The README content as a string, or null if not found
+ * @throws Error if the item ID is invalid (path traversal protection)
+ */
+export async function getItemReadme(id: string): Promise<string | null> {
+  if (!isValidItemId(id)) {
+    throw new Error(`Invalid marketplace item ID "${id}": must match ${VALID_ITEM_ID_PATTERN}`);
+  }
+
+  // Try skill type first (most common), then other types
+  const types: MarketplaceItemType[] = ['skill', 'role', 'mcp_tool', 'model'];
+  const readmeNames = ['README.md', 'readme.md', 'SKILL.md'];
+
+  for (const type of types) {
+    const installDir = getInstallPath(type, id);
+    for (const name of readmeNames) {
+      try {
+        const content = await readFile(path.join(installDir, name), 'utf-8');
+        return content;
+      } catch {
+        // File doesn't exist for this type/name combo — try next
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Resets the in-memory registry cache.
  *
  * Used primarily for testing to ensure a clean state between test runs.

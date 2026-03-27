@@ -102,11 +102,11 @@ export const CloudConnectionBanner: React.FC = () => {
 
   // Disconnected state: show connect prompt with redirect button
   return (
-    <div className="flex items-center justify-between px-4 py-2 border-b bg-violet-500/10 border-violet-500/30">
+    <div className="flex items-center justify-between px-4 py-2 border-b bg-primary/10 border-primary/30">
       <div className="flex items-center gap-3">
-        <Cloud className="shrink-0 text-violet-400" size={18} />
-        <span className="text-sm text-violet-200/80">
-          Connect to <span className="font-semibold text-violet-300">CrewlyAI Cloud</span> for premium templates and features.
+        <Cloud className="shrink-0 text-primary" size={18} />
+        <span className="text-sm text-gray-200/80">
+          Connect to <span className="font-semibold text-primary">CrewlyAI Cloud</span> for premium templates and features.
         </span>
       </div>
       <div className="flex items-center gap-2">

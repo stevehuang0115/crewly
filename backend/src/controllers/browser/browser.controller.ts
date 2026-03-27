@@ -26,13 +26,16 @@ export function getStatus(_req: Request, res: Response): void {
 /**
  * Helper: send a tool command to the Chrome Extension and return the result.
  * Handles the common pattern of forwarding a REST request to the WS bridge.
+ * Extracts agent name from X-Agent-Session header if present.
  *
+ * @param req - Express request (for extracting agent metadata)
  * @param res - Express response object
  * @param tool - Chrome Extension tool name
  * @param params - Tool parameters
  * @param timeoutMs - Optional command timeout
  */
 async function sendToolCommand(
+	req: Request,
 	res: Response,
 	tool: string,
 	params?: Record<string, unknown>,
@@ -49,8 +52,26 @@ async function sendToolCommand(
 		return;
 	}
 
+	// Extract agent name: prefer explicit body/header name, fall back to session header.
+	// Session names look like "crewly-product-max-118c0421" — extract "max" as friendly name.
+	let agentName = (req.body?.agentName as string)
+		|| (req.headers['x-agent-name'] as string)
+		|| undefined;
+	if (!agentName) {
+		const session = req.headers['x-agent-session'] as string;
+		if (session) {
+			// Extract friendly name from session: "crewly-product-max-118c0421" → "max"
+			const parts = session.split('-');
+			if (parts.length >= 3) {
+				agentName = parts[parts.length - 2]; // second-to-last part is the name
+			} else {
+				agentName = session;
+			}
+		}
+	}
+
 	try {
-		const result = await bridge.sendCommand(tool, params, timeoutMs);
+		const result = await bridge.sendCommand(tool, params, timeoutMs, agentName);
 		res.json(result);
 	} catch (err) {
 		res.status(504).json({
@@ -68,7 +89,7 @@ async function sendToolCommand(
  * @param res - Express response
  */
 export async function navigate(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'navigate', { url: req.body.url });
+	await sendToolCommand(req, res, 'navigate', { url: req.body.url });
 }
 
 /**
@@ -78,8 +99,8 @@ export async function navigate(req: Request, res: Response): Promise<void> {
  * @param _req - Express request
  * @param res - Express response
  */
-export async function screenshot(_req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'screenshot');
+export async function screenshot(req: Request, res: Response): Promise<void> {
+	await sendToolCommand(req, res, 'screenshot');
 }
 
 /**
@@ -90,7 +111,7 @@ export async function screenshot(_req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function readText(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'readText', req.body || {});
+	await sendToolCommand(req, res, 'readText', req.body || {});
 }
 
 /**
@@ -100,8 +121,8 @@ export async function readText(req: Request, res: Response): Promise<void> {
  * @param _req - Express request
  * @param res - Express response
  */
-export async function getTabs(_req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'getTabs');
+export async function getTabs(req: Request, res: Response): Promise<void> {
+	await sendToolCommand(req, res, 'getTabs');
 }
 
 /**
@@ -112,7 +133,7 @@ export async function getTabs(_req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function execute(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'executeScript', { code: req.body.code });
+	await sendToolCommand(req, res, 'executeScript', { code: req.body.code });
 }
 
 /**
@@ -123,7 +144,7 @@ export async function execute(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function click(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'click', req.body || {});
+	await sendToolCommand(req, res, 'click', req.body || {});
 }
 
 /**
@@ -134,7 +155,7 @@ export async function click(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function fill(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'fill', req.body || {});
+	await sendToolCommand(req, res, 'fill', req.body || {});
 }
 
 /**
@@ -145,7 +166,7 @@ export async function fill(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function type(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'type', req.body || {});
+	await sendToolCommand(req, res, 'type', req.body || {});
 }
 
 /**
@@ -156,7 +177,7 @@ export async function type(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function scroll(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'scroll', req.body || {});
+	await sendToolCommand(req, res, 'scroll', req.body || {});
 }
 
 /**
@@ -167,7 +188,7 @@ export async function scroll(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function scrollInElement(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'scroll', req.body || {});
+	await sendToolCommand(req, res, 'scroll', req.body || {});
 }
 
 /**
@@ -178,7 +199,7 @@ export async function scrollInElement(req: Request, res: Response): Promise<void
  * @param res - Express response
  */
 export async function hover(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'hover', req.body || {});
+	await sendToolCommand(req, res, 'hover', req.body || {});
 }
 
 /**
@@ -189,7 +210,7 @@ export async function hover(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function pressKey(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'pressKey', req.body || {});
+	await sendToolCommand(req, res, 'pressKey', req.body || {});
 }
 
 /**
@@ -200,7 +221,7 @@ export async function pressKey(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function getElement(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'getElement', req.body || {});
+	await sendToolCommand(req, res, 'getElement', req.body || {});
 }
 
 /**
@@ -212,7 +233,7 @@ export async function getElement(req: Request, res: Response): Promise<void> {
  */
 export async function waitForSelector(req: Request, res: Response): Promise<void> {
 	const timeout = req.body?.timeout;
-	await sendToolCommand(res, 'waitForSelector', req.body || {}, timeout ? timeout + 5000 : undefined);
+	await sendToolCommand(req, res, 'waitForSelector', req.body || {}, timeout ? timeout + 5000 : undefined);
 }
 
 /**
@@ -225,7 +246,7 @@ export async function waitForSelector(req: Request, res: Response): Promise<void
 export async function getCookies(req: Request, res: Response): Promise<void> {
 	const params: Record<string, unknown> = {};
 	if (req.query.domain) params.domain = req.query.domain;
-	await sendToolCommand(res, 'getCookies', params);
+	await sendToolCommand(req, res, 'getCookies', params);
 }
 
 /**
@@ -236,7 +257,7 @@ export async function getCookies(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function getLocalStorage(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'getLocalStorage', req.body || {});
+	await sendToolCommand(req, res, 'getLocalStorage', req.body || {});
 }
 
 /**
@@ -249,7 +270,7 @@ export async function getLocalStorage(req: Request, res: Response): Promise<void
 export async function getConsole(req: Request, res: Response): Promise<void> {
 	const params: Record<string, unknown> = {};
 	if (req.query.clear === 'true') params.clear = true;
-	await sendToolCommand(res, 'getConsoleMessages', params);
+	await sendToolCommand(req, res, 'getConsoleMessages', params);
 }
 
 /**
@@ -259,8 +280,8 @@ export async function getConsole(req: Request, res: Response): Promise<void> {
  * @param _req - Express request
  * @param res - Express response
  */
-export async function fullPageScreenshot(_req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'fullPageScreenshot');
+export async function fullPageScreenshot(req: Request, res: Response): Promise<void> {
+	await sendToolCommand(req, res, 'fullPageScreenshot');
 }
 
 /**
@@ -271,7 +292,7 @@ export async function fullPageScreenshot(_req: Request, res: Response): Promise<
  * @param res - Express response
  */
 export async function getInteractiveElements(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'getInteractiveElements', req.body || {});
+	await sendToolCommand(req, res, 'getInteractiveElements', req.body || {});
 }
 
 /**
@@ -282,7 +303,7 @@ export async function getInteractiveElements(req: Request, res: Response): Promi
  * @param res - Express response
  */
 export async function searchText(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'searchText', req.body || {});
+	await sendToolCommand(req, res, 'searchText', req.body || {});
 }
 
 /**
@@ -293,5 +314,16 @@ export async function searchText(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function listOptions(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(res, 'listOptions', req.body || {});
+	await sendToolCommand(req, res, 'listOptions', req.body || {});
+}
+
+/**
+ * POST /api/browser/set-file-input
+ * Set files on a file input element using CDP, bypassing the OS file picker.
+ *
+ * @param req - Express request with body { selector: string, filePaths: string[] }
+ * @param res - Express response
+ */
+export async function setFileInput(req: Request, res: Response): Promise<void> {
+	await sendToolCommand(req, res, 'setFileInput', req.body || {});
 }

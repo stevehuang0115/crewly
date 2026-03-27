@@ -67,11 +67,19 @@ class MockElement {
 
 const documentElements = {};
 
+const _bodyClassList = new Set();
+const mockBody = new MockElement('body');
+mockBody.classList = {
+  add: (cls) => _bodyClassList.add(cls),
+  remove: (cls) => _bodyClassList.delete(cls),
+  contains: (cls) => _bodyClassList.has(cls),
+};
+
 const document = {
   createElement: (tag) => new MockElement(tag),
   getElementById: (id) => documentElements[id] || null,
   documentElement: new MockElement('html'),
-  body: new MockElement('body'),
+  body: mockBody,
   querySelector: (sel) => null,
 };
 
@@ -166,7 +174,7 @@ async function runTests() {
     showControlIndicator('click');
     const border = documentElements['__crewly-ai-border'];
     assert(border.style.boxShadow.includes('inset'), 'Should use inset box-shadow');
-    assert(border.style.boxShadow.includes('128, 0, 255'), 'Should use purple color (128, 0, 255)');
+    assert(border.style.boxShadow.includes('42, 115, 234'), 'Should use OSS blue color (42, 115, 234)');
     // Should NOT have a solid border
     assert(!border.style.border, 'Should not have solid border property');
   });
@@ -214,19 +222,19 @@ async function runTests() {
     assertEqual(panel.style.transform, 'translateX(-50%)');
   });
 
-  await test('Floating panel has purple background', async () => {
+  await test('Floating panel has OSS blue background', async () => {
     showControlIndicator('type');
     const panel = documentElements['__crewly-ai-indicator'];
     assert(
-      panel.style.background.includes('128, 0, 255'),
-      'Should have purple background'
+      panel.style.background.includes('42, 115, 234'),
+      'Should have OSS blue background'
     );
   });
 
-  await test('Floating panel has pill shape (borderRadius: 20px)', async () => {
+  await test('Floating panel has 12px border radius', async () => {
     showControlIndicator('fill');
     const panel = documentElements['__crewly-ai-indicator'];
-    assertEqual(panel.style.borderRadius, '20px');
+    assertEqual(panel.style.borderRadius, '12px');
   });
 
   await test('Floating panel displays "Crewly is taking over"', async () => {
@@ -313,11 +321,11 @@ async function runTests() {
     showControlIndicator('navigate');
     const styles = documentElements['__crewlyStyles'];
     assert(
-      styles.textContent.includes('inset 0 0 30px rgba(128, 0, 255, 0.3)'),
+      styles.textContent.includes('inset 0 0 30px rgba(42, 115, 234, 0.3)'),
       'Should have 30px shadow at 0%/100%'
     );
     assert(
-      styles.textContent.includes('inset 0 0 50px rgba(128, 0, 255, 0.5)'),
+      styles.textContent.includes('inset 0 0 50px rgba(42, 115, 234, 0.5)'),
       'Should have 50px shadow at 50%'
     );
   });

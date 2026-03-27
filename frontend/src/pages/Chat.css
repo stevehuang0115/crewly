@@ -10,26 +10,26 @@
   flex-direction: column;
   height: 100%;
   max-height: 100%;
-  padding: 24px;
+  padding: 16px 24px;
   overflow: hidden;
   background-color: var(--color-bg-primary);
   color: var(--color-text-primary);
 }
 
 .chat-page-header {
-  margin-bottom: 24px;
+  margin-bottom: 12px;
   flex-shrink: 0;
 }
 
 .chat-page-header h1 {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--color-text-primary);
-  margin: 0 0 8px 0;
+  margin: 0 0 4px 0;
 }
 
 .chat-page-header p {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--color-text-secondary);
   margin: 0;
 }
@@ -38,7 +38,6 @@
   flex: 1;
   display: flex;
   min-height: 0;
-  max-height: 100%;
   border-radius: 8px;
   overflow: hidden;
   background: var(--color-bg-secondary);
@@ -47,7 +46,7 @@
 
 /* Two-pane thread layout */
 .chat-page.thread-layout .chat-page-content {
-  max-width: 1200px;
+  max-width: 100%;
   margin: 0 auto;
   width: 100%;
 }

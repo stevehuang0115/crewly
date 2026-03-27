@@ -9,8 +9,10 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { AlertTriangle, CheckCircle, RefreshCw, Unlink, X, QrCode } from 'lucide-react';
+import { RefreshCw, Unlink, QrCode } from 'lucide-react';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
 import { Button } from '../UI/Button';
+import { Alert } from '../UI/Alert';
 
 // =============================================================================
 // Types
@@ -138,9 +140,8 @@ export const WhatsAppTab: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center py-8">
-        <div className="w-8 h-8 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-3" />
-        <p className="text-sm text-text-secondary-dark">Loading WhatsApp status...</p>
+      <div className="flex justify-center py-8">
+        <LoadingSpinner size="md" text="Loading WhatsApp status..." />
       </div>
     );
   }
@@ -149,28 +150,14 @@ export const WhatsAppTab: React.FC = () => {
     <div className="space-y-5">
       {/* Error Banner */}
       {error && (
-        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-3 rounded-lg flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5" />
-            <span className="text-sm">{error}</span>
-          </div>
-          <button
-            onClick={() => setError(null)}
-            className="text-rose-400 hover:text-rose-300 p-1"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <Alert variant="error" onClose={() => setError(null)}>{error}</Alert>
       )}
 
       {status.connected ? (
         /* Connected State */
         <div className="space-y-5">
           {/* Status Card */}
-          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-4 flex items-center gap-3">
-            <CheckCircle className="w-5 h-5 text-emerald-400" />
-            <span className="text-emerald-400 font-medium text-sm">Connected to WhatsApp</span>
-          </div>
+          <Alert variant="success">Connected to WhatsApp</Alert>
 
           {/* Connection Details */}
           <div className="bg-background-dark border border-border-dark rounded-lg p-5">
@@ -236,10 +223,7 @@ export const WhatsAppTab: React.FC = () => {
           ) : (
             /* Not Connected, No QR */
             <div className="space-y-4">
-              <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 flex items-center gap-3">
-                <AlertTriangle className="w-5 h-5 text-amber-400" />
-                <span className="text-amber-400 font-medium text-sm">Not connected to WhatsApp</span>
-              </div>
+              <Alert variant="warning">Not connected to WhatsApp</Alert>
 
               {/* Setup Instructions */}
               <div className="bg-background-dark border border-border-dark rounded-lg p-5">

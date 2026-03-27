@@ -36,6 +36,8 @@ export interface GeneralSettings {
   enableProactiveCompact: boolean;
   /** Enable Self Evolution mode — orchestrator monitors for errors and self-triages */
   enableSelfEvolution: boolean;
+  /** Enable the auditor agent (quality observer that monitors agents and writes audit reports) */
+  enableAuditor: boolean;
 }
 
 /**

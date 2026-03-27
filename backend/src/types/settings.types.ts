@@ -58,6 +58,10 @@ export interface GeneralSettings {
 
   /** Enable token usage tracking for agent sessions */
   tokenTracking: boolean;
+
+  /** Enable the auditor agent (quality observer that monitors agents and writes audit reports).
+   *  When disabled, the auditor PTY session is not started and all audit scheduling is skipped. */
+  enableAuditor: boolean;
 }
 
 /**
@@ -292,6 +296,7 @@ export function getDefaultSettings(): CrewlySettings {
       enableProactiveCompact: true,
       enableSelfEvolution: false,
       tokenTracking: false,
+      enableAuditor: false,
     },
     chat: {
       showRawTerminalOutput: false,

@@ -8,6 +8,8 @@
 
 import React from 'react';
 import type { ChatChannelType, ChatConversation } from '../../types/chat.types';
+import { Badge } from '../UI/Badge';
+import { Button } from '../UI/Button';
 import { CHANNEL_CONFIG } from './channel-config';
 import './ChannelFilterBar.css';
 
@@ -82,21 +84,25 @@ export const ChannelFilterBar: React.FC<ChannelFilterBarProps> = ({
         const isActive = activeFilter === chip.key;
 
         return (
-          <button
+          <Button
             key={chip.key ?? 'all'}
-            className={`filter-chip ${isActive ? 'active' : ''}`}
+            variant={isActive ? 'secondary' : 'ghost'}
+            size="sm"
             onClick={() => onFilterChange(chip.key)}
             data-testid={`filter-chip-${chip.key ?? 'all'}`}
             aria-pressed={isActive}
+            className={`!h-8 !rounded-full gap-1.5 ${isActive ? 'active' : ''}`}
           >
             {chip.icon && (
-              <span className="filter-chip-icon" aria-hidden="true">
+              <span aria-hidden="true">
                 {chip.icon}
               </span>
             )}
-            <span className="filter-chip-label">{chip.label}</span>
-            <span className="filter-chip-count">{count}</span>
-          </button>
+            <span>{chip.label}</span>
+            <Badge variant={isActive ? 'primary' : 'default'} size="sm">
+              {count}
+            </Badge>
+          </Button>
         );
       })}
     </div>

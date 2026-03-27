@@ -55,7 +55,7 @@ function formatDownloads(n: number): string {
 /** CSS class mapping for item type badges */
 const typeBadgeColor: Record<MarketplaceItemType, string> = {
   skill: 'bg-blue-500/20 text-blue-400',
-  model: 'bg-purple-500/20 text-purple-400',
+  model: 'bg-primary/20 text-primary',
   role: 'bg-emerald-500/20 text-emerald-400',
   mcp_tool: 'bg-orange-500/20 text-orange-400',
 };
@@ -222,7 +222,7 @@ export default function Marketplace() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
-          <Store className="w-6 h-6 text-indigo-400" />
+          <Store className="w-6 h-6 text-primary" />
           <h1 className="text-2xl font-bold text-white">Marketplace</h1>
         </div>
         <div className="flex items-center gap-2">
@@ -290,14 +290,14 @@ export default function Marketplace() {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   aria-label="Search marketplace"
-                  className="bg-gray-900 border border-gray-700 rounded-lg pl-9 pr-3 py-1.5 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-indigo-500 w-48"
+                  className="bg-gray-900 border border-gray-700 rounded-lg pl-9 pr-3 py-1.5 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-primary w-48"
                 />
               </div>
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as SortOption)}
                 aria-label="Sort by"
-                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
+                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-primary"
               >
                 {sortOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -362,7 +362,7 @@ export default function Marketplace() {
                       <button
                         onClick={() => handleInstall(item.id)}
                         disabled={operatingOn === item.id}
-                        className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 transition-colors"
+                        className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-sm bg-primary hover:bg-primary/90 text-white rounded-lg disabled:opacity-50 transition-colors"
                       >
                         <Package className="w-3 h-3" />
                         {operatingOn === item.id ? 'Installing...' : 'Install'}

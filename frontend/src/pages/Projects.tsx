@@ -1,23 +1,24 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ProjectCard } from '@/components/Cards/ProjectCard';
 import { CreateCard } from '@/components/Cards/CreateCard';
 import { ProjectCreator } from '@/components/Modals/ProjectCreator';
-import { Project, Team, ApiResponse } from '@/types';
+import { Project, Team } from '@/types';
 import { apiService } from '@/services/api.service';
-import axios from 'axios';
-import { Plus, Search, Filter, Folder } from 'lucide-react';
-
-const API_BASE = '/api';
+import { Plus, Search, Filter, Folder, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
+import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
+import { usePinnedFavorites } from '@/hooks/usePinnedFavorites';
 
 export const Projects: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { isPinned, togglePin } = usePinnedFavorites();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [showCreator, setShowCreator] = useState(false);
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [progressMap, setProgressMap] = useState<Record<string, {
     percent: number;
     active: number;
@@ -32,7 +33,7 @@ export const Projects: React.FC = () => {
 
   useEffect(() => {
     loadProjects();
-    
+
     // Check if we should show creator modal
     if (searchParams.get('create') === 'true') {
       setShowCreator(true);
@@ -45,15 +46,11 @@ export const Projects: React.FC = () => {
   const loadProjects = async () => {
     try {
       setLoading(true);
-      const response = await axios.get<ApiResponse<Project[]>>(`${API_BASE}/projects`);
-      
-      if (response.data.success) {
-        const list = response.data.data || [];
-        setProjects(list);
-        // Calculate progress and teams asynchronously
-        calculateProgressForProjects(list).catch(err => console.error('Progress calc failed:', err));
-        loadTeamsForProjects(list).catch(err => console.error('Teams loading failed:', err));
-      }
+      const list = await apiService.getProjects();
+      setProjects(list);
+      // Calculate progress and teams asynchronously
+      calculateProgressForProjects(list).catch(err => console.error('Progress calc failed:', err));
+      loadTeamsForProjects(list).catch(err => console.error('Teams loading failed:', err));
     } catch (error) {
       console.error('Error loading projects:', error);
     } finally {
@@ -85,10 +82,8 @@ export const Projects: React.FC = () => {
 
   const loadTeamsForProjects = async (list: Project[]) => {
     try {
-      // Get all teams
       const allTeams = await apiService.getTeams();
 
-      // Avatar choices for migration
       const avatarChoices = [
         'https://picsum.photos/seed/1/64',
         'https://picsum.photos/seed/2/64',
@@ -98,7 +93,6 @@ export const Projects: React.FC = () => {
         'https://picsum.photos/seed/6/64',
       ];
 
-      // Migrate teams without avatars for backward compatibility
       const migratedTeams = allTeams.map(team => ({
         ...team,
         members: team.members.map((member: any, index: number) => ({
@@ -107,10 +101,8 @@ export const Projects: React.FC = () => {
         }))
       }));
 
-      // Create a map of project ID to assigned teams
       const entries = list.map(project => {
         const assignedTeams = migratedTeams.filter(team => {
-          // Match by project ID or project name
           const matchesById = team.projectIds?.includes(project.id);
           const matchesByName = team.projectIds?.includes(project.name);
           return matchesById || matchesByName;
@@ -126,17 +118,29 @@ export const Projects: React.FC = () => {
 
   const handleProjectCreate = async (path: string) => {
     try {
-      const response = await axios.post<ApiResponse<Project>>(`${API_BASE}/projects`, { path });
-      
-      if (response.data.success && response.data.data) {
-        setProjects(prev => [response.data.data!, ...prev]);
-        setShowCreator(false);
-        // Navigate to the new project
-        navigate(`/projects/${response.data.data.id}`);
-      }
+      const newProject = await apiService.createProject(path);
+      setProjects(prev => [newProject, ...prev]);
+      setShowCreator(false);
+      navigate(`/projects/${newProject.id}`);
     } catch (error) {
       console.error('Error creating project:', error);
       throw error;
+    }
+  };
+
+  /**
+   * Archive a project by setting its status to 'completed'.
+   *
+   * @param projectId - The ID of the project to archive
+   */
+  const handleArchiveProject = async (projectId: string) => {
+    try {
+      const updated = await apiService.updateProject(projectId, { status: 'completed' });
+      setProjects(prev =>
+        prev.map(p => p.id === projectId ? updated : p)
+      );
+    } catch (error) {
+      console.error('Error archiving project:', error);
     }
   };
 
@@ -145,40 +149,85 @@ export const Projects: React.FC = () => {
   };
 
   // Filter projects based on search term and status
-  const filteredProjects = projects.filter(project => {
+  const filteredProjects = useMemo(() => projects.filter(project => {
     const matchesSearch = project.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          project.path.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = filterStatus === 'all' || project.status === filterStatus;
-    
+
     return matchesSearch && matchesStatus;
-  });
+  }), [projects, searchTerm, filterStatus]);
+
+  /** Active (non-completed) projects from the filtered list */
+  const activeProjects = useMemo(
+    () => filteredProjects.filter(p => p.status !== 'completed'),
+    [filteredProjects],
+  );
+
+  /** Completed projects from the filtered list */
+  const completedProjects = useMemo(
+    () => filteredProjects.filter(p => p.status === 'completed'),
+    [filteredProjects],
+  );
 
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4 mx-auto"></div>
-          <p className="text-text-secondary-dark">Loading projects...</p>
-        </div>
+        <LoadingSpinner size="xl" text="Loading projects..." />
       </div>
     );
   }
+
+  const renderProjectCard = (project: Project, withArchive = false) => (
+    <ProjectCard
+      key={project.id}
+      project={project}
+      showStatus
+      showTeams
+      assignedTeams={teamsMap[project.id] || []}
+      onClick={() => navigateToProject(project.id)}
+      onArchive={withArchive ? () => handleArchiveProject(project.id) : undefined}
+      isPinned={isPinned(project.id)}
+      onTogglePin={() => togglePin({ id: project.id, name: project.name, type: 'project' })}
+      progressPercent={progressMap[project.id]?.percent}
+      progressLabel={typeof progressMap[project.id]?.total === 'number' ? `${progressMap[project.id]?.done || 0} of ${progressMap[project.id]?.total || 0} completed` : undefined}
+      progressBreakdown={progressMap[project.id] ? {
+        open: progressMap[project.id].open,
+        inProgress: progressMap[project.id].inProgress,
+        pending: progressMap[project.id].pending,
+        done: progressMap[project.id].done,
+        blocked: progressMap[project.id].blocked,
+        total: progressMap[project.id].total,
+      } : undefined}
+    />
+  );
 
   return (
     <div className="max-w-7xl mx-auto">
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Projects</h2>
+          <h1 className="page-title text-3xl font-bold tracking-tight">Projects</h1>
           <p className="text-sm text-text-secondary-dark mt-1">Manage and monitor your Crewly projects</p>
         </div>
 
-        <button
-          className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2"
-          onClick={() => setShowCreator(true)}
-        >
-          <Plus className="w-5 h-5" />
-          New Project
-        </button>
+        <div className="flex items-center gap-3">
+          {projects.length > 0 && (
+            <button
+              className="bg-gradient-to-r from-primary to-primary/80 text-white px-4 py-2 rounded-lg hover:from-primary/90 hover:to-primary/70 transition-colors flex items-center gap-2"
+              data-testid="generate-tasks-cta"
+              onClick={() => navigate('/chat')}
+            >
+              <Sparkles className="w-5 h-5" />
+              Generate Tasks
+            </button>
+          )}
+          <button
+            className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2"
+            onClick={() => setShowCreator(true)}
+          >
+            <Plus className="w-5 h-5" />
+            New Project
+          </button>
+        </div>
       </div>
 
       {/* Search and Filter Controls */}
@@ -208,37 +257,17 @@ export const Projects: React.FC = () => {
         </div>
       </div>
 
-      {/* Projects Grid */}
+      {/* Active Projects Grid */}
       <div>
-        {filteredProjects.length > 0 ? (
+        {activeProjects.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredProjects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                showStatus
-                showTeams
-                assignedTeams={teamsMap[project.id] || []}
-                onClick={() => navigateToProject(project.id)}
-                progressPercent={progressMap[project.id]?.percent}
-                progressLabel={typeof progressMap[project.id]?.total === 'number' ? `${progressMap[project.id]?.done || 0} of ${progressMap[project.id]?.total || 0} completed` : undefined}
-                progressBreakdown={progressMap[project.id] ? {
-                  open: progressMap[project.id].open,
-                  inProgress: progressMap[project.id].inProgress,
-                  pending: progressMap[project.id].pending,
-                  done: progressMap[project.id].done,
-                  blocked: progressMap[project.id].blocked,
-                  total: progressMap[project.id].total,
-                } : undefined}
-              />
-            ))}
-
+            {activeProjects.map((project) => renderProjectCard(project, true))}
             <CreateCard
-              title="New Project"
+              title="Add Project"
               onClick={() => setShowCreator(true)}
             />
           </div>
-        ) : (
+        ) : completedProjects.length === 0 ? (
           <div className="text-center py-16">
             <div className="flex justify-center mb-4">
               <Folder className="w-12 h-12 text-text-secondary-dark/50" strokeWidth={1.5} />
@@ -262,8 +291,30 @@ export const Projects: React.FC = () => {
               </button>
             )}
           </div>
-        )}
+        ) : null}
       </div>
+
+      {/* Completed Projects Section */}
+      {completedProjects.length > 0 && (
+        <div className="mt-8" data-testid="archived-section">
+          <button
+            className="flex items-center gap-2 text-text-secondary-dark hover:text-text-primary-dark transition-colors mb-4"
+            onClick={() => setArchivedExpanded(!archivedExpanded)}
+            data-testid="archived-toggle"
+          >
+            {archivedExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+            <span className="text-sm font-semibold">Completed Projects ({completedProjects.length})</span>
+          </button>
+          <div
+            className={archivedExpanded ? '' : 'sr-only'}
+            data-testid="archived-grid"
+          >
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {completedProjects.map((project) => renderProjectCard(project))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Project Creator Modal */}
       {showCreator && (

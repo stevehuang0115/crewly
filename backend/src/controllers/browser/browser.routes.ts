@@ -32,6 +32,7 @@ import {
 	getInteractiveElements,
 	searchText,
 	listOptions,
+	setFileInput,
 } from './browser.controller.js';
 
 /**
@@ -107,6 +108,9 @@ export function createBrowserRouter(): Router {
 
 	// POST /api/browser/list-options — list select options
 	router.post('/list-options', listOptions);
+
+	// POST /api/browser/set-file-input — set files on file input via CDP
+	router.post('/set-file-input', setFileInput);
 
 	return router;
 }

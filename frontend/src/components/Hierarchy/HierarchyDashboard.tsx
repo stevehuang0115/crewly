@@ -198,7 +198,7 @@ export const HierarchyDashboard: React.FC<HierarchyDashboardProps> = ({
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="stats-row">
         <StatCard label="Total" value={stats.total} icon={Users} color="bg-blue-500/10 text-blue-400" />
         <StatCard label="Active" value={stats.active} icon={Activity} color="bg-emerald-500/10 text-emerald-400" />
-        <StatCard label="Working" value={stats.working} icon={Zap} color="bg-purple-500/10 text-purple-400" />
+        <StatCard label="Working" value={stats.working} icon={Zap} color="bg-primary/10 text-primary" />
         {isHierarchical ? (
           <StatCard label="Depth" value={stats.hierarchyDepth} icon={GitBranch} color="bg-primary/10 text-primary" />
         ) : (

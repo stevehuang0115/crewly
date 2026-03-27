@@ -19,7 +19,10 @@ import {
   AI_RUNTIME_DISPLAY_NAMES,
   ApiKeyConfig,
 } from '../../types/settings.types';
+import { Alert } from '../UI/Alert';
 import { Button } from '../UI/Button';
+import { Card } from '../UI/Card';
+import { Toggle } from '../UI/Toggle';
 import { FormInput, FormLabel } from '../UI/Form';
 
 /**
@@ -196,9 +199,7 @@ export const ApiKeysTab: React.FC = () => {
 
   if (error) {
     return (
-      <div className="bg-red-900/20 border border-red-800 rounded-lg p-4">
-        <p className="text-red-400">{error}</p>
-      </div>
+      <Alert variant="error">{error}</Alert>
     );
   }
 
@@ -207,7 +208,7 @@ export const ApiKeysTab: React.FC = () => {
       {/* Header with save/reset buttons */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold">API Keys</h2>
+          <h2 className="text-lg font-semibold">API Keys</h2>
           <p className="text-sm text-text-secondary-dark mt-1">
             Configure AI provider API keys. Keys are encrypted at rest and never logged.
           </p>
@@ -231,13 +232,11 @@ export const ApiKeysTab: React.FC = () => {
       </div>
 
       {saveStatus === 'error' && saveError && (
-        <div className="bg-red-900/20 border border-red-800 rounded-lg p-3">
-          <p className="text-sm text-red-400">{saveError}</p>
-        </div>
+        <Alert variant="error">{saveError}</Alert>
       )}
 
       {/* Global Keys Section */}
-      <section className="bg-surface-dark rounded-lg border border-border-dark p-6">
+      <Card padding="lg">
         <div className="flex items-center gap-2 mb-4">
           <Key className="w-5 h-5 text-primary" />
           <h3 className="text-lg font-medium">Global API Keys</h3>
@@ -296,10 +295,10 @@ export const ApiKeysTab: React.FC = () => {
             );
           })}
         </div>
-      </section>
+      </Card>
 
       {/* Runtime Overrides Section */}
-      <section className="bg-surface-dark rounded-lg border border-border-dark p-6">
+      <Card padding="lg">
         <div className="flex items-center gap-2 mb-4">
           <Zap className="w-5 h-5 text-primary" />
           <h3 className="text-lg font-medium">Runtime Overrides</h3>
@@ -341,21 +340,16 @@ export const ApiKeysTab: React.FC = () => {
                             <FormLabel htmlFor={`${runtime}-${provider}-toggle`}>
                               {PROVIDER_DISPLAY_NAMES[provider]}
                             </FormLabel>
-                            <label className="flex items-center gap-2 cursor-pointer text-sm">
-                              <input
-                                id={`${runtime}-${provider}-toggle`}
-                                type="checkbox"
-                                checked={isCustom}
-                                onChange={(e) => handleRuntimeOverrideChange(
-                                  runtime, provider, 'source',
-                                  e.target.checked ? 'custom' : 'global'
-                                )}
-                                className="form-checkbox rounded border-border-dark bg-surface-dark"
-                              />
-                              <span className="text-text-secondary-dark">
-                                {isCustom ? 'Custom key' : 'Use global'}
-                              </span>
-                            </label>
+                            <Toggle
+                              id={`${runtime}-${provider}-toggle`}
+                              size="sm"
+                              label={isCustom ? 'Custom key' : 'Use global'}
+                              checked={isCustom}
+                              onChange={(e) => handleRuntimeOverrideChange(
+                                runtime, provider, 'source',
+                                e.target.checked ? 'custom' : 'global'
+                              )}
+                            />
                           </div>
 
                           {isCustom && (
@@ -398,7 +392,7 @@ export const ApiKeysTab: React.FC = () => {
             );
           })}
         </div>
-      </section>
+      </Card>
     </div>
   );
 };

@@ -82,7 +82,7 @@ export const TeamAssignmentModal: React.FC<TeamAssignmentModalProps> = ({
 
   const getRoleColor = (role: string) => {
     const roleColors: Record<string, string> = {
-      orchestrator: '#8b5cf6',
+      orchestrator: '#2a73ea',
       pm: '#3b82f6',
       developer: '#10b981',
       qa: '#f59e0b',

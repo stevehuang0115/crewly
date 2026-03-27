@@ -18,6 +18,7 @@ import { createTools } from './tool-registry.js';
 import { McpClientService } from '../../mcp-client.js';
 import { connectAndLoadMcpTools } from './mcp-tool-bridge.js';
 import { ApprovalQueueService, type PendingApproval } from './approval-queue.service.js';
+import { OutputFilterService } from './output-filter.service.js';
 import type { ToolDefinition } from './types.js';
 import {
   type CrewlyAgentConfig,
@@ -176,6 +177,8 @@ export class AgentRunnerService {
   private currentRunAbort: AbortController | null = null;
   /** Streaming event callbacks — set per run by the runtime service */
   private streamingCallbacks: StreamingEventCallbacks = {};
+  /** Output filter for redacting API keys from agent responses */
+  private outputFilter: OutputFilterService = new OutputFilterService();
   /** @internal Override for testing — replaces the AI SDK generateText call */
   _generateTextFn: GenerateTextFn | null = null;
 
@@ -726,6 +729,15 @@ export class AgentRunnerService {
       }
     }
 
+    // Security guardrail: redact any API keys from agent output
+    if (text) {
+      const scanResult = this.outputFilter.scan(text);
+      if (scanResult.detected) {
+        console.warn('[AgentRunner] API keys redacted from output:', scanResult.matchedPatterns);
+        text = scanResult.redactedText;
+      }
+    }
+
     // Update token tracking
     const resultUsage = await result.usage;
     const usage = {
@@ -863,6 +875,15 @@ export class AgentRunnerService {
       const fallbackResult = await this.requestSummaryFallback();
       if (fallbackResult) {
         finalText = fallbackResult;
+      }
+    }
+
+    // Security guardrail: redact any API keys from agent output
+    if (finalText) {
+      const scanResult = this.outputFilter.scan(finalText);
+      if (scanResult.detected) {
+        console.warn('[AgentRunner] API keys redacted from output:', scanResult.matchedPatterns);
+        finalText = scanResult.redactedText;
       }
     }
 

@@ -76,7 +76,7 @@ export function KnowledgeDocumentEditor({
           <button
             type="submit"
             disabled={!isValid || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary hover:bg-primary/90 text-white rounded-lg disabled:opacity-50 transition-colors"
           >
             <Save className="w-3.5 h-3.5" />
             {saving ? 'Saving...' : 'Save'}
@@ -94,7 +94,7 @@ export function KnowledgeDocumentEditor({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Document title"
-            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-indigo-500"
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-primary"
             maxLength={200}
           />
         </div>
@@ -107,7 +107,7 @@ export function KnowledgeDocumentEditor({
               id="doc-category"
               value={category}
               onChange={(e) => setCategory(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-primary"
             >
               {allCategories.map((cat) => (
                 <option key={cat} value={cat}>{cat}</option>
@@ -122,7 +122,7 @@ export function KnowledgeDocumentEditor({
               value={tagsInput}
               onChange={(e) => setTagsInput(e.target.value)}
               placeholder="api, backend, auth"
-              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-indigo-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-primary"
             />
           </div>
         </div>
@@ -135,7 +135,7 @@ export function KnowledgeDocumentEditor({
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder="Write your document content in Markdown..."
-            className="flex-1 min-h-[200px] w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-indigo-500 font-mono resize-none"
+            className="flex-1 min-h-[200px] w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-primary font-mono resize-none"
           />
         </div>
       </div>

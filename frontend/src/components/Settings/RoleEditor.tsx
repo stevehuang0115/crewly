@@ -8,6 +8,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Check } from 'lucide-react';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
 import { useRole } from '../../hooks/useRole';
 import { useSkills } from '../../hooks/useSkills';
 import {
@@ -18,6 +19,7 @@ import {
   ROLE_CATEGORY_DISPLAY_NAMES,
 } from '../../types/role.types';
 import { Button, IconButton } from '../UI/Button';
+import { Toggle } from '../UI/Toggle';
 import { FormInput, FormLabel, FormSelect, FormTextarea } from '../UI/Form';
 
 /**
@@ -167,9 +169,8 @@ export const RoleEditor: React.FC<RoleEditorProps> = ({
         onClick={handleOverlayClick}
       >
         <div className="bg-surface-dark border border-border-dark rounded-xl shadow-lg p-8">
-          <div className="flex flex-col items-center">
-            <div className="w-10 h-10 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4" />
-            <p className="text-text-secondary-dark">Loading role...</p>
+          <div className="flex justify-center">
+            <LoadingSpinner text="Loading role..." />
           </div>
         </div>
       </div>
@@ -292,19 +293,12 @@ export const RoleEditor: React.FC<RoleEditorProps> = ({
               </FormSelect>
             </div>
 
-            <div className="flex items-center gap-3">
-              <input
-                id="isDefault"
-                type="checkbox"
-                checked={formData.isDefault}
-                onChange={(e) => handleChange('isDefault', e.target.checked)}
-                disabled={false}
-                className="w-4 h-4 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-              />
-              <label htmlFor="isDefault" className="text-sm text-text-primary-dark cursor-pointer">
-                Set as default role
-              </label>
-            </div>
+            <Toggle
+              id="isDefault"
+              label="Set as default role"
+              checked={formData.isDefault}
+              onChange={(e) => handleChange('isDefault', e.target.checked)}
+            />
           </div>
 
           {/* System Prompt Section */}
@@ -341,12 +335,10 @@ export const RoleEditor: React.FC<RoleEditorProps> = ({
                     formData.assignedSkills.includes(skill.id) ? 'border-primary/50 bg-primary/5' : ''
                   }`}
                 >
-                  <input
-                    type="checkbox"
+                  <Toggle
+                    size="sm"
                     checked={formData.assignedSkills.includes(skill.id)}
                     onChange={() => handleSkillToggle(skill.id)}
-                    disabled={false}
-                    className="w-4 h-4 mt-0.5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
                   />
                   <div className="flex-1 min-w-0">
                     <span className="text-sm font-medium text-text-primary-dark block">

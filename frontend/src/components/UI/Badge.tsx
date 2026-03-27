@@ -12,15 +12,13 @@ import React from 'react';
 export type BadgeVariant = 'default' | 'primary' | 'success' | 'warning' | 'error' | 'info';
 export type BadgeSize = 'sm' | 'md';
 
-export interface BadgeProps {
+export interface BadgeProps extends Omit<React.HTMLAttributes<HTMLSpanElement>, 'children'> {
   /** Color variant of the badge */
   variant?: BadgeVariant;
   /** Size of the badge */
   size?: BadgeSize;
   /** Badge content */
   children: React.ReactNode;
-  /** Additional CSS classes */
-  className?: string;
 }
 
 const variantClasses: Record<BadgeVariant, string> = {
@@ -57,6 +55,7 @@ export const Badge: React.FC<BadgeProps> = ({
   size = 'sm',
   children,
   className = '',
+  ...rest
 }) => {
   const combinedClassName = [
     'inline-flex items-center',
@@ -68,7 +67,7 @@ export const Badge: React.FC<BadgeProps> = ({
     .filter(Boolean)
     .join(' ');
 
-  return <span className={combinedClassName}>{children}</span>;
+  return <span className={combinedClassName} {...rest}>{children}</span>;
 };
 
 Badge.displayName = 'Badge';

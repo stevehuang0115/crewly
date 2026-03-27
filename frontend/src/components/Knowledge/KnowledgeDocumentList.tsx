@@ -68,7 +68,7 @@ export function KnowledgeDocumentList({
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           aria-label="Search documents"
-          className="w-full bg-gray-900 border border-gray-700 rounded-lg pl-9 pr-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-indigo-500"
+          className="w-full bg-gray-900 border border-gray-700 rounded-lg pl-9 pr-3 py-2 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-primary"
         />
       </div>
 
@@ -88,7 +88,7 @@ export function KnowledgeDocumentList({
               onClick={() => onSelectDocument(doc.id)}
               className={`w-full text-left px-3 py-3 rounded-lg transition-colors ${
                 selectedDocId === doc.id
-                  ? 'bg-indigo-600/20 border border-indigo-500/30'
+                  ? 'bg-primary/20 border border-primary/30'
                   : 'hover:bg-gray-800 border border-transparent'
               }`}
             >

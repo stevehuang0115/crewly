@@ -8,6 +8,7 @@
 
 import React from 'react';
 import type { ChatChannelType } from '../../types/chat.types';
+import { Badge } from '../UI/Badge';
 import { CHANNEL_CONFIG } from './channel-config';
 import './ChannelBadge.css';
 
@@ -39,16 +40,16 @@ export const ChannelBadge: React.FC<ChannelBadgeProps> = ({
   const config = CHANNEL_CONFIG[channelType] ?? CHANNEL_CONFIG.crewly_chat;
 
   return (
-    <span
-      className={`channel-badge ${config.className}`}
+    <Badge
+      variant="default"
+      size="sm"
+      className={`${config.className} gap-1 channel-badge`}
       data-testid="channel-badge"
       title={config.label}
     >
-      <span className="channel-badge-icon" aria-hidden="true">
-        {config.icon}
-      </span>
-      {showLabel && <span className="channel-badge-label">{config.label}</span>}
-    </span>
+      <span aria-hidden="true">{config.icon}</span>
+      {showLabel && <span>{config.label}</span>}
+    </Badge>
   );
 };
 

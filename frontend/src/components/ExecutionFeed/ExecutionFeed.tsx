@@ -16,7 +16,7 @@ import './ExecutionFeed.css';
 const DOT_COLOR: Record<FeedEventType, string> = {
 	agent_status: 'bg-emerald-400',
 	task_update: 'bg-blue-400',
-	message: 'bg-violet-400',
+	message: 'bg-primary',
 	system: 'bg-amber-400',
 	error: 'bg-red-400',
 };

@@ -359,3 +359,7 @@ export interface KnowledgeDocumentSummary {
   /** ISO timestamp of last update */
   updatedAt: string;
 }
+
+
+// Re-export monitoring types
+export * from './monitoring.types';

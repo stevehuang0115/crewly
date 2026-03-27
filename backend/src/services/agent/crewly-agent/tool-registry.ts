@@ -11,9 +11,13 @@
 import { promises as fsPromises } from 'fs';
 import * as childProcess from 'child_process';
 import { homedir } from 'os';
+import * as path from 'path';
 import { z } from 'zod';
 import type { CrewlyApiClient } from './api-client.js';
 import type { ToolDefinition, ToolCallbacks, ToolSensitivity, AuditEntry, ApprovalCheckResult, AuditLogFilters } from './types.js';
+import { KEY_EXTRACTION_BLOCKED_COMMANDS, PromptGuardService } from './prompt-guard.service.js';
+import { EnvIsolationService } from './env-isolation.service.js';
+import { OutputFilterService } from './output-filter.service.js';
 
 /** TTL for delegation idle event subscriptions (minutes) */
 const DELEGATION_SUBSCRIPTION_TTL_MINUTES = 120;
@@ -37,6 +41,8 @@ const BLOCKED_COMMAND_PATTERNS: RegExp[] = [
   /\bdd\s+.*of=\/dev\//i,                    // dd of=/dev/...
   /\blaunchctl\b/i,
   /\bsystemctl\b/i,
+  // Key extraction protection (from prompt-guard.service.ts)
+  ...KEY_EXTRACTION_BLOCKED_COMMANDS,
 ];
 
 /**
@@ -112,9 +118,14 @@ function execIsolatedAsync(cmd: string, workDir: string, timeoutMs: number): Pro
     const maxBuffer = 1024 * 1024;
     let finished = false;
 
+    // Apply environment isolation — strip sensitive vars from child process
+    const envIsolation = new EnvIsolationService();
+    const safeEnv = envIsolation.createSafeEnv(process.env as Record<string, string>);
+    safeEnv.FORCE_COLOR = '0';
+
     const child = childProcess.spawn('/bin/sh', ['-c', cmd], {
       cwd: workDir,
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: safeEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -233,6 +244,194 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   svg: 'image/svg+xml',
 };
 
+// ── Glob / Grep Native Helpers ──────────────────────────────────────────────
+
+/** Maximum number of files returned by glob to prevent runaway results */
+const GLOB_MAX_RESULTS = 1000;
+
+/** Maximum number of matching lines returned by grep */
+const GREP_MAX_MATCHES = 500;
+
+/** Default directories/patterns to ignore during glob/grep traversal */
+const DEFAULT_IGNORE_PATTERNS = [
+  'node_modules', '.git', 'dist', 'build', '.next', '__pycache__',
+  '.cache', 'coverage', '.nyc_output', '.turbo', '.parcel-cache',
+];
+
+/**
+ * Convert a glob pattern to a RegExp.
+ *
+ * Supports:
+ * - `*` matches any characters except `/`
+ * - `**` matches any characters including `/` (recursive)
+ * - `?` matches a single character except `/`
+ * - `{a,b}` matches either a or b
+ * - Character classes `[abc]`
+ *
+ * @param pattern - Glob pattern string (e.g., "src/**\/*.ts")
+ * @returns Compiled RegExp
+ */
+export function globToRegExp(pattern: string): RegExp {
+  let regexStr = '';
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === '*' && pattern[i + 1] === '*') {
+      // ** — match everything including path separators
+      if (pattern[i + 2] === '/') {
+        regexStr += '(?:.*/)?';
+        i += 3;
+      } else {
+        regexStr += '.*';
+        i += 2;
+      }
+    } else if (ch === '*') {
+      regexStr += '[^/]*';
+      i++;
+    } else if (ch === '?') {
+      regexStr += '[^/]';
+      i++;
+    } else if (ch === '{') {
+      const closeBrace = pattern.indexOf('}', i);
+      if (closeBrace === -1) {
+        regexStr += '\\{';
+        i++;
+      } else {
+        const alternatives = pattern.slice(i + 1, closeBrace).split(',');
+        regexStr += '(?:' + alternatives.map(a => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
+        i = closeBrace + 1;
+      }
+    } else if (ch === '[') {
+      const closeBracket = pattern.indexOf(']', i);
+      if (closeBracket === -1) {
+        regexStr += '\\[';
+        i++;
+      } else {
+        regexStr += pattern.slice(i, closeBracket + 1);
+        i = closeBracket + 1;
+      }
+    } else if ('.+^${}()|[]\\'.includes(ch)) {
+      regexStr += '\\' + ch;
+      i++;
+    } else {
+      regexStr += ch;
+      i++;
+    }
+  }
+  return new RegExp('^' + regexStr + '$');
+}
+
+/**
+ * Recursively walk a directory tree, yielding file paths that match
+ * the given glob pattern while respecting ignore patterns.
+ *
+ * Uses a stack-based iterative approach to avoid stack overflow on deep trees.
+ * Respects DEFAULT_IGNORE_PATTERNS and user-supplied ignore patterns.
+ *
+ * @param rootDir - Root directory to start traversal
+ * @param patternRegex - Compiled glob regex to test relative paths against
+ * @param ignoreSet - Set of directory base names to skip
+ * @param maxResults - Maximum number of results to return
+ * @returns Array of matching absolute file paths
+ */
+export async function walkAndMatch(
+  rootDir: string,
+  patternRegex: RegExp,
+  ignoreSet: Set<string>,
+  maxResults: number,
+): Promise<string[]> {
+  const results: string[] = [];
+  const stack: string[] = [rootDir];
+
+  while (stack.length > 0 && results.length < maxResults) {
+    const dir = stack.pop()!;
+    let entries;
+    try {
+      entries = await fsPromises.readdir(dir, { withFileTypes: true });
+    } catch {
+      // Permission denied or not a directory — skip
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= maxResults) break;
+      if (ignoreSet.has(entry.name)) continue;
+
+      const fullPath = path.join(dir, entry.name);
+      const relativePath = path.relative(rootDir, fullPath);
+
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
+        if (patternRegex.test(relativePath)) {
+          results.push(fullPath);
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Search file contents for lines matching a regular expression.
+ *
+ * Reads the file once, splits into lines, and tests each against the pattern.
+ * Returns matching lines with line numbers and optional context lines.
+ *
+ * @param filePath - Absolute path to the file to search
+ * @param regex - Compiled RegExp to test each line
+ * @param contextLines - Number of lines before and after each match to include
+ * @returns Array of match objects with line number, content, and context
+ */
+export async function searchFileContents(
+  filePath: string,
+  regex: RegExp,
+  contextLines: number,
+): Promise<Array<{ line: number; content: string; context?: string[] }>> {
+  const content = await fsPromises.readFile(filePath, 'utf8');
+  const lines = content.split('\n');
+  const matches: Array<{ line: number; content: string; context?: string[] }> = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (regex.test(lines[i])) {
+      const match: { line: number; content: string; context?: string[] } = {
+        line: i + 1,
+        content: lines[i],
+      };
+      if (contextLines > 0) {
+        const start = Math.max(0, i - contextLines);
+        const end = Math.min(lines.length, i + contextLines + 1);
+        match.context = lines.slice(start, end).map((l, idx) => `${start + idx + 1}\t${l}`);
+      }
+      matches.push(match);
+    }
+  }
+
+  return matches;
+}
+
+/**
+ * Determine if a file is likely binary by reading its first 8KB and
+ * checking for null bytes.
+ *
+ * @param filePath - Absolute path to the file
+ * @returns True if the file appears to be binary
+ */
+async function isBinaryFile(filePath: string): Promise<boolean> {
+  const fd = await fsPromises.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(8192);
+    const { bytesRead } = await fd.read(buffer, 0, 8192, 0);
+    for (let i = 0; i < bytesRead; i++) {
+      if (buffer[i] === 0) return true;
+    }
+    return false;
+  } finally {
+    await fd.close();
+  }
+}
+
 /**
  * Strip [NOTIFY]...[/NOTIFY] markers from text.
  *
@@ -307,6 +506,8 @@ export const TOOL_SENSITIVITY: Record<string, ToolSensitivity> = {
   get_tasks: 'safe',
   get_project_overview: 'safe',
   read_file: 'safe',
+  glob: 'safe',
+  grep: 'safe',
   recall_memory: 'safe',
   subscribe_event: 'safe',
   get_audit_log: 'safe',
@@ -1206,6 +1407,150 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
       },
     },
 
+    // ===== Native File Search Tools (O7.KR1 — Claude Code parity) =====
+
+    glob: {
+      description: 'Fast file pattern matching. Recursively find files matching a glob pattern (e.g., "**/*.ts", "src/**/*.test.tsx"). Returns matching file paths sorted alphabetically. Use this instead of bash find.',
+      inputSchema: z.object({
+        pattern: z.string().describe('Glob pattern to match files (e.g., "**/*.ts", "src/components/**/*.tsx")'),
+        path: z.string().optional().describe('Root directory to search in. Defaults to projectPath or cwd.'),
+        ignore: z.array(z.string()).optional().describe('Additional directory names to ignore (node_modules, .git, dist are always ignored)'),
+      }),
+      execute: async ({ pattern, path: searchPath, ignore }) => {
+        try {
+          const rootDir = expandPath((searchPath as string | undefined) || projectPath || process.cwd());
+          const stat = await fsPromises.stat(rootDir);
+          if (!stat.isDirectory()) {
+            return { success: false, error: `Not a directory: ${rootDir}` };
+          }
+
+          const patternStr = pattern as string;
+          const patternRegex = globToRegExp(patternStr);
+
+          const ignoreNames = new Set(DEFAULT_IGNORE_PATTERNS);
+          if (Array.isArray(ignore)) {
+            for (const ig of ignore) {
+              ignoreNames.add(ig as string);
+            }
+          }
+
+          const results = await walkAndMatch(rootDir, patternRegex, ignoreNames, GLOB_MAX_RESULTS);
+          results.sort();
+
+          return {
+            success: true,
+            pattern: patternStr,
+            root: rootDir,
+            matchCount: results.length,
+            files: results,
+            truncated: results.length >= GLOB_MAX_RESULTS,
+          };
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
+
+    grep: {
+      description: 'Search file contents for a regex pattern. Returns matching lines with line numbers and optional context. Searches recursively through files matching an optional file glob filter. Use this instead of bash grep/rg.',
+      inputSchema: z.object({
+        pattern: z.string().describe('Regular expression pattern to search for in file contents'),
+        path: z.string().optional().describe('File or directory to search in. Defaults to projectPath or cwd.'),
+        file_pattern: z.string().optional().describe('Glob pattern to filter which files to search (e.g., "*.ts", "**/*.tsx")'),
+        context_lines: z.number().optional().describe('Number of lines before and after each match to include (default: 0)'),
+        case_insensitive: z.boolean().optional().describe('Case insensitive search (default: false)'),
+        max_matches: z.number().optional().describe('Maximum total matches to return (default: 500)'),
+        ignore: z.array(z.string()).optional().describe('Additional directory names to ignore'),
+      }),
+      execute: async ({ pattern: searchPattern, path: searchPath, file_pattern, context_lines, case_insensitive, max_matches, ignore }) => {
+        try {
+          const patternStr = searchPattern as string;
+          const flags = (case_insensitive as boolean) ? 'gi' : 'g';
+          let regex: RegExp;
+          try {
+            regex = new RegExp(patternStr, flags);
+          } catch (e) {
+            return { success: false, error: `Invalid regex: ${patternStr} — ${e instanceof Error ? e.message : String(e)}` };
+          }
+
+          // Also create a non-global version for line testing
+          const testRegex = new RegExp(patternStr, (case_insensitive as boolean) ? 'i' : '');
+          const ctxLines = (context_lines as number | undefined) || 0;
+          const maxTotal = (max_matches as number | undefined) || GREP_MAX_MATCHES;
+
+          const rootDir = expandPath((searchPath as string | undefined) || projectPath || process.cwd());
+          let filesToSearch: string[];
+
+          // Check if rootDir is a file or directory
+          const stat = await fsPromises.stat(rootDir);
+          if (stat.isFile()) {
+            filesToSearch = [rootDir];
+          } else {
+            // Determine file pattern for filtering
+            const filePatternStr = (file_pattern as string | undefined) || '**/*';
+            const fileRegex = globToRegExp(filePatternStr);
+
+            const ignoreNames = new Set(DEFAULT_IGNORE_PATTERNS);
+            if (Array.isArray(ignore)) {
+              for (const ig of ignore) {
+                ignoreNames.add(ig as string);
+              }
+            }
+
+            filesToSearch = await walkAndMatch(rootDir, fileRegex, ignoreNames, GLOB_MAX_RESULTS);
+          }
+
+          const allMatches: Array<{
+            file: string;
+            line: number;
+            content: string;
+            context?: string[];
+          }> = [];
+          let totalMatches = 0;
+
+          for (const filePath of filesToSearch) {
+            if (totalMatches >= maxTotal) break;
+
+            // Skip binary files
+            try {
+              if (await isBinaryFile(filePath)) continue;
+            } catch {
+              continue;
+            }
+
+            try {
+              const fileMatches = await searchFileContents(filePath, testRegex, ctxLines);
+              for (const m of fileMatches) {
+                if (totalMatches >= maxTotal) break;
+                allMatches.push({
+                  file: filePath,
+                  line: m.line,
+                  content: m.content,
+                  ...(m.context ? { context: m.context } : {}),
+                });
+                totalMatches++;
+              }
+            } catch {
+              // Permission denied, encoding error, etc. — skip file
+              continue;
+            }
+          }
+
+          return {
+            success: true,
+            pattern: patternStr,
+            root: rootDir,
+            matchCount: allMatches.length,
+            filesSearched: filesToSearch.length,
+            matches: allMatches,
+            truncated: totalMatches >= maxTotal,
+          };
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
+
     // ===== Agent Lifecycle Self-Registration Tools =====
 
     register_self: {
@@ -1632,6 +1977,7 @@ export function getToolNames(): string[] {
     'get_scheduled_checks', 'start_agent', 'stop_agent', 'subscribe_event',
     'recall_memory', 'remember', 'heartbeat', 'get_tasks', 'complete_task',
     'broadcast', 'handle_agent_failure', 'edit_file', 'read_file', 'write_file',
+    'glob', 'grep',
     'register_self', 'get_project_overview', 'report_status',
     'compact_memory', 'get_audit_log',
     'git_status', 'git_diff', 'git_commit',

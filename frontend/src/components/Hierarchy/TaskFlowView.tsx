@@ -83,7 +83,7 @@ const STATUS_COLORS: Record<string, string> = {
   assigned: 'text-yellow-400',
   active: 'text-blue-400',
   working: 'text-blue-400',
-  submitted: 'text-purple-400',
+  submitted: 'text-primary',
   input_required: 'text-orange-400',
   verifying: 'text-cyan-400',
   blocked: 'text-orange-400',

@@ -10,6 +10,7 @@ import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import { ChatSidebar } from './ChatSidebar';
 import { useChat } from '../../contexts/ChatContext';
 import type { ChatConversation } from '../../types/chat.types';
@@ -25,6 +26,13 @@ vi.mock('../../utils/time', () => ({
 }));
 
 const mockUseChat = useChat as jest.MockedFunction<typeof useChat>;
+
+/**
+ * Wrapper providing router context for Link components.
+ */
+const TestWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <MemoryRouter>{children}</MemoryRouter>
+);
 
 describe('ChatSidebar', () => {
   const mockConversations: ChatConversation[] = [
@@ -86,38 +94,38 @@ describe('ChatSidebar', () => {
 
   describe('rendering', () => {
     it('renders the sidebar', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByTestId('chat-sidebar')).toBeInTheDocument();
     });
 
     it('renders header with title', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByText('Conversations')).toBeInTheDocument();
     });
 
     it('renders new chat button', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByTestId('new-chat-button')).toBeInTheDocument();
     });
 
     it('renders search input', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByTestId('conversation-search')).toBeInTheDocument();
     });
 
     it('renders conversations list', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByTestId('conversations-list')).toBeInTheDocument();
     });
 
     it('renders all conversations', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByText('First Chat')).toBeInTheDocument();
       expect(screen.getByText('Second Chat')).toBeInTheDocument();
     });
 
     it('renders quick links', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByText(/Projects/)).toBeInTheDocument();
       expect(screen.getByText(/Teams/)).toBeInTheDocument();
       expect(screen.getByText(/Settings/)).toBeInTheDocument();
@@ -126,17 +134,17 @@ describe('ChatSidebar', () => {
 
   describe('conversation items', () => {
     it('shows last message preview', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByText('Last message preview')).toBeInTheDocument();
     });
 
     it('shows relative time', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getAllByText('5 min ago')).toHaveLength(2);
     });
 
     it('highlights active conversation', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       const activeItem = screen.getByTestId('conversation-item-conv-1');
       expect(activeItem).toHaveClass('active');
     });
@@ -147,7 +155,7 @@ describe('ChatSidebar', () => {
         conversations: [{ ...mockConversations[0], title: undefined }],
       });
 
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByText('Untitled Chat')).toBeInTheDocument();
     });
   });
@@ -155,7 +163,7 @@ describe('ChatSidebar', () => {
   describe('new chat button', () => {
     it('calls createConversation when clicked', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.click(screen.getByTestId('new-chat-button'));
 
@@ -166,7 +174,7 @@ describe('ChatSidebar', () => {
   describe('conversation selection', () => {
     it('calls selectConversation when conversation clicked', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.click(screen.getByTestId('conversation-item-conv-2'));
 
@@ -177,7 +185,7 @@ describe('ChatSidebar', () => {
   describe('search functionality', () => {
     it('filters conversations by title', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.type(screen.getByTestId('conversation-search'), 'First');
 
@@ -187,7 +195,7 @@ describe('ChatSidebar', () => {
 
     it('filters conversations by last message content', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.type(screen.getByTestId('conversation-search'), 'preview');
 
@@ -197,7 +205,7 @@ describe('ChatSidebar', () => {
 
     it('shows empty message when no matches', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.type(screen.getByTestId('conversation-search'), 'nonexistent');
 
@@ -206,7 +214,7 @@ describe('ChatSidebar', () => {
 
     it('case insensitive search', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.type(screen.getByTestId('conversation-search'), 'FIRST');
 
@@ -216,13 +224,13 @@ describe('ChatSidebar', () => {
 
   describe('context menu', () => {
     it('shows menu trigger on conversation', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByTestId('menu-trigger-conv-1')).toBeInTheDocument();
     });
 
     it('opens context menu when trigger clicked', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.click(screen.getByTestId('menu-trigger-conv-1'));
 
@@ -231,7 +239,7 @@ describe('ChatSidebar', () => {
 
     it('shows archive and delete options', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.click(screen.getByTestId('menu-trigger-conv-1'));
 
@@ -241,7 +249,7 @@ describe('ChatSidebar', () => {
 
     it('closes menu when clicking elsewhere', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.click(screen.getByTestId('menu-trigger-conv-1'));
       expect(screen.getByTestId('context-menu-conv-1')).toBeInTheDocument();
@@ -254,7 +262,7 @@ describe('ChatSidebar', () => {
   describe('archive conversation', () => {
     it('calls archiveConversation when archive clicked', async () => {
       const user = userEvent.setup();
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.click(screen.getByTestId('menu-trigger-conv-1'));
       await user.click(screen.getByText(/Archive/));
@@ -268,7 +276,7 @@ describe('ChatSidebar', () => {
       const user = userEvent.setup();
       vi.spyOn(window, 'confirm').mockReturnValue(true);
 
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.click(screen.getByTestId('menu-trigger-conv-1'));
       await user.click(screen.getByText(/Delete/));
@@ -280,7 +288,7 @@ describe('ChatSidebar', () => {
       const user = userEvent.setup();
       vi.spyOn(window, 'confirm').mockReturnValue(false);
 
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
 
       await user.click(screen.getByTestId('menu-trigger-conv-1'));
       await user.click(screen.getByText(/Delete/));
@@ -296,7 +304,7 @@ describe('ChatSidebar', () => {
         conversations: [],
       });
 
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByTestId('empty-conversations')).toBeInTheDocument();
       expect(screen.getByText('No conversations yet')).toBeInTheDocument();
     });
@@ -304,7 +312,7 @@ describe('ChatSidebar', () => {
 
   describe('accessibility', () => {
     it('has aria-label on new chat button', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByTestId('new-chat-button')).toHaveAttribute(
         'aria-label',
         'Create new conversation'
@@ -312,7 +320,7 @@ describe('ChatSidebar', () => {
     });
 
     it('has aria-label on search input', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByTestId('conversation-search')).toHaveAttribute(
         'aria-label',
         'Search conversations'
@@ -320,7 +328,7 @@ describe('ChatSidebar', () => {
     });
 
     it('has aria-label on menu trigger', () => {
-      render(<ChatSidebar />);
+      render(<ChatSidebar />, { wrapper: TestWrapper });
       expect(screen.getByTestId('menu-trigger-conv-1')).toHaveAttribute(
         'aria-label',
         'Conversation options'

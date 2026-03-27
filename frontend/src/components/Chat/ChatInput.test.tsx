@@ -176,7 +176,7 @@ describe('ChatInput', () => {
       const user = userEvent.setup();
       render(<ChatInput />);
 
-      await user.click(screen.getByLabelText('Dismiss error'));
+      await user.click(screen.getByLabelText('Dismiss alert'));
       expect(mockClearError).toHaveBeenCalled();
     });
 
@@ -196,14 +196,16 @@ describe('ChatInput', () => {
   });
 
   describe('sending state', () => {
-    it('shows sending indicator while sending', () => {
+    it('shows loading spinner while sending', () => {
       mockUseChat.mockReturnValue({
         ...mockUseChat(),
         isSending: true,
       });
 
       render(<ChatInput />);
-      expect(screen.getByText('⏳')).toBeInTheDocument();
+      // Button component renders a spinner div when loading=true
+      const sendButton = screen.getByTestId('chat-send-button');
+      expect(sendButton).toBeDisabled();
     });
 
     it('disables textarea while sending', () => {

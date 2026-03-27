@@ -14,8 +14,15 @@ import {
   FileCheck,
   Download,
   Filter,
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
 } from 'lucide-react';
 import type { ApprovalEvent, ApprovalOutcome, ApprovalLogFilter } from '../../hooks/useApprovalLog';
+import { Card } from '../UI/Card';
+import { Button } from '../UI/Button';
+import { Badge } from '../UI/Badge';
+import type { BadgeVariant } from '../UI/Badge';
 
 /** Props for ApprovalAuditLog */
 export interface ApprovalAuditLogProps {
@@ -30,11 +37,11 @@ export interface ApprovalAuditLogProps {
 }
 
 /** Badge config per outcome type */
-const OUTCOME_BADGES: Record<ApprovalOutcome, { label: string; className: string; icon: string }> = {
-  auto: { label: 'Auto', className: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', icon: '✅' },
-  approved: { label: 'Approved', className: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30', icon: '✅' },
-  denied: { label: 'Denied', className: 'bg-red-500/10 text-red-400 border-red-500/20', icon: '🔴' },
-  sop_block: { label: 'SOP Block', className: 'bg-amber-500/10 text-amber-400 border-amber-500/20', icon: '⚠️' },
+const OUTCOME_BADGES: Record<ApprovalOutcome, { label: string; variant: BadgeVariant; icon: React.ReactNode }> = {
+  auto: { label: 'Auto', variant: 'success', icon: <CheckCircle size={12} /> },
+  approved: { label: 'Approved', variant: 'success', icon: <CheckCircle size={12} /> },
+  denied: { label: 'Denied', variant: 'error', icon: <XCircle size={12} /> },
+  sop_block: { label: 'SOP Block', variant: 'warning', icon: <AlertTriangle size={12} /> },
 };
 
 /** Number of events to show initially */
@@ -124,7 +131,7 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
   };
 
   return (
-    <section aria-labelledby="audit-log-heading" className="border border-border-dark rounded-lg bg-surface-dark">
+    <Card padding="none" role="region" aria-labelledby="audit-log-heading">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4">
         <button
@@ -149,19 +156,19 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
           <div className="flex items-center gap-2">
             {/* Filter Button */}
             <div className="relative">
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="sm"
+                icon={Filter}
                 onClick={() => setShowFilterMenu((prev) => !prev)}
-                className="flex items-center gap-1 px-3 py-1.5 text-xs text-text-secondary-dark border border-border-dark rounded-md hover:bg-zinc-800 transition-colors"
                 aria-label="Filter events"
                 data-testid="filter-button"
               >
-                <Filter size={14} aria-hidden="true" />
                 Filter
                 {(filter.agent || filter.outcome) && (
                   <span className="ml-1 w-1.5 h-1.5 rounded-full bg-primary" aria-label="Filter active" />
                 )}
-              </button>
+              </Button>
 
               {/* Filter Dropdown */}
               {showFilterMenu && (
@@ -223,16 +230,16 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
             </div>
 
             {/* Export Button */}
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="sm"
+              icon={Download}
               onClick={handleExport}
-              className="flex items-center gap-1 px-3 py-1.5 text-xs text-text-secondary-dark border border-border-dark rounded-md hover:bg-zinc-800 transition-colors"
               aria-label="Export as CSV"
               data-testid="export-button"
             >
-              <Download size={14} aria-hidden="true" />
               Export
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -281,12 +288,10 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
                             )}
                           </td>
                           <td className="py-2.5 text-right">
-                            <span
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${badge.className}`}
-                            >
+                            <Badge variant={badge.variant} size="sm" className="gap-1">
                               <span aria-hidden="true">{badge.icon}</span>
                               {badge.label}
-                            </span>
+                            </Badge>
                           </td>
                         </tr>
                       );
@@ -298,21 +303,21 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
               {/* Load More */}
               {events.length > displayCount && (
                 <div className="mt-3 text-center">
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={handleLoadMore}
-                    className="text-xs text-primary hover:text-primary/80 transition-colors"
                     data-testid="load-more-button"
                   >
                     Showing {displayCount} of {events.length} events — Load more
-                  </button>
+                  </Button>
                 </div>
               )}
             </>
           )}
         </div>
       )}
-    </section>
+    </Card>
   );
 };
 

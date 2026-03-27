@@ -70,7 +70,7 @@ export function KnowledgeDocumentViewer({
           {doc.tags.length > 0 && (
             <div className="flex gap-1.5 mt-2 flex-wrap">
               {doc.tags.map((tag) => (
-                <span key={tag} className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400">
+                <span key={tag} className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary">
                   {tag}
                 </span>
               ))}

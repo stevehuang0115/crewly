@@ -7,13 +7,17 @@
  */
 
 import React, { useRef, useEffect } from 'react';
-import { Link } from 'react-router-dom';
 import { useChat } from '../../contexts/ChatContext';
 import { useOrchestratorStatus } from '../../hooks/useOrchestratorStatus';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { TypingIndicator } from './TypingIndicator';
 import { QueueStatusBar } from './QueueStatusBar';
+import { ChatLoadingState } from './ChatLoadingState';
+import { ChatErrorState } from './ChatErrorState';
+import { ChatEmptyState } from './ChatEmptyState';
+import { ChatOfflineBanner } from './ChatOfflineBanner';
+import { maskSensitiveData } from '../../utils/security';
 import './ChatPanel.css';
 
 // =============================================================================
@@ -49,10 +53,7 @@ export const ChatPanel: React.FC = () => {
   if (isLoading && messages.length === 0) {
     return (
       <div className="chat-panel loading" data-testid="chat-panel-loading">
-        <div className="loading-spinner">
-          <div className="spinner" />
-          <span>Loading conversation...</span>
-        </div>
+        <ChatLoadingState message="Loading conversation..." />
       </div>
     );
   }
@@ -61,16 +62,7 @@ export const ChatPanel: React.FC = () => {
   if (error && messages.length === 0) {
     return (
       <div className="chat-panel error" data-testid="chat-panel-error">
-        <div className="error-message">
-          <span className="error-icon">⚠️</span>
-          <p>Error: {error}</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="retry-button"
-          >
-            Retry
-          </button>
-        </div>
+        <ChatErrorState error={error} />
       </div>
     );
   }
@@ -81,7 +73,7 @@ export const ChatPanel: React.FC = () => {
   return (
     <div className="chat-panel" data-testid="chat-panel">
       <header className="chat-header">
-        <h2>{currentConversation?.title ?? 'Chat with Orchestrator'}</h2>
+        <h2>{maskSensitiveData(currentConversation?.title ?? 'Chat with Orchestrator')}</h2>
         <span className="message-count">
           {messages.length} {messages.length === 1 ? 'message' : 'messages'}
         </span>
@@ -90,16 +82,9 @@ export const ChatPanel: React.FC = () => {
       <QueueStatusBar />
 
       {isOrchestratorOffline && (
-        <div className="orchestrator-offline-banner" data-testid="orchestrator-offline-banner">
-          <span className="offline-icon" aria-hidden="true">⚠️</span>
-          <div className="offline-content">
-            <strong>Orchestrator Offline</strong>
-            <p>{orchestratorStatus?.offlineMessage || orchestratorStatus?.message}</p>
-          </div>
-          <Link to="/" className="dashboard-link">
-            Go to Dashboard
-          </Link>
-        </div>
+        <ChatOfflineBanner
+          message={orchestratorStatus?.offlineMessage || orchestratorStatus?.message}
+        />
       )}
 
       <div
@@ -108,19 +93,7 @@ export const ChatPanel: React.FC = () => {
         data-testid="messages-container"
       >
         {messages.length === 0 ? (
-          <div className="empty-chat" data-testid="empty-chat">
-            <div className="welcome-message">
-              <h3>Welcome to Crewly</h3>
-              <p>Start a conversation with the Orchestrator.</p>
-              <p>Try asking to:</p>
-              <ul>
-                <li>Create a new project</li>
-                <li>Assign a task to an agent</li>
-                <li>Check project status</li>
-                <li>Configure a team</li>
-              </ul>
-            </div>
-          </div>
+          <ChatEmptyState />
         ) : (
           <>
             {messages.map((message) => (

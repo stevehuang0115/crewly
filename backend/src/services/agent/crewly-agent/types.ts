@@ -338,6 +338,21 @@ export interface AuditLogFilters {
 }
 
 /**
+ * Configuration for API key security guardrails.
+ * Controls output filtering, environment isolation, and prompt protection.
+ */
+export interface SecurityGuardrailConfig {
+  /** Enable output filtering (redact API keys from agent responses) */
+  outputFilterEnabled: boolean;
+  /** Enable environment isolation (strip secrets from bash child processes) */
+  envIsolationEnabled: boolean;
+  /** Enable prompt guard (block key extraction commands and prompt injections) */
+  promptGuardEnabled: boolean;
+  /** Additional env vars to explicitly allow in child processes */
+  explicitEnvVars: string[];
+}
+
+/**
  * Default configuration values for Crewly Agent
  */
 export const CREWLY_AGENT_DEFAULTS = {
@@ -388,6 +403,13 @@ export const CREWLY_AGENT_DEFAULTS = {
     maxAuditEntries: 500,
     readOnlyMode: false,
   } satisfies SecurityPolicy,
+  /** Default security guardrail configuration */
+  SECURITY_GUARDRAILS: {
+    outputFilterEnabled: true,
+    envIsolationEnabled: true,
+    promptGuardEnabled: true,
+    explicitEnvVars: [],
+  } satisfies SecurityGuardrailConfig,
 } as const;
 
 /**

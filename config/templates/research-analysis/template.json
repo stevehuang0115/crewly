@@ -3,11 +3,12 @@
   "name": "Research & Analysis Team",
   "description": "Research lead + analysts for competitive analysis and strategy",
   "category": "research",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "tags": ["research", "analysis", "strategy", "competitive"],
   "icon": "microscope",
   "hierarchical": true,
-  "defaultRuntime": "claude-code",
+  "compatibleRuntimes": ["claude-code", "crewly-agent"],
+  "defaultRuntime": "crewly-agent",
   "norms": {
     "enabled": true,
     "files": [
@@ -23,30 +24,58 @@
       "count": 1,
       "hierarchyLevel": 1,
       "canDelegate": true,
-      "defaultSkills": [
-        "decompose-goal",
-        "delegate-task",
-        "verify-output",
-        "aggregate-results",
-        "handle-failure",
-        "fact-check"
+      "defaultTools": [
+        "delegate_task",
+        "send_message",
+        "get_team_status",
+        "get_agent_status",
+        "report_status",
+        "complete_task",
+        "handle_agent_failure",
+        "schedule_check",
+        "subscribe_event",
+        "recall_memory",
+        "remember",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "bash_exec"
       ],
+      "modelConfig": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "temperature": 0.4
+      },
       "enableBrowser": true
     },
     {
-      "role": "developer",
+      "role": "analyst",
       "label": "Research Analyst",
       "defaultName": "Analyst",
       "count": 2,
       "hierarchyLevel": 2,
       "canDelegate": false,
       "reportsTo": "team-leader",
-      "defaultSkills": [
-        "report-status",
-        "complete-task",
-        "request-help",
-        "web-search"
+      "defaultTools": [
+        "report_status",
+        "complete_task",
+        "send_message",
+        "recall_memory",
+        "remember",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "bash_exec"
       ],
+      "modelConfig": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "temperature": 0.4
+      },
       "enableBrowser": true
     }
   ],

@@ -2,14 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       width: 320px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 13px;
-      color: #1a1a2e;
-      background: #f8f9fb;
+      color: #e2e8f0;
+      background: #0f172a;
       padding: 16px;
     }
     h1 {
@@ -19,10 +22,11 @@
       display: flex;
       align-items: center;
       gap: 6px;
+      color: #f1f5f9;
     }
-    .logo { width: 20px; height: 20px; border-radius: 4px; background: #6c5ce7; }
+    .logo { width: 20px; height: 20px; border-radius: 4px; background: #2a73ea; }
 
-    /* Status indicator */
+    /* Status indicator — OSS Tailwind tokens */
     .status-bar {
       display: flex;
       align-items: center;
@@ -37,26 +41,30 @@
       border-radius: 50%;
       flex-shrink: 0;
     }
-    .status-bar.disconnected { background: #fde8e8; color: #c0392b; }
-    .status-bar.disconnected .status-dot { background: #e74c3c; }
-    .status-bar.connecting { background: #fef3cd; color: #856404; }
-    .status-bar.connecting .status-dot { background: #f39c12; animation: pulse 1s infinite; }
-    .status-bar.connected { background: #d4edda; color: #155724; }
-    .status-bar.connected .status-dot { background: #27ae60; }
+    .status-bar.disconnected { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+    .status-bar.disconnected .status-dot { background: #ef4444; }
+    .status-bar.connecting { background: rgba(234, 179, 8, 0.15); color: #fde047; }
+    .status-bar.connecting .status-dot { background: #eab308; animation: pulse 1s infinite; }
+    .status-bar.connected { background: rgba(34, 197, 94, 0.15); color: #86efac; }
+    .status-bar.connected .status-dot { background: #22c55e; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
     /* Form */
-    label { display: block; font-weight: 500; margin-bottom: 4px; }
+    label { display: block; font-weight: 500; margin-bottom: 4px; color: #94a3b8; }
     input[type="text"] {
       width: 100%;
       padding: 8px 10px;
-      border: 1px solid #ddd;
+      border: 1px solid #334155;
       border-radius: 6px;
       font-size: 13px;
+      font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       margin-bottom: 10px;
       outline: none;
+      background: #1e293b;
+      color: #e2e8f0;
     }
-    input[type="text"]:focus { border-color: #6c5ce7; }
+    input[type="text"]::placeholder { color: #64748b; }
+    input[type="text"]:focus { border-color: #2a73ea; }
 
     .btn-row { display: flex; gap: 8px; }
     button {
@@ -65,21 +73,32 @@
       border: none;
       border-radius: 6px;
       font-size: 13px;
+      font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-weight: 500;
       cursor: pointer;
       transition: background 0.15s;
     }
-    #btnConnect { background: #6c5ce7; color: #fff; }
-    #btnConnect:hover { background: #5b4bd5; }
-    #btnConnect:disabled { background: #b8b0e8; cursor: default; }
-    #btnDisconnect { background: #e9ecef; color: #495057; }
-    #btnDisconnect:hover { background: #dee2e6; }
+    #btnConnect { background: #2a73ea; color: #fff; }
+    #btnConnect:hover { background: #1d5fc0; }
+    #btnConnect:disabled { background: rgba(42, 115, 234, 0.4); cursor: default; }
+    #btnDisconnect { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+    #btnDisconnect:hover { background: #334155; }
     #btnDisconnect:disabled { opacity: 0.4; cursor: default; }
+
+    .error-text {
+      display: none;
+      font-size: 11px;
+      color: #fca5a5;
+      margin-top: 8px;
+      padding: 6px 10px;
+      background: rgba(239, 68, 68, 0.15);
+      border-radius: 6px;
+    }
 
     .footer {
       margin-top: 14px;
       font-size: 11px;
-      color: #999;
+      color: #475569;
       text-align: center;
     }
   </style>
@@ -99,6 +118,8 @@
     <button id="btnConnect">Connect</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
   </div>
+
+  <div id="errorText" class="error-text"></div>
 
   <div class="footer">Crewly Remote Browser v0.1.0</div>
 

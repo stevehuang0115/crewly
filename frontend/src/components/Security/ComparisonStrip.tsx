@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import { Card } from '../UI/Card';
 
 /** Single comparison item data */
 interface ComparisonItem {
@@ -59,7 +60,7 @@ export const ComparisonStrip: React.FC = () => {
           className="md:px-6 first:md:pl-0 last:md:pr-0"
           role="listitem"
         >
-          <div className="rounded-lg md:rounded-none border md:border-0 border-zinc-700 p-4 md:p-0">
+          <Card variant="outlined" padding="md" className="md:rounded-none md:border-0 md:bg-transparent md:p-0">
             {/* Category header */}
             <div className="text-sm font-semibold text-zinc-200 mb-3">
               {item.category}
@@ -82,7 +83,7 @@ export const ComparisonStrip: React.FC = () => {
                 <span className="text-sm text-emerald-300 font-medium">{item.crewly}</span>
               </div>
             </div>
-          </div>
+          </Card>
         </div>
       ))}
     </div>

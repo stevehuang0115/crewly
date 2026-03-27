@@ -1106,9 +1106,21 @@ export class CrewlyServer {
 			}
 
 			// Start AuditorSchedulerService (non-critical — audit scheduling)
-			// Skip if auditor is disabled via env var or default config
-			const auditorEnabled = process.env[AUDITOR_CONSTANTS.ENV_VAR]?.toLowerCase() === 'true'
-				|| (process.env[AUDITOR_CONSTANTS.ENV_VAR] === undefined && AUDITOR_CONSTANTS.ENABLED_BY_DEFAULT);
+			// Priority: env var > settings.json > ENABLED_BY_DEFAULT constant
+			const envValue = process.env[AUDITOR_CONSTANTS.ENV_VAR]?.toLowerCase();
+			let auditorEnabled: boolean;
+			if (envValue !== undefined) {
+				// Env var explicitly set — use it
+				auditorEnabled = envValue === 'true';
+			} else {
+				// Check persisted settings (settings.json)
+				try {
+					const settingsForAuditor = await getSettingsService().getSettings();
+					auditorEnabled = settingsForAuditor.general.enableAuditor ?? AUDITOR_CONSTANTS.ENABLED_BY_DEFAULT;
+				} catch {
+					auditorEnabled = AUDITOR_CONSTANTS.ENABLED_BY_DEFAULT;
+				}
+			}
 			if (auditorEnabled) {
 				try {
 					const auditorScheduler = AuditorSchedulerService.getInstance();
@@ -1123,7 +1135,7 @@ export class CrewlyServer {
 					});
 				}
 			} else {
-				this.logger.info('Auditor disabled (set CREWLY_ENABLE_AUDITOR=true to enable)');
+				this.logger.info('Auditor disabled (enable via Settings > General or CREWLY_ENABLE_AUDITOR=true)');
 			}
 
 		} catch (error) {

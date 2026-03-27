@@ -40,7 +40,6 @@ export const RecentActivityPanel: React.FC = () => {
     };
 
     const handleTeamActivity = (payload: any) => {
-      // payload structure depends on the specific activity broadcast
       addActivity({
         type: 'task_update',
         agentName: payload.agentName || 'System',
@@ -72,36 +71,36 @@ export const RecentActivityPanel: React.FC = () => {
 
   const getSeverityClass = (item: ActivityItem) => {
     switch (item.severity) {
-      case 'success': return 'bg-green-100 text-green-700 border-green-200';
-      case 'error': return 'bg-red-100 text-red-700 border-red-200';
-      case 'warning': return 'bg-yellow-100 text-yellow-700 border-yellow-200';
-      default: return 'bg-blue-50 text-blue-700 border-blue-100';
+      case 'success': return 'bg-green-500/10 text-green-400 border-green-500/20';
+      case 'error': return 'bg-red-500/10 text-red-400 border-red-500/20';
+      case 'warning': return 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20';
+      default: return 'bg-primary/10 text-primary border-primary/20';
     }
   };
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col h-[500px]">
-      <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+    <div className="bg-surface-dark rounded-lg border border-border-dark flex flex-col h-[500px]">
+      <div className="p-4 border-b border-border-dark flex items-center justify-between">
         <div className="flex items-center space-x-2">
           <Activity className="w-5 h-5 text-primary" />
-          <h3 className="font-semibold text-gray-900">Real-time Execution Feed</h3>
+          <h3 className="font-semibold text-text-primary-dark">Real-time Execution Feed</h3>
         </div>
         <div className="flex items-center space-x-1">
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-          <span className="text-xs text-gray-500 font-medium uppercase tracking-wider">Live</span>
+          <span className="text-xs text-text-secondary-dark font-medium uppercase tracking-wider">Live</span>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {activities.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-2">
+          <div className="h-full flex flex-col items-center justify-center text-text-secondary-dark space-y-2">
             <Clock className="w-8 h-8 opacity-20" />
             <p className="text-sm">Waiting for agent activities...</p>
           </div>
         ) : (
           activities.map((item) => (
-            <div 
-              key={item.id} 
+            <div
+              key={item.id}
               className={`p-3 rounded-lg border flex items-start space-x-3 transition-all animate-in slide-in-from-top-2 duration-300 ${getSeverityClass(item)}`}
             >
               <div className="mt-0.5 shrink-0">

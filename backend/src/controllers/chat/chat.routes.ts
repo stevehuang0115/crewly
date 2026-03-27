@@ -26,6 +26,7 @@ import {
   getThreadStatusList,
   getThreadStatusStats,
   getThreadStatusByKey,
+  handleGetHighlights,
 } from './chat.controller.js';
 
 /**
@@ -45,6 +46,9 @@ export function createChatRouter(context?: ApiContext): Router {
 
   // Agent response endpoint (for bash skills to post messages directly)
   router.post('/agent-response', agentResponse);
+
+  // Highlights
+  router.get('/highlights', handleGetHighlights);
 
   // Statistics
   router.get('/statistics', getStatistics);

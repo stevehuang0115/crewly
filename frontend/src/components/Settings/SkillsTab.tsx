@@ -38,7 +38,11 @@ import type { CrewlySettings } from '../../types/settings.types';
 import type { CreateSkillInput } from '../../services/skills.service';
 import { getSkillCategoryLabel, getSkillTypeLabel, SKILL_CATEGORIES } from '../../types/skill.types';
 import { Button, IconButton } from '../UI/Button';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
+import { Toggle } from '../UI/Toggle';
 import { FormInput, FormSelect, FormLabel, FormTextarea } from '../UI/Form';
+import { Card } from '../UI/Card';
+import { Alert } from '../UI/Alert';
 
 /**
  * Build category options from the canonical SKILL_CATEGORIES list for consistency.
@@ -66,14 +70,14 @@ const CATEGORY_COLORS: Record<SkillCategory, string> = {
   development: 'bg-blue-500/15 text-blue-400',
   design: 'bg-pink-500/15 text-pink-400',
   communication: 'bg-emerald-500/15 text-emerald-400',
-  research: 'bg-indigo-500/15 text-indigo-400',
+  research: 'bg-primary/15 text-primary',
   'content-creation': 'bg-amber-500/15 text-amber-400',
-  automation: 'bg-purple-500/15 text-purple-400',
+  automation: 'bg-primary/15 text-primary',
   analysis: 'bg-cyan-500/15 text-cyan-400',
   integration: 'bg-rose-500/15 text-rose-400',
   management: 'bg-orange-500/15 text-orange-400',
   monitoring: 'bg-teal-500/15 text-teal-400',
-  memory: 'bg-violet-500/15 text-violet-400',
+  memory: 'bg-primary/15 text-primary',
   system: 'bg-slate-500/15 text-slate-400',
   'task-management': 'bg-sky-500/15 text-sky-400',
   quality: 'bg-lime-500/15 text-lime-400',
@@ -83,7 +87,7 @@ const CATEGORY_COLORS: Record<SkillCategory, string> = {
  * Skill type badge color mapping
  */
 const SKILL_TYPE_COLORS: Record<SkillType, string> = {
-  'claude-skill': 'bg-purple-500/15 text-purple-400',
+  'claude-skill': 'bg-primary/15 text-primary',
   'web-page': 'bg-blue-500/15 text-blue-400',
 };
 
@@ -223,68 +227,38 @@ export const SkillsTab: React.FC = () => {
     <div className="space-y-6">
       {/* Browser Automation Settings */}
       {browserSettings && (
-        <section className="bg-surface-dark border border-border-dark rounded-lg p-6">
+        <Card padding="lg">
           <div className="flex items-center gap-2 mb-4">
             <Monitor className="w-5 h-5 text-primary" />
             <h2 className="text-lg font-semibold">Browser Automation</h2>
           </div>
 
           <div className="space-y-5">
-            <div className="flex items-center justify-between">
-              <div className="flex-1">
-                <label htmlFor="enableBrowserAutomation" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                  Enable Browser Automation
-                </label>
-                <p className="text-xs text-text-secondary-dark mt-0.5">
-                  Allow agents to use Playwright for browser tasks (navigate, click, screenshot, etc.)
-                </p>
-              </div>
-              <input
-                type="checkbox"
-                id="enableBrowserAutomation"
-                checked={browserSettings.enableBrowserAutomation}
-                onChange={(e) => handleBrowserChange('enableBrowserAutomation', e.target.checked)}
-                className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-              />
-            </div>
+            <Toggle
+              id="enableBrowserAutomation"
+              label="Enable Browser Automation"
+              description="Allow agents to use Playwright for browser tasks (navigate, click, screenshot, etc.)"
+              checked={browserSettings.enableBrowserAutomation}
+              onChange={(e) => handleBrowserChange('enableBrowserAutomation', e.target.checked)}
+            />
 
             {browserSettings.enableBrowserAutomation && browserSettings.browserProfile && (
               <div className="pl-4 border-l-2 border-border-dark space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex-1">
-                    <label htmlFor="headless" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                      Headless Mode
-                    </label>
-                    <p className="text-xs text-text-secondary-dark mt-0.5">
-                      Run browser invisibly in the background (recommended)
-                    </p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    id="headless"
-                    checked={browserSettings.browserProfile.headless}
-                    onChange={(e) => handleBrowserProfileChange('headless', e.target.checked)}
-                    className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-                  />
-                </div>
+                <Toggle
+                  id="headless"
+                  label="Headless Mode"
+                  description="Run browser invisibly in the background (recommended)"
+                  checked={browserSettings.browserProfile.headless}
+                  onChange={(e) => handleBrowserProfileChange('headless', e.target.checked)}
+                />
 
-                <div className="flex items-center justify-between">
-                  <div className="flex-1">
-                    <label htmlFor="stealth" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                      Stealth Mode
-                    </label>
-                    <p className="text-xs text-text-secondary-dark mt-0.5">
-                      Use anti-detection features to avoid bot blocking (uses community fork)
-                    </p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    id="stealth"
-                    checked={browserSettings.browserProfile.stealth}
-                    onChange={(e) => handleBrowserProfileChange('stealth', e.target.checked)}
-                    className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-                  />
-                </div>
+                <Toggle
+                  id="stealth"
+                  label="Stealth Mode"
+                  description="Use anti-detection features to avoid bot blocking (uses community fork)"
+                  checked={browserSettings.browserProfile.stealth}
+                  onChange={(e) => handleBrowserProfileChange('stealth', e.target.checked)}
+                />
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -337,7 +311,7 @@ export const SkillsTab: React.FC = () => {
               {browserSaveStatus === 'saving' ? 'Saving...' : 'Save'}
             </Button>
           </div>
-        </section>
+        </Card>
       )}
 
       {/* Header */}
@@ -392,19 +366,20 @@ export const SkillsTab: React.FC = () => {
 
       {/* Error state */}
       {error && (
-        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-3 rounded-lg flex items-center justify-between">
-          <span>Error: {error}</span>
-          <Button variant="outline" size="sm" onClick={refresh}>
-            Retry
-          </Button>
-        </div>
+        <Alert variant="error">
+          <div className="flex items-center justify-between">
+            <span>Error: {error}</span>
+            <Button variant="outline" size="sm" onClick={refresh}>
+              Retry
+            </Button>
+          </div>
+        </Alert>
       )}
 
       {/* Loading state */}
       {loading && skills.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16">
-          <div className="w-10 h-10 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4" />
-          <p className="text-text-secondary-dark">Loading skills...</p>
+        <div className="flex justify-center py-16">
+          <LoadingSpinner text="Loading skills..." />
         </div>
       )}
 
@@ -730,8 +705,10 @@ const SkillEditorModal: React.FC<SkillEditorModalProps> = ({
 
         {/* Form Error */}
         {formError && (
-          <div className="mx-6 mt-4 bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-3 rounded-lg text-sm">
-            {formError}
+          <div className="mx-6 mt-4">
+            <Alert variant="error">
+              {formError}
+            </Alert>
           </div>
         )}
 

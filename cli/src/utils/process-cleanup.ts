@@ -76,4 +76,58 @@ export function killZombieProcesses(port: number, logFn: (msg: string) => void =
 	} catch {
 		// No stale processes found
 	}
+
+	// Kill orphaned vitest/test runner processes from previous agent sessions
+	killOrphanedTestProcesses(myPid, logFn);
+}
+
+/**
+ * Kill orphaned vitest worker processes that survived agent session termination.
+ * These accumulate when exec() kills only the parent shell but leaves
+ * vitest's forked worker pool running.
+ *
+ * @param myPid - Current process PID to exclude from killing.
+ * @param logFn - Logging function for status messages.
+ */
+export function killOrphanedTestProcesses(
+	myPid: number = process.pid,
+	logFn: (msg: string) => void = console.log,
+): void {
+	try {
+		const result = execSync(
+			'ps -eo pid,ppid,command | grep -E "node.*vitest|npx vitest" | grep -v grep',
+			{ encoding: 'utf8', timeout: 5000 }
+		).trim();
+
+		if (!result) return;
+
+		const pids = result
+			.split('\n')
+			.map(line => parseInt(line.trim()))
+			.filter(pid => !isNaN(pid) && pid !== myPid);
+
+		if (pids.length > 0) {
+			logFn(`Found ${pids.length} orphaned test process(es), killing...`);
+			for (const pid of pids) {
+				try {
+					process.kill(pid, 'SIGTERM');
+				} catch {
+					// Already dead
+				}
+			}
+			// Force kill after a brief grace period
+			try {
+				execSync('sleep 1', { timeout: 3000 });
+			} catch { /* ignore */ }
+			for (const pid of pids) {
+				try {
+					process.kill(pid, 'SIGKILL');
+				} catch {
+					// Already dead
+				}
+			}
+		}
+	} catch {
+		// No orphaned test processes found
+	}
 }

@@ -1292,3 +1292,54 @@ export async function cleanupProjectScheduledMessages(
 
 	return result;
 }
+
+// =============================================================================
+// Project Search
+// =============================================================================
+
+/**
+ * GET /api/projects/search?q=keyword
+ *
+ * Search across project names and task filenames within their .crewly/tasks/
+ * directories. Returns matching projects and tasks with match source annotation.
+ *
+ * @param req - Request with query param: { q: string }
+ * @param res - Response with array of ProjectSearchResult
+ *
+ * @example
+ * ```
+ * GET /api/projects/search?q=auth
+ * // { success: true, data: [{ id, name, matchType: 'project_name' }, ...] }
+ * ```
+ */
+export async function handleSearch(this: ApiContext, req: Request, res: Response): Promise<void> {
+	try {
+		const { q } = req.query;
+
+		if (!q || typeof q !== 'string' || q.trim().length === 0) {
+			res.status(400).json({
+				success: false,
+				error: 'Query parameter "q" is required',
+			});
+			return;
+		}
+
+		const { ProjectSearchService } = await import('../../services/project/project-search.service.js');
+		const searchService = new ProjectSearchService(this.storageService);
+		const results = await searchService.search(q.trim());
+
+		res.json({
+			success: true,
+			data: results,
+			count: results.length,
+		});
+	} catch (error) {
+		logger.error('Project search failed', {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		res.status(500).json({
+			success: false,
+			error: 'Search failed',
+		});
+	}
+}

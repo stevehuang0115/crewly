@@ -9,8 +9,11 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { AlertTriangle, CheckCircle, RefreshCw, Unlink, ExternalLink, X } from 'lucide-react';
+import { RefreshCw, Unlink, ExternalLink } from 'lucide-react';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
 import { Button } from '../UI/Button';
+import { Card } from '../UI/Card';
+import { Alert } from '../UI/Alert';
 import { FormInput, FormLabel } from '../UI/Form';
 
 // ---------------------------------------------------------------------------
@@ -180,9 +183,8 @@ export const TelegramTab: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center py-16">
-        <div className="w-10 h-10 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4" />
-        <p className="text-text-secondary-dark">Loading Telegram status...</p>
+      <div className="flex justify-center py-16">
+        <LoadingSpinner text="Loading Telegram status..." />
       </div>
     );
   }
@@ -199,26 +201,15 @@ export const TelegramTab: React.FC = () => {
 
       {/* Error Banner */}
       {error && (
-        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-3 rounded-lg flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5" />
-            <span>{error}</span>
-          </div>
-          <button onClick={() => setError(null)} className="text-rose-400 hover:text-rose-300 p-1" aria-label="×">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <Alert variant="error" onClose={() => setError(null)}>{error}</Alert>
       )}
 
       {status.connected ? (
         /* Connected State */
         <div className="space-y-6">
-          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-4 flex items-center gap-3">
-            <CheckCircle className="w-5 h-5 text-emerald-400" />
-            <span className="text-emerald-400 font-medium">Connected to Telegram</span>
-          </div>
+          <Alert variant="success">Connected to Telegram</Alert>
 
-          <div className="bg-surface-dark border border-border-dark rounded-lg p-6">
+          <Card padding="lg">
             <h3 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide mb-4">
               Connection Details
             </h3>
@@ -248,7 +239,7 @@ export const TelegramTab: React.FC = () => {
                 </div>
               )}
             </div>
-          </div>
+          </Card>
 
           <div className="flex items-center gap-3">
             <Button variant="secondary" onClick={fetchStatus} icon={RefreshCw}>
@@ -262,12 +253,9 @@ export const TelegramTab: React.FC = () => {
       ) : (
         /* Setup State */
         <div className="space-y-6">
-          <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 flex items-center gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-400" />
-            <span className="text-amber-400 font-medium">Not connected to Telegram</span>
-          </div>
+          <Alert variant="warning">Not connected to Telegram</Alert>
 
-          <div className="bg-surface-dark border border-border-dark rounded-lg p-6">
+          <Card padding="lg">
             <h3 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide mb-4">
               Setup Instructions
             </h3>
@@ -290,56 +278,58 @@ export const TelegramTab: React.FC = () => {
               <li>Copy the HTTP API token provided by BotFather</li>
               <li>Paste the token below and click Connect</li>
             </ol>
-          </div>
+          </Card>
 
-          <form onSubmit={handleConnect} className="bg-surface-dark border border-border-dark rounded-lg p-6 space-y-4">
-            <h3 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide mb-4">
-              Connect to Telegram
-            </h3>
+          <Card padding="lg">
+            <form onSubmit={handleConnect} className="space-y-4">
+              <h3 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide mb-4">
+                Connect to Telegram
+              </h3>
 
-            <div>
-              <FormLabel htmlFor="botToken" required>Bot Token</FormLabel>
-              <FormInput
-                id="botToken"
-                name="botToken"
-                type="password"
-                value={formData.botToken}
-                onChange={handleInputChange}
-                placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-                required
-                autoComplete="off"
-              />
-              <p className="text-xs text-text-secondary-dark mt-1">
-                The HTTP API token from @BotFather
-              </p>
-            </div>
+              <div>
+                <FormLabel htmlFor="botToken" required>Bot Token</FormLabel>
+                <FormInput
+                  id="botToken"
+                  name="botToken"
+                  type="password"
+                  value={formData.botToken}
+                  onChange={handleInputChange}
+                  placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                  required
+                  autoComplete="off"
+                />
+                <p className="text-xs text-text-secondary-dark mt-1">
+                  The HTTP API token from @BotFather
+                </p>
+              </div>
 
-            <div>
-              <FormLabel htmlFor="allowedChats">Allowed Chats (optional)</FormLabel>
-              <FormInput
-                id="allowedChats"
-                name="allowedChats"
-                type="text"
-                value={formData.allowedChats}
-                onChange={handleInputChange}
-                placeholder="-1001234567890, -1009876543210"
-              />
-              <p className="text-xs text-text-secondary-dark mt-1">
-                Comma-separated chat IDs to restrict the bot to specific groups
-              </p>
-            </div>
+              <div>
+                <FormLabel htmlFor="allowedChats">Allowed Chats (optional)</FormLabel>
+                <FormInput
+                  id="allowedChats"
+                  name="allowedChats"
+                  type="text"
+                  value={formData.allowedChats}
+                  onChange={handleInputChange}
+                  placeholder="-1001234567890, -1009876543210"
+                />
+                <p className="text-xs text-text-secondary-dark mt-1">
+                  Comma-separated chat IDs to restrict the bot to specific groups
+                </p>
+              </div>
 
-            <div className="pt-2">
-              <Button
-                type="submit"
-                disabled={configuring || !formData.botToken}
-                loading={configuring}
-                fullWidth
-              >
-                {configuring ? 'Connecting...' : 'Connect to Telegram'}
-              </Button>
-            </div>
-          </form>
+              <div className="pt-2">
+                <Button
+                  type="submit"
+                  disabled={configuring || !formData.botToken}
+                  loading={configuring}
+                  fullWidth
+                >
+                  {configuring ? 'Connecting...' : 'Connect to Telegram'}
+                </Button>
+              </div>
+            </form>
+          </Card>
         </div>
       )}
     </div>

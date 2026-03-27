@@ -23,7 +23,12 @@ describe('GeneralTab', () => {
         'claude-code': 'claude --dangerously-skip-permissions',
         'gemini-cli': 'gemini --yolo',
         'codex-cli': 'codex -a never -s danger-full-access',
+        'crewly-agent': 'crewly-agent-in-process',
       },
+      agentIdleTimeoutMinutes: 10,
+      enableProactiveCompact: true,
+      enableSelfEvolution: false,
+      enableAuditor: false,
     },
     chat: {
       showRawTerminalOutput: false,
@@ -81,6 +86,24 @@ describe('GeneralTab', () => {
       expect(screen.getByLabelText('Check-in Interval (minutes)')).toBeInTheDocument();
       expect(screen.getByLabelText('Max Concurrent Agents')).toBeInTheDocument();
       expect(screen.getByLabelText('Verbose Logging')).toBeInTheDocument();
+      expect(screen.getByLabelText('Enable Auditor')).toBeInTheDocument();
+    });
+
+    it('should render Enable Auditor toggle as unchecked by default', () => {
+      render(<GeneralTab />);
+
+      const toggle = screen.getByLabelText('Enable Auditor') as HTMLInputElement;
+      expect(toggle.checked).toBe(false);
+    });
+
+    it('should toggle Enable Auditor and mark changes dirty', () => {
+      render(<GeneralTab />);
+
+      const toggle = screen.getByLabelText('Enable Auditor');
+      fireEvent.click(toggle);
+
+      const saveButton = screen.getByText('Save Changes').closest('button');
+      expect(saveButton).not.toBeDisabled();
     });
 
     it('should render all chat settings fields', () => {
@@ -235,7 +258,7 @@ describe('GeneralTab', () => {
     it('should disable save button when no changes made', () => {
       render(<GeneralTab />);
 
-      const saveButton = screen.getByText('Save Changes');
+      const saveButton = screen.getByText('Save Changes').closest('button');
       expect(saveButton).toBeDisabled();
     });
 

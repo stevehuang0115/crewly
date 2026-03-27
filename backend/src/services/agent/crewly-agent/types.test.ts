@@ -55,6 +55,14 @@ describe('Crewly Agent Types', () => {
       expect(policy.maxAuditEntries).toBe(500);
       expect(policy.readOnlyMode).toBe(false);
     });
+
+    it('should have valid default security guardrails', () => {
+      const guardrails = CREWLY_AGENT_DEFAULTS.SECURITY_GUARDRAILS;
+      expect(guardrails.outputFilterEnabled).toBe(true);
+      expect(guardrails.envIsolationEnabled).toBe(true);
+      expect(guardrails.promptGuardEnabled).toBe(true);
+      expect(guardrails.explicitEnvVars).toEqual([]);
+    });
   });
 
   describe('isModelProvider', () => {

@@ -107,28 +107,39 @@ describe('ChannelBadge', () => {
       render(<ChannelBadge channelType="slack" />);
 
       const badge = screen.getByTestId('channel-badge');
-      expect(badge).toHaveClass('channel-badge', 'channel-slack');
+      expect(badge).toHaveClass('channel-badge');
+      expect(badge).toHaveClass('channel-slack');
     });
 
     it('applies channel-specific CSS class for crewly_chat', () => {
       render(<ChannelBadge channelType="crewly_chat" />);
 
       const badge = screen.getByTestId('channel-badge');
-      expect(badge).toHaveClass('channel-badge', 'channel-crewly');
+      expect(badge).toHaveClass('channel-badge');
+      expect(badge).toHaveClass('channel-crewly');
     });
 
     it('applies channel-specific CSS class for telegram', () => {
       render(<ChannelBadge channelType="telegram" />);
 
       const badge = screen.getByTestId('channel-badge');
-      expect(badge).toHaveClass('channel-badge', 'channel-telegram');
+      expect(badge).toHaveClass('channel-badge');
+      expect(badge).toHaveClass('channel-telegram');
     });
 
     it('applies channel-specific CSS class for api', () => {
       render(<ChannelBadge channelType="api" />);
 
       const badge = screen.getByTestId('channel-badge');
-      expect(badge).toHaveClass('channel-badge', 'channel-api');
+      expect(badge).toHaveClass('channel-badge');
+      expect(badge).toHaveClass('channel-api');
+    });
+
+    it('uses shared Badge component (has rounded-full class)', () => {
+      render(<ChannelBadge channelType="slack" />);
+
+      const badge = screen.getByTestId('channel-badge');
+      expect(badge).toHaveClass('rounded-full');
     });
   });
 
@@ -137,8 +148,8 @@ describe('ChannelBadge', () => {
       render(<ChannelBadge channelType="slack" />);
 
       const badge = screen.getByTestId('channel-badge');
-      const icon = badge.querySelector('.channel-badge-icon');
-      expect(icon).toHaveAttribute('aria-hidden', 'true');
+      const icon = badge.querySelector('[aria-hidden="true"]');
+      expect(icon).toBeInTheDocument();
     });
   });
 });
