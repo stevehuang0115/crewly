@@ -142,6 +142,14 @@ bgCode = bgCode.replace(/^let serverUrl/m, 'var serverUrl');
 bgCode = bgCode.replace(/^let connectionState/m, 'var connectionState');
 bgCode = bgCode.replace(/^let firstControlDone/m, 'var firstControlDone');
 bgCode = bgCode.replace(/^let controlledTabId/m, 'var controlledTabId');
+bgCode = bgCode.replace(/^let reconnectAttempts/m, 'var reconnectAttempts');
+bgCode = bgCode.replace(/^let lastPongAt/m, 'var lastPongAt');
+bgCode = bgCode.replace(/^let pongTimeoutTimer/m, 'var pongTimeoutTimer');
+bgCode = bgCode.replace(/^const agentTabMap/m, 'var agentTabMap');
+bgCode = bgCode.replace(/^const RECONNECT_BASE_MS/m, 'var RECONNECT_BASE_MS');
+bgCode = bgCode.replace(/^const RECONNECT_MAX_MS/m, 'var RECONNECT_MAX_MS');
+bgCode = bgCode.replace(/^const PONG_TIMEOUT_MS/m, 'var PONG_TIMEOUT_MS');
+bgCode = bgCode.replace(/^const HEARTBEAT_INTERVAL_MS/m, 'var HEARTBEAT_INTERVAL_MS');
 // Also skip the chrome.storage.local.get auto-connect at the end
 bgCode = bgCode.replace(/chrome\.storage\.local\.get\(\['serverUrl'[\s\S]*?\}\);$/m, '// auto-connect disabled for tests');
 eval(bgCode);
@@ -203,7 +211,7 @@ async function runTests() {
     const group = mockGroups.find(g => g.id === crewlyGroupId);
     assert(group, 'Group should exist in mockGroups');
     assertEqual(group.title, 'crewly-tabs');
-    assertEqual(group.color, 'purple');
+    assertEqual(group.color, 'blue');
   });
 
   await test('_addToCrewlyGroup reuses cached group', async () => {
@@ -240,7 +248,7 @@ async function runTests() {
     assert(crewlyGroupId !== oldGroupId, 'Should create new group');
     assertEqual(mockGroups.length, 1);
     assertEqual(mockGroups[0].title, 'crewly-tabs');
-    assertEqual(mockGroups[0].color, 'purple');
+    assertEqual(mockGroups[0].color, 'blue');
   });
 
   await test('_addToCrewlyGroup handles group API errors gracefully', async () => {
@@ -442,6 +450,52 @@ async function runTests() {
     assert(showMsgs.every(m => m.tabId === 2), 'All showIndicator messages should target tab 2');
     assert(hideMsgs.every(m => m.tabId === 2), 'All hideIndicator messages should target tab 2');
     assert(indicatorMessages.every(m => m.tabId !== 1), 'No messages should go to tab 1');
+  });
+
+  // ── Reconnect & Heartbeat Tests ──
+
+  await test('getState should include reconnectAttempts and agentTabCount', () => {
+    const state = getState();
+    assert(typeof state.reconnectAttempts === 'number', 'reconnectAttempts should be a number');
+    assert(typeof state.agentTabCount === 'number', 'agentTabCount should be a number');
+    assert(state.agentTabCount === 0, 'agentTabCount should start at 0');
+  });
+
+  await test('exponential backoff constants should be configured', () => {
+    // Verify the backoff constants exist in the evaluated code
+    assert(typeof RECONNECT_BASE_MS === 'number', 'RECONNECT_BASE_MS should be defined');
+    assert(typeof RECONNECT_MAX_MS === 'number', 'RECONNECT_MAX_MS should be defined');
+    assert(RECONNECT_BASE_MS > 0, 'RECONNECT_BASE_MS should be positive');
+    assert(RECONNECT_MAX_MS >= RECONNECT_BASE_MS, 'RECONNECT_MAX_MS should be >= RECONNECT_BASE_MS');
+    assert(RECONNECT_MAX_MS <= 60000, 'RECONNECT_MAX_MS should be reasonable (<=60s)');
+  });
+
+  await test('PONG_TIMEOUT_MS should be less than HEARTBEAT_INTERVAL_MS', () => {
+    assert(typeof PONG_TIMEOUT_MS === 'number', 'PONG_TIMEOUT_MS should be defined');
+    assert(PONG_TIMEOUT_MS < HEARTBEAT_INTERVAL_MS, 'Pong timeout should be shorter than heartbeat interval');
+  });
+
+  await test('agentTabMap should isolate per-agent tabs', () => {
+    // Simulate two agents getting different tabs
+    agentTabMap.set('agent-sam', 10);
+    agentTabMap.set('agent-leo', 20);
+    assert(agentTabMap.get('agent-sam') === 10, 'Sam should have tab 10');
+    assert(agentTabMap.get('agent-leo') === 20, 'Leo should have tab 20');
+    assert(agentTabMap.size === 2, 'Should have 2 agent tab entries');
+    // Cleanup
+    agentTabMap.clear();
+  });
+
+  await test('disconnect should reset reconnectAttempts', () => {
+    reconnectAttempts = 5;
+    disconnect();
+    assert(reconnectAttempts === 0, 'reconnectAttempts should reset to 0 after disconnect');
+  });
+
+  await test('_cleanup should clear agentTabMap', () => {
+    agentTabMap.set('test-agent', 99);
+    _cleanup();
+    assert(agentTabMap.size === 0, 'agentTabMap should be cleared after cleanup');
   });
 
   // ── Summary ──

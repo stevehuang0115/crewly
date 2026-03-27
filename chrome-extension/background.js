@@ -13,6 +13,7 @@ importScripts('cdp-screenshot.js');
 let ws = null;
 let serverUrl = '';
 let connectionState = 'disconnected'; // disconnected | connecting | connected
+let lastError = ''; // last connection error message for popup display
 let reconnectTimer = null;
 let heartbeatTimer = null;
 
@@ -25,7 +26,10 @@ let firstControlDone = false;
 // Navigate→Screenshot tracking (Task 4)
 let lastNavigatedTabId = null;
 
-// Controlled tab tracking — only this tab gets glow/indicator
+// Per-agent controlled tab tracking — isolates tabs so multiple agents
+// don't fight over the same controlledTabId. Maps agentName → tabId.
+const agentTabMap = new Map();
+// Fallback controlled tab for commands without agentName
 let controlledTabId = null;
 
 // Glow indicator timing (Task 2)
@@ -39,8 +43,15 @@ let logReportingUrl = '';   // e.g. http://localhost:3000/api/extension/logs
 let logFlushTimer = null;
 const LOG_FLUSH_INTERVAL_MS = 10000; // flush every 10s
 
-const RECONNECT_DELAY_MS = 3000;
+// ── Reconnect with exponential backoff ───────────────────────────────────────
+const RECONNECT_BASE_MS = 1000;   // start at 1 second
+const RECONNECT_MAX_MS = 30000;   // cap at 30 seconds
+let reconnectAttempts = 0;        // reset on successful connection
+
 const HEARTBEAT_INTERVAL_MS = 25000; // well under the 30s idle timeout
+const PONG_TIMEOUT_MS = 10000;       // force reconnect if no pong within 10s
+let lastPongAt = 0;                  // timestamp of last pong received
+let pongTimeoutTimer = null;         // fires if pong is not received in time
 
 // ── Public helpers (called from popup) ───────────────────────────────────────
 
@@ -48,25 +59,42 @@ const HEARTBEAT_INTERVAL_MS = 25000; // well under the 30s idle timeout
  * Returns the current connection state for the popup UI.
  */
 function getState() {
-  return { connectionState, serverUrl };
+  return {
+    connectionState,
+    serverUrl,
+    lastError,
+    reconnectAttempts,
+    agentTabCount: agentTabMap.size,
+  };
 }
 
 /**
  * Initiates a WebSocket connection to the given URL.
+ * Persists the URL to chrome.storage so the popup can restore it even if
+ * the Service Worker is killed before the in-memory state is read.
+ * Also stores a flag indicating the user wants to stay connected.
+ *
  * @param {string} url - WebSocket server URL (ws:// or wss://)
  */
 function connect(url) {
   serverUrl = url;
-  chrome.storage.local.set({ serverUrl: url });
+  lastError = ''; // clear previous error on new connection attempt
+  chrome.storage.local.set({ serverUrl: url, autoConnect: true });
   _openSocket(url);
 }
 
 /**
- * Tears down the current WebSocket connection.
+ * Tears down the current WebSocket connection and clears the
+ * auto-connect flag so the SW does not reconnect on restart.
+ * The serverUrl is kept in storage so the popup can still display
+ * it as a pre-filled value.
  */
 function disconnect() {
   _cleanup();
+  serverUrl = ''; // prevent _scheduleReconnect from firing after cleanup
   connectionState = 'disconnected';
+  reconnectAttempts = 0;
+  chrome.storage.local.set({ autoConnect: false });
   _broadcastState();
 }
 
@@ -81,6 +109,7 @@ function _openSocket(url) {
     ws = new WebSocket(url);
   } catch (err) {
     console.error('[crewly] WebSocket constructor error:', err);
+    lastError = err.message || 'Failed to create WebSocket';
     connectionState = 'disconnected';
     _broadcastState();
     _scheduleReconnect();
@@ -90,6 +119,9 @@ function _openSocket(url) {
   ws.onopen = () => {
     console.log('[crewly] Connected to', url);
     connectionState = 'connected';
+    lastError = ''; // clear any previous errors on successful connection
+    reconnectAttempts = 0; // reset exponential backoff on successful connection
+    lastPongAt = Date.now();
     _appendLog('info', 'WebSocket connected', { url });
     _broadcastState();
     _startHeartbeat();
@@ -103,8 +135,12 @@ function _openSocket(url) {
       console.warn('[crewly] Non-JSON message ignored');
       return;
     }
-    // Ignore heartbeat acks
-    if (cmd.type === 'pong') return;
+    // Track heartbeat acks for dead-connection detection
+    if (cmd.type === 'pong') {
+      lastPongAt = Date.now();
+      _clearPongTimeout();
+      return;
+    }
 
     console.log('[crewly] Received command:', cmd.tool, cmd.id);
     _appendLog('info', `Command received: ${cmd.tool}`, { id: cmd.id, tool: cmd.tool, params: cmd.params });
@@ -116,6 +152,12 @@ function _openSocket(url) {
   ws.onclose = (e) => {
     console.log('[crewly] Connection closed:', e.code, e.reason);
     _appendLog('warn', 'WebSocket closed', { code: e.code, reason: e.reason });
+    // Provide user-friendly error messages for common close codes
+    if (e.code === 1006) {
+      lastError = 'Connection lost — is the Crewly server running?';
+    } else if (e.code !== 1000 && e.code !== 1001) {
+      lastError = e.reason || `Connection closed (code ${e.code})`;
+    }
     connectionState = 'disconnected';
     firstControlDone = false;
     lastNavigatedTabId = null;
@@ -127,6 +169,7 @@ function _openSocket(url) {
 
   ws.onerror = (err) => {
     console.error('[crewly] WebSocket error:', err);
+    lastError = err.message || 'WebSocket connection error';
     _appendLog('error', 'WebSocket error', { message: err.message || 'unknown' });
   };
 }
@@ -135,9 +178,11 @@ function _cleanup() {
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
   _stopHeartbeat();
+  _clearPongTimeout();
   firstControlDone = false;
   lastNavigatedTabId = null;
   controlledTabId = null;
+  agentTabMap.clear();
   crewlyGroupId = null;
   if (ws) {
     ws.onclose = null; // prevent reconnect on intentional close
@@ -146,22 +191,37 @@ function _cleanup() {
   }
 }
 
+/**
+ * Schedule a reconnection attempt with exponential backoff.
+ * Delay doubles each attempt: 1s → 2s → 4s → 8s → 16s → 30s (capped).
+ * Resets to 1s on successful connection (see ws.onopen).
+ */
 function _scheduleReconnect() {
   if (reconnectTimer) return;
   if (!serverUrl) return;
+  const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
+  reconnectAttempts++;
+  console.log(`[crewly] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})...`);
+  _appendLog('info', 'Scheduling reconnect', { delay, attempt: reconnectAttempts });
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    console.log('[crewly] Reconnecting...');
     _openSocket(serverUrl);
-  }, RECONNECT_DELAY_MS);
+  }, delay);
 }
 
-// ── Heartbeat (keeps Service Worker alive) ───────────────────────────────────
+// ── Heartbeat (keeps Service Worker alive + dead connection detection) ────────
 
+/**
+ * Start the heartbeat interval. Each ping starts a pong timeout — if no pong
+ * arrives within PONG_TIMEOUT_MS, the connection is assumed dead and we force
+ * a reconnect instead of waiting for the browser's TCP timeout (can be >60s).
+ */
 function _startHeartbeat() {
   _stopHeartbeat();
   heartbeatTimer = setInterval(() => {
     _send({ type: 'ping' });
+    // Start pong timeout — if server doesn't respond, connection is dead
+    _startPongTimeout();
   }, HEARTBEAT_INTERVAL_MS);
 }
 
@@ -169,6 +229,39 @@ function _stopHeartbeat() {
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
+  }
+  _clearPongTimeout();
+}
+
+/**
+ * Start a timer that fires if the server doesn't reply with pong.
+ * Forces a reconnect to avoid silently dead connections.
+ */
+function _startPongTimeout() {
+  _clearPongTimeout();
+  pongTimeoutTimer = setTimeout(() => {
+    console.warn('[crewly] Pong timeout — connection appears dead, forcing reconnect');
+    _appendLog('warn', 'Pong timeout — forcing reconnect', { lastPongAt });
+    // Force-close and reconnect
+    if (ws) {
+      ws.onclose = null; // prevent double reconnect from onclose handler
+      ws.close();
+      ws = null;
+    }
+    connectionState = 'disconnected';
+    _stopHeartbeat();
+    _broadcastState();
+    _scheduleReconnect();
+  }, PONG_TIMEOUT_MS);
+}
+
+/**
+ * Clear the pong timeout timer (called when pong is received or on cleanup).
+ */
+function _clearPongTimeout() {
+  if (pongTimeoutTimer) {
+    clearTimeout(pongTimeoutTimer);
+    pongTimeoutTimer = null;
   }
 }
 
@@ -196,9 +289,10 @@ function _broadcastState() {
  * not whatever tab the user happens to be viewing.
  *
  * @param {string} tool - Tool name being executed
+ * @param {string} [agentName] - Name of the agent performing the action
  * @returns {Promise<number|null>} Tab ID that received the indicator, or null
  */
-async function _showToolIndicator(tool) {
+async function _showToolIndicator(tool, agentName) {
   // Skip indicator for non-visual tools
   if (tool === 'getTabs' || tool === 'getCookies') return null;
 
@@ -223,9 +317,9 @@ async function _showToolIndicator(tool) {
     }
 
     indicatorShownAt = Date.now();
-    chrome.tabs.sendMessage(targetTabId, { type: 'showIndicator', action: tool }).catch(() => {
+    chrome.tabs.sendMessage(targetTabId, { type: 'showIndicator', action: tool, agentName: agentName || '' }).catch(() => {
       // Content script may not be loaded yet — try injecting it
-      _ensureContentScriptAndShow(targetTabId, tool);
+      _ensureContentScriptAndShow(targetTabId, tool, agentName);
     });
     return targetTabId;
   } catch {
@@ -238,8 +332,9 @@ async function _showToolIndicator(tool) {
  * Handles the case where content script hasn't loaded yet on the tab.
  * @param {number} tabId - Tab to inject into
  * @param {string} tool - Tool name for indicator label
+ * @param {string} [agentName] - Name of the agent performing the action
  */
-async function _ensureContentScriptAndShow(tabId, tool) {
+async function _ensureContentScriptAndShow(tabId, tool, agentName) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -247,7 +342,7 @@ async function _ensureContentScriptAndShow(tabId, tool) {
     });
     // Small delay for script to initialize
     setTimeout(() => {
-      chrome.tabs.sendMessage(tabId, { type: 'showIndicator', action: tool }).catch(() => {});
+      chrome.tabs.sendMessage(tabId, { type: 'showIndicator', action: tool, agentName: agentName || '' }).catch(() => {});
     }, 50);
   } catch {
     // chrome:// or restricted page — ignore
@@ -278,16 +373,18 @@ async function _hideToolIndicator(tabId) {
  * @returns {Promise<{id: string, success: boolean, result?: any, error?: string}>}
  */
 async function _handleCommand(cmd) {
-  const { id, tool, params = {} } = cmd;
+  const { id, tool, params = {}, agentName = '' } = cmd;
 
   // First-control: bring the tab to foreground on the first real command (Task 3)
-  // Also set controlledTabId so indicators only appear on this tab
+  // Also set controlledTabId so indicators only appear on this tab.
+  // Per-agent tab isolation: each agent gets its own controlled tab.
   if (!firstControlDone && tool !== 'getTabs' && tool !== 'getCookies') {
     firstControlDone = true;
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.id) {
         controlledTabId = tab.id;
+        if (agentName) agentTabMap.set(agentName, tab.id);
         await chrome.tabs.update(tab.id, { active: true });
         await chrome.windows.update(tab.windowId, { focused: true });
       }
@@ -296,14 +393,19 @@ async function _handleCommand(cmd) {
     }
   }
 
+  // Resolve the correct tab for this agent (multi-agent isolation)
+  if (agentName && agentTabMap.has(agentName)) {
+    controlledTabId = agentTabMap.get(agentName);
+  }
+
   // Show visual indicator on the active tab before executing
-  const indicatorTabId = await _showToolIndicator(tool);
+  const indicatorTabId = await _showToolIndicator(tool, agentName);
 
   try {
     let result;
     switch (tool) {
       case 'navigate':
-        result = await toolNavigate(params);
+        result = await toolNavigate({ ...params, agentName });
         break;
       case 'screenshot':
         result = await toolScreenshot(params);
@@ -372,7 +474,7 @@ async function _handleCommand(cmd) {
  * Navigates the active tab to the specified URL.
  * Adds the tab to a 'Crewly' tab group (purple) and tracks it for screenshots.
  */
-async function toolNavigate({ url }) {
+async function toolNavigate({ url, agentName }) {
   if (!url) throw new Error('Missing required param: url');
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) throw new Error('No active tab');
@@ -383,6 +485,8 @@ async function toolNavigate({ url }) {
   // Track this tab for screenshot targeting (Task 4) and indicator targeting
   lastNavigatedTabId = updated.id;
   controlledTabId = updated.id;
+  // Per-agent tab isolation: remember which tab this agent is using
+  if (agentName) agentTabMap.set(agentName, updated.id);
 
   // Add tab to Crewly tab group (Task 1)
   await _addToCrewlyGroup(updated.id);
@@ -417,7 +521,7 @@ async function _addToCrewlyGroup(tabId) {
         if (groups.length > 0) {
           crewlyGroupId = groups[0].id;
           // Ensure color is correct (may have been changed by user)
-          await chrome.tabGroups.update(crewlyGroupId, { color: 'purple' });
+          await chrome.tabGroups.update(crewlyGroupId, { color: 'blue' });
         }
       } catch {
         // tabGroups.query may fail on some Chrome versions — proceed to create
@@ -430,7 +534,7 @@ async function _addToCrewlyGroup(tabId) {
     } else {
       // Create new group
       const groupId = await chrome.tabs.group({ tabIds: [tabId] });
-      await chrome.tabGroups.update(groupId, { title: 'crewly-tabs', color: 'purple' });
+      await chrome.tabGroups.update(groupId, { title: 'crewly-tabs', color: 'blue' });
       crewlyGroupId = groupId;
     }
   } catch (err) {
@@ -1128,11 +1232,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 // ── Restore connection on Service Worker wake ────────────────────────────────
 
-chrome.storage.local.get(['serverUrl', 'logReportingUrl'], (data) => {
+chrome.storage.local.get(['serverUrl', 'logReportingUrl', 'autoConnect'], (data) => {
   if (data.serverUrl) {
     serverUrl = data.serverUrl;
-    // Auto-reconnect on SW restart
-    _openSocket(serverUrl);
+    // Only auto-reconnect if the user hasn't explicitly disconnected
+    if (data.autoConnect !== false) {
+      _openSocket(serverUrl);
+    }
   }
   if (data.logReportingUrl) {
     logReportingUrl = data.logReportingUrl;
