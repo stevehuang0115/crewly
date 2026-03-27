@@ -28,8 +28,22 @@ import './ThreadDetailPanel.css';
 // =============================================================================
 
 /**
- * Terminal artifact patterns that should be hidden from chat display.
- * These are Claude Code / Gemini CLI UI elements that leak into messages.
+ * Strip system metadata tags from thread titles and previews.
+ *
+ * @param text - Raw text that may contain metadata tags
+ * @returns Cleaned text, or empty string if null/undefined
+ */
+function stripThreadMetadata(text?: string | null): string {
+  if (!text) return '';
+  return text
+    .replace(/\[Thread[^\]]*\]/g, '')
+    .replace(/\[T\d+\]/g, '')
+    .trim();
+}
+
+/**
+ * Terminal artifact patterns — messages matching these are pure CLI noise.
+ * Only hide messages that are ENTIRELY artifacts (not mixed content).
  */
 const TERMINAL_ARTIFACT_PATTERNS = [
   /^[\s⏺❯▸▶►›»─━┄┅┈┉╌╍═│┃┆┇┊┋╎╏║┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬╭╮╰╯\s]*$/,
@@ -37,41 +51,58 @@ const TERMINAL_ARTIFACT_PATTERNS = [
   /shift\+tab to cycle/i,
   /esc to interrupt/i,
   /^\s*▸▸\s/,
-  /\[Thread context file:.*\]/,
 ];
 
 /**
- * Check if a message is a terminal artifact that should be hidden.
+ * Strip system metadata tags from message content for display.
  *
- * @param content - Message content to check
- * @returns True if the content is a terminal UI artifact
+ * @param content - Raw message content
+ * @returns Cleaned content with metadata tags removed
  */
-function isTerminalArtifact(content: string): boolean {
-  const trimmed = content.trim();
-  if (!trimmed) return true;
-  return TERMINAL_ARTIFACT_PATTERNS.some((pattern) => pattern.test(trimmed));
+function cleanMessageContent(content: string): string {
+  return content
+    .replace(/\[Thread[^\]]*\]/g, '')
+    .replace(/\[T\d+\]/g, '')
+    .trim();
 }
 
 /**
- * Filter messages for chat display:
- * - Only show user and orchestrator messages (hide agent/system)
- * - Hide messages that are purely terminal UI artifacts
+ * Check if a message is a pure terminal artifact that should be hidden.
+ *
+ * @param content - Already-cleaned message content
+ * @returns True if the content is purely terminal UI noise
+ */
+function isTerminalArtifact(content: string): boolean {
+  if (!content) return true;
+  return TERMINAL_ARTIFACT_PATTERNS.some((pattern) => pattern.test(content));
+}
+
+/**
+ * Filter and clean messages for chat display:
+ * - Show user, orchestrator, and agent messages (hide system-only)
+ * - Strip metadata tags from content before checking
+ * - Hide messages that are purely terminal UI artifacts after cleaning
  *
  * @param messages - All messages in the conversation
- * @returns Filtered messages suitable for chat display
+ * @returns Filtered messages with cleaned content
  */
 function filterDisplayMessages(messages: ChatMessageType[]): ChatMessageType[] {
-  return messages.filter((msg) => {
-    // Only show user and orchestrator messages
-    if (msg.from.type !== 'user' && msg.from.type !== 'orchestrator') {
-      return false;
-    }
-    // Hide terminal artifact messages
-    if (isTerminalArtifact(msg.content)) {
-      return false;
-    }
-    return true;
-  });
+  return messages
+    .map((msg) => ({
+      ...msg,
+      content: cleanMessageContent(msg.content),
+    }))
+    .filter((msg) => {
+      // Hide system-generated internal messages
+      if (msg.from.type === 'system') {
+        return false;
+      }
+      // Hide messages that are purely terminal artifacts after cleaning
+      if (isTerminalArtifact(msg.content)) {
+        return false;
+      }
+      return true;
+    });
 }
 
 // =============================================================================
@@ -198,7 +229,7 @@ export const ThreadDetailPanel: React.FC<ThreadDetailPanelProps> = ({
           </button>
         )}
         <div className="thread-detail-header-info">
-          <h2>{conversation.title ?? 'Chat with Orchestrator'}</h2>
+          <h2>{stripThreadMetadata(conversation.title) || 'Chat with Orchestrator'}</h2>
           <div className="thread-detail-header-meta">
             <ChannelBadge channelType={channelType} />
           </div>

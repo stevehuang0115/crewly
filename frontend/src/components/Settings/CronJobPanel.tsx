@@ -168,11 +168,11 @@ interface CronJobCardProps {
  */
 const CronJobCard: React.FC<CronJobCardProps> = ({ task, onToggle, onDelete }) => {
   return (
-    <div className="border border-border-dark rounded-lg p-4 hover:bg-surface-dark/30 transition-colors">
+    <div className="bg-surface-dark border border-border-dark rounded-lg p-5 hover:shadow-lg hover:border-primary/50 transition-all">
       {/* Header: description + status */}
       <div className="flex items-start justify-between mb-3">
         <div className="min-w-0 mr-2">
-          <p className="text-sm font-medium text-text-primary-dark truncate" title={task.taskDescription}>
+          <p className="text-lg font-semibold text-text-primary-dark truncate" title={task.taskDescription}>
             {task.taskDescription}
           </p>
           <p className="text-xs text-text-secondary-dark mt-0.5">{task.targetAgent}</p>
