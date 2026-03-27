@@ -111,7 +111,7 @@ describe('Task Management Handlers', () => {
     let jsonSpy: jest.Mock<any>;
     let statusSpy: jest.Mock<any>;
 
-    const validTaskPath = '/Users/yellowsunhy/Desktop/projects/justslash/gas-vibe-coder/.crewly/tasks/m0_initial_tasks/open/01_create_project_requirements_document.md';
+    const validTaskPath = '/home/user/projects/my-project/.crewly/tasks/m0_initial_tasks/open/01_create_project_requirements_document.md';
     const validSessionName = 'session-123';
 
     beforeEach(() => {
@@ -218,12 +218,12 @@ describe('Task Management Handlers', () => {
 
     describe('Path parsing - REGEX TESTS', () => {
       it('should correctly match gas-vibe-coder path with regex and return 404 when project not found', async () => {
-        const taskPathWithDashes = '/Users/yellowsunhy/Desktop/projects/justslash/gas-vibe-coder/.crewly/tasks/m0_initial_tasks/open/01_create_project_requirements_document.md';
+        const taskPathWithDashes = '/home/user/projects/my-project/.crewly/tasks/m0_initial_tasks/open/01_create_project_requirements_document.md';
         mockReq.body!.taskPath = taskPathWithDashes;
         (existsSync as jest.Mock<any>).mockReturnValue(true);
         (readFile as jest.Mock<any>).mockResolvedValue('# Test Task\n## Task Information\n- **Target Role**: developer');
         (basename as jest.Mock<any>).mockReturnValue('01_create_project_requirements_document.md');
-        (dirname as jest.Mock<any>).mockReturnValue('/Users/yellowsunhy/Desktop/projects/justslash/gas-vibe-coder');
+        (dirname as jest.Mock<any>).mockReturnValue('/home/user/projects/my-project');
         mockStorageService.getProjects.mockResolvedValue([]);
 
         await assignTask.call(fullMockApiController, mockReq as Request, mockRes as Response);
@@ -266,7 +266,7 @@ describe('Task Management Handlers', () => {
         (readFile as jest.Mock<any>).mockResolvedValue('# Test Task\n## Task Information\n- **Target Role**: developer');
         // Mock path functions so that the controller can resolve the project path correctly
         (basename as jest.Mock<any>).mockReturnValue('01_create_project_requirements_document.md');
-        (dirname as jest.Mock<any>).mockReturnValue('/Users/yellowsunhy/Desktop/projects/justslash/gas-vibe-coder');
+        (dirname as jest.Mock<any>).mockReturnValue('/home/user/projects/my-project');
       });
 
       it('should return 404 when project is not found', async () => {
@@ -284,7 +284,7 @@ describe('Task Management Handlers', () => {
       it('should return 404 when team member is not found for sessionName', async () => {
         mockStorageService.getProjects.mockResolvedValue([{
           id: 'project1',
-          path: '/Users/yellowsunhy/Desktop/projects/justslash/gas-vibe-coder',
+          path: '/home/user/projects/my-project',
         }]);
         mockStorageService.getTeams.mockResolvedValue([{
           id: 'team1',
@@ -459,14 +459,14 @@ describe('Task Management Handlers', () => {
       const testCases = [
         {
           name: 'should NOT match project with dashes using CURRENT BROKEN regex',
-          path: '/Users/yellowsunhy/Desktop/projects/justslash/gas-vibe-coder/.crewly/tasks/m0_initial_tasks/open/01_create_project_requirements_document.md',
+          path: '/home/user/projects/my-project/.crewly/tasks/m0_initial_tasks/open/01_create_project_requirements_document.md',
           expectedMatch: null,
           shouldMatch: false,
           regex: /\/([^\/]+)\.crewly/, // Current broken regex
         },
         {
           name: 'should match project with dashes using FIXED regex',
-          path: '/Users/yellowsunhy/Desktop/projects/justslash/gas-vibe-coder/.crewly/tasks/m0_initial_tasks/open/01_create_project_requirements_document.md',
+          path: '/home/user/projects/my-project/.crewly/tasks/m0_initial_tasks/open/01_create_project_requirements_document.md',
           expectedMatch: 'gas-vibe-coder',
           shouldMatch: true,
           regex: /\/([^\/]+)\/\.crewly/, // Fixed regex

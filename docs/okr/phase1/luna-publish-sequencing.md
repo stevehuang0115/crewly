@@ -2,8 +2,8 @@
 
 Last updated: 2026-02-24 (UTC)
 Grounding docs:
-- `/Users/yellowsunhy/Desktop/projects/crewly/docs/okr/phase1/luna-competitor-evidence-pack.md`
-- `/Users/yellowsunhy/Desktop/projects/crewly/docs/okr/phase1/luna-week1-gtm-pack.md`
+- `docs/docs/okr/phase1/luna-competitor-evidence-pack.md`
+- `docs/docs/okr/phase1/luna-week1-gtm-pack.md`
 
 ## 7-Day Publish Schedule
 

@@ -134,6 +134,10 @@ docs/remote-agent-prd-*.md
 # Auto-generated MCP config (contains localhost URLs, environment-specific)
 .mcp.json
 
+# Temporary orchestrator decomposition files
+decompose.json
+/tmp/decompose.json
+
 # Prototype and development files
 frontend_prototype/
 
