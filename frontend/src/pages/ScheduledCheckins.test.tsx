@@ -129,10 +129,10 @@ describe('ScheduledCheckins', () => {
       expect(screen.getByText('New Scheduled Message')).toBeInTheDocument();
     });
 
-    it('shows "New Cron Job" on cron tab', () => {
+    it('hides page-level create button on cron tab (CronJobPanel has its own)', () => {
       render(<ScheduledCheckins />);
       fireEvent.click(screen.getByRole('tab', { name: 'Cron Jobs' }));
-      expect(screen.getByText('New Cron Job')).toBeInTheDocument();
+      expect(screen.queryByText('New Scheduled Message')).not.toBeInTheDocument();
     });
   });
 

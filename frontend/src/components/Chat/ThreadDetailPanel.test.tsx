@@ -664,7 +664,7 @@ describe('ThreadDetailPanel', () => {
   });
 
   describe('message filtering', () => {
-    it('hides agent messages and only shows user/orchestrator', () => {
+    it('shows user, orchestrator, and agent messages but hides system', () => {
       mockUseChat.mockReturnValue({
         ...mockUseChat(),
         messages: [
@@ -690,7 +690,7 @@ describe('ThreadDetailPanel', () => {
             id: 'msg-agent',
             conversationId: 'conv-123',
             from: { type: 'agent', name: 'crewly-marketing-luna-5c6cb893' },
-            content: '[DONE] Agent completed task',
+            content: 'Agent completed task',
             contentType: 'text',
             status: 'delivered',
             timestamp: '2026-03-08T00:02:00Z',
@@ -713,10 +713,10 @@ describe('ThreadDetailPanel', () => {
       );
 
       const messages = screen.getAllByTestId('chat-message');
-      expect(messages).toHaveLength(2);
+      expect(messages).toHaveLength(3);
       expect(screen.getByText('Hello')).toBeInTheDocument();
       expect(screen.getByText('Task delegated to Sam')).toBeInTheDocument();
-      expect(screen.queryByText('[DONE] Agent completed task')).not.toBeInTheDocument();
+      expect(screen.getByText('Agent completed task')).toBeInTheDocument();
       expect(screen.queryByText('Agent went offline')).not.toBeInTheDocument();
     });
 

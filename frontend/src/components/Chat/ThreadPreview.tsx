@@ -11,7 +11,6 @@
 import React, { useState, useCallback } from 'react';
 import { MoreVertical, Pin, Archive, Trash2 } from 'lucide-react';
 import type { ChatConversation } from '../../types/chat.types';
-import { Card } from '../UI/Card';
 import { ChannelBadge } from './ChannelBadge';
 import { formatRelativeTime } from '../../utils/time';
 import { maskSensitiveData } from '../../utils/security';
@@ -43,13 +42,21 @@ const ROLE_AVATAR_COLORS: Record<string, string> = {
 // =============================================================================
 
 /**
- * Strip `[Thread context file: ...]` metadata from preview text.
+ * Strip system metadata tags from preview/title text.
  *
- * @param text - Raw preview text that may contain metadata tags
+ * Removes patterns like:
+ * - [Thread context file: ...]
+ * - [Thread ...]  (any Thread-prefixed bracket tag)
+ * - [T1], [T2], etc. (task reference tags)
+ *
+ * @param text - Raw text that may contain metadata tags
  * @returns Cleaned text with metadata tags removed
  */
 function stripMetadata(text: string): string {
-  return text.replace(/\[Thread context file:[^\]]*\]/g, '').trim();
+  return text
+    .replace(/\[Thread[^\]]*\]/g, '')
+    .replace(/\[T\d+\]/g, '')
+    .trim();
 }
 
 /**
@@ -119,7 +126,7 @@ export const ThreadPreview: React.FC<ThreadPreviewProps> = ({
   const channelType = conversation.channelType ?? 'crewly_chat';
   const rawTitle = conversation.title || conversation.lastMessage?.content?.slice(0, 60) || 'New conversation';
   const rawPreview = conversation.lastMessage?.content ?? '';
-  const title = maskSensitiveData(rawTitle);
+  const title = stripMetadata(maskSensitiveData(rawTitle));
   const preview = stripMetadata(maskSensitiveData(rawPreview));
   const senderName = conversation.lastMessage?.from?.name ?? conversation.lastMessage?.from?.type ?? '';
   const senderRole = conversation.lastMessage?.from?.role;
@@ -139,10 +146,7 @@ export const ThreadPreview: React.FC<ThreadPreviewProps> = ({
   }, [conversation.id]);
 
   return (
-    <Card
-      variant={isActive ? 'elevated' : 'default'}
-      padding="sm"
-      interactive
+    <div
       onClick={onClick}
       className={`thread-preview${isActive ? ' active' : ''}${isUnread ? ' unread' : ''}`}
       data-testid="thread-preview"
@@ -229,7 +233,7 @@ export const ThreadPreview: React.FC<ThreadPreviewProps> = ({
           </button>
         </div>
       )}
-    </Card>
+    </div>
   );
 };
 

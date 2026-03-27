@@ -22,7 +22,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { PaymentWallProvider } from './contexts/PaymentWallContext';
 import { AuthCallback } from './pages/AuthCallback';
 import { Auth } from './pages/Auth';
-import { Pricing } from './pages/Pricing';
+
 
 function App() {
   return (
@@ -53,7 +53,7 @@ function App() {
               <Route path="security" element={<SecurityOverview />} />
               <Route path="monitoring/costs" element={<CostDashboard />} />
               <Route path="settings" element={<Settings />} />
-              <Route path="pricing" element={<Pricing />} />
+
               <Route
                 path="chat"
                 element={
