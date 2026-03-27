@@ -1,7 +1,7 @@
 # Luna Week 1 GTM Pack
 
 Last updated: 2026-02-24 (UTC)
-Source of truth: `/Users/yellowsunhy/Desktop/projects/crewly/docs/okr/phase1/luna-competitor-evidence-pack.md`
+Source of truth: `docs/docs/okr/phase1/luna-competitor-evidence-pack.md`
 
 ## 1) Blog Post Outlines (3)
 
@@ -134,7 +134,7 @@ Control Without Slowdown
 
 ## 4) Evidence Reference Map
 
-- Core source document: `/Users/yellowsunhy/Desktop/projects/crewly/docs/okr/phase1/luna-competitor-evidence-pack.md`
+- Core source document: `docs/docs/okr/phase1/luna-competitor-evidence-pack.md`
 - External URLs inherited from that pack (all previously verified `HTTP 200` on 2026-02-24 UTC):
   - https://raw.githubusercontent.com/openclaw/openclaw/main/README.md
   - https://docs.openclaw.ai/channels

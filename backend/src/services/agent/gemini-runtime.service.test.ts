@@ -949,27 +949,27 @@ describe('GeminiRuntimeService', () => {
 			(fs.mkdir as jest.MockedFunction<typeof fs.mkdir>).mockResolvedValue(undefined as any);
 
 			await (service as any).ensureGeminiTrustedFolders([
-				'/Users/yellowsunhy/.crewly',
-				'/Users/yellowsunhy/Desktop/projects/crewly',
+				'/Users/testuser/.crewly',
+				'/Users/testuser/Desktop/projects/crewly',
 			]);
 
 			expect(fs.writeFile).toHaveBeenCalled();
 			const writeArgs = (fs.writeFile as jest.MockedFunction<typeof fs.writeFile>).mock.calls[0];
 			expect(String(writeArgs[0])).toContain(path.join('.gemini', 'trustedFolders.json'));
 			const content = String(writeArgs[1]);
-			expect(content).toContain('"/Users/yellowsunhy/.crewly": "TRUST_FOLDER"');
-			expect(content).toContain('"/Users/yellowsunhy/Desktop/projects/crewly": "TRUST_FOLDER"');
+			expect(content).toContain('"/Users/testuser/.crewly": "TRUST_FOLDER"');
+			expect(content).toContain('"/Users/testuser/Desktop/projects/crewly": "TRUST_FOLDER"');
 		});
 
 		it('should preserve existing trusted folders and avoid duplicate writes when unchanged', async () => {
 			(fs.readFile as jest.MockedFunction<typeof fs.readFile>).mockResolvedValueOnce(
 				JSON.stringify({
-					'/Users/yellowsunhy/.crewly': 'TRUST_FOLDER',
+					'/Users/testuser/.crewly': 'TRUST_FOLDER',
 				}) as any
 			);
 
 			await (service as any).ensureGeminiTrustedFolders([
-				'/Users/yellowsunhy/.crewly',
+				'/Users/testuser/.crewly',
 			]);
 
 			expect(fs.writeFile).not.toHaveBeenCalled();

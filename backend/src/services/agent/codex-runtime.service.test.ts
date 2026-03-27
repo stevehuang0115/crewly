@@ -48,7 +48,7 @@ describe('CodexRuntimeService', () => {
 		});
 
 		it('should not detect Codex when no ready pattern is present', async () => {
-			mockSessionHelper.capturePane.mockReturnValueOnce('yellowsunhy@macbookpro crewly %');
+			mockSessionHelper.capturePane.mockReturnValueOnce('testuser@macbookpro crewly %');
 
 			const result = await service['detectRuntimeSpecific']('test-session');
 
