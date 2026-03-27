@@ -63,7 +63,16 @@
 }
 
 .error-message .error-icon {
-  font-size: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background-color: var(--color-error);
+  color: white;
+  font-size: 1.25rem;
+  font-weight: 700;
 }
 
 .error-message p {
@@ -99,7 +108,16 @@
 }
 
 .orchestrator-offline-banner .offline-icon {
-  font-size: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background-color: var(--color-warning, #f59e0b);
+  color: white;
+  font-size: 0.875rem;
+  font-weight: 700;
   flex-shrink: 0;
 }
 

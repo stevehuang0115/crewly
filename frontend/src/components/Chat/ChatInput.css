@@ -1,7 +1,8 @@
 /**
  * Chat Input Styles
  *
- * Uses design token CSS variables for consistent dark theming.
+ * Layout and textarea styles only.
+ * Send button and error display use UI library components (Button, Alert).
  */
 
 .chat-input-container {
@@ -10,32 +11,6 @@
   padding: 1rem;
   border-top: 1px solid var(--color-border);
   background-color: var(--color-bg-primary);
-}
-
-.input-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.5rem 0.75rem;
-  margin-bottom: 0.5rem;
-  background-color: var(--color-error-light);
-  color: var(--color-error);
-  border-radius: 0.25rem;
-  font-size: 0.875rem;
-}
-
-.input-error .dismiss-error {
-  background: none;
-  border: none;
-  color: var(--color-error);
-  font-size: 1.25rem;
-  cursor: pointer;
-  padding: 0 0.25rem;
-  line-height: 1;
-}
-
-.input-error .dismiss-error:hover {
-  opacity: 0.7;
 }
 
 .input-wrapper {
@@ -80,40 +55,6 @@
   color: var(--color-warning, #f59e0b);
 }
 
-.send-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.5rem;
-  height: 2.5rem;
-  border: none;
-  border-radius: 50%;
-  background-color: var(--color-primary);
-  color: white;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  flex-shrink: 0;
-}
-
-.send-button:hover:not(:disabled) {
-  background-color: var(--color-primary-hover);
-  transform: scale(1.05);
-}
-
-.send-button:disabled {
-  background-color: var(--color-text-muted);
-  cursor: not-allowed;
-}
-
-.send-button .send-icon {
-  font-size: 1rem;
-}
-
-.send-button .sending-indicator {
-  font-size: 1rem;
-  animation: pulse 1s ease-in-out infinite;
-}
-
 .input-hints {
   display: flex;
   gap: 1rem;
@@ -131,16 +72,6 @@
   font-family: inherit;
   font-size: 0.75rem;
   color: var(--color-text-secondary);
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
 }
 
 /* Mobile responsive */

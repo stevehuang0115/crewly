@@ -3,14 +3,19 @@
  *
  * General settings tab for configuring application-wide options.
  *
+ * @uses LoadingSpinner from UI library
  * @module components/Settings/GeneralTab
  */
 
 import React, { useEffect, useState } from 'react';
-import { Save, RotateCcw, Check, AlertCircle } from 'lucide-react';
+import { Save, RotateCcw, Check } from 'lucide-react';
 import { useSettings } from '../../hooks/useSettings';
 import { CrewlySettings, AIRuntime, AI_RUNTIMES, AI_RUNTIME_DISPLAY_NAMES } from '../../types/settings.types';
+import { Alert } from '../UI/Alert';
 import { Button } from '../UI/Button';
+import { Card } from '../UI/Card';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
+import { Toggle } from '../UI/Toggle';
 import { FormInput, FormLabel, FormSelect } from '../UI/Form';
 
 /**
@@ -112,19 +117,15 @@ export const GeneralTab: React.FC = () => {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center py-16">
-        <div className="w-10 h-10 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4" />
-        <p className="text-text-secondary-dark">Loading settings...</p>
+      <div className="flex justify-center py-16">
+        <LoadingSpinner text="Loading settings..." />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-3 rounded-lg flex items-center gap-2">
-        <AlertCircle className="w-5 h-5" />
-        Error loading settings: {error}
-      </div>
+      <Alert variant="error">Error loading settings: {error}</Alert>
     );
   }
 
@@ -135,8 +136,8 @@ export const GeneralTab: React.FC = () => {
   return (
     <div className="space-y-8 max-w-3xl">
       {/* Runtime Settings Section */}
-      <section className="bg-surface-dark border border-border-dark rounded-lg p-6">
-        <h2 className="text-lg font-semibold mb-4">Runtime Settings</h2>
+      <Card padding="lg">
+        <h2 className="text-lg font-semibold mb-4 pb-3 border-b border-border-dark">Runtime Settings</h2>
 
         <div className="space-y-5">
           <div>
@@ -157,41 +158,21 @@ export const GeneralTab: React.FC = () => {
             </p>
           </div>
 
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <label htmlFor="autoStart" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                Auto-Start Orchestrator
-              </label>
-              <p className="text-xs text-text-secondary-dark mt-0.5">
-                Automatically start the orchestrator when Crewly launches
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              id="autoStart"
-              checked={localSettings.general.autoStartOrchestrator}
-              onChange={(e) => handleChange('general', 'autoStartOrchestrator', e.target.checked)}
-              className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-            />
-          </div>
+          <Toggle
+            id="autoStart"
+            label="Auto-Start Orchestrator"
+            description="Automatically start the orchestrator when Crewly launches"
+            checked={localSettings.general.autoStartOrchestrator}
+            onChange={(e) => handleChange('general', 'autoStartOrchestrator', e.target.checked)}
+          />
 
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <label htmlFor="autoResume" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                Auto-Resume Sessions on Restart
-              </label>
-              <p className="text-xs text-text-secondary-dark mt-0.5">
-                Automatically resume agent sessions when they restart
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              id="autoResume"
-              checked={localSettings.general.autoResumeOnRestart}
-              onChange={(e) => handleChange('general', 'autoResumeOnRestart', e.target.checked)}
-              className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-            />
-          </div>
+          <Toggle
+            id="autoResume"
+            label="Auto-Resume Sessions on Restart"
+            description="Automatically resume agent sessions when they restart"
+            checked={localSettings.general.autoResumeOnRestart}
+            onChange={(e) => handleChange('general', 'autoResumeOnRestart', e.target.checked)}
+          />
 
           <div>
             <FormLabel htmlFor="checkInInterval">Check-in Interval (minutes)</FormLabel>
@@ -223,65 +204,43 @@ export const GeneralTab: React.FC = () => {
             </p>
           </div>
 
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <label htmlFor="verboseLogging" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                Verbose Logging
-              </label>
-              <p className="text-xs text-text-secondary-dark mt-0.5">
-                Enable detailed logging for debugging
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              id="verboseLogging"
-              checked={localSettings.general.verboseLogging}
-              onChange={(e) => handleChange('general', 'verboseLogging', e.target.checked)}
-              className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-            />
-          </div>
+          <Toggle
+            id="verboseLogging"
+            label="Verbose Logging"
+            description="Enable detailed logging for debugging"
+            checked={localSettings.general.verboseLogging}
+            onChange={(e) => handleChange('general', 'verboseLogging', e.target.checked)}
+          />
 
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <label htmlFor="enableProactiveCompact" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                Proactive Context Compaction
-              </label>
-              <p className="text-xs text-text-secondary-dark mt-0.5">
-                Automatically run runtime compact/compress when output volume grows large
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              id="enableProactiveCompact"
-              checked={localSettings.general.enableProactiveCompact}
-              onChange={(e) => handleChange('general', 'enableProactiveCompact', e.target.checked)}
-              className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-            />
-          </div>
+          <Toggle
+            id="enableProactiveCompact"
+            label="Proactive Context Compaction"
+            description="Automatically run runtime compact/compress when output volume grows large"
+            checked={localSettings.general.enableProactiveCompact}
+            onChange={(e) => handleChange('general', 'enableProactiveCompact', e.target.checked)}
+          />
 
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <label htmlFor="enableSelfEvolution" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                Self Evolution Mode
-              </label>
-              <p className="text-xs text-text-secondary-dark mt-0.5">
-                Orchestrator monitors for errors, triages issues, and reports bugs. When enabled, the orchestrator will proactively read system and session logs to diagnose problems.
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              id="enableSelfEvolution"
-              checked={localSettings.general.enableSelfEvolution}
-              onChange={(e) => handleChange('general', 'enableSelfEvolution', e.target.checked)}
-              className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-            />
-          </div>
+          <Toggle
+            id="enableSelfEvolution"
+            label="Self Evolution Mode"
+            description="Orchestrator monitors for errors, triages issues, and reports bugs. When enabled, the orchestrator will proactively read system and session logs to diagnose problems."
+            checked={localSettings.general.enableSelfEvolution}
+            onChange={(e) => handleChange('general', 'enableSelfEvolution', e.target.checked)}
+          />
+
+          <Toggle
+            id="enableAuditor"
+            label="Enable Auditor"
+            description="Run the auditor agent — an autonomous quality observer that monitors all agents, detects problems, and writes audit reports. Requires server restart to take effect."
+            checked={localSettings.general.enableAuditor ?? false}
+            onChange={(e) => handleChange('general', 'enableAuditor', e.target.checked)}
+          />
         </div>
-      </section>
+      </Card>
 
       {/* Runtime Commands Section */}
-      <section className="bg-surface-dark border border-border-dark rounded-lg p-6">
-        <h2 className="text-lg font-semibold mb-2">Runtime Commands</h2>
+      <Card padding="lg">
+        <h2 className="text-lg font-semibold mb-2 pb-3 border-b border-border-dark">Runtime Commands</h2>
         <p className="text-sm text-text-secondary-dark mb-4">
           Configure the CLI command used to start each runtime. Changes take effect on next agent start.
         </p>
@@ -301,48 +260,28 @@ export const GeneralTab: React.FC = () => {
             </div>
           ))}
         </div>
-      </section>
+      </Card>
 
       {/* Chat Settings Section */}
-      <section className="bg-surface-dark border border-border-dark rounded-lg p-6">
-        <h2 className="text-lg font-semibold mb-4">Chat Settings</h2>
+      <Card padding="lg">
+        <h2 className="text-lg font-semibold mb-4 pb-3 border-b border-border-dark">Chat Settings</h2>
 
         <div className="space-y-5">
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <label htmlFor="showRawOutput" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                Show Raw Terminal Output
-              </label>
-              <p className="text-xs text-text-secondary-dark mt-0.5">
-                Display raw terminal output alongside formatted messages
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              id="showRawOutput"
-              checked={localSettings.chat.showRawTerminalOutput}
-              onChange={(e) => handleChange('chat', 'showRawTerminalOutput', e.target.checked)}
-              className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-            />
-          </div>
+          <Toggle
+            id="showRawOutput"
+            label="Show Raw Terminal Output"
+            description="Display raw terminal output alongside formatted messages"
+            checked={localSettings.chat.showRawTerminalOutput}
+            onChange={(e) => handleChange('chat', 'showRawTerminalOutput', e.target.checked)}
+          />
 
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <label htmlFor="typingIndicator" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                Enable Typing Indicator
-              </label>
-              <p className="text-xs text-text-secondary-dark mt-0.5">
-                Show typing animation when agents are processing
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              id="typingIndicator"
-              checked={localSettings.chat.enableTypingIndicator}
-              onChange={(e) => handleChange('chat', 'enableTypingIndicator', e.target.checked)}
-              className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-            />
-          </div>
+          <Toggle
+            id="typingIndicator"
+            label="Enable Typing Indicator"
+            description="Show typing animation when agents are processing"
+            checked={localSettings.chat.enableTypingIndicator}
+            onChange={(e) => handleChange('chat', 'enableTypingIndicator', e.target.checked)}
+          />
 
           <div>
             <FormLabel htmlFor="maxHistory">Message History Limit</FormLabel>
@@ -359,46 +298,26 @@ export const GeneralTab: React.FC = () => {
             </p>
           </div>
 
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <label htmlFor="autoScroll" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                Auto-Scroll to Bottom
-              </label>
-              <p className="text-xs text-text-secondary-dark mt-0.5">
-                Automatically scroll to new messages
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              id="autoScroll"
-              checked={localSettings.chat.autoScrollToBottom}
-              onChange={(e) => handleChange('chat', 'autoScrollToBottom', e.target.checked)}
-              className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-            />
-          </div>
+          <Toggle
+            id="autoScroll"
+            label="Auto-Scroll to Bottom"
+            description="Automatically scroll to new messages"
+            checked={localSettings.chat.autoScrollToBottom}
+            onChange={(e) => handleChange('chat', 'autoScrollToBottom', e.target.checked)}
+          />
 
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              <label htmlFor="showTimestamps" className="text-sm font-medium text-text-primary-dark cursor-pointer">
-                Show Timestamps
-              </label>
-              <p className="text-xs text-text-secondary-dark mt-0.5">
-                Display timestamps on chat messages
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              id="showTimestamps"
-              checked={localSettings.chat.showTimestamps}
-              onChange={(e) => handleChange('chat', 'showTimestamps', e.target.checked)}
-              className="w-5 h-5 rounded border-border-dark bg-background-dark text-primary focus:ring-primary focus:ring-offset-0 cursor-pointer"
-            />
-          </div>
+          <Toggle
+            id="showTimestamps"
+            label="Show Timestamps"
+            description="Display timestamps on chat messages"
+            checked={localSettings.chat.showTimestamps}
+            onChange={(e) => handleChange('chat', 'showTimestamps', e.target.checked)}
+          />
         </div>
-      </section>
+      </Card>
 
       {/* Action Buttons */}
-      <div className="flex items-center justify-end gap-3 pb-4">
+      <div className="sticky bottom-0 bg-background-dark/95 backdrop-blur-sm border-t border-border-dark pt-4 pb-4 -mx-4 px-4 flex items-center justify-end gap-3">
         <Button variant="secondary" onClick={handleReset} icon={RotateCcw}>
           Reset to Defaults
         </Button>

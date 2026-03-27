@@ -9,6 +9,10 @@
 import React, { useState } from 'react';
 import { ChatMessage as ChatMessageType } from '../../types/chat.types';
 import { formatRelativeTime } from '../../utils/time';
+import { segmentSensitiveData, REDACTED_CLASS } from '../../utils/security';
+import { Avatar } from '../UI/Avatar';
+import { Badge } from '../UI/Badge';
+import { Button } from '../UI/Button';
 import './ChatMessage.css';
 
 // =============================================================================
@@ -44,32 +48,75 @@ function getSenderName(message: ChatMessageType): string {
 }
 
 /**
- * Get icon for a sender
+ * Get icon label for a sender (text-based, no emoji)
  */
 function getSenderIcon(message: ChatMessageType): string {
   switch (message.from.type) {
     case 'user':
-      return '👤';
+      return 'U';
     case 'orchestrator':
-      return '🤖';
+      return 'O';
     case 'agent':
-      return '🔧';
+      return 'A';
     case 'system':
-      return 'ℹ️';
+      return 'S';
     default:
-      return '💬';
+      return 'C';
   }
 }
 
 /**
- * Format message content - basic markdown support
+ * Get Tailwind classes for sender avatar background color based on type.
+ *
+ * @param message - Chat message to determine sender type
+ * @returns Tailwind class string for avatar styling
+ */
+function getSenderAvatarClass(message: ChatMessageType): string {
+  switch (message.from.type) {
+    case 'user':
+      return '!bg-primary text-white !border-0';
+    case 'orchestrator':
+      return '!bg-emerald-500 text-white !border-0';
+    case 'agent':
+      return '!bg-yellow-500 text-white !border-0';
+    case 'system':
+      return '!bg-gray-500 text-white !border-0';
+    default:
+      return '';
+  }
+}
+
+/**
+ * Render a text string with sensitive data masked and styled.
+ * Splits text into normal and redacted segments for distinct rendering.
+ *
+ * @param text - Text that may contain sensitive data
+ * @param keyPrefix - React key prefix for generated elements
+ * @returns Array of React nodes with redacted placeholders styled
+ */
+function renderMaskedText(text: string, keyPrefix: string): React.ReactNode {
+  const segments = segmentSensitiveData(text);
+  return segments.map((seg, i) =>
+    seg.type === 'redacted' ? (
+      <span key={`${keyPrefix}-${i}`} className={REDACTED_CLASS} title="Sensitive data redacted">
+        {seg.content}
+      </span>
+    ) : (
+      <React.Fragment key={`${keyPrefix}-${i}`}>{seg.content}</React.Fragment>
+    )
+  );
+}
+
+/**
+ * Format message content - basic markdown support with sensitive data masking.
+ * All text segments are passed through the security masking pipeline before rendering.
  */
 function formatContent(content: string): React.ReactNode {
   // Split by code blocks first
   const parts = content.split(/(```[\s\S]*?```)/g);
 
   return parts.map((part, index) => {
-    // Code block
+    // Code block — mask sensitive data inside code blocks too
     if (part.startsWith('```') && part.endsWith('```')) {
       const codeContent = part.slice(3, -3);
       const firstLineEnd = codeContent.indexOf('\n');
@@ -80,12 +127,12 @@ function formatContent(content: string): React.ReactNode {
 
       return (
         <pre key={index} className="code-block" data-language={language}>
-          <code>{code}</code>
+          <code>{renderMaskedText(code, `code-${index}`)}</code>
         </pre>
       );
     }
 
-    // Regular text - apply inline formatting
+    // Regular text - apply inline formatting (with masking)
     return (
       <span key={index}>
         {formatInlineContent(part)}
@@ -95,7 +142,8 @@ function formatContent(content: string): React.ReactNode {
 }
 
 /**
- * Format inline content (bold, italic, inline code)
+ * Format inline content (bold, italic, inline code) with sensitive data masking.
+ * Text segments that are not code or bold are passed through the masking pipeline.
  */
 function formatInlineContent(text: string): React.ReactNode {
   // Split by inline code
@@ -105,28 +153,30 @@ function formatInlineContent(text: string): React.ReactNode {
     if (part.startsWith('`') && part.endsWith('`')) {
       return (
         <code key={index} className="inline-code">
-          {part.slice(1, -1)}
+          {renderMaskedText(part.slice(1, -1), `ic-${index}`)}
         </code>
       );
     }
 
     // Apply bold and italic
-    let result: React.ReactNode = part;
-
-    // Bold
     const boldRegex = /\*\*([^*]+)\*\*/g;
     const boldParts = part.split(boldRegex);
     if (boldParts.length > 1) {
-      result = boldParts.map((boldPart, i) =>
-        i % 2 === 1 ? (
-          <strong key={`bold-${index}-${i}`}>{boldPart}</strong>
-        ) : (
-          boldPart
-        )
+      return (
+        <React.Fragment key={index}>
+          {boldParts.map((boldPart, i) =>
+            i % 2 === 1 ? (
+              <strong key={`bold-${index}-${i}`}>{renderMaskedText(boldPart, `b-${index}-${i}`)}</strong>
+            ) : (
+              <React.Fragment key={`text-${index}-${i}`}>{renderMaskedText(boldPart, `t-${index}-${i}`)}</React.Fragment>
+            )
+          )}
+        </React.Fragment>
       );
     }
 
-    return <React.Fragment key={index}>{result}</React.Fragment>;
+    // Plain text — mask sensitive data
+    return <React.Fragment key={index}>{renderMaskedText(part, `p-${index}`)}</React.Fragment>;
   });
 }
 
@@ -157,7 +207,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     if (showRaw && message.metadata?.rawOutput) {
       return (
         <pre className="raw-output" data-testid="raw-output">
-          {message.metadata.rawOutput}
+          {renderMaskedText(message.metadata.rawOutput, 'raw')}
         </pre>
       );
     }
@@ -170,7 +220,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       return <div className="formatted-content">{formatContent(message.content)}</div>;
     }
 
-    return <p>{message.content}</p>;
+    // Fallback: plain text with masking
+    return <p>{renderMaskedText(message.content, 'plain')}</p>;
   };
 
   const classNames = [
@@ -186,37 +237,59 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   return (
     <div className={classNames} data-testid="chat-message">
       <div className="message-header">
-        <span className="sender-icon" aria-hidden="true">
-          {getSenderIcon(message)}
-        </span>
+        <Avatar
+          src={getSenderIcon(message)}
+          name={getSenderName(message)}
+          size="sm"
+          showRing={false}
+          className={getSenderAvatarClass(message)}
+        />
         <span className="sender-name">{getSenderName(message)}</span>
         <span className="message-time">{formatRelativeTime(message.timestamp)}</span>
         {hasRawOutput && (
-          <button
-            className="toggle-raw-btn"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setShowRaw(!showRaw)}
             title={showRaw ? 'Show formatted' : 'Show raw output'}
             aria-label={showRaw ? 'Show formatted' : 'Show raw output'}
             data-testid="toggle-raw-button"
+            className="toggle-raw-btn"
           >
-            {showRaw ? '📝' : '🔍'}
-          </button>
+            {showRaw ? 'Fmt' : 'Raw'}
+          </Button>
         )}
       </div>
 
       <div className="message-content">{renderContent()}</div>
 
-      {message.metadata?.skillUsed && (
+      {(message.metadata?.skillUsed || message.metadata?.taskCreated || message.metadata?.responseTimeMs) && (
         <div className="message-metadata">
-          <span className="skill-badge">Skill: {message.metadata.skillUsed}</span>
-        </div>
-      )}
-
-      {message.metadata?.taskCreated && (
-        <div className="message-metadata">
-          <span className="task-badge">
-            Task created: {message.metadata.taskCreated}
-          </span>
+          {message.metadata?.skillUsed && (
+            <span data-testid="skill-badge">
+              <Badge variant="primary" size="sm" className="skill-badge gap-1.5">
+                <span className="skill-badge-icon" aria-hidden="true">S</span>
+                {message.metadata.skillUsed}
+              </Badge>
+            </span>
+          )}
+          {message.metadata?.taskCreated && (
+            <span data-testid="task-badge">
+              <Badge variant="warning" size="sm" className="task-badge gap-1.5">
+                <span className="task-badge-icon" aria-hidden="true">T</span>
+                {message.metadata.taskCreated}
+              </Badge>
+            </span>
+          )}
+          {message.metadata?.responseTimeMs && (
+            <span data-testid="timing-badge">
+              <Badge variant="default" size="sm" className="timing-badge">
+                {message.metadata.responseTimeMs < 1000
+                  ? `${message.metadata.responseTimeMs}ms`
+                  : `${(message.metadata.responseTimeMs / 1000).toFixed(1)}s`}
+              </Badge>
+            </span>
+          )}
         </div>
       )}
 

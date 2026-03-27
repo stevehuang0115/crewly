@@ -12,6 +12,7 @@ import { useAlert, useConfirm } from '../components/UI/Dialog';
 import { webSocketService } from '../services/websocket.service';
 import { apiService } from '../services/api.service';
 import { assignDefaultAvatars } from '../utils/team.utils';
+import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
 
 export const TeamDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -589,10 +590,7 @@ export const TeamDetail: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4 mx-auto"></div>
-          <p className="text-text-secondary-dark">Loading team details...</p>
-        </div>
+        <LoadingSpinner size="xl" text="Loading team details..." />
       </div>
     );
   }

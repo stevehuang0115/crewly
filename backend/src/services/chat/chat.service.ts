@@ -799,11 +799,38 @@ export class ChatService extends EventEmitter {
    * @param message - The message to emit
    */
   private emitChatMessageEvent(message: ChatMessage): void {
+    // Sanitize message content before broadcasting via WebSocket
+    // to prevent JWT/API key leaks in real-time messages
+    const sanitizedMessage = {
+      ...message,
+      content: this.sanitizeContent(message.content),
+      metadata: message.metadata ? {
+        ...message.metadata,
+        rawOutput: message.metadata.rawOutput
+          ? this.sanitizeContent(message.metadata.rawOutput)
+          : undefined,
+      } : message.metadata,
+    };
     const event: ChatMessageEvent = {
       type: 'chat_message',
-      data: message,
+      data: sanitizedMessage,
     };
     this.emit('chat_message', event);
+  }
+
+  /**
+   * Strip sensitive tokens from a text string before broadcasting.
+   * Uses the same JWT + API key patterns as chat-sanitizer.service.ts.
+   *
+   * @param text - Raw text that may contain tokens
+   * @returns Text with sensitive data replaced by '***'
+   */
+  private sanitizeContent(text: string): string {
+    return text
+      .replace(/eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}/g, '***')
+      .replace(/\bsk-[A-Za-z0-9_-]{20,}/g, '***')
+      .replace(/\bAKIA[A-Z0-9]{16}\b/g, '***')
+      .replace(/\bgh[pousr]_[A-Za-z0-9_]{30,}/g, '***');
   }
 
   /**

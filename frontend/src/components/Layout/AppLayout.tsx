@@ -12,11 +12,16 @@ import { TeamsRestorePopup } from '../TeamsRestorePopup';
 import { useTerminal } from '../../contexts/TerminalContext';
 import { useSidebar } from '../../contexts/SidebarContext';
 import { IconButton } from '../UI';
+import { PaymentWallModal } from '../PaymentWall/PaymentWall';
+import { usePaymentWall } from '../../contexts/PaymentWallContext';
+import { apiService } from '../../services/api.service';
+import type { BillingInterval } from '../../types/payment-wall.types';
 import clsx from 'clsx';
 
 export const AppLayout: React.FC = () => {
   const { isTerminalOpen, openTerminal, closeTerminal } = useTerminal();
   const { isCollapsed } = useSidebar();
+  const { activeLimitEvent, escalationLevel, isVisible, dismiss, openModal } = usePaymentWall();
   const [isMobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const toggleTerminal = () => {
@@ -103,6 +108,29 @@ export const AppLayout: React.FC = () => {
           onClose={closeTerminal}
         />
       </>
+
+      {/* Payment Wall Modal — rendered once at root level */}
+      {activeLimitEvent && isVisible && escalationLevel === 'modal' && (
+        <PaymentWallModal
+          isOpen={true}
+          event={activeLimitEvent}
+          onClose={dismiss}
+          onUpgrade={async (interval: BillingInterval) => {
+            try {
+              const stripeInterval = interval === 'monthly' ? 'month' : 'year';
+              const result = await apiService.createCheckoutSession(
+                'pro',
+                stripeInterval as 'month' | 'year',
+                `${window.location.origin}/settings?tab=cloud&upgraded=true`,
+                window.location.href,
+              );
+              window.location.href = result.checkoutUrl;
+            } catch {
+              // Checkout creation failed — modal stays open for retry
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -7,7 +7,7 @@
  * @module services/quality/quality-gate.service
  */
 
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -291,48 +291,34 @@ export class QualityGateService implements IQualityGateService {
         CI: 'true', // Always set CI for consistent behavior
       };
 
-      // Execute command with timeout
-      const { stdout, stderr } = await execAsync(gate.command, {
-        cwd: projectPath,
-        timeout: gate.timeout,
+      // Use spawn with a new process group so we can kill the entire tree
+      // (exec only kills the shell, leaving vitest workers orphaned)
+      const { exitCode, stdout, stderr } = await this.spawnWithProcessGroup(
+        gate.command,
+        projectPath,
         env,
-        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-      });
+        gate.timeout,
+      );
 
       const output = this.truncateOutput(stdout + stderr);
       const duration = Date.now() - startTime;
 
-      this.logger.info('Gate passed', { name: gate.name, duration });
-
-      return {
-        name: gate.name,
-        passed: true,
-        required: gate.required,
-        duration,
-        output,
-        exitCode: 0,
-      };
-    } catch (error: unknown) {
-      const execError = error as {
-        stdout?: string;
-        stderr?: string;
-        message?: string;
-        killed?: boolean;
-        code?: number | string;
-      };
-
-      const output = this.truncateOutput(
-        (execError.stdout || '') + (execError.stderr || '') + (execError.message || '')
-      );
-
-      // Check if it's a timeout
-      const isTimeout = execError.killed || execError.code === 'ETIMEDOUT';
-      const duration = Date.now() - startTime;
+      if (exitCode === 0) {
+        this.logger.info('Gate passed', { name: gate.name, duration });
+        return {
+          name: gate.name,
+          passed: true,
+          required: gate.required,
+          duration,
+          output,
+          exitCode: 0,
+        };
+      }
 
       this.logger.warn('Gate failed', {
         name: gate.name,
-        exitCode: execError.code,
-        isTimeout,
+        exitCode,
+        isTimeout: false,
         duration,
       });
 
@@ -342,10 +328,97 @@ export class QualityGateService implements IQualityGateService {
         required: gate.required,
         duration,
         output,
-        exitCode: typeof execError.code === 'number' ? execError.code : 1,
-        error: isTimeout ? 'Command timed out' : (execError.message || 'Unknown error'),
+        exitCode,
+        error: `Process exited with code ${exitCode}`,
+      };
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      const isTimeout = errMsg.includes('timed out');
+      const duration = Date.now() - startTime;
+
+      this.logger.warn('Gate failed', {
+        name: gate.name,
+        exitCode: 1,
+        isTimeout,
+        duration,
+      });
+
+      return {
+        name: gate.name,
+        passed: gate.allowFailure || false,
+        required: gate.required,
+        duration,
+        output: this.truncateOutput(errMsg),
+        exitCode: 1,
+        error: isTimeout ? 'Command timed out' : errMsg,
       };
     }
+  }
+
+  /**
+   * Spawn a command in a new process group so the entire process tree
+   * (including vitest workers) can be killed on timeout or cancellation.
+   *
+   * @param command - Shell command to execute
+   * @param cwd - Working directory
+   * @param env - Environment variables
+   * @param timeout - Timeout in milliseconds
+   * @returns Exit code, stdout, and stderr
+   */
+  private spawnWithProcessGroup(
+    command: string,
+    cwd: string,
+    env: Record<string, string | undefined>,
+    timeout: number,
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn('sh', ['-c', command], {
+        cwd,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true, // Creates a new process group
+      });
+
+      let stdout = '';
+      let stderr = '';
+      let killed = false;
+      const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
+
+      child.stdout?.on('data', (data: Buffer) => {
+        if (stdout.length < MAX_BUFFER) stdout += data.toString();
+      });
+      child.stderr?.on('data', (data: Buffer) => {
+        if (stderr.length < MAX_BUFFER) stderr += data.toString();
+      });
+
+      // Kill the entire process group on timeout
+      const timer = setTimeout(() => {
+        killed = true;
+        if (child.pid) {
+          try {
+            process.kill(-child.pid, 'SIGTERM');
+          } catch { /* already exited */ }
+          // Force kill after 5s grace period
+          setTimeout(() => {
+            try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already exited */ }
+          }, 5000);
+        }
+      }, timeout);
+
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (killed) {
+          reject(new Error(`Command timed out after ${timeout}ms`));
+        } else {
+          resolve({ exitCode: code ?? 1, stdout, stderr });
+        }
+      });
+
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
   }
 
   /**

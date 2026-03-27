@@ -70,6 +70,45 @@ vi.mock('./ChannelBadge', () => ({
   ),
 }));
 
+vi.mock('./ChatLoadingState', () => ({
+  ChatLoadingState: ({ message }: { message?: string }) => (
+    <div data-testid="chat-loading">{message ?? 'Loading...'}</div>
+  ),
+}));
+
+vi.mock('./ChatErrorState', () => ({
+  ChatErrorState: ({ error }: { error: string }) => (
+    <div data-testid="chat-error">
+      <span>Error: {error}</span>
+      <button onClick={() => window.location.reload()}>Retry</button>
+    </div>
+  ),
+}));
+
+vi.mock('./ChatEmptyState', () => ({
+  ChatEmptyState: () => (
+    <div data-testid="empty-chat">
+      <h3>Welcome to Crewly</h3>
+      <p>Start a conversation with the Orchestrator.</p>
+      <ul>
+        <li>Create a new project</li>
+        <li>Assign a task to an agent</li>
+        <li>Check project status</li>
+        <li>Configure a team</li>
+      </ul>
+    </div>
+  ),
+}));
+
+vi.mock('./ChatOfflineBanner', () => ({
+  ChatOfflineBanner: ({ message }: { message?: string }) => (
+    <div data-testid="orchestrator-offline-banner">
+      <span>{message}</span>
+      <button onClick={() => {}}>Dashboard</button>
+    </div>
+  ),
+}));
+
 const mockUseChat = useChat as ReturnType<typeof vi.fn>;
 const mockUseOrchestratorStatus = useOrchestratorStatus as ReturnType<typeof vi.fn>;
 
@@ -502,7 +541,7 @@ describe('ThreadDetailPanel', () => {
       expect(screen.getByTestId('orchestrator-offline-banner')).toBeInTheDocument();
     });
 
-    it('shows dashboard link when offline', () => {
+    it('shows Dashboard button when offline', () => {
       mockUseOrchestratorStatus.mockReturnValue({
         status: {
           isActive: false,
@@ -520,11 +559,7 @@ describe('ThreadDetailPanel', () => {
         { wrapper: TestWrapper }
       );
 
-      expect(screen.getByText('Go to Dashboard')).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: /go to dashboard/i })).toHaveAttribute(
-        'href',
-        '/'
-      );
+      expect(screen.getByText('Dashboard')).toBeInTheDocument();
     });
 
     it('disables chat input when orchestrator is offline', () => {

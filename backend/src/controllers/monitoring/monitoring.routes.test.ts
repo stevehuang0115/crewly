@@ -57,6 +57,37 @@ describe('Monitoring Routes', () => {
     );
   });
 
+  it('should register token-quote and token-quotes routes', () => {
+    const router = createMonitoringRouter();
+    const routes = router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({
+        path: layer.route.path,
+        methods: Object.keys(layer.route.methods),
+      }));
+
+    expect(routes).toContainEqual(
+      expect.objectContaining({ path: '/token-quote/:templateId', methods: expect.arrayContaining(['get']) })
+    );
+    expect(routes).toContainEqual(
+      expect.objectContaining({ path: '/token-quotes', methods: expect.arrayContaining(['get']) })
+    );
+  });
+
+  it('should register estimate-tokens POST route', () => {
+    const router = createMonitoringRouter();
+    const routes = router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({
+        path: layer.route.path,
+        methods: Object.keys(layer.route.methods),
+      }));
+
+    expect(routes).toContainEqual(
+      expect.objectContaining({ path: '/estimate-tokens', methods: expect.arrayContaining(['post']) })
+    );
+  });
+
   it('should register extension-logs POST route', () => {
     const router = createMonitoringRouter();
     const routes = router.stack

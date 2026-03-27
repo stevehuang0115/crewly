@@ -12,8 +12,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Shield, Database, CheckSquare } from 'lucide-react';
+import { Shield, Database, CheckSquare, CheckCircle, AlertTriangle, XOctagon } from 'lucide-react';
 import type { PillarId } from './SecurityPillarCard';
+import { Card } from '../UI/Card';
+import { Button } from '../UI/Button';
 
 /** Props for SecurityArchDiagram */
 export interface SecurityArchDiagramProps {
@@ -159,12 +161,26 @@ const LocalStorageDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
 
 /** Permission matrix rows from spec section 2.3 State C */
 const PERMISSION_ROWS = [
-  { tool: 'read files', level: 'auto', label: 'Auto-approved', color: 'text-emerald-400', icon: '\u2705' },
-  { tool: 'write files', level: 'auto', label: 'Auto-approved', color: 'text-emerald-400', icon: '\u2705' },
-  { tool: 'npm install', level: 'ask-once', label: 'Ask once', color: 'text-yellow-400', icon: '\u26A0\uFE0F' },
-  { tool: 'git push --force', level: 'always-ask', label: 'Always ask', color: 'text-red-400', icon: '\uD83D\uDD34' },
-  { tool: 'rm -rf', level: 'always-ask', label: 'Always ask', color: 'text-red-400', icon: '\uD83D\uDD34' },
+  { tool: 'read files', level: 'auto', label: 'Auto-approved', color: 'text-emerald-400', iconType: 'check' },
+  { tool: 'write files', level: 'auto', label: 'Auto-approved', color: 'text-emerald-400', iconType: 'check' },
+  { tool: 'npm install', level: 'ask-once', label: 'Ask once', color: 'text-yellow-400', iconType: 'warn' },
+  { tool: 'git push --force', level: 'always-ask', label: 'Always ask', color: 'text-red-400', iconType: 'deny' },
+  { tool: 'rm -rf', level: 'always-ask', label: 'Always ask', color: 'text-red-400', iconType: 'deny' },
 ] as const;
+
+/** Map permission icon types to Lucide components */
+function PermissionIcon({ type, className }: { type: string; className?: string }) {
+  switch (type) {
+    case 'check':
+      return <CheckCircle size={14} className={className} />;
+    case 'warn':
+      return <AlertTriangle size={14} className={className} />;
+    case 'deny':
+      return <XOctagon size={14} className={className} />;
+    default:
+      return null;
+  }
+}
 
 /**
  * State C — Granular Tool Approval diagram showing the approval prompt
@@ -185,7 +201,7 @@ const ToolApprovalDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
       </div>
 
       {/* Approval prompt */}
-      <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-5">
+      <Card variant="outlined" padding="lg" className="bg-zinc-900">
         <div className="text-sm text-zinc-400 mb-3">
           Agent &ldquo;Sam&rdquo; wants to execute:
         </div>
@@ -208,30 +224,22 @@ const ToolApprovalDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
           <div>&bull; Cannot be undone</div>
         </div>
         <div className="flex gap-3">
-          <button
-            type="button"
+          <Button
+            variant={decision === 'denied' ? 'danger' : 'outline'}
+            size="sm"
             onClick={() => setDecision('denied')}
-            className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
-              decision === 'denied'
-                ? 'bg-red-500 text-white'
-                : 'bg-zinc-800 text-zinc-300 hover:bg-red-500/20 hover:text-red-300 border border-zinc-600'
-            }`}
             aria-label="Deny this tool execution"
           >
             Deny
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant={decision === 'approved' ? 'success' : 'outline'}
+            size="sm"
             onClick={() => setDecision('approved')}
-            className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
-              decision === 'approved'
-                ? 'bg-emerald-500 text-white'
-                : 'bg-zinc-800 text-zinc-300 hover:bg-emerald-500/20 hover:text-emerald-300 border border-zinc-600'
-            }`}
             aria-label="Approve this tool execution"
           >
             Approve
-          </button>
+          </Button>
         </div>
         {decision !== 'pending' && (
           <div
@@ -244,10 +252,10 @@ const ToolApprovalDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
             {decision === 'denied' ? 'Execution denied — agent notified.' : 'Execution approved — proceeding.'}
           </div>
         )}
-      </div>
+      </Card>
 
       {/* Permission matrix */}
-      <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
+      <Card variant="outlined" padding="md" className="bg-zinc-900">
         <div className="text-sm font-semibold text-zinc-300 mb-3">Permission Matrix:</div>
         <div className="space-y-2" role="list" aria-label="Permission matrix">
           {PERMISSION_ROWS.map((row) => (
@@ -261,15 +269,15 @@ const ToolApprovalDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
                 <span className="text-zinc-600" aria-hidden="true">
                   {'·'.repeat(12)}
                 </span>
-                <span className={row.color}>
-                  <span aria-hidden="true">{row.icon} </span>
+                <span className={`flex items-center gap-1 ${row.color}`}>
+                  <PermissionIcon type={row.iconType} className={row.color} />
                   {row.label}
                 </span>
               </span>
             </div>
           ))}
         </div>
-      </div>
+      </Card>
     </div>
   );
 };
@@ -321,9 +329,10 @@ export const SecurityArchDiagram: React.FC<SecurityArchDiagramProps> = ({ active
   };
 
   return (
-    <div
+    <Card
       id="security-arch-diagram"
-      className="rounded-xl border border-zinc-700 bg-zinc-950 p-6"
+      variant="default"
+      padding="lg"
       role="img"
       aria-label={PILLAR_LABELS[internalPillar]}
       data-testid="security-arch-diagram"
@@ -376,7 +385,7 @@ export const SecurityArchDiagram: React.FC<SecurityArchDiagramProps> = ({ active
       <div className="sr-only">
         {PILLAR_LABELS[internalPillar]}
       </div>
-    </div>
+    </Card>
   );
 };
 

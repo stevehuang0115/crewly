@@ -13,9 +13,8 @@ import { ProjectCard } from '@/components/Cards/ProjectCard';
 import TeamsGridCard from '@/components/Teams/TeamsGridCard';
 import { CreateCard } from '@/components/Cards/CreateCard';
 import { Team, Project } from '@/types';
-import { Factory } from 'lucide-react';
 import { apiService } from '@/services/api.service';
-import { RelayHealthCard } from '@/components/Dashboard/RelayHealthCard';
+import { HealthBar } from '@/components/Dashboard/HealthBar';
 
 
 interface ProjectProgress {
@@ -207,29 +206,24 @@ export const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 mb-10">
+      {/* Health Bar — compact system overview */}
+      <div className="mb-6">
+        <HealthBar
+          runningAgents={teams.flatMap(t => t.members).filter(m => m.agentStatus === 'active').length}
+          projectCount={projects.length}
+          teamCount={teams.length}
+          tasksInProgress={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.inProgress, 0)}
+          tasksCompleted={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.done, 0)}
+          relayConnected={false}
+          onFactoryClick={navigateToFactory}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
         <StatCard title="Projects" value={projects.length} />
         <StatCard title="Teams" value={teams.length} />
         <StatCard title="Active Projects" value={projects.filter(p => p.status === 'active').length} />
         <StatCard title="Running Agents" value={teams.flatMap(t => t.members).filter(m => m.agentStatus === 'active').length} />
-        <button
-          type="button"
-          onClick={navigateToFactory}
-          className="bg-gradient-to-br from-primary/20 to-purple-500/20 p-6 rounded-lg border border-primary/30 transition-all hover:shadow-lg hover:shadow-primary/20 hover:border-primary hover:scale-[1.02] group"
-        >
-          <div className="flex items-center gap-3">
-            <Factory className="w-8 h-8 text-primary group-hover:scale-110 transition-transform" />
-            <div className="text-left">
-              <p className="text-sm font-medium text-text-secondary-dark">3D View</p>
-              <p className="text-lg font-bold text-primary">Factory</p>
-            </div>
-          </div>
-        </button>
-      </div>
-
-      {/* Cloud Relay Health */}
-      <div className="mb-10">
-        <RelayHealthCard />
       </div>
 
       <div className="space-y-10">

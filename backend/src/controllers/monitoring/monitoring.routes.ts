@@ -9,7 +9,7 @@
 
 import { Router } from 'express';
 import type { ApiContext } from '../types.js';
-import { getTokenUsage, resetTokenUsage } from './token-usage.controller.js';
+import { getTokenUsage, resetTokenUsage, getDeploymentQuote, getAllDeploymentQuotes, estimateTokens } from './token-usage.controller.js';
 import { receiveExtensionLogs } from './extension-logs.controller.js';
 import { getPtyStatus } from './pty-status.controller.js';
 
@@ -27,6 +27,15 @@ export function createMonitoringRouter(_context?: ApiContext): Router {
 
   // POST /api/monitoring/token-usage/reset — clear all tracking data
   router.post('/token-usage/reset', resetTokenUsage);
+
+  // GET /api/monitoring/token-quote/:templateId — get deployment quote for a template
+  router.get('/token-quote/:templateId', getDeploymentQuote);
+
+  // GET /api/monitoring/token-quotes — get quotes for all templates
+  router.get('/token-quotes', getAllDeploymentQuotes);
+
+  // POST /api/monitoring/estimate-tokens — pre-execution token estimation
+  router.post('/estimate-tokens', estimateTokens);
 
   // POST /api/monitoring/extension-logs — receive Chrome Extension log batches
   router.post('/extension-logs', receiveExtensionLogs);

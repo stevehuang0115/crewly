@@ -322,7 +322,7 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
                 Cancel
               </button>
               <button
-                onClick={() => {
+                onClick={async () => {
                   if (onSave) {
                     const updates: Partial<TeamMember> = {
                       runtimeType: editedRuntime as TeamMember['runtimeType'],
@@ -330,7 +330,7 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
                     if (editedRuntime === 'crewly-agent') {
                       updates.modelId = editedModelId || undefined;
                     }
-                    onSave(member.id, updates);
+                    await onSave(member.id, updates);
                   }
                   onClose();
                 }}

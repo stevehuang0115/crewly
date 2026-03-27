@@ -21,6 +21,7 @@ import {
   installItem,
   uninstallItem,
   updateItem,
+  getItemReadme,
   submitSkill,
   listSubmissions,
   getSubmission,
@@ -338,4 +339,38 @@ export const handleReviewSubmission = asyncHandler(async (req: Request, res: Res
     return;
   }
   res.json(result);
+});
+
+/**
+ * GET /api/marketplace/:id/readme - Get README content for a marketplace item.
+ *
+ * Reads the README.md (or SKILL.md) from the item's installed directory.
+ * Returns 404 if the item has no README or is not installed.
+ *
+ * @param req - Express request with params.id
+ * @param res - Express response returning { success, data: { content: string } } or 404
+ *
+ * @example
+ * ```
+ * GET /api/marketplace/skill-deploy-aws/readme
+ * ```
+ */
+export const handleGetItemReadme = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  try {
+    const content = await getItemReadme(req.params.id);
+    if (content === null) {
+      res.status(404).json({
+        success: false,
+        error: 'README not found. The item may not be installed or has no README.',
+      });
+      return;
+    }
+    res.json({ success: true, data: { content } });
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('Invalid marketplace item ID')) {
+      res.status(400).json({ success: false, error: err.message });
+      return;
+    }
+    throw err;
+  }
 });

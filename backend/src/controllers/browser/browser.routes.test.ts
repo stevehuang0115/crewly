@@ -70,11 +70,12 @@ describe('createBrowserRouter', () => {
 		expect(routePaths).toContain('POST /get-interactive-elements');
 		expect(routePaths).toContain('POST /search-text');
 		expect(routePaths).toContain('POST /list-options');
+		expect(routePaths).toContain('POST /set-file-input');
 	});
 
-	it('should have exactly 22 routes', () => {
+	it('should have exactly 23 routes', () => {
 		const router = createBrowserRouter();
 		const routes = router.stack.filter((layer: any) => layer.route);
-		expect(routes.length).toBe(22);
+		expect(routes.length).toBe(23);
 	});
 });

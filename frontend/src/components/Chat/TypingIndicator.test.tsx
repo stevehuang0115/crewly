@@ -17,9 +17,11 @@ describe('TypingIndicator', () => {
     expect(screen.getByTestId('typing-indicator')).toBeInTheDocument();
   });
 
-  it('shows orchestrator sender icon', () => {
+  it('shows orchestrator sender icon (Lucide Bot)', () => {
     render(<TypingIndicator />);
-    expect(screen.getByText('🤖')).toBeInTheDocument();
+    // Bot icon renders as SVG inside the sender-icon span
+    const senderIcon = screen.getByTestId('typing-indicator').querySelector('.sender-icon svg');
+    expect(senderIcon).toBeInTheDocument();
   });
 
   it('shows orchestrator name', () => {

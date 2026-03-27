@@ -19,6 +19,7 @@ export {
   searchItems,
   getInstallPath,
   resetRegistryCache,
+  getItemReadme,
 } from './marketplace.service.js';
 
 // Marketplace installation operations

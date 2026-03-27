@@ -1,6 +1,7 @@
 import React from 'react';
-import { FolderOpen } from 'lucide-react';
+import { FolderOpen, Pin, PinOff } from 'lucide-react';
 import { Project, Team } from '@/types';
+import { OverflowMenu } from '@/components/UI/OverflowMenu';
 
 interface ProjectCardProps {
   project: Project;
@@ -8,6 +9,11 @@ interface ProjectCardProps {
   showTeams?: boolean;
   assignedTeams?: Team[];
   onClick?: () => void;
+  onArchive?: () => void;
+  /** Whether this project is currently pinned as a favorite */
+  isPinned?: boolean;
+  /** Callback to toggle pin state. If undefined, pin button is not shown. */
+  onTogglePin?: () => void;
   progressPercent?: number; // 0-100 representing (open+in_progress)/total
   progressLabel?: string;   // optional label like "X of Y active"
   progressBreakdown?: {
@@ -22,10 +28,10 @@ interface ProjectCardProps {
 
 const statusColors = {
   active: { bg: 'bg-green-500/10', text: 'text-green-400', label: 'Running' },
-  paused: { bg: 'bg-yellow-500/10', text: 'text-yellow-400', label: 'Stopped' },
+  paused: { bg: 'bg-gray-500/10', text: 'text-gray-400', label: 'Idle' },
   completed: { bg: 'bg-blue-500/10', text: 'text-blue-400', label: 'Completed' },
   blocked: { bg: 'bg-red-500/10', text: 'text-red-400', label: 'Blocked' },
-  stopped: { bg: 'bg-gray-500/10', text: 'text-gray-400', label: 'Stopped' },
+  stopped: { bg: 'bg-gray-500/10', text: 'text-gray-400', label: 'Idle' },
 };
 
 export const ProjectCard: React.FC<ProjectCardProps> = ({
@@ -34,6 +40,9 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
   showTeams = false,
   assignedTeams = [],
   onClick,
+  onArchive,
+  isPinned,
+  onTogglePin,
   progressPercent,
   progressLabel,
   progressBreakdown
@@ -47,25 +56,50 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
     if (!fullPath) return '';
     const segments = fullPath.split('/').filter(Boolean);
     const tail = segments.slice(-3).join('/');
-    const label = segments.length > 3 ? `…/${tail}` : `/${segments.join('/')}`;
+    const label = segments.length > 3 ? `.../${tail}` : `/${segments.join('/')}`;
     if (label.length <= 60) return label;
     const last = label.slice(-60);
-    return `…${last}`;
+    return `...${last}`;
   };
   const pathLabel = getPathLabel(project.path);
 
+  // Build kebab menu items (only when onArchive is provided and project is not completed)
+  const showMenu = onArchive && project.status !== 'completed';
+
   return (
     <div
-      className={`bg-surface-dark p-6 rounded-lg border border-border-dark transition-all hover:shadow-lg hover:border-primary/50 flex flex-col h-full ${onClick ? 'cursor-pointer' : ''}`}
+      className={`group bg-surface-dark p-6 rounded-lg border border-border-dark transition-all hover:shadow-lg hover:border-primary/50 flex flex-col h-full ${onClick ? 'cursor-pointer' : ''}`}
       onClick={onClick}
     >
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-semibold text-lg">{project.name}</h3>
-        {showStatus && (
-          <span className={`text-xs font-medium px-2 py-1 rounded-full ${statusColor.bg} ${statusColor.text}`}>
-            {statusColor.label}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {onTogglePin && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
+              className={`p-1 rounded transition-colors ${isPinned ? 'text-yellow-400 hover:text-yellow-300' : 'text-gray-500 opacity-0 group-hover:opacity-100 hover:text-yellow-400'}`}
+              title={isPinned ? 'Unpin from favorites' : 'Pin to favorites'}
+              aria-label={isPinned ? 'Unpin from favorites' : 'Pin to favorites'}
+              data-testid={`pin-btn-${project.id}`}
+            >
+              {isPinned ? <PinOff className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
+            </button>
+          )}
+          {showStatus && (
+            <span className={`text-xs font-medium px-2 py-1 rounded-full ${statusColor.bg} ${statusColor.text}`}>
+              {statusColor.label}
+            </span>
+          )}
+          {showMenu && (
+            <div data-testid={`project-menu-${project.id}`} onClick={(e) => e.stopPropagation()}>
+              <OverflowMenu
+                items={[
+                  { label: 'Archive', onClick: () => onArchive() },
+                ]}
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       <p

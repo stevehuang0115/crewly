@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, jest, afterEach } from '@jest/globals';
-import { createTools, getToolNames, TOOL_SENSITIVITY, stripNotifyMarkers, convertMarkdownToSlackMrkdwn } from './tool-registry.js';
+import { createTools, getToolNames, TOOL_SENSITIVITY, stripNotifyMarkers, convertMarkdownToSlackMrkdwn, globToRegExp, walkAndMatch, searchFileContents } from './tool-registry.js';
 import { CrewlyApiClient } from './api-client.js';
 import type { AuditEntry, ToolCallbacks, CompactionResult, AuditLogFilters } from './types.js';
 import { WRITE_TOOLS } from './types.js';
@@ -18,9 +18,9 @@ describe('Tool Registry', () => {
   });
 
   describe('getToolNames', () => {
-    it('should return all 27 tool names', () => {
+    it('should return all tool names including glob and grep', () => {
       const names = getToolNames();
-      expect(names).toHaveLength(30);
+      expect(names).toHaveLength(32);
       expect(names).toContain('delegate_task');
       expect(names).toContain('send_message');
       expect(names).toContain('get_agent_status');
@@ -48,6 +48,8 @@ describe('Tool Registry', () => {
       expect(names).toContain('report_status');
       expect(names).toContain('compact_memory');
       expect(names).toContain('get_audit_log');
+      expect(names).toContain('glob');
+      expect(names).toContain('grep');
     });
   });
 
@@ -2045,6 +2047,286 @@ describe('Tool Registry', () => {
       expect(result.success).toBe(true);
       const childPid = parseInt(result.stdout.trim(), 10);
       expect(childPid).not.toBe(process.pid);
+    });
+  });
+
+  // ===== globToRegExp unit tests =====
+
+  describe('globToRegExp', () => {
+    it('should match simple wildcards', () => {
+      const re = globToRegExp('*.ts');
+      expect(re.test('foo.ts')).toBe(true);
+      expect(re.test('bar.js')).toBe(false);
+      expect(re.test('src/foo.ts')).toBe(false); // * should not match /
+    });
+
+    it('should match ** for recursive paths', () => {
+      const re = globToRegExp('**/*.ts');
+      expect(re.test('foo.ts')).toBe(true);
+      expect(re.test('src/foo.ts')).toBe(true);
+      expect(re.test('src/deep/nested/foo.ts')).toBe(true);
+      expect(re.test('foo.js')).toBe(false);
+    });
+
+    it('should match ? for single characters', () => {
+      const re = globToRegExp('?.ts');
+      expect(re.test('a.ts')).toBe(true);
+      expect(re.test('ab.ts')).toBe(false);
+    });
+
+    it('should match brace alternatives', () => {
+      const re = globToRegExp('*.{ts,tsx}');
+      expect(re.test('foo.ts')).toBe(true);
+      expect(re.test('foo.tsx')).toBe(true);
+      expect(re.test('foo.js')).toBe(false);
+    });
+
+    it('should match character classes', () => {
+      const re = globToRegExp('[abc].ts');
+      expect(re.test('a.ts')).toBe(true);
+      expect(re.test('d.ts')).toBe(false);
+    });
+
+    it('should escape regex special characters in literal parts', () => {
+      const re = globToRegExp('file.test.ts');
+      expect(re.test('file.test.ts')).toBe(true);
+      expect(re.test('filextest.ts')).toBe(false); // dot should be literal
+    });
+
+    it('should handle src/**/*.test.ts pattern', () => {
+      const re = globToRegExp('src/**/*.test.ts');
+      expect(re.test('src/foo.test.ts')).toBe(true);
+      expect(re.test('src/deep/bar.test.ts')).toBe(true);
+      expect(re.test('lib/foo.test.ts')).toBe(false);
+    });
+  });
+
+  // ===== walkAndMatch unit tests =====
+
+  describe('walkAndMatch', () => {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const path = require('path');
+    let tmpDir: string;
+
+    beforeEach(async () => {
+      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-glob-test-'));
+      // Create test file structure
+      await fs.mkdir(path.join(tmpDir, 'src'), { recursive: true });
+      await fs.mkdir(path.join(tmpDir, 'src', 'utils'), { recursive: true });
+      await fs.mkdir(path.join(tmpDir, 'node_modules', 'pkg'), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, 'index.ts'), 'export {};');
+      await fs.writeFile(path.join(tmpDir, 'src', 'app.ts'), 'const app = 1;');
+      await fs.writeFile(path.join(tmpDir, 'src', 'app.test.ts'), 'test("app", () => {});');
+      await fs.writeFile(path.join(tmpDir, 'src', 'utils', 'helper.ts'), 'export function help() {}');
+      await fs.writeFile(path.join(tmpDir, 'src', 'style.css'), 'body {}');
+      await fs.writeFile(path.join(tmpDir, 'node_modules', 'pkg', 'index.js'), 'module.exports = {};');
+    });
+
+    afterEach(async () => {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    });
+
+    it('should find all .ts files recursively', async () => {
+      const re = globToRegExp('**/*.ts');
+      const results = await walkAndMatch(tmpDir, re, new Set(['node_modules', '.git']), 100);
+      expect(results.length).toBe(4);
+      expect(results.some(f => f.endsWith('index.ts'))).toBe(true);
+      expect(results.some(f => f.endsWith('app.ts'))).toBe(true);
+      expect(results.some(f => f.endsWith('app.test.ts'))).toBe(true);
+      expect(results.some(f => f.endsWith('helper.ts'))).toBe(true);
+    });
+
+    it('should ignore node_modules by default', async () => {
+      const re = globToRegExp('**/*.js');
+      const results = await walkAndMatch(tmpDir, re, new Set(['node_modules']), 100);
+      expect(results.length).toBe(0); // Only .js is in node_modules
+    });
+
+    it('should respect maxResults limit', async () => {
+      const re = globToRegExp('**/*');
+      const results = await walkAndMatch(tmpDir, re, new Set(['node_modules']), 2);
+      expect(results.length).toBe(2);
+    });
+
+    it('should match specific subdirectory patterns', async () => {
+      const re = globToRegExp('src/**/*.ts');
+      const results = await walkAndMatch(tmpDir, re, new Set(['node_modules']), 100);
+      expect(results.length).toBe(3); // app.ts, app.test.ts, helper.ts
+      expect(results.every(f => f.includes('/src/'))).toBe(true);
+    });
+  });
+
+  // ===== searchFileContents unit tests =====
+
+  describe('searchFileContents', () => {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const path = require('path');
+    let tmpFile: string;
+
+    beforeEach(async () => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-grep-test-'));
+      tmpFile = path.join(tmpDir, 'test.ts');
+      await fs.writeFile(tmpFile, [
+        'import { foo } from "./foo";',
+        'import { bar } from "./bar";',
+        '',
+        'export function hello() {',
+        '  return "hello world";',
+        '}',
+        '',
+        'export function goodbye() {',
+        '  return "goodbye world";',
+        '}',
+      ].join('\n'));
+    });
+
+    it('should find matching lines with line numbers', async () => {
+      const matches = await searchFileContents(tmpFile, /export function/, 0);
+      expect(matches.length).toBe(2);
+      expect(matches[0].line).toBe(4);
+      expect(matches[0].content).toContain('hello');
+      expect(matches[1].line).toBe(8);
+      expect(matches[1].content).toContain('goodbye');
+    });
+
+    it('should return context lines when requested', async () => {
+      const matches = await searchFileContents(tmpFile, /hello\(\)/, 1);
+      expect(matches.length).toBe(1);
+      expect(matches[0].line).toBe(4);
+      expect(matches[0].context).toBeDefined();
+      expect(matches[0].context!.length).toBe(3); // 1 before + match + 1 after
+    });
+
+    it('should return empty array when no matches', async () => {
+      const matches = await searchFileContents(tmpFile, /nonexistent/, 0);
+      expect(matches.length).toBe(0);
+    });
+
+    it('should handle regex special characters in content', async () => {
+      const matches = await searchFileContents(tmpFile, /from "\.\/foo"/, 0);
+      expect(matches.length).toBe(1);
+      expect(matches[0].line).toBe(1);
+    });
+  });
+
+  // ===== glob tool integration tests =====
+
+  describe('glob tool', () => {
+    it('should exist in createTools output', () => {
+      expect(tools.glob).toBeDefined();
+      expect((tools.glob as any).description).toContain('file pattern matching');
+    });
+
+    it('should find files in the project directory', async () => {
+      const result = await (tools.glob as any).execute({
+        pattern: '**/*.ts',
+        path: __dirname,
+      }) as any;
+      expect(result.success).toBe(true);
+      expect(result.matchCount).toBeGreaterThan(0);
+      expect(result.files.some((f: string) => f.endsWith('tool-registry.ts'))).toBe(true);
+    });
+
+    it('should return error for non-existent directory', async () => {
+      const result = await (tools.glob as any).execute({
+        pattern: '**/*.ts',
+        path: '/nonexistent/path/xyz',
+      }) as any;
+      expect(result.success).toBe(false);
+    });
+
+    it('should respect custom ignore patterns', async () => {
+      const result = await (tools.glob as any).execute({
+        pattern: '**/*.ts',
+        path: __dirname,
+        ignore: ['__snapshots__'],
+      }) as any;
+      expect(result.success).toBe(true);
+    });
+
+    it('should have safe sensitivity', () => {
+      expect(TOOL_SENSITIVITY.glob).toBe('safe');
+    });
+  });
+
+  // ===== grep tool integration tests =====
+
+  describe('grep tool', () => {
+    it('should exist in createTools output', () => {
+      expect(tools.grep).toBeDefined();
+      expect((tools.grep as any).description).toContain('Search file contents');
+    });
+
+    it('should find pattern matches in files', async () => {
+      const result = await (tools.grep as any).execute({
+        pattern: 'export function createTools',
+        path: __dirname,
+        file_pattern: '**/*.ts',
+      }) as any;
+      expect(result.success).toBe(true);
+      expect(result.matchCount).toBeGreaterThan(0);
+      // Match may come from source or test file — both contain the string
+      expect(result.matches.some((m: any) => m.file.includes('tool-registry'))).toBe(true);
+    });
+
+    it('should support case insensitive search', async () => {
+      const result = await (tools.grep as any).execute({
+        pattern: 'EXPORT FUNCTION CREATETOOLS',
+        path: __dirname,
+        file_pattern: 'tool-registry.ts',
+        case_insensitive: true,
+      }) as any;
+      expect(result.success).toBe(true);
+      expect(result.matchCount).toBeGreaterThan(0);
+    });
+
+    it('should return context lines when requested', async () => {
+      const result = await (tools.grep as any).execute({
+        pattern: 'export function createTools',
+        path: __dirname,
+        file_pattern: 'tool-registry.ts',
+        context_lines: 2,
+      }) as any;
+      expect(result.success).toBe(true);
+      expect(result.matches[0].context).toBeDefined();
+      expect(result.matches[0].context.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('should return error for invalid regex', async () => {
+      const result = await (tools.grep as any).execute({
+        pattern: '[invalid',
+        path: __dirname,
+      }) as any;
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid regex');
+    });
+
+    it('should search a single file when path is a file', async () => {
+      const filePath = require('path').join(__dirname, 'tool-registry.ts');
+      const result = await (tools.grep as any).execute({
+        pattern: 'glob:',
+        path: filePath,
+      }) as any;
+      expect(result.success).toBe(true);
+      expect(result.matchCount).toBeGreaterThan(0);
+    });
+
+    it('should have safe sensitivity', () => {
+      expect(TOOL_SENSITIVITY.grep).toBe('safe');
+    });
+
+    it('should respect max_matches limit', async () => {
+      const result = await (tools.grep as any).execute({
+        pattern: 'const|let|var',
+        path: __dirname,
+        file_pattern: '**/*.ts',
+        max_matches: 3,
+      }) as any;
+      expect(result.success).toBe(true);
+      expect(result.matchCount).toBeLessThanOrEqual(3);
+      expect(result.truncated).toBe(true);
     });
   });
 });

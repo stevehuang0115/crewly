@@ -9,11 +9,12 @@
 
 import React, { useCallback, useState } from 'react';
 import {
-  Trash2, Clock, RefreshCw, AlertCircle, Loader2,
+  Trash2, Clock, RefreshCw, AlertCircle,
   Plus, Play, Pause, CalendarClock, Timer, X,
 } from 'lucide-react';
 import { useCronTasks } from '../../hooks/useCronTasks';
 import { Button } from '../UI/Button';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
 import { Badge } from '../UI/Badge';
 import { Modal, ModalFooter } from '../UI/Modal';
 import { Input } from '../UI/Input';
@@ -598,8 +599,7 @@ export const CronJobPanel: React.FC = () => {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-text-secondary-dark" />
-        <span className="ml-2 text-sm text-text-secondary-dark">Loading cron jobs...</span>
+        <LoadingSpinner size="sm" text="Loading cron jobs..." />
       </div>
     );
   }

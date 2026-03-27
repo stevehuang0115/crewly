@@ -3549,6 +3549,24 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 								}
 							}
 
+							// Fast-response detection: if the terminal output changed since
+							// we sent the message, Claude processed it and returned to prompt
+							// before our first check. Without this, fast responses (e.g.,
+							// simple IP queries) cause false "delivery unconfirmed" verdicts
+							// and trigger duplicate sends (#retry-storm).
+							const outputChanged = currentOutput !== beforeOutput;
+							if (outputChanged) {
+								this.logger.info('Agent at prompt but output changed — fast response detected, delivery confirmed', {
+									sessionName,
+									attempt,
+									intervalMs,
+									beforeLength: beforeOutput.length,
+									currentLength: currentOutput.length,
+								});
+								claudeDelivered = true;
+								break;
+							}
+
 							this.logger.debug('Agent still at prompt, waiting before re-check', {
 								sessionName,
 								attempt,
@@ -3655,6 +3673,15 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 							// Spinner or working indicator → delivered
 							if (containsSpinnerOrWorkingIndicator(loopOutput)) {
 								this.logger.info('Confirmation loop: processing detected', {
+									sessionName, attempt, confirmAttempt,
+								});
+								claudeDelivered = true;
+								break;
+							}
+
+							// Fast-response detection: output changed since send → delivered
+							if (loopOutput !== beforeOutput) {
+								this.logger.info('Confirmation loop: output changed from pre-send — fast response confirmed', {
 									sessionName, attempt, confirmAttempt,
 								});
 								claudeDelivered = true;

@@ -2,12 +2,14 @@
  * RolesTab Component
  *
  * Roles management tab for viewing and editing agent roles.
- *
+ * @uses LoadingSpinner from UI library
  * @module components/Settings/RolesTab
  */
 
 import React, { useState, useMemo } from 'react';
 import { Plus, Trash2, User, RefreshCw } from 'lucide-react';
+import { Alert } from '../UI/Alert';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
 import { useRoles } from '../../hooks/useRoles';
 import {
   RoleSummary,
@@ -26,7 +28,7 @@ const CATEGORY_COLORS: Record<RoleCategory, string> = {
   management: 'bg-amber-500/15 text-amber-400',
   quality: 'bg-emerald-500/15 text-emerald-400',
   design: 'bg-pink-500/15 text-pink-400',
-  sales: 'bg-purple-500/15 text-purple-400',
+  sales: 'bg-primary/15 text-primary',
   support: 'bg-cyan-500/15 text-cyan-400',
   automation: 'bg-orange-500/15 text-orange-400',
 };
@@ -192,19 +194,20 @@ export const RolesTab: React.FC = () => {
 
       {/* Error state */}
       {error && (
-        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-3 rounded-lg flex items-center justify-between">
-          <span>Error: {error}</span>
-          <Button variant="outline" size="sm" onClick={handleRefresh}>
-            Retry
-          </Button>
-        </div>
+        <Alert variant="error">
+          <div className="flex items-center justify-between">
+            <span>Error: {error}</span>
+            <Button variant="outline" size="sm" onClick={handleRefresh}>
+              Retry
+            </Button>
+          </div>
+        </Alert>
       )}
 
       {/* Loading state */}
       {isLoading && filteredRoles.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16">
-          <div className="w-10 h-10 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4" />
-          <p className="text-text-secondary-dark">Loading roles...</p>
+        <div className="flex justify-center py-16">
+          <LoadingSpinner text="Loading roles..." />
         </div>
       )}
 

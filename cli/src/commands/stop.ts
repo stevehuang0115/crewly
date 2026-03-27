@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import chalk from 'chalk';
 import axios from 'axios';
 import { WEB_CONSTANTS, TIMING_CONSTANTS } from '../../../config/index.js';
+import { killOrphanedTestProcesses } from '../utils/process-cleanup.js';
 
 const execAsync = promisify(exec);
 
@@ -28,6 +29,9 @@ export async function stopCommand(options: StopOptions) {
 
     // 3. Kill backend processes
     await killBackendProcesses(options.force);
+
+    // 4. Clean up orphaned test processes (vitest workers, etc.)
+    killOrphanedTestProcesses(process.pid, (msg) => console.log(chalk.gray(msg)));
 
     console.log(chalk.green('✅ Crewly stopped successfully'));
 

@@ -3,9 +3,12 @@
   "name": "Social Media Operations Team",
   "description": "Content creation, visual review, and multi-platform publishing",
   "category": "content",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "tags": ["content", "social-media", "visual", "marketing"],
   "icon": "smartphone",
+  "hierarchical": true,
+  "compatibleRuntimes": ["claude-code", "crewly-agent"],
+  "defaultRuntime": "crewly-agent",
   "norms": {
     "enabled": true,
     "files": [
@@ -13,8 +16,6 @@
       { "file": "engagement-rules.md", "trigger": "always", "roles": ["*"] }
     ]
   },
-  "hierarchical": true,
-  "defaultRuntime": "claude-code",
   "roles": [
     {
       "role": "team-leader",
@@ -23,29 +24,56 @@
       "count": 1,
       "hierarchyLevel": 1,
       "canDelegate": true,
-      "defaultSkills": [
-        "decompose-goal",
-        "delegate-task",
-        "verify-output",
-        "aggregate-results",
-        "handle-failure",
-        "screenshot-review"
+      "defaultTools": [
+        "delegate_task",
+        "send_message",
+        "get_team_status",
+        "get_agent_status",
+        "report_status",
+        "complete_task",
+        "handle_agent_failure",
+        "schedule_check",
+        "subscribe_event",
+        "recall_memory",
+        "remember",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "bash_exec"
       ],
+      "modelConfig": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "temperature": 0.5
+      },
       "enableBrowser": true
     },
     {
-      "role": "designer",
+      "role": "creator",
       "label": "Content Creator",
       "defaultName": "Creator",
       "count": 2,
       "hierarchyLevel": 2,
       "canDelegate": false,
       "reportsTo": "team-leader",
-      "defaultSkills": [
-        "report-status",
-        "complete-task",
-        "request-help"
+      "defaultTools": [
+        "report_status",
+        "complete_task",
+        "send_message",
+        "recall_memory",
+        "remember",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "bash_exec"
       ],
+      "modelConfig": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "temperature": 0.6
+      },
       "enableBrowser": true
     }
   ],

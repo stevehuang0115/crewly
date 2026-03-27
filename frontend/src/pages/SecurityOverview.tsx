@@ -15,18 +15,11 @@ import { useDataSovereignty, formatBytes } from '../hooks/useDataSovereignty';
 import { PtyIsolationMap } from '../components/Security/PtyIsolationMap';
 import { ApprovalAuditLog } from '../components/Security/ApprovalAuditLog';
 import { DataSovereigntyReport } from '../components/Security/DataSovereigntyReport';
-
-/** Status indicator colors */
-const STATUS_COLORS: Record<string, string> = {
-  healthy: 'text-emerald-400',
-  secure: 'text-emerald-400',
-  enforced: 'text-emerald-400',
-  warning: 'text-amber-400',
-  partial: 'text-amber-400',
-  error: 'text-red-400',
-  disabled: 'text-red-400',
-  compromised: 'text-red-400',
-};
+import { SecurityScoreWidget } from '../components/Security/SecurityScoreWidget';
+import { Card } from '../components/UI/Card';
+import { StatusDot } from '../components/UI/StatusDot';
+import { LoadingSpinner } from '../components/UI/LoadingSpinner';
+import type { DotStatus } from '../components/UI/StatusDot';
 
 /** Status indicator labels */
 const STATUS_LABELS: Record<string, string> = {
@@ -41,9 +34,34 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 /**
+ * Maps security-specific status strings to StatusDot DotStatus values.
+ *
+ * @param status - Security status string from hooks
+ * @returns A DotStatus suitable for StatusDot
+ */
+function toDotStatus(status: string): DotStatus {
+  switch (status) {
+    case 'healthy':
+    case 'secure':
+    case 'enforced':
+      return 'active';
+    case 'warning':
+    case 'partial':
+      return 'waiting';
+    case 'error':
+    case 'disabled':
+    case 'compromised':
+      return 'error';
+    default:
+      return 'inactive';
+  }
+}
+
+/**
  * Security Overview page component.
  *
  * Provides a security posture view with:
+ * - Security Score Widget
  * - 3 summary cards (PTY Status, Storage, Approvals)
  * - Live PTY Isolation Map
  * - Approval Audit Log with filtering and export
@@ -79,16 +97,30 @@ export const SecurityOverview: React.FC = () => {
         </div>
       </div>
 
+      {/* Security Score Widget */}
+      <SecurityScoreWidget
+        data={{
+          ptyStatus: ptySummary.status,
+          ptyTotalAgents: ptySummary.totalAgents,
+          ptyIsolatedCount: ptySummary.isolatedCount,
+          approvalStatus: approvalSummary.status,
+          approvalsDeniedToday: approvalSummary.deniedToday,
+          approvalsBypassedToday: approvalSummary.bypassedToday,
+          storageStatus: storageSummary.status,
+        }}
+        loading={ptyLoading || approvalLoading || storageLoading}
+      />
+
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4" data-testid="summary-cards">
         {/* PTY Status Card */}
-        <div className="border border-border-dark rounded-lg bg-surface-dark p-6" data-testid="card-pty">
+        <Card padding="lg" data-testid="card-pty">
           <div className="flex items-center gap-2 mb-3">
             <Monitor size={18} className="text-blue-400" aria-hidden="true" />
             <h3 className="text-sm font-semibold text-text-primary-dark">PTY Status</h3>
           </div>
           {ptyLoading ? (
-            <div className="text-text-secondary-dark text-sm" role="status">Loading...</div>
+            <LoadingSpinner size="sm" />
           ) : (
             <div className="space-y-1 text-sm">
               <div className="text-text-secondary-dark">
@@ -100,22 +132,22 @@ export const SecurityOverview: React.FC = () => {
               <div className="text-text-secondary-dark">
                 {ptySummary.sharedCount} shared
               </div>
-              <div className={`text-xs font-medium uppercase tracking-wide mt-2 flex items-center gap-1 ${STATUS_COLORS[ptySummary.status]}`}>
-                <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${ptySummary.status === 'healthy' ? 'bg-emerald-400' : 'bg-amber-400'}`} aria-hidden="true" />
-                {STATUS_LABELS[ptySummary.status]}
+              <div className="text-xs font-medium uppercase tracking-wide mt-2 flex items-center gap-1.5">
+                <StatusDot status={toDotStatus(ptySummary.status)} size="sm" />
+                <span>{STATUS_LABELS[ptySummary.status]}</span>
               </div>
             </div>
           )}
-        </div>
+        </Card>
 
         {/* Storage Card */}
-        <div className="border border-border-dark rounded-lg bg-surface-dark p-6" data-testid="card-storage">
+        <Card padding="lg" data-testid="card-storage">
           <div className="flex items-center gap-2 mb-3">
             <HardDrive size={18} className="text-purple-400" aria-hidden="true" />
             <h3 className="text-sm font-semibold text-text-primary-dark">Storage</h3>
           </div>
           {storageLoading ? (
-            <div className="text-text-secondary-dark text-sm" role="status">Loading...</div>
+            <LoadingSpinner size="sm" />
           ) : (
             <div className="space-y-1 text-sm">
               <div className="text-text-secondary-dark">Local DB</div>
@@ -125,22 +157,22 @@ export const SecurityOverview: React.FC = () => {
               <div className="text-text-secondary-dark">
                 {storageSummary.externalConnections} cloud
               </div>
-              <div className={`text-xs font-medium uppercase tracking-wide mt-2 flex items-center gap-1 ${STATUS_COLORS[storageSummary.status]}`}>
-                <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${storageSummary.status === 'secure' ? 'bg-emerald-400' : 'bg-amber-400'}`} aria-hidden="true" />
-                {STATUS_LABELS[storageSummary.status]}
+              <div className="text-xs font-medium uppercase tracking-wide mt-2 flex items-center gap-1.5">
+                <StatusDot status={toDotStatus(storageSummary.status)} size="sm" />
+                <span>{STATUS_LABELS[storageSummary.status]}</span>
               </div>
             </div>
           )}
-        </div>
+        </Card>
 
         {/* Approvals Card */}
-        <div className="border border-border-dark rounded-lg bg-surface-dark p-6" data-testid="card-approvals">
+        <Card padding="lg" data-testid="card-approvals">
           <div className="flex items-center gap-2 mb-3">
             <FileCheck size={18} className="text-emerald-400" aria-hidden="true" />
             <h3 className="text-sm font-semibold text-text-primary-dark">Approvals</h3>
           </div>
           {approvalLoading ? (
-            <div className="text-text-secondary-dark text-sm" role="status">Loading...</div>
+            <LoadingSpinner size="sm" />
           ) : (
             <div className="space-y-1 text-sm">
               <div className="text-text-secondary-dark">
@@ -152,13 +184,13 @@ export const SecurityOverview: React.FC = () => {
               <div className="text-text-secondary-dark">
                 {approvalSummary.bypassedToday} bypassed
               </div>
-              <div className={`text-xs font-medium uppercase tracking-wide mt-2 flex items-center gap-1 ${STATUS_COLORS[approvalSummary.status]}`}>
-                <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${approvalSummary.status === 'enforced' ? 'bg-emerald-400' : 'bg-amber-400'}`} aria-hidden="true" />
-                {STATUS_LABELS[approvalSummary.status]}
+              <div className="text-xs font-medium uppercase tracking-wide mt-2 flex items-center gap-1.5">
+                <StatusDot status={toDotStatus(approvalSummary.status)} size="sm" />
+                <span>{STATUS_LABELS[approvalSummary.status]}</span>
               </div>
             </div>
           )}
-        </div>
+        </Card>
       </div>
 
       {/* Live PTY Isolation Map */}

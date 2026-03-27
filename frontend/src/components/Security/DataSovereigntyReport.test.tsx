@@ -57,7 +57,7 @@ describe('DataSovereigntyReport', () => {
 
   it('should show external status for each entry', () => {
     render(<DataSovereigntyReport {...defaultProps} />);
-    const noLabels = screen.getAllByText(/No ✅/);
+    const noLabels = screen.getAllByLabelText('External: No');
     expect(noLabels.length).toBe(3);
   });
 
@@ -109,6 +109,6 @@ describe('DataSovereigntyReport', () => {
       { path: 'cloud://sync', type: 'Cloud Backup', sizeBytes: 5000000, isExternal: true },
     ];
     render(<DataSovereigntyReport entries={entriesWithExternal} summary={mockSummary} loading={false} />);
-    expect(screen.getByText(/Yes ❌/)).toBeInTheDocument();
+    expect(screen.getByLabelText('External: Yes')).toBeInTheDocument();
   });
 });

@@ -8,6 +8,7 @@ import { TaskDetailModal } from '../components/Modals/TaskDetailModal';
 import { MarkdownEditor } from '../components/MarkdownEditor/MarkdownEditor';
 import { useTerminal } from '../contexts/TerminalContext';
 import { Button, useAlert, useConfirm, Dropdown, FormPopup, FormGroup, FormRow, FormLabel, FormInput, FormTextarea, FormHelp } from '../components/UI';
+import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
 import { OverflowMenu } from '../components/UI/OverflowMenu';
 import { DetailView } from '../components/ProjectDetail/DetailView';
 import { TasksView } from '../components/ProjectDetail/TasksView';
@@ -1333,10 +1334,7 @@ export const ProjectDetail: React.FC = () => {
   if (state.loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4 mx-auto"></div>
-          <p className="text-text-secondary-dark">Loading project...</p>
-        </div>
+        <LoadingSpinner size="xl" text="Loading project..." />
       </div>
     );
   }

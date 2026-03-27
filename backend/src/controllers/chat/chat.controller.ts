@@ -13,6 +13,8 @@ import {
   MessageValidationError,
   ConversationNotFoundError,
 } from '../../services/chat/chat.service.js';
+import { sanitizeMessages, sanitizeMessage } from '../../services/chat/chat-sanitizer.service.js';
+import { getChatHighlightsService } from '../../services/chat/chat-highlights.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { getSessionBackendSync } from '../../services/session/session-backend.factory.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
@@ -231,7 +233,7 @@ export async function getMessages(
 
     res.json({
       success: true,
-      data: messages,
+      data: sanitizeMessages(messages),
       count: messages.length,
       totalCount,
       hasMore,
@@ -270,7 +272,7 @@ export async function getMessage(
 
     res.json({
       success: true,
-      data: message,
+      data: sanitizeMessage(message),
     });
   } catch (error) {
     next(error);
@@ -898,6 +900,48 @@ export function getThreadStatusByKey(
     res.json({
       success: true,
       data: entry,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// =============================================================================
+// Highlights Endpoint
+// =============================================================================
+
+/**
+ * GET /api/chat/highlights
+ *
+ * Retrieve highlighted messages (decisions, questions, blockers, task completions)
+ * from all conversations. Useful for dashboard activity feeds.
+ *
+ * @param req - Request with query params: { since?: string, limit?: number }
+ * @param res - Response with array of chat highlights
+ * @param next - Express next function for error propagation
+ *
+ * @example
+ * ```
+ * GET /api/chat/highlights?since=2026-03-25T00:00:00.000Z&limit=10
+ * ```
+ */
+export async function handleGetHighlights(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { since, limit } = req.query;
+
+    const highlightsService = getChatHighlightsService();
+    const highlights = await highlightsService.getHighlights({
+      since: since as string | undefined,
+      limit: limit ? parseInt(limit as string, 10) : undefined,
+    });
+
+    res.json({
+      success: true,
+      data: { highlights },
     });
   } catch (error) {
     next(error);

@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } 
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { connectToCloud, disconnectFromCloud, getCloudStatus, getCloudTemplates, validateCloudToken, refreshCloudToken, getDeviceId } from './cloud.controller.js';
+import { connectToCloud, disconnectFromCloud, getCloudStatus, getCloudTemplates, validateCloudToken, refreshCloudToken, getDeviceId, verifyLicense } from './cloud.controller.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -39,6 +39,7 @@ const mockDisconnect = vi.fn();
 const mockGetStatus = vi.fn();
 const mockGetTemplates = vi.fn();
 const mockIsConnected = vi.fn();
+const mockGetTier = vi.fn();
 
 vi.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
@@ -49,6 +50,7 @@ vi.mock('../../services/cloud/cloud-client.service.js', () => ({
       getStatus: mockGetStatus,
       getTemplates: mockGetTemplates,
       isConnected: mockIsConnected,
+      getTier: mockGetTier,
       getCloudUrl: vi.fn().mockReturnValue(null),
       getToken: vi.fn().mockReturnValue('test-token'),
       setRefreshToken: vi.fn(),
@@ -590,6 +592,98 @@ describe('Cloud Controller', () => {
 
       expect(next).toHaveBeenCalledWith(expect.any(Error));
       expect(res.json).not.toHaveBeenCalled();
+    });
+  });
+
+  // ----- verifyLicense -----------------------------------------------------
+
+  describe('verifyLicense()', () => {
+    it('should return valid=true with pro features when connected as pro', async () => {
+      mockIsConnected.mockReturnValue(true);
+      mockGetTier.mockReturnValue('pro');
+
+      const req = mockReq();
+      const res = mockRes();
+
+      await verifyLicense(req, res, mockNext);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          valid: true,
+          tier: 'pro',
+          features: ['basic_teams', 'premium_templates', 'cloud_relay', 'multi_device'],
+        },
+      });
+    });
+
+    it('should return valid=false with free features when disconnected', async () => {
+      mockIsConnected.mockReturnValue(false);
+      // When disconnected, tier is forced to 'free' regardless of getTier()
+      mockGetTier.mockReturnValue('pro');
+
+      const req = mockReq();
+      const res = mockRes();
+
+      await verifyLicense(req, res, mockNext);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          valid: false,
+          tier: 'free',
+          features: ['basic_teams'],
+        },
+      });
+    });
+
+    it('should return enterprise features for enterprise tier', async () => {
+      mockIsConnected.mockReturnValue(true);
+      mockGetTier.mockReturnValue('enterprise');
+
+      const req = mockReq();
+      const res = mockRes();
+
+      await verifyLicense(req, res, mockNext);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          valid: true,
+          tier: 'enterprise',
+          features: ['basic_teams', 'premium_templates', 'cloud_relay', 'multi_device', 'custom_templates', 'priority_support'],
+        },
+      });
+    });
+
+    it('should fall back to free features for unknown tier', async () => {
+      mockIsConnected.mockReturnValue(true);
+      mockGetTier.mockReturnValue('unknown-tier');
+
+      const req = mockReq();
+      const res = mockRes();
+
+      await verifyLicense(req, res, mockNext);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          valid: true,
+          tier: 'unknown-tier',
+          features: ['basic_teams'],
+        },
+      });
+    });
+
+    it('should call next on unexpected error', async () => {
+      mockIsConnected.mockImplementation(() => { throw new Error('Unexpected'); });
+
+      const req = mockReq();
+      const res = mockRes();
+
+      await verifyLicense(req, res, mockNext);
+
+      expect(mockNext).toHaveBeenCalledWith(expect.any(Error));
     });
   });
 });

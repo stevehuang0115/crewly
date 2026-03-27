@@ -9,9 +9,11 @@
  */
 
 import React from 'react';
-import { Activity, RefreshCw, AlertCircle, Loader2, Wifi, WifiOff } from 'lucide-react';
+import { Activity, RefreshCw, AlertCircle, Wifi, WifiOff } from 'lucide-react';
+import { formatRelativeTimeCompact } from '../../utils/time';
 import { useAgentHeartbeat } from '../../hooks/useAgentHeartbeat';
 import { Button } from '../UI/Button';
+import { LoadingSpinner } from '../UI/LoadingSpinner';
 import type { AgentHeartbeatInfo } from '../../hooks/useAgentHeartbeat';
 import type { TeamMember } from '../../types';
 
@@ -30,26 +32,14 @@ const STATUS_CONFIG: Record<TeamMember['agentStatus'], { label: string; color: s
 // ========================= Helpers =========================
 
 /**
- * Formats an ISO timestamp to a relative time string for display.
+ * Wrapper for HeartbeatPanel: returns "Never" for null, otherwise compact relative time.
  *
  * @param iso - ISO timestamp string or null
  * @returns Human-readable relative time
  */
-function formatRelativeTime(iso: string | null): string {
+function formatHeartbeatTime(iso: string | null): string {
   if (!iso) return 'Never';
-  const date = new Date(iso);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-
-  if (diffSec < 10) return 'Just now';
-  if (diffSec < 60) return `${diffSec}s ago`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays}d ago`;
+  return formatRelativeTimeCompact(iso);
 }
 
 // ========================= Sub-Components =========================
@@ -120,7 +110,7 @@ const HeartbeatCard: React.FC<HeartbeatCardProps> = ({ agent }) => {
       {/* Footer: last active time */}
       <div className="mt-3 pt-3 border-t border-border-dark flex justify-between text-xs">
         <span className="text-text-secondary-dark">Last active</span>
-        <span className="text-text-secondary-dark">{formatRelativeTime(agent.lastActivityCheck ?? agent.readyAt)}</span>
+        <span className="text-text-secondary-dark">{formatHeartbeatTime(agent.lastActivityCheck ?? agent.readyAt)}</span>
       </div>
     </div>
   );
@@ -144,8 +134,7 @@ export const HeartbeatPanel: React.FC = () => {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-text-secondary-dark" />
-        <span className="ml-2 text-sm text-text-secondary-dark">Loading heartbeat status...</span>
+        <LoadingSpinner size="sm" text="Loading heartbeat status..." />
       </div>
     );
   }

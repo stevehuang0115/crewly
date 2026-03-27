@@ -536,15 +536,12 @@ Describe the main objective and purpose of this project.
             </div>
           </div>
           
-          {/* Generate Project Tasks */}
+          {/* Generate Project Tasks — redirects to Chat for orchestrator input */}
           <div className="spec-task-actions">
             <h5>Generate Project Tasks</h5>
             <div className="task-creation-buttons">
-              <Button onClick={onCreateSpecsTasks} className="w-full sm:w-auto flex-1">
-                Generate Tasks from Goal
-              </Button>
-              <Button variant="secondary" onClick={onCreateDevTasks} className="w-full sm:w-auto flex-1">
-                Generate Tasks from User Journey
+              <Button onClick={() => window.location.assign('/chat')} className="w-full sm:w-auto flex-1">
+                Open Chat to Generate Tasks
               </Button>
             </div>
           </div>

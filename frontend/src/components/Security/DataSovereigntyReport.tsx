@@ -8,9 +8,11 @@
  */
 
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Database } from 'lucide-react';
+import { ChevronDown, ChevronUp, Database, CheckCircle, XCircle } from 'lucide-react';
 import type { StorageEntry, DataSovereigntySummary } from '../../hooks/useDataSovereignty';
 import { formatBytes } from '../../hooks/useDataSovereignty';
+import { Card } from '../UI/Card';
+import { Badge } from '../UI/Badge';
 
 /** Props for DataSovereigntyReport */
 export interface DataSovereigntyReportProps {
@@ -38,11 +40,8 @@ export const DataSovereigntyReport: React.FC<DataSovereigntyReportProps> = ({
 
   const toggleExpand = () => setIsExpanded((prev) => !prev);
 
-  const statusColor = summary.status === 'secure' ? 'text-emerald-400' : 'text-amber-400';
-  const statusLabel = summary.status === 'secure' ? 'SECURE' : 'WARNING';
-
   return (
-    <section aria-labelledby="sovereignty-heading" className="border border-border-dark rounded-lg bg-surface-dark">
+    <Card padding="none" aria-labelledby="sovereignty-heading">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4">
         <button
@@ -64,9 +63,13 @@ export const DataSovereigntyReport: React.FC<DataSovereigntyReportProps> = ({
         </button>
 
         {/* Status Badge */}
-        <span className={`text-xs font-medium uppercase tracking-wide ${statusColor}`} data-testid="sovereignty-status">
-          {statusLabel}
-        </span>
+        <Badge
+          variant={summary.status === 'secure' ? 'success' : 'warning'}
+          size="sm"
+          data-testid="sovereignty-status"
+        >
+          {summary.status === 'secure' ? 'SECURE' : 'WARNING'}
+        </Badge>
       </div>
 
       {/* Content */}
@@ -113,9 +116,15 @@ export const DataSovereigntyReport: React.FC<DataSovereigntyReportProps> = ({
                         </td>
                         <td className="py-2.5 text-center">
                           {entry.isExternal ? (
-                            <span className="text-red-400 text-xs font-medium" aria-label="External: Yes">Yes ❌</span>
+                            <Badge variant="error" size="sm" className="gap-1" aria-label="External: Yes">
+                              <span>Yes</span>
+                              <XCircle size={12} className="inline" />
+                            </Badge>
                           ) : (
-                            <span className="text-emerald-400 text-xs font-medium" aria-label="External: No">No ✅</span>
+                            <Badge variant="success" size="sm" className="gap-1" aria-label="External: No">
+                              <span>No</span>
+                              <CheckCircle size={12} className="inline" />
+                            </Badge>
                           )}
                         </td>
                       </tr>
@@ -152,7 +161,7 @@ export const DataSovereigntyReport: React.FC<DataSovereigntyReportProps> = ({
           )}
         </div>
       )}
-    </section>
+    </Card>
   );
 };
 

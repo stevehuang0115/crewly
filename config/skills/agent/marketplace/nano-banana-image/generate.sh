@@ -15,7 +15,7 @@ fi
 # Usage: generate.sh [prompt] [--pro]
 #   --pro    Use gemini-3-pro-image-preview (higher quality)
 #   default  Use gemini-2.0-flash-exp-image-generation (faster)
-MODEL="gemini-2.0-flash-exp-image-generation"
+MODEL="gemini-2.5-flash-image"
 PROMPT=""
 
 for arg in "$@"; do

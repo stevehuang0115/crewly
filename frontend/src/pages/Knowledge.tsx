@@ -204,7 +204,7 @@ export function Knowledge() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
-          <BookOpen className="w-6 h-6 text-indigo-400" />
+          <BookOpen className="w-6 h-6 text-primary" />
           <h1 className="text-2xl font-bold text-white">Knowledge</h1>
         </div>
         <KnowledgeScopeToggle
@@ -230,7 +230,7 @@ export function Knowledge() {
           <div className="mb-4">
             <button
               onClick={handleCreate}
-              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-sm bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors"
             >
               <Plus className="w-4 h-4" />
               New Document

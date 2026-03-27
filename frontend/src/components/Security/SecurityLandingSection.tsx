@@ -12,6 +12,8 @@ import { Shield, Database, CheckSquare } from 'lucide-react';
 import { SecurityPillarCard, type PillarId } from './SecurityPillarCard';
 import { SecurityArchDiagram } from './SecurityArchDiagram';
 import { ComparisonStrip } from './ComparisonStrip';
+import { Card } from '../UI/Card';
+import { Button } from '../UI/Button';
 
 /** Pillar definitions matching spec section 2.1 */
 const PILLARS = [
@@ -121,18 +123,19 @@ export const SecurityLandingSection: React.FC = () => {
         </h3>
 
         {/* Command + Copy */}
-        <div className="inline-flex items-center gap-2 bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 mb-6">
+        <Card variant="outlined" padding="none" className="inline-flex items-center gap-2 bg-zinc-900 border-zinc-700 px-4 py-3 mb-6">
           <span className="text-zinc-500 select-none" aria-hidden="true">$</span>
           <code className="font-mono text-sm text-emerald-300">npx crewly init</code>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={handleCopy}
-            className="ml-2 px-3 py-1 rounded text-xs font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors border border-zinc-600"
+            className="ml-2 text-xs"
             aria-label={copied ? 'Copied to clipboard' : 'Copy command to clipboard'}
           >
             {copied ? 'Copied!' : 'Copy'}
-          </button>
-        </div>
+          </Button>
+        </Card>
 
         {/* Links */}
         <div className="flex items-center justify-center gap-4">

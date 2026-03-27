@@ -74,6 +74,21 @@ async function getDefaultRuntime(): Promise<TeamMember['runtimeType']> {
 }
 
 /**
+ * Check if the auditor is enabled in settings.
+ * Used to conditionally include the auditor member in the orchestrator team.
+ *
+ * @returns True if the auditor is enabled
+ */
+async function isAuditorEnabled(): Promise<boolean> {
+  try {
+    const settings = await getSettingsService().getSettings();
+    return settings.general.enableAuditor ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Result of a team member start/stop operation
  */
 interface TeamMemberOperationResult {
@@ -135,6 +150,41 @@ interface OrchestratorStatusInfo {
 }
 
 /**
+ * Computes the lastActivity timestamp for a team.
+ *
+ * Takes the maximum of the team's own updatedAt and all members' updatedAt
+ * timestamps. This represents the most recent agent status change or
+ * team configuration update.
+ *
+ * @param team - The team object with members
+ * @returns ISO timestamp of the most recent activity
+ */
+function computeTeamLastActivity(team: Team): string {
+  let latest = team.updatedAt;
+
+  for (const member of team.members) {
+    if (member.updatedAt && member.updatedAt > latest) {
+      latest = member.updatedAt;
+    }
+  }
+
+  return latest;
+}
+
+/**
+ * Augments a team object with the lastActivity field.
+ *
+ * @param team - The team to augment
+ * @returns Team with lastActivity field added
+ */
+function withLastActivity(team: Team): Team & { lastActivity: string } {
+  return {
+    ...team,
+    lastActivity: computeTeamLastActivity(team),
+  };
+}
+
+/**
  * Build the virtual orchestrator Team object.
  *
  * The orchestrator is not stored in teams.json but surfaced as a virtual team
@@ -149,7 +199,8 @@ function buildOrchestratorTeam(
   actualAgentStatus: string,
   orchestratorStatus: OrchestratorStatusInfo | null,
   overrides?: Partial<Team>,
-  inProcessRuntimeStatus?: Record<string, boolean>
+  inProcessRuntimeStatus?: Record<string, boolean>,
+  options?: { auditorEnabled?: boolean }
 ): Team {
   const now = new Date().toISOString();
 
@@ -159,54 +210,59 @@ function buildOrchestratorTeam(
     ? CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE as TeamMember['agentStatus']
     : CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as TeamMember['agentStatus'];
 
-  // Resolve Auditor status: check in-process runtime active state
-  const auditorInProcessActive = inProcessRuntimeStatus?.['crewly-auditor'] ?? false;
-  const auditorStatus = auditorInProcessActive
-    ? CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE as TeamMember['agentStatus']
-    : CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as TeamMember['agentStatus'];
+  const members: TeamMember[] = [
+    {
+      id: 'orchestrator-member',
+      name: 'Agentmux Orchestrator',
+      sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+      role: 'orchestrator',
+      systemPrompt: 'You are the Crewly Orchestrator responsible for coordinating teams and managing project workflows.',
+      agentStatus: actualAgentStatus as TeamMember['agentStatus'],
+      workingStatus: (orchestratorStatus?.workingStatus || CREWLY_CONSTANTS.WORKING_STATUSES.IDLE) as TeamMember['workingStatus'],
+      runtimeType: (orchestratorStatus?.runtimeType || 'claude-code') as TeamMember['runtimeType'],
+      createdAt: orchestratorStatus?.createdAt || now,
+      updatedAt: orchestratorStatus?.updatedAt || now
+    },
+    {
+      id: 'crewly-orc-assistant-member-001',
+      name: 'Assistant',
+      sessionName: 'crewly-orc-assistant',
+      role: 'orchestrator',
+      systemPrompt: 'Shadow orchestrator running in-process via Crewly Agent runtime (AI SDK)',
+      agentStatus: assistantStatus,
+      workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE as TeamMember['workingStatus'],
+      runtimeType: 'crewly-agent' as TeamMember['runtimeType'],
+      createdAt: '2026-03-11T02:00:00.000Z',
+      updatedAt: now
+    },
+  ];
+
+  // Only include auditor member when auditor is enabled (default: include for backward compat)
+  if (options?.auditorEnabled !== false) {
+    const auditorInProcessActive = inProcessRuntimeStatus?.['crewly-auditor'] ?? false;
+    const auditorStatus = auditorInProcessActive
+      ? CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE as TeamMember['agentStatus']
+      : CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as TeamMember['agentStatus'];
+
+    members.push({
+      id: 'e5f6a7b8-9012-3cde-f456-auditor00001',
+      name: 'Auditor',
+      sessionName: 'crewly-auditor',
+      role: 'auditor' as TeamMember['role'],
+      systemPrompt: 'Autonomous quality observer — monitors all agents, detects problems, writes audit reports',
+      agentStatus: auditorStatus,
+      workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE as TeamMember['workingStatus'],
+      runtimeType: 'claude-code' as TeamMember['runtimeType'],
+      createdAt: '2026-03-11T02:10:00.000Z',
+      updatedAt: now
+    });
+  }
 
   return {
     id: 'orchestrator',
     name: 'Orchestrator Team',
     description: 'System orchestrator for project management',
-    members: [
-      {
-        id: 'orchestrator-member',
-        name: 'Agentmux Orchestrator',
-        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
-        role: 'orchestrator',
-        systemPrompt: 'You are the Crewly Orchestrator responsible for coordinating teams and managing project workflows.',
-        agentStatus: actualAgentStatus as TeamMember['agentStatus'],
-        workingStatus: (orchestratorStatus?.workingStatus || CREWLY_CONSTANTS.WORKING_STATUSES.IDLE) as TeamMember['workingStatus'],
-        runtimeType: (orchestratorStatus?.runtimeType || 'claude-code') as TeamMember['runtimeType'],
-        createdAt: orchestratorStatus?.createdAt || now,
-        updatedAt: orchestratorStatus?.updatedAt || now
-      },
-      {
-        id: 'crewly-orc-assistant-member-001',
-        name: 'Assistant',
-        sessionName: 'crewly-orc-assistant',
-        role: 'orchestrator',
-        systemPrompt: 'Shadow orchestrator running in-process via Crewly Agent runtime (AI SDK)',
-        agentStatus: assistantStatus,
-        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE as TeamMember['workingStatus'],
-        runtimeType: 'crewly-agent' as TeamMember['runtimeType'],
-        createdAt: '2026-03-11T02:00:00.000Z',
-        updatedAt: now
-      },
-      {
-        id: 'e5f6a7b8-9012-3cde-f456-auditor00001',
-        name: 'Auditor',
-        sessionName: 'crewly-auditor',
-        role: 'auditor',
-        systemPrompt: 'Autonomous quality observer — monitors all agents, detects problems, writes audit reports',
-        agentStatus: auditorStatus,
-        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE as TeamMember['workingStatus'],
-        runtimeType: 'claude-code' as TeamMember['runtimeType'],
-        createdAt: '2026-03-11T02:10:00.000Z',
-        updatedAt: now
-      }
-    ],
+    members,
     projectIds: [],
     createdAt: orchestratorStatus?.createdAt || now,
     updatedAt: orchestratorStatus?.updatedAt || now,
@@ -823,7 +879,8 @@ export async function getTeams(this: ApiContext, req: Request, res: Response): P
     // Check in-process runtime status for virtual team members (Assistant, Auditor)
     const inProcessRuntimeStatus = getInProcessRuntimeStatusMap(this.agentRegistrationService);
 
-    const orchestratorTeam = buildOrchestratorTeam(actualOrchestratorStatus, orchestratorStatus, undefined, inProcessRuntimeStatus);
+    const auditorEnabled = await isAuditorEnabled();
+    const orchestratorTeam = buildOrchestratorTeam(actualOrchestratorStatus, orchestratorStatus, undefined, inProcessRuntimeStatus, { auditorEnabled });
 
     // Load working status data from ActivityMonitorService
     let workingStatusData;
@@ -851,7 +908,7 @@ export async function getTeams(this: ApiContext, req: Request, res: Response): P
       })
     }));
 
-    const allTeams = [orchestratorTeam, ...teamsWithActualStatus];
+    const allTeams = [orchestratorTeam, ...teamsWithActualStatus].map(withLastActivity);
     res.json({
       success: true,
       data: allTeams,
@@ -885,8 +942,9 @@ export async function getTeam(this: ApiContext, req: Request, res: Response): Pr
       );
 
       const inProcessStatus = getInProcessRuntimeStatusMap(this.agentRegistrationService);
-      const orchestratorTeam = buildOrchestratorTeam(actualOrchestratorStatus, orchestratorStatus, undefined, inProcessStatus);
-      res.json({ success: true, data: orchestratorTeam } as ApiResponse<Team>);
+      const auditorEnabled = await isAuditorEnabled();
+      const orchestratorTeam = buildOrchestratorTeam(actualOrchestratorStatus, orchestratorStatus, undefined, inProcessStatus, { auditorEnabled });
+      res.json({ success: true, data: withLastActivity(orchestratorTeam) } as ApiResponse<Team & { lastActivity: string }>);
       return;
     }
 
@@ -926,7 +984,7 @@ export async function getTeam(this: ApiContext, req: Request, res: Response): Pr
       }
     }
 
-    res.json({ success: true, data: team } as ApiResponse<Team>);
+    res.json({ success: true, data: withLastActivity(team) } as ApiResponse<Team & { lastActivity: string }>);
   } catch (error) {
     logger.error('Error getting team', { error: error instanceof Error ? error.message : String(error) });
     res.status(500).json({ success: false, error: 'Failed to retrieve team' } as ApiResponse);

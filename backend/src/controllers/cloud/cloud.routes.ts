@@ -11,6 +11,7 @@
  * - GET  /device-id            - Get persistent device UUID and hostname
  * - GET  /devices              - Get device list from CloudSync (or fallback to legacy)
  * - GET  /templates            - Fetch premium templates (requires connection)
+ * - GET  /license/verify       - Verify license and return tier + features
  * - POST /send                 - Send a message to another device via Cloud Sync
  * - GET  /google/start         - Redirect to Google OAuth consent screen
  * - GET  /google/callback      - Handle Google OAuth callback, issue JWT, redirect to frontend
@@ -31,6 +32,7 @@ import {
   sendCloudMessage,
   getDeviceId,
   getDevicesFromSync,
+  verifyLicense,
 } from './cloud.controller.js';
 import {
   cloudGoogleStart,
@@ -56,6 +58,7 @@ export function createCloudRouter(): Router {
   router.get('/devices', getDevicesFromSync);
   router.post('/send', sendCloudMessage);
   router.get('/templates', getCloudTemplates);
+  router.get('/license/verify', verifyLicense);
 
   // Google OAuth login flow — browser-redirect (GET)
   router.get('/google/start', cloudGoogleStart);

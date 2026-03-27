@@ -118,7 +118,7 @@ describe('Dashboard Page', () => {
       });
     });
 
-    it('should render the RelayHealthCard', async () => {
+    it('should not render RelayHealthCard (removed, CloudBar in header is sufficient)', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -126,8 +126,10 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByTestId('relay-health-card')).toBeInTheDocument();
+        expect(screen.getByText('Dashboard')).toBeInTheDocument();
       });
+
+      expect(screen.queryByTestId('relay-health-card')).not.toBeInTheDocument();
     });
 
     it('should render teams section header', async () => {
@@ -241,7 +243,7 @@ describe('Dashboard Page', () => {
       });
     });
 
-    it('should render Factory button', async () => {
+    it('should render Factory button in HealthBar', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -249,7 +251,7 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('Factory')).toBeInTheDocument();
+        expect(screen.getByTestId('health-factory-btn')).toBeInTheDocument();
       });
     });
 
@@ -269,7 +271,7 @@ describe('Dashboard Page', () => {
   });
 
   describe('Navigation', () => {
-    it('should navigate to factory when Factory button is clicked', async () => {
+    it('should navigate to factory when HealthBar Factory button is clicked', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -277,7 +279,7 @@ describe('Dashboard Page', () => {
       );
 
       await waitFor(() => {
-        const factoryButton = screen.getByText('Factory').closest('button');
+        const factoryButton = screen.getByTestId('health-factory-btn');
         if (factoryButton) {
           fireEvent.click(factoryButton);
         }

@@ -28,6 +28,7 @@ import { updateAgentHeartbeat } from '../agent-heartbeat.service.js';
 import { PtyActivityTrackerService } from '../pty-activity-tracker.service.js';
 import { TokenUsageService } from '../../monitoring/token-usage.service.js';
 import { getSettingsService } from '../../settings/settings.service.js';
+import { AgentStreamService } from './agent-stream.service.js';
 
 
 /**
@@ -354,6 +355,9 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     const REPETITION_THRESHOLD = 5; // consecutive repeated patterns to trigger abort
     let repetitionDetected = false;
 
+    // Stream service for SSE broadcasting to frontend Dashboard
+    const agentStream = AgentStreamService.getInstance();
+
     // Build streaming callbacks that write to InProcessLogBuffer in real-time
     const streamingCallbacks: StreamingEventCallbacks = {
       onTextChunk: (chunk: string) => {
@@ -361,6 +365,8 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
           executionTracker.lastActivityAt = new Date();
           executionTracker.phase = 'model-thinking';
           textChunkBuffer += chunk;
+          // Broadcast to SSE subscribers for Dashboard streaming
+          agentStream.emitTextChunk(session, chunk);
 
           // Repetition detection: track recent chunks and check for loops
           const trimmed = chunk.trim();
@@ -391,11 +397,13 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
         executionTracker.phase = 'tool-calling';
         executionTracker.currentTool = toolName;
         executionTracker.lastActivityAt = new Date();
+        agentStream.emitToolCallStart(session, toolName, _args);
       },
       onToolCallFinish: (toolName: string, args: Record<string, unknown>, result: unknown, _durationMs: number) => {
         executionTracker.toolCallsCompleted.push(toolName);
         executionTracker.currentTool = null;
         executionTracker.lastActivityAt = new Date();
+        agentStream.emitToolCallFinish(session, toolName, args, result, _durationMs);
         const argsPreview = JSON.stringify(args).substring(0, 120);
         this.logBuffer.append(session, 'info', `🔧 ${toolName}(${argsPreview})`);
 
@@ -410,6 +418,7 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       },
       onStepFinish: (stepIndex: number, hasToolCalls: boolean) => {
         executionTracker.lastActivityAt = new Date();
+        agentStream.emitStepFinish(session, stepIndex, hasToolCalls);
 
         // Flush buffered text at each step boundary
         if (textChunkBuffer.trim().length > 0) {

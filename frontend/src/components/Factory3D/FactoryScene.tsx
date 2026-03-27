@@ -98,7 +98,7 @@ class SceneErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryStat
                 </p>
               )}
               <button
-                className="px-4 py-2 bg-blue-600 rounded hover:bg-blue-700"
+                className="px-4 py-2 bg-primary rounded hover:bg-primary/90"
                 onClick={() => this.setState((prev) => ({
                   hasError: false,
                   error: null,

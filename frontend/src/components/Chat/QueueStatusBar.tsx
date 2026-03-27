@@ -11,6 +11,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from '../../services/api.service';
 import { webSocketService } from '../../services/websocket.service';
+import { formatRelativeTimeCompact } from '../../utils/time';
+import { Clock, ChevronDown } from 'lucide-react';
+import { Badge } from '../UI/Badge';
+import { Button } from '../UI/Button';
 import type { QueueStatus, QueuedMessage } from '../../types';
 import './QueueStatusBar.css';
 
@@ -37,24 +41,6 @@ function truncate(text: string, maxLength: number): string {
   return text.slice(0, maxLength) + '...';
 }
 
-/**
- * Format an ISO timestamp as a relative time string (e.g., "2m ago").
- *
- * @param isoTimestamp - ISO 8601 timestamp string
- * @returns Human-readable relative time
- */
-function formatRelativeTime(isoTimestamp: string): string {
-  const diffMs = Date.now() - new Date(isoTimestamp).getTime();
-  const diffSeconds = Math.floor(diffMs / 1000);
-
-  if (diffSeconds < 60) return 'just now';
-
-  const diffMinutes = Math.floor(diffSeconds / 60);
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
-
-  const diffHours = Math.floor(diffMinutes / 60);
-  return `${diffHours}h ago`;
-}
 
 // =============================================================================
 // Component
@@ -247,24 +233,27 @@ export const QueueStatusBar: React.FC = () => {
       >
         {isProcessing && <div className="queue-spinner" data-testid="queue-spinner" />}
         <span className="queue-status-text">{summaryText}</span>
-        <button
+        <Button
+          variant="outline"
+          size="sm"
           className="queue-clear-all-btn"
           onClick={(e) => {
             e.stopPropagation();
             handleClearAll();
           }}
           disabled={isClearing}
+          loading={isClearing}
           data-testid="queue-clear-all-btn"
           title="Clear all queued messages"
         >
           {isClearing ? 'Clearing...' : 'Clear All'}
-        </button>
+        </Button>
         <button
           className={`queue-toggle-btn${isExpanded ? ' expanded' : ''}`}
           aria-label={isExpanded ? 'Collapse queue' : 'Expand queue'}
           tabIndex={-1}
         >
-          &#9660;
+          <ChevronDown size={14} />
         </button>
       </div>
 
@@ -282,26 +271,29 @@ export const QueueStatusBar: React.FC = () => {
               {msg.status === 'processing' ? (
                 <div className="queue-spinner" />
               ) : (
-                <span aria-label="pending">&#128337;</span>
+                <Clock size={14} aria-label="pending" />
               )}
             </div>
 
             <div className="queue-item-content">
               <p className="queue-item-preview">{truncate(msg.content, MAX_PREVIEW_LENGTH)}</p>
               <div className="queue-item-meta">
-                <span className="queue-source-badge">{msg.source === 'slack' ? 'slack' : 'web'}</span>
-                <span className="queue-item-time">{formatRelativeTime(msg.enqueuedAt)}</span>
+                <Badge variant="default" size="sm">{msg.source === 'slack' ? 'slack' : 'web'}</Badge>
+                <span className="queue-item-time">{formatRelativeTimeCompact(msg.enqueuedAt)}</span>
               </div>
             </div>
 
-            <button
+            <Button
+              variant="danger-ghost"
+              size="sm"
               className="queue-cancel-btn"
               onClick={() => msg.status === 'processing' ? handleClearAll() : handleCancel(msg.id)}
               disabled={cancellingIds.has(msg.id) || isClearing}
+              loading={cancellingIds.has(msg.id) || isClearing}
               data-testid="queue-cancel-btn"
             >
               {cancellingIds.has(msg.id) || isClearing ? 'Cancelling...' : 'Cancel'}
-            </button>
+            </Button>
           </div>
         ))}
       </div>

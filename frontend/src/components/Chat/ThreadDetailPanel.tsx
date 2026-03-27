@@ -8,7 +8,6 @@
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
 import { useChat } from '../../contexts/ChatContext';
 import { useOrchestratorStatus } from '../../hooks/useOrchestratorStatus';
 import { ChatMessage } from './ChatMessage';
@@ -16,6 +15,11 @@ import { ChatInput } from './ChatInput';
 import { TypingIndicator } from './TypingIndicator';
 import { QueueStatusBar } from './QueueStatusBar';
 import { ChannelBadge } from './ChannelBadge';
+import { ChatLoadingState } from './ChatLoadingState';
+import { ChatErrorState } from './ChatErrorState';
+import { ChatEmptyState } from './ChatEmptyState';
+import { ChatOfflineBanner } from './ChatOfflineBanner';
+import { ArrowLeft, ChevronDown } from 'lucide-react';
 import type { ChatConversation, ChatMessage as ChatMessageType } from '../../types/chat.types';
 import './ThreadDetailPanel.css';
 
@@ -33,6 +37,7 @@ const TERMINAL_ARTIFACT_PATTERNS = [
   /shift\+tab to cycle/i,
   /esc to interrupt/i,
   /^\s*▸▸\s/,
+  /\[Thread context file:.*\]/,
 ];
 
 /**
@@ -165,10 +170,7 @@ export const ThreadDetailPanel: React.FC<ThreadDetailPanelProps> = ({
   if (isLoading && messages.length === 0) {
     return (
       <div className="thread-detail-panel loading" data-testid="thread-detail-loading">
-        <div className="loading-spinner">
-          <div className="spinner" />
-          <span>Loading messages...</span>
-        </div>
+        <ChatLoadingState message="Loading messages..." />
       </div>
     );
   }
@@ -177,16 +179,7 @@ export const ThreadDetailPanel: React.FC<ThreadDetailPanelProps> = ({
   if (error && messages.length === 0) {
     return (
       <div className="thread-detail-panel error" data-testid="thread-detail-error">
-        <div className="error-message">
-          <span className="error-icon">⚠️</span>
-          <p>Error: {error}</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="retry-button"
-          >
-            Retry
-          </button>
-        </div>
+        <ChatErrorState error={error} />
       </div>
     );
   }
@@ -201,7 +194,7 @@ export const ThreadDetailPanel: React.FC<ThreadDetailPanelProps> = ({
             aria-label="Back to thread list"
             data-testid="thread-detail-back"
           >
-            ←
+            <ArrowLeft size={16} />
           </button>
         )}
         <div className="thread-detail-header-info">
@@ -215,16 +208,9 @@ export const ThreadDetailPanel: React.FC<ThreadDetailPanelProps> = ({
       <QueueStatusBar />
 
       {isOrchestratorOffline && (
-        <div className="orchestrator-offline-banner" data-testid="orchestrator-offline-banner">
-          <span className="offline-icon" aria-hidden="true">⚠️</span>
-          <div className="offline-content">
-            <strong>Orchestrator Offline</strong>
-            <p>{orchestratorStatus?.offlineMessage || orchestratorStatus?.message}</p>
-          </div>
-          <Link to="/" className="dashboard-link">
-            Go to Dashboard
-          </Link>
-        </div>
+        <ChatOfflineBanner
+          message={orchestratorStatus?.offlineMessage || orchestratorStatus?.message}
+        />
       )}
 
       <div
@@ -241,19 +227,7 @@ export const ThreadDetailPanel: React.FC<ThreadDetailPanelProps> = ({
         )}
 
         {messages.length === 0 ? (
-          <div className="empty-chat" data-testid="empty-chat">
-            <div className="welcome-message">
-              <h3>Welcome to Crewly</h3>
-              <p>Start a conversation with the Orchestrator.</p>
-              <p>Try asking to:</p>
-              <ul>
-                <li>Create a new project</li>
-                <li>Assign a task to an agent</li>
-                <li>Check project status</li>
-                <li>Configure a team</li>
-              </ul>
-            </div>
-          </div>
+          <ChatEmptyState />
         ) : (
           <>
             {messages.map((message) => (
@@ -274,7 +248,7 @@ export const ThreadDetailPanel: React.FC<ThreadDetailPanelProps> = ({
           aria-label="Scroll to bottom"
           data-testid="scroll-to-bottom"
         >
-          ↓
+          <ChevronDown size={16} />
         </button>
       )}
 

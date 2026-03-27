@@ -14,6 +14,7 @@ import {
   searchItems,
   getInstallPath,
   resetRegistryCache,
+  getItemReadme,
 } from './marketplace.service.js';
 import type { InstalledItemsManifest } from '../../types/marketplace.types.js';
 import { MARKETPLACE_CONSTANTS } from '../../constants.js';
@@ -350,5 +351,46 @@ describe('getInstallPath', () => {
 
   it('should throw on IDs starting with hyphen', () => {
     expect(() => getInstallPath('skill', '-bad-id')).toThrow('Invalid marketplace item ID');
+  });
+});
+
+describe('getItemReadme', () => {
+  beforeEach(() => {
+    readFile.mockReset();
+  });
+
+  it('should return README.md content when file exists', async () => {
+    readFile.mockImplementation(async (filePath: string) => {
+      if (filePath.includes('skills') && filePath.endsWith('README.md')) {
+        return '# Test Skill\n\nDoes great things.';
+      }
+      throw new Error('ENOENT');
+    });
+
+    const result = await getItemReadme('test-skill');
+    expect(result).toBe('# Test Skill\n\nDoes great things.');
+  });
+
+  it('should return null when no README exists', async () => {
+    readFile.mockRejectedValue(new Error('ENOENT'));
+
+    const result = await getItemReadme('no-readme');
+    expect(result).toBeNull();
+  });
+
+  it('should try SKILL.md as fallback', async () => {
+    readFile.mockImplementation(async (filePath: string) => {
+      if (filePath.endsWith('SKILL.md')) {
+        return '# Skill Instructions';
+      }
+      throw new Error('ENOENT');
+    });
+
+    const result = await getItemReadme('fallback-skill');
+    expect(result).toBe('# Skill Instructions');
+  });
+
+  it('should throw on invalid item ID', async () => {
+    await expect(getItemReadme('../evil')).rejects.toThrow('Invalid marketplace item ID');
   });
 });

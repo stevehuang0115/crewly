@@ -20,6 +20,7 @@ import {
   handleListSubmissions,
   handleGetSubmission,
   handleReviewSubmission,
+  handleGetItemReadme,
 } from './marketplace.controller.js';
 
 // Mock marketplace service
@@ -35,6 +36,7 @@ const mockSubmitSkill = jest.fn();
 const mockListSubmissions = jest.fn();
 const mockGetSubmission = jest.fn();
 const mockReviewSubmission = jest.fn();
+const mockGetItemReadme = jest.fn();
 
 jest.mock('../../services/marketplace/index.js', () => ({
   listItems: (...args: unknown[]) => mockListItems(...args),
@@ -49,6 +51,7 @@ jest.mock('../../services/marketplace/index.js', () => ({
   listSubmissions: (...args: unknown[]) => mockListSubmissions(...args),
   getSubmission: (...args: unknown[]) => mockGetSubmission(...args),
   reviewSubmission: (...args: unknown[]) => mockReviewSubmission(...args),
+  getItemReadme: (...args: unknown[]) => mockGetItemReadme(...args),
 }));
 
 describe('MarketplaceController', () => {
@@ -701,6 +704,49 @@ describe('MarketplaceController', () => {
       );
 
       expect(mockRes.status).toHaveBeenCalledWith(404);
+    });
+  });
+
+  describe('handleGetItemReadme', () => {
+    it('should return README content when found', async () => {
+      const readmeContent = '# My Skill\n\nThis skill does great things.';
+      mockGetItemReadme.mockResolvedValue(readmeContent);
+
+      await handleGetItemReadme(
+        { params: { id: 'my-skill' } } as any,
+        mockRes as any,
+        next,
+      );
+
+      expect(mockGetItemReadme).toHaveBeenCalledWith('my-skill');
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: true,
+        data: { content: readmeContent },
+      });
+    });
+
+    it('should return 404 when README not found', async () => {
+      mockGetItemReadme.mockResolvedValue(null);
+
+      await handleGetItemReadme(
+        { params: { id: 'no-readme-skill' } } as any,
+        mockRes as any,
+        next,
+      );
+
+      expect(mockRes.status).toHaveBeenCalledWith(404);
+    });
+
+    it('should return 400 for invalid item ID', async () => {
+      mockGetItemReadme.mockRejectedValue(new Error('Invalid marketplace item ID "../evil": must match /^[a-z0-9][a-z0-9\\-]*$/'));
+
+      await handleGetItemReadme(
+        { params: { id: '../evil' } } as any,
+        mockRes as any,
+        next,
+      );
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
     });
   });
 });

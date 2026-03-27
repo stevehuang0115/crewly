@@ -22,7 +22,8 @@ import {
   unassignTeamFromProject,
   getProjectStats,
   getAlignmentStatus,
-  continueWithMisalignment
+  continueWithMisalignment,
+  handleSearch,
 } from './project.controller.js';
 
 // Import additional controllers for consolidated routes
@@ -48,6 +49,9 @@ import * as orchestratorHandlers from '../orchestrator/orchestrator.controller.j
  */
 export function createProjectRouter(context: ApiContext): Router {
   const router = Router();
+
+  // Project search (must be before /:id to avoid route collision)
+  router.get('/search', handleSearch.bind(context));
 
   // Project CRUD operations
   router.post('/', createProject.bind(context));

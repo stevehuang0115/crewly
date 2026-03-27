@@ -15,8 +15,20 @@ import { CloudSyncService } from '../../services/cloud/cloud-sync.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { CLOUD_CONSTANTS, CLOUD_SYNC_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
+import type { CloudTier } from '../../constants.js';
 import type { MessageType } from '../../services/cloud/cloud-sync.types.js';
 import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
+
+// ---------------------------------------------------------------------------
+// License Feature Mapping
+// ---------------------------------------------------------------------------
+
+/** Features available per subscription tier. */
+const TIER_FEATURES: Record<string, readonly string[]> = {
+  [CLOUD_CONSTANTS.TIERS.FREE]: ['basic_teams'],
+  [CLOUD_CONSTANTS.TIERS.PRO]: ['basic_teams', 'premium_templates', 'cloud_relay', 'multi_device'],
+  [CLOUD_CONSTANTS.TIERS.ENTERPRISE]: ['basic_teams', 'premium_templates', 'cloud_relay', 'multi_device', 'custom_templates', 'priority_support'],
+} as const;
 
 const logger = LoggerService.getInstance().createComponentLogger('CloudController');
 
@@ -255,6 +267,43 @@ export async function getCloudStatus(req: Request, res: Response, next: NextFunc
     res.json({ success: true, data: status });
   } catch (error) {
     logger.error('Failed to get cloud status', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    next(error);
+  }
+}
+
+/**
+ * GET /api/cloud/license/verify
+ *
+ * Verify the current user's license tier and return the list of features
+ * their subscription entitles them to. Used by the CLI license interceptor
+ * and any client that needs to gate premium functionality.
+ *
+ * Returns `valid: true` when connected to Cloud with an active subscription,
+ * or `valid: false` with free-tier features when disconnected.
+ *
+ * @param req - Express request (no params required)
+ * @param res - Response returning { success, data: { valid, tier, features } }
+ * @param next - Next function for error propagation
+ */
+export async function verifyLicense(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const client = CloudClientService.getInstance();
+    const connected = client.isConnected();
+    const tier: CloudTier = connected ? client.getTier() : CLOUD_CONSTANTS.TIERS.FREE;
+    const features = TIER_FEATURES[tier] ?? TIER_FEATURES[CLOUD_CONSTANTS.TIERS.FREE];
+
+    res.json({
+      success: true,
+      data: {
+        valid: connected,
+        tier,
+        features: [...features],
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to verify license', {
       error: error instanceof Error ? error.message : String(error),
     });
     next(error);

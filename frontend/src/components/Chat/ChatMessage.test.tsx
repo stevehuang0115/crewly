@@ -52,40 +52,45 @@ describe('ChatMessage', () => {
   });
 
   describe('sender types', () => {
-    it('shows "You" for user messages', () => {
+    it('shows "You" for user messages with Avatar', () => {
       render(<ChatMessage message={baseMessage} />);
       expect(screen.getByText('You')).toBeInTheDocument();
-      expect(screen.getByText('👤')).toBeInTheDocument();
+      // Avatar renders the sender initial in a div
+      const avatar = screen.getByText('U');
+      expect(avatar).toBeInTheDocument();
     });
 
-    it('shows "Orchestrator" for orchestrator messages', () => {
+    it('shows "Orchestrator" for orchestrator messages with Avatar', () => {
       const msg: ChatMessageType = {
         ...baseMessage,
         from: { type: 'orchestrator' },
       };
       render(<ChatMessage message={msg} />);
       expect(screen.getByText('Orchestrator')).toBeInTheDocument();
-      expect(screen.getByText('🤖')).toBeInTheDocument();
+      const avatar = screen.getByText('O');
+      expect(avatar).toBeInTheDocument();
     });
 
-    it('shows role for agent messages', () => {
+    it('shows role for agent messages with Avatar', () => {
       const msg: ChatMessageType = {
         ...baseMessage,
         from: { type: 'agent', role: 'Developer' },
       };
       render(<ChatMessage message={msg} />);
       expect(screen.getByText('Developer')).toBeInTheDocument();
-      expect(screen.getByText('🔧')).toBeInTheDocument();
+      const avatar = screen.getByText('A');
+      expect(avatar).toBeInTheDocument();
     });
 
-    it('shows "System" for system messages', () => {
+    it('shows "System" for system messages with Avatar', () => {
       const msg: ChatMessageType = {
         ...baseMessage,
         from: { type: 'system' },
       };
       render(<ChatMessage message={msg} />);
       expect(screen.getByText('System')).toBeInTheDocument();
-      expect(screen.getByText('ℹ️')).toBeInTheDocument();
+      const avatar = screen.getByText('S');
+      expect(avatar).toBeInTheDocument();
     });
 
     it('uses custom name when provided', () => {
@@ -161,7 +166,8 @@ describe('ChatMessage', () => {
         metadata: { skillUsed: 'code-review' },
       };
       render(<ChatMessage message={msg} />);
-      expect(screen.getByText('Skill: code-review')).toBeInTheDocument();
+      expect(screen.getByTestId('skill-badge')).toBeInTheDocument();
+      expect(screen.getByText('code-review')).toBeInTheDocument();
     });
 
     it('shows task badge when taskCreated metadata exists', () => {
@@ -170,7 +176,27 @@ describe('ChatMessage', () => {
         metadata: { taskCreated: 'task-123' },
       };
       render(<ChatMessage message={msg} />);
-      expect(screen.getByText('Task created: task-123')).toBeInTheDocument();
+      expect(screen.getByTestId('task-badge')).toBeInTheDocument();
+      expect(screen.getByText('task-123')).toBeInTheDocument();
+    });
+
+    it('shows timing badge when responseTimeMs metadata exists', () => {
+      const msg: ChatMessageType = {
+        ...baseMessage,
+        metadata: { responseTimeMs: 450 },
+      };
+      render(<ChatMessage message={msg} />);
+      expect(screen.getByTestId('timing-badge')).toBeInTheDocument();
+      expect(screen.getByText('450ms')).toBeInTheDocument();
+    });
+
+    it('formats timing badge in seconds for values >= 1000ms', () => {
+      const msg: ChatMessageType = {
+        ...baseMessage,
+        metadata: { responseTimeMs: 2500 },
+      };
+      render(<ChatMessage message={msg} />);
+      expect(screen.getByText('2.5s')).toBeInTheDocument();
     });
   });
 

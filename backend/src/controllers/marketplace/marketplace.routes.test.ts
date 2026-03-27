@@ -24,6 +24,7 @@ jest.mock('./marketplace.controller.js', () => ({
   handleListSubmissions: jest.fn(),
   handleGetSubmission: jest.fn(),
   handleReviewSubmission: jest.fn(),
+  handleGetItemReadme: jest.fn(),
 }));
 
 describe('Marketplace Routes', () => {
@@ -143,9 +144,16 @@ describe('Marketplace Routes', () => {
   // Route count and method restrictions
   // ---------------------------------------------------------------
 
-  it('should register exactly 12 routes', () => {
+  it('should have GET route for /:id/readme', () => {
+    const route = (router.stack as any[]).find(
+      (layer: any) => layer.route?.path === '/:id/readme' && layer.route?.methods?.get
+    );
+    expect(route).toBeDefined();
+  });
+
+  it('should register exactly 13 routes', () => {
     const routes = (router.stack as any[]).filter((layer: any) => layer.route);
-    expect(routes).toHaveLength(12);
+    expect(routes).toHaveLength(13);
   });
 
   it('should only use GET or POST methods', () => {
@@ -157,11 +165,11 @@ describe('Marketplace Routes', () => {
     }
   });
 
-  it('should have 6 GET routes and 6 POST routes', () => {
+  it('should have 7 GET routes and 6 POST routes', () => {
     const routes = (router.stack as any[]).filter((layer: any) => layer.route);
     const getRoutes = routes.filter((r: any) => r.route.methods.get);
     const postRoutes = routes.filter((r: any) => r.route.methods.post);
-    expect(getRoutes).toHaveLength(6);
+    expect(getRoutes).toHaveLength(7);
     expect(postRoutes).toHaveLength(6);
   });
 

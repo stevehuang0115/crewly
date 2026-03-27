@@ -35,7 +35,7 @@ export function KnowledgeCategoryFilter({
         onClick={() => onCategoryChange('')}
         className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
           selectedCategory === ''
-            ? 'bg-indigo-600/20 text-indigo-400 font-medium'
+            ? 'bg-primary/20 text-primary font-medium'
             : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
         }`}
       >
@@ -49,7 +49,7 @@ export function KnowledgeCategoryFilter({
           onClick={() => onCategoryChange(cat)}
           className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
             selectedCategory === cat
-              ? 'bg-indigo-600/20 text-indigo-400 font-medium'
+              ? 'bg-primary/20 text-primary font-medium'
               : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
           }`}
         >

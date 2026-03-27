@@ -22,6 +22,7 @@ vi.mock('./cloud.controller.js', () => ({
   sendCloudMessage: vi.fn((_req, res) => res.status(200).json({ success: true })),
   getDeviceId: vi.fn((_req, res) => res.status(200).json({ success: true })),
   getDevicesFromSync: vi.fn((_req, res) => res.status(200).json({ success: true })),
+  verifyLicense: vi.fn((_req, res) => res.status(200).json({ success: true })),
 }));
 
 vi.mock('./cloud-google-auth.controller.js', () => ({
@@ -123,7 +124,11 @@ describe('Cloud Routes', () => {
     expect(routes).toContainEqual({ method: 'GET', path: '/device-id' });
   });
 
-  it('should register exactly 13 routes', () => {
-    expect(routes).toHaveLength(13);
+  it('should register GET /license/verify route', () => {
+    expect(routes).toContainEqual({ method: 'GET', path: '/license/verify' });
+  });
+
+  it('should register exactly 14 routes', () => {
+    expect(routes).toHaveLength(14);
   });
 });

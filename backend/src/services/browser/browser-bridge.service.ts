@@ -48,6 +48,8 @@ export interface BrowserCommand {
 	tool: string;
 	/** Parameters for the tool */
 	params?: Record<string, unknown>;
+	/** Name of the agent sending this command (displayed in extension banner) */
+	agentName?: string;
 }
 
 /** Response from Chrome Extension */
@@ -130,17 +132,33 @@ export class BrowserBridgeService {
 			perMessageDeflate: false,
 		});
 
-		// Manually handle HTTP upgrade requests — only intercept our path
-		httpServer.on('upgrade', (request, socket, head) => {
-			const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
-			if (pathname === BROWSER_BRIDGE_CONSTANTS.WS_PATH) {
-				this.wss!.handleUpgrade(request, socket, head, (ws) => {
-					this.wss!.emit('connection', ws, request);
-				});
+		// Intercept 'upgrade' events for /ws/browser BEFORE Socket.IO sees them.
+		// Problem: Node EventEmitter has no stopPropagation — all 'upgrade' listeners
+		// fire for every request. Socket.IO's Engine.IO handler interferes with
+		// browser-bridge WebSocket connections (corrupts frames, sets RSV1 compression
+		// bits), causing "Invalid frame header" / "RSV1 must be clear" in the Extension.
+		// Fix: Override httpServer.emit to exclusively handle our path and skip all
+		// other listeners (including Engine.IO) for /ws/browser upgrades.
+		const originalEmit = httpServer.emit.bind(httpServer) as (...args: unknown[]) => boolean;
+		(httpServer as { emit: (...args: unknown[]) => boolean }).emit = (event: unknown, ...args: unknown[]): boolean => {
+			if (event === 'upgrade') {
+				const request = args[0] as { url?: string; headers: Record<string, string | undefined> };
+				const url = request.url || '';
+				const host = request.headers.host || 'localhost';
+				const pathname = new URL(url, `http://${host}`).pathname;
+				if (pathname === BROWSER_BRIDGE_CONSTANTS.WS_PATH) {
+					// Handle exclusively — no other upgrade listeners will fire
+					this.wss!.handleUpgrade(
+						args[0] as Parameters<InstanceType<typeof WebSocketServer>['handleUpgrade']>[0],
+						args[1] as Parameters<InstanceType<typeof WebSocketServer>['handleUpgrade']>[1],
+						args[2] as Parameters<InstanceType<typeof WebSocketServer>['handleUpgrade']>[2],
+						(ws) => { this.wss!.emit('connection', ws, args[0]); },
+					);
+					return true;
+				}
 			}
-			// Do NOT destroy the socket for non-matching paths —
-			// let other handlers (Socket.IO) process them
-		});
+			return originalEmit(event, ...args);
+		};
 
 		this.wss.on('connection', (ws, req) => {
 			const clientId = `ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -238,13 +256,15 @@ export class BrowserBridgeService {
 	 * @param tool - Tool name to execute (e.g., 'navigate', 'screenshot')
 	 * @param params - Tool parameters
 	 * @param timeoutMs - Command timeout in milliseconds
+	 * @param agentName - Optional agent name to display in the extension banner
 	 * @returns Response from the Chrome Extension
 	 * @throws Error if no client is connected or command times out
 	 */
 	async sendCommand(
 		tool: string,
 		params?: Record<string, unknown>,
-		timeoutMs: number = BROWSER_BRIDGE_CONSTANTS.COMMAND_TIMEOUT_MS
+		timeoutMs: number = BROWSER_BRIDGE_CONSTANTS.COMMAND_TIMEOUT_MS,
+		agentName?: string
 	): Promise<BrowserCommandResponse> {
 		const client = this.getActiveClient();
 		if (!client) {
@@ -253,6 +273,9 @@ export class BrowserBridgeService {
 
 		const id = `cmd-${++this.commandCounter}-${Date.now()}`;
 		const command: BrowserCommand = { id, tool, params };
+		if (agentName) {
+			command.agentName = agentName;
+		}
 
 		return new Promise<BrowserCommandResponse>((resolve, reject) => {
 			const timer = setTimeout(() => {

@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   formatRelativeTime,
+  formatRelativeTimeCompact,
   formatDate,
   formatTime,
   formatDateTime,
@@ -130,6 +131,50 @@ describe('Time Utilities', () => {
         const timestamp = new Date(now.getTime() - 30 * 1000);
         expect(formatRelativeTime(timestamp)).toBe('just now');
       });
+    });
+  });
+
+  // ===========================================================================
+  // formatRelativeTimeCompact Tests
+  // ===========================================================================
+
+  describe('formatRelativeTimeCompact', () => {
+    it('returns "Just now" for timestamps less than 5 seconds ago', () => {
+      const ts = new Date(Date.now() - 2000).toISOString();
+      expect(formatRelativeTimeCompact(ts)).toBe('Just now');
+    });
+
+    it('returns seconds for timestamps under 1 minute', () => {
+      const ts = new Date(Date.now() - 30_000).toISOString();
+      expect(formatRelativeTimeCompact(ts)).toBe('30s ago');
+    });
+
+    it('returns minutes for timestamps under 1 hour', () => {
+      const ts = new Date(Date.now() - 5 * 60_000).toISOString();
+      expect(formatRelativeTimeCompact(ts)).toBe('5m ago');
+    });
+
+    it('returns hours for timestamps under 1 day', () => {
+      const ts = new Date(Date.now() - 3 * 3600_000).toISOString();
+      expect(formatRelativeTimeCompact(ts)).toBe('3h ago');
+    });
+
+    it('returns days for timestamps over 1 day', () => {
+      const ts = new Date(Date.now() - 2 * 86400_000).toISOString();
+      expect(formatRelativeTimeCompact(ts)).toBe('2d ago');
+    });
+
+    it('returns "—" for null input', () => {
+      expect(formatRelativeTimeCompact(null)).toBe('—');
+    });
+
+    it('returns "—" for invalid date string', () => {
+      expect(formatRelativeTimeCompact('not-a-date')).toBe('—');
+    });
+
+    it('accepts a Date object', () => {
+      const date = new Date(Date.now() - 120_000);
+      expect(formatRelativeTimeCompact(date)).toBe('2m ago');
     });
   });
 

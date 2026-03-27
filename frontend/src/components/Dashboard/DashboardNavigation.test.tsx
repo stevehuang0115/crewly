@@ -32,7 +32,7 @@ describe('DashboardNavigation', () => {
     );
     
     const teamsTab = screen.getByText('teams');
-    expect(teamsTab).toHaveClass('text-blue-600', 'border-blue-500');
+    expect(teamsTab).toHaveClass('text-primary', 'border-primary');
   });
 
   it('calls onTabChange when tab is clicked', () => {

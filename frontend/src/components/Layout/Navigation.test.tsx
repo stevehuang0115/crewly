@@ -1,3 +1,11 @@
+/**
+ * Navigation Component Tests
+ *
+ * Tests for the grouped sidebar navigation with 4 functional groups
+ * (Work / Communicate / Tools / System), pinned favorites, and collapse behavior.
+ *
+ * @module components/Layout/Navigation.test
+ */
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
@@ -7,12 +15,25 @@ import { SidebarProvider } from '../../contexts/SidebarContext';
 
 // Mock the QRCodeDisplay component
 vi.mock('./QRCodeDisplay', () => ({
-  QRCodeDisplay: () => <div data-testid="qr-code">QR Code</div>
+  QRCodeDisplay: () => <div data-testid="qr-code">QR Code</div>,
 }));
 
 // Mock the AuthStatusIndicator component
 vi.mock('../Auth/AuthStatusIndicator', () => ({
-  AuthStatusIndicator: () => <div data-testid="auth-status">Auth Status</div>
+  AuthStatusIndicator: () => <div data-testid="auth-status">Auth Status</div>,
+}));
+
+// Mock usePinnedFavorites hook
+const mockPinnedItems: Array<{ id: string; name: string; type: 'project' | 'team' }> = [];
+vi.mock('../../hooks/usePinnedFavorites', () => ({
+  usePinnedFavorites: () => ({
+    pinnedItems: mockPinnedItems,
+    isPinned: (id: string) => mockPinnedItems.some(p => p.id === id),
+    togglePin: vi.fn(),
+    isAtLimit: false,
+  }),
+  MAX_PINNED: 5,
+  STORAGE_KEY: 'crewly_pinned_favorites',
 }));
 
 const renderWithProviders = (component: React.ReactElement) => {
@@ -26,21 +47,80 @@ const renderWithProviders = (component: React.ReactElement) => {
 };
 
 describe('Navigation', () => {
-  it('renders all navigation items when expanded', () => {
+  beforeEach(() => {
+    mockPinnedItems.length = 0;
+  });
+
+  // ---------------------------------------------------------------------------
+  // 4-Group Navigation Structure
+  // ---------------------------------------------------------------------------
+
+  it('renders all 4 navigation group headers', () => {
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
-    expect(screen.getByText('Chat')).toBeInTheDocument();
-    expect(screen.getByText('Teams')).toBeInTheDocument();
-    expect(screen.getByText('Projects')).toBeInTheDocument();
-    expect(screen.getByText('Marketplace')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-group-work')).toHaveTextContent('WORK');
+    expect(screen.getByTestId('nav-group-communicate')).toHaveTextContent('COMMUNICATE');
+    expect(screen.getByTestId('nav-group-tools')).toHaveTextContent('TOOLS');
+    expect(screen.getByTestId('nav-group-system')).toHaveTextContent('SYSTEM');
   });
+
+  it('renders Work group items: Dashboard, Projects, Teams', () => {
+    renderWithProviders(<Navigation />);
+
+    expect(screen.getByRole('link', { name: /dashboard/i })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: /projects/i })).toHaveAttribute('href', '/projects');
+    expect(screen.getByRole('link', { name: /teams/i })).toHaveAttribute('href', '/teams');
+  });
+
+  it('renders Communicate group items: Chat', () => {
+    renderWithProviders(<Navigation />);
+
+    expect(screen.getByRole('link', { name: /chat/i })).toHaveAttribute('href', '/chat');
+  });
+
+  it('renders Tools group items: Marketplace, Schedules', () => {
+    renderWithProviders(<Navigation />);
+
+    expect(screen.getByRole('link', { name: /marketplace/i })).toHaveAttribute('href', '/marketplace');
+    expect(screen.getByRole('link', { name: /schedules/i })).toHaveAttribute('href', '/scheduled-checkins');
+  });
+
+  it('renders System group items: Security, Settings', () => {
+    renderWithProviders(<Navigation />);
+
+    expect(screen.getByRole('link', { name: /security/i })).toHaveAttribute('href', '/security');
+    expect(screen.getByRole('link', { name: /settings/i })).toHaveAttribute('href', '/settings');
+  });
+
+  // ---------------------------------------------------------------------------
+  // All Navigation Items
+  // ---------------------------------------------------------------------------
+
+  it('renders all 8 navigation items', () => {
+    renderWithProviders(<Navigation />);
+
+    const expectedItems = [
+      'Dashboard', 'Projects', 'Teams', 'Chat',
+      'Marketplace', 'Schedules', 'Security', 'Settings',
+    ];
+    expectedItems.forEach((item) => {
+      expect(screen.getByText(item)).toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Logo and Branding
+  // ---------------------------------------------------------------------------
 
   it('shows logo text when expanded', () => {
     renderWithProviders(<Navigation />);
 
     expect(screen.getByText('CREWLY')).toBeInTheDocument();
   });
+
+  // ---------------------------------------------------------------------------
+  // Collapse / Expand
+  // ---------------------------------------------------------------------------
 
   it('shows collapse toggle button in footer', () => {
     renderWithProviders(<Navigation />);
@@ -53,39 +133,16 @@ describe('Navigation', () => {
     renderWithProviders(<Navigation />);
 
     const toggleButton = screen.getByRole('button', { name: /collapse sidebar/i });
-
-    // Initially expanded, should show navigation labels
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
     expect(screen.getByText('Collapse')).toBeInTheDocument();
 
     fireEvent.click(toggleButton);
 
-    // After clicking, button label should change to "Expand sidebar"
     expect(screen.getByRole('button', { name: /expand sidebar/i })).toBeInTheDocument();
   });
 
-  it('renders navigation links correctly', () => {
-    renderWithProviders(<Navigation />);
-
-    // Check that all navigation links are present and have correct href attributes
-    const dashboardLink = screen.getByRole('link', { name: /dashboard/i });
-    const chatLink = screen.getByRole('link', { name: /chat/i });
-    const teamsLink = screen.getByRole('link', { name: /teams/i });
-    const projectsLink = screen.getByRole('link', { name: /projects/i });
-    const marketplaceLink = screen.getByRole('link', { name: /marketplace/i });
-
-    expect(dashboardLink).toHaveAttribute('href', '/');
-    expect(chatLink).toHaveAttribute('href', '/chat');
-    expect(teamsLink).toHaveAttribute('href', '/teams');
-    expect(projectsLink).toHaveAttribute('href', '/projects');
-    expect(marketplaceLink).toHaveAttribute('href', '/marketplace');
-  });
-
-  it('shows QR code display', () => {
-    renderWithProviders(<Navigation />);
-
-    expect(screen.getByTestId('qr-code')).toBeInTheDocument();
-  });
+  // ---------------------------------------------------------------------------
+  // Mobile
+  // ---------------------------------------------------------------------------
 
   it('renders close button when mobile menu is open', () => {
     const onMobileClose = vi.fn();
@@ -98,59 +155,65 @@ describe('Navigation', () => {
     expect(onMobileClose).toHaveBeenCalled();
   });
 
-  it('renders Settings link in navigation', () => {
+  // ---------------------------------------------------------------------------
+  // QR Code and Auth
+  // ---------------------------------------------------------------------------
+
+  it('shows QR code display', () => {
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByText('Settings')).toBeInTheDocument();
+    expect(screen.getByTestId('qr-code')).toBeInTheDocument();
   });
 
-  it('Settings link has correct href', () => {
+  it('shows auth status indicator', () => {
     renderWithProviders(<Navigation />);
 
-    const settingsLink = screen.getByRole('link', { name: /settings/i });
-    expect(settingsLink).toHaveAttribute('href', '/settings');
+    expect(screen.getByTestId('auth-status')).toBeInTheDocument();
   });
 
-  it('renders Schedules link in bottom section', () => {
+  // ---------------------------------------------------------------------------
+  // Pinned Favorites
+  // ---------------------------------------------------------------------------
+
+  it('does not show pinned favorites section when empty', () => {
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByText('Schedules')).toBeInTheDocument();
+    expect(screen.queryByTestId('pinned-favorites')).not.toBeInTheDocument();
   });
 
-  it('Schedules link has correct href', () => {
+  it('shows pinned favorites when items exist', () => {
+    mockPinnedItems.push(
+      { id: 'proj-1', name: 'My Project', type: 'project' },
+      { id: 'team-1', name: 'Dev Team', type: 'team' },
+    );
+
     renderWithProviders(<Navigation />);
 
-    const schedulesLink = screen.getByRole('link', { name: /schedules/i });
-    expect(schedulesLink).toHaveAttribute('href', '/scheduled-checkins');
+    expect(screen.getByTestId('pinned-favorites')).toBeInTheDocument();
+    expect(screen.getByText('Favorites')).toBeInTheDocument();
+    expect(screen.getByText('My Project')).toBeInTheDocument();
+    expect(screen.getByText('Dev Team')).toBeInTheDocument();
   });
 
-  it('has exactly 5 main navigation items', () => {
+  it('pinned project links to correct project URL', () => {
+    mockPinnedItems.push(
+      { id: 'proj-abc', name: 'Test Project', type: 'project' },
+    );
+
     renderWithProviders(<Navigation />);
 
-    const mainNavItems = ['Dashboard', 'Chat', 'Teams', 'Projects', 'Marketplace'];
-    mainNavItems.forEach((item) => {
-      expect(screen.getByText(item)).toBeInTheDocument();
-    });
-
-    // Security, Schedules, and Settings should be in bottom section, not main nav
-    const securityLink = screen.getByRole('link', { name: /security/i });
-    const schedulesLink = screen.getByRole('link', { name: /schedules/i });
-    const settingsLink = screen.getByRole('link', { name: /settings/i });
-    expect(securityLink).toBeInTheDocument();
-    expect(schedulesLink).toBeInTheDocument();
-    expect(settingsLink).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /test project/i });
+    expect(link).toHaveAttribute('href', '/projects/proj-abc');
   });
 
-  it('renders Security link in bottom section', () => {
+  it('pinned team links to correct team URL', () => {
+    mockPinnedItems.push(
+      { id: 'team-xyz', name: 'QA Team', type: 'team' },
+    );
+
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByText('Security')).toBeInTheDocument();
-  });
-
-  it('Security link has correct href', () => {
-    renderWithProviders(<Navigation />);
-
-    const securityLink = screen.getByRole('link', { name: /security/i });
-    expect(securityLink).toHaveAttribute('href', '/security');
+    const link = screen.getByRole('link', { name: /qa team/i });
+    expect(link).toHaveAttribute('href', '/teams/team-xyz');
   });
 });

@@ -88,14 +88,14 @@ describe('BrowserBridgeService', () => {
 	describe('attach', () => {
 		it('should attach without error', () => {
 			const bridge = BrowserBridgeService.getInstance();
-			const mockServer = { on: vi.fn() } as any;
+			const mockServer = { on: vi.fn(), emit: vi.fn() } as any;
 			// Should not throw
 			expect(() => bridge.attach(mockServer)).not.toThrow();
 		});
 
 		it('should not throw on second attach (idempotent)', () => {
 			const bridge = BrowserBridgeService.getInstance();
-			const mockServer = { on: vi.fn() } as any;
+			const mockServer = { on: vi.fn(), emit: vi.fn() } as any;
 			bridge.attach(mockServer);
 			// Second attach should not throw (warns instead)
 			expect(() => bridge.attach(mockServer)).not.toThrow();
@@ -105,7 +105,7 @@ describe('BrowserBridgeService', () => {
 	describe('stop', () => {
 		it('should close the WebSocket server and clean up', () => {
 			const bridge = BrowserBridgeService.getInstance();
-			const mockServer = { on: vi.fn() } as any;
+			const mockServer = { on: vi.fn(), emit: vi.fn() } as any;
 			bridge.attach(mockServer);
 			bridge.stop();
 			expect(bridge.isConnected()).toBe(false);

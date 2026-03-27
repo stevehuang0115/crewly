@@ -22,7 +22,7 @@ const statusColors = {
 };
 
 const roleColors: Record<string, string> = {
-  orchestrator: '#8b5cf6',
+  orchestrator: '#2a73ea',
   tpm: '#3b82f6',
   pgm: '#0ea5e9',
   developer: '#10b981',

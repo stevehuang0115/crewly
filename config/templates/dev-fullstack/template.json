@@ -3,11 +3,12 @@
   "name": "Fullstack Development Team",
   "description": "Team Leader + developers + QA for building web applications",
   "category": "development",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "tags": ["development", "web", "fullstack", "testing"],
   "icon": "laptop",
   "hierarchical": true,
-  "defaultRuntime": "claude-code",
+  "compatibleRuntimes": ["claude-code", "crewly-agent"],
+  "defaultRuntime": "crewly-agent",
   "norms": {
     "enabled": true,
     "files": [
@@ -23,14 +24,33 @@
       "count": 1,
       "hierarchyLevel": 1,
       "canDelegate": true,
-      "defaultSkills": [
-        "decompose-goal",
-        "delegate-task",
-        "verify-output",
-        "aggregate-results",
-        "handle-failure",
-        "code-review"
+      "defaultTools": [
+        "delegate_task",
+        "send_message",
+        "get_team_status",
+        "get_agent_status",
+        "report_status",
+        "complete_task",
+        "handle_agent_failure",
+        "schedule_check",
+        "subscribe_event",
+        "recall_memory",
+        "remember",
+        "bash_exec",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "git_status",
+        "git_diff",
+        "git_commit"
       ],
+      "modelConfig": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "temperature": 0.3
+      },
       "enableBrowser": true
     },
     {
@@ -41,11 +61,27 @@
       "hierarchyLevel": 2,
       "canDelegate": false,
       "reportsTo": "team-leader",
-      "defaultSkills": [
-        "report-status",
-        "complete-task",
-        "request-help"
+      "defaultTools": [
+        "report_status",
+        "complete_task",
+        "send_message",
+        "recall_memory",
+        "remember",
+        "bash_exec",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "git_status",
+        "git_diff",
+        "git_commit"
       ],
+      "modelConfig": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "temperature": 0.2
+      },
       "enableBrowser": false
     },
     {
@@ -56,11 +92,22 @@
       "hierarchyLevel": 2,
       "canDelegate": false,
       "reportsTo": "team-leader",
-      "defaultSkills": [
-        "report-status",
-        "complete-task",
-        "request-help"
+      "defaultTools": [
+        "report_status",
+        "complete_task",
+        "send_message",
+        "recall_memory",
+        "remember",
+        "bash_exec",
+        "read_file",
+        "glob",
+        "grep"
       ],
+      "modelConfig": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "temperature": 0.2
+      },
       "enableBrowser": true
     }
   ],
