@@ -292,7 +292,7 @@ export function getDefaultSettings(): CrewlySettings {
         'codex-cli': 'codex -a never -s danger-full-access',
         'crewly-agent': 'crewly-agent-in-process',
       },
-      agentIdleTimeoutMinutes: 10,
+      agentIdleTimeoutMinutes: 30,
       enableProactiveCompact: true,
       enableSelfEvolution: false,
       tokenTracking: false,

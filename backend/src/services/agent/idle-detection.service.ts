@@ -170,8 +170,23 @@ export class IdleDetectionService {
 					? AGENT_SUSPEND_CONSTANTS.STARTED_AGENT_IDLE_TIMEOUT_MINUTES * 60 * 1000
 					: timeoutMs;
 
-				// Check if idle
-				if (activityTracker.isIdleFor(member.sessionName, effectiveTimeoutMs)) {
+				// Check if idle — dual detection:
+				// PTY-based runtimes: use PtyActivityTracker
+				// In-process runtimes (crewly-agent): use member.updatedAt timestamp
+				const isCrewlyAgent = member.runtimeType === 'crewly-agent';
+				let isIdle = false;
+				if (isCrewlyAgent) {
+					// crewly-agent has no PTY — check last updatedAt or readyAt timestamp
+					const lastActive = member.readyAt || member.updatedAt || member.createdAt;
+					if (lastActive) {
+						const idleMs = Date.now() - new Date(lastActive).getTime();
+						isIdle = idleMs > effectiveTimeoutMs;
+					}
+				} else {
+					isIdle = activityTracker.isIdleFor(member.sessionName, effectiveTimeoutMs);
+				}
+
+				if (isIdle) {
 					// Skip agents that are actively working (workingStatus: in_progress)
 					// This prevents suspending agents that are mid-task but happen to
 					// have stale PTY output (e.g., waiting for a long API call)
