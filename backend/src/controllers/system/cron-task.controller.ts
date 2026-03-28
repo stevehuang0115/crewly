@@ -93,6 +93,27 @@ export async function updateCronTask(req: Request, res: Response): Promise<void>
 }
 
 /**
+ * GET /api/teams/:teamId/cron-tasks — List cron tasks for a specific team.
+ */
+export async function listTeamCronTasks(req: Request, res: Response): Promise<void> {
+	try {
+		const teamId = req.params.teamId || req.params.id;
+		const targetAgent = req.query.targetAgent as string | undefined;
+		const enabled = req.query.enabled !== undefined
+			? req.query.enabled === 'true'
+			: undefined;
+
+		const tasks = await CronTaskService.getInstance().getByTeam(teamId, { targetAgent, enabled });
+		res.json({ success: true, data: tasks });
+	} catch (error) {
+		res.status(500).json({
+			success: false,
+			error: error instanceof Error ? error.message : 'Failed to list team cron tasks',
+		});
+	}
+}
+
+/**
  * DELETE /api/cron-tasks/:id — Delete a cron task (user/orchestrator only).
  */
 export async function deleteCronTask(req: Request, res: Response): Promise<void> {

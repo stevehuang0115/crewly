@@ -8,7 +8,7 @@
  */
 
 /**
- * A cron task definition stored in ~/.crewly/cron-tasks.json.
+ * A cron task definition stored in ~/.crewly/teams/{teamId}/cron-tasks.json.
  */
 export interface CronTask {
 	/** Unique identifier (cron-xxxx) */
