@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { ApiContext } from '../types.js';
+import { listTeamCronTasks } from '../system/cron-task.controller.js';
 import {
   createTeam,
   getTeams,
@@ -24,6 +25,7 @@ import {
   updateTeamMemberRuntime,
   archiveTeam
 } from './team.controller.js';
+import { exportTeam, importTeam } from './team-export.controller.js';
 
 /**
  * Creates team router with all team-related endpoints
@@ -67,11 +69,18 @@ export function createTeamRouter(context: ApiContext): Router {
   router.post('/:teamId/members/:memberId/context/inject', injectContextIntoSession.bind(context));
   router.post('/:teamId/members/:memberId/context/refresh', refreshMemberContext.bind(context));
 
+  // Team-scoped cron tasks
+  router.get('/:id/cron-tasks', listTeamCronTasks);
+
   // Team activity monitoring
   router.get('/activity-status', getTeamActivityStatus.bind(context));
 
   // Runtime management
   router.put('/:teamId/members/:memberId/runtime', updateTeamMemberRuntime.bind(context));
+
+  // Team export/import
+  router.get('/:teamId/export', exportTeam.bind(context));
+  router.post('/import', importTeam.bind(context));
 
   return router;
 }
