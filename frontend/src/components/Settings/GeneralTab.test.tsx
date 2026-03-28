@@ -25,7 +25,7 @@ describe('GeneralTab', () => {
         'codex-cli': 'codex -a never -s danger-full-access',
         'crewly-agent': 'crewly-agent-in-process',
       },
-      agentIdleTimeoutMinutes: 10,
+      agentIdleTimeoutMinutes: 30,
       enableProactiveCompact: true,
       enableSelfEvolution: false,
       enableAuditor: false,

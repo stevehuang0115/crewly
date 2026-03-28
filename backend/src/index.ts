@@ -670,7 +670,9 @@ export class CrewlyServer {
 
 			// Start idle detection for agent suspension
 			this.logger.info('Starting idle detection service...');
-			IdleDetectionService.getInstance().start();
+			const idleDetection = IdleDetectionService.getInstance();
+			idleDetection.setAgentRegistrationService(this.apiController.agentRegistrationService);
+			idleDetection.start();
 
 			// Wire OrchestratorRestartService with dependencies for auto-restart
 			try {

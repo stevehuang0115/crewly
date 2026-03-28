@@ -856,7 +856,7 @@ export const AGENT_HEARTBEAT_MONITOR_CONSTANTS = {
  */
 export const AGENT_SUSPEND_CONSTANTS = {
 	/** Default idle timeout in minutes before an agent is suspended (0 = disabled) */
-	DEFAULT_IDLE_TIMEOUT_MINUTES: 10,
+	DEFAULT_IDLE_TIMEOUT_MINUTES: 30,
 	/** Interval between idle checks in milliseconds (2 minutes) */
 	IDLE_CHECK_INTERVAL_MS: 120_000,
 	/** Maximum age of debug log files eligible for cleanup on suspend (hours) */
@@ -869,8 +869,8 @@ export const AGENT_SUSPEND_CONSTANTS = {
 	STARTED_AGENT_IDLE_TIMEOUT_MINUTES: 15,
 	/** Roles that should never be auto-stopped (always-on) */
 	ALWAYS_ON_ROLES: ['orchestrator', 'auditor'] as const,
-	/** Idle timeout in ms before a worker agent is stopped (default 10 min) */
-	AGENT_IDLE_STOP_TIMEOUT_MS: 600_000,
+	/** Idle timeout in ms before a worker agent is stopped (default 30 min) */
+	AGENT_IDLE_STOP_TIMEOUT_MS: 1_800_000,
 } as const;
 
 // ========================= SERVER PROCESS CONSTANTS =========================
