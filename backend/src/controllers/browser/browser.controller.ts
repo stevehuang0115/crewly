@@ -1,7 +1,7 @@
 /**
  * Browser Controller
  *
- * REST API handlers for the Browser Bridge. Each handler translates an
+ * REST API handlers for Crewly in Chrome. Each handler translates an
  * HTTP request into a WebSocket command sent to the connected Chrome
  * Extension, waits for the response, and returns it as JSON.
  *
@@ -13,7 +13,7 @@ import { BrowserBridgeService } from '../../services/browser/browser-bridge.serv
 
 /**
  * GET /api/browser/status
- * Returns the current browser bridge connection status.
+ * Returns the current Crewly in Chrome connection status.
  *
  * @param _req - Express request (unused)
  * @param res - Express response

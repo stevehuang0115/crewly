@@ -211,9 +211,9 @@ export class CrewlyServer {
 			maxHttpBufferSize: 5 * 1024 * 1024, // 5MB
 			perMessageDeflate: false,
 			// CRITICAL: Prevent Engine.IO from destroying non-matching upgrade requests.
-			// BrowserBridgeService shares this httpServer and handles /ws/browser upgrades.
+			// Crewly in Chrome (BrowserBridgeService) shares this httpServer and handles /ws/browser upgrades.
 			// Without this, Engine.IO sets a 1-second timer to socket.end() any upgrade
-			// that doesn't match /socket.io/ — killing BrowserBridge connections before
+			// that doesn't match /socket.io/ — killing Crewly in Chrome connections before
 			// any data is exchanged (manifests as "Invalid frame header" errors).
 			destroyUpgrade: false,
 		});
@@ -782,14 +782,14 @@ export class CrewlyServer {
 				});
 			}
 
-			// Start Browser Bridge WebSocket server for Chrome Extension
+			// Start Crewly in Chrome WebSocket bridge
 			try {
 				const { BrowserBridgeService } = await import('./services/browser/browser-bridge.service.js');
 				const browserBridge = BrowserBridgeService.getInstance();
 				browserBridge.attach(this.httpServer);
-				this.logger.info('Browser Bridge WebSocket server started');
+				this.logger.info('Crewly in Chrome WebSocket bridge started');
 			} catch (error) {
-				this.logger.warn('Failed to start Browser Bridge (non-critical)', {
+				this.logger.warn('Failed to start Crewly in Chrome bridge (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
@@ -1793,7 +1793,7 @@ export class CrewlyServer {
 			// Stop orchestrator heartbeat monitor
 			OrchestratorHeartbeatMonitorService.getInstance().stop();
 
-			// Stop Browser Bridge WebSocket server
+			// Stop Crewly in Chrome WebSocket bridge
 			try {
 				const { BrowserBridgeService } = await import('./services/browser/browser-bridge.service.js');
 				BrowserBridgeService.getInstance().stop();

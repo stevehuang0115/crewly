@@ -501,7 +501,7 @@ export abstract class RuntimeAgentService {
 			const requiredServers: Record<string, { command: string; args: string[] }> = {};
 
 			// Skip Playwright injection when Crewly Pro addon is installed
-			// (Pro addon provides its own WS Browser Bridge for browser control)
+			// (Pro addon provides its own Crewly in Chrome bridge for browser control)
 			const proAddonInstalled = this.isProAddonInstalled();
 			if (proAddonInstalled) {
 				this.logger.info('Crewly Pro addon detected — skipping Playwright MCP injection', { projectPath });
@@ -629,7 +629,7 @@ export abstract class RuntimeAgentService {
 	/**
 	 * Check if the Crewly Pro addon is installed.
 	 *
-	 * Pro addon provides its own WS Browser Bridge, so Playwright MCP
+	 * Pro addon provides its own Crewly in Chrome bridge, so Playwright MCP
 	 * should not be injected when it is present.
 	 *
 	 * @returns True if crewly-pro addon manifest exists

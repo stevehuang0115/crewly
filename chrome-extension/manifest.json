@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Crewly Remote Browser",
+  "name": "Crewly in Chrome",
   "version": "0.1.0",
   "description": "Allows Crewly Cloud agents to remotely operate your Chrome browser via WebSocket.",
   "permissions": [

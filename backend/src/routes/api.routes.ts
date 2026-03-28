@@ -109,7 +109,7 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Tool approval management routes for granular tool execution control
   router.use('/approvals', createApprovalsRouter());
 
-  // Browser Bridge routes for Chrome Extension remote browser control
+  // Crewly in Chrome routes for browser control
   router.use('/browser', createBrowserRouter());
 
   // Cross-machine communication routes for Slack-based inter-machine messaging

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Crewly Remote Browser — Test WebSocket Server
+ * Crewly in Chrome — Test WebSocket Server
  *
  * A simple CLI tool for testing the Chrome Extension.
  * Starts a WebSocket server, accepts one extension connection,
@@ -32,7 +32,7 @@ let extensionSocket = null;
 
 const wss = new WebSocketServer({ port: PORT });
 
-console.log(`\n  Crewly Remote Browser — Test Server`);
+console.log(`\n  Crewly in Chrome — Test Server`);
 console.log(`  WebSocket listening on ws://localhost:${PORT}`);
 console.log(`  Waiting for Chrome Extension to connect...\n`);
 

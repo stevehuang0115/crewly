@@ -81,7 +81,7 @@ export const AGENT_TIMEOUTS = {
 	STARTING_WATCHDOG: 300000, // 5 minutes
 } as const;
 
-// Browser Bridge constants for Chrome Extension WebSocket bridge
+// Crewly in Chrome constants for Chrome Extension WebSocket bridge
 export const BROWSER_BRIDGE_CONSTANTS = {
 	/** WebSocket server path for Chrome Extension connections */
 	WS_PATH: '/ws/browser',
