@@ -1,5 +1,5 @@
 /**
- * Crewly Remote Browser — Content Script
+ * Crewly in Chrome — Content Script
  *
  * Injected into all pages. Provides DOM access helpers
  * that can be invoked from the background service worker

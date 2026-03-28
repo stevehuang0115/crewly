@@ -1,7 +1,7 @@
 /**
  * Browser Routes
  *
- * Router configuration for Browser Bridge REST API endpoints.
+ * Router configuration for Crewly in Chrome REST API endpoints.
  * These endpoints are called by the remote-browser skill to control
  * the user's Chrome browser via the WebSocket bridge.
  *

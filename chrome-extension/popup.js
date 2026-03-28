@@ -1,5 +1,5 @@
 /**
- * Crewly Remote Browser — Popup Script
+ * Crewly in Chrome — Popup Script
  *
  * Controls the popup UI: server URL input, connect/disconnect buttons,
  * and live connection status display.

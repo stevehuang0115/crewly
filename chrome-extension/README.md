@@ -1,4 +1,4 @@
-# Crewly Remote Browser — Chrome Extension Demo
+# Crewly in Chrome — Chrome Extension Demo
 
 Allows Crewly Cloud agents to remotely operate a user's Chrome browser via WebSocket.
 

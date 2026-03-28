@@ -1,5 +1,5 @@
 /**
- * Crewly Remote Browser — CDP Screenshot Module
+ * Crewly in Chrome — CDP Screenshot Module
  *
  * Provides screenshot capture using Chrome DevTools Protocol (CDP)
  * via chrome.debugger API. Falls back to chrome.tabs.captureVisibleTab

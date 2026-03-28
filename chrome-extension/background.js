@@ -1,5 +1,5 @@
 /**
- * Crewly Remote Browser — Background Service Worker
+ * Crewly in Chrome — Background Service Worker
  *
  * Maintains a WebSocket connection to the Crewly Cloud relay server,
  * receives JSON commands, routes them to the appropriate Chrome API

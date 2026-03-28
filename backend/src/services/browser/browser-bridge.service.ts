@@ -1,7 +1,7 @@
 /**
- * Browser Bridge Service
+ * Crewly in Chrome — Browser Bridge Service
  *
- * Provides a raw WebSocket server that the Crewly Chrome Extension connects to.
+ * Provides a raw WebSocket server that the Crewly in Chrome extension connects to.
  * Acts as a bridge between REST API calls (from remote-browser skill) and the
  * Chrome Extension. When a REST endpoint receives a command, it forwards it to
  * the connected Chrome Extension via WebSocket and waits for the response.
@@ -64,7 +64,7 @@ export interface BrowserCommandResponse {
 	error?: string;
 }
 
-/** Status information about the browser bridge */
+/** Status information about the Crewly in Chrome bridge */
 export interface BrowserBridgeStatus {
 	/** Whether at least one Chrome Extension is connected */
 	connected: boolean;
@@ -206,7 +206,7 @@ export class BrowserBridgeService {
 			this.logger.error('WebSocket server error', { error: err.message });
 		});
 
-		this.logger.info('Browser Bridge WebSocket server attached', {
+		this.logger.info('Crewly in Chrome WebSocket server attached', {
 			path: BROWSER_BRIDGE_CONSTANTS.WS_PATH,
 		});
 	}
@@ -340,7 +340,7 @@ export class BrowserBridgeService {
 		// Clear all pending commands
 		for (const [id, pending] of this.pendingCommands) {
 			clearTimeout(pending.timer);
-			pending.reject(new Error('Browser Bridge shutting down'));
+			pending.reject(new Error('Crewly in Chrome bridge shutting down'));
 			this.pendingCommands.delete(id);
 		}
 
@@ -360,6 +360,6 @@ export class BrowserBridgeService {
 			this.wss = null;
 		}
 
-		this.logger.info('Browser Bridge stopped');
+		this.logger.info('Crewly in Chrome bridge stopped');
 	}
 }
