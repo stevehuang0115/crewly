@@ -118,7 +118,7 @@ describe('Dashboard Page', () => {
       });
     });
 
-    it('should not render RelayHealthCard (removed, CloudBar in header is sufficient)', async () => {
+    it('should render RelayHealthCard for live Cloud Relay status', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -129,7 +129,7 @@ describe('Dashboard Page', () => {
         expect(screen.getByText('Dashboard')).toBeInTheDocument();
       });
 
-      expect(screen.queryByTestId('relay-health-card')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('relay-health-card')).toBeInTheDocument();
     });
 
     it('should render teams section header', async () => {

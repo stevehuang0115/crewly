@@ -30,6 +30,8 @@ export interface TokenUsageEvent {
   output: number;
   /** AI model used for this event */
   model: string;
+  /** Optional task ID for per-task tracking */
+  taskId?: string;
 }
 
 /**
@@ -76,6 +78,56 @@ export interface SessionUsageSummary {
   totalOutput: number;
   /** Number of events */
   eventCount: number;
+  /** Computed cost in USD based on model pricing */
+  cost: number;
+  /** Per-model breakdown of token usage */
+  modelBreakdown: ModelUsageBreakdown[];
+}
+
+/**
+ * Token usage breakdown for a specific model
+ */
+export interface ModelUsageBreakdown {
+  /** Model identifier */
+  model: string;
+  /** Input tokens for this model */
+  inputTokens: number;
+  /** Output tokens for this model */
+  outputTokens: number;
+  /** Computed cost for this model in USD */
+  cost: number;
+}
+
+/**
+ * Per-model token cost rates in USD per token.
+ * Used for server-side cost calculation.
+ */
+export const TOKEN_COSTS: Record<string, { input: number; output: number }> = {
+  'claude-3-opus': { input: 0.000015, output: 0.000075 },
+  'claude-3-5-sonnet': { input: 0.000003, output: 0.000015 },
+  'claude-3-haiku': { input: 0.00000025, output: 0.00000125 },
+  'claude-opus-4-20250514': { input: 0.000015, output: 0.000075 },
+  'claude-sonnet-4-20250514': { input: 0.000003, output: 0.000015 },
+  'claude-haiku-4-20250506': { input: 0.00000025, output: 0.00000125 },
+  'gemini-3-flash-preview': { input: 0.0000001, output: 0.0000004 },
+  'gemini-2.5-flash-preview-05-20': { input: 0.00000015, output: 0.0000006 },
+  'gemini-2.0-flash': { input: 0.0000001, output: 0.0000004 },
+  'gpt-4o': { input: 0.000005, output: 0.000015 },
+  'gpt-4o-mini': { input: 0.00000015, output: 0.0000006 },
+  default: { input: 0.000003, output: 0.000015 },
+};
+
+/**
+ * Calculate the cost for a given number of tokens and model.
+ *
+ * @param inputTokens - Number of input tokens
+ * @param outputTokens - Number of output tokens
+ * @param model - Model identifier
+ * @returns Cost in USD
+ */
+export function calculateCost(inputTokens: number, outputTokens: number, model: string): number {
+  const rates = TOKEN_COSTS[model] || TOKEN_COSTS.default;
+  return inputTokens * rates.input + outputTokens * rates.output;
 }
 
 /**
@@ -96,6 +148,9 @@ export class TokenUsageService {
 
   /** In-memory storage keyed by session name */
   private readonly sessions: Map<string, SessionUsageRecord> = new Map();
+
+  /** Active task context per session (sessionName → taskId) */
+  private readonly taskContexts: Map<string, string | null> = new Map();
 
   /** Timer handle for periodic flush */
   private flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -146,7 +201,7 @@ export class TokenUsageService {
    * @param output - Number of output tokens generated
    * @param model - AI model identifier used
    */
-  recordUsage(sessionName: string, agentId: string, input: number, output: number, model: string): void {
+  recordUsage(sessionName: string, agentId: string, input: number, output: number, model: string, taskId?: string): void {
     let record = this.sessions.get(sessionName);
     if (!record) {
       record = {
@@ -160,12 +215,16 @@ export class TokenUsageService {
       this.sessions.set(sessionName, record);
     }
 
+    // Auto-apply task context if no explicit taskId provided
+    const effectiveTaskId = taskId ?? this.taskContexts.get(sessionName) ?? undefined;
+
     const event: TokenUsageEvent = {
       timestamp: new Date().toISOString(),
       agentId,
       input,
       output,
       model,
+      taskId: effectiveTaskId,
     };
 
     record.events.push(event);
@@ -201,20 +260,76 @@ export class TokenUsageService {
    *
    * @returns Array of session usage summaries
    */
-  getUsageBySessions(): SessionUsageSummary[] {
+  getUsageBySessions(taskId?: string): SessionUsageSummary[] {
     const summaries: SessionUsageSummary[] = [];
 
     for (const record of this.sessions.values()) {
+      // Filter events by taskId if provided
+      const events = taskId
+        ? record.events.filter(e => e.taskId === taskId)
+        : record.events;
+
+      if (taskId && events.length === 0) continue;
+
+      // Compute per-model breakdown
+      const modelMap = new Map<string, { input: number; output: number }>();
+      let filteredInput = 0;
+      let filteredOutput = 0;
+
+      for (const event of events) {
+        const existing = modelMap.get(event.model) || { input: 0, output: 0 };
+        existing.input += event.input;
+        existing.output += event.output;
+        modelMap.set(event.model, existing);
+        filteredInput += event.input;
+        filteredOutput += event.output;
+      }
+
+      const modelBreakdown: ModelUsageBreakdown[] = [];
+      for (const [model, usage] of modelMap) {
+        modelBreakdown.push({
+          model,
+          inputTokens: usage.input,
+          outputTokens: usage.output,
+          cost: calculateCost(usage.input, usage.output, model),
+        });
+      }
+
+      const totalCost = modelBreakdown.reduce((sum, m) => sum + m.cost, 0);
+
       summaries.push({
         sessionName: record.sessionName,
         agentId: record.agentId,
-        totalInput: record.totalInput,
-        totalOutput: record.totalOutput,
-        eventCount: record.eventCount,
+        totalInput: taskId ? filteredInput : record.totalInput,
+        totalOutput: taskId ? filteredOutput : record.totalOutput,
+        eventCount: taskId ? events.length : record.eventCount,
+        cost: totalCost,
+        modelBreakdown,
       });
     }
 
     return summaries;
+  }
+
+  /**
+   * Set the current task context for a session.
+   * All subsequent recordUsage calls for this session will be tagged with the taskId.
+   *
+   * @param sessionName - Session name
+   * @param taskId - Task ID to associate, or null to clear
+   */
+  setTaskContext(sessionName: string, taskId: string | null): void {
+    this.taskContexts.set(sessionName, taskId);
+  }
+
+  /**
+   * Get the current task context for a session.
+   *
+   * @param sessionName - Session name
+   * @returns Current task ID or null
+   */
+  getTaskContext(sessionName: string): string | null {
+    return this.taskContexts.get(sessionName) ?? null;
   }
 
   /**

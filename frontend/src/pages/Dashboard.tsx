@@ -15,6 +15,9 @@ import { CreateCard } from '@/components/Cards/CreateCard';
 import { Team, Project } from '@/types';
 import { apiService } from '@/services/api.service';
 import { HealthBar } from '@/components/Dashboard/HealthBar';
+import { RelayHealthCard } from '@/components/Dashboard/RelayHealthCard';
+import { assignDefaultAvatars } from '@/utils/team.utils';
+import { logSilentError } from '@/utils/error-handling';
 
 
 interface ProjectProgress {
@@ -59,6 +62,7 @@ export const Dashboard: React.FC = () => {
   const [teamsMap, setTeamsMap] = useState<Record<string, Team[]>>({});
   const [projectProgress, setProjectProgress] = useState<Record<string, ProjectProgress>>({});
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadData();
@@ -100,8 +104,8 @@ export const Dashboard: React.FC = () => {
         progressLabel,
         progressBreakdown: breakdown
       };
-    } catch (error) {
-      console.error(`Error calculating progress for project ${projectId}:`, error);
+    } catch (err) {
+      logSilentError(err, { context: `Calculating progress for project ${projectId}` });
       return {
         projectId,
         progressPercent: 0,
@@ -114,6 +118,7 @@ export const Dashboard: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
+      setError(null);
       const [projectList, teamList] = await Promise.all([
         apiService.getProjects(),
         apiService.getTeams()
@@ -132,23 +137,10 @@ export const Dashboard: React.FC = () => {
 
       setProjectProgress(progressMap);
 
-      // Avatar choices for migration (only need to define once)
-      const avatarChoices = [
-        'https://picsum.photos/seed/1/64',
-        'https://picsum.photos/seed/2/64',
-        'https://picsum.photos/seed/3/64',
-        'https://picsum.photos/seed/4/64',
-        'https://picsum.photos/seed/5/64',
-        'https://picsum.photos/seed/6/64',
-      ];
-
-      // Migrate teams without avatars (do once, reuse for both teams and teamsMap)
+      // Migrate teams without avatars using shared utility
       const migratedTeams = teamList.map(team => ({
         ...team,
-        members: team.members.map((member, index) => ({
-          ...member,
-          avatar: member.avatar || avatarChoices[index % avatarChoices.length]
-        }))
+        members: assignDefaultAvatars(team.members),
       }));
 
       setTeams(migratedTeams);
@@ -164,8 +156,9 @@ export const Dashboard: React.FC = () => {
         return acc;
       }, {} as Record<string, Team[]>);
       setTeamsMap(teamsMapping);
-    } catch (error) {
-      console.error('Error loading dashboard data:', error);
+    } catch (err) {
+      logSilentError(err, { context: 'Loading dashboard data', level: 'error' });
+      setError('Failed to load dashboard data. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -189,6 +182,20 @@ export const Dashboard: React.FC = () => {
       <div className="flex items-center justify-center min-h-64">
         <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent"></div>
         <p className="ml-3 text-text-secondary-dark">Loading dashboard...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-64 text-center">
+        <p className="text-red-400 mb-4">{error}</p>
+        <button
+          onClick={loadData}
+          className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -219,11 +226,16 @@ export const Dashboard: React.FC = () => {
         />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
         <StatCard title="Projects" value={projects.length} />
         <StatCard title="Teams" value={teams.length} />
         <StatCard title="Active Projects" value={projects.filter(p => p.status === 'active').length} />
         <StatCard title="Running Agents" value={teams.flatMap(t => t.members).filter(m => m.agentStatus === 'active').length} />
+      </div>
+
+      {/* Cloud Relay Health */}
+      <div className="mb-10">
+        <RelayHealthCard />
       </div>
 
       <div className="space-y-10">

@@ -28,7 +28,6 @@ export default {
     // Tests that directly test PTY/SQLite functionality should use
     // jest.unmock() or are expected to skip on architecture mismatch.
     'node-pty': '<rootDir>/__mocks__/node-pty.ts',
-    'better-sqlite3': '<rootDir>/__mocks__/better-sqlite3.ts',
   },
   transformIgnorePatterns: [
     'node_modules/',

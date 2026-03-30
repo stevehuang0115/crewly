@@ -796,6 +796,25 @@ export class CrewlyServer {
 				});
 			}
 
+			// Connect BrowserProxyService to Cloud Relay (lazy — does not block startup)
+			try {
+				const { BrowserProxyService } = await import('./services/browser/browser-proxy.service.js');
+				const { CloudClientService } = await import('./services/cloud/cloud-client.service.js');
+				const cloudClient = CloudClientService.getInstance();
+				const relayToken = cloudClient.getToken();
+				if (relayToken) {
+					const browserProxy = BrowserProxyService.getInstance();
+					browserProxy.connect(relayToken);
+					this.logger.info('BrowserProxyService connecting to Cloud Relay');
+				} else {
+					this.logger.debug('BrowserProxyService skipped — no cloud token available');
+				}
+			} catch (error) {
+				this.logger.warn('Failed to initialize BrowserProxyService (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Start team activity WebSocket service
 			this.logger.info('Starting team activity WebSocket service...');
 			this.teamActivityWebSocketService.start();
@@ -1799,6 +1818,14 @@ export class CrewlyServer {
 			try {
 				const { BrowserBridgeService } = await import('./services/browser/browser-bridge.service.js');
 				BrowserBridgeService.getInstance().stop();
+			} catch {
+				// May not have been initialized
+			}
+
+			// Disconnect BrowserProxyService from Cloud Relay
+			try {
+				const { BrowserProxyService } = await import('./services/browser/browser-proxy.service.js');
+				BrowserProxyService.getInstance().disconnect();
 			} catch {
 				// May not have been initialized
 			}

@@ -8,6 +8,7 @@ import { resolveStepConfig } from '../../utils/prompt-resolver.js';
 import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.service.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { TaskPlanningService } from '../../services/agent/task-planning.service.js';
 import { TaskOutputValidatorService } from '../../services/quality/task-output-validator.service.js';
 import { TracingService } from '../../services/core/tracing.service.js';
 import { TRACING_CONSTANTS } from '../../constants.js';
@@ -165,6 +166,23 @@ export async function createTask(this: ApiController, req: Request, res: Respons
 		}
 
 		await writeFile(taskPath, taskContent, 'utf-8');
+
+		// Create planning files (plan.md, findings.md, progress.md) when task is assigned
+		if (sessionName) {
+			try {
+				const planningService = TaskPlanningService.getInstance();
+				await planningService.createPlanningFiles({
+					taskFilePath: taskPath,
+					taskTitle: task,
+					priority,
+					sessionName,
+				});
+			} catch (planErr) {
+				logger.warn('Failed to create planning files (non-fatal)', {
+					error: planErr instanceof Error ? planErr.message : String(planErr),
+				});
+			}
+		}
 
 		// If assigned, track via TaskTrackingService
 		let trackedTaskId: string | undefined;

@@ -16,10 +16,12 @@ require_param "reason" "$REASON"
 
 BODY=$(jq -n \
   --arg absoluteTaskPath "$ABSOLUTE_TASK_PATH" \
+  --arg taskPath "$ABSOLUTE_TASK_PATH" \
   --arg reason "$REASON" \
+  --arg blockReason "$REASON" \
   --arg questions "$QUESTIONS" \
   --arg urgency "$URGENCY" \
-  '{absoluteTaskPath: $absoluteTaskPath, reason: $reason} +
+  '{absoluteTaskPath: $absoluteTaskPath, taskPath: $taskPath, reason: $reason, blockReason: $blockReason} +
    (if $questions != "" then {questions: $questions} else {} end) +
    (if $urgency != "" then {urgency: $urgency} else {} end)')
 

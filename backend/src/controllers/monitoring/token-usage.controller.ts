@@ -16,13 +16,15 @@ import { formatError } from '../../utils/format-error.js';
  * GET /api/monitoring/token-usage
  *
  * Returns per-session token usage summaries for the dashboard.
+ * Supports optional `?taskId=xxx` query parameter to filter by task.
  *
- * @param _req - Express request (unused)
+ * @param req - Express request with optional taskId query param
  * @param res - Express response
  */
-export function getTokenUsage(_req: Request, res: Response): void {
+export function getTokenUsage(req: Request, res: Response): void {
   const service = TokenUsageService.getInstance();
-  const sessions = service.getUsageBySessions();
+  const taskId = req.query.taskId as string | undefined;
+  const sessions = service.getUsageBySessions(taskId);
   res.json({ success: true, data: sessions });
 }
 

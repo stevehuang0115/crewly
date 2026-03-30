@@ -10,25 +10,156 @@
 
 import type { Request, Response } from 'express';
 import { BrowserBridgeService } from '../../services/browser/browser-bridge.service.js';
+import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
+import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 
 /**
  * GET /api/browser/status
- * Returns the current Crewly in Chrome connection status.
+ * Returns the current Crewly in Chrome connection status,
+ * including proxy relay state and available browser instances.
  *
  * @param _req - Express request (unused)
  * @param res - Express response
  */
 export function getStatus(_req: Request, res: Response): void {
 	const bridge = BrowserBridgeService.getInstance();
-	res.json(bridge.getStatus());
+	const proxy = BrowserProxyService.getInstance();
+	const bridgeStatus = bridge.getStatus();
+
+	res.json({
+		...bridgeStatus,
+		proxy: {
+			state: proxy.getState(),
+			available: proxy.isAvailable(),
+			instances: proxy.getInstances(),
+		},
+	});
+}
+
+/**
+ * GET /api/browser/instances
+ * List all connected browser instances available for command routing.
+ *
+ * @param _req - Express request (unused)
+ * @param res - Express response
+ */
+export function getInstances(_req: Request, res: Response): void {
+	const bridge = BrowserBridgeService.getInstance();
+	const proxy = BrowserProxyService.getInstance();
+
+	// Combine direct WS clients and relay proxy instances
+	const directClients = bridge.getStatus().clientCount;
+	const proxyInstances = proxy.getInstances();
+
+	res.json({
+		success: true,
+		instances: proxyInstances,
+		directClientCount: directClients,
+		proxyConnected: proxy.isConnected(),
+	});
+}
+
+/**
+ * POST /api/browser/proxy/connect
+ * Manually connect the BrowserProxyService to the Cloud Relay.
+ * Uses the current CloudClientService token. Call this when the proxy
+ * is disconnected but the cloud connection is active.
+ *
+ * @param _req - Express request (unused)
+ * @param res - Express response
+ */
+export async function connectProxy(_req: Request, res: Response): Promise<void> {
+	const proxy = BrowserProxyService.getInstance();
+
+	if (proxy.isConnected()) {
+		res.json({
+			success: true,
+			message: 'Proxy already connected',
+			state: proxy.getState(),
+			instances: proxy.getInstances(),
+		});
+		return;
+	}
+
+	try {
+		const cloudClient = CloudClientService.getInstance();
+		const token = cloudClient.getToken();
+
+		if (!token) {
+			res.status(400).json({
+				success: false,
+				error: 'No cloud token available. Connect to Cloud first via /api/cloud/connect.',
+			});
+			return;
+		}
+
+		proxy.connect(token);
+
+		// Wait a moment for the WS connection + registration to complete
+		await new Promise((resolve) => setTimeout(resolve, 3000));
+
+		res.json({
+			success: true,
+			message: 'Proxy connecting to Cloud Relay',
+			state: proxy.getState(),
+			instances: proxy.getInstances(),
+		});
+	} catch (err) {
+		res.status(500).json({
+			success: false,
+			error: (err as Error).message,
+		});
+	}
+}
+
+/**
+ * Extract the target browser instance from the request query or body.
+ *
+ * @param req - Express request
+ * @returns Instance name/ID string or undefined for auto-select
+ */
+function resolveInstanceParam(req: Request): string | undefined {
+	return (req.query.instance as string)
+		|| (req.body?.instance as string)
+		|| undefined;
+}
+
+/**
+ * Extract the agent name from request headers or body.
+ * Session names look like "crewly-product-max-118c0421" — extracts "max".
+ *
+ * @param req - Express request
+ * @returns Agent name string or undefined
+ */
+function extractAgentName(req: Request): string | undefined {
+	let agentName = (req.body?.agentName as string)
+		|| (req.headers['x-agent-name'] as string)
+		|| undefined;
+	if (!agentName) {
+		const session = req.headers['x-agent-session'] as string;
+		if (session) {
+			const parts = session.split('-');
+			if (parts.length >= 3) {
+				agentName = parts[parts.length - 2];
+			} else {
+				agentName = session;
+			}
+		}
+	}
+	return agentName;
 }
 
 /**
  * Helper: send a tool command to the Chrome Extension and return the result.
- * Handles the common pattern of forwarding a REST request to the WS bridge.
- * Extracts agent name from X-Agent-Session header if present.
  *
- * @param req - Express request (for extracting agent metadata)
+ * Tries three paths in order:
+ * 1. Direct WebSocket (BrowserBridgeService) — fastest
+ * 2. Browser Proxy (BrowserProxyService via Cloud Relay relay_to) — supports multi-instance
+ * 3. Legacy relay adapter (BrowserRelayAdapter via CloudSync HTTP queue) — fallback
+ *
+ * Supports `?instance=` query param for targeting a specific browser instance.
+ *
+ * @param req - Express request (for extracting agent metadata and instance param)
  * @param res - Express response object
  * @param tool - Chrome Extension tool name
  * @param params - Tool parameters
@@ -42,43 +173,61 @@ async function sendToolCommand(
 	timeoutMs?: number
 ): Promise<void> {
 	const bridge = BrowserBridgeService.getInstance();
+	const proxy = BrowserProxyService.getInstance();
+	const instance = resolveInstanceParam(req);
+	const agentName = extractAgentName(req);
 
-	if (!bridge.isConnected()) {
-		res.status(503).json({
-			success: false,
-			error: 'No Chrome browser connected. Please connect the Crewly Chrome Extension first.',
-			code: 'NO_BROWSER_CLIENT',
-		});
-		return;
-	}
-
-	// Extract agent name: prefer explicit body/header name, fall back to session header.
-	// Session names look like "crewly-product-max-118c0421" — extract "max" as friendly name.
-	let agentName = (req.body?.agentName as string)
-		|| (req.headers['x-agent-name'] as string)
-		|| undefined;
-	if (!agentName) {
-		const session = req.headers['x-agent-session'] as string;
-		if (session) {
-			// Extract friendly name from session: "crewly-product-max-118c0421" → "max"
-			const parts = session.split('-');
-			if (parts.length >= 3) {
-				agentName = parts[parts.length - 2]; // second-to-last part is the name
-			} else {
-				agentName = session;
-			}
+	// Path 1: If a specific instance is requested AND proxy is available, use proxy
+	if (instance && proxy.isAvailable()) {
+		try {
+			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName);
+			res.json(result);
+			return;
+		} catch (err) {
+			res.status(504).json({
+				success: false,
+				error: (err as Error).message,
+			});
+			return;
 		}
 	}
 
-	try {
-		const result = await bridge.sendCommand(tool, params, timeoutMs, agentName);
-		res.json(result);
-	} catch (err) {
-		res.status(504).json({
-			success: false,
-			error: (err as Error).message,
-		});
+	// Path 2: Direct WebSocket connection (fastest, no instance routing)
+	if (bridge.isConnected()) {
+		try {
+			const result = await bridge.sendCommand(tool, params, timeoutMs, agentName);
+			res.json(result);
+			return;
+		} catch (err) {
+			res.status(504).json({
+				success: false,
+				error: (err as Error).message,
+			});
+			return;
+		}
 	}
+
+	// Path 3: Proxy relay (relay_to addressed messaging)
+	if (proxy.isAvailable()) {
+		try {
+			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName);
+			res.json(result);
+			return;
+		} catch (err) {
+			res.status(504).json({
+				success: false,
+				error: (err as Error).message,
+			});
+			return;
+		}
+	}
+
+	// No path available
+	res.status(503).json({
+		success: false,
+		error: 'No Chrome browser connected. Please connect the Crewly Chrome Extension first.',
+		code: 'NO_BROWSER_CLIENT',
+	});
 }
 
 /**

@@ -4,6 +4,7 @@
  * Tests for the top-level tab layout (Scheduled Messages | Cron Jobs)
  * and core page rendering.
  *
+ * @vitest-environment jsdom
  * @module pages/ScheduledCheckins.test
  */
 

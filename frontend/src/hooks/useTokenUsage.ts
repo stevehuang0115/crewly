@@ -19,7 +19,8 @@ const STALE_THRESHOLD_MS = 30_000;
 
 /**
  * Per-model token cost rates (USD per token).
- * Rates sourced from Anthropic pricing as of 2025.
+ * Used as fallback when backend doesn't include cost.
+ * Primary cost calculation is now done server-side.
  */
 const TOKEN_COSTS: Record<string, TokenCostRate> = {
   'claude-3-opus': { input: 0.000015, output: 0.000075 },
@@ -80,7 +81,8 @@ function transformSessions(sessions: SessionUsageSummary[]): AgentCostEntry[] {
     inputTokens: s.totalInput,
     outputTokens: s.totalOutput,
     totalTokens: s.totalInput + s.totalOutput,
-    cost: computeCost(s),
+    // Use server-side cost if available, fall back to client-side calculation
+    cost: (s as { cost?: number }).cost ?? computeCost(s),
     eventCount: s.eventCount,
   }));
 }

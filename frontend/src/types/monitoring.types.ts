@@ -26,6 +26,25 @@ export interface SessionUsageSummary {
   totalOutput: number;
   /** Number of LLM events recorded */
   eventCount: number;
+  /** Server-computed cost in USD */
+  cost?: number;
+  /** Per-model usage breakdown */
+  modelBreakdown?: ModelUsageBreakdown[];
+}
+
+/**
+ * Token usage breakdown for a specific model.
+ * Returned by the backend as part of SessionUsageSummary.
+ */
+export interface ModelUsageBreakdown {
+  /** Model identifier (e.g. 'claude-sonnet-4-20250514') */
+  model: string;
+  /** Input tokens for this model */
+  inputTokens: number;
+  /** Output tokens for this model */
+  outputTokens: number;
+  /** Computed cost for this model in USD */
+  cost: number;
 }
 
 // =============================================================================

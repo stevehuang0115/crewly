@@ -175,7 +175,10 @@ const CronJobCard: React.FC<CronJobCardProps> = ({ task, onToggle, onDelete }) =
           <p className="text-lg font-semibold text-text-primary-dark truncate" title={task.taskDescription}>
             {task.taskDescription}
           </p>
-          <p className="text-xs text-text-secondary-dark mt-0.5">{task.targetAgent}</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-xs text-text-secondary-dark">{task.targetAgent}</span>
+            <span className="text-xs text-text-secondary-dark bg-surface-dark/80 px-1.5 py-0.5 rounded">{task.targetTeamId}</span>
+          </div>
         </div>
         <Badge variant={task.enabled ? 'success' : 'default'}>
           {task.enabled ? 'Active' : 'Disabled'}
@@ -259,6 +262,11 @@ const CronJobRow: React.FC<CronJobRowProps> = ({ task, onToggle, onDelete }) => 
           </span>
           <span className="text-xs text-text-secondary-dark">{task.targetAgent}</span>
         </div>
+      </td>
+      <td className="px-4 py-3">
+        <span className="text-xs text-text-secondary-dark bg-surface-dark px-2 py-0.5 rounded-full">
+          {task.targetTeamId}
+        </span>
       </td>
       <td className="px-4 py-3">
         <div className="flex flex-col gap-0.5">
@@ -576,10 +584,28 @@ const SummaryStats: React.FC<SummaryStatsProps> = ({ tasks }) => {
  *
  * @returns CronJobPanel component
  */
-export const CronJobPanel: React.FC = () => {
-  const { tasks, isLoading, error, refresh, createTask, updateTask, deleteTask } = useCronTasks();
+interface CronJobPanelProps {
+  /** If set, only show cron tasks for this team (no team filter UI) */
+  teamId?: string;
+  /** If true, hide the header (used when embedded in another page) */
+  compact?: boolean;
+}
+
+export const CronJobPanel: React.FC<CronJobPanelProps> = ({ teamId: filterTeamId, compact }) => {
+  const { tasks: allTasks, isLoading, error, refresh, createTask, updateTask, deleteTask } = useCronTasks();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<CronTask | null>(null);
+  const [teamFilter, setTeamFilter] = useState<string>('all');
+
+  // Derive unique team IDs for filter
+  const teamIds = [...new Set(allTasks.map((t) => t.targetTeamId))].sort();
+
+  // Apply filtering
+  const tasks = filterTeamId
+    ? allTasks.filter((t) => t.targetTeamId === filterTeamId)
+    : teamFilter === 'all'
+      ? allTasks
+      : allTasks.filter((t) => t.targetTeamId === teamFilter);
 
   const handleToggle = useCallback(async (id: string, enabled: boolean) => {
     await updateTask(id, { enabled });
@@ -615,24 +641,55 @@ export const CronJobPanel: React.FC = () => {
 
   return (
     <div>
-      {/* Section Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Clock className="w-5 h-5 text-text-secondary-dark" />
-          <h3 className="text-lg font-semibold text-text-primary-dark">Cron Jobs</h3>
-          <span className="text-xs text-text-secondary-dark bg-surface-dark px-2 py-0.5 rounded-full">
-            {tasks.length}
-          </span>
+      {/* Section Header — hidden in compact mode */}
+      {!compact && (
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Clock className="w-5 h-5 text-text-secondary-dark" />
+            <h3 className="text-lg font-semibold text-text-primary-dark">Cron Jobs</h3>
+            <span className="text-xs text-text-secondary-dark bg-surface-dark px-2 py-0.5 rounded-full">
+              {tasks.length}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={refresh} icon={RefreshCw}>
+              Refresh
+            </Button>
+            <Button variant="primary" size="sm" onClick={() => setShowCreateModal(true)} icon={Plus}>
+              Create
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={refresh} icon={RefreshCw}>
-            Refresh
-          </Button>
-          <Button variant="primary" size="sm" onClick={() => setShowCreateModal(true)} icon={Plus}>
-            Create
-          </Button>
+      )}
+
+      {/* Team Filter — hidden when embedded for a specific team */}
+      {!filterTeamId && teamIds.length >= 1 && (
+        <div className="flex flex-wrap gap-1.5 mb-4">
+          <button
+            onClick={() => setTeamFilter('all')}
+            className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+              teamFilter === 'all'
+                ? 'bg-primary text-white'
+                : 'bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark border border-border-dark'
+            }`}
+          >
+            All teams ({allTasks.length})
+          </button>
+          {teamIds.map((tid) => (
+            <button
+              key={tid}
+              onClick={() => setTeamFilter(tid)}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                teamFilter === tid
+                  ? 'bg-primary text-white'
+                  : 'bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark border border-border-dark'
+              }`}
+            >
+              {tid} ({allTasks.filter((t) => t.targetTeamId === tid).length})
+            </button>
+          ))}
         </div>
-      </div>
+      )}
 
       {/* Summary Stats */}
       {tasks.length > 0 && <SummaryStats tasks={tasks} />}
@@ -672,6 +729,7 @@ export const CronJobPanel: React.FC = () => {
               <thead>
                 <tr className="border-b border-border-dark bg-surface-dark/50">
                   <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Task</th>
+                  <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Team</th>
                   <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Schedule</th>
                   <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Timezone</th>
                   <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Last Run</th>
