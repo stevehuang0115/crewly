@@ -52,6 +52,9 @@ const RECONNECT_DELAY_MS = 5_000;
 /** Maximum reconnect delay for exponential backoff (ms). */
 const MAX_RECONNECT_DELAY_MS = 60_000;
 
+/** Delay before retrying reconnect when no auth token is available (ms). */
+const NO_TOKEN_RETRY_DELAY_MS = 30_000;
+
 /**
  * Function type for resolving fresh auth tokens.
  * Used to fetch updated JWT from CloudClientService on reconnect.
@@ -138,8 +141,15 @@ export class BrowserProxyService {
   /**
    * Called externally when the auth token has been refreshed (e.g., by CloudClientService).
    * Updates the stored token so the next heartbeat/reconnect uses the fresh one.
-   * If the proxy is currently connected, re-registers with the new token immediately
-   * to prevent the relay from closing the connection due to an expired token.
+   *
+   * Behavior depends on current state:
+   * - **connected**: re-registers with the relay using the new token immediately
+   *   to prevent the relay from closing the connection due to an expired token.
+   * - **disconnected** (with autoReconnect): triggers a reconnect using the fresh
+   *   token. This handles the case where handleDisconnect gave up because no
+   *   valid token was available at the time of disconnection.
+   * - **connecting**: does nothing extra — the ongoing connection attempt will
+   *   pick up the new token.
    *
    * @param newToken - Fresh JWT auth token
    */
@@ -149,10 +159,7 @@ export class BrowserProxyService {
 
     if (oldToken === newToken) return;
 
-    this.logger.info('Auth token updated', {
-      state: this.state,
-      wasConnected: this.state === 'connected',
-    });
+    this.logger.info('Auth token updated', { state: this.state });
 
     // If currently connected, force a re-register so the relay accepts the new JWT.
     // The relay should respond with a new 'registered' message without dropping
@@ -164,6 +171,16 @@ export class BrowserProxyService {
         pairingCode: `backend-proxy-${Date.now()}`,
         token: this.authToken,
       });
+      return;
+    }
+
+    // If disconnected and auto-reconnect is enabled but no reconnect is pending,
+    // use the fresh token to reconnect now. This covers the scenario where
+    // handleDisconnect stopped retrying because the token was stale/null.
+    if (this.state === 'disconnected' && this.autoReconnect && !this.reconnectTimer) {
+      this.logger.info('Triggering reconnect with fresh token after disconnect');
+      this.reconnectAttempts = 0; // Reset backoff since we have a fresh token
+      this.connect(this.authToken);
     }
   }
 
@@ -652,7 +669,25 @@ export class BrowserProxyService {
           this.connect(this.authToken!);
         }, delay);
       } else {
-        this.logger.warn('No auth token available for reconnect — staying disconnected');
+        // No token available right now. Schedule a single delayed retry.
+        // If updateToken() receives a fresh token before this timer fires,
+        // the timer will pick it up via this.authToken (already updated).
+        // If updateToken() arrives after this timer fires with still-null token,
+        // it will trigger connect() directly via the !this.reconnectTimer path.
+        this.logger.warn('No auth token available for reconnect — will retry in 30s or when token arrives');
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.disconnecting = false;
+
+          const latestToken = this.tokenResolver?.() ?? this.authToken;
+          if (latestToken) {
+            this.authToken = latestToken;
+            this.reconnectAttempts = 0;
+            this.connect(this.authToken);
+          } else {
+            this.logger.warn('Still no auth token after delayed retry — staying disconnected until token refresh');
+          }
+        }, NO_TOKEN_RETRY_DELAY_MS);
         this.disconnecting = false;
       }
     } else {

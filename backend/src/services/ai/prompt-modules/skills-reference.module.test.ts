@@ -1,3 +1,4 @@
+import { describe, it, expect, beforeEach } from 'vitest';
 import { SkillsReferenceModule } from './skills-reference.module.js';
 import { ModuleConfig } from './prompt-module.interface.js';
 
@@ -116,6 +117,34 @@ describe('SkillsReferenceModule', () => {
 
 			expect(result).toContain('**Read** project files');
 			expect(result).not.toContain('Read/Write');
+		});
+	});
+
+	describe('Crewly in Chrome documentation', () => {
+		it('should include remote-browser skill documentation for all roles', async () => {
+			const result = await module.build(baseConfig);
+
+			expect(result).toContain('Crewly in Chrome');
+			expect(result).toContain('remote-browser');
+			expect(result).toContain('NOT Playwright');
+			expect(result).toContain('NOT Chrome DevTools');
+			expect(result).toContain('NOT computer-use');
+			expect(result).toContain(`${baseConfig.agentSkillsPath}/remote-browser/execute.sh`);
+		});
+
+		it('should include usage examples', async () => {
+			const result = await module.build(baseConfig);
+
+			expect(result).toContain('"action":"navigate"');
+			expect(result).toContain('"action":"screenshot"');
+			expect(result).toContain('"action":"status"');
+		});
+
+		it('should mention Chrome Extension and Cloud Relay', async () => {
+			const result = await module.build(baseConfig);
+
+			expect(result).toContain('Chrome Extension');
+			expect(result).toContain('Cloud Relay');
 		});
 	});
 

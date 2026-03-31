@@ -131,6 +131,31 @@ export class SkillsReferenceModule implements PromptModule {
 			);
 		}
 
+		// Crewly in Chrome clarification — prevents agents from confusing
+		// the remote-browser skill with Playwright, Chrome DevTools, or computer-use.
+		const remoteBrowserPath = `${config.agentSkillsPath}/remote-browser/execute.sh`;
+		lines.push(
+			'',
+			'### Crewly in Chrome (remote-browser skill)',
+			'',
+			'"Crewly in Chrome" = the `remote-browser` skill. This is the ONLY way to control the user\'s real Chrome browser.',
+			`- **Skill path:** \`${remoteBrowserPath}\``,
+			'- **How it works:** Sends commands to the Crewly Chrome Extension installed in the user\'s real Chrome browser.',
+			'  The Extension connects via direct WebSocket or Cloud Relay. The skill calls HTTP endpoints at `/api/browser/*`.',
+			'- **Has the user\'s login sessions:** Because it controls the user\'s actual Chrome, it has access to all logged-in sites.',
+			'- **NOT Playwright** — Playwright runs a headless/sandboxed browser with no user sessions.',
+			'- **NOT Chrome DevTools / CDP** — This is a higher-level tool that works through the Chrome Extension.',
+			'- **NOT computer-use** — computer-use controls the entire desktop; remote-browser only controls Chrome tabs.',
+			'',
+			'When asked to "use Chrome", "browse the web", or "check a website", use the `remote-browser` skill:',
+			'```bash',
+			`bash ${remoteBrowserPath} '{"action":"navigate","url":"https://example.com"}'`,
+			`bash ${remoteBrowserPath} '{"action":"screenshot"}'`,
+			`bash ${remoteBrowserPath} '{"action":"read-text"}'`,
+			`bash ${remoteBrowserPath} '{"action":"status"}'`,
+			'```',
+		);
+
 		return lines.join('\n');
 	}
 
