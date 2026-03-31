@@ -1,0 +1,10 @@
+{
+  "name": "xiaoyuzhoufm-transcript",
+  "displayName": "小宇宙 Podcast Transcript",
+  "description": "Extract and transcribe 小宇宙 podcast episodes using Gemini Audio API. Supports speaker identification and timestamps.",
+  "category": "content",
+  "assignableRoles": ["*"],
+  "version": "1.0.0",
+  "author": "Crewly Team",
+  "requires": ["GEMINI_API_KEY"]
+}

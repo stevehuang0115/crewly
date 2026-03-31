@@ -32,30 +32,48 @@ The script auto-resolves `config/skills/...` references to absolute paths so del
 
 **Monitoring is enabled by default** — idle event subscriptions and recurring fallback checks (every 5 minutes) are automatically set up for every delegation. These are linked to the task and will be **automatically cleaned up** when the task is completed via `report-status` or `complete-task`. To disable monitoring, explicitly pass `"monitor": {"idleEvent": false, "fallbackCheckMinutes": 0}`.
 
-## Usage
-
-```bash
-bash config/skills/orchestrator/delegate-task/execute.sh '{"to":"agent-joe","task":"Implement the login form","priority":"high","context":"Use React hooks","projectPath":"/path/to/project"}'
-```
-
-### With monitoring disabled (opt-out)
-
-```bash
-bash config/skills/orchestrator/delegate-task/execute.sh '{"to":"agent-joe","task":"Implement the login form","priority":"high","projectPath":"/path/to/project","monitor":{"idleEvent":false,"fallbackCheckMinutes":0}}'
-```
-
 ## Parameters
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `to` | Yes | Target agent's PTY session name |
-| `task` | Yes | Task description |
-| `priority` | No | Task priority: `low`, `normal`, `high` (default: `normal`) |
-| `context` | No | Additional context for the task |
-| `projectPath` | No | Project path; when provided, creates a task MD file in `.crewly/tasks/` |
-| `monitor` | No | Auto-monitoring configuration (see below). Enabled by default. |
-| `monitor.idleEvent` | No | If `true`, subscribes to `agent:idle` event for the target agent (default: `true`) |
-| `monitor.fallbackCheckMinutes` | No | If > 0, sets up a recurring fallback check every N minutes (default: `5`) |
+| Flag | JSON Field | Required | Description |
+|------|-----------|----------|-------------|
+| `--to` / `-t` | `to` | Yes | Target agent's PTY session name |
+| `--task` / `-T` | `task` | Yes | Task description (or pipe via stdin) |
+| `--task-file` | — | No | Read task description from a file path |
+| `--priority` / `-P` | `priority` | No | Priority: `low`, `normal`, `high` (default: `normal`) |
+| `--context` / `-c` | `context` | No | Additional context for the task |
+| `--project` / `-p` | `projectPath` | No | Project path; creates task file in `.crewly/tasks/` |
+| `--team` / `-g` | `teamId` | No | Team ID for cross-team validation |
+| `--task-type` | `taskType` | No | Task type: `general`, `technical` (default: `general`) |
+| `--force-cross-team` | `forceCrossTeam` | No | Allow cross-team delegation |
+| `monitor` (JSON only) | `monitor` | No | Auto-monitoring config (see below) |
+
+## Usage — CLI Flags (preferred)
+
+```bash
+# Basic delegation
+bash execute.sh --to agent-joe --task "Implement the login form" --priority high --project /path/to/project
+
+# With context
+bash execute.sh --to agent-joe --task "Implement login form" --priority high --context "Use React hooks" --project /path
+
+# Task from stdin (for long descriptions with special characters)
+echo "Implement the OAuth2 flow — it's critical for launch" | bash execute.sh --to agent-joe --priority high --project /path
+
+# Task from file
+bash execute.sh --to agent-joe --task-file /tmp/task-description.txt --priority high --project /path
+```
+
+## Usage — Legacy JSON (backward compatible)
+
+```bash
+bash execute.sh '{"to":"agent-joe","task":"Implement the login form","priority":"high","context":"Use React hooks","projectPath":"/path/to/project"}'
+```
+
+### With monitoring disabled (opt-out, JSON only)
+
+```bash
+bash execute.sh '{"to":"agent-joe","task":"Implement the login form","priority":"high","projectPath":"/path/to/project","monitor":{"idleEvent":false,"fallbackCheckMinutes":0}}'
+```
 
 ## Examples
 

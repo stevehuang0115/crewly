@@ -801,9 +801,18 @@ export class CrewlyServer {
 				const { BrowserProxyService } = await import('./services/browser/browser-proxy.service.js');
 				const { CloudClientService } = await import('./services/cloud/cloud-client.service.js');
 				const cloudClient = CloudClientService.getInstance();
+				const browserProxy = BrowserProxyService.getInstance();
+
+				// Wire up token resolver so reconnects always use the freshest JWT
+				browserProxy.setTokenResolver(() => cloudClient.getToken());
+
+				// Subscribe to token refresh events so the proxy updates in real-time
+				cloudClient.onTokenRefresh((newToken: string) => {
+					browserProxy.updateToken(newToken);
+				});
+
 				const relayToken = cloudClient.getToken();
 				if (relayToken) {
-					const browserProxy = BrowserProxyService.getInstance();
 					browserProxy.connect(relayToken);
 					this.logger.info('BrowserProxyService connecting to Cloud Relay');
 				} else {

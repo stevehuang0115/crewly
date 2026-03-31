@@ -81,6 +81,7 @@ describe('CommunicationModule', () => {
 			expect(result).toContain('### Message Channels');
 			expect(result).toContain('### Message Routing Rules');
 			expect(result).toContain('### Slack Communication');
+			expect(result).toContain('### Google Chat Communication');
 			expect(result).toContain('### Chat UI Communication');
 			expect(result).toContain('### Notification Protocol');
 			expect(result).toContain('### Thread Context');
@@ -92,6 +93,25 @@ describe('CommunicationModule', () => {
 			expect(result).toContain('mrkdwn');
 			expect(result).toContain('Bold:');
 			expect(result).toContain('reply-slack');
+		});
+
+		it('should include Google Chat reply routing instructions', async () => {
+			const result = await module.build(orchConfig);
+
+			expect(result).toContain('reply-gchat');
+			expect(result).toContain('[GCHAT:');
+			expect(result).toContain('--thread');
+			expect(result).toContain('--space');
+		});
+
+		it('should include message source prefix routing rules', async () => {
+			const result = await module.build(orchConfig);
+
+			expect(result).toContain('[CHAT:...]');
+			expect(result).toContain('[GCHAT:...]');
+			expect(result).toContain('[SLACK:...]');
+			expect(result).toContain('[REMOTE:...]');
+			expect(result).toContain('Match the reply skill to the message source prefix');
 		});
 
 		it('should include NOTIFY marker handling', async () => {
@@ -118,7 +138,16 @@ describe('CommunicationModule', () => {
 			expect(result).toContain('## Communication Protocol');
 			expect(result).toContain('### Reporting to Orchestrator');
 			expect(result).toContain('### Messaging Workers');
+			expect(result).toContain('### Delegating Tasks');
 			expect(result).toContain('### Communication Rules');
+		});
+
+		it('should include delegate-task example with TL skills path', async () => {
+			const result = await module.build(tlConfig);
+
+			expect(result).toContain('delegate-task');
+			expect(result).toContain(tlConfig.tlSkillsPath);
+			expect(result).toContain('delegate-task/execute.sh');
 		});
 
 		it('should include TL_REPORT tag instruction', async () => {
@@ -153,6 +182,54 @@ describe('CommunicationModule', () => {
 			const result = await module.build(noPathConfig);
 
 			expect(result).toContain(baseConfig.projectRoot);
+		});
+	});
+
+	describe('gemini-cli safe call pattern (#EOF-fix)', () => {
+		it('should use CLI flags pattern for gemini-cli workers', async () => {
+			const geminiConfig: ModuleConfig = { ...baseConfig, runtimeType: 'gemini-cli' };
+			const result = await module.build(geminiConfig);
+
+			// Should use CLI flags like --session, --status, --summary
+			expect(result).toContain('--session');
+			expect(result).toContain('--status');
+			expect(result).toContain('--summary');
+			expect(result).toContain('--to');
+			expect(result).toContain('--message');
+			// Should NOT use printf pattern
+			expect(result).not.toContain("printf '%s'");
+		});
+
+		it('should use inline JSON for non-gemini workers', async () => {
+			const claudeConfig: ModuleConfig = { ...baseConfig, runtimeType: 'claude-code' };
+			const result = await module.build(claudeConfig);
+
+			expect(result).not.toContain('--file /tmp/crewly_skill_input.json');
+			expect(result).toContain("execute.sh '");
+		});
+
+		it('should use CLI flags for gemini-cli TLs', async () => {
+			const geminiTLConfig: ModuleConfig = { ...baseConfig, role: 'team-leader', canDelegate: true, runtimeType: 'gemini-cli' };
+			const result = await module.build(geminiTLConfig);
+
+			expect(result).toContain('--to');
+			expect(result).toContain('--task');
+			expect(result).toContain('--priority');
+		});
+
+		it('should use CLI flags for delegate-task with TL skills path for gemini-cli TLs', async () => {
+			const geminiTLConfig: ModuleConfig = { ...baseConfig, role: 'team-leader', canDelegate: true, runtimeType: 'gemini-cli' };
+			const result = await module.build(geminiTLConfig);
+
+			expect(result).toContain(`${geminiTLConfig.tlSkillsPath}/delegate-task/execute.sh --to`);
+		});
+
+		it('should use CLI flags for gemini-cli orchestrators', async () => {
+			const geminiOrcConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator', runtimeType: 'gemini-cli' };
+			const result = await module.build(geminiOrcConfig);
+
+			expect(result).toContain('--session');
+			expect(result).toContain('--status');
 		});
 	});
 

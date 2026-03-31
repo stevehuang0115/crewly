@@ -20,8 +20,8 @@ describe('SkillsReferenceModule', () => {
 	it('should have correct metadata', () => {
 		expect(module.name).toBe('skills_references');
 		expect(module.priority).toBe(5);
-		expect(module.maxTokens).toBe(500);
-		expect(module.compactable).toBe(true);
+		expect(module.maxTokens).toBe(800);
+		expect(module.compactable).toBe(false);
 	});
 
 	it('should always be included', () => {
@@ -116,6 +116,75 @@ describe('SkillsReferenceModule', () => {
 
 			expect(result).toContain('**Read** project files');
 			expect(result).not.toContain('Read/Write');
+		});
+	});
+
+	describe('safe skill calling guide (#EOF-fix)', () => {
+		it('should include CLI flags guide for gemini-cli runtime', async () => {
+			const geminiConfig: ModuleConfig = { ...baseConfig, runtimeType: 'gemini-cli' };
+			const result = await module.build(geminiConfig);
+
+			expect(result).toContain('Safe Skill Calling');
+			expect(result).toContain('CLI flags');
+			expect(result).toContain('NEVER');
+			// Should show CLI flag examples
+			expect(result).toContain('--session');
+			expect(result).toContain('--status');
+			expect(result).toContain('--summary');
+			expect(result).toContain('--agent');
+			expect(result).toContain('--content');
+			expect(result).toContain('--category');
+		});
+
+		it('should include stdin pipe pattern for long text', async () => {
+			const geminiConfig: ModuleConfig = { ...baseConfig, runtimeType: 'gemini-cli' };
+			const result = await module.build(geminiConfig);
+
+			expect(result).toContain('stdin');
+			expect(result).toContain('--summary-file');
+		});
+
+		it('should NOT include guide for claude-code runtime', async () => {
+			const claudeConfig: ModuleConfig = { ...baseConfig, runtimeType: 'claude-code' };
+			const result = await module.build(claudeConfig);
+
+			expect(result).not.toContain('Safe Skill Calling');
+		});
+
+		it('should NOT include guide when runtimeType is not set', async () => {
+			const result = await module.build(baseConfig);
+
+			expect(result).not.toContain('Safe Skill Calling');
+		});
+
+		it('should reference the agent skills path in examples', async () => {
+			const geminiConfig: ModuleConfig = { ...baseConfig, runtimeType: 'gemini-cli' };
+			const result = await module.build(geminiConfig);
+
+			expect(result).toContain(baseConfig.agentSkillsPath);
+			expect(result).toContain('report-status');
+		});
+
+		it('should include TL skills CLI flags example for gemini-cli TLs', async () => {
+			const geminiTLConfig: ModuleConfig = { ...baseConfig, runtimeType: 'gemini-cli', canDelegate: true };
+			const result = await module.build(geminiTLConfig);
+
+			expect(result).toContain('Team Leader Skills');
+			expect(result).toContain(`${baseConfig.tlSkillsPath}/delegate-task/execute.sh --to`);
+		});
+
+		it('should NOT include TL skills example for non-TL gemini agents', async () => {
+			const geminiConfig: ModuleConfig = { ...baseConfig, runtimeType: 'gemini-cli' };
+			const result = await module.build(geminiConfig);
+
+			expect(result).not.toContain('Team Leader Skills');
+		});
+
+		it('should include --help instruction in rules', async () => {
+			const geminiConfig: ModuleConfig = { ...baseConfig, runtimeType: 'gemini-cli' };
+			const result = await module.build(geminiConfig);
+
+			expect(result).toContain('--help');
 		});
 	});
 });

@@ -42,15 +42,29 @@ Send a direct message to another agent's terminal session. The message is writte
 
 ## Parameters
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `to` | Yes | Target agent's PTY session name |
-| `message` | Yes | The message text to send |
+| Flag | JSON Field | Required | Description |
+|------|-----------|----------|-------------|
+| `--to` / `-t` | `to` | Yes | Target agent's PTY session name |
+| `--message` / `-m` | `message` | Yes | Message text (or pipe via stdin) |
+| `--message-file` | — | No | Read message from a file path |
 
-## Example
+## Examples — CLI Flags (preferred)
 
 ```bash
-bash config/skills/agent/send-message/execute.sh '{"to":"qa-1","message":"PR #42 is ready for review. I added unit tests for the auth module."}'
+# Simple message
+bash execute.sh --to qa-1 --message "PR #42 is ready for review"
+
+# Multi-line message via stdin (avoids shell escaping)
+echo "PR #42 is ready for review. It's passing all tests." | bash execute.sh --to qa-1
+
+# Message from file
+bash execute.sh --to qa-1 --message-file /tmp/task-details.txt
+```
+
+## Examples — Legacy JSON (backward compatible)
+
+```bash
+bash execute.sh '{"to":"qa-1","message":"PR #42 is ready for review."}'
 ```
 
 ## Output

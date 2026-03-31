@@ -114,8 +114,11 @@ export const PTY_CONSTANTS = {
 	FORCE_KILL_ESCALATION_DELAY: 500,
 	/** Delay before escalating from SIGTERM to SIGKILL in forceDestroyAll (ms) */
 	FORCE_DESTROY_ESCALATION_DELAY: 1000,
-	/** Minimum non-whitespace characters in stripped PTY output to count as meaningful activity */
-	MIN_MEANINGFUL_OUTPUT_BYTES: 2,
+	/** Minimum non-whitespace characters in stripped PTY output to count as meaningful activity.
+	 * Set to 8 to filter out Gemini CLI TUI noise (cursor movements, spinner chars, single-char
+	 * redraws) that have 1-5 residual chars after ANSI stripping. Real output (tool results,
+	 * response text, bash output) is always longer. */
+	MIN_MEANINGFUL_OUTPUT_BYTES: 8,
 	/** Minimum time (ms) an agent must remain in_progress before emitting busy/idle events */
 	MIN_BUSY_DURATION_MS: 10000,
 } as const;
@@ -663,14 +666,31 @@ export const GEMINI_READY_PATTERNS: readonly string[] = [
  * Constants for detecting Gemini CLI error-overlay state (#130).
  * Used to identify and dismiss MCP connection error overlays
  * before message delivery.
+ *
+ * IMPORTANT: Detection must be narrow to avoid false positives (#130 follow-up).
+ * Previous issues: STATUS_AREA_LINES=5 and generic /\d+ errors?/ matched normal
+ * content (build output, test results), causing spurious F12 keypresses that
+ * typed literal "F12" text into the terminal (because F12 was missing from KEY_CODES).
+ *
+ * Current approach: Only check the last 2 lines (actual status bar), and require
+ * Gemini-specific patterns ("F12 for deta" or "✖" + "error") to avoid matching
+ * generic error text from build tools, test runners, etc.
  */
 export const GEMINI_ERROR_STATE_CONSTANTS = {
 	/** Unicode marker for error state in Gemini CLI status bar */
 	ERROR_MARKER: '\u2716',
-	/** Regex matching error count in the status area (e.g., "3 errors") */
-	ERROR_COUNT_PATTERN: /\d+ errors?\b/i,
-	/** Number of terminal lines from the bottom to consider as "status area" */
-	STATUS_AREA_LINES: 5,
+	/**
+	 * Regex matching Gemini CLI's specific error format in the status bar.
+	 * Requires "F12" nearby to distinguish from generic "N errors" text in
+	 * build output or test results. Matches: "3 errors (F12 for details)"
+	 */
+	ERROR_COUNT_PATTERN: /\d+ errors?.*F12/i,
+	/**
+	 * Number of terminal lines from the bottom to consider as "status area".
+	 * Gemini CLI's status bar is 1-2 lines; using 3 for safety margin.
+	 * Previously 5, which caught content lines and caused false positives.
+	 */
+	STATUS_AREA_LINES: 3,
 } as const;
 
 /**

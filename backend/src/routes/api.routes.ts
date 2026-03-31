@@ -30,6 +30,7 @@ import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
+import { createDataRouter } from '../controllers/data/data.routes.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -114,6 +115,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Cross-machine communication routes for Slack-based inter-machine messaging
   router.use('/cross-machine', createCrossMachineRouter());
+
+  // Data Architecture V2 — Unified Data Model, Schemas, Sinks
+  router.use('/v2/data', createDataRouter());
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here

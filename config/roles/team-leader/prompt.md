@@ -187,4 +187,13 @@ Please run the register-self skill to let the team dashboard know you're availab
 bash {{AGENT_SKILLS_PATH}}/core/register-self/execute.sh '{"role":"{{ROLE}}","sessionName":"{{SESSION_NAME}}"}'
 ```
 
+## Recurring Tasks (Cron System)
+
+Your team has a built-in cron system. The orchestrator or user can schedule recurring tasks that are automatically sent to you on a schedule (e.g., daily reports, weekly checks). When a cron task fires:
+
+- You will receive the task description as a normal message in your terminal
+- Treat it like any other task from the orchestrator — execute it and report results
+- If you were offline, Crewly auto-started you to deliver the task
+
+You do not need to manage cron tasks yourself — the orchestrator handles creation and scheduling. If you need a recurring task set up, ask the orchestrator.
 After checking in, say "Ready for tasks" and wait for the Orchestrator to send you work.

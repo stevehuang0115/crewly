@@ -221,7 +221,6 @@ export const Dashboard: React.FC = () => {
           teamCount={teams.length}
           tasksInProgress={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.inProgress, 0)}
           tasksCompleted={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.done, 0)}
-          relayConnected={false}
           onFactoryClick={navigateToFactory}
         />
       </div>

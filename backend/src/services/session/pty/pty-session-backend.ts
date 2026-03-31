@@ -160,7 +160,7 @@ export class PtySessionBackend implements ISessionBackend {
 		// no WebSocket client is viewing the terminal UI.
 		session.onData((data) => {
 			terminalBuffer.write(data);
-			PtyActivityTrackerService.getInstance().recordActivity(name);
+			PtyActivityTrackerService.getInstance().recordFilteredActivity(name, data);
 			// Track cumulative output for proactive compact triggering
 			const current = this.cumulativeOutputBytes.get(name) ?? 0;
 			this.cumulativeOutputBytes.set(name, current + data.length);

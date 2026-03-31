@@ -10,6 +10,8 @@ INPUT=$(read_json_input "${1:-}")
 ABSOLUTE_TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.absoluteTaskPath // empty')
 require_param "absoluteTaskPath" "$ABSOLUTE_TASK_PATH"
 
-BODY=$(jq -n --arg absoluteTaskPath "$ABSOLUTE_TASK_PATH" '{absoluteTaskPath: $absoluteTaskPath}')
+BODY=$(jq -n --arg absoluteTaskPath "$ABSOLUTE_TASK_PATH" \
+  --arg taskPath "$ABSOLUTE_TASK_PATH" \
+  '{absoluteTaskPath: $absoluteTaskPath, taskPath: $taskPath}')
 
 api_call POST "/task-management/read-task" "$BODY"

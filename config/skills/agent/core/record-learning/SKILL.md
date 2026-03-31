@@ -42,19 +42,31 @@ Record a learning or insight gained during task execution. These learnings are s
 
 ## Parameters
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `agentId` | Yes | Your agent ID |
-| `agentRole` | Yes | Your role (e.g., `"developer"`, `"qa"`) |
-| `projectPath` | Yes | Absolute path to the project |
-| `learning` | Yes | Description of the learning or insight |
-| `relatedTask` | No | Path or ID of the task that triggered this learning |
-| `relatedFiles` | No | Array of file paths related to the learning |
+| Flag | JSON Field | Required | Description |
+|------|-----------|----------|-------------|
+| `--agent` / `-a` | `agentId` | Yes | Your agent ID / session name |
+| `--role` / `-r` | `agentRole` | Yes | Your role (e.g., `developer`, `qa`) |
+| `--project` / `-p` | `projectPath` | Yes | Absolute path to the project |
+| `--learning` / `-l` | `learning` | Yes | The learning or insight (or pipe via stdin) |
+| `--learning-file` | — | No | Read learning from a file path |
 
-## Example
+## Examples — CLI Flags (preferred)
 
 ```bash
-bash config/skills/agent/record-learning/execute.sh '{"agentId":"dev-1","agentRole":"developer","projectPath":"/projects/app","learning":"Jest mock resets are required between tests when using shared module mocks","relatedTask":"implement-auth-tests","relatedFiles":["src/auth.service.test.ts"]}'
+# Record a learning
+bash execute.sh --agent dev-1 --role developer --project /projects/app --learning "Jest mock resets are required between tests"
+
+# Learning via stdin (for text with special characters)
+echo "Don't use git add -A — it catches .env files" | bash execute.sh --agent dev-1 --role developer --project /projects/app
+
+# Learning from file
+bash execute.sh --agent dev-1 --role developer --project /projects/app --learning-file /tmp/insight.txt
+```
+
+## Examples — Legacy JSON (backward compatible)
+
+```bash
+bash execute.sh '{"agentId":"dev-1","agentRole":"developer","projectPath":"/projects/app","learning":"Jest mock resets are required between tests"}'
 ```
 
 ## Output

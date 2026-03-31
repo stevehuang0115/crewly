@@ -93,6 +93,9 @@ export async function connectProxy(_req: Request, res: Response): Promise<void> 
 			return;
 		}
 
+		// Ensure token resolver is wired up (idempotent — safe to call multiple times)
+		proxy.setTokenResolver(() => cloudClient.getToken());
+
 		proxy.connect(token);
 
 		// Wait a moment for the WS connection + registration to complete

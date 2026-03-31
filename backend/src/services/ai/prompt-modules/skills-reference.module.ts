@@ -12,8 +12,8 @@ import { PromptModule, ModuleConfig } from './prompt-module.interface.js';
 export class SkillsReferenceModule implements PromptModule {
 	name = 'skills_references';
 	priority = 5;
-	maxTokens = 500;
-	compactable = true;
+	maxTokens = 800;
+	compactable = false;
 
 	/**
 	 * Always included — agents need to know how to use skills.
@@ -34,7 +34,12 @@ export class SkillsReferenceModule implements PromptModule {
 		const capabilities = this.buildCapabilities(config);
 		const communication = this.buildCommunication(config);
 
-		return `${coreSkills}\n\n${capabilities}\n\n${communication}`;
+		const safeCallGuide = this.buildSafeCallGuide(config);
+		const parts = [coreSkills, capabilities, communication];
+		if (safeCallGuide) {
+			parts.push(safeCallGuide);
+		}
+		return parts.join('\n\n');
 	}
 
 	/**
@@ -60,10 +65,16 @@ export class SkillsReferenceModule implements PromptModule {
 				'  - `schedule-check` — schedule future check-in reminders',
 				'  - `subscribe-event` — subscribe to agent lifecycle events',
 				'  - `reply-slack` / `reply-chat` — respond to user messages',
+				'  - `reply-gchat` — respond to Google Chat messages',
 				'  - `send-to-remote` / `reply-remote` — send/reply to other Crewly machines',
 				'  - `list-devices` — discover connected Crewly devices',
-				'  - `delegate-task` — assign work to agents',
+				'  - `delegate-task` / `assign-task` — assign work to agents',
 				'  - `get-team-status` / `get-agent-status` — monitor team state',
+				'  - `create-team` / `update-team` / `start-team` / `stop-team` — team management',
+				'  - `start-agent` / `stop-agent` / `terminate-agent` — agent lifecycle',
+				'  - `create-cron` / `list-cron` / `update-cron` / `cancel-cron` — recurring tasks',
+				'',
+				'**IMPORTANT:** You have ALL skills listed above. Never say you lack a skill — if unsure, check the catalog.',
 			);
 		} else if (config.canDelegate) {
 			lines.push(
@@ -121,6 +132,82 @@ export class SkillsReferenceModule implements PromptModule {
 		}
 
 		return lines.join('\n');
+	}
+
+	/**
+	 * Build safe skill calling guide for runtimes with shell escaping issues.
+	 *
+	 * Gemini CLI's run_shell_command mangles JSON arguments containing quotes,
+	 * backticks, and parentheses, causing "unexpected EOF" shell errors.
+	 * This guide instructs the agent to write JSON to a temp file using heredoc
+	 * with a single-quoted delimiter, then pass --file <path>.
+	 *
+	 * Uses `<< 'CREWLY_EOF'` instead of `printf '%s' '...'` because:
+	 * - Single-quoted heredoc delimiter prevents ALL shell interpretation
+	 * - Single quotes, double quotes, backticks, $, () all pass through literally
+	 * - The previous printf approach broke when JSON contained single quotes
+	 *   (e.g., "it's working" or "don't forget")
+	 *
+	 * Only included for gemini-cli runtime type.
+	 *
+	 * @param config - Module configuration with runtime type
+	 * @returns Safe calling guide markdown, or null if not needed
+	 */
+	private buildSafeCallGuide(config: ModuleConfig): string | null {
+		if (config.runtimeType !== 'gemini-cli') {
+			return null;
+		}
+
+		return `## Safe Skill Calling (MANDATORY)
+
+**CRITICAL:** All skills support **CLI flags** — use them instead of JSON to avoid shell escaping issues.
+Passing JSON as a shell argument causes "unexpected EOF" errors when content contains quotes, backticks, or parentheses.
+
+### CLI Flags Pattern (ALWAYS use this)
+\`\`\`bash
+# report-status
+bash ${config.agentSkillsPath}/core/report-status/execute.sh --session "my-agent" --status done --summary "Fixed the bug — it's working now" --project "${config.projectPath || config.projectRoot}"
+
+# send-message
+bash ${config.agentSkillsPath}/core/send-message/execute.sh --to "target-session" --message "Please implement feature X"
+
+# remember
+bash ${config.agentSkillsPath}/core/remember/execute.sh --agent "my-agent" --content "Key finding" --category pattern --scope project --project "${config.projectPath || config.projectRoot}"
+
+# recall
+bash ${config.agentSkillsPath}/core/recall/execute.sh --agent "my-agent" --context "topic to search" --project "${config.projectPath || config.projectRoot}"
+
+# record-learning
+bash ${config.agentSkillsPath}/core/record-learning/execute.sh --agent "my-agent" --role developer --project "${config.projectPath || config.projectRoot}" --learning "What I learned"
+\`\`\`
+
+### For long text (multi-line or special chars): use stdin or --summary-file/--message-file
+\`\`\`bash
+# Pipe long text via stdin
+echo "Multi-line summary with 'quotes' and special chars" | bash ${config.agentSkillsPath}/core/report-status/execute.sh --session "my-agent" --status done --project "${config.projectPath || config.projectRoot}"
+
+# Or write to file first, then use --summary-file
+cat > /tmp/summary.txt << 'CREWLY_EOF'
+Long summary with 'quotes', \`backticks\`, and (parens)
+CREWLY_EOF
+bash ${config.agentSkillsPath}/core/report-status/execute.sh --session "my-agent" --status done --summary-file /tmp/summary.txt --project "${config.projectPath || config.projectRoot}"
+\`\`\`${config.canDelegate ? `
+
+### Team Leader Skills
+\`\`\`bash
+# delegate-task
+bash ${config.tlSkillsPath}/delegate-task/execute.sh --to "worker-session" --task "implement feature X" --priority high --project "${config.projectPath || config.projectRoot}" --team "${config.teamId || ''}" --tl-member "${config.memberId}"
+
+# For long task descriptions, pipe via stdin:
+echo "Detailed task description here" | bash ${config.tlSkillsPath}/delegate-task/execute.sh --to "worker-session" --priority high --project "${config.projectPath || config.projectRoot}"
+\`\`\`` : ''}
+
+### Rules
+1. **ALWAYS** use CLI flags: \`--session\`, \`--status\`, \`--summary\`, \`--to\`, \`--message\`, etc.
+2. **NEVER** pass JSON directly as a shell argument: \`bash execute.sh '{"key":"value"}'\`
+3. For text with special characters, use **stdin pipe** or \`--summary-file\`/\`--message-file\`/\`--task-file\`
+4. Legacy JSON is still supported via \`--file\` flag if needed, but CLI flags are preferred
+5. Use \`--help\` on any skill to see all available flags`;
 	}
 
 	/**

@@ -235,6 +235,22 @@ export const GeneralTab: React.FC = () => {
             checked={localSettings.general.enableAuditor ?? false}
             onChange={(e) => handleChange('general', 'enableAuditor', e.target.checked)}
           />
+
+          <div>
+            <FormLabel htmlFor="idleTimeout">Agent Idle Timeout (minutes)</FormLabel>
+            <FormInput
+              id="idleTimeout"
+              type="number"
+              min={0}
+              max={1440}
+              value={localSettings.general.agentIdleTimeoutMinutes}
+              onChange={(e) => handleChange('general', 'agentIdleTimeoutMinutes', parseInt(e.target.value) || 0)}
+            />
+            <p className="text-xs text-text-secondary-dark mt-1">
+              Minutes of inactivity before an agent is automatically suspended. Set to 0 to disable.
+              Changes take effect immediately — no restart required.
+            </p>
+          </div>
         </div>
       </Card>
 

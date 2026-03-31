@@ -8,6 +8,39 @@
 CREWLY_API_URL="${CREWLY_API_URL:-http://localhost:8787}"
 
 # -----------------------------------------------------------------------------
+# Universal --file flag preprocessor (#EOF-fix)
+#
+# Fixes Gemini CLI's "unexpected EOF while looking for matching `'" errors.
+#
+# Root cause: When an LLM CLI passes JSON as a shell argument, special chars
+# inside the JSON (single quotes, backticks, parentheses, $variables) get
+# interpreted by the shell BEFORE the script runs, causing parse errors.
+#
+# Solution: The LLM writes JSON to a temp file, then passes --file <path>.
+# This preprocessor detects --file as the first argument, reads the file,
+# and replaces the script's positional parameters with the file contents.
+# All downstream parsing (read_json_input, custom arg loops) works unchanged.
+#
+# Usage (by LLM CLI — use heredoc to avoid single-quote EOF issues):
+#   cat > /tmp/crewly_input.json << 'CREWLY_EOF'
+#   {"summary":"text with 'quotes' and special chars"}
+#   CREWLY_EOF
+#   bash execute.sh --file /tmp/crewly_input.json
+#
+# This runs at source-time, so every script that sources lib.sh gets it for free.
+# -----------------------------------------------------------------------------
+if [ "${1:-}" = "--file" ] && [ -n "${2:-}" ]; then
+  if [ -f "$2" ]; then
+    _CREWLY_FILE_CONTENT="$(cat "$2")"
+    set -- "$_CREWLY_FILE_CONTENT"
+    unset _CREWLY_FILE_CONTENT
+  else
+    echo '{"error":"File not found: '"$2"'"}' >&2
+    exit 1
+  fi
+fi
+
+# -----------------------------------------------------------------------------
 # read_json_input [arg]
 #
 # Reads JSON input from either:

@@ -71,3 +71,13 @@ When you encounter an error and successfully resolve it:
 1. Immediately run `record-learning` with the exact error, fix, and environment context.
 2. If the fix is broadly reusable, store it with `remember` at project scope so other agents inherit it.
 3. Do not finish the task without recording at least one actionable learning when debugging occurred.
+
+## Recurring Tasks (Cron System)
+
+Your team has a built-in cron system. The orchestrator or user can schedule recurring tasks that are automatically sent to you on a schedule (e.g., daily reports, weekly checks). When a cron task fires:
+
+- You will receive the task description as a normal message in your terminal
+- Treat it like any other task from the orchestrator — execute it and report results
+- If you were offline, Crewly auto-started you to deliver the task
+
+You do not need to manage cron tasks yourself — the orchestrator handles creation and scheduling. If you need a recurring task set up, ask the orchestrator.

@@ -10,6 +10,7 @@ import React from 'react';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import { RelayHealthCard } from './RelayHealthCard';
 
 // ---------------------------------------------------------------------------
@@ -93,6 +94,12 @@ function createMockFetch(
   devicesResp: object = mockDevicesResponse,
 ) {
   return vi.fn((url: string) => {
+    if (url.includes('/api/cloud/devices')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(devicesResp),
+      });
+    }
     if (url.includes('/api/relay/cloud-devices')) {
       return Promise.resolve({
         ok: true,
@@ -106,6 +113,12 @@ function createMockFetch(
     });
   });
 }
+
+const renderRelayHealthCard = () => render(
+  <MemoryRouter>
+    <RelayHealthCard />
+  </MemoryRouter>,
+);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -130,7 +143,7 @@ describe('RelayHealthCard', () => {
     global.fetch = createMockFetch() as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     expect(screen.getByTestId('relay-health-card')).toBeDefined();
@@ -141,7 +154,7 @@ describe('RelayHealthCard', () => {
     global.fetch = createMockFetch(mockRelayStatusDisconnected) as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
@@ -156,7 +169,7 @@ describe('RelayHealthCard', () => {
     global.fetch = createMockFetch() as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
@@ -182,7 +195,7 @@ describe('RelayHealthCard', () => {
     global.fetch = createMockFetch() as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
@@ -197,7 +210,7 @@ describe('RelayHealthCard', () => {
     global.fetch = createMockFetch() as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
@@ -207,7 +220,7 @@ describe('RelayHealthCard', () => {
     expect(screen.getByText('E2EE')).toBeDefined();
   });
 
-  it('does not show E2EE shield when no devices are paired', async () => {
+  it('shows standby security state when no devices are paired', async () => {
     const devicesNoPaired = {
       success: true,
       data: {
@@ -236,37 +249,38 @@ describe('RelayHealthCard', () => {
     global.fetch = createMockFetch(registeredStatus, devicesNoPaired) as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
       expect(screen.getByText('1 device')).toBeDefined();
     });
 
-    expect(screen.queryByTestId('relay-e2ee')).toBeNull();
+    expect(screen.getByTestId('relay-e2ee')).toBeDefined();
+    expect(screen.getByText('Secure standby')).toBeDefined();
   });
 
   it('shows last-seen timestamps for devices', async () => {
     global.fetch = createMockFetch() as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
       expect(screen.getByTestId('relay-device-list')).toBeDefined();
     });
 
-    // Local device should show "Just now", remote device "30s ago"
-    expect(screen.getByText('Just now')).toBeDefined();
-    expect(screen.getByText('30s ago')).toBeDefined();
+    // Local device should show "Last seen Just now", remote device "Last seen 30s ago"
+    expect(screen.getByText('Last seen Just now')).toBeDefined();
+    expect(screen.getByText('Last seen 30s ago')).toBeDefined();
   });
 
   it('shows error state when fetch fails', async () => {
     global.fetch = vi.fn(() => Promise.reject(new Error('Network error'))) as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
@@ -283,7 +297,7 @@ describe('RelayHealthCard', () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
@@ -305,7 +319,7 @@ describe('RelayHealthCard', () => {
     global.fetch = createMockFetch() as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
@@ -321,7 +335,7 @@ describe('RelayHealthCard', () => {
     global.fetch = createMockFetch(mockRelayStatusDisconnected) as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
@@ -338,7 +352,7 @@ describe('RelayHealthCard', () => {
     global.fetch = createMockFetch(connectedNoDevices, mockEmptyDevicesResponse) as unknown as typeof fetch;
 
     await act(async () => {
-      render(<RelayHealthCard />);
+      renderRelayHealthCard();
     });
 
     await waitFor(() => {
@@ -346,5 +360,19 @@ describe('RelayHealthCard', () => {
     });
 
     expect(screen.getByText('No devices found')).toBeDefined();
+  });
+
+  it('renders a CTA to open Cloud settings when disconnected', async () => {
+    global.fetch = createMockFetch(mockRelayStatusDisconnected) as unknown as typeof fetch;
+
+    await act(async () => {
+      renderRelayHealthCard();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('relay-settings-cta')).toBeDefined();
+    });
+
+    expect(screen.getByText('Open Cloud Settings')).toBeDefined();
   });
 });
