@@ -11,6 +11,9 @@ import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
+import { TokenUsageService } from '../monitoring/token-usage.service.js';
+import { parseRuntimeTokens } from '../monitoring/runtime-token-parser.service.js';
+import { getSettingsService } from '../settings/settings.service.js';
 
 /**
  * Team Working Status File Structure
@@ -74,6 +77,11 @@ export class ActivityMonitorService {
   private busyTransitionTimestamps: Map<string, number> = new Map();
   /** Tracks which sessions have had their agent:busy event emitted */
   private busyEventEmitted: Set<string> = new Set();
+  /** Tracks last recorded token counts per session to avoid duplicate recording */
+  private lastRecordedTokens: Map<string, { input: number; output: number }> = new Map();
+  /** Cached tokenTracking setting, refreshed periodically to avoid async reads in hot path */
+  private tokenTrackingEnabled = false;
+  private tokenTrackingLastCheck = 0;
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ActivityMonitor');
@@ -548,6 +556,13 @@ export class ActivityMonitorService {
 
               this.lastTerminalOutputs.set(member.sessionName, currentOutput);
 
+              // Token usage tracking: parse PTY output for token data from CLI runtimes
+              this.tryRecordPtyTokenUsage(
+                member.sessionName,
+                currentOutput,
+                member.runtimeType as 'claude-code' | 'gemini-cli' | 'codex-cli' | undefined
+              );
+
             } catch (error) {
               this.logger.error('Error checking member working status', {
                 teamId: team.id,
@@ -682,6 +697,68 @@ export class ActivityMonitorService {
           mapSize: this.lastTerminalOutputs.size
         });
       }
+    }
+  }
+
+  /**
+   * Attempt to parse and record token usage from PTY terminal output.
+   *
+   * Only records when token tracking is enabled in settings and when the
+   * parsed token counts differ from the last recorded values (to avoid
+   * duplicate recording from the same output being captured multiple times).
+   *
+   * @param sessionName - Agent session name
+   * @param output - Captured terminal output
+   * @param runtimeType - Runtime type hint for parser selection
+   */
+  private tryRecordPtyTokenUsage(
+    sessionName: string,
+    output: string,
+    runtimeType?: 'claude-code' | 'gemini-cli' | 'codex-cli'
+  ): void {
+    // Skip non-PTY runtimes (crewly-agent records via SDK, not PTY output)
+    if (!runtimeType || runtimeType === ('crewly-agent' as string)) return;
+
+    try {
+      // Refresh cached tokenTracking setting every 60 seconds
+      const now = Date.now();
+      if (now - this.tokenTrackingLastCheck > 60_000) {
+        this.tokenTrackingLastCheck = now;
+        getSettingsService().getSettings().then(s => {
+          this.tokenTrackingEnabled = s.general.tokenTracking ?? false;
+        }).catch(() => { /* ignore */ });
+      }
+      if (!this.tokenTrackingEnabled) return;
+
+      const parsed = parseRuntimeTokens(output, runtimeType);
+      if (!parsed) return;
+
+      // Dedup: skip if we already recorded these exact counts for this session
+      const last = this.lastRecordedTokens.get(sessionName);
+      if (last && last.input === parsed.inputTokens && last.output === parsed.outputTokens) {
+        return;
+      }
+
+      // Record delta if we have a previous reading, otherwise record full amount
+      const deltaInput = last ? Math.max(0, parsed.inputTokens - last.input) : parsed.inputTokens;
+      const deltaOutput = last ? Math.max(0, parsed.outputTokens - last.output) : parsed.outputTokens;
+
+      if (deltaInput > 0 || deltaOutput > 0) {
+        const model = parsed.model ?? `${runtimeType}-default`;
+        TokenUsageService.getInstance().recordUsage(
+          sessionName,
+          sessionName,
+          deltaInput,
+          deltaOutput,
+          model
+        );
+        this.lastRecordedTokens.set(sessionName, {
+          input: parsed.inputTokens,
+          output: parsed.outputTokens,
+        });
+      }
+    } catch {
+      // Non-critical — don't let token parsing errors affect activity monitoring
     }
   }
 

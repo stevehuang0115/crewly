@@ -117,6 +117,35 @@ describe('TokenUsageService', () => {
     });
   });
 
+  describe('getUsageByTask', () => {
+    it('should return empty map when no data', () => {
+      const taskMap = service.getUsageByTask();
+      expect(taskMap.size).toBe(0);
+    });
+
+    it('should aggregate by task ID across sessions', () => {
+      service.recordUsage('s1', 'a1', 100, 50, 'claude-opus', 'task-1');
+      service.recordUsage('s2', 'a2', 200, 80, 'claude-opus', 'task-1');
+      service.recordUsage('s1', 'a1', 300, 120, 'claude-opus', 'task-2');
+      service.recordUsage('s1', 'a1', 50, 20, 'claude-opus'); // no taskId
+
+      const taskMap = service.getUsageByTask();
+      expect(taskMap.size).toBe(3);
+
+      const task1 = taskMap.get('task-1')!;
+      expect(task1.totalInput).toBe(300);
+      expect(task1.totalOutput).toBe(130);
+      expect(task1.eventCount).toBe(2);
+
+      const task2 = taskMap.get('task-2')!;
+      expect(task2.totalInput).toBe(300);
+      expect(task2.eventCount).toBe(1);
+
+      const unassigned = taskMap.get('unassigned')!;
+      expect(unassigned.totalInput).toBe(50);
+    });
+  });
+
   describe('resetUsage', () => {
     it('should clear all tracked data', () => {
       service.recordUsage('session-1', 'agent-a', 100, 50, 'claude-opus');

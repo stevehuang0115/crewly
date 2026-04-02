@@ -333,6 +333,29 @@ export class TokenUsageService {
   }
 
   /**
+   * Get aggregated token usage grouped by task ID.
+   *
+   * @returns Map of taskId to aggregated token totals
+   */
+  getUsageByTask(): Map<string, { taskId: string; totalInput: number; totalOutput: number; eventCount: number; cost: number }> {
+    const taskMap = new Map<string, { taskId: string; totalInput: number; totalOutput: number; eventCount: number; cost: number }>();
+
+    for (const record of this.sessions.values()) {
+      for (const event of record.events) {
+        const tid = event.taskId ?? 'unassigned';
+        const existing = taskMap.get(tid) ?? { taskId: tid, totalInput: 0, totalOutput: 0, eventCount: 0, cost: 0 };
+        existing.totalInput += event.input;
+        existing.totalOutput += event.output;
+        existing.eventCount += 1;
+        existing.cost += calculateCost(event.input, event.output, event.model);
+        taskMap.set(tid, existing);
+      }
+    }
+
+    return taskMap;
+  }
+
+  /**
    * Clear all tracked token usage data.
    */
   resetUsage(): void {

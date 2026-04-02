@@ -9,7 +9,7 @@
 
 import { Router } from 'express';
 import type { ApiContext } from '../types.js';
-import { getTokenUsage, resetTokenUsage, getDeploymentQuote, getAllDeploymentQuotes, estimateTokens } from './token-usage.controller.js';
+import { getTokenUsage, getTokenUsageByTask, resetTokenUsage, recordTokenUsage, getDeploymentQuote, getAllDeploymentQuotes, estimateTokens } from './token-usage.controller.js';
 import { receiveExtensionLogs } from './extension-logs.controller.js';
 import { getPtyStatus } from './pty-status.controller.js';
 
@@ -25,8 +25,14 @@ export function createMonitoringRouter(_context?: ApiContext): Router {
   // GET /api/monitoring/token-usage — per-session token usage summaries
   router.get('/token-usage', getTokenUsage);
 
+  // GET /api/monitoring/token-usage/by-task — per-task token usage aggregation
+  router.get('/token-usage/by-task', getTokenUsageByTask);
+
   // POST /api/monitoring/token-usage/reset — clear all tracking data
   router.post('/token-usage/reset', resetTokenUsage);
+
+  // POST /api/monitoring/token-usage/record — manually record a token usage event
+  router.post('/token-usage/record', recordTokenUsage);
 
   // GET /api/monitoring/token-quote/:templateId — get deployment quote for a template
   router.get('/token-quote/:templateId', getDeploymentQuote);

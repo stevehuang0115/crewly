@@ -17,6 +17,7 @@ import { AgentUsageTable } from '../components/Monitoring/AgentUsageTable';
 import { ModelMixChart } from '../components/Monitoring/ModelMixChart';
 import { UsageTimeline } from '../components/Monitoring/UsageTimeline';
 import { BudgetConfigPanel } from '../components/Monitoring/BudgetConfigPanel';
+import { TaskUsageTable } from '../components/Monitoring/TaskUsageTable';
 
 /**
  * Formats seconds ago into a human-readable string.
@@ -96,9 +97,9 @@ export const CostDashboard: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Cost Dashboard</h2>
+          <h2 className="text-3xl font-bold tracking-tight">Usage</h2>
           <p className="text-sm text-text-secondary-dark mt-1">
-            Monitor token usage and spending across all agents.
+            Monitor token usage and spending across all agents and tasks.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -155,6 +156,9 @@ export const CostDashboard: React.FC = () => {
 
           {/* Agent Usage Table */}
           <AgentUsageTable sessions={sessions} />
+
+          {/* Per-Task Usage Table */}
+          <TaskUsageTable />
 
           {/* Budget Configuration */}
           <BudgetConfigPanel

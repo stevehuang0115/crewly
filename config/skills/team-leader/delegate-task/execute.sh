@@ -61,6 +61,7 @@ if [ -z "$INPUT_JSON" ] && [ -z "$TASK" ] && [ ! -t 0 ]; then
 fi
 
 # Parse JSON if provided (backward compatible)
+INPUT="{}"
 if [ -n "$INPUT_JSON" ]; then
   INPUT=$(read_json_input "$INPUT_JSON")
   [ -z "$TO" ] && TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')

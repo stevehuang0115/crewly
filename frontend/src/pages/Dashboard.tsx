@@ -7,7 +7,7 @@
  * @module pages/Dashboard
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { ProjectCard } from '@/components/Cards/ProjectCard';
 import TeamsGridCard from '@/components/Teams/TeamsGridCard';
@@ -16,6 +16,7 @@ import { Team, Project } from '@/types';
 import { apiService } from '@/services/api.service';
 import { HealthBar } from '@/components/Dashboard/HealthBar';
 import { RelayHealthCard } from '@/components/Dashboard/RelayHealthCard';
+import { AgentStreamPanel } from '@/components/ExecutionFeed/AgentStreamPanel';
 import { assignDefaultAvatars } from '@/utils/team.utils';
 import { logSilentError } from '@/utils/error-handling';
 
@@ -63,6 +64,14 @@ export const Dashboard: React.FC = () => {
   const [projectProgress, setProjectProgress] = useState<Record<string, ProjectProgress>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Derive the first active agent session name for the stream panel
+  const activeAgentSession = useMemo(() => {
+    const activeMember = teams
+      .flatMap(t => t.members)
+      .find(m => m.agentStatus === 'active');
+    return activeMember?.sessionName ?? null;
+  }, [teams]);
 
   useEffect(() => {
     loadData();
@@ -236,6 +245,17 @@ export const Dashboard: React.FC = () => {
       <div className="mb-10">
         <RelayHealthCard />
       </div>
+
+      {/* Agent Activity — live streaming output (visible only when an agent is active) */}
+      {activeAgentSession && (
+        <section className="mb-10" data-testid="agent-activity-section">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true" />
+            <h3 className="text-xl font-semibold">Agent Activity</h3>
+          </div>
+          <AgentStreamPanel sessionName={activeAgentSession} maxHeight="360px" />
+        </section>
+      )}
 
       <div className="space-y-10">
         <section>

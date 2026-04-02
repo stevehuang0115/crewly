@@ -1067,6 +1067,56 @@ export const EVENT_DEBOUNCE_MS = CONTINUATION_CONSTANTS.EVENTS.DEBOUNCE_MS;
 
 // ========================= TYPE HELPERS =========================
 
+// ========================= REDIS CACHE CONSTANTS =========================
+
+/**
+ * Redis connection and caching configuration
+ */
+export const REDIS_CONSTANTS = {
+	/** Redis connection settings */
+	CONNECTION: {
+		/** Default Redis host */
+		HOST: '127.0.0.1',
+		/** Default Redis port */
+		PORT: 6379,
+		/** Connection timeout in milliseconds (5 seconds) */
+		CONNECT_TIMEOUT: 5000,
+		/** Maximum number of reconnect retries before giving up */
+		MAX_RETRIES: 3,
+		/** Delay between reconnect attempts in milliseconds */
+		RETRY_DELAY: 1000,
+		/** Key prefix to namespace all Crewly cache entries */
+		KEY_PREFIX: 'crewly:',
+	},
+	/** Cache TTL (time-to-live) settings in seconds */
+	TTL: {
+		/** TTL for GET /api/teams list (60 seconds) */
+		TEAMS_LIST: 60,
+		/** TTL for GET /api/projects list (60 seconds) */
+		PROJECTS_LIST: 60,
+		/** Default TTL for unspecified cache entries (60 seconds) */
+		DEFAULT: 60,
+	},
+	/** Cache key patterns */
+	KEYS: {
+		/** Cache key for the teams list endpoint */
+		TEAMS_LIST: 'api:teams',
+		/** Cache key for the projects list endpoint */
+		PROJECTS_LIST: 'api:projects',
+	},
+	/** Environment variable names for Redis configuration */
+	ENV: {
+		/** Redis host override */
+		REDIS_HOST: 'CREWLY_REDIS_HOST',
+		/** Redis port override */
+		REDIS_PORT: 'CREWLY_REDIS_PORT',
+		/** Redis password */
+		REDIS_PASSWORD: 'CREWLY_REDIS_PASSWORD',
+		/** Redis URL (takes precedence over host/port) */
+		REDIS_URL: 'CREWLY_REDIS_URL',
+	},
+} as const;
+
 /**
  * Type helpers for extracting literal types from constants
  */

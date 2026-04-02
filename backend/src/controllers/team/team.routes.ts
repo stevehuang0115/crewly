@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import type { ApiContext } from '../types.js';
 import { listTeamCronTasks } from '../system/cron-task.controller.js';
+import { cacheResponse, invalidateCache } from '../../middleware/cache.middleware.js';
+import { REDIS_CONSTANTS } from '../../../../config/constants.js';
 import {
   createTeam,
   getTeams,
@@ -35,25 +37,28 @@ import { exportTeam, importTeam } from './team-export.controller.js';
 export function createTeamRouter(context: ApiContext): Router {
   const router = Router();
 
+  // Cache keys for invalidation on mutations
+  const teamsCacheKeys = [REDIS_CONSTANTS.KEYS.TEAMS_LIST];
+
   // Team CRUD operations
-  router.post('/', createTeam.bind(context));
-  router.get('/', getTeams.bind(context));
+  router.post('/', invalidateCache(teamsCacheKeys), createTeam.bind(context));
+  router.get('/', cacheResponse(REDIS_CONSTANTS.KEYS.TEAMS_LIST, REDIS_CONSTANTS.TTL.TEAMS_LIST), getTeams.bind(context));
   router.get('/:id', getTeam.bind(context));
-  router.put('/:id', updateTeam.bind(context));
-  router.patch('/:id', updateTeam.bind(context));
-  router.delete('/:id', deleteTeam.bind(context));
+  router.put('/:id', invalidateCache(teamsCacheKeys), updateTeam.bind(context));
+  router.patch('/:id', invalidateCache(teamsCacheKeys), updateTeam.bind(context));
+  router.delete('/:id', invalidateCache(teamsCacheKeys), deleteTeam.bind(context));
 
   // Team lifecycle management
-  router.post('/:id/start', startTeam.bind(context));
-  router.post('/:id/stop', stopTeam.bind(context));
-  router.post('/:id/archive', archiveTeam.bind(context));
+  router.post('/:id/start', invalidateCache(teamsCacheKeys), startTeam.bind(context));
+  router.post('/:id/stop', invalidateCache(teamsCacheKeys), stopTeam.bind(context));
+  router.post('/:id/archive', invalidateCache(teamsCacheKeys), archiveTeam.bind(context));
   router.get('/:id/workload', getTeamWorkload.bind(context));
 
   // Team member management
-  router.post('/:id/members', addTeamMember.bind(context));
-  router.put('/:teamId/members/:memberId', updateTeamMember.bind(context));
-  router.patch('/:teamId/members/:memberId', updateTeamMember.bind(context));
-  router.delete('/:teamId/members/:memberId', deleteTeamMember.bind(context));
+  router.post('/:id/members', invalidateCache(teamsCacheKeys), addTeamMember.bind(context));
+  router.put('/:teamId/members/:memberId', invalidateCache(teamsCacheKeys), updateTeamMember.bind(context));
+  router.patch('/:teamId/members/:memberId', invalidateCache(teamsCacheKeys), updateTeamMember.bind(context));
+  router.delete('/:teamId/members/:memberId', invalidateCache(teamsCacheKeys), deleteTeamMember.bind(context));
 
   // Team member lifecycle
   router.post('/:teamId/members/:memberId/start', startTeamMember.bind(context));
