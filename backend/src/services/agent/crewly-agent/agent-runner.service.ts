@@ -201,13 +201,162 @@ export class AgentRunnerService {
       config.sessionName,
     );
     this.securityPolicy = { ...CREWLY_AGENT_DEFAULTS.SECURITY_POLICY };
+    // In eval mode, strip delegation-first instructions so agent implements directly
+    const effectivePrompt = config.evalMode
+      ? AgentRunnerService.stripDelegationInstructions(config.systemPrompt)
+      : config.systemPrompt;
     this.state = {
       messages: [],
-      systemPrompt: config.systemPrompt,
+      systemPrompt: effectivePrompt,
       totalTokens: { input: 0, output: 0 },
       createdAt: new Date(),
       lastActivityAt: new Date(),
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Eval Mode: Delegation Stripping (P1)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Regex patterns that match TL delegation-first instructions in the system prompt.
+   * These cause the agent to delegate instead of implementing in eval sandboxes.
+   */
+  private static readonly DELEGATION_PATTERNS: RegExp[] = [
+    // "delegate 80% of execution tasks" and variants
+    /delegate\s+\d+%?\s+of\s+execution\s+tasks?/gi,
+    // "DELEGATION-FIRST PROTOCOL" sections
+    /DELEGATION-FIRST\s+PROTOCOL[^]*?(?=\n#{1,3}\s|\n---|\Z)/gm,
+    // "Only implement yourself when:" blocks
+    /\*\*Only implement yourself\*\*\s+when:[^]*?(?=\n#{1,3}\s|\n---|\n\n\*\*)/gm,
+    // "Your core loop on every task is:" delegation loop
+    /Your core loop on every task is:[^]*?(?=\n#{1,3}\s|\n---)/gm,
+    // "Target: delegate 70–80% of execution tasks"
+    /Target:\s*delegate\s+\d+[–-]\d+%\s+of\s+execution\s+tasks\.?/gi,
+    // Entire "Team Lead Delegation SOP" section
+    /#+\s*Team Lead Delegation SOP[^]*?(?=\n#{1,2}\s[^#]|\Z)/gm,
+    // "ANTI-PATTERNS" that tell TL not to implement
+    /These are ANTI-PATTERNS\.\s*The TL must avoid:[^]*?(?=\n#{1,3}\s|\n---)/gm,
+  ];
+
+  /**
+   * Eval-mode override instruction injected after stripping delegation instructions.
+   * Tells the agent to implement directly.
+   */
+  private static readonly EVAL_MODE_OVERRIDE = [
+    '',
+    '## Eval Mode Active',
+    '',
+    'You are running in evaluation mode. IMPORTANT behavioral overrides:',
+    '- **Implement directly** — Do NOT delegate tasks to workers. Write code yourself.',
+    '- **Create all output files** — If the task asks you to create a file, you MUST write it using write_file or edit_file.',
+    '- **Use standard tool names** — Use handle-failure, delegate-task, send-message for collaboration actions.',
+    '- **Materialize deliverables** — After gathering information, always produce the required output files before finishing.',
+    '- **Self-check before stopping** — Before you finish, verify: "Have I created every file/artifact the task requested?"',
+    '',
+  ].join('\n');
+
+  /**
+   * Strip delegation-first instructions from a system prompt for eval mode.
+   *
+   * Removes TL delegation SOP sections, delegation-first protocol blocks,
+   * and anti-pattern warnings that cause the agent to delegate instead of
+   * implementing. Injects an eval-mode override instruction.
+   *
+   * @param prompt - Original system prompt
+   * @returns Cleaned prompt with eval-mode overrides
+   */
+  static stripDelegationInstructions(prompt: string): string {
+    let cleaned = prompt;
+    for (const pattern of AgentRunnerService.DELEGATION_PATTERNS) {
+      cleaned = cleaned.replace(pattern, '');
+    }
+    // Remove consecutive blank lines left by stripping
+    cleaned = cleaned.replace(/\n{4,}/g, '\n\n\n');
+    // Inject eval mode override at the end
+    cleaned = cleaned.trimEnd() + '\n' + AgentRunnerService.EVAL_MODE_OVERRIDE;
+    return cleaned;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Post-Execution Deliverable Check (P0 - Stop Hook)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Patterns that indicate the task expects a file to be created.
+   * Matches phrases like "create health.controller.ts", "write team-health.json",
+   * "produce a report file", etc.
+   */
+  private static readonly FILE_CREATION_PATTERNS: RegExp[] = [
+    // Note: longer extensions (json, tsx, jsx, yaml) must come before shorter ones (js, ts) to avoid partial matches
+    /(?:create|write|produce|generate|build|implement)\s+(?:a\s+)?(?:file\s+(?:called|named)\s+)?[`"']?(\S+\.(?:tsx|jsx|json|yaml|yml|html|css|ts|js|md|txt))\b[`"']?/gi,
+    /(?:output|save|write)\s+(?:to|into)\s+[`"']?(\S+\.(?:tsx|jsx|json|yaml|yml|html|css|ts|js|md|txt))\b[`"']?/gi,
+    /[`"'](\S+\.(?:tsx|jsx|json|yaml|yml|html|css|ts|js|md|txt))[`"']\s+(?:file|should be created|must be created)/gi,
+    // Backtick-quoted file paths — commonly used in task prompts
+    /`(\S+\.(?:tsx|jsx|json|yaml|yml|html|css|ts|js|md|txt))`/gi,
+  ];
+
+  /**
+   * Extract expected output file names from the task prompt.
+   *
+   * Scans the message for file creation patterns and returns the
+   * list of file names the task expects to be produced.
+   *
+   * @param taskPrompt - The original task prompt/message
+   * @returns Array of expected file names (basename only)
+   */
+  static extractExpectedOutputFiles(taskPrompt: string): string[] {
+    const files = new Set<string>();
+    for (const pattern of AgentRunnerService.FILE_CREATION_PATTERNS) {
+      // Reset lastIndex for global regex
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(taskPrompt)) !== null) {
+        const fileName = match[1];
+        if (fileName && !fileName.includes('*') && fileName.length < 100) {
+          files.add(fileName);
+        }
+      }
+    }
+    return Array.from(files);
+  }
+
+  /**
+   * Check if the agent's tool calls produced the expected output files.
+   *
+   * Examines write_file and edit_file tool calls to see if the expected
+   * files were written. Returns the list of missing files.
+   *
+   * @param expectedFiles - File names expected to be created
+   * @param toolCalls     - Tool calls made during the run
+   * @returns Array of file names that were NOT written
+   */
+  static checkMissingDeliverables(
+    expectedFiles: string[],
+    toolCalls: ToolCallRecord[],
+  ): string[] {
+    if (expectedFiles.length === 0) return [];
+
+    // Collect all files written by write_file or edit_file tools
+    const writtenFiles = new Set<string>();
+    for (const tc of toolCalls) {
+      if (tc.toolName === 'write_file' || tc.toolName === 'edit_file') {
+        const filePath = (tc.args as Record<string, unknown>).file_path
+          ?? (tc.args as Record<string, unknown>).path
+          ?? '';
+        if (typeof filePath === 'string' && filePath) {
+          // Extract basename for comparison
+          const basename = filePath.split('/').pop() ?? filePath;
+          writtenFiles.add(basename);
+          writtenFiles.add(filePath); // Also add full path
+        }
+      }
+    }
+
+    return expectedFiles.filter((f) => {
+      const basename = f.split('/').pop() ?? f;
+      return !writtenFiles.has(f) && !writtenFiles.has(basename);
+    });
   }
 
   /**
@@ -753,6 +902,20 @@ export class AgentRunnerService {
 
     const finishReason = await result.finishReason;
 
+    // P0 Stop Hook: In eval mode, check if required output files were created.
+    // If deliverables are missing, inject a corrective message and do one more run.
+    // Note: If loop was detected, we already returned early via handleLoopDetected.
+    if (this.config.evalMode) {
+      const stopHookResult = await this.executeStopHook(toolCalls, tools, abortSignal);
+      if (stopHookResult) {
+        // Merge tool calls and update text from the follow-up run
+        toolCalls.push(...stopHookResult.toolCalls);
+        if (stopHookResult.text) {
+          text = stopHookResult.text;
+        }
+      }
+    }
+
     return {
       text,
       steps: stepCount,
@@ -899,6 +1062,18 @@ export class AgentRunnerService {
     const postBudget = this.getContextBudget();
     const budgetWarning = postBudget.level !== 'normal' ? postBudget.summary : undefined;
 
+    // P0 Stop Hook: In eval mode, check if required output files were created.
+    // Note: If loop was detected via loopDetector, we already returned early.
+    if (this.config.evalMode) {
+      const stopHookResult = await this.executeStopHook(toolCalls, tools, abortSignal);
+      if (stopHookResult) {
+        toolCalls.push(...stopHookResult.toolCalls);
+        if (stopHookResult.text) {
+          finalText = stopHookResult.text;
+        }
+      }
+    }
+
     return {
       text: finalText,
       steps: result.steps.length,
@@ -958,6 +1133,109 @@ export class AgentRunnerService {
       finishReason: 'loop-detected',
       budgetWarning: undefined,
     };
+  }
+
+  /**
+   * Execute the Stop Hook: check if the agent produced all required deliverables.
+   *
+   * Scans the original task prompt (first user message) for expected output files,
+   * then checks if write_file/edit_file tool calls created them. If files are
+   * missing, injects a corrective prompt and runs one more generateText call
+   * with tools so the agent can create the missing deliverables.
+   *
+   * Inspired by Claude Code's Stop hook which blocks the agent from finishing
+   * until task requirements are met.
+   *
+   * @param toolCalls   - Tool calls made so far
+   * @param tools       - Available tools for the follow-up run
+   * @param abortSignal - Abort signal for cancellation
+   * @returns Additional AgentRunResult from the follow-up, or null if no action needed
+   */
+  private async executeStopHook(
+    toolCalls: ToolCallRecord[],
+    tools: Record<string, unknown>,
+    abortSignal: AbortSignal,
+  ): Promise<AgentRunResult | null> {
+    if (!this.model) return null;
+
+    // Find the original task prompt (first user message)
+    const firstUserMsg = this.state.messages.find((m) => m.role === 'user');
+    if (!firstUserMsg) return null;
+    const taskPrompt = typeof firstUserMsg.content === 'string'
+      ? firstUserMsg.content
+      : JSON.stringify(firstUserMsg.content);
+
+    // Extract expected output files from the task prompt
+    const expectedFiles = AgentRunnerService.extractExpectedOutputFiles(taskPrompt);
+    if (expectedFiles.length === 0) return null;
+
+    // Check which files are missing
+    const missingFiles = AgentRunnerService.checkMissingDeliverables(expectedFiles, toolCalls);
+    if (missingFiles.length === 0) return null;
+
+    // Inject corrective message
+    const stopMessage = [
+      '[STOP HOOK — Deliverable Check Failed]',
+      '',
+      `The task requires you to create these files: ${expectedFiles.map(f => '`' + f + '`').join(', ')}`,
+      `Missing files: ${missingFiles.map(f => '`' + f + '`').join(', ')}`,
+      '',
+      'You MUST create these files before finishing. Use write_file to create each missing file now.',
+      'Do NOT delegate this work. Implement and write the files directly.',
+    ].join('\n');
+
+    this.state.messages.push({ role: 'user', content: stopMessage });
+    this.streamingCallbacks.onTextChunk?.(`\n⚠️ Stop Hook: Missing deliverables: ${missingFiles.join(', ')}. Running follow-up...\n`);
+
+    try {
+      // Run one more round with tools to create missing files
+      const followUp = await generateText({
+        model: this.model,
+        system: this.state.systemPrompt,
+        messages: this.state.messages,
+        tools: tools as any,
+        stopWhen: stepCountIs(20), // Limited steps for follow-up
+        temperature: this.config.model.temperature,
+        maxOutputTokens: this.config.model.maxTokens,
+        abortSignal,
+      });
+
+      const followUpToolCalls: ToolCallRecord[] = [];
+      for (const step of (followUp as any).steps ?? []) {
+        if (step.toolCalls) {
+          for (const tc of step.toolCalls) {
+            const args = (tc as Record<string, unknown>).input as Record<string, unknown> ?? {};
+            followUpToolCalls.push({ toolName: tc.toolName, args, result: undefined });
+          }
+        }
+      }
+
+      const text = (followUp as any).text ?? '';
+      if (text) {
+        this.state.messages.push({ role: 'assistant', content: text });
+      }
+
+      // Track follow-up token usage
+      const followUpUsage = (followUp as any).usage;
+      if (followUpUsage) {
+        this.state.totalTokens.input += followUpUsage.inputTokens ?? 0;
+        this.state.totalTokens.output += followUpUsage.outputTokens ?? 0;
+      }
+
+      return {
+        text,
+        steps: ((followUp as any).steps ?? []).length,
+        usage: {
+          input: followUpUsage?.inputTokens ?? 0,
+          output: followUpUsage?.outputTokens ?? 0,
+        },
+        toolCalls: followUpToolCalls,
+        finishReason: (followUp as any).finishReason ?? 'stop',
+      };
+    } catch (err) {
+      console.error('[AgentRunner] Stop hook follow-up failed:', err instanceof Error ? err.message : err);
+      return null;
+    }
   }
 
   /**
@@ -1183,9 +1461,29 @@ export class AgentRunnerService {
     try {
 
     const messagesBefore = this.state.messages.length;
-    const keepRecent = 10;
-    const oldMessages = this.state.messages.slice(0, -keepRecent);
-    const recentMessages = this.state.messages.slice(-keepRecent);
+    // Determine the split point: keep at least 10 recent messages but adjust
+    // to avoid breaking tool_call/tool_result pairs. If the first "recent"
+    // message is a tool result (role === 'tool'), extend keepRecent backwards
+    // to include its paired assistant tool_call message.
+    let keepRecent = Math.min(10, this.state.messages.length - 2);
+    if (keepRecent < 2) keepRecent = 2;
+
+    // Expand keepRecent if we'd split inside a tool call pair
+    let splitIdx = this.state.messages.length - keepRecent;
+    while (splitIdx > 0 && splitIdx < this.state.messages.length) {
+      const firstKept = this.state.messages[splitIdx];
+      // If the first kept message is a tool result, we must also keep the
+      // preceding assistant message that contained the tool_call
+      if (firstKept.role === 'tool') {
+        splitIdx--;
+        keepRecent++;
+      } else {
+        break;
+      }
+    }
+
+    const oldMessages = this.state.messages.slice(0, splitIdx);
+    const recentMessages = this.state.messages.slice(splitIdx);
 
     // Pre-compaction context flush (#153): extract critical items from old
     // messages so they can be explicitly included in the AI summary prompt.

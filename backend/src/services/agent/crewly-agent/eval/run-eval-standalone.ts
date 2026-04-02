@@ -77,7 +77,7 @@ async function tryBackendRun(
       body: JSON.stringify({
         prompt: `Working directory: ${workDir}\n\n${prompt}`,
         workDir,
-        maxSteps: 15,
+        maxSteps: 200,
         timeoutMs,
       }),
       signal: AbortSignal.timeout(timeoutMs + 15_000),
@@ -118,7 +118,7 @@ async function tryChatRun(
         prompt: `Working directory: ${workDir}\n\n${prompt}`,
         workDir,
         sessionName: `eval-standalone-${Date.now()}`,
-        maxSteps: 15,
+        maxSteps: 200,
         timeoutMs,
       }),
       signal: AbortSignal.timeout(timeoutMs + 15_000),
@@ -144,10 +144,22 @@ async function tryChatRun(
 
 /**
  * Compute per-dimension scores from verification results.
+ *
+ * D2 (Code Quality): For coding tasks, scores based on code-related
+ * verification checks. For collaboration-only tasks, gives a neutral score.
+ *
+ * D6 (Stability): Starts at 100, deducts for actual instability signals
+ * (tool errors, timeout, near-timeout) instead of using a pass/fail binary.
+ *
+ * @param verification - verification result from task.verify()
+ * @param toolCalls    - tool calls recorded during the run
+ * @param task         - the eval task definition
+ * @param durationMs   - wall-clock duration of the task run
+ * @returns per-dimension scores (0-100)
  */
-function computeDimensions(
+export function computeDimensions(
   verification: EvalVerification,
-  toolCalls: Array<{ toolName: string }>,
+  toolCalls: Array<{ toolName: string; args?: unknown; result?: unknown }>,
   task: EvalTask,
   durationMs: number,
 ): Record<string, number> {
@@ -161,8 +173,25 @@ function computeDimensions(
     : 0;
   const d1 = Math.min(100, passBonus + partialChecks);
 
-  // D2 Code Quality (simplified — no tsc/lint in standalone)
-  const d2 = verification.passed ? 75 : 40;
+  // D2 Code Quality — analyze actual output quality
+  // Coding tasks: score based on checks that verify code creation & structure
+  // Collaboration-only tasks: give neutral score (no code expected)
+  const codingCheckNames = new Set([
+    'created_controller', 'created_service', 'created_test',
+    'created_logger', 'created_file', 'has_named_exports',
+    'has_typed_interfaces', 'has_error_handling', 'has_test_file',
+    'used_patterns', 'no_any_types', 'fixed_build',
+  ]);
+  const codeChecks = checks.filter((c) => codingCheckNames.has(c.name));
+  let d2: number;
+  if (codeChecks.length === 0) {
+    // No coding checks → collaboration task, neutral D2
+    d2 = verification.passed ? 80 : 60;
+  } else {
+    // Coding task — score based on actual code quality checks
+    const codePassed = codeChecks.filter((c) => c.passed).length;
+    d2 = Math.round((codePassed / codeChecks.length) * 100);
+  }
 
   // D3 Tool Accuracy
   const expectedSet = new Set(task.expectedTools.map((t) => t.toLowerCase()));
@@ -189,8 +218,22 @@ function computeDimensions(
     }
   }
 
-  // D6 Stability
-  const d6 = verification.passed ? 100 : 60;
+  // D6 Stability — deduct only for actual instability signals
+  // Start at 100, penalize for: tool errors (-10 each), timeout (-40), excessive duration (-10)
+  let d6 = 100;
+  const toolErrors = toolCalls.filter((tc) =>
+    tc.result && typeof tc.result === 'object' && 'error' in (tc.result as Record<string, unknown>),
+  ).length;
+  d6 -= toolErrors * 10;
+  // Timeout penalty: if durationMs exceeds task timeout (or 120s default)
+  const taskTimeout = task.timeoutMs ?? 120_000;
+  if (durationMs > taskTimeout) {
+    d6 -= 40;
+  } else if (durationMs > taskTimeout * 0.9) {
+    // Near-timeout: minor penalty
+    d6 -= 10;
+  }
+  d6 = Math.max(0, Math.min(100, d6));
 
   // D7 Cost Efficiency (assume baseline in standalone)
   const d7 = 100;

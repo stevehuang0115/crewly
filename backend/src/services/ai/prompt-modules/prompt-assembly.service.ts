@@ -42,6 +42,17 @@ const MODULE_SEPARATOR = '\n\n---\n\n';
 const TRIM_FRACTION = 0.5;
 
 /**
+ * Module names that are included in eval mode.
+ * All other modules are skipped to reduce prompt size and cost during eval runs.
+ */
+const EVAL_MODE_CORE_MODULES: ReadonlySet<string> = new Set([
+	'identity',
+	'soul',
+	'role-boundary',
+	'recovery',
+]);
+
+/**
  * Internal build result with module reference for truncation.
  */
 interface InternalBuildResult extends ModuleBuildResult {
@@ -172,6 +183,14 @@ export class PromptAssemblyService {
 
 		// Phase 1: Build all applicable modules
 		for (const module of sorted) {
+			// In eval mode, skip non-core modules to reduce prompt size and cost
+			if (config.evalMode && !EVAL_MODE_CORE_MODULES.has(module.name)) {
+				this.logger.debug(`Module '${module.name}' skipped (evalMode)`, {
+					sessionName: config.sessionName,
+				});
+				continue;
+			}
+
 			if (!module.shouldInclude(config)) {
 				this.logger.debug(`Module '${module.name}' skipped (shouldInclude=false)`, {
 					sessionName: config.sessionName,

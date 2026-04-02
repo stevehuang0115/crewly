@@ -19,6 +19,38 @@ import type {
 import { calculateCost } from '../eval-scorer.js';
 
 // ---------------------------------------------------------------------------
+// Tool name normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps Crewly runtime tool names to the canonical names expected by the eval scorer.
+ *
+ * The eval task definitions use standard names (e.g. `delegate-task`, `send-message`)
+ * but the Crewly runtime registers tools under different names. This map bridges
+ * the gap so that tool-accuracy scoring works correctly.
+ */
+export const TOOL_ALIAS_MAP: Readonly<Record<string, string>> = {
+  handoff_task: 'handle-failure',
+  assign_task: 'delegate-task',
+  reply_slack: 'send-message',
+  handle_failure: 'handle-failure',
+  send_message: 'send-message',
+} as const;
+
+/**
+ * Normalize a tool name using {@link TOOL_ALIAS_MAP}.
+ *
+ * If the tool name has a known alias, the canonical name is returned.
+ * Otherwise the original name is returned unchanged.
+ *
+ * @param toolName - raw tool name from the runtime
+ * @returns canonical tool name for eval scoring
+ */
+export function normalizeToolName(toolName: string): string {
+  return TOOL_ALIAS_MAP[toolName] ?? toolName;
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
@@ -112,14 +144,16 @@ export class CrewlyAgentAdapter implements RuntimeAdapter {
       model: {
         provider: 'anthropic',
         modelId: config.model,
+        maxTokens: 16384, // Higher output limit for eval tasks (default 8192 too low)
       },
-      maxSteps: 50,
+      maxSteps: 200,
       sessionName: `eval-${config.runtimeId}-${Date.now()}`,
       apiBaseUrl: 'http://localhost:3000',
       systemPrompt: 'You are an AI coding agent being evaluated. Complete the given task.',
       maxHistoryMessages: 100,
       compactionThreshold: 0.8,
       projectPath: config.workDir,
+      evalMode: true, // P0: Enable stop hook + P1: Strip delegation instructions
     };
 
     this.runner = new AgentRunnerService(agentConfig);
@@ -166,15 +200,21 @@ export class CrewlyAgentAdapter implements RuntimeAdapter {
       const _costUSD = calculateCost(modelName, runResult.usage.input, runResult.usage.output);
       const _toolErrors = countToolErrors(runResult);
 
+      // Normalize tool names so eval scorer matches against canonical names
+      const normalizedToolCalls = runResult.toolCalls.map((call) => ({
+        ...call,
+        toolName: normalizeToolName(call.toolName),
+      }));
+
       return {
         success: true,
         output: runResult.text,
         durationMs,
         steps: runResult.steps,
         usage: { input: runResult.usage.input, output: runResult.usage.output },
-        toolCalls: runResult.toolCalls,
+        toolCalls: normalizedToolCalls,
         humanNudges: 0,
-        loopDetected: runResult.finishReason === 'loop-warning',
+        loopDetected: runResult.finishReason === 'loop-detected',
         timedOut: false,
       };
     } catch (err) {

@@ -85,6 +85,13 @@ export interface CrewlyAgentConfig {
   mcpServers?: Record<string, McpServerConfig>;
   /** Sensitivity overrides for MCP tools (key: 'serverName:toolName' or 'toolName') */
   mcpSensitivityOverrides?: McpSensitivityOverrides;
+  /**
+   * Eval mode flag. When true:
+   * - Strips TL delegation-first instructions from system prompt
+   * - Agent implements directly instead of delegating to workers
+   * - Enables post-execution deliverable self-check (Stop Hook)
+   */
+  evalMode?: boolean;
 }
 
 /**

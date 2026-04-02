@@ -25,6 +25,12 @@ const DELEGATION_SUBSCRIPTION_TTL_MINUTES = 120;
 /** Maximum characters for git diff output */
 const GIT_DIFF_MAX_CHARS = 5000;
 
+/** Maximum characters for read_file output to prevent context overflow */
+const READ_FILE_MAX_CHARS = 50_000;
+
+/** Maximum lines to return from read_file when no limit is specified */
+const READ_FILE_MAX_LINES = 2000;
+
 /**
  * Commands that could kill/signal the parent Crewly server process or
  * cause irreversible system damage.  Checked against the raw command
@@ -1376,17 +1382,46 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
             };
           }
 
+          // Auto-limit large files to prevent context overflow
+          const effectiveLines = lines.length > READ_FILE_MAX_LINES
+            ? lines.slice(0, READ_FILE_MAX_LINES)
+            : lines;
+          let output = effectiveLines.map((line, i) => `${i + 1}\t${line}`).join('\n');
+          const wasTruncated = lines.length > READ_FILE_MAX_LINES;
+          if (output.length > READ_FILE_MAX_CHARS) {
+            output = output.slice(0, READ_FILE_MAX_CHARS) + '\n...[truncated — use offset/limit to read specific sections]';
+          }
           return {
             success: true,
-            content: lines.map((line, i) => `${i + 1}\t${line}`).join('\n'),
+            content: output,
             totalLines: lines.length,
+            ...(wasTruncated && { truncated: true, shownLines: READ_FILE_MAX_LINES }),
           };
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           if (msg.includes('ENOENT')) {
             return { success: false, error: `File not found: ${fp}` };
           }
-          return { success: false, error: msg };
+
+          // Fallback: use bash cat when fs.readFile fails for non-ENOENT errors
+          try {
+            let cmd = `cat -n ${JSON.stringify(fp)}`;
+            if (offset || limit) {
+              const startLine = (offset as number) || 1;
+              const endLine = limit ? startLine + (limit as number) - 1 : '';
+              cmd = endLine
+                ? `sed -n '${startLine},${endLine}p' ${JSON.stringify(fp)} | cat -n`
+                : `tail -n +${startLine} ${JSON.stringify(fp)} | cat -n`;
+            }
+            const stdout = childProcess.execSync(cmd, { encoding: 'utf8', timeout: 10000 });
+            return {
+              success: true,
+              content: stdout.trimEnd(),
+              fallback: 'bash',
+            };
+          } catch {
+            return { success: false, error: msg };
+          }
         }
       },
     },
@@ -1408,7 +1443,21 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
           await fsPromises.writeFile(fp, ct, 'utf8');
           return { success: true, file: fp, bytes: Buffer.byteLength(ct, 'utf8') };
         } catch (error) {
-          return { success: false, error: error instanceof Error ? error.message : String(error) };
+          // Fallback: use bash to write file when fs.writeFile fails
+          try {
+            const dir = fp.substring(0, fp.lastIndexOf('/'));
+            if (dir) {
+              childProcess.execSync(`mkdir -p ${JSON.stringify(dir)}`, { timeout: 5000 });
+            }
+            childProcess.execSync(`cat > ${JSON.stringify(fp)}`, {
+              input: ct,
+              encoding: 'utf8',
+              timeout: 10000,
+            });
+            return { success: true, file: fp, bytes: Buffer.byteLength(ct, 'utf8'), fallback: 'bash' };
+          } catch {
+            return { success: false, error: error instanceof Error ? error.message : String(error) };
+          }
         }
       },
     },

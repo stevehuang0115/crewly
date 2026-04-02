@@ -475,6 +475,67 @@ describe('PromptAssemblyService', () => {
 		});
 	});
 
+	describe('evalMode', () => {
+		it('should only include core modules when evalMode is true', async () => {
+			const service = new PromptAssemblyService();
+			const evalConfig: ModuleConfig = { ...baseConfig, evalMode: true };
+			const { report } = await service.assemble(evalConfig);
+
+			// Core modules: identity, soul, role-boundary, recovery
+			const moduleNames = report.moduleBreakdown.map((m) => m.name);
+			const allowedCoreNames = new Set(['identity', 'soul', 'role-boundary', 'recovery']);
+			for (const name of moduleNames) {
+				expect(allowedCoreNames.has(name)).toBe(true);
+			}
+		});
+
+		it('should include all modules when evalMode is false', async () => {
+			const service = new PromptAssemblyService();
+			const normalConfig: ModuleConfig = { ...baseConfig, evalMode: false };
+			const { report } = await service.assemble(normalConfig);
+
+			const moduleNames = report.moduleBreakdown.map((m) => m.name);
+			// Should have more than just core modules
+			expect(moduleNames.length).toBeGreaterThan(4);
+		});
+
+		it('should include all modules when evalMode is undefined', async () => {
+			const service = new PromptAssemblyService();
+			const { report } = await service.assemble(baseConfig);
+
+			const moduleNames = report.moduleBreakdown.map((m) => m.name);
+			expect(moduleNames.length).toBeGreaterThan(4);
+		});
+
+		it('should skip non-core custom modules in evalMode', async () => {
+			const service = emptyService();
+
+			service.addModule({
+				name: 'identity',
+				priority: 1,
+				maxTokens: 100,
+				compactable: false,
+				shouldInclude: () => true,
+				build: async () => 'identity-content',
+			});
+
+			service.addModule({
+				name: 'custom-extra',
+				priority: 10,
+				maxTokens: 100,
+				compactable: true,
+				shouldInclude: () => true,
+				build: async () => 'extra-content',
+			});
+
+			const evalConfig: ModuleConfig = { ...baseConfig, evalMode: true };
+			const { prompt } = await service.assemble(evalConfig);
+
+			expect(prompt).toContain('identity-content');
+			expect(prompt).not.toContain('extra-content');
+		});
+	});
+
 	describe('tokenBudget', () => {
 		it('should get the current budget', () => {
 			const service = new PromptAssemblyService(5000);

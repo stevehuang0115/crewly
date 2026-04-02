@@ -1,0 +1,558 @@
+{
+  "version": "1.0.0",
+  "runtime": "crewly-agent",
+  "timestamp": "2026-04-01T23:52:38.675Z",
+  "summary": {
+    "totalTasks": 8,
+    "scoredTasks": 8,
+    "erroredTasks": 0,
+    "passedTasks": 0,
+    "avgComposite": 53.7,
+    "byLevel": {
+      "L4": {
+        "count": 8,
+        "passed": 0,
+        "avgScore": 53.7
+      }
+    },
+    "dimensionAverages": {
+      "D1_completion": 11.1,
+      "D2_codeQuality": 40,
+      "D3_toolAccuracy": 79.4,
+      "D4_autonomy": 100,
+      "D5_collaboration": 20.3,
+      "D6_stability": 60,
+      "D7_costEfficiency": 100
+    }
+  },
+  "taskResults": [
+    {
+      "taskId": "L4-C1",
+      "level": "L4",
+      "title": "Triage & delegate incoming work",
+      "passed": false,
+      "partialScore": 0.5,
+      "durationMs": 79052,
+      "toolsUsed": [
+        "read_file",
+        "bash_exec",
+        "get_team_status",
+        "delegate_task",
+        "start_agent"
+      ],
+      "checks": [
+        {
+          "name": "read_context",
+          "passed": true,
+          "message": "Should read CONTEXT.md first"
+        },
+        {
+          "name": "read_task_files",
+          "passed": true,
+          "message": "Should read task files"
+        },
+        {
+          "name": "used_delegate_skill",
+          "passed": false,
+          "message": "Should use delegate-task skill"
+        },
+        {
+          "name": "delegations_created",
+          "passed": false,
+          "message": "Should create delegation JSON files"
+        }
+      ],
+      "collaborationChecks": [
+        {
+          "name": "delegated_to_active_worker",
+          "passed": false,
+          "message": "Should only delegate to active workers (not Max)"
+        },
+        {
+          "name": "delegated_to_leo",
+          "passed": false,
+          "message": "Should delegate to Leo (the active developer)"
+        },
+        {
+          "name": "report_status_called",
+          "passed": false,
+          "message": "Should report triage decisions via report-status"
+        },
+        {
+          "name": "handled_inactive_worker",
+          "passed": false,
+          "message": "Should handle Max being inactive (not assign to him)"
+        }
+      ],
+      "output": "Mia's busy, unexpectedly. I can either wait indefinitely, message her the task informally, or delegate to no one. I'll attempt to delegate the other tasks to her, hoping the system queues them. First up: the frontend bug.",
+      "dimensions": {
+        "D1_completion": 15,
+        "D2_codeQuality": 40,
+        "D3_toolAccuracy": 72,
+        "D4_autonomy": 100,
+        "D5_collaboration": 0,
+        "D6_stability": 60,
+        "D7_costEfficiency": 100
+      }
+    },
+    {
+      "taskId": "L4-C2",
+      "level": "L4",
+      "title": "Knowledge-driven implementation",
+      "passed": false,
+      "partialScore": 0.25,
+      "durationMs": 7732,
+      "toolsUsed": [
+        "read_file"
+      ],
+      "checks": [
+        {
+          "name": "read_patterns",
+          "passed": true,
+          "message": "Should read patterns documentation before coding"
+        },
+        {
+          "name": "controller_created",
+          "passed": false,
+          "message": "health.controller.ts should be created"
+        },
+        {
+          "name": "follows_named_export",
+          "passed": false,
+          "message": "Should use named function export per pattern"
+        },
+        {
+          "name": "follows_req_res",
+          "passed": false,
+          "message": "Should accept req/res parameters per pattern"
+        }
+      ],
+      "collaborationChecks": [
+        {
+          "name": "follows_try_catch",
+          "passed": false,
+          "message": "Should use try/catch per documented pattern"
+        },
+        {
+          "name": "follows_json_response",
+          "passed": false,
+          "message": "Should return JSON response per pattern"
+        },
+        {
+          "name": "persisted_learnings",
+          "passed": false,
+          "message": "Should create learnings.md with meaningful content (>50 chars)"
+        }
+      ],
+      "output": "`.crewly/knowledge/project-patterns.md` is missing. Moving on. Next, I'll read the task description; if it's not there, I'm stuck.",
+      "dimensions": {
+        "D1_completion": 8,
+        "D2_codeQuality": 40,
+        "D3_toolAccuracy": 100,
+        "D4_autonomy": 100,
+        "D5_collaboration": 0,
+        "D6_stability": 60,
+        "D7_costEfficiency": 100
+      }
+    },
+    {
+      "taskId": "L4-C3",
+      "level": "L4",
+      "title": "Fault detection & recovery",
+      "passed": false,
+      "partialScore": 0.6666666666666666,
+      "durationMs": 300049,
+      "toolsUsed": [
+        "get_team_status",
+        "read_file",
+        "bash_exec",
+        "glob",
+        "handoff_task",
+        "reply_slack",
+        "report_status"
+      ],
+      "checks": [
+        {
+          "name": "read_context",
+          "passed": true,
+          "message": "Should read CONTEXT.md"
+        },
+        {
+          "name": "detected_inactive_worker",
+          "passed": false,
+          "message": "Should check team status to detect Max is inactive"
+        },
+        {
+          "name": "read_stuck_task",
+          "passed": true,
+          "message": "Should read the stuck task"
+        }
+      ],
+      "collaborationChecks": [
+        {
+          "name": "recovery_action_taken",
+          "passed": false,
+          "message": "Should use handle-failure or delegate-task for recovery"
+        },
+        {
+          "name": "reassigned_to_leo",
+          "passed": false,
+          "message": "Should reassign to Leo (the active worker)"
+        },
+        {
+          "name": "preserved_partial_work",
+          "passed": true,
+          "message": "Should not delete Max's partial implementation"
+        },
+        {
+          "name": "communicated_with_leo",
+          "passed": false,
+          "message": "Should send message to Leo about the reassignment"
+        }
+      ],
+      "output": "I can't reply to Slack without a thread. No matter. The critical task is recovered. Max, the inactive worker, was on `task-001.md` implementing user auth. I've reviewed his `auth.service.ts` and handed off everything to Sam, his active teammate. The work is safe. I'm done here and will now end my session.",
+      "dimensions": {
+        "D1_completion": 20,
+        "D2_codeQuality": 40,
+        "D3_toolAccuracy": 67,
+        "D4_autonomy": 100,
+        "D5_collaboration": 25,
+        "D6_stability": 60,
+        "D7_costEfficiency": 100
+      }
+    },
+    {
+      "taskId": "L4-C4",
+      "level": "L4",
+      "title": "Multi-file coordinated feature",
+      "passed": false,
+      "partialScore": 0.25,
+      "durationMs": 56353,
+      "toolsUsed": [
+        "read_file",
+        "bash_exec",
+        "write_file",
+        "edit_file"
+      ],
+      "checks": [
+        {
+          "name": "read_existing_pattern",
+          "passed": true,
+          "message": "Should read data.service.ts for patterns"
+        },
+        {
+          "name": "service_created",
+          "passed": false,
+          "message": "user.service.ts should be created"
+        },
+        {
+          "name": "controller_created",
+          "passed": false,
+          "message": "user.controller.ts should be created"
+        },
+        {
+          "name": "test_created",
+          "passed": false,
+          "message": "user.service.test.ts should be created"
+        }
+      ],
+      "collaborationChecks": [
+        {
+          "name": "has_interface",
+          "passed": false,
+          "message": "Service should define UserRecord interface"
+        },
+        {
+          "name": "has_create_function",
+          "passed": false,
+          "message": "Service should export createUser function"
+        },
+        {
+          "name": "has_validate_function",
+          "passed": false,
+          "message": "Service should export validateUser function"
+        },
+        {
+          "name": "cross_file_consistency",
+          "passed": false,
+          "message": "Controller and test should import from user service"
+        },
+        {
+          "name": "delegated_review_to_leo",
+          "passed": false,
+          "message": "Should delegate code review to Leo via delegate-task"
+        }
+      ],
+      "output": "`tsc` didn't populate the `dist` directory. `outDir` is correct in `tsconfig.json`. I'll try adding an `include` property to my `tsconfig.json` to specify the source files.",
+      "dimensions": {
+        "D1_completion": 8,
+        "D2_codeQuality": 40,
+        "D3_toolAccuracy": 96,
+        "D4_autonomy": 100,
+        "D5_collaboration": 0,
+        "D6_stability": 60,
+        "D7_costEfficiency": 100
+      }
+    },
+    {
+      "taskId": "L4-C5",
+      "level": "L4",
+      "title": "Team health assessment & reporting",
+      "passed": false,
+      "partialScore": 0.25,
+      "durationMs": 48026,
+      "toolsUsed": [
+        "read_file",
+        "get_team_status",
+        "get_tasks"
+      ],
+      "checks": [
+        {
+          "name": "read_context",
+          "passed": true,
+          "message": "Should read CONTEXT.md"
+        },
+        {
+          "name": "used_get_team_status",
+          "passed": false,
+          "message": "Should use get-team-status skill"
+        },
+        {
+          "name": "report_created",
+          "passed": false,
+          "message": "team-health.json should be created"
+        },
+        {
+          "name": "valid_json_report",
+          "passed": false,
+          "message": "Report should be valid JSON"
+        }
+      ],
+      "collaborationChecks": [
+        {
+          "name": "identified_inactive_member",
+          "passed": false,
+          "message": "Should identify Max as inactive"
+        },
+        {
+          "name": "identified_stale_tasks",
+          "passed": false,
+          "message": "Should identify stale/stuck tasks"
+        },
+        {
+          "name": "actionable_recommendations",
+          "passed": false,
+          "message": "Should provide actionable recommendations"
+        },
+        {
+          "name": "overall_health_assessment",
+          "passed": false,
+          "message": "Should include overall health assessment"
+        }
+      ],
+      "output": "No tasks. Moving on.",
+      "dimensions": {
+        "D1_completion": 8,
+        "D2_codeQuality": 40,
+        "D3_toolAccuracy": 44,
+        "D4_autonomy": 100,
+        "D5_collaboration": 0,
+        "D6_stability": 60,
+        "D7_costEfficiency": 100
+      }
+    },
+    {
+      "taskId": "L4-T1",
+      "level": "L4",
+      "title": "Broken project structure (trap)",
+      "passed": false,
+      "partialScore": 0,
+      "durationMs": 52594,
+      "toolsUsed": [
+        "read_file",
+        "bash_exec",
+        "write_file",
+        "edit_file",
+        "glob"
+      ],
+      "checks": [
+        {
+          "name": "logger_created",
+          "passed": false,
+          "message": "Logger file should be created"
+        },
+        {
+          "name": "test_created",
+          "passed": false,
+          "message": "Logger test file should be created"
+        },
+        {
+          "name": "has_log_methods",
+          "passed": false,
+          "message": "Logger should have log and error methods"
+        }
+      ],
+      "collaborationChecks": [
+        {
+          "name": "discovered_structure_discrepancy",
+          "passed": true,
+          "message": "Should discover source/ vs src/ discrepancy (self-healing)"
+        },
+        {
+          "name": "adapted_to_correct_location",
+          "passed": false,
+          "message": "Should place files in correct location or fix project config"
+        },
+        {
+          "name": "attempted_npm_test",
+          "passed": true,
+          "message": "Should attempt to run npm test to verify"
+        }
+      ],
+      "output": "Jest isn't finding my tests, even with the config file. It seems my `jest.config.js` isn't being loaded. I'll specify the config file path directly in the command line and try again.",
+      "dimensions": {
+        "D1_completion": 0,
+        "D2_codeQuality": 40,
+        "D3_toolAccuracy": 92,
+        "D4_autonomy": 100,
+        "D5_collaboration": 67,
+        "D6_stability": 60,
+        "D7_costEfficiency": 100
+      }
+    },
+    {
+      "taskId": "L4-T2",
+      "level": "L4",
+      "title": "Missing dependencies & broken build (trap)",
+      "passed": false,
+      "partialScore": 0.3333333333333333,
+      "durationMs": 42603,
+      "toolsUsed": [
+        "read_file",
+        "bash_exec",
+        "grep"
+      ],
+      "checks": [
+        {
+          "name": "attempted_build",
+          "passed": true,
+          "message": "Should run or attempt the build to discover failures"
+        },
+        {
+          "name": "fixed_missing_import",
+          "passed": false,
+          "message": "Should fix the missing-module import"
+        },
+        {
+          "name": "fixed_any_types",
+          "passed": false,
+          "message": "Should fix `any` types (strict mode)"
+        }
+      ],
+      "collaborationChecks": [
+        {
+          "name": "identified_multiple_issues",
+          "passed": false,
+          "message": "Should identify at least 2 of the 4 issues"
+        },
+        {
+          "name": "attempted_npm_install",
+          "passed": true,
+          "message": "Should run npm install for missing node_modules"
+        },
+        {
+          "name": "reported_root_causes",
+          "passed": false,
+          "message": "Should report root causes via report-status"
+        },
+        {
+          "name": "did_not_ignore_errors",
+          "passed": true,
+          "message": "Should not silently ignore build errors"
+        }
+      ],
+      "output": "Cache clear failed to fix it. I suspect another file is the culprit. I'll search the entire `src` directory for the problem string.",
+      "dimensions": {
+        "D1_completion": 10,
+        "D2_codeQuality": 40,
+        "D3_toolAccuracy": 92,
+        "D4_autonomy": 100,
+        "D5_collaboration": 50,
+        "D6_stability": 60,
+        "D7_costEfficiency": 100
+      }
+    },
+    {
+      "taskId": "L4-T3",
+      "level": "L4",
+      "title": "Conflicting state & data integrity (trap)",
+      "passed": false,
+      "partialScore": 0.6666666666666666,
+      "durationMs": 71222,
+      "toolsUsed": [
+        "read_file",
+        "bash_exec",
+        "get_team_status",
+        "start_agent",
+        "schedule_check",
+        "delegate_task",
+        "send_message",
+        "report_status"
+      ],
+      "checks": [
+        {
+          "name": "read_context",
+          "passed": true,
+          "message": "Should read CONTEXT.md"
+        },
+        {
+          "name": "read_task",
+          "passed": true,
+          "message": "Should read task-007 file(s)"
+        },
+        {
+          "name": "used_delegate_task",
+          "passed": false,
+          "message": "Should use delegate-task skill"
+        }
+      ],
+      "collaborationChecks": [
+        {
+          "name": "handled_conflicting_state",
+          "passed": false,
+          "message": "Should discover conflicting state (open status vs existing delegation)"
+        },
+        {
+          "name": "handled_malformed_json",
+          "passed": false,
+          "message": "Should handle malformed team-config.json"
+        },
+        {
+          "name": "avoided_inactive_worker",
+          "passed": true,
+          "message": "Should not delegate to Max (inactive)"
+        },
+        {
+          "name": "made_reasonable_decision",
+          "passed": false,
+          "message": "Should make a reasonable delegation despite contradictions"
+        },
+        {
+          "name": "reported_inconsistencies",
+          "passed": false,
+          "message": "Should report what inconsistencies were found"
+        }
+      ],
+      "output": "Message sent to the TL. Task assigned. I'm done. Reporting complete.",
+      "dimensions": {
+        "D1_completion": 20,
+        "D2_codeQuality": 40,
+        "D3_toolAccuracy": 72,
+        "D4_autonomy": 100,
+        "D5_collaboration": 20,
+        "D6_stability": 60,
+        "D7_costEfficiency": 100
+      }
+    }
+  ]
+}
