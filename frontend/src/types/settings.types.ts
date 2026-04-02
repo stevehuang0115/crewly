@@ -39,7 +39,7 @@ export interface GeneralSettings {
   /** Enable the auditor agent (quality observer that monitors agents and writes audit reports) */
   enableAuditor: boolean;
   /** Enable token usage tracking for agent sessions */
-  tokenTracking: boolean;
+  tokenTracking?: boolean;
 }
 
 /**

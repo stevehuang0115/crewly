@@ -1065,8 +1065,7 @@ describe('Tool Registry', () => {
       jest.restoreAllMocks();
     });
 
-    it('should fallback to bash cat when fs.readFile fails with non-ENOENT error', async () => {
-      // Create a real temp file so bash cat can read it
+    it('should return error when fs.readFile fails with non-ENOENT error', async () => {
       const tmpFile = `${tmpDir}/crewly-test-read-fallback-${Date.now()}.txt`;
       fs.writeFileSync(tmpFile, 'line one\nline two\n');
 
@@ -1079,9 +1078,8 @@ describe('Tool Registry', () => {
           file_path: tmpFile,
         });
 
-        expect(result.success).toBe(true);
-        expect(result.fallback).toBe('bash');
-        expect(result.content).toContain('line one');
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('EPERM');
       } finally {
         fs.unlinkSync(tmpFile);
       }
@@ -1122,11 +1120,11 @@ describe('Tool Registry', () => {
       jest.restoreAllMocks();
     });
 
-    it('should fallback to bash when fs.writeFile fails', async () => {
+    it('should return error when fs.writeFile fails', async () => {
       const tmpFile = `${tmpDir}/crewly-test-write-fallback-${Date.now()}.txt`;
       const content = 'export const x = 1;\n';
 
-      // Mock writeFile to fail, but mkdir succeeds and bash cat > works on a real path
+      // Mock writeFile to fail
       const mockWriteFile = jest.spyOn(fs.promises, 'writeFile') as any;
       mockWriteFile.mockRejectedValue(new Error('EPERM: operation not permitted'));
 
@@ -1136,14 +1134,8 @@ describe('Tool Registry', () => {
           content,
         });
 
-        expect(result.success).toBe(true);
-        expect(result.fallback).toBe('bash');
-        expect(result.file).toBe(tmpFile);
-        expect(result.bytes).toBeGreaterThan(0);
-
-        // Verify the file was actually written by bash fallback
-        const written = fs.readFileSync(tmpFile, 'utf8');
-        expect(written).toBe(content);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('EPERM');
       } finally {
         try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
       }

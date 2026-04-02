@@ -1402,26 +1402,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
           if (msg.includes('ENOENT')) {
             return { success: false, error: `File not found: ${fp}` };
           }
-
-          // Fallback: use bash cat when fs.readFile fails for non-ENOENT errors
-          try {
-            let cmd = `cat -n ${JSON.stringify(fp)}`;
-            if (offset || limit) {
-              const startLine = (offset as number) || 1;
-              const endLine = limit ? startLine + (limit as number) - 1 : '';
-              cmd = endLine
-                ? `sed -n '${startLine},${endLine}p' ${JSON.stringify(fp)} | cat -n`
-                : `tail -n +${startLine} ${JSON.stringify(fp)} | cat -n`;
-            }
-            const stdout = childProcess.execSync(cmd, { encoding: 'utf8', timeout: 10000 });
-            return {
-              success: true,
-              content: stdout.trimEnd(),
-              fallback: 'bash',
-            };
-          } catch {
-            return { success: false, error: msg };
-          }
+          return { success: false, error: msg };
         }
       },
     },
@@ -1443,21 +1424,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
           await fsPromises.writeFile(fp, ct, 'utf8');
           return { success: true, file: fp, bytes: Buffer.byteLength(ct, 'utf8') };
         } catch (error) {
-          // Fallback: use bash to write file when fs.writeFile fails
-          try {
-            const dir = fp.substring(0, fp.lastIndexOf('/'));
-            if (dir) {
-              childProcess.execSync(`mkdir -p ${JSON.stringify(dir)}`, { timeout: 5000 });
-            }
-            childProcess.execSync(`cat > ${JSON.stringify(fp)}`, {
-              input: ct,
-              encoding: 'utf8',
-              timeout: 10000,
-            });
-            return { success: true, file: fp, bytes: Buffer.byteLength(ct, 'utf8'), fallback: 'bash' };
-          } catch {
-            return { success: false, error: error instanceof Error ? error.message : String(error) };
-          }
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
       },
     },

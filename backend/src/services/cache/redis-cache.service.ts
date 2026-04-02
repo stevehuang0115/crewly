@@ -15,9 +15,13 @@
  * @module redis-cache.service
  */
 
-import Redis, { type RedisOptions } from 'ioredis';
 import { REDIS_CONSTANTS } from '../../../../config/constants.js';
 import { LoggerService } from '../core/logger.service.js';
+
+// Dynamic import to avoid crash when ioredis is not installed.
+// Redis is optional — the service falls back to in-memory cache.
+type Redis = import('ioredis').default;
+type RedisOptions = import('ioredis').RedisOptions;
 
 const logger = LoggerService.getInstance().createComponentLogger('RedisCacheService');
 
@@ -87,6 +91,17 @@ export class RedisCacheService {
 	 */
 	async connect(): Promise<boolean> {
 		try {
+			// Dynamic import so the app doesn't crash when ioredis isn't installed
+			let RedisConstructor: typeof import('ioredis').default;
+			try {
+				const mod = await import('ioredis');
+				RedisConstructor = mod.default;
+			} catch {
+				logger.info('ioredis package not installed, using in-memory cache fallback');
+				this.connected = false;
+				return false;
+			}
+
 			const redisUrl = process.env[REDIS_CONSTANTS.ENV.REDIS_URL];
 			const host = process.env[REDIS_CONSTANTS.ENV.REDIS_HOST] || REDIS_CONSTANTS.CONNECTION.HOST;
 			const port = parseInt(
@@ -109,17 +124,17 @@ export class RedisCacheService {
 			};
 
 			if (redisUrl) {
-				this.client = new Redis(redisUrl, options);
+				this.client = new RedisConstructor(redisUrl, options) as unknown as Redis;
 			} else {
-				this.client = new Redis({
+				this.client = new RedisConstructor({
 					...options,
 					host,
 					port,
 					password,
-				});
+				}) as unknown as Redis;
 			}
 
-			this.client.on('error', (err) => {
+			this.client.on('error', (err: Error) => {
 				if (this.connected) {
 					logger.warn('Redis connection lost, falling back to memory cache', {
 						error: err.message,

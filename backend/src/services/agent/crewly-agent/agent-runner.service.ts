@@ -1200,23 +1200,28 @@ export class AgentRunnerService {
         abortSignal,
       });
 
+      // Extract results from the generateText response using safe property access
+      const followUpResult = followUp as unknown as Record<string, unknown>;
+      const steps = (followUpResult.steps as Array<Record<string, unknown>>) ?? [];
+      const text = (followUpResult.text as string) ?? '';
+      const followUpUsage = followUpResult.usage as { inputTokens?: number; outputTokens?: number } | undefined;
+      const finishReason = (followUpResult.finishReason as string) ?? 'stop';
+
       const followUpToolCalls: ToolCallRecord[] = [];
-      for (const step of (followUp as any).steps ?? []) {
+      for (const step of steps) {
         if (step.toolCalls) {
-          for (const tc of step.toolCalls) {
-            const args = (tc as Record<string, unknown>).input as Record<string, unknown> ?? {};
+          for (const tc of step.toolCalls as Array<{ toolName: string; input?: Record<string, unknown> }>) {
+            const args = tc.input ?? {};
             followUpToolCalls.push({ toolName: tc.toolName, args, result: undefined });
           }
         }
       }
 
-      const text = (followUp as any).text ?? '';
       if (text) {
         this.state.messages.push({ role: 'assistant', content: text });
       }
 
       // Track follow-up token usage
-      const followUpUsage = (followUp as any).usage;
       if (followUpUsage) {
         this.state.totalTokens.input += followUpUsage.inputTokens ?? 0;
         this.state.totalTokens.output += followUpUsage.outputTokens ?? 0;
@@ -1224,16 +1229,16 @@ export class AgentRunnerService {
 
       return {
         text,
-        steps: ((followUp as any).steps ?? []).length,
+        steps: steps.length,
         usage: {
           input: followUpUsage?.inputTokens ?? 0,
           output: followUpUsage?.outputTokens ?? 0,
         },
         toolCalls: followUpToolCalls,
-        finishReason: (followUp as any).finishReason ?? 'stop',
+        finishReason,
       };
     } catch (err) {
-      console.error('[AgentRunner] Stop hook follow-up failed:', err instanceof Error ? err.message : err);
+      console.warn('[AgentRunner] Stop hook follow-up failed:', err instanceof Error ? err.message : err);
       return null;
     }
   }
