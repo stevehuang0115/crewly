@@ -76,7 +76,9 @@ import { setMessageQueueService as setChatMessageQueueService, setThreadStatusQu
 import { setMessageQueueService as setMessagingControllerQueueService } from './controllers/messaging/messaging.controller.js';
 import { createMessagingRouter } from './controllers/messaging/messaging.routes.js';
 import { SystemResourceAlertService } from './services/monitoring/system-resource-alert.service.js';
+import { TokenUsageService } from './services/monitoring/token-usage.service.js';
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
+import { RedisCacheService } from './services/cache/redis-cache.service.js';
 import { OrchestratorRestartService } from './services/orchestrator/orchestrator-restart.service.js';
 import { IdleDetectionService } from './services/agent/idle-detection.service.js';
 import { AgentSuspendService } from './services/agent/agent-suspend.service.js';
@@ -644,6 +646,16 @@ export class CrewlyServer {
 				});
 			}
 
+			// Initialize Redis cache (non-blocking — falls back to memory if Redis is unavailable)
+			try {
+				const redisConnected = await RedisCacheService.getInstance().connect();
+				this.logger.info('Redis cache initialized', { connected: redisConnected, backend: redisConnected ? 'redis' : 'memory' });
+			} catch (cacheErr) {
+				this.logger.info('Redis cache not available, using in-memory fallback', {
+					error: cacheErr instanceof Error ? cacheErr.message : String(cacheErr),
+				});
+			}
+
 			// Start message scheduler
 			this.logger.info('Starting message scheduler...');
 			await this.messageSchedulerService.start();
@@ -1040,6 +1052,18 @@ export class CrewlyServer {
 
 			// Start periodic task file system sync (#137) — cleans up stale tracking entries
 			this.taskTrackingService.startAutoSync();
+
+			// Initialize token usage tracking: load persisted data and start periodic flush
+			try {
+				const tokenUsageService = TokenUsageService.getInstance();
+				await tokenUsageService.loadFromDisk();
+				tokenUsageService.startPeriodicFlush();
+				this.logger.info('Token usage tracking initialized');
+			} catch (tokenErr) {
+				this.logger.warn('Token usage initialization failed (non-fatal)', {
+					error: tokenErr instanceof Error ? tokenErr.message : String(tokenErr),
+				});
+			}
 
 			// Start HTTP server with enhanced error handling
 			await this.startHttpServer();
@@ -1725,6 +1749,13 @@ export class CrewlyServer {
 				this.logger.warn('Failed to generate session handoff summary', {
 					error: error instanceof Error ? error.message : String(error),
 				});
+			}
+
+			// Disconnect Redis cache
+			try {
+				RedisCacheService.getInstance().disconnect();
+			} catch {
+				// Non-critical — ignore
 			}
 
 			// Save PTY session state and force-kill all child processes

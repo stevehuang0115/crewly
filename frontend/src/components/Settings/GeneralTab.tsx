@@ -236,6 +236,14 @@ export const GeneralTab: React.FC = () => {
             onChange={(e) => handleChange('general', 'enableAuditor', e.target.checked)}
           />
 
+          <Toggle
+            id="tokenTracking"
+            label="Token Usage Tracking"
+            description="Track token consumption per agent and per task. Data is stored locally in ~/.crewly/token-usage.json. View usage on the Usage page."
+            checked={localSettings.general.tokenTracking ?? false}
+            onChange={(e) => handleChange('general', 'tokenTracking', e.target.checked)}
+          />
+
           <div>
             <FormLabel htmlFor="idleTimeout">Agent Idle Timeout (minutes)</FormLabel>
             <FormInput

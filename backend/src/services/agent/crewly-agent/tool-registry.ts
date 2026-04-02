@@ -25,6 +25,12 @@ const DELEGATION_SUBSCRIPTION_TTL_MINUTES = 120;
 /** Maximum characters for git diff output */
 const GIT_DIFF_MAX_CHARS = 5000;
 
+/** Maximum characters for read_file output to prevent context overflow */
+const READ_FILE_MAX_CHARS = 50_000;
+
+/** Maximum lines to return from read_file when no limit is specified */
+const READ_FILE_MAX_LINES = 2000;
+
 /**
  * Commands that could kill/signal the parent Crewly server process or
  * cause irreversible system damage.  Checked against the raw command
@@ -216,17 +222,23 @@ async function execGitAsync(cmd: string, cwd: string): Promise<string> {
 
 /**
  * Expand ~ and $HOME in a file path to the user's home directory.
+ * If the path is relative and a baseDir is provided, resolve against it.
  *
- * @param filePath - Path that may contain ~ or $HOME
+ * @param filePath - Path that may contain ~ or $HOME, or be relative
+ * @param baseDir  - Optional base directory to resolve relative paths against
  * @returns Resolved absolute path
  */
-function expandPath(filePath: string): string {
+function expandPath(filePath: string, baseDir?: string): string {
   const home = homedir();
   if (filePath === '~' || filePath.startsWith('~/')) {
     return home + filePath.slice(1);
   }
   if (filePath.startsWith('$HOME/') || filePath === '$HOME') {
     return home + filePath.slice(5);
+  }
+  // Resolve relative paths against baseDir (e.g. projectPath)
+  if (baseDir && !path.isAbsolute(filePath)) {
+    return path.resolve(baseDir, filePath);
   }
   return filePath;
 }
@@ -1271,7 +1283,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         replace_all: z.boolean().default(false).describe('Replace all occurrences instead of requiring uniqueness'),
       }),
       execute: async ({ file_path, old_string, new_string, replace_all }) => {
-        const fp = expandPath(file_path as string), os = old_string as string, ns = new_string as string;
+        const fp = expandPath(file_path as string, projectPath), os = old_string as string, ns = new_string as string;
         try {
           // Read the file
           const content = await fsPromises.readFile(fp, 'utf8');
@@ -1338,7 +1350,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         limit: z.number().optional().describe('Maximum number of lines to read (text files only)'),
       }),
       execute: async ({ file_path, offset, limit }) => {
-        const fp = expandPath(file_path as string);
+        const fp = expandPath(file_path as string, projectPath);
         try {
           // Check if this is an image file
           const ext = fp.split('.').pop()?.toLowerCase() || '';
@@ -1370,10 +1382,20 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
             };
           }
 
+          // Auto-limit large files to prevent context overflow
+          const effectiveLines = lines.length > READ_FILE_MAX_LINES
+            ? lines.slice(0, READ_FILE_MAX_LINES)
+            : lines;
+          let output = effectiveLines.map((line, i) => `${i + 1}\t${line}`).join('\n');
+          const wasTruncated = lines.length > READ_FILE_MAX_LINES;
+          if (output.length > READ_FILE_MAX_CHARS) {
+            output = output.slice(0, READ_FILE_MAX_CHARS) + '\n...[truncated — use offset/limit to read specific sections]';
+          }
           return {
             success: true,
-            content: lines.map((line, i) => `${i + 1}\t${line}`).join('\n'),
+            content: output,
             totalLines: lines.length,
+            ...(wasTruncated && { truncated: true, shownLines: READ_FILE_MAX_LINES }),
           };
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
@@ -1392,7 +1414,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         content: z.string().describe('Full file content to write'),
       }),
       execute: async ({ file_path, content }) => {
-        const fp = expandPath(file_path as string), ct = content as string;
+        const fp = expandPath(file_path as string, projectPath), ct = content as string;
         try {
           // Ensure parent directory exists
           const dir = fp.substring(0, fp.lastIndexOf('/'));
@@ -1734,6 +1756,17 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
 
         const workDir = expandPath((cwd as string | undefined) || projectPath || process.cwd());
         const timeoutMs = Math.min((timeout as number | undefined) || 60000, 300000);
+
+        // Validate working directory exists — spawn gives cryptic "ENOENT" if cwd is missing
+        try { await fsPromises.stat(workDir); } catch {
+          return {
+            success: false,
+            exitCode: 1,
+            stdout: '',
+            stderr: `Working directory does not exist: ${workDir}`,
+            error: `Working directory does not exist: ${workDir}`,
+          };
+        }
 
         // Run in isolated process group to prevent signal propagation (async, non-blocking)
         const result = await execIsolatedAsync(cmd, workDir, timeoutMs);

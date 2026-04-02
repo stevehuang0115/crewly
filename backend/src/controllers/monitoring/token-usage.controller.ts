@@ -80,6 +80,53 @@ export async function getAllDeploymentQuotes(_req: Request, res: Response): Prom
 }
 
 /**
+ * GET /api/monitoring/token-usage/by-task
+ *
+ * Returns token usage aggregated by task ID.
+ *
+ * @param _req - Express request (unused)
+ * @param res - Express response with per-task usage data
+ */
+export function getTokenUsageByTask(_req: Request, res: Response): void {
+  const service = TokenUsageService.getInstance();
+  const taskMap = service.getUsageByTask();
+  const data = Array.from(taskMap.values());
+  res.json({ success: true, data });
+}
+
+/**
+ * POST /api/monitoring/token-usage/record
+ *
+ * Manually records a token usage event for a session.
+ * Used by external integrations or CLI parsers to report token consumption.
+ *
+ * @param req - Express request with body { sessionName, agentId, input, output, model, taskId? }
+ * @param res - Express response
+ */
+export function recordTokenUsage(req: Request, res: Response): void {
+  const { sessionName, agentId, input, output, model, taskId } = req.body as {
+    sessionName?: string;
+    agentId?: string;
+    input?: number;
+    output?: number;
+    model?: string;
+    taskId?: string;
+  };
+
+  if (!sessionName || !agentId || input == null || output == null || !model) {
+    res.status(400).json({
+      success: false,
+      message: 'Missing required fields: sessionName, agentId, input, output, model',
+    });
+    return;
+  }
+
+  const service = TokenUsageService.getInstance();
+  service.recordUsage(sessionName, agentId, input, output, model, taskId);
+  res.json({ success: true, message: 'Token usage recorded' });
+}
+
+/**
  * POST /api/monitoring/estimate-tokens
  *
  * Estimates token consumption for a task before execution.

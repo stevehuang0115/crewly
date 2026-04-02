@@ -45,6 +45,9 @@ pids/
 *.seed
 *.pid.lock
 
+# Eval results (generated, machine-specific)
+eval-results/
+
 # Coverage and test reports
 coverage/
 .nyc_output/

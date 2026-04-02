@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import type { ApiContext } from '../types.js';
+import { cacheResponse, invalidateCache } from '../../middleware/cache.middleware.js';
+import { REDIS_CONSTANTS } from '../../../../config/constants.js';
 import {
   createProject,
   getProjects,
@@ -53,11 +55,14 @@ export function createProjectRouter(context: ApiContext): Router {
   // Project search (must be before /:id to avoid route collision)
   router.get('/search', handleSearch.bind(context));
 
+  // Cache keys for invalidation on mutations
+  const projectsCacheKeys = [REDIS_CONSTANTS.KEYS.PROJECTS_LIST];
+
   // Project CRUD operations
-  router.post('/', createProject.bind(context));
-  router.get('/', getProjects.bind(context));
+  router.post('/', invalidateCache(projectsCacheKeys), createProject.bind(context));
+  router.get('/', cacheResponse(REDIS_CONSTANTS.KEYS.PROJECTS_LIST, REDIS_CONSTANTS.TTL.PROJECTS_LIST), getProjects.bind(context));
   router.get('/:id', getProject.bind(context));
-  router.delete('/:id', deleteProject.bind(context));
+  router.delete('/:id', invalidateCache(projectsCacheKeys), deleteProject.bind(context));
 
   // Project status and information
   router.get('/:id/status', getProjectStatus.bind(context));
@@ -73,8 +78,8 @@ export function createProjectRouter(context: ApiContext): Router {
   router.post('/:id/restart', restartProject.bind(context));
 
   // Team assignment
-  router.post('/:id/teams', assignTeamsToProject.bind(context));
-  router.delete('/:id/teams', unassignTeamFromProject.bind(context));
+  router.post('/:id/teams', invalidateCache(projectsCacheKeys), assignTeamsToProject.bind(context));
+  router.delete('/:id/teams', invalidateCache(projectsCacheKeys), unassignTeamFromProject.bind(context));
 
   // File operations
   router.get('/:id/files', getProjectFiles.bind(context));

@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, KnowledgeDocument, KnowledgeDocumentSummary, KnowledgeScope, CloudStatus, CloudConnectResult, SessionUsageSummary } from '../types';
+import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, KnowledgeDocument, KnowledgeDocumentSummary, KnowledgeScope, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary } from '../types';
 import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
 
@@ -998,6 +998,16 @@ class ApiService {
    */
   async getTokenUsage(): Promise<SessionUsageSummary[]> {
     const response = await axios.get<ApiResponse<SessionUsageSummary[]>>(`${API_BASE}/monitoring/token-usage`);
+    return response.data.data || [];
+  }
+
+  /**
+   * Fetches token usage data aggregated by task ID.
+   *
+   * @returns Promise resolving to array of per-task usage summaries
+   */
+  async getTokenUsageByTask(): Promise<TaskUsageSummary[]> {
+    const response = await axios.get<ApiResponse<TaskUsageSummary[]>>(`${API_BASE}/monitoring/token-usage/by-task`);
     return response.data.data || [];
   }
 

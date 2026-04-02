@@ -61,13 +61,15 @@ updatedAt: 2026-03-31
 | Text generation, writing, editing | gemini-cli | Pure text, no browser needed, cost-effective |
 | Research, web browsing, scraping | claude-code | Browser automation (Playwright/CDP) required |
 | Visual content, screenshots | claude-code | Needs file system access, image tools |
-| Social media posting via API | claude-code | Needs HTTP requests, API calls |
+| Social media posting via API | User (Steve) | **MANDATORY**: Manual publish via Compose URL only. No automation. |
 | Content strategy, planning | gemini-cli | Pure analysis and text output |
 | Code-related content (changelogs) | gemini-cli or claude-code | Either works, prefer gemini for pure text |
 
 **Rule of thumb:**
 - If the task needs a **browser** or **file system** → claude-code
 - If the task is **pure text** generation/analysis → gemini-cli (cheaper, faster)
+- **X (Twitter) Publishing**: Strictly MANUAL by Steve via Slack-delivered Compose URLs. No automation allowed.
+- **Grace's Role**: Prepare content and compose URLs for Steve.
 
 ## Collaboration Workflow
 

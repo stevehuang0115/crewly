@@ -52,6 +52,7 @@ function App() {
               <Route path="knowledge" element={<Knowledge />} />
               <Route path="security" element={<SecurityOverview />} />
               <Route path="monitoring/costs" element={<CostDashboard />} />
+              <Route path="usage" element={<CostDashboard />} />
               <Route path="settings" element={<Settings />} />
 
               <Route

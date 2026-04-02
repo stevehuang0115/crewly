@@ -47,6 +47,23 @@ export interface ModelUsageBreakdown {
   cost: number;
 }
 
+/**
+ * Token usage summary aggregated by task ID.
+ * Returned by the GET /api/monitoring/token-usage/by-task endpoint.
+ */
+export interface TaskUsageSummary {
+  /** Task identifier (or 'unassigned' for events without a task) */
+  taskId: string;
+  /** Total input tokens consumed for this task */
+  totalInput: number;
+  /** Total output tokens consumed for this task */
+  totalOutput: number;
+  /** Number of LLM events for this task */
+  eventCount: number;
+  /** Server-computed cost in USD */
+  cost: number;
+}
+
 // =============================================================================
 // Budget Configuration Types
 // =============================================================================

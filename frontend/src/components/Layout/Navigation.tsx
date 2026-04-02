@@ -78,7 +78,7 @@ const NAV_GROUPS: NavGroup[] = [
 	{
 		label: 'SYSTEM',
 		items: [
-			{ name: 'Cost Dashboard', href: '/monitoring/costs', icon: DollarSign },
+			{ name: 'Usage', href: '/usage', icon: DollarSign },
 			{ name: 'Security', href: '/security', icon: Shield },
 			{ name: 'Settings', href: '/settings', icon: Settings },
 		],
