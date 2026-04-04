@@ -381,12 +381,69 @@ export interface ProjectTaskStatus {
 }
 
 // =============================================================================
+// Actionability Detection
+// =============================================================================
+
+/**
+ * Patterns that indicate a message is NOT actionable (should not become a task).
+ * These cover greetings, acknowledgments, questions, feedback, opinions, and filler.
+ */
+const NON_ACTIONABLE_PATTERNS: RegExp[] = [
+  // Greetings / pleasantries
+  /^(hi|hello|hey|yo|sup|good\s+(morning|afternoon|evening|night)|thanks|thank\s+you|thx|cheers|bye|goodbye|welcome\s+back)\b/i,
+  // Pure acknowledgments
+  /^(ok|okay|sure|got\s+it|understood|roger|ack|yep|yup|yeah|yes|no|nah|nope|alright|right|fine|great|perfect|awesome|cool|nice|good\s+(job|work)|looks?\s+good|lgtm|approved|noted|agreed|sounds\s+good|will\s+do|on\s+it)\s*[.!]?$/i,
+  // Pure questions with no action request (short, interrogative-only)
+  /^(what|where|when|who|which|how|why|is|are|was|were|can|could|do|does|did|has|have|will|would|should)\b.{0,60}\?\s*$/i,
+  // Opinions / discussion / thinking out loud (no imperative verb)
+  /^(i\s+think|i\s+believe|i\s+feel|i\s+wonder|maybe\s+we|perhaps|it\s+seems|it\s+looks\s+like|fyi|btw|by\s+the\s+way|just\s+letting\s+you\s+know|heads\s+up|for\s+your\s+info)\b/i,
+  // Status updates / reports (not requests)
+  /^(i\s+(just|already)\s+(did|finished|completed|fixed|deployed|updated|pushed|merged|committed)|done\s+with|finished|completed|all\s+(set|done|good))\b/i,
+  // Emoji-only or very short non-actionable
+  /^[\p{Emoji}\s.,!?:;]+$/u,
+];
+
+/**
+ * Action verbs that indicate a message contains an actionable intent.
+ * Used as a positive signal when non-actionable patterns don't match.
+ */
+const ACTION_VERB_PATTERN = /\b(fix|build|create|deploy|implement|add|update|delete|remove|write|read|check|test|run|make|send|set\s+up|configure|install|download|upload|convert|transform|generate|export|import|refactor|migrate|upgrade|optimize|search|find|move|copy|rename|clean\s*up|set|start|stop|restart|enable|disable|schedule|assign|delegate|review|audit|analyze|investigate|research|explore|design|plan|document|monitor|track|debug|trace|patch|revert|rollback|merge|push|pull|commit|release|publish|integrate|connect|disconnect|setup|tear\s*down|provision|scale|backup|restore)\b/i;
+
+/**
+ * Minimum character count for a segment to be a meaningful intent.
+ * Very short fragments like "ok" or "no" are not tasks.
+ */
+const MIN_ACTIONABLE_CHARS = 3;
+
+/**
+ * Determines whether a text segment represents an actionable intent
+ * that should become a task (vs. a question, greeting, acknowledgment, or discussion).
+ *
+ * @param text - The text segment to evaluate
+ * @returns true if the text is actionable and should become a task
+ */
+export function isActionableIntent(text: string): boolean {
+  const trimmed = text.trim();
+
+  // Too short to be meaningful
+  if (trimmed.length < MIN_ACTIONABLE_CHARS) return false;
+
+  // Check non-actionable patterns first (fast reject)
+  for (const pattern of NON_ACTIONABLE_PATTERNS) {
+    if (pattern.test(trimmed)) return false;
+  }
+
+  // Must contain at least one action verb to be considered a task
+  return ACTION_VERB_PATTERN.test(trimmed);
+}
+
+// =============================================================================
 // Classification Helpers
 // =============================================================================
 
 /**
  * Heuristic rules for auto-classifying intent level.
- * Returns L0 for simple queries, L1 for standard tasks, L2 for complex.
+ * Returns L0 for simple queries/lookups, L1 for standard tasks, L2 for complex multi-step.
  *
  * @param intent - User intent text
  * @returns Classified intent level
@@ -395,32 +452,41 @@ export function classifyIntentLevel(intent: string): IntentLevel {
   const lower = intent.toLowerCase();
   const wordCount = intent.split(/\s+/).length;
 
-  // L0: Simple queries — short, question-like
-  const queryPatterns = [
-    /^(what|where|when|who|how|is|are|can|does|do|show|list|get)\b/i,
+  // L0: Simple lookups, status checks, single-tool operations
+  const l0Patterns = [
+    /^(what|where|when|who|how|is|are|can|does|do|show|list|get|check|find)\b/i,
     /\?$/,
+    /\b(status|version|health|uptime|count|list)\b/i,
   ];
-  if (wordCount <= 10 && queryPatterns.some((p) => p.test(lower))) {
+  if (wordCount <= 12 && l0Patterns.some((p) => p.test(lower))) {
     return 'L0';
   }
 
-  // L2: Complex multi-agent tasks
-  const complexPatterns = [
-    /\b(implement|build|create|develop|design|architect|refactor)\b.*\b(feature|system|service|module|component)\b/i,
-    /\b(deploy|migrate|upgrade)\b/i,
-    /\bmulti[- ]?(agent|step|phase)\b/i,
-    /\b(coordinate|orchestrate|delegate)\b/i,
+  // L2: Complex multi-agent, multi-step, or cross-system tasks
+  const l2Patterns = [
+    // Verb + complex noun = feature-level work
+    /\b(implement|build|create|develop|design|architect|refactor)\b.*\b(feature|system|service|module|component|pipeline|workflow|framework|infrastructure)\b/i,
+    // Deployment / migration / upgrade (multi-step by nature)
+    /\b(deploy|migrate|upgrade|provision)\b.*\b(to|from|environment|server|cluster|staging|production)\b/i,
+    // Explicit multi-step language
+    /\bmulti[- ]?(agent|step|phase|stage)\b/i,
+    /\b(coordinate|orchestrate|delegate|parallelize)\b/i,
+    // End-to-end or full-stack scope
+    /\b(end[- ]to[- ]end|full[- ]stack|e2e|integration)\b.*\b(test|setup|implementation)\b/i,
+    // Sprint / project level work
+    /\b(sprint|milestone|epic|project)\b.*\b(deliver|complete|implement|execute)\b/i,
   ];
-  if (complexPatterns.some((p) => p.test(lower)) || wordCount > 30) {
+  if (l2Patterns.some((p) => p.test(lower)) || wordCount > 35) {
     return 'L2';
   }
 
-  // L1: Everything else — standard single-agent tasks
+  // L1: Standard single-agent tasks
   return 'L1';
 }
 
 /**
  * Heuristic rules for auto-classifying intent category.
+ * Uses prioritized pattern matching — first match wins.
  *
  * @param intent - User intent text
  * @returns Classified intent category
@@ -428,14 +494,31 @@ export function classifyIntentLevel(intent: string): IntentLevel {
 export function classifyIntentCategory(intent: string): IntentCategory {
   const lower = intent.toLowerCase();
 
-  if (/\b(fix|bug|error|crash|broken|issue|debug|trace|stack)\b/.test(lower)) return 'debugging';
-  if (/\b(deploy|release|staging|production|ci|cd|docker|kubernetes)\b/.test(lower)) return 'deployment';
-  if (/\b(review|pr|pull request|code review|audit)\b/.test(lower)) return 'review';
-  if (/\b(research|investigate|explore|analyze|compare|evaluate)\b/.test(lower)) return 'research';
-  if (/\b(plan|roadmap|strategy|design|architect|spec)\b/.test(lower)) return 'planning';
-  if (/\b(message|notify|slack|email|communicate|tell|ask)\b/.test(lower)) return 'communication';
-  if (/\b(implement|code|write|add|update|modify|refactor|create|build)\b/.test(lower)) return 'code_change';
-  if (/\b(what|where|when|who|how|show|list|get|status)\b/.test(lower)) return 'query';
+  // Debugging: bug fixes, error investigation, tracing
+  if (/\b(fix|bug|error|crash|broken|issue|debug|trace|stack\s*trace|exception|segfault|panic|hang|leak|regression|flaky)\b/.test(lower)) return 'debugging';
+
+  // Deployment: releases, CI/CD, infrastructure (require deployment-specific context)
+  if (/\b(deploy|staging|production|docker|kubernetes|k8s|helm|terraform|ansible|nginx|container|image|rollback|rollout)\b/.test(lower)) return 'deployment';
+  if (/\b(release)\b/.test(lower) && !/\b(announce|notify|tell|inform|message|communicate)\b/.test(lower)) return 'deployment';
+  if (/\b(ci|cd)\b/.test(lower) && /\b(pipeline|build|run|trigger|fix)\b/.test(lower)) return 'deployment';
+
+  // Review: code review, PR, audit
+  if (/\b(review|pr\b|pull\s+request|code\s+review|audit|approve|reject|lgtm)\b/.test(lower)) return 'review';
+
+  // Research: investigation, exploration, analysis, comparison
+  if (/\b(research|investigate|explore|analyze|compare|evaluate|benchmark|measure|profile|survey|study)\b/.test(lower)) return 'research';
+
+  // Planning: strategy, design, architecture, roadmap
+  if (/\b(plan|roadmap|strategy|design|architect|spec|specification|rfc|proposal|estimate|prioritize|schedule|timeline|milestone)\b/.test(lower)) return 'planning';
+
+  // Communication: messaging, notifications, announcements
+  if (/\b(message|notify|slack|email|communicate|tell\s|announce|broadcast|ping|alert|report\s+to|inform|update\s+the\s+team)\b/.test(lower)) return 'communication';
+
+  // Code change: implementation, modification, creation (broad — checked after more specific categories)
+  if (/\b(implement|code|write|add|update|modify|refactor|create|build|develop|rename|move|copy|delete|remove|clean\s*up|optimize|improve|enhance|extend|extract|inline|merge|split|convert|transform|generate|scaffold|bootstrap|set\s*up|configure|install|integrate|connect|wire|hook\s*up|enable|disable)\b/.test(lower)) return 'code_change';
+
+  // Query: information retrieval, status checks, lookups
+  if (/\b(what|where|when|who|which|how|show|list|get|status|check|find|search|look\s*up|count|describe|explain)\b/.test(lower)) return 'query';
 
   return 'other';
 }
@@ -445,35 +528,37 @@ export function classifyIntentCategory(intent: string): IntentCategory {
 // =============================================================================
 
 /**
- * Sentence/clause splitting patterns that indicate intent boundaries.
- * Order matters — earlier patterns are checked first.
+ * Combined regex that splits on intent boundaries in a single pass.
+ * Matches: "then", "after that", "and then", "and also", "also", "plus",
+ * numbered lists ("1. ... 2. ..."), semicolons, and "and/," before action verbs.
+ *
+ * Uses non-capturing groups and alternation with priority ordering.
  */
-const SPLIT_PATTERNS: RegExp[] = [
-  /\bthen\b/i,
-  /\bafter that\b/i,
-  /\band then\b/i,
-  /\band also\b/i,
-  /\balso\b/i,
-  /\bplus\b/i,
-  /\b(?:and|,)\s+(?=(?:search|find|fix|build|create|deploy|implement|add|update|delete|remove|write|read|check|test|run|make|do|send|set|configure|install|download|upload|convert|transform|generate|export|import)\b)/i,
-];
+const SPLIT_REGEX = /\s*(?:\band\s+then\b|\bafter\s+that\b|\band\s+also\b|\bthen\b|\balso\b|\bplus\b|\s*;\s*|\s*\d+\)\s*|\s*\d+\.\s+(?=[A-Z])|(?:,\s*|\s+and\s+)(?=(?:search|find|fix|build|create|deploy|implement|add|update|delete|remove|write|read|check|test|run|make|do|send|set\s*up|configure|install|download|upload|convert|transform|generate|export|import|review|audit|analyze|investigate|research|design|plan|monitor|debug|refactor|migrate|optimize|clean|start|stop|restart|enable|disable|schedule|assign|push|pull|commit|release|merge|connect|move|copy|rename|backup|restore)\b))\s*/i;
 
 /**
- * Decompose a user message into multiple individual intents using heuristic splitting.
+ * Decompose a user message into multiple individual actionable intents.
  *
- * Splits on conjunctions and sequential markers ("then", "and also", etc.),
- * classifies each resulting intent independently.
+ * Three-phase pipeline:
+ * 1. **Split**: Single-pass regex split on conjunctions and sequential markers.
+ * 2. **Filter**: Remove non-actionable segments (questions, greetings, feedback, filler).
+ * 3. **Classify**: Independently classify each actionable segment by level and category.
  *
  * @param message - The full user message
- * @returns DecomposeResult with the original message, a generated messageId, and the extracted intents
+ * @returns DecomposeResult with the original message and extracted actionable intents.
+ *          Returns empty intents array if no actionable content is found.
  *
  * @example
  * ```typescript
  * const result = decomposeIntents('Search for abc then make it into a PDF');
  * // result.intents = [
- * //   { intent: 'Search for abc', level: 'L1', category: 'research' },
+ * //   { intent: 'Search for abc', level: 'L0', category: 'query' },
  * //   { intent: 'make it into a PDF', level: 'L1', category: 'code_change' },
  * // ]
+ *
+ * // Non-actionable messages return empty
+ * const result2 = decomposeIntents('Looks good, thanks!');
+ * // result2.intents = []
  * ```
  */
 export function decomposeIntents(message: string): DecomposeResult {
@@ -486,27 +571,37 @@ export function decomposeIntents(message: string): DecomposeResult {
     };
   }
 
-  // Try splitting with each pattern
-  let segments: string[] = [trimmed];
+  // Phase 1: Split on intent boundaries (single-pass)
+  const rawSegments = trimmed.split(SPLIT_REGEX)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= MIN_ACTIONABLE_CHARS);
 
-  for (const pattern of SPLIT_PATTERNS) {
-    const newSegments: string[] = [];
-    for (const seg of segments) {
-      const parts = seg.split(pattern).map((s) => s.trim()).filter(Boolean);
-      newSegments.push(...parts);
+  // Phase 2: Filter to actionable intents only
+  const actionable = rawSegments.filter((seg) => isActionableIntent(seg));
+
+  // If splitting produced no actionable segments, check if the whole message is actionable
+  if (actionable.length === 0) {
+    if (isActionableIntent(trimmed)) {
+      return {
+        originalMessage: message,
+        messageId: '',
+        intents: [{
+          intent: trimmed,
+          level: classifyIntentLevel(trimmed),
+          category: classifyIntentCategory(trimmed),
+        }],
+      };
     }
-    segments = newSegments;
+    // Entire message is non-actionable → no tasks
+    return {
+      originalMessage: message,
+      messageId: '',
+      intents: [],
+    };
   }
 
-  // Filter out segments that are too short to be meaningful (< 3 chars)
-  segments = segments.filter((s) => s.length >= 3);
-
-  // If no meaningful split found, treat the whole message as one intent
-  if (segments.length === 0) {
-    segments = [trimmed];
-  }
-
-  const intents: DecomposedIntent[] = segments.map((seg) => ({
+  // Phase 3: Classify each actionable segment
+  const intents: DecomposedIntent[] = actionable.map((seg) => ({
     intent: seg,
     level: classifyIntentLevel(seg),
     category: classifyIntentCategory(seg),

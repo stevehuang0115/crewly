@@ -141,7 +141,7 @@ describe('IntentTaskService', () => {
 
     it('should store all decomposed tasks in the service', () => {
       const service = IntentTaskService.getInstance();
-      service.decomposeMessage({ message: 'Fix bug then deploy' });
+      service.decomposeMessage({ message: 'Fix the bug then deploy it' });
       expect(service.getTaskCount()).toBeGreaterThanOrEqual(2);
     });
 
@@ -433,10 +433,10 @@ describe('IntentTaskService', () => {
 
     it('should sort groups by createdAt descending', () => {
       const service = IntentTaskService.getInstance();
-      service.decomposeMessage({ message: 'First message' });
+      service.decomposeMessage({ message: 'Fix the login page' });
 
       // Small delay to ensure different timestamps
-      const tasks2 = service.decomposeMessage({ message: 'Second message' });
+      const tasks2 = service.decomposeMessage({ message: 'Deploy the backend' });
 
       const groups = service.listMessageGroups();
       // The second message should appear first (newest first) or same time

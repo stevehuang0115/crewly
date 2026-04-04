@@ -317,10 +317,10 @@ describe('IntentTaskService — Session-less Recovery', () => {
     it('should maintain correct task-to-message mapping after restart', () => {
       const service = IntentTaskService.getInstance();
       const batch1 = service.decomposeMessage({
-        message: 'Task A then Task B',
+        message: 'Fix the login then update the tests',
       });
       const batch2 = service.decomposeMessage({
-        message: 'Task C then Task D',
+        message: 'Build the API then deploy the service',
       });
       const messageId1 = batch1[0].messageId;
       const messageId2 = batch2[0].messageId;
@@ -338,7 +338,7 @@ describe('IntentTaskService — Session-less Recovery', () => {
     it('should recover completion counts per group after partial completion', () => {
       const service = IntentTaskService.getInstance();
       const tasks = service.decomposeMessage({
-        message: 'Step 1 then Step 2 then Step 3',
+        message: 'Fix the bug then run the tests then deploy it',
       });
       expect(tasks.length).toBeGreaterThanOrEqual(2);
       service.completeTask(tasks[0].id, 'Done step 1');
