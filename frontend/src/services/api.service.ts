@@ -916,7 +916,7 @@ class ApiService {
   /**
    * Creates a Stripe Checkout Session for upgrading to a paid plan.
    *
-   * @param planId - Plan to subscribe to ('solo', 'pro', 'team', 'enterprise')
+   * @param planId - Plan to subscribe to ('starter', 'pro', 'max')
    * @param interval - Billing interval ('month' or 'year')
    * @param successUrl - URL to redirect to after successful payment
    * @param cancelUrl - URL to redirect to if payment is cancelled
@@ -971,6 +971,70 @@ class ApiService {
       throw new Error(response.data.error || 'Failed to create portal session');
     }
     return response.data.data;
+  }
+
+  // ============ Provisioning Methods ============
+
+  /**
+   * Trigger a new full-stack deployment (DigitalOcean droplet + Crewly OSS + Pro addon).
+   *
+   * @param config - Deployment configuration
+   * @returns Deployment ID and status URL
+   * @throws Error if the request fails
+   */
+  async createDeployment(config: {
+    dropletName: string;
+    region?: string;
+    size?: string;
+    apiKeys?: {
+      anthropicApiKey?: string;
+      googleApiKey?: string;
+      crewlyCloudApiKey?: string;
+    };
+    customerId?: string;
+    installPro?: boolean;
+    registerCloud?: boolean;
+  }): Promise<{ deploymentId: string; statusUrl: string }> {
+    const response = await axios.post<{ deploymentId: string; message: string; statusUrl: string }>(
+      `${API_BASE}/provisioning/deployments`,
+      config
+    );
+    return { deploymentId: response.data.deploymentId, statusUrl: response.data.statusUrl };
+  }
+
+  /**
+   * Get the current status of a deployment.
+   *
+   * @param deploymentId - The deployment to check
+   * @returns Deployment status including phase, progress, and any errors
+   * @throws Error if the deployment is not found
+   */
+  async getDeploymentStatus(deploymentId: string): Promise<{
+    currentPhase: string;
+    success: boolean;
+    dropletId?: number;
+    ipAddress?: string;
+    error?: string;
+  }> {
+    const response = await axios.get(`${API_BASE}/provisioning/deployments/${deploymentId}/status`);
+    return response.data;
+  }
+
+  /**
+   * List all deployments, optionally filtered.
+   *
+   * @param filters - Optional filters for completion status or customer
+   * @returns Array of deployment records
+   */
+  async listDeployments(filters?: {
+    complete?: boolean;
+    customerId?: string;
+  }): Promise<{ deployments: Array<{ deploymentId: string; currentPhase: string; success: boolean }>; total: number }> {
+    const params = new URLSearchParams();
+    if (filters?.complete !== undefined) params.set('complete', String(filters.complete));
+    if (filters?.customerId) params.set('customerId', filters.customerId);
+    const response = await axios.get(`${API_BASE}/provisioning/deployments?${params.toString()}`);
+    return response.data;
   }
 
   // ============ Relay Methods ============

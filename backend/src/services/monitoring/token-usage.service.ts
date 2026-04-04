@@ -149,8 +149,8 @@ export class TokenUsageService {
   /** In-memory storage keyed by session name */
   private readonly sessions: Map<string, SessionUsageRecord> = new Map();
 
-  /** Active task context per session (sessionName → taskId) */
-  private readonly taskContexts: Map<string, string | null> = new Map();
+  /** Active task context per session (sessionName → { taskId, runId }) */
+  private readonly taskContexts: Map<string, { taskId: string; runId?: string } | null> = new Map();
 
   /** Timer handle for periodic flush */
   private flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -216,7 +216,8 @@ export class TokenUsageService {
     }
 
     // Auto-apply task context if no explicit taskId provided
-    const effectiveTaskId = taskId ?? this.taskContexts.get(sessionName) ?? undefined;
+    const ctx = this.taskContexts.get(sessionName);
+    const effectiveTaskId = taskId ?? ctx?.taskId ?? undefined;
 
     const event: TokenUsageEvent = {
       timestamp: new Date().toISOString(),
@@ -317,18 +318,34 @@ export class TokenUsageService {
    *
    * @param sessionName - Session name
    * @param taskId - Task ID to associate, or null to clear
+   * @param runId - Optional run ID for precise run-level attribution
    */
-  setTaskContext(sessionName: string, taskId: string | null): void {
-    this.taskContexts.set(sessionName, taskId);
+  setTaskContext(sessionName: string, taskId: string | null, runId?: string): void {
+    if (taskId === null) {
+      this.taskContexts.set(sessionName, null);
+    } else {
+      this.taskContexts.set(sessionName, { taskId, runId });
+    }
   }
 
   /**
-   * Get the current task context for a session.
+   * Get the current task context for a session (taskId only, backward compatible).
    *
    * @param sessionName - Session name
    * @returns Current task ID or null
    */
   getTaskContext(sessionName: string): string | null {
+    const ctx = this.taskContexts.get(sessionName);
+    return ctx?.taskId ?? null;
+  }
+
+  /**
+   * Get the full task+run context for a session.
+   *
+   * @param sessionName - Session name
+   * @returns Object with taskId and optional runId, or null if no context
+   */
+  getRunContext(sessionName: string): { taskId: string; runId?: string } | null {
     return this.taskContexts.get(sessionName) ?? null;
   }
 

@@ -24,6 +24,8 @@ import {
 	DollarSign,
 	Pin,
 	Star,
+	Cloud,
+	ClipboardList,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
@@ -60,6 +62,7 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Dashboard', href: '/', icon: Home },
 			{ name: 'Projects', href: '/projects', icon: FolderOpen },
 			{ name: 'Teams', href: '/teams', icon: Users },
+			{ name: 'Tasks', href: '/tasks', icon: ClipboardList },
 		],
 	},
 	{
@@ -73,6 +76,12 @@ const NAV_GROUPS: NavGroup[] = [
 		items: [
 			{ name: 'Marketplace', href: '/marketplace', icon: Store },
 			{ name: 'Schedules & Cron', href: '/scheduled-checkins', icon: Clock },
+		],
+	},
+	{
+		label: 'CLOUD',
+		items: [
+			{ name: 'Cloud Portal', href: '/cloud', icon: Cloud },
 		],
 	},
 	{

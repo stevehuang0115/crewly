@@ -13,8 +13,8 @@ import {
 
 describe('payment.types', () => {
   describe('PLAN_IDS', () => {
-    it('should contain exactly free, pro, enterprise', () => {
-      expect(PLAN_IDS).toEqual(['free', 'pro', 'enterprise']);
+    it('should contain exactly starter, pro, max', () => {
+      expect(PLAN_IDS).toEqual(['starter', 'pro', 'max']);
     });
   });
 
@@ -25,11 +25,11 @@ describe('payment.types', () => {
   });
 
   describe('isValidPlanId', () => {
-    it.each(['free', 'pro', 'enterprise'])('should return true for "%s"', (id) => {
+    it.each(['starter', 'pro', 'max'])('should return true for "%s"', (id) => {
       expect(isValidPlanId(id)).toBe(true);
     });
 
-    it.each(['', 'basic', 'premium', 'Free', 'PRO'])('should return false for "%s"', (id) => {
+    it.each(['', 'basic', 'premium', 'free', 'enterprise', 'Free', 'PRO'])('should return false for "%s"', (id) => {
       expect(isValidPlanId(id)).toBe(false);
     });
   });

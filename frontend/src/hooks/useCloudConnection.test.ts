@@ -88,7 +88,7 @@ describe('useCloudConnection', () => {
     mockGetCloudStatus.mockResolvedValue(disconnectedStatus());
     mockConnectToCloud.mockResolvedValue({
       connected: true,
-      tier: 'enterprise',
+      tier: 'max',
       cloudUrl: 'https://api.crewlyai.com',
     });
 
@@ -105,7 +105,7 @@ describe('useCloudConnection', () => {
 
     expect(success!).toBe(true);
     expect(result.current.isConnected).toBe(true);
-    expect(result.current.tier).toBe('enterprise');
+    expect(result.current.tier).toBe('max');
     expect(result.current.error).toBeNull();
     expect(mockConnectToCloud).toHaveBeenCalledWith('test-token', undefined);
   });

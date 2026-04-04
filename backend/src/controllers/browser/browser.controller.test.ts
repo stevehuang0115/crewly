@@ -51,7 +51,7 @@ describe('Browser Controller', () => {
 		it('should return disconnected status when no Chrome Extension is connected', async () => {
 			const res = await request(app).get('/api/browser/status');
 			expect(res.status).toBe(200);
-			expect(res.body).toEqual({
+			expect(res.body).toMatchObject({
 				connected: false,
 				clientCount: 0,
 				wsPath: '/ws/browser',

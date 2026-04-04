@@ -279,13 +279,32 @@ export async function getTabs(req: Request, res: Response): Promise<void> {
 
 /**
  * POST /api/browser/execute
- * Execute JavaScript on the active tab.
+ * Execute a safe predefined operation on the active tab.
+ * Supports: querySelectorAll, getTitle, getUrl, getSelection, getScrollPosition.
+ *
+ * @param req - Express request with body { operation: string, selector?: string }
+ * @param res - Express response
+ */
+export async function execute(req: Request, res: Response): Promise<void> {
+	const { operation, selector, code } = req.body || {};
+	// Support legacy { code } param by mapping to executeJs tool
+	if (code && !operation) {
+		await sendToolCommand(req, res, 'executeJs', { code });
+		return;
+	}
+	await sendToolCommand(req, res, 'executeScript', { operation, selector });
+}
+
+/**
+ * POST /api/browser/execute-js
+ * Execute arbitrary JavaScript code on the active tab.
+ * Returns the serialized result.
  *
  * @param req - Express request with body { code: string }
  * @param res - Express response
  */
-export async function execute(req: Request, res: Response): Promise<void> {
-	await sendToolCommand(req, res, 'executeScript', { code: req.body.code });
+export async function executeJs(req: Request, res: Response): Promise<void> {
+	await sendToolCommand(req, res, 'executeJs', { code: req.body?.code });
 }
 
 /**

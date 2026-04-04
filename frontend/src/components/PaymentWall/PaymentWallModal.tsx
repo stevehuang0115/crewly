@@ -83,10 +83,10 @@ export const PaymentWallModal: React.FC<PaymentWallModalProps> = ({
    * Handle the upgrade flow by calling the checkout API and
    * redirecting the user to the Stripe checkout page.
    */
-  const handleUpgrade = useCallback(async () => {
+  const handleUpgrade = useCallback(async (planId: string = 'pro') => {
     try {
       const response = await axios.post<CheckoutResponse>('/api/payment/checkout', {
-        planId: 'pro',
+        planId,
         interval: billingInterval === 'monthly' ? 'month' : 'year',
         successUrl: window.location.origin + '/settings?tab=cloud&upgraded=true',
         cancelUrl: window.location.href,

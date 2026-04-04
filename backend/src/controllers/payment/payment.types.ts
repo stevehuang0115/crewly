@@ -7,7 +7,7 @@
  */
 
 /** Valid subscription plan identifiers */
-export const PLAN_IDS = ['free', 'pro', 'enterprise'] as const;
+export const PLAN_IDS = ['starter', 'pro', 'max'] as const;
 
 /** Plan ID type */
 export type PlanId = (typeof PLAN_IDS)[number];

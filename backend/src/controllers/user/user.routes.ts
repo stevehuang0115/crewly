@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { UserIdentityService } from '../../services/user/user-identity.service.js';
+import { validateCreateUserInput } from './user-validation.js';
 
 /**
  * Create the user API router.
@@ -36,12 +37,16 @@ export function createUserRouter(): Router {
 
   router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const email = String(req.body?.email || '').trim();
-      const slackUserId = req.body?.slackUserId ? String(req.body.slackUserId) : undefined;
-      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        res.status(400).json({ success: false, error: 'A valid email is required' });
+      // Run field-level validation (username, email, password)
+      const validation = validateCreateUserInput(req.body);
+      if (!validation.valid) {
+        res.status(400).json({ success: false, ...validation.error });
         return;
       }
+
+      const { email } = validation.data;
+      const slackUserId = req.body?.slackUserId ? String(req.body.slackUserId) : undefined;
+
       const user = await users.createOrUpdateUser({ email, slackUserId });
       res.status(201).json({ success: true, data: user });
     } catch (error) {

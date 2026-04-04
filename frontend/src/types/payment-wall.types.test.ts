@@ -79,8 +79,16 @@ describe('payment-wall.types', () => {
       expect(pct).toBeLessThan(100);
     });
 
-    it('returns 17% for $29 monthly / $24 yearly', () => {
-      expect(getYearlySavingsPercent()).toBe(17);
+    it('returns 20% for Pro plan ($99 monthly / $79 yearly)', () => {
+      expect(getYearlySavingsPercent()).toBe(20);
+    });
+
+    it('returns correct savings for starter plan', () => {
+      expect(getYearlySavingsPercent('starter')).toBe(20);
+    });
+
+    it('returns correct savings for max plan', () => {
+      expect(getYearlySavingsPercent('max')).toBe(20);
     });
   });
 

@@ -167,14 +167,14 @@ describe('StripeService', () => {
     });
 
     describe('createCheckoutSession', () => {
-      it('should return error when no price is configured for plan/interval', async () => {
-        const result = await service.createCheckoutSession('u1', 'pro', 'month', 'http://ok', 'http://cancel');
+      it('should return error for unknown plan/interval without price', async () => {
+        const result = await service.createCheckoutSession('u1', 'starter', 'year', 'http://ok', 'http://cancel');
         expect(result.success).toBe(false);
         expect(result.message).toContain('No Stripe price configured');
       });
 
-      it('should return error for free plan', async () => {
-        const result = await service.createCheckoutSession('u1', 'free', 'month', 'http://ok', 'http://cancel');
+      it('should return error for invalid plan', async () => {
+        const result = await service.createCheckoutSession('u1', 'nonexistent', 'month', 'http://ok', 'http://cancel');
         expect(result.success).toBe(false);
         expect(result.message).toContain('No Stripe price configured');
       });
@@ -274,7 +274,7 @@ describe('StripeService', () => {
         });
 
         expect(mockUpsert).toHaveBeenCalledWith(
-          expect.objectContaining({ plan_id: 'pro' }),
+          expect.objectContaining({ plan_id: 'starter' }),
           expect.any(Object),
         );
       });
@@ -337,7 +337,7 @@ describe('StripeService', () => {
         id: 'sub_del_123',
         customer: 'cus_456',
         status: 'canceled',
-        metadata: { planId: 'enterprise' },
+        metadata: { planId: 'max' },
         items: { data: [{ current_period_start: 1700000000, current_period_end: 1702592000 }] },
         cancel_at: null,
         cancel_at_period_end: false,
@@ -350,7 +350,7 @@ describe('StripeService', () => {
           expect.objectContaining({
             stripe_subscription_id: 'sub_del_123',
             status: 'canceled',
-            plan_id: 'enterprise',
+            plan_id: 'max',
             cancel_at_period_end: false,
           }),
           { onConflict: 'stripe_subscription_id' },
@@ -494,7 +494,7 @@ describe('StripeService', () => {
         });
 
         expect(mockCustomerUpdate).toHaveBeenCalledWith('cus_789', {
-          metadata: { userId: 'user-fallback', planId: 'pro' },
+          metadata: { userId: 'user-fallback', planId: 'starter' },
         });
       });
 

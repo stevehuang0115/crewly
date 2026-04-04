@@ -21,15 +21,17 @@ import type { CloudTier } from '../types';
 /** Maps tier values to display labels */
 const TIER_LABELS: Record<CloudTier, string> = {
   free: 'Free',
+  starter: 'Starter',
   pro: 'Pro',
-  enterprise: 'Enterprise',
+  max: 'Max',
 };
 
 /** Maps tier values to badge variants */
 const TIER_BADGE_VARIANTS: Record<CloudTier, 'default' | 'primary' | 'success' | 'warning' | 'info'> = {
   free: 'default',
+  starter: 'primary',
   pro: 'primary',
-  enterprise: 'success',
+  max: 'success',
 };
 
 // ========================= Component =========================

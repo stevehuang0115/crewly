@@ -22,6 +22,9 @@ import { AuthProvider } from './contexts/AuthContext';
 import { PaymentWallProvider } from './contexts/PaymentWallContext';
 import { AuthCallback } from './pages/AuthCallback';
 import { Auth } from './pages/Auth';
+import { Pricing } from './pages/Pricing';
+import { CloudPortal } from './pages/CloudPortal';
+import { TasksPage } from './pages/TasksPage';
 
 
 function App() {
@@ -54,6 +57,9 @@ function App() {
               <Route path="monitoring/costs" element={<CostDashboard />} />
               <Route path="usage" element={<CostDashboard />} />
               <Route path="settings" element={<Settings />} />
+              <Route path="pricing" element={<Pricing />} />
+              <Route path="cloud" element={<CloudPortal />} />
+              <Route path="tasks" element={<TasksPage />} />
 
               <Route
                 path="chat"

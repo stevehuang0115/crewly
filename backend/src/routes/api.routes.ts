@@ -25,12 +25,14 @@ import { createKnowledgeRouter } from '../controllers/knowledge/index.js';
 import { createTemplateRouter } from '../controllers/template/index.js';
 import { createAuditorRouter } from '../controllers/auditor/auditor.routes.js';
 import { createPaymentRouter } from '../controllers/payment/payment.routes.js';
+import { createProvisioningRouter } from '../controllers/provisioning/provisioning.routes.js';
 import { createCloudRouter } from '../controllers/cloud/index.js';
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
 import { createDataRouter } from '../controllers/data/data.routes.js';
+import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -100,6 +102,9 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Payment routes for Stripe checkout, subscriptions, and webhooks
   router.use('/payment', createPaymentRouter());
 
+  // Provisioning routes for DigitalOcean deployment management
+  router.use('/provisioning', createProvisioningRouter());
+
   // Cloud routes for connect, disconnect, validate, status, templates, and Google OAuth
   router.use('/cloud', createCloudRouter());
 
@@ -118,6 +123,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Data Architecture V2 — Unified Data Model, Schemas, Sinks
   router.use('/v2/data', createDataRouter());
+
+  // Intent Task routes for task decomposition, tracking, and lifecycle
+  router.use('/intent-tasks', createIntentTaskRouter());
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here

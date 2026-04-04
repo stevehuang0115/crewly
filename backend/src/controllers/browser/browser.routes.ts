@@ -18,6 +18,7 @@ import {
 	readText,
 	getTabs,
 	execute,
+	executeJs,
 	click,
 	fill,
 	type,
@@ -72,8 +73,11 @@ export function createBrowserRouter(): Router {
 	// POST /api/browser/read-text — read page text
 	router.post('/read-text', readText);
 
-	// POST /api/browser/execute — execute JavaScript
+	// POST /api/browser/execute — execute safe predefined operations
 	router.post('/execute', execute);
+
+	// POST /api/browser/execute-js — execute arbitrary JavaScript code
+	router.post('/execute-js', executeJs);
 
 	// POST /api/browser/click — click element or coordinates
 	router.post('/click', click);

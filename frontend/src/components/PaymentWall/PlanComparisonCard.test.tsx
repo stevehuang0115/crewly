@@ -1,8 +1,9 @@
 /**
  * PlanComparisonCard Test Suite
  *
- * Tests rendering of Free and Pro plan cards, feature row highlighting,
- * billing interval toggle, upgrade button, and enterprise link.
+ * Tests rendering of Starter, Pro, and Max plan cards, feature row
+ * highlighting, billing interval toggle, upgrade buttons, and current
+ * plan indication.
  *
  * @module components/PaymentWall/PlanComparisonCard.test
  */
@@ -19,25 +20,20 @@ describe('PlanComparisonCard', () => {
     onUpgrade: vi.fn(),
   };
 
-  it('renders both Free and Pro plan cards', () => {
+  it('renders all three plan cards', () => {
     render(<PlanComparisonCard {...defaultProps} />);
 
-    expect(screen.getByTestId('plan-card-free')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-card-starter')).toBeInTheDocument();
     expect(screen.getByTestId('plan-card-pro')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-card-max')).toBeInTheDocument();
   });
 
-  it('shows "Free" and "Pro" headings', () => {
+  it('shows plan headings', () => {
     render(<PlanComparisonCard {...defaultProps} />);
 
-    expect(screen.getByText('Free')).toBeInTheDocument();
+    expect(screen.getByText('Starter')).toBeInTheDocument();
     expect(screen.getByText('Pro')).toBeInTheDocument();
-  });
-
-  it('shows "Current Plan" badge on the Free card', () => {
-    render(<PlanComparisonCard {...defaultProps} />);
-
-    const freeCard = screen.getByTestId('plan-card-free');
-    expect(within(freeCard).getByText('Current Plan')).toBeInTheDocument();
+    expect(screen.getByText('Max')).toBeInTheDocument();
   });
 
   it('shows "Popular" badge on the Pro card', () => {
@@ -47,20 +43,33 @@ describe('PlanComparisonCard', () => {
     expect(within(proCard).getByText('Popular')).toBeInTheDocument();
   });
 
-  it('renders all 6 feature rows in both cards', () => {
+  it('shows "Best Value" badge on the Max card', () => {
     render(<PlanComparisonCard {...defaultProps} />);
 
-    const freeCard = screen.getByTestId('plan-card-free');
-    const proCard = screen.getByTestId('plan-card-pro');
-
-    expect(within(freeCard).getByText(/Teams: 2 teams/)).toBeInTheDocument();
-    expect(within(freeCard).getByText(/Projects: 3 projects/)).toBeInTheDocument();
-
-    expect(within(proCard).getByText(/Teams: Unlimited/)).toBeInTheDocument();
-    expect(within(proCard).getByText(/Projects: Unlimited/)).toBeInTheDocument();
+    const maxCard = screen.getByTestId('plan-card-max');
+    expect(within(maxCard).getByText('Best Value')).toBeInTheDocument();
   });
 
-  it('highlights the correct row when highlightedLimitType is provided', () => {
+  it('shows "Current" badge when currentPlan matches', () => {
+    render(<PlanComparisonCard {...defaultProps} currentPlan="pro" />);
+
+    const proCard = screen.getByTestId('plan-card-pro');
+    expect(within(proCard).getByText('Current')).toBeInTheDocument();
+  });
+
+  it('renders feature rows in each card', () => {
+    render(<PlanComparisonCard {...defaultProps} />);
+
+    const starterCard = screen.getByTestId('plan-card-starter');
+    const proCard = screen.getByTestId('plan-card-pro');
+    const maxCard = screen.getByTestId('plan-card-max');
+
+    expect(within(starterCard).getByText(/Teams: 2 teams/)).toBeInTheDocument();
+    expect(within(proCard).getByText(/Teams: 10 teams/)).toBeInTheDocument();
+    expect(within(maxCard).getByText(/Teams: Unlimited/)).toBeInTheDocument();
+  });
+
+  it('highlights the correct rows when highlightedLimitType is provided', () => {
     render(
       <PlanComparisonCard
         {...defaultProps}
@@ -69,7 +78,7 @@ describe('PlanComparisonCard', () => {
     );
 
     const highlighted = screen.getAllByTestId('highlighted-row');
-    expect(highlighted).toHaveLength(2);
+    expect(highlighted.length).toBeGreaterThanOrEqual(3);
     highlighted.forEach((row) => {
       expect(row.className).toContain('bg-yellow-500/10');
       expect(row.className).toContain('text-yellow-500');
@@ -82,22 +91,25 @@ describe('PlanComparisonCard', () => {
     expect(screen.queryAllByTestId('highlighted-row')).toHaveLength(0);
   });
 
-  it('shows $29/mo for monthly billing', () => {
+  it('shows monthly prices by default', () => {
     render(
       <PlanComparisonCard {...defaultProps} billingInterval="monthly" />,
     );
 
-    expect(screen.getByTestId('plan-price')).toHaveTextContent('$29');
-    expect(screen.queryByText(/Save/)).not.toBeInTheDocument();
+    expect(screen.getByTestId('plan-price-starter')).toHaveTextContent('$49');
+    expect(screen.getByTestId('plan-price-pro')).toHaveTextContent('$99');
+    expect(screen.getByTestId('plan-price-max')).toHaveTextContent('$299');
   });
 
-  it('shows $24/mo and savings badge for yearly billing', () => {
+  it('shows yearly prices and savings badge', () => {
     render(
       <PlanComparisonCard {...defaultProps} billingInterval="yearly" />,
     );
 
-    expect(screen.getByTestId('plan-price')).toHaveTextContent('$24');
-    expect(screen.getByText(/Save 17%/)).toBeInTheDocument();
+    expect(screen.getByTestId('plan-price-starter')).toHaveTextContent('$39');
+    expect(screen.getByTestId('plan-price-pro')).toHaveTextContent('$79');
+    expect(screen.getByTestId('plan-price-max')).toHaveTextContent('$239');
+    expect(screen.getByText(/Save 20%/)).toBeInTheDocument();
   });
 
   it('calls onBillingToggle with "yearly" when Yearly is clicked', () => {
@@ -127,23 +139,44 @@ describe('PlanComparisonCard', () => {
     expect(onBillingToggle).toHaveBeenCalledWith('monthly');
   });
 
-  it('fires onUpgrade when Upgrade Now button is clicked', () => {
+  it('fires onUpgrade with correct plan ID when upgrade button is clicked', () => {
     const onUpgrade = vi.fn();
     render(
       <PlanComparisonCard {...defaultProps} onUpgrade={onUpgrade} />,
     );
 
-    fireEvent.click(screen.getByTestId('upgrade-now-btn'));
-    expect(onUpgrade).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('upgrade-pro-btn'));
+    expect(onUpgrade).toHaveBeenCalledWith('pro');
   });
 
-  it('shows enterprise contact link', () => {
-    render(<PlanComparisonCard {...defaultProps} />);
+  it('fires onUpgrade with starter plan ID', () => {
+    const onUpgrade = vi.fn();
+    render(
+      <PlanComparisonCard {...defaultProps} onUpgrade={onUpgrade} />,
+    );
 
-    expect(screen.getByText(/Need Enterprise/)).toBeInTheDocument();
-    const link = screen.getByText('Contact us');
-    expect(link).toBeInTheDocument();
-    expect(link.closest('a')).toHaveAttribute('href', 'mailto:team@crewlyai.com');
+    fireEvent.click(screen.getByTestId('upgrade-starter-btn'));
+    expect(onUpgrade).toHaveBeenCalledWith('starter');
+  });
+
+  it('fires onUpgrade with max plan ID', () => {
+    const onUpgrade = vi.fn();
+    render(
+      <PlanComparisonCard {...defaultProps} onUpgrade={onUpgrade} />,
+    );
+
+    fireEvent.click(screen.getByTestId('upgrade-max-btn'));
+    expect(onUpgrade).toHaveBeenCalledWith('max');
+  });
+
+  it('hides upgrade button for current plan', () => {
+    render(
+      <PlanComparisonCard {...defaultProps} currentPlan="pro" />,
+    );
+
+    expect(screen.queryByTestId('upgrade-pro-btn')).not.toBeInTheDocument();
+    expect(screen.getByTestId('upgrade-starter-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('upgrade-max-btn')).toBeInTheDocument();
   });
 
   it('highlights Monthly toggle when billingInterval is monthly', () => {

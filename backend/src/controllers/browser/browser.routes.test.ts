@@ -49,6 +49,8 @@ describe('createBrowserRouter', () => {
 		const routePaths = routes.map((r: any) => `${r.methods[0].toUpperCase()} ${r.path}`);
 
 		expect(routePaths).toContain('GET /status');
+		expect(routePaths).toContain('GET /instances');
+		expect(routePaths).toContain('POST /proxy/connect');
 		expect(routePaths).toContain('GET /tabs');
 		expect(routePaths).toContain('GET /cookies');
 		expect(routePaths).toContain('GET /console');
@@ -56,6 +58,7 @@ describe('createBrowserRouter', () => {
 		expect(routePaths).toContain('POST /screenshot');
 		expect(routePaths).toContain('POST /read-text');
 		expect(routePaths).toContain('POST /execute');
+		expect(routePaths).toContain('POST /execute-js');
 		expect(routePaths).toContain('POST /click');
 		expect(routePaths).toContain('POST /fill');
 		expect(routePaths).toContain('POST /type');
@@ -73,9 +76,9 @@ describe('createBrowserRouter', () => {
 		expect(routePaths).toContain('POST /set-file-input');
 	});
 
-	it('should have exactly 23 routes', () => {
+	it('should have exactly 26 routes', () => {
 		const router = createBrowserRouter();
 		const routes = router.stack.filter((layer: any) => layer.route);
-		expect(routes.length).toBe(23);
+		expect(routes.length).toBe(26);
 	});
 });

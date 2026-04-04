@@ -11,8 +11,8 @@
 // User plan
 // ---------------------------------------------------------------------------
 
-/** Subscription plan type — must match backend AUTH_CONSTANTS.PLANS. */
-export type UserPlan = 'free' | 'pro' | 'enterprise';
+/** Subscription plan type — must match backend plan IDs. 'free' = no subscription. */
+export type UserPlan = 'free' | 'starter' | 'pro' | 'max';
 
 // ---------------------------------------------------------------------------
 // User profile
@@ -77,10 +77,10 @@ export interface AuthState {
  * Check whether a value is a valid UserPlan.
  *
  * @param value - Value to check
- * @returns true if value is 'free' or 'pro'
+ * @returns true if value is a valid UserPlan
  */
 export function isValidUserPlan(value: unknown): value is UserPlan {
-  return value === 'free' || value === 'pro' || value === 'enterprise';
+  return value === 'free' || value === 'starter' || value === 'pro' || value === 'max';
 }
 
 /**
