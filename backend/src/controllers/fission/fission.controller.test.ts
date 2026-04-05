@@ -7,7 +7,6 @@
  * @module controllers/fission/fission.controller.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import {
   getFissionConfig,
@@ -48,12 +47,12 @@ function createMockRequest(opts?: {
  */
 function createMockResponse(): Response {
   return {
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
   } as unknown as Response;
 }
 
-const mockNext: NextFunction = vi.fn();
+const mockNext: NextFunction = jest.fn();
 
 /**
  * Creates a mock FissionViolation.
@@ -82,11 +81,11 @@ function createMockViolation(overrides?: Partial<FissionViolation>): FissionViol
  */
 function createMockService(): FissionGuardService {
   return {
-    getConfig: vi.fn().mockReturnValue({ ...DEFAULT_FISSION_CONFIG }),
-    updateConfig: vi.fn(),
-    getViolations: vi.fn().mockReturnValue([createMockViolation()]),
-    getViolationsByType: vi.fn().mockReturnValue([createMockViolation()]),
-    canCreateSubTask: vi.fn().mockResolvedValue({ allowed: true } as GuardResult),
+    getConfig: jest.fn().mockReturnValue({ ...DEFAULT_FISSION_CONFIG }),
+    updateConfig: jest.fn(),
+    getViolations: jest.fn().mockReturnValue([createMockViolation()]),
+    getViolationsByType: jest.fn().mockReturnValue([createMockViolation()]),
+    canCreateSubTask: jest.fn().mockResolvedValue({ allowed: true } as GuardResult),
   } as unknown as FissionGuardService;
 }
 
@@ -98,7 +97,7 @@ describe('FissionController', () => {
   let service: FissionGuardService;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
     service = createMockService();
     setFissionGuardService(service);
   });
@@ -117,7 +116,7 @@ describe('FissionController', () => {
     it('returns current config', async () => {
       const res = createMockResponse();
       await getFissionConfig(createMockRequest(), res, mockNext);
-      expect(service.getConfig).toHaveBeenCalledOnce();
+      expect(service.getConfig).toHaveBeenCalledTimes(1);
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         data: expect.objectContaining({ maxDepth: 3 }),
@@ -126,7 +125,7 @@ describe('FissionController', () => {
 
     it('forwards errors to next()', async () => {
       const err = new Error('fail');
-      (service.getConfig as ReturnType<typeof vi.fn>).mockImplementation(() => { throw err; });
+      (service.getConfig as jest.Mock).mockImplementation(() => { throw err; });
       const res = createMockResponse();
       await getFissionConfig(createMockRequest(), res, mockNext);
       expect(mockNext).toHaveBeenCalledWith(err);
@@ -328,7 +327,7 @@ describe('FissionController', () => {
     });
 
     it('returns blocked result from service', async () => {
-      (service.canCreateSubTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+      (service.canCreateSubTask as jest.Mock).mockResolvedValue({
         allowed: false,
         reason: 'Too deep',
         violationType: 'max_depth',
@@ -373,7 +372,7 @@ describe('FissionController', () => {
 
     it('forwards errors to next()', async () => {
       const err = new Error('service error');
-      (service.canCreateSubTask as ReturnType<typeof vi.fn>).mockRejectedValue(err);
+      (service.canCreateSubTask as jest.Mock).mockRejectedValue(err);
       const res = createMockResponse();
       await checkFission(
         createMockRequest({ body: { parentWorkItemId: 'wi-1', agentId: 'a-1' } }),

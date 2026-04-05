@@ -4,7 +4,6 @@
  * @module types/v2/workspace.types.test
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   WORKSPACE_ACCESS_MODES,
   WORKSPACE_OWNER_TYPES,

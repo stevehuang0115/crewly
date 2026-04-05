@@ -4,7 +4,6 @@
  * @module types/v2/claim.types.test
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   CLAIM_STATUSES,
   DEFAULT_LEASE_DURATION_MS,

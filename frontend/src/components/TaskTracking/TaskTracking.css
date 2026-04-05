@@ -555,6 +555,112 @@
   font-weight: 500;
 }
 
+/* Assign Agent button + dropdown */
+.task-row-assign-container {
+  position: relative;
+}
+
+.task-row-assign-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--color-text-muted, #6b7a94);
+  font-size: 0.68rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.task-row-assign-btn:hover {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.3);
+  color: #60a5fa;
+}
+
+.task-assign-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  min-width: 200px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--color-surface, #1a1f2e);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+}
+
+.task-assign-dropdown-empty {
+  padding: 8px 12px;
+  font-size: 0.72rem;
+  color: var(--color-text-muted, #6b7a94);
+  text-align: center;
+}
+
+.task-assign-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: var(--color-text-primary, #f6f7f8);
+  transition: background 0.1s ease;
+  text-align: left;
+}
+
+.task-assign-dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.task-assign-agent-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.task-assign-agent-dot--active {
+  background: #4ade80;
+}
+
+.task-assign-agent-dot--inactive {
+  background: var(--color-text-muted, #6b7a94);
+}
+
+.task-assign-agent-name {
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-assign-agent-role {
+  font-size: 0.65rem;
+  color: var(--color-text-muted, #6b7a94);
+  flex-shrink: 0;
+}
+
+.task-assign-agent-busy {
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: #fbbf24;
+  flex-shrink: 0;
+}
+
 /* Details disclosure */
 .task-row-details-toggle {
   display: inline-flex;

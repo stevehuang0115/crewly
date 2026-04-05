@@ -8,7 +8,6 @@
  * @module services/fission/fission-guard.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FissionGuardService, type FissionDataProvider, type BudgetChecker } from './fission-guard.service.js';
 import { DEFAULT_FISSION_CONFIG } from './fission-guard.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -18,21 +17,21 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 // ---------------------------------------------------------------------------
 
 /** Suppress logger output in tests */
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
 }));
 
 /** Stub uuid for deterministic violation IDs */
-vi.mock('uuid', () => ({
+jest.mock('uuid', () => ({
   v4: () => 'test-uuid-001',
 }));
 
@@ -67,9 +66,9 @@ function createMockWorkItem(overrides?: Partial<WorkItem>): WorkItem {
  */
 function createMockDataProvider(): FissionDataProvider {
   return {
-    getWorkItemById: vi.fn().mockResolvedValue(null),
-    countMissionWorkItems: vi.fn().mockResolvedValue(0),
-    countChildWorkItems: vi.fn().mockResolvedValue(0),
+    getWorkItemById: jest.fn().mockResolvedValue(null),
+    countMissionWorkItems: jest.fn().mockResolvedValue(0),
+    countChildWorkItems: jest.fn().mockResolvedValue(0),
   };
 }
 
@@ -81,7 +80,7 @@ function createMockDataProvider(): FissionDataProvider {
  */
 function createMockBudgetChecker(withinBudget = true): BudgetChecker {
   return {
-    isWithinBudget: vi.fn().mockResolvedValue(withinBudget),
+    isWithinBudget: jest.fn().mockResolvedValue(withinBudget),
   };
 }
 
@@ -94,15 +93,15 @@ describe('FissionGuardService', () => {
   let guard: FissionGuardService;
 
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-04-05T12:00:00.000Z'));
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-04-05T12:00:00.000Z'));
     FissionGuardService.resetInstance();
     dataProvider = createMockDataProvider();
     guard = new FissionGuardService(dataProvider);
   });
 
   afterEach(() => {
-    vi.useRealTimers();
+    jest.useRealTimers();
     FissionGuardService.resetInstance();
   });
 
@@ -122,7 +121,7 @@ describe('FissionGuardService', () => {
       const parent = createMockWorkItem({ id: 'wi-parent', parentWorkItemId: 'wi-mid' });
       const mid = createMockWorkItem({ id: 'wi-mid', parentWorkItemId: 'wi-gp' });
 
-      (dataProvider.getWorkItemById as ReturnType<typeof vi.fn>)
+      (dataProvider.getWorkItemById as jest.Mock)
         .mockImplementation(async (id: string) => {
           if (id === 'wi-mid') return mid;
           if (id === 'wi-gp') return grandparent;
@@ -140,7 +139,7 @@ describe('FissionGuardService', () => {
       const l2 = createMockWorkItem({ id: 'wi-l2', parentWorkItemId: 'wi-l1' });
       const parent = createMockWorkItem({ id: 'wi-parent', parentWorkItemId: 'wi-l2' });
 
-      (dataProvider.getWorkItemById as ReturnType<typeof vi.fn>)
+      (dataProvider.getWorkItemById as jest.Mock)
         .mockImplementation(async (id: string) => {
           if (id === 'wi-l2') return l2;
           if (id === 'wi-l1') return l1;
@@ -157,7 +156,7 @@ describe('FissionGuardService', () => {
     it('uses custom maxDepth from config', async () => {
       const customGuard = new FissionGuardService(dataProvider, null, { maxDepth: 1 });
       const parent = createMockWorkItem({ parentWorkItemId: 'wi-root' });
-      (dataProvider.getWorkItemById as ReturnType<typeof vi.fn>)
+      (dataProvider.getWorkItemById as jest.Mock)
         .mockResolvedValue(createMockWorkItem({ id: 'wi-root' }));
 
       // Parent is at depth 1, child would be depth 2 > maxDepth=1
@@ -172,14 +171,14 @@ describe('FissionGuardService', () => {
   // -----------------------------------------------------------------------
   describe('maxTasks', () => {
     it('allows creation when mission has few tasks', async () => {
-      (dataProvider.countMissionWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(10);
+      (dataProvider.countMissionWorkItems as jest.Mock).mockResolvedValue(10);
       const parent = createMockWorkItem();
       const result = await guard.canCreateSubTask(parent, 'agent-1', 'mission-1');
       expect(result.allowed).toBe(true);
     });
 
     it('blocks when mission reaches maxTasksPerMission', async () => {
-      (dataProvider.countMissionWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(50);
+      (dataProvider.countMissionWorkItems as jest.Mock).mockResolvedValue(50);
       const parent = createMockWorkItem();
       const result = await guard.canCreateSubTask(parent, 'agent-1', 'mission-1');
       expect(result.allowed).toBe(false);
@@ -191,7 +190,7 @@ describe('FissionGuardService', () => {
         maxTasksPerMission: 300, // Above hard limit
         hardMaxTasksPerMission: 200,
       });
-      (dataProvider.countMissionWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(200);
+      (dataProvider.countMissionWorkItems as jest.Mock).mockResolvedValue(200);
       const parent = createMockWorkItem();
       const result = await customGuard.canCreateSubTask(parent, 'agent-1', 'mission-1');
       expect(result.allowed).toBe(false);
@@ -255,7 +254,7 @@ describe('FissionGuardService', () => {
       }
 
       // Advance time past the window
-      vi.advanceTimersByTime(DEFAULT_FISSION_CONFIG.rateLimitWindowMs + 1);
+      jest.advanceTimersByTime(DEFAULT_FISSION_CONFIG.rateLimitWindowMs + 1);
 
       const result = await guard.canCreateSubTask(parent, 'agent-1');
       expect(result.allowed).toBe(true);
@@ -280,14 +279,14 @@ describe('FissionGuardService', () => {
   // -----------------------------------------------------------------------
   describe('branchingFactor', () => {
     it('allows creation when parent has few children', async () => {
-      (dataProvider.countChildWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(2);
+      (dataProvider.countChildWorkItems as jest.Mock).mockResolvedValue(2);
       const parent = createMockWorkItem();
       const result = await guard.canCreateSubTask(parent, 'agent-1');
       expect(result.allowed).toBe(true);
     });
 
     it('blocks when parent has maxBranchingFactor children', async () => {
-      (dataProvider.countChildWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(5);
+      (dataProvider.countChildWorkItems as jest.Mock).mockResolvedValue(5);
       const parent = createMockWorkItem();
       const result = await guard.canCreateSubTask(parent, 'agent-1');
       expect(result.allowed).toBe(false);
@@ -296,7 +295,7 @@ describe('FissionGuardService', () => {
 
     it('uses custom branching factor', async () => {
       const customGuard = new FissionGuardService(dataProvider, null, { maxBranchingFactor: 2 });
-      (dataProvider.countChildWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(2);
+      (dataProvider.countChildWorkItems as jest.Mock).mockResolvedValue(2);
       const parent = createMockWorkItem();
       const result = await customGuard.canCreateSubTask(parent, 'agent-1');
       expect(result.allowed).toBe(false);
@@ -376,7 +375,7 @@ describe('FissionGuardService', () => {
 
     it('allows on budget check error (non-fatal)', async () => {
       const budgetChecker: BudgetChecker = {
-        isWithinBudget: vi.fn().mockRejectedValue(new Error('service down')),
+        isWithinBudget: jest.fn().mockRejectedValue(new Error('service down')),
       };
       const budgetGuard = new FissionGuardService(dataProvider, budgetChecker);
       const parent = createMockWorkItem();
@@ -390,7 +389,7 @@ describe('FissionGuardService', () => {
   // -----------------------------------------------------------------------
   describe('violation history', () => {
     it('records violations on blocked creation', async () => {
-      (dataProvider.countChildWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(5);
+      (dataProvider.countChildWorkItems as jest.Mock).mockResolvedValue(5);
       const parent = createMockWorkItem();
       await guard.canCreateSubTask(parent, 'agent-1');
 
@@ -414,7 +413,7 @@ describe('FissionGuardService', () => {
         maxViolationHistory: 3,
         maxBranchingFactor: 0, // Ensure every check fails
       });
-      (dataProvider.countChildWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(1);
+      (dataProvider.countChildWorkItems as jest.Mock).mockResolvedValue(1);
 
       const parent = createMockWorkItem();
       for (let i = 0; i < 5; i++) {
@@ -426,7 +425,7 @@ describe('FissionGuardService', () => {
 
     it('filters violations by type', async () => {
       // Create one branching factor violation
-      (dataProvider.countChildWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(5);
+      (dataProvider.countChildWorkItems as jest.Mock).mockResolvedValue(5);
       const parent = createMockWorkItem();
       await guard.canCreateSubTask(parent, 'agent-1');
 
@@ -491,14 +490,14 @@ describe('FissionGuardService', () => {
       const l2 = createMockWorkItem({ id: 'wi-l2', parentWorkItemId: 'wi-l1' });
       const parent = createMockWorkItem({ id: 'wi-parent', parentWorkItemId: 'wi-l2' });
 
-      (dataProvider.getWorkItemById as ReturnType<typeof vi.fn>)
+      (dataProvider.getWorkItemById as jest.Mock)
         .mockImplementation(async (id: string) => {
           if (id === 'wi-l2') return l2;
           if (id === 'wi-l1') return l1;
           if (id === 'wi-root') return root;
           return null;
         });
-      (dataProvider.countChildWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue(10);
+      (dataProvider.countChildWorkItems as jest.Mock).mockResolvedValue(10);
 
       const result = await guard.canCreateSubTask(parent, 'agent-1');
       // maxDepth is checked first

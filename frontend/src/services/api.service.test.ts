@@ -141,4 +141,38 @@ describe('ApiService', () => {
       }
     });
   });
+
+  describe('getIntentTaskStatistics', () => {
+    it('should return statistics from the API', async () => {
+      const mockStats = {
+        totalTasks: 5,
+        byStatus: { classified: 3, completed: 2 },
+        byLevel: { L0: 2, L1: 3 },
+        totalTokens: 1500,
+        totalCost: 0.05,
+        llmCost: 0.04,
+        skillCost: 0.01,
+        totalMessages: 3,
+      };
+
+      const axios = await import('axios');
+      vi.spyOn(axios.default, 'get').mockResolvedValue({
+        data: { success: true, data: mockStats },
+      });
+
+      const result = await apiService.getIntentTaskStatistics();
+
+      expect(result).toEqual(mockStats);
+      expect(axios.default.get).toHaveBeenCalledWith('/api/intent-tasks/statistics');
+    });
+
+    it('should throw on failure response', async () => {
+      const axios = await import('axios');
+      vi.spyOn(axios.default, 'get').mockResolvedValue({
+        data: { success: false, error: 'Service unavailable' },
+      });
+
+      await expect(apiService.getIntentTaskStatistics()).rejects.toThrow('Service unavailable');
+    });
+  });
 });

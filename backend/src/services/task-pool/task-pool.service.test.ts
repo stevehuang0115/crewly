@@ -4,7 +4,6 @@
  * @module services/task-pool/task-pool.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TaskPoolService } from './task-pool.service.js';
 import { PoolStorage } from './pool-storage.js';
 import { createWorkItem } from '../../types/v2/work-item.types.js';
@@ -13,14 +12,14 @@ import * as path from 'path';
 import * as os from 'os';
 
 // Mock LoggerService
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        debug: vi.fn(),
-        error: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        debug: jest.fn(),
+        error: jest.fn(),
       }),
     }),
   },
@@ -396,6 +395,91 @@ describe('TaskPoolService', () => {
       const b = TaskPoolService.getInstance();
       expect(a).not.toBe(b);
       TaskPoolService.resetInstance();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // getActiveClaims (V3 integration)
+  // -----------------------------------------------------------------------
+
+  describe('getActiveClaims', () => {
+    it('returns active claims after claiming', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      const claims = await service.getActiveClaims();
+      expect(claims).toHaveLength(1);
+      expect(claims[0].agentId).toBe('agent-leo');
+      expect(claims[0].status).toBe('active');
+    });
+
+    it('returns empty when no claims', async () => {
+      const claims = await service.getActiveClaims();
+      expect(claims).toHaveLength(0);
+    });
+
+    it('excludes released claims', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      await service.completeItem(wi.id);
+
+      const claims = await service.getActiveClaims();
+      expect(claims).toHaveLength(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // updateItemStatus (V3 integration — used by Reconciler)
+  // -----------------------------------------------------------------------
+
+  describe('updateItemStatus', () => {
+    it('updates running item to blocked', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      await service.updateItemStatus(wi.id, 'blocked');
+
+      const items = await service.getAllItems();
+      const updated = items.find(i => i.id === wi.id);
+      expect(updated!.status).toBe('blocked');
+    });
+
+    it('throws for nonexistent item', async () => {
+      await expect(service.updateItemStatus('ghost-id', 'blocked'))
+        .rejects.toThrow('WorkItem not found');
+    });
+
+    it('throws for invalid transition', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+
+      // queued → done is not a valid direct transition
+      await expect(service.updateItemStatus(wi.id, 'done'))
+        .rejects.toThrow('Invalid status transition');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // markClaimExpiring (V3 integration — used by Reconciler)
+  // -----------------------------------------------------------------------
+
+  describe('markClaimExpiring', () => {
+    it('marks an active claim as expiring', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      const result = await service.claimFromPool('agent-leo');
+      expect(result).not.toBeNull();
+
+      await service.markClaimExpiring(result!.claim.id);
+
+      // Claim should now be 'expiring' — verify via getActiveClaims
+      // (expiring claims are still considered active for reconciliation)
+      const claims = await service.getActiveClaims();
+      expect(claims).toHaveLength(1);
+      expect(claims[0].status).toBe('expiring');
     });
   });
 });

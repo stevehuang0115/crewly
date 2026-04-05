@@ -1,4 +1,3 @@
-import { describe, it, expect, beforeEach } from 'vitest';
 import { SkillsReferenceModule } from './skills-reference.module.js';
 import { ModuleConfig } from './prompt-module.interface.js';
 

@@ -62,6 +62,7 @@ export const Dashboard: React.FC = () => {
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamsMap, setTeamsMap] = useState<Record<string, Team[]>>({});
   const [projectProgress, setProjectProgress] = useState<Record<string, ProjectProgress>>({});
+  const [intentTaskStats, setIntentTaskStats] = useState<{ inProgress: number; completed: number }>({ inProgress: 0, completed: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -154,6 +155,19 @@ export const Dashboard: React.FC = () => {
 
       setTeams(migratedTeams);
 
+      // Fetch intent task statistics for the HealthBar
+      try {
+        const intentStats = await apiService.getIntentTaskStatistics();
+        if (intentStats.byStatus) {
+          setIntentTaskStats({
+            inProgress: intentStats.byStatus['in_progress'] || 0,
+            completed: intentStats.byStatus['completed'] || 0,
+          });
+        }
+      } catch {
+        // Intent task stats are non-critical
+      }
+
       // Create teams map for projects (reuse migratedTeams)
       const teamsMapping = projectList.reduce((acc, project) => {
         const assignedTeams = migratedTeams.filter(team => {
@@ -228,8 +242,8 @@ export const Dashboard: React.FC = () => {
           runningAgents={teams.flatMap(t => t.members).filter(m => m.agentStatus === 'active').length}
           projectCount={projects.length}
           teamCount={teams.length}
-          tasksInProgress={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.inProgress, 0)}
-          tasksCompleted={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.done, 0)}
+          tasksInProgress={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.inProgress, 0) + intentTaskStats.inProgress}
+          tasksCompleted={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.done, 0) + intentTaskStats.completed}
           onFactoryClick={navigateToFactory}
         />
       </div>

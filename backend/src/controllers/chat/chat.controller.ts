@@ -171,6 +171,7 @@ export async function sendMessage(
         orchestrator: orchestratorStatus,
       },
     });
+
   } catch (error) {
     if (error instanceof MessageValidationError) {
       res.status(400).json({

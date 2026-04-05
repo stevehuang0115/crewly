@@ -6,7 +6,6 @@
  * @module services/fission/fission-guard.types.test
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_FISSION_CONFIG,
   FISSION_VIOLATION_TYPES,

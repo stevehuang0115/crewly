@@ -7,7 +7,6 @@
  * @module controllers/v2-workspace/workspace.controller.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import {
   listWorkspaces,
@@ -40,12 +39,12 @@ function mockReq(opts?: {
 
 function mockRes(): Response {
   return {
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
   } as unknown as Response;
 }
 
-const mockNext: NextFunction = vi.fn();
+const mockNext: NextFunction = jest.fn();
 
 function createMockWorkspace(overrides?: Partial<Workspace>): Workspace {
   return {
@@ -65,13 +64,13 @@ function createMockWorkspace(overrides?: Partial<Workspace>): Workspace {
 
 function createMockService(): WorkspaceService {
   return {
-    listAll: vi.fn().mockResolvedValue([createMockWorkspace()]),
-    read: vi.fn().mockResolvedValue(createMockWorkspace()),
-    create: vi.fn().mockResolvedValue(createMockWorkspace()),
-    write: vi.fn().mockResolvedValue(createMockWorkspace({ version: 2 })),
-    writeStructured: vi.fn().mockResolvedValue(createMockWorkspace({ version: 2 })),
-    delete: vi.fn().mockResolvedValue(true),
-    listIds: vi.fn().mockResolvedValue(['ws-001']),
+    listAll: jest.fn().mockResolvedValue([createMockWorkspace()]),
+    read: jest.fn().mockResolvedValue(createMockWorkspace()),
+    create: jest.fn().mockResolvedValue(createMockWorkspace()),
+    write: jest.fn().mockResolvedValue(createMockWorkspace({ version: 2 })),
+    writeStructured: jest.fn().mockResolvedValue(createMockWorkspace({ version: 2 })),
+    delete: jest.fn().mockResolvedValue(true),
+    listIds: jest.fn().mockResolvedValue(['ws-001']),
   } as unknown as WorkspaceService;
 }
 
@@ -83,7 +82,7 @@ describe('V2 WorkspaceController', () => {
   let service: WorkspaceService;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
     service = createMockService();
     setWorkspaceService(service);
   });
@@ -114,7 +113,7 @@ describe('V2 WorkspaceController', () => {
     it('returns all workspaces', async () => {
       const res = mockRes();
       await listWorkspaces(mockReq(), res, mockNext);
-      expect(service.listAll).toHaveBeenCalledOnce();
+      expect(service.listAll).toHaveBeenCalledTimes(1);
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         data: [expect.objectContaining({ id: 'ws-001' })],
@@ -137,7 +136,7 @@ describe('V2 WorkspaceController', () => {
     });
 
     it('returns 404 when workspace not found', async () => {
-      (service.read as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      (service.read as jest.Mock).mockResolvedValue(null);
       const res = mockRes();
       await readWorkspace(mockReq({ params: { id: 'ws-999' } }), res, mockNext);
       expect(res.status).toHaveBeenCalledWith(404);
@@ -207,7 +206,7 @@ describe('V2 WorkspaceController', () => {
     });
 
     it('returns 409 on CAS conflict', async () => {
-      (service.write as ReturnType<typeof vi.fn>).mockRejectedValue(
+      (service.write as jest.Mock).mockRejectedValue(
         new WorkspaceConflictError('ws-001', 1, 3),
       );
       const res = mockRes();
@@ -228,7 +227,7 @@ describe('V2 WorkspaceController', () => {
     });
 
     it('returns 403 on access denied', async () => {
-      (service.write as ReturnType<typeof vi.fn>).mockRejectedValue(
+      (service.write as jest.Mock).mockRejectedValue(
         new WorkspaceAccessError('ws-001', 'intruder'),
       );
       const res = mockRes();
@@ -243,7 +242,7 @@ describe('V2 WorkspaceController', () => {
     });
 
     it('returns 404 when workspace not found', async () => {
-      (service.write as ReturnType<typeof vi.fn>).mockRejectedValue(
+      (service.write as jest.Mock).mockRejectedValue(
         new Error("Workspace 'ws-999' not found"),
       );
       const res = mockRes();
@@ -320,7 +319,7 @@ describe('V2 WorkspaceController', () => {
     });
 
     it('returns 409 on CAS conflict', async () => {
-      (service.writeStructured as ReturnType<typeof vi.fn>).mockRejectedValue(
+      (service.writeStructured as jest.Mock).mockRejectedValue(
         new WorkspaceConflictError('ws-001', 1, 5),
       );
       const res = mockRes();
@@ -338,7 +337,7 @@ describe('V2 WorkspaceController', () => {
     });
 
     it('returns 403 on access denied', async () => {
-      (service.writeStructured as ReturnType<typeof vi.fn>).mockRejectedValue(
+      (service.writeStructured as jest.Mock).mockRejectedValue(
         new WorkspaceAccessError('ws-001', 'intruder'),
       );
       const res = mockRes();
@@ -353,7 +352,7 @@ describe('V2 WorkspaceController', () => {
     });
 
     it('returns 400 when workspace not in structured mode', async () => {
-      (service.writeStructured as ReturnType<typeof vi.fn>).mockRejectedValue(
+      (service.writeStructured as jest.Mock).mockRejectedValue(
         new Error("Workspace 'ws-001' is not in structured mode"),
       );
       const res = mockRes();
@@ -421,7 +420,7 @@ describe('V2 WorkspaceController', () => {
     });
 
     it('returns 404 when workspace not found', async () => {
-      (service.delete as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+      (service.delete as jest.Mock).mockResolvedValue(false);
       const res = mockRes();
       await deleteWorkspace(mockReq({ params: { id: 'ws-999' } }), res, mockNext);
       expect(res.status).toHaveBeenCalledWith(404);
@@ -434,7 +433,7 @@ describe('V2 WorkspaceController', () => {
   describe('error forwarding', () => {
     it('listWorkspaces forwards unexpected errors', async () => {
       const err = new Error('boom');
-      (service.listAll as ReturnType<typeof vi.fn>).mockRejectedValue(err);
+      (service.listAll as jest.Mock).mockRejectedValue(err);
       const res = mockRes();
       await listWorkspaces(mockReq(), res, mockNext);
       expect(mockNext).toHaveBeenCalledWith(err);
@@ -442,7 +441,7 @@ describe('V2 WorkspaceController', () => {
 
     it('writeWorkspace forwards unexpected errors', async () => {
       const err = new Error('something unexpected');
-      (service.write as ReturnType<typeof vi.fn>).mockRejectedValue(err);
+      (service.write as jest.Mock).mockRejectedValue(err);
       const res = mockRes();
       await writeWorkspace(
         mockReq({

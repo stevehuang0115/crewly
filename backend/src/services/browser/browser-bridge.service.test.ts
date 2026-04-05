@@ -4,14 +4,13 @@
  * @module services/browser/browser-bridge.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { BrowserBridgeService } from './browser-bridge.service.js';
 
 // Mock ws module
-vi.mock('ws', () => {
+jest.mock('ws', () => {
 	class MockWebSocketServer {
-		on = vi.fn();
-		close = vi.fn();
+		on = jest.fn();
+		close = jest.fn();
 		constructor() {
 			// no-op
 		}
@@ -23,14 +22,14 @@ vi.mock('ws', () => {
 });
 
 // Mock logger
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
 			createComponentLogger: () => ({
-				info: vi.fn(),
-				warn: vi.fn(),
-				error: vi.fn(),
-				debug: vi.fn(),
+				info: jest.fn(),
+				warn: jest.fn(),
+				error: jest.fn(),
+				debug: jest.fn(),
 			}),
 		}),
 	},
@@ -88,14 +87,14 @@ describe('BrowserBridgeService', () => {
 	describe('attach', () => {
 		it('should attach without error', () => {
 			const bridge = BrowserBridgeService.getInstance();
-			const mockServer = { on: vi.fn(), emit: vi.fn() } as any;
+			const mockServer = { on: jest.fn(), emit: jest.fn() } as any;
 			// Should not throw
 			expect(() => bridge.attach(mockServer)).not.toThrow();
 		});
 
 		it('should not throw on second attach (idempotent)', () => {
 			const bridge = BrowserBridgeService.getInstance();
-			const mockServer = { on: vi.fn(), emit: vi.fn() } as any;
+			const mockServer = { on: jest.fn(), emit: jest.fn() } as any;
 			bridge.attach(mockServer);
 			// Second attach should not throw (warns instead)
 			expect(() => bridge.attach(mockServer)).not.toThrow();
@@ -105,7 +104,7 @@ describe('BrowserBridgeService', () => {
 	describe('stop', () => {
 		it('should close the WebSocket server and clean up', () => {
 			const bridge = BrowserBridgeService.getInstance();
-			const mockServer = { on: vi.fn(), emit: vi.fn() } as any;
+			const mockServer = { on: jest.fn(), emit: jest.fn() } as any;
 			bridge.attach(mockServer);
 			bridge.stop();
 			expect(bridge.isConnected()).toBe(false);

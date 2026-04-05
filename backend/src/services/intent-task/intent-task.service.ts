@@ -25,6 +25,7 @@ import {
   type IntentTaskSummary,
   type CreateIntentTaskInput,
   type UpdateIntentTaskInput,
+  type BatchCreateIntentTaskInput,
   type StartRunInput,
   type RecordSpanInput,
   type DecomposeMessageInput,
@@ -316,7 +317,7 @@ export class IntentTaskService {
       intent: input.intent,
       level,
       category,
-      status: 'classified',
+      status: 'pending',
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -342,6 +343,68 @@ export class IntentTaskService {
 
     this.scheduleSave();
     return task;
+  }
+
+  /**
+   * Create multiple intent tasks in a single batch, grouped by a shared messageId.
+   *
+   * Used by the orchestrator to create all tasks from one chat message at once.
+   * All tasks share the same messageId for grouping in the todo-list UI.
+   *
+   * @param input - Batch creation input with tasks array and optional originalMessage
+   * @returns Array of created IntentTasks
+   */
+  batchCreateTasks(input: BatchCreateIntentTaskInput): IntentTask[] {
+    if (!input.tasks || input.tasks.length === 0) {
+      return [];
+    }
+
+    const messageId = randomUUID();
+
+    // Store original message text for the group
+    if (input.originalMessage) {
+      this.messageTexts.set(messageId, input.originalMessage);
+    }
+
+    const tasks: IntentTask[] = input.tasks.map((taskInput, index) =>
+      this.createTask({
+        ...taskInput,
+        messageId,
+        order: taskInput.order ?? index,
+      })
+    );
+
+    // If no originalMessage was provided, store a fallback from intents
+    if (!input.originalMessage) {
+      this.messageTexts.set(messageId, tasks.map((t) => t.intent).join('; '));
+    }
+
+    // Auto-schedule follow-up for each task so the orchestrator gets reminded
+    this.scheduleFollowUpsAsync(tasks);
+
+    return tasks;
+  }
+
+  /**
+   * Schedule follow-up reminders for newly created tasks.
+   * Lazy-imports IntentTaskFollowUpService to avoid circular dependency.
+   * Runs asynchronously — does not block task creation.
+   *
+   * @param tasks - Newly created tasks to schedule follow-ups for
+   */
+  private scheduleFollowUpsAsync(tasks: IntentTask[]): void {
+    import('./intent-task-follow-up.service.js').then(({ IntentTaskFollowUpService }) => {
+      const followUpService = IntentTaskFollowUpService.getInstance();
+      for (const task of tasks) {
+        try {
+          followUpService.scheduleFollowUp(task.id);
+        } catch {
+          // Best-effort — don't fail task creation if follow-up scheduling fails
+        }
+      }
+    }).catch(() => {
+      // Follow-up service not available — tasks still created successfully
+    });
   }
 
   /**
@@ -402,6 +465,18 @@ export class IntentTaskService {
         // Clear schedule association on terminal status
         task.scheduleId = undefined;
       }
+    }
+
+    if (input.intent !== undefined && input.intent.trim()) {
+      task.intent = input.intent.trim();
+    }
+
+    if (input.level !== undefined) {
+      task.level = input.level;
+    }
+
+    if (input.category !== undefined) {
+      task.category = input.category;
     }
 
     if (input.result !== undefined) {

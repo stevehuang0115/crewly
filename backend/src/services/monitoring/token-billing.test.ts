@@ -10,7 +10,6 @@
  * @module services/monitoring/token-billing.test
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
 import { TokenUsageService, calculateCost, TOKEN_COSTS } from './token-usage.service.js';
 
 describe('Token Billing Integration', () => {

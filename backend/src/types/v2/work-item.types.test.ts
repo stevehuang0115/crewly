@@ -4,7 +4,6 @@
  * @module types/v2/work-item.types.test
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   WORK_ITEM_TYPES,
   WORK_ITEM_OWNERS,

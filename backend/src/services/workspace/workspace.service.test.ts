@@ -7,7 +7,6 @@
  * @module services/workspace/workspace.service.test
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { WorkspaceService } from './workspace.service.js';
 import type { WorkspaceStorage } from './workspace.service.js';
 import {
@@ -144,7 +143,7 @@ describe('WorkspaceService', () => {
 
       try {
         await service.write(ws.id, { expectedVersion: 1, data: {}, writerId: 'owner-1' });
-        expect.unreachable('Should have thrown');
+        fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(WorkspaceConflictError);
         const conflict = err as WorkspaceConflictError;

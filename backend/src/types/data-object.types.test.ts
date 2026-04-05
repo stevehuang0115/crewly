@@ -5,7 +5,6 @@
  * and structural checks on interface-conforming objects.
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   DATA_CONSTANTS,
   type DataObject,

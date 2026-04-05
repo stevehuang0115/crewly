@@ -7,7 +7,6 @@
  * @module controllers/reconciler/reconciler.controller.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import {
   getReconcilerStatus,
@@ -39,14 +38,14 @@ function createMockRequest(query: Record<string, string> = {}): Request {
  */
 function createMockResponse(): Response {
   const res = {
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
   } as unknown as Response;
   return res;
 }
 
 /** No-op next function for tests */
-const mockNext: NextFunction = vi.fn();
+const mockNext: NextFunction = jest.fn();
 
 /**
  * Creates a mock ReconcileResult for testing.
@@ -60,11 +59,14 @@ function createMockReconcileResult(overrides?: Partial<ReconcileResult>): Reconc
     workItemsTimedOut: 0,
     workItemsRequeued: 0,
     triggersRebuilt: 0,
+    claimsRevoked: 0,
     staleItemsCleaned: 0,
     reconciledAt: '2026-04-05T03:00:00.000Z',
     durationMs: 42,
     type: 'full',
+    agentsWoken: 0,
     corrections: [],
+    wakeActions: [],
     errors: [],
     ...overrides,
   };
@@ -103,14 +105,14 @@ function createMockReconcilerStatus(overrides?: Partial<ReconcilerStatus>): Reco
  */
 function createMockReconcilerService(): ReconcilerService {
   return {
-    start: vi.fn(),
-    stop: vi.fn(),
-    runFull: vi.fn().mockResolvedValue(createMockReconcileResult()),
-    runFast: vi.fn().mockResolvedValue(createMockReconcileResult({ type: 'fast' })),
-    reconcileRequest: vi.fn().mockResolvedValue(createMockReconcileResult({ type: 'targeted_request' })),
-    getStatus: vi.fn().mockReturnValue(createMockReconcilerStatus()),
-    getHistory: vi.fn().mockReturnValue([createMockReconcileResult()]),
-    updateConfig: vi.fn(),
+    start: jest.fn(),
+    stop: jest.fn(),
+    runFull: jest.fn().mockResolvedValue(createMockReconcileResult()),
+    runFast: jest.fn().mockResolvedValue(createMockReconcileResult({ type: 'fast' })),
+    reconcileRequest: jest.fn().mockResolvedValue(createMockReconcileResult({ type: 'targeted_request' })),
+    getStatus: jest.fn().mockReturnValue(createMockReconcilerStatus()),
+    getHistory: jest.fn().mockReturnValue([createMockReconcileResult()]),
+    updateConfig: jest.fn(),
   } as unknown as ReconcilerService;
 }
 
@@ -122,7 +124,7 @@ describe('ReconcilerController', () => {
   let service: ReconcilerService;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
     service = createMockReconcilerService();
     setReconcilerService(service);
   });
@@ -151,7 +153,7 @@ describe('ReconcilerController', () => {
 
       await getReconcilerStatus(req, res, mockNext);
 
-      expect(service.getStatus).toHaveBeenCalledOnce();
+      expect(service.getStatus).toHaveBeenCalledTimes(1);
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         data: expect.objectContaining({
@@ -164,7 +166,7 @@ describe('ReconcilerController', () => {
 
     it('forwards unexpected errors to next()', async () => {
       const error = new Error('unexpected');
-      (service.getStatus as ReturnType<typeof vi.fn>).mockImplementation(() => { throw error; });
+      (service.getStatus as jest.Mock).mockImplementation(() => { throw error; });
       const req = createMockRequest();
       const res = createMockResponse();
 
@@ -194,7 +196,7 @@ describe('ReconcilerController', () => {
 
       await runReconcile(req, res, mockNext);
 
-      expect(service.runFull).toHaveBeenCalledOnce();
+      expect(service.runFull).toHaveBeenCalledTimes(1);
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         data: expect.objectContaining({
@@ -206,7 +208,7 @@ describe('ReconcilerController', () => {
 
     it('forwards errors to next()', async () => {
       const error = new Error('reconcile failed');
-      (service.runFull as ReturnType<typeof vi.fn>).mockRejectedValue(error);
+      (service.runFull as jest.Mock).mockRejectedValue(error);
       const req = createMockRequest();
       const res = createMockResponse();
 
@@ -303,7 +305,7 @@ describe('ReconcilerController', () => {
 
     it('forwards unexpected errors to next()', async () => {
       const error = new Error('history failed');
-      (service.getHistory as ReturnType<typeof vi.fn>).mockImplementation(() => { throw error; });
+      (service.getHistory as jest.Mock).mockImplementation(() => { throw error; });
       const req = createMockRequest();
       const res = createMockResponse();
 

@@ -5,15 +5,14 @@
  * SchemaRegistry, and SinkRegistry services.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response } from 'express';
 import { getSyncStatus } from './data.controller.js';
 
 /** Create a mock Express response. */
 function mockRes(): Response {
   const res = {
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
   } as unknown as Response;
   return res;
 }
@@ -30,7 +29,7 @@ function mockReq(overrides?: Partial<Request>): Request {
 
 describe('Data Controller', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
   });
 
   describe('getSyncStatus', () => {

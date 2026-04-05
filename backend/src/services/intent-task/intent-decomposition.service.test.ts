@@ -7,7 +7,6 @@
  * @module services/intent-task/intent-decomposition.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IntentDecompositionService } from './intent-decomposition.service.js';
 import { IntentTaskService } from './intent-task.service.js';
 import { join } from 'path';
@@ -19,14 +18,14 @@ import { tmpdir } from 'os';
 // =============================================================================
 
 // Mock LoggerService
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        debug: vi.fn(),
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
       }),
     }),
   },

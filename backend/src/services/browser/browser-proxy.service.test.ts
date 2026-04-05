@@ -4,16 +4,15 @@
  * @module services/browser/browser-proxy.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import { BrowserProxyService } from './browser-proxy.service.js';
 
 // Capture event handlers registered on mock WebSocket instances
 type WsHandler = (...args: unknown[]) => void;
 interface MockWsInstance {
-  on: Mock;
-  send: Mock;
-  close: Mock;
-  removeAllListeners: Mock;
+  on: jest.Mock;
+  send: jest.Mock;
+  close: jest.Mock;
+  removeAllListeners: jest.Mock;
   readyState: number;
   _handlers: Record<string, WsHandler>;
   _trigger: (event: string, ...args: unknown[]) => void;
@@ -27,12 +26,12 @@ interface MockWsInstance {
 function createMockWs(): MockWsInstance {
   const handlers: Record<string, WsHandler> = {};
   const ws: MockWsInstance = {
-    on: vi.fn((event: string, handler: WsHandler) => {
+    on: jest.fn((event: string, handler: WsHandler) => {
       handlers[event] = handler;
     }),
-    send: vi.fn(),
-    close: vi.fn(),
-    removeAllListeners: vi.fn(),
+    send: jest.fn(),
+    close: jest.fn(),
+    removeAllListeners: jest.fn(),
     readyState: 1, // OPEN
     _handlers: handlers,
     _trigger: (event: string, ...args: unknown[]) => {
@@ -44,29 +43,30 @@ function createMockWs(): MockWsInstance {
 
 let latestMockWs: MockWsInstance | null = null;
 
-// Mock ws module
-vi.mock('ws', () => {
-  const MockWebSocket = vi.fn().mockImplementation(() => {
+// jest.Mock ws module
+jest.mock('ws', () => {
+  const MockWebSocket = jest.fn().mockImplementation(() => {
     const ws = createMockWs();
     latestMockWs = ws;
     return ws;
   });
-  (MockWebSocket as Record<string, unknown>).OPEN = 1;
+  (MockWebSocket as any).OPEN = 1;
   return {
+    __esModule: true,
     default: MockWebSocket,
     WebSocket: MockWebSocket,
   };
 });
 
-// Mock logger
-vi.mock('../core/logger.service.js', () => ({
+// jest.Mock logger
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
@@ -74,7 +74,7 @@ vi.mock('../core/logger.service.js', () => ({
 
 describe('BrowserProxyService', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    jest.useFakeTimers();
     BrowserProxyService.resetInstance();
     latestMockWs = null;
   });
@@ -87,8 +87,8 @@ describe('BrowserProxyService', () => {
       // ignore
     }
     BrowserProxyService.resetInstance();
-    vi.useRealTimers();
-    vi.clearAllMocks();
+    jest.useRealTimers();
+    jest.clearAllMocks();
   });
 
   describe('singleton pattern', () => {
@@ -304,7 +304,7 @@ describe('BrowserProxyService', () => {
       const cmdPromise = proxy.sendCommand('screenshot', {}, undefined, 5000);
 
       // Advance time past timeout
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
 
       await expect(cmdPromise).rejects.toThrow("timed out after 5000ms");
     });
@@ -460,7 +460,7 @@ describe('BrowserProxyService', () => {
       expect(proxy.getState()).toBe('disconnected');
 
       // Advance past reconnect delay (5000ms)
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
 
       // Should have created a new WebSocket
       expect(latestMockWs).not.toBe(firstWs);
@@ -480,7 +480,7 @@ describe('BrowserProxyService', () => {
       const wsAfterDisconnect = latestMockWs;
 
       // Advance past reconnect delay
-      vi.advanceTimersByTime(10000);
+      jest.advanceTimersByTime(10000);
 
       // Should NOT have created a new WebSocket
       expect(latestMockWs).toBe(wsAfterDisconnect);
@@ -512,7 +512,7 @@ describe('BrowserProxyService', () => {
       const wsAfterClose = latestMockWs;
 
       // Should schedule reconnect with authToken fallback (5s delay)
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
 
       // New WS should be created using the authToken fallback
       expect(latestMockWs).not.toBe(wsAfterClose);
@@ -541,7 +541,7 @@ describe('BrowserProxyService', () => {
       latestMockWs!._trigger('close', 4003, Buffer.from('Authentication failed'));
 
       // Advance past reconnect delay
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
 
       // Should have created a new WS
       expect(latestMockWs).not.toBe(firstWs);
@@ -589,22 +589,22 @@ describe('BrowserProxyService', () => {
 
       // Drain the auto-reconnect timer — advance past it but don't let the new
       // WS register, so it keeps disconnecting with backoff.
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
       // New WS created by auto-reconnect, but we simulate it failing too
       latestMockWs!._trigger('close', 4003, Buffer.from('Still auth failed'));
 
       // Now advance past second backoff (10s)
-      vi.advanceTimersByTime(10001);
+      jest.advanceTimersByTime(10001);
       // Third attempt, also fails
       latestMockWs!._trigger('close', 4003, Buffer.from('Still failing'));
 
       // Advance past third backoff (20s)
-      vi.advanceTimersByTime(20001);
+      jest.advanceTimersByTime(20001);
       // Fourth attempt fails
       latestMockWs!._trigger('close', 4003, Buffer.from('Still failing'));
 
       // Now there's a pending reconnect timer. Let it fire (40s backoff)
-      vi.advanceTimersByTime(40001);
+      jest.advanceTimersByTime(40001);
       // Fifth attempt fails, now at 60s max backoff
       latestMockWs!._trigger('close', 4003, Buffer.from('Still failing'));
 
@@ -619,7 +619,7 @@ describe('BrowserProxyService', () => {
       expect(latestMockWs).toBe(wsBeforeUpdate);
 
       // Now advance past the 60s timer
-      vi.advanceTimersByTime(60001);
+      jest.advanceTimersByTime(60001);
       // This reconnect attempt should use the fresh token
       expect(latestMockWs).not.toBe(wsBeforeUpdate);
       latestMockWs!._trigger('open');
@@ -656,7 +656,7 @@ describe('BrowserProxyService', () => {
       expect(proxy.getState()).toBe('disconnected');
 
       // Advance past the 5s reconnect timer — it fires and creates a new WS
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
       // That new WS connects and registers
       latestMockWs!._trigger('open');
       latestMockWs!._trigger(
@@ -670,7 +670,7 @@ describe('BrowserProxyService', () => {
       expect(proxy.getState()).toBe('disconnected');
 
       // Let the 5s reconnect fire → new WS is created but fails before registering
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
       latestMockWs!._trigger('close', 4003, Buffer.from('Still expired'));
 
       // Now in 10s backoff. Rather than wait for the timer, call updateToken
@@ -680,7 +680,7 @@ describe('BrowserProxyService', () => {
 
       // Timer is pending so no immediate reconnect
       // Advance past the 10s timer
-      vi.advanceTimersByTime(10001);
+      jest.advanceTimersByTime(10001);
 
       // The timer should have fired with the fresh token
       expect(latestMockWs).not.toBe(wsBeforeFreshToken);
@@ -740,7 +740,7 @@ describe('BrowserProxyService', () => {
       const firstWs = latestMockWs;
 
       // 5s delay for first reconnect
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
       expect(latestMockWs).not.toBe(firstWs);
 
       // Simulate immediate close (no registration) → 10s delay
@@ -749,11 +749,11 @@ describe('BrowserProxyService', () => {
       latestMockWs!._trigger('close', 4003, Buffer.from('Auth failed'));
 
       // 5s should NOT be enough now (exponential: 10s)
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
       expect(latestMockWs).toBe(secondWs);
 
       // 10s total should trigger reconnect
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
       expect(latestMockWs).not.toBe(secondWs);
     });
   });
@@ -778,7 +778,7 @@ describe('BrowserProxyService', () => {
       // Now close → reconnect should use token-v2
       latestMockWs!._trigger('close', 4003, Buffer.from('Authentication failed'));
 
-      vi.advanceTimersByTime(5001);
+      jest.advanceTimersByTime(5001);
       latestMockWs!._trigger('open');
 
       const sent = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);

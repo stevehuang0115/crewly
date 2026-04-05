@@ -4,7 +4,6 @@
  * @module services/policy/policy-enforcement.service.test
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
 import { PolicyEnforcementService } from './policy-enforcement.service.js';
 import { createMission, createMissionPolicy } from '../../types/v2/index.js';
 import type { Mission, EscalationContext, EscalationRule, PolicyAction } from '../../types/v2/index.js';

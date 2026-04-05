@@ -94,6 +94,12 @@ import { AuditorSchedulerService } from './services/agent/auditor-scheduler.serv
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
 import { AddonLoaderService } from './services/addon/addon-loader.service.js';
 import { CronTaskService } from './services/workflow/cron-task.service.js';
+import { ReconcilerService, type ReconcilerDataProvider } from './services/reconciler/reconciler.service.js';
+import { LiveReconcilerDataProvider } from './services/reconciler/reconciler-data-provider.js';
+import { setReconcilerService } from './controllers/reconciler/reconciler.controller.js';
+import { FissionGuardService, type FissionDataProvider } from './services/fission/fission-guard.service.js';
+import { setFissionGuardService } from './controllers/fission/fission.controller.js';
+import { TaskPoolService } from './services/task-pool/task-pool.service.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -162,6 +168,7 @@ export class CrewlyServer {
 	private eventBusService!: EventBusService;
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
+	private reconcilerService: ReconcilerService | null = null;
 
 	// Shutdown state
 	private isShuttingDown = false;
@@ -370,6 +377,81 @@ export class CrewlyServer {
 				}
 			}
 		});
+
+		// Initialize Reconciler Service (V2 — system truth recomputation)
+		{
+			const reconcilerLogger = LoggerService.getInstance().createComponentLogger('ReconcilerInit');
+
+			// Live data provider — connects Reconciler to Task Pool, Claim Service,
+			// Storage Service, and Agent Suspend for real reconciliation including
+			// Hybrid Wake (auto-rehydrating suspended agents when tasks go unclaimed).
+			const liveDataProvider = new LiveReconcilerDataProvider();
+
+			this.reconcilerService = new ReconcilerService(liveDataProvider);
+			setReconcilerService(this.reconcilerService);
+
+			// Subscribe EventBus events for targeted reconciliation
+			if (this.reconcilerService) {
+				const reconciler = this.reconcilerService;
+				const eventTypes = ['agent:idle', 'task:completed', 'task:failed', 'agent:inactive'] as const;
+				for (const eventType of eventTypes) {
+					this.eventBusService.subscribe({
+						eventType,
+						filter: {},
+						subscriberSession: '__reconciler__',
+						oneShot: false,
+						ttlMinutes: 525_600, // 1 year — permanent subscription
+					});
+				}
+
+				// Listen for all published events and trigger targeted reconciliation
+				this.eventBusService.on('event_published', (payload: { eventType: string; sessionName: string }) => {
+					const targetedEventTypes = ['task:completed', 'task:failed', 'agent:idle', 'agent:inactive'];
+					if (targetedEventTypes.includes(payload.eventType)) {
+						reconciler.runFast().catch((err) => {
+							reconcilerLogger.warn('Event-triggered fast reconcile failed', {
+								eventType: payload.eventType,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						});
+					}
+				});
+			}
+
+			reconcilerLogger.info('ReconcilerService initialized and wired to EventBus');
+		}
+
+		// Initialize Fission Guard Service
+		{
+			const fissionLogger = LoggerService.getInstance().createComponentLogger('FissionInit');
+			try {
+				const taskPool = TaskPoolService.getInstance();
+
+				// FissionDataProvider backed by TaskPoolService storage
+				const fissionDataProvider: FissionDataProvider = {
+					async getWorkItemById(id: string) {
+						const items = await taskPool.getAllItems();
+						return items.find((i) => i.id === id) ?? null;
+					},
+					async countMissionWorkItems(missionId: string) {
+						const items = await taskPool.getAllItems();
+						return items.filter((i) => i.missionId === missionId).length;
+					},
+					async countChildWorkItems(parentWorkItemId: string) {
+						const items = await taskPool.getAllItems();
+						return items.filter((i) => i.parentWorkItemId === parentWorkItemId).length;
+					},
+				};
+
+				const fissionService = FissionGuardService.init(fissionDataProvider);
+				setFissionGuardService(fissionService);
+				fissionLogger.info('FissionGuardService initialized');
+			} catch (fissionErr) {
+				fissionLogger.warn('FissionGuardService initialization failed (non-fatal)', {
+					error: fissionErr instanceof Error ? fissionErr.message : String(fissionErr),
+				});
+			}
+		}
 
 		// Broadcast queue events via Socket.IO
 		this.messageQueueService.on('enqueued', (msg) => {
@@ -1063,6 +1145,25 @@ export class CrewlyServer {
 				this.logger.warn('Token usage initialization failed (non-fatal)', {
 					error: tokenErr instanceof Error ? tokenErr.message : String(tokenErr),
 				});
+			}
+
+			// Start Reconciler: run initial full reconcile and start loops
+			if (this.reconcilerService) {
+				try {
+					this.logger.info('Running initial full reconciliation...');
+					const initialResult = await this.reconcilerService.runFull();
+					this.logger.info('Initial reconciliation complete', {
+						durationMs: initialResult.durationMs,
+						corrections: initialResult.corrections.length,
+						errors: initialResult.errors.length,
+					});
+					this.reconcilerService.start();
+					this.logger.info('Reconciler loops started (fast: 10s, full: 60s)');
+				} catch (reconcilerErr) {
+					this.logger.warn('Reconciler startup failed (non-fatal)', {
+						error: reconcilerErr instanceof Error ? reconcilerErr.message : String(reconcilerErr),
+					});
+				}
 			}
 
 			// Start HTTP server with enhanced error handling
@@ -1819,6 +1920,12 @@ export class CrewlyServer {
 			// Stop system resource alert monitoring
 			if (this.systemResourceAlertService) {
 				this.systemResourceAlertService.stopMonitoring();
+			}
+
+			// Stop Reconciler loops (V2)
+			if (this.reconcilerService) {
+				this.reconcilerService.stop();
+				this.logger.info('Reconciler stopped');
 			}
 
 			// Stop NOTIFY reconciliation service

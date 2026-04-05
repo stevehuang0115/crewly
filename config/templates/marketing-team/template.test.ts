@@ -7,7 +7,7 @@
  * @module templates/marketing-team/template.test
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import {

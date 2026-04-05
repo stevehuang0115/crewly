@@ -1,14 +1,17 @@
 /**
- * Message Group Card Component
+ * Message Group Card Component — V2
  *
  * Renders a message group as an expandable card with derived group state,
  * progress pill, and collapsible task list.
+ *
+ * V2 adds: agent assignment passthrough to TaskRow.
  *
  * @module components/TaskTracking/MessageGroupCard
  */
 
 import React, { useState, useCallback } from 'react';
 import { TaskRow } from './TaskRow';
+import type { AvailableAgent } from './TaskRow';
 import type { MessageGroup } from './task-tracking.types';
 import { deriveGroupState, formatRelativeTime } from './task-tracking.types';
 import type { GroupState } from './task-tracking.types';
@@ -24,6 +27,10 @@ interface MessageGroupCardProps {
   defaultExpanded?: boolean;
   /** Callback when a task toggle is triggered */
   onTaskToggle?: (taskId: string) => void;
+  /** Callback when an agent is assigned to a task */
+  onAssignAgent?: (taskId: string, sessionName: string) => void;
+  /** List of available agents for assignment */
+  availableAgents?: AvailableAgent[];
 }
 
 // =============================================================================
@@ -56,7 +63,7 @@ function getGroupStateClass(state: GroupState): string {
  * Expandable card representing a message group with derived status.
  *
  * Header shows: message preview (2 lines), timestamp, progress pill, group state badge.
- * Body shows: list of TaskRow components.
+ * Body shows: list of TaskRow components with assign agent support.
  *
  * @param props - Component props
  * @returns Message group card JSX element
@@ -65,6 +72,8 @@ export const MessageGroupCard: React.FC<MessageGroupCardProps> = ({
   group,
   defaultExpanded = false,
   onTaskToggle,
+  onAssignAgent,
+  availableAgents,
 }) => {
   const [expanded, setExpanded] = useState(defaultExpanded);
 
@@ -126,7 +135,13 @@ export const MessageGroupCard: React.FC<MessageGroupCardProps> = ({
       {expanded && (
         <div className="message-group-card-body" data-testid="message-group-body">
           {group.tasks.map((task) => (
-            <TaskRow key={task.id} task={task} onToggle={onTaskToggle} />
+            <TaskRow
+              key={task.id}
+              task={task}
+              onToggle={onTaskToggle}
+              onAssignAgent={onAssignAgent}
+              availableAgents={availableAgents}
+            />
           ))}
         </div>
       )}

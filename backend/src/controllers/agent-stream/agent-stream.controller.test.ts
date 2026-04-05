@@ -4,7 +4,6 @@
  * @module controllers/agent-stream/agent-stream.controller.test
  */
 
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { streamAgentEvents } from './agent-stream.controller.js';
 import { AgentStreamService } from '../../services/agent/crewly-agent/agent-stream.service.js';
 
@@ -33,10 +32,10 @@ function mockResponse(): any {
   const written: string[] = [];
   return {
     setHeader: (key: string, value: string) => { headers[key] = value; },
-    flushHeaders: vi.fn(),
-    write: vi.fn((data: string) => { written.push(data); return true; }),
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn(),
+    flushHeaders: jest.fn(),
+    write: jest.fn((data: string) => { written.push(data); return true; }),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn(),
     _headers: headers,
     _written: written,
   };
@@ -102,7 +101,7 @@ describe('streamAgentEvents', () => {
     const streamService = AgentStreamService.getInstance();
     streamService.emitTextChunk('my-agent', 'Hello world');
 
-    expect(res.write).toHaveBeenCalledOnce();
+    expect(res.write).toHaveBeenCalledTimes(1);
     const eventData = res._written[0];
     const parsed = JSON.parse(eventData.replace('data: ', '').trim());
     expect(parsed.type).toBe('text_chunk');

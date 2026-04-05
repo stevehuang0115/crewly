@@ -4,7 +4,6 @@
  * @module types/v2/trigger.types.test
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   TRIGGER_TYPES,
   TRIGGER_STATUSES,

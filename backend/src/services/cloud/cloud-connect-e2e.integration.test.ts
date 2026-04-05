@@ -17,7 +17,6 @@
  * @module services/cloud/cloud-connect-e2e.integration.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CloudSyncService } from './cloud-sync.service.js';
 import { CLOUD_SYNC_CONSTANTS, AUTH_CONSTANTS } from '../../constants.js';
 import type {
@@ -933,7 +932,7 @@ describe('Cloud Connect E2E — Resilience', () => {
     (sync as any).config = makeConfig();
     (sync as any).state = 'syncing';
 
-    const messageSpy = vi.fn();
+    const messageSpy = jest.fn();
     sync.on('message', messageSpy);
 
     await sync.pollMessages();

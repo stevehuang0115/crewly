@@ -426,6 +426,39 @@ class ApiService {
     await axios.post(`${API_BASE}/sessions/previous/dismiss`);
   }
 
+  // ============ Intent Task Methods ============
+
+  /**
+   * Fetches aggregate intent task statistics.
+   *
+   * @returns Promise resolving to statistics with task counts by status, level, tokens, and cost
+   */
+  async getIntentTaskStatistics(): Promise<{
+    totalTasks: number;
+    byStatus: Record<string, number>;
+    byLevel: Record<string, number>;
+    totalTokens: number;
+    totalCost: number;
+    llmCost: number;
+    skillCost: number;
+    totalMessages: number;
+  }> {
+    const response = await axios.get<ApiResponse<{
+      totalTasks: number;
+      byStatus: Record<string, number>;
+      byLevel: Record<string, number>;
+      totalTokens: number;
+      totalCost: number;
+      llmCost: number;
+      skillCost: number;
+      totalMessages: number;
+    }>>(`${API_BASE}/intent-tasks/statistics`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to get intent task statistics');
+    }
+    return response.data.data;
+  }
+
   // ============ Task Methods (from markdown files) ============
 
   /**

@@ -1,17 +1,17 @@
 /**
- * Task Row Component — V3
+ * Task Row Component — V4
  *
  * Renders a single intent task as a 2-tier row:
  * - Top line: status icon + intent text + status badge
- * - Bottom line: level badge + category + agents + updated time
+ * - Bottom line: level badge + category + agents + assign button + updated time
  * - Expandable details: tokens, cost, runs (hidden by default)
  *
- * Replaces the checkbox-based V2 design with state dot/check-circle icons.
+ * V4 adds: "Assign Agent" action to map intent tasks to worker agents.
  *
  * @module components/TaskTracking/TaskRow
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useRef, useEffect } from 'react';
 import type { IntentTaskSummary } from './task-tracking.types';
 import {
   getStatusLabel,
@@ -26,11 +26,31 @@ import {
 // Types
 // =============================================================================
 
+/**
+ * Available agent info for the assign dropdown
+ */
+export interface AvailableAgent {
+  /** Agent session name (unique identifier) */
+  sessionName: string;
+  /** Display name */
+  name: string;
+  /** Agent role */
+  role: string;
+  /** Agent status */
+  agentStatus: string;
+  /** Working status */
+  workingStatus: string;
+}
+
 interface TaskRowProps {
   /** Task summary data */
   task: IntentTaskSummary;
   /** Callback when the task state is toggled */
   onToggle?: (taskId: string) => void;
+  /** Callback when an agent is assigned to the task */
+  onAssignAgent?: (taskId: string, sessionName: string) => void;
+  /** List of available agents for assignment */
+  availableAgents?: AvailableAgent[];
 }
 
 // =============================================================================
@@ -62,24 +82,79 @@ const StatusIcon: React.FC<{ status: string; statusClass: string }> = ({ status,
   );
 };
 
+/**
+ * Agent assignment dropdown for mapping intent tasks to worker agents.
+ *
+ * @param props - Available agents and selection callback
+ * @returns Dropdown component or null
+ */
+const AssignAgentDropdown: React.FC<{
+  agents: AvailableAgent[];
+  assignedSessions: string[];
+  onSelect: (sessionName: string) => void;
+  onClose: () => void;
+}> = ({ agents, assignedSessions, onSelect, onClose }) => {
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [onClose]);
+
+  const unassigned = agents.filter((a) => !assignedSessions.includes(a.sessionName));
+
+  return (
+    <div className="task-assign-dropdown" ref={dropdownRef} data-testid="assign-dropdown">
+      {unassigned.length === 0 ? (
+        <div className="task-assign-dropdown-empty">All agents assigned</div>
+      ) : (
+        unassigned.map((agent) => (
+          <button
+            key={agent.sessionName}
+            className="task-assign-dropdown-item"
+            onClick={() => onSelect(agent.sessionName)}
+            data-testid={`assign-agent-${agent.sessionName}`}
+          >
+            <span className={`task-assign-agent-dot task-assign-agent-dot--${agent.agentStatus === 'active' ? 'active' : 'inactive'}`} />
+            <span className="task-assign-agent-name">{agent.name}</span>
+            <span className="task-assign-agent-role">{agent.role}</span>
+            {agent.workingStatus === 'in_progress' && (
+              <span className="task-assign-agent-busy">busy</span>
+            )}
+          </button>
+        ))
+      )}
+    </div>
+  );
+};
+
 // =============================================================================
 // Component
 // =============================================================================
 
 /**
- * Single task row with 2-tier layout and expandable details.
+ * Single task row with 2-tier layout, assign agent action, and expandable details.
  *
  * @param props - Component props
  * @returns JSX element with task row
  */
-export const TaskRow: React.FC<TaskRowProps> = ({ task, onToggle }) => {
+export const TaskRow: React.FC<TaskRowProps> = ({ task, onToggle, onAssignAgent, availableAgents }) => {
   const [showDetails, setShowDetails] = useState(false);
+  const [showAssignDropdown, setShowAssignDropdown] = useState(false);
 
   const statusLabel = getStatusLabel(task.status);
   const statusClass = getStatusClass(task.status);
   const levelInfo = getLevelInfo(task.level);
   const isDone = task.status === 'completed';
+  const isCancelled = task.status === 'cancelled';
   const hasDetails = task.totalTokens > 0 || task.totalCost > 0 || task.runCount > 0;
+  const canAssign = !isDone && !isCancelled && onAssignAgent && availableAgents && availableAgents.length > 0;
 
   /** Toggle details disclosure */
   const handleDetailsToggle = useCallback(() => {
@@ -90,6 +165,23 @@ export const TaskRow: React.FC<TaskRowProps> = ({ task, onToggle }) => {
   const handleToggle = useCallback(() => {
     onToggle?.(task.id);
   }, [onToggle, task.id]);
+
+  /** Handle assign button click */
+  const handleAssignClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setShowAssignDropdown((prev) => !prev);
+  }, []);
+
+  /** Handle agent selection from dropdown */
+  const handleAgentSelect = useCallback((sessionName: string) => {
+    onAssignAgent?.(task.id, sessionName);
+    setShowAssignDropdown(false);
+  }, [onAssignAgent, task.id]);
+
+  /** Close assign dropdown */
+  const handleCloseDropdown = useCallback(() => {
+    setShowAssignDropdown(false);
+  }, []);
 
   return (
     <div
@@ -123,7 +215,7 @@ export const TaskRow: React.FC<TaskRowProps> = ({ task, onToggle }) => {
         </span>
       </div>
 
-      {/* Bottom line: level + category + agents + time */}
+      {/* Bottom line: level + category + agents + assign + time */}
       <div className="task-row-bottom" data-testid="task-row-bottom">
         <span
           className={`task-row-level task-row-level--${task.level.toLowerCase()}`}
@@ -138,6 +230,32 @@ export const TaskRow: React.FC<TaskRowProps> = ({ task, onToggle }) => {
         {task.assignedSessions.length > 0 && (
           <span className="task-row-agents" title={task.assignedSessions.join(', ')} data-testid="task-agents">
             {task.assignedSessions.length} agent{task.assignedSessions.length > 1 ? 's' : ''}
+          </span>
+        )}
+
+        {canAssign && (
+          <span className="task-row-assign-container">
+            <button
+              className="task-row-assign-btn"
+              onClick={handleAssignClick}
+              aria-label="Assign agent"
+              data-testid="task-assign-btn"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="8" cy="5" r="3" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                <path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                <path d="M12 3v4M10 5h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+              <span>Assign</span>
+            </button>
+            {showAssignDropdown && (
+              <AssignAgentDropdown
+                agents={availableAgents!}
+                assignedSessions={task.assignedSessions}
+                onSelect={handleAgentSelect}
+                onClose={handleCloseDropdown}
+              />
+            )}
           </span>
         )}
 

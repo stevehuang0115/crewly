@@ -7,7 +7,6 @@
  * @module controllers/mission/mission-policy.controller.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Request, Response } from 'express';
 import {
   getPolicy,
@@ -24,11 +23,11 @@ import { createMission, createMissionPolicy } from '../../types/v2/index.js';
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('fs/promises');
-vi.mock('../../utils/file-io.utils.js', () => ({
-  ensureDir: vi.fn().mockResolvedValue(undefined),
-  atomicWriteJson: vi.fn().mockResolvedValue(undefined),
-  safeReadJson: vi.fn().mockResolvedValue(null),
+jest.mock('fs/promises');
+jest.mock('../../utils/file-io.utils.js', () => ({
+  ensureDir: jest.fn().mockResolvedValue(undefined),
+  atomicWriteJson: jest.fn().mockResolvedValue(undefined),
+  safeReadJson: jest.fn().mockResolvedValue(null),
 }));
 
 import * as fileIo from '../../utils/file-io.utils.js';
@@ -90,7 +89,7 @@ function createTestMission(id: string = 'mission-1'): Mission {
 
 describe('MissionPolicy Controller', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
     resetEnforcementService();
   });
 
@@ -109,7 +108,7 @@ describe('MissionPolicy Controller', () => {
     });
 
     it('returns 404 when mission is not found', async () => {
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(null);
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(null);
 
       const req = mockRequest({ params: { id: 'nonexistent' } });
       const res = mockResponse();
@@ -122,7 +121,7 @@ describe('MissionPolicy Controller', () => {
 
     it('returns the policy for an existing mission', async () => {
       const mission = createTestMission('m-abc');
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
 
       const req = mockRequest({ params: { id: 'm-abc' } });
       const res = mockResponse();
@@ -137,7 +136,7 @@ describe('MissionPolicy Controller', () => {
     });
 
     it('returns 500 on internal error', async () => {
-      vi.mocked(fileIo.safeReadJson).mockRejectedValueOnce(new Error('disk failure'));
+      jest.mocked(fileIo.safeReadJson).mockRejectedValueOnce(new Error('disk failure'));
 
       const req = mockRequest({ params: { id: 'm-1' } });
       const res = mockResponse();
@@ -204,7 +203,7 @@ describe('MissionPolicy Controller', () => {
     });
 
     it('returns 404 when mission is not found', async () => {
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(null);
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(null);
 
       const req = mockRequest({
         params: { id: 'nonexistent' },
@@ -219,7 +218,7 @@ describe('MissionPolicy Controller', () => {
 
     it('updates policy fields and persists', async () => {
       const mission = createTestMission('m-upd');
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
 
       const req = mockRequest({
         params: { id: 'm-upd' },
@@ -242,7 +241,7 @@ describe('MissionPolicy Controller', () => {
 
     it('updates escalation rules when provided', async () => {
       const mission = createTestMission('m-esc');
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
 
       const newRules = [
         { condition: 'cost_exceeded' as const, threshold: 100, escalateTo: 'user' as const, action: 'block' as const },
@@ -264,8 +263,8 @@ describe('MissionPolicy Controller', () => {
 
     it('returns 500 on internal error', async () => {
       const mission = createTestMission('m-err');
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
-      vi.mocked(fileIo.atomicWriteJson).mockRejectedValueOnce(new Error('write failed'));
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
+      jest.mocked(fileIo.atomicWriteJson).mockRejectedValueOnce(new Error('write failed'));
 
       const req = mockRequest({
         params: { id: 'm-err' },
@@ -316,7 +315,7 @@ describe('MissionPolicy Controller', () => {
     });
 
     it('returns 404 when mission is not found', async () => {
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(null);
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(null);
 
       const req = mockRequest({
         params: { id: 'ghost' },
@@ -332,7 +331,7 @@ describe('MissionPolicy Controller', () => {
     it('returns allowed=true for permitted action', async () => {
       const mission = createTestMission('m-chk');
       // Moderate policy allows create_task
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
 
       const req = mockRequest({
         params: { id: 'm-chk' },
@@ -351,7 +350,7 @@ describe('MissionPolicy Controller', () => {
     it('returns allowed=false for blocked action', async () => {
       const mission = createTestMission('m-blk');
       // Moderate policy blocks deploy_prod
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
 
       const req = mockRequest({
         params: { id: 'm-blk' },
@@ -373,7 +372,7 @@ describe('MissionPolicy Controller', () => {
       mission.policy.escalationRules = [
         { condition: 'cost_exceeded', threshold: 50, escalateTo: 'user', action: 'block' },
       ];
-      vi.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
+      jest.mocked(fileIo.safeReadJson).mockResolvedValueOnce(mission);
 
       const req = mockRequest({
         params: { id: 'm-esc-chk' },
@@ -406,7 +405,7 @@ describe('MissionPolicy Controller', () => {
     });
 
     it('returns 500 on internal error', async () => {
-      vi.mocked(fileIo.safeReadJson).mockRejectedValueOnce(new Error('read error'));
+      jest.mocked(fileIo.safeReadJson).mockRejectedValueOnce(new Error('read error'));
 
       const req = mockRequest({
         params: { id: 'm-1' },

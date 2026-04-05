@@ -2,7 +2,6 @@
  * Tests for Content Approval type constants.
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   CONTENT_APPROVAL_TTL_MS,
   MAX_PENDING_APPROVALS,

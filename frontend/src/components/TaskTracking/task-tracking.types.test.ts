@@ -148,7 +148,7 @@ describe('getFilterStatuses', () => {
   });
 
   it('returns active statuses', () => {
-    expect(getFilterStatuses('active')).toEqual(['classified', 'in_progress', 'paused']);
+    expect(getFilterStatuses('active')).toEqual(['pending', 'classified', 'in_progress', 'paused']);
   });
 
   it('returns failed for needs_attention', () => {

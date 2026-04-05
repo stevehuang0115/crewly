@@ -5,7 +5,6 @@
  * Brand Voice Guide generation, and persistence.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { BrandOnboardingService } from './brand-onboarding.service.js';

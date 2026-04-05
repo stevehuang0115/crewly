@@ -5,7 +5,6 @@
  * are well-formed and consistent.
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   ONBOARDING_QUESTIONS,
   DEFAULT_CONTENT_MIX,

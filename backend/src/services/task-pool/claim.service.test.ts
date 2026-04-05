@@ -7,7 +7,6 @@
  * @module services/task-pool/claim.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ClaimService } from './claim.service.js';
 import { PoolStorage } from './pool-storage.js';
 import {
@@ -21,14 +20,14 @@ import * as path from 'path';
 import * as os from 'os';
 
 // Mock LoggerService
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        debug: vi.fn(),
-        error: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        debug: jest.fn(),
+        error: jest.fn(),
       }),
     }),
   },

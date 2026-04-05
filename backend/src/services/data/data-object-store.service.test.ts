@@ -4,7 +4,6 @@
  * Uses temporary directories to isolate each test run.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';

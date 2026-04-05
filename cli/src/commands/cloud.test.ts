@@ -5,17 +5,17 @@
  * logout, and error handling for all three subcommands.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../constants.js', () => ({
+jest.mock('../constants.js', () => ({
   DEFAULT_WEB_PORT: 3000,
 }));
 
-vi.mock('chalk', () => ({
+jest.mock('chalk', () => ({
   __esModule: true,
   default: new Proxy({}, {
     get: () => {
@@ -25,11 +25,11 @@ vi.mock('chalk', () => ({
   }),
 }));
 
-const mockAxiosPost = vi.fn<any>();
-const mockAxiosGet = vi.fn<any>();
-const mockIsAxiosError = vi.fn<any>();
+const mockAxiosPost = jest.fn();
+const mockAxiosGet = jest.fn();
+const mockIsAxiosError = jest.fn();
 
-vi.mock('axios', () => ({
+jest.mock('axios', () => ({
   __esModule: true,
   default: {
     post: (...args: any[]) => mockAxiosPost(...args),
@@ -38,36 +38,36 @@ vi.mock('axios', () => ({
   },
 }));
 
-const mockExec = vi.fn<any>();
-vi.mock('child_process', () => ({
+const mockExec = jest.fn();
+jest.mock('child_process', () => ({
   exec: (...args: any[]) => mockExec(...args),
 }));
 
-const mockExistsSync = vi.fn<any>();
-const mockMkdirSync = vi.fn<any>();
-const mockWriteFileSync = vi.fn<any>();
-const mockReadFileSync = vi.fn<any>();
+const mockExistsSync = jest.fn();
+const mockMkdirSync = jest.fn();
+const mockWriteFileSync = jest.fn();
+const mockReadFileSync = jest.fn();
 
-vi.mock('fs', () => ({
+jest.mock('fs', () => ({
   existsSync: (...args: any[]) => mockExistsSync(...args),
   mkdirSync: (...args: any[]) => mockMkdirSync(...args),
   writeFileSync: (...args: any[]) => mockWriteFileSync(...args),
   readFileSync: (...args: any[]) => mockReadFileSync(...args),
 }));
 
-vi.mock('http', async () => {
-  const actualHttp = await vi.importActual('http') as any;
+jest.mock('http', async () => {
+  const actualHttp = await jest.requireActual('http') as any;
   return {
     ...actualHttp,
-    createServer: vi.fn(),
+    createServer: jest.fn(),
   };
 });
 
-const mockRlQuestion = vi.fn<any>();
-const mockRlClose = vi.fn<any>();
+const mockRlQuestion = jest.fn();
+const mockRlClose = jest.fn();
 
-vi.mock('readline', () => {
-  const mockCreateInterface = vi.fn(() => ({
+jest.mock('readline', () => {
+  const mockCreateInterface = jest.fn(() => ({
     question: mockRlQuestion,
     close: mockRlClose,
   }));
@@ -92,13 +92,13 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-let consoleLogSpy: ReturnType<typeof vi.spyOn>;
-let processExitSpy: ReturnType<typeof vi.spyOn>;
+let consoleLogSpy: ReturnType<typeof jest.spyOn>;
+let processExitSpy: ReturnType<typeof jest.spyOn>;
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-  processExitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+  jest.clearAllMocks();
+  consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+  processExitSpy = jest.spyOn(process, 'exit').mockImplementation((() => {
     throw new Error('process.exit');
   }) as never);
   mockIsAxiosError.mockReturnValue(false);

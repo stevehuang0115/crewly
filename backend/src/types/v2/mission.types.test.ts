@@ -4,7 +4,6 @@
  * @module types/v2/mission.types.test
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   MISSION_STATUSES,
   TERMINAL_MISSION_STATUSES,

@@ -550,6 +550,65 @@ export class TaskPoolService {
     return this.storage.getWorkItems();
   }
 
+  /**
+   * Returns all active/expiring claims.
+   * Used by the Reconciler to check lease health.
+   *
+   * @returns Array of active/expiring TaskClaims
+   */
+  async getActiveClaims(): Promise<TaskClaim[]> {
+    return this.claimService.getActiveClaims();
+  }
+
+  /**
+   * Updates a work item's status directly.
+   * Used by the Reconciler for corrections (e.g., stuck → blocked).
+   *
+   * @param workItemId - The work item ID
+   * @param newStatus - The target status
+   * @throws Error if work item not found or transition is invalid
+   */
+  async updateItemStatus(workItemId: string, newStatus: WorkItemStatus): Promise<void> {
+    const items = await this.storage.getWorkItems();
+    const item = items.find((wi) => wi.id === workItemId);
+
+    if (!item) {
+      throw new Error(`WorkItem not found: ${workItemId}`);
+    }
+
+    if (!isValidWorkItemTransition(item.status, newStatus)) {
+      throw new Error(
+        `Invalid status transition for WorkItem ${workItemId}: ${item.status} → ${newStatus}`,
+      );
+    }
+
+    await this.storage.updateWorkItem(workItemId, (wi) => {
+      wi.status = newStatus;
+      // Use startedAt for running, completedAt for done/failed
+      if (newStatus === 'running') {
+        wi.startedAt = new Date().toISOString();
+      } else if (newStatus === 'done' || newStatus === 'failed') {
+        wi.completedAt = new Date().toISOString();
+      }
+    });
+
+    this.logger.info('Work item status updated', {
+      workItemId,
+      from: item.status,
+      to: newStatus,
+    });
+  }
+
+  /**
+   * Marks a claim as 'expiring' (lease expired, within grace period).
+   * Used by the Reconciler fast loop.
+   *
+   * @param claimId - The claim ID to mark
+   */
+  async markClaimExpiring(claimId: string): Promise<void> {
+    await this.claimService.markExpiring([claimId]);
+  }
+
   // -----------------------------------------------------------------------
   // Lifecycle
   // -----------------------------------------------------------------------

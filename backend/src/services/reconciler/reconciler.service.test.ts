@@ -4,7 +4,6 @@
  * @module services/reconciler/reconciler.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ReconcilerService } from './reconciler.service.js';
 import type { ReconcilerDataProvider } from './reconciler.service.js';
 import { createWorkItem, createRequest, createTaskClaim } from '../../types/v2/index.js';
@@ -17,16 +16,16 @@ import type { AgentHealth } from './reconcile-rules.js';
 
 function createMockProvider(overrides: Partial<ReconcilerDataProvider> = {}): ReconcilerDataProvider {
   return {
-    getActiveWorkItems: vi.fn().mockResolvedValue([]),
-    getActiveRequests: vi.fn().mockResolvedValue([]),
-    getActiveClaims: vi.fn().mockResolvedValue([]),
-    getAgentHealthMap: vi.fn().mockResolvedValue(new Map()),
-    getWorkItemsForRequest: vi.fn().mockResolvedValue([]),
-    applyCorrection: vi.fn().mockResolvedValue(undefined),
-    releaseToPool: vi.fn().mockResolvedValue(undefined),
-    requeueWorkItem: vi.fn().mockResolvedValue(undefined),
-    markClaimExpiring: vi.fn().mockResolvedValue(undefined),
-    revokeClaimAndRelease: vi.fn().mockResolvedValue(undefined),
+    getActiveWorkItems: jest.fn().mockResolvedValue([]),
+    getActiveRequests: jest.fn().mockResolvedValue([]),
+    getActiveClaims: jest.fn().mockResolvedValue([]),
+    getAgentHealthMap: jest.fn().mockResolvedValue(new Map()),
+    getWorkItemsForRequest: jest.fn().mockResolvedValue([]),
+    applyCorrection: jest.fn().mockResolvedValue(undefined),
+    releaseToPool: jest.fn().mockResolvedValue(undefined),
+    requeueWorkItem: jest.fn().mockResolvedValue(undefined),
+    markClaimExpiring: jest.fn().mockResolvedValue(undefined),
+    revokeClaimAndRelease: jest.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -57,7 +56,7 @@ describe('ReconcilerService', () => {
   let provider: ReconcilerDataProvider;
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    jest.useFakeTimers();
     provider = createMockProvider();
     service = new ReconcilerService(provider, {
       fastLoopIntervalMs: 10_000,
@@ -67,7 +66,7 @@ describe('ReconcilerService', () => {
 
   afterEach(() => {
     service.stop();
-    vi.useRealTimers();
+    jest.useRealTimers();
   });
 
   // -----------------------------------------------------------------------
@@ -107,8 +106,8 @@ describe('ReconcilerService', () => {
       ]);
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([wi]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
       });
       service = new ReconcilerService(provider);
 
@@ -123,8 +122,8 @@ describe('ReconcilerService', () => {
       const wi = makeWorkItem({ id: 'wi-1', status: 'done' });
 
       provider = createMockProvider({
-        getActiveRequests: vi.fn().mockResolvedValue([request]),
-        getWorkItemsForRequest: vi.fn().mockResolvedValue([wi]),
+        getActiveRequests: jest.fn().mockResolvedValue([request]),
+        getWorkItemsForRequest: jest.fn().mockResolvedValue([wi]),
       });
       service = new ReconcilerService(provider);
 
@@ -137,7 +136,7 @@ describe('ReconcilerService', () => {
       const child = makeWorkItem({ id: 'child-1', status: 'running', parentWorkItemId: 'parent-1' });
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([parent, child]),
+        getActiveWorkItems: jest.fn().mockResolvedValue([parent, child]),
       });
       service = new ReconcilerService(provider);
 
@@ -157,8 +156,8 @@ describe('ReconcilerService', () => {
       ]);
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([wi]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
       });
       service = new ReconcilerService(provider);
 
@@ -169,7 +168,7 @@ describe('ReconcilerService', () => {
 
     it('should handle errors gracefully', async () => {
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockRejectedValue(new Error('DB connection failed')),
+        getActiveWorkItems: jest.fn().mockRejectedValue(new Error('DB connection failed')),
       });
       service = new ReconcilerService(provider);
 
@@ -181,19 +180,19 @@ describe('ReconcilerService', () => {
     it('should not run concurrently', async () => {
       // Make the data provider slow
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockImplementation(
+        getActiveWorkItems: jest.fn().mockImplementation(
           () => new Promise(resolve => setTimeout(() => resolve([]), 100)),
         ),
       });
       service = new ReconcilerService(provider);
 
       // Start two concurrent runs
-      vi.useRealTimers();
+      jest.useRealTimers();
       const [result1, result2] = await Promise.all([
         service.runFull(),
         service.runFull(),
       ]);
-      vi.useFakeTimers();
+      jest.useFakeTimers();
 
       // One should be empty (skipped)
       const totalCorrections = result1.corrections.length + result2.corrections.length;
@@ -220,7 +219,7 @@ describe('ReconcilerService', () => {
       };
 
       provider = createMockProvider({
-        getActiveClaims: vi.fn().mockResolvedValue([expiredClaim]),
+        getActiveClaims: jest.fn().mockResolvedValue([expiredClaim]),
       });
       service = new ReconcilerService(provider);
 
@@ -239,8 +238,8 @@ describe('ReconcilerService', () => {
       ]);
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([wi]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
       });
       service = new ReconcilerService(provider);
 
@@ -258,8 +257,8 @@ describe('ReconcilerService', () => {
       const wi = makeWorkItem({ id: 'wi-1', status: 'done' });
 
       provider = createMockProvider({
-        getActiveRequests: vi.fn().mockResolvedValue([request]),
-        getWorkItemsForRequest: vi.fn().mockResolvedValue([wi]),
+        getActiveRequests: jest.fn().mockResolvedValue([request]),
+        getWorkItemsForRequest: jest.fn().mockResolvedValue([wi]),
       });
       service = new ReconcilerService(provider);
 
@@ -270,7 +269,7 @@ describe('ReconcilerService', () => {
 
     it('should do nothing if request not found', async () => {
       provider = createMockProvider({
-        getActiveRequests: vi.fn().mockResolvedValue([]),
+        getActiveRequests: jest.fn().mockResolvedValue([]),
       });
       service = new ReconcilerService(provider);
 
@@ -353,8 +352,8 @@ describe('ReconcilerService', () => {
 
     it('should restart loops when interval changes', () => {
       service.start();
-      const stopSpy = vi.spyOn(service, 'stop');
-      const startSpy = vi.spyOn(service, 'start');
+      const stopSpy = jest.spyOn(service, 'stop');
+      const startSpy = jest.spyOn(service, 'start');
 
       service.updateConfig({ fastLoopIntervalMs: 5_000 });
 
@@ -376,7 +375,7 @@ describe('ReconcilerService', () => {
       };
 
       provider = createMockProvider({
-        getActiveClaims: vi.fn().mockResolvedValue([expiringClaim]),
+        getActiveClaims: jest.fn().mockResolvedValue([expiringClaim]),
       });
       service = new ReconcilerService(provider);
 
@@ -397,7 +396,7 @@ describe('ReconcilerService', () => {
       };
 
       provider = createMockProvider({
-        getActiveClaims: vi.fn().mockResolvedValue([expiredClaim]),
+        getActiveClaims: jest.fn().mockResolvedValue([expiredClaim]),
       });
       service = new ReconcilerService(provider);
 
@@ -417,8 +416,8 @@ describe('ReconcilerService', () => {
       ]);
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([wi]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
       });
       service = new ReconcilerService(provider);
 
@@ -437,9 +436,9 @@ describe('ReconcilerService', () => {
       ]);
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([wi]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
-        applyCorrection: vi.fn().mockRejectedValue(new Error('Write failed')),
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+        applyCorrection: jest.fn().mockRejectedValue(new Error('Write failed')),
       });
       service = new ReconcilerService(provider);
 
@@ -469,11 +468,11 @@ describe('ReconcilerService', () => {
         }],
       ]);
 
-      const executeWakeAction = vi.fn().mockResolvedValue(true);
+      const executeWakeAction = jest.fn().mockResolvedValue(true);
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([wi]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
         executeWakeAction,
       });
       service = new ReconcilerService(provider);
@@ -501,8 +500,8 @@ describe('ReconcilerService', () => {
 
       // Default provider has no executeWakeAction
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([wi]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
       });
       service = new ReconcilerService(provider);
 
@@ -525,12 +524,12 @@ describe('ReconcilerService', () => {
         }],
       ]);
 
-      const getAvailablePoolItems = vi.fn().mockResolvedValue([poolItem]);
-      const executeWakeAction = vi.fn().mockResolvedValue(true);
+      const getAvailablePoolItems = jest.fn().mockResolvedValue([poolItem]);
+      const executeWakeAction = jest.fn().mockResolvedValue(true);
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
+        getActiveWorkItems: jest.fn().mockResolvedValue([]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
         getAvailablePoolItems,
         executeWakeAction,
       });
@@ -556,11 +555,11 @@ describe('ReconcilerService', () => {
         }],
       ]);
 
-      const executeWakeAction = vi.fn().mockResolvedValue(false);
+      const executeWakeAction = jest.fn().mockResolvedValue(false);
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([wi]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
         executeWakeAction,
       });
       service = new ReconcilerService(provider);
@@ -584,11 +583,11 @@ describe('ReconcilerService', () => {
         }],
       ]);
 
-      const executeWakeAction = vi.fn().mockRejectedValue(new Error('Connection timeout'));
+      const executeWakeAction = jest.fn().mockRejectedValue(new Error('Connection timeout'));
 
       provider = createMockProvider({
-        getActiveWorkItems: vi.fn().mockResolvedValue([wi]),
-        getAgentHealthMap: vi.fn().mockResolvedValue(agentMap),
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
         executeWakeAction,
       });
       service = new ReconcilerService(provider);

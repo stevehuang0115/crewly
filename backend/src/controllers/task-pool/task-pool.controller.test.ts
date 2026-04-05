@@ -4,7 +4,6 @@
  * @module controllers/task-pool/task-pool.controller.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   listAvailable,
   claimItem,
@@ -22,20 +21,20 @@ import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../../services/task-pool/task-pool.service.js');
+jest.mock('../../services/task-pool/task-pool.service.js');
 
 const mockService = {
-  getAvailableItems: vi.fn(),
-  claimFromPool: vi.fn(),
-  releaseBack: vi.fn(),
-  getPoolStatus: vi.fn(),
-  heartbeat: vi.fn(),
-  extendLease: vi.fn(),
-  scanExpiredClaims: vi.fn(),
-  revokeAndRelease: vi.fn(),
+  getAvailableItems: jest.fn(),
+  claimFromPool: jest.fn(),
+  releaseBack: jest.fn(),
+  getPoolStatus: jest.fn(),
+  heartbeat: jest.fn(),
+  extendLease: jest.fn(),
+  scanExpiredClaims: jest.fn(),
+  revokeAndRelease: jest.fn(),
 };
 
-(TaskPoolService.getInstance as any) = vi.fn().mockReturnValue(mockService);
+(TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
 
 function mockReq(overrides: Record<string, any> = {}): any {
   return {
@@ -48,8 +47,8 @@ function mockReq(overrides: Record<string, any> = {}): any {
 
 function mockRes(): any {
   const res: any = {};
-  res.json = vi.fn().mockReturnValue(res);
-  res.status = vi.fn().mockReturnValue(res);
+  res.json = jest.fn().mockReturnValue(res);
+  res.status = jest.fn().mockReturnValue(res);
   return res;
 }
 
@@ -59,7 +58,7 @@ function mockRes(): any {
 
 describe('TaskPoolController', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
   });
 
   // -----------------------------------------------------------------------

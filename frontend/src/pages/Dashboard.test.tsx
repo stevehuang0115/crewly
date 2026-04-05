@@ -29,6 +29,7 @@ vi.mock('../services/api.service', () => ({
     getProjects: vi.fn(),
     getTeams: vi.fn(),
     getAllTasks: vi.fn(),
+    getIntentTaskStatistics: vi.fn(),
   },
 }));
 
@@ -119,6 +120,16 @@ describe('Dashboard Page', () => {
     vi.mocked(apiService.getProjects).mockResolvedValue(mockProjects);
     vi.mocked(apiService.getTeams).mockResolvedValue(mockTeams);
     vi.mocked(apiService.getAllTasks).mockResolvedValue([]);
+    vi.mocked(apiService.getIntentTaskStatistics).mockResolvedValue({
+      totalTasks: 0,
+      byStatus: {},
+      byLevel: {},
+      totalTokens: 0,
+      totalCost: 0,
+      llmCost: 0,
+      skillCost: 0,
+      totalMessages: 0,
+    });
   });
 
   describe('Layout', () => {

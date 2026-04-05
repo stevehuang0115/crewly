@@ -4,46 +4,45 @@
  * @module services/workflow/cron-task.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CronTaskService, getNextRunTime, getDatePartsInTimezone, parseCronField } from './cron-task.service.js';
 import type { CronTask } from '../../types/cron-task.types.js';
 
 // Mock logger
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
-		getInstance: vi.fn().mockReturnValue({
-			createComponentLogger: vi.fn().mockReturnValue({
-				info: vi.fn(),
-				debug: vi.fn(),
-				warn: vi.fn(),
-				error: vi.fn(),
+		getInstance: jest.fn().mockReturnValue({
+			createComponentLogger: jest.fn().mockReturnValue({
+				info: jest.fn(),
+				debug: jest.fn(),
+				warn: jest.fn(),
+				error: jest.fn(),
 			}),
 		}),
 	},
 }));
 
 // Mock fs/promises
-vi.mock('fs/promises', () => ({
-	readFile: vi.fn(),
-	writeFile: vi.fn().mockResolvedValue(undefined),
-	mkdir: vi.fn().mockResolvedValue(undefined),
-	readdir: vi.fn(),
-	rename: vi.fn().mockResolvedValue(undefined),
+jest.mock('fs/promises', () => ({
+	readFile: jest.fn(),
+	writeFile: jest.fn().mockResolvedValue(undefined),
+	mkdir: jest.fn().mockResolvedValue(undefined),
+	readdir: jest.fn(),
+	rename: jest.fn().mockResolvedValue(undefined),
 }));
 
 // Mock fs (sync)
-vi.mock('fs', () => ({
-	existsSync: vi.fn().mockReturnValue(false),
+jest.mock('fs', () => ({
+	existsSync: jest.fn().mockReturnValue(false),
 }));
 
 import { readFile, writeFile, readdir, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 
-const mockReadFile = vi.mocked(readFile);
-const mockWriteFile = vi.mocked(writeFile);
-const mockReaddir = vi.mocked(readdir);
-const mockExistsSync = vi.mocked(existsSync);
-const mockRename = vi.mocked(rename);
+const mockReadFile = jest.mocked(readFile);
+const mockWriteFile = jest.mocked(writeFile);
+const mockReaddir = jest.mocked(readdir);
+const mockExistsSync = jest.mocked(existsSync);
+const mockRename = jest.mocked(rename);
 
 /**
  * Helper: set up mockReaddir to return team directories.
@@ -80,7 +79,7 @@ describe('CronTaskService', () => {
 	let service: CronTaskService;
 
 	beforeEach(() => {
-		vi.clearAllMocks();
+		jest.clearAllMocks();
 		CronTaskService.resetInstance();
 		service = new CronTaskService('/tmp/test-crewly');
 		mockReadFile.mockRejectedValue(new Error('ENOENT'));

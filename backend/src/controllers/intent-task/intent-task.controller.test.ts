@@ -11,6 +11,7 @@ import { IntentTaskService } from '../../services/intent-task/intent-task.servic
 import { TokenUsageService } from '../../services/monitoring/token-usage.service.js';
 import {
   decomposeMessage,
+  batchCreateTasks,
   createTask,
   listTasks,
   getStatistics,
@@ -109,6 +110,128 @@ describe('IntentTaskController', () => {
       for (const task of data) {
         expect(task.projectTaskId).toBe('proj-1');
       }
+    });
+  });
+
+  // ===========================================================================
+  // Batch Create Endpoint (V3)
+  // ===========================================================================
+
+  describe('POST /api/intent-tasks/batch (batchCreateTasks)', () => {
+    it('should batch create tasks and return 201', async () => {
+      const req = mockReq({
+        body: {
+          tasks: [
+            { intent: '部署到 staging', level: 'L1', category: 'deployment' },
+            { intent: '检查错误日志', level: 'L0', category: 'debugging' },
+          ],
+          originalMessage: '帮我部署一下然后检查日志',
+        },
+      });
+      const res = mockRes();
+
+      await batchCreateTasks(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const data = res.json.mock.calls[0][0].data;
+      expect(data).toHaveLength(2);
+      expect(data[0].intent).toBe('部署到 staging');
+      expect(data[1].intent).toBe('检查错误日志');
+      // All tasks share same messageId
+      expect(data[0].messageId).toBe(data[1].messageId);
+    });
+
+    it('should return 400 for missing tasks array', async () => {
+      const req = mockReq({ body: {} });
+      const res = mockRes();
+
+      await batchCreateTasks(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 400 for empty tasks array', async () => {
+      const req = mockReq({ body: { tasks: [] } });
+      const res = mockRes();
+
+      await batchCreateTasks(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 400 when a task is missing intent', async () => {
+      const req = mockReq({
+        body: {
+          tasks: [
+            { intent: 'Valid task' },
+            { level: 'L1' }, // missing intent
+          ],
+        },
+      });
+      const res = mockRes();
+
+      await batchCreateTasks(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json.mock.calls[0][0].error).toContain('tasks[1].intent');
+    });
+
+    it('should create message group viewable via messages endpoint', async () => {
+      const req = mockReq({
+        body: {
+          tasks: [
+            { intent: 'Task A' },
+            { intent: 'Task B' },
+          ],
+          originalMessage: 'Do A and B',
+        },
+      });
+      const res = mockRes();
+
+      await batchCreateTasks(req, res);
+
+      // Now list message groups
+      const listReq = mockReq();
+      const listRes = mockRes();
+      await listMessageGroups(listReq, listRes);
+
+      const groups = listRes.json.mock.calls[0][0].data;
+      expect(groups).toHaveLength(1);
+      expect(groups[0].originalMessage).toBe('Do A and B');
+      expect(groups[0].totalCount).toBe(2);
+    });
+  });
+
+  // ===========================================================================
+  // Extended Update (V3)
+  // ===========================================================================
+
+  describe('PUT /api/intent-tasks/:taskId — extended fields', () => {
+    it('should update intent description', async () => {
+      const task = IntentTaskService.getInstance().createTask({ intent: 'Original' });
+
+      const req = mockReq({ params: { taskId: task.id }, body: { intent: 'Refined' } });
+      const res = mockRes();
+
+      await updateTask(req, res);
+
+      expect(res.json.mock.calls[0][0].data.intent).toBe('Refined');
+    });
+
+    it('should update level and category', async () => {
+      const task = IntentTaskService.getInstance().createTask({ intent: 'Test', level: 'L0', category: 'query' });
+
+      const req = mockReq({
+        params: { taskId: task.id },
+        body: { level: 'L2', category: 'deployment' },
+      });
+      const res = mockRes();
+
+      await updateTask(req, res);
+
+      const data = res.json.mock.calls[0][0].data;
+      expect(data.level).toBe('L2');
+      expect(data.category).toBe('deployment');
     });
   });
 

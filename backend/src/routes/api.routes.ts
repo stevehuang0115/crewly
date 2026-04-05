@@ -33,6 +33,11 @@ import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
 import { createDataRouter } from '../controllers/data/data.routes.js';
 import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
+import { createTaskPoolRouter } from '../controllers/task-pool/task-pool.routes.js';
+import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
+import { createFissionRouter } from '../controllers/fission/fission.routes.js';
+import { createMissionPolicyRouter } from '../controllers/mission/mission-policy.routes.js';
+import { createV2WorkspaceRouter } from '../controllers/v2-workspace/workspace.routes.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -126,6 +131,21 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Intent Task routes for task decomposition, tracking, and lifecycle
   router.use('/intent-tasks', createIntentTaskRouter());
+
+  // Task Pool routes for V2 work item pool management
+  router.use('/task-pool', createTaskPoolRouter());
+
+  // Reconciler routes for status monitoring, manual trigger, and history
+  router.use('/reconciler', createReconcilerRouter());
+
+  // Fission guardrail routes for config, stats, violations, and pre-checks
+  router.use('/fission', createFissionRouter());
+
+  // Mission policy routes for CRUD and dry-run policy checks
+  router.use('/missions', createMissionPolicyRouter());
+
+  // V2 Shared Workspace routes — versioned JSON CRUD with CAS
+  router.use('/v2/workspaces', createV2WorkspaceRouter());
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here

@@ -5,7 +5,6 @@
  * /api/v2/data/* endpoints.
  */
 
-import { describe, it, expect } from 'vitest';
 import { createDataRouter } from './data.routes.js';
 
 describe('createDataRouter', () => {

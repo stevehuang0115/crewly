@@ -8,6 +8,7 @@
 
 import { Router } from 'express';
 import {
+  addItem,
   listAvailable,
   claimItem,
   releaseItem,
@@ -34,6 +35,9 @@ export function createTaskPoolRouter(): Router {
 
   // List available work items
   router.get('/', listAvailable);
+
+  // Add a work item to the pool
+  router.post('/add', addItem);
 
   // Claim a work item
   router.post('/claim', claimItem);

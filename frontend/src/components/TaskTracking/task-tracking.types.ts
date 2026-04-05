@@ -63,7 +63,7 @@ export interface TaskStatistics {
 /**
  * Backend status values
  */
-export type BackendStatus = 'classified' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'paused';
+export type BackendStatus = 'pending' | 'classified' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'paused';
 
 /**
  * User-facing status labels mapped from backend status
@@ -100,6 +100,7 @@ export interface LevelInfo {
  */
 export function getStatusLabel(status: string): UserFacingStatus {
   const map: Record<string, UserFacingStatus> = {
+    pending: 'Ready',
     classified: 'Ready',
     in_progress: 'Running',
     completed: 'Done',
@@ -118,6 +119,7 @@ export function getStatusLabel(status: string): UserFacingStatus {
  */
 export function getStatusClass(status: string): string {
   const map: Record<string, string> = {
+    pending: 'ready',
     classified: 'ready',
     in_progress: 'running',
     completed: 'done',
@@ -160,7 +162,7 @@ export function deriveGroupState(tasks: IntentTaskSummary[]): GroupState {
   if (statuses.some((s) => s === 'paused')) return 'Paused';
   if (statuses.every((s) => s === 'completed')) return 'Done';
   if (statuses.every((s) => s === 'cancelled')) return 'Stopped';
-  if (statuses.every((s) => s === 'classified' || s === 'completed' || s === 'cancelled')) return 'Ready';
+  if (statuses.every((s) => s === 'pending' || s === 'classified' || s === 'completed' || s === 'cancelled')) return 'Ready';
 
   return 'Ready';
 }
@@ -174,7 +176,7 @@ export function deriveGroupState(tasks: IntentTaskSummary[]): GroupState {
 export function getFilterStatuses(filter: PrimaryFilter): string[] {
   switch (filter) {
     case 'active':
-      return ['classified', 'in_progress', 'paused'];
+      return ['pending', 'classified', 'in_progress', 'paused'];
     case 'needs_attention':
       return ['failed'];
     case 'completed':

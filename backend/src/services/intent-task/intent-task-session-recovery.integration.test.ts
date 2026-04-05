@@ -7,7 +7,6 @@
  * @module services/intent-task/intent-task-session-recovery.integration.test
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';

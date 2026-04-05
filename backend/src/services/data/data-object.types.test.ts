@@ -5,7 +5,6 @@
  * against valid objects and various malformed inputs.
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   DataObject,
   SchemaDefinition,

@@ -3,7 +3,6 @@
  * Tests the multi-step agent initialization and registration process
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AgentRegistrationService } from './agent-registration.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -13,88 +12,88 @@ import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 
 // Mock dependencies
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
-		getInstance: vi.fn().mockReturnValue({
-			createComponentLogger: vi.fn().mockReturnValue({
-				info: vi.fn(),
-				debug: vi.fn(),
-				warn: vi.fn(),
-				error: vi.fn(),
+		getInstance: jest.fn().mockReturnValue({
+			createComponentLogger: jest.fn().mockReturnValue({
+				info: jest.fn(),
+				debug: jest.fn(),
+				warn: jest.fn(),
+				error: jest.fn(),
 			}),
 		}),
 	},
 }));
 
-vi.mock('fs/promises', () => ({
-	readFile: vi.fn(),
-	readdir: vi.fn().mockResolvedValue([]),
-	stat: vi.fn().mockResolvedValue({ mtimeMs: 0 }),
-	mkdir: vi.fn().mockResolvedValue(undefined),
-	writeFile: vi.fn().mockResolvedValue(undefined),
-	access: vi.fn(),
+jest.mock('fs/promises', () => ({
+	readFile: jest.fn(),
+	readdir: jest.fn().mockResolvedValue([]),
+	stat: jest.fn().mockResolvedValue({ mtimeMs: 0 }),
+	mkdir: jest.fn().mockResolvedValue(undefined),
+	writeFile: jest.fn().mockResolvedValue(undefined),
+	access: jest.fn(),
 }));
 
 import * as fsPromises from 'fs/promises';
 
-vi.mock('os', () => ({
-	homedir: vi.fn().mockReturnValue('/home/test'),
+jest.mock('os', () => ({
+	homedir: jest.fn().mockReturnValue('/home/test'),
 }));
 
-vi.mock('../settings/settings.service.js', () => ({
-	getSettingsService: vi.fn().mockReturnValue({
-		getSettings: vi.fn().mockResolvedValue({
+jest.mock('../settings/settings.service.js', () => ({
+	getSettingsService: jest.fn().mockReturnValue({
+		getSettings: jest.fn().mockResolvedValue({
 			general: { autoResumeOnRestart: true },
 		}),
-		getApiKey: vi.fn().mockResolvedValue(undefined),
+		getApiKey: jest.fn().mockResolvedValue(undefined),
 	}),
 }));
 
 // Mock session module
-vi.mock('../session/index.js', () => ({
-	getSessionBackendSync: vi.fn(),
-	createSessionBackend: vi.fn(),
-	createSessionCommandHelper: vi.fn(),
-	getSessionStatePersistence: vi.fn(),
+jest.mock('../session/index.js', () => ({
+	getSessionBackendSync: jest.fn(),
+	createSessionBackend: jest.fn(),
+	createSessionCommandHelper: jest.fn(),
+	getSessionStatePersistence: jest.fn(),
 }));
 
 // Mock RuntimeServiceFactory
-vi.mock('./runtime-service.factory.js', () => ({
+jest.mock('./runtime-service.factory.js', () => ({
 	RuntimeServiceFactory: {
-		create: vi.fn(),
+		create: jest.fn(),
 	},
 }));
 
 // Mock PromptBuilderService for TL addon injection
-vi.mock('../ai/prompt-builder.service.js', () => ({
-	PromptBuilderService: vi.fn().mockImplementation(() => ({
-		buildTeamLeadSection: vi.fn().mockResolvedValue('## TL ADDON INJECTED\n\nYou are the Team Lead.'),
+jest.mock('../ai/prompt-builder.service.js', () => ({
+	PromptBuilderService: jest.fn().mockImplementation(() => ({
+		buildTeamLeadSection: jest.fn().mockResolvedValue('## TL ADDON INJECTED\n\nYou are the Team Lead.'),
 	})),
 }));
 
 // Mock PtyActivityTrackerService — default to high idle time (agent not busy)
-const mockGetIdleTimeMs = vi.fn().mockReturnValue(999999);
-vi.mock('./pty-activity-tracker.service.js', () => ({
+const mockGetIdleTimeMs = jest.fn().mockReturnValue(999999);
+jest.mock('./pty-activity-tracker.service.js', () => ({
 	PtyActivityTrackerService: {
-		getInstance: vi.fn().mockReturnValue({
+		getInstance: jest.fn().mockReturnValue({
 			getIdleTimeMs: (...args: unknown[]) => mockGetIdleTimeMs(...args),
 		}),
 	},
 }));
 
 // Mock OAuthReloginMonitorService — no-op for tests
-vi.mock('./oauth-relogin-monitor.service.js', () => ({
+jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
-		getInstance: vi.fn().mockReturnValue({
-			startMonitoring: vi.fn(),
-			stopMonitoring: vi.fn(),
+		getInstance: jest.fn().mockReturnValue({
+			startMonitoring: jest.fn(),
+			stopMonitoring: jest.fn(),
 		}),
 	},
 }));
 
 describe('AgentRegistrationService', () => {
 	let service: AgentRegistrationService;
-	let mockStorageService: anyed<StorageService>;
+	let mockStorageService: jest.Mocked<StorageService>;
 	let mockReadFile: any;
 	let mockAccess: any;
 	let mockSessionHelper: any;
@@ -102,7 +101,7 @@ describe('AgentRegistrationService', () => {
 	const savedModularEnv = process.env.CREWLY_USE_MODULAR_PROMPTS;
 
 	beforeEach(() => {
-		vi.clearAllMocks();
+		jest.clearAllMocks();
 		// Default to legacy path for existing tests; the feature-flag describe block overrides this
 		process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
 
@@ -116,7 +115,7 @@ describe('AgentRegistrationService', () => {
 			name: 'test-session',
 			pid: 1234,
 			cwd: '/test',
-			onData: vi.fn().mockImplementation((callback: (data: string) => void) => {
+			onData: jest.fn().mockImplementation((callback: (data: string) => void) => {
 				onDataCallback = callback;
 				// Simulate prompt appearing after brief delay
 				setTimeout(() => {
@@ -130,38 +129,38 @@ describe('AgentRegistrationService', () => {
 						onDataCallback('⠋ Thinking...'); // Processing started
 					}
 				}, 100);
-				return vi.fn(); // unsubscribe function
+				return jest.fn(); // unsubscribe function
 			}),
-			onExit: vi.fn().mockReturnValue(vi.fn()),
-			write: vi.fn(),
-			resize: vi.fn(),
-			kill: vi.fn(),
+			onExit: jest.fn().mockReturnValue(jest.fn()),
+			write: jest.fn(),
+			resize: jest.fn(),
+			kill: jest.fn(),
 		};
 
 		// Mock SessionCommandHelper
 		mockSessionHelper = {
-			sessionExists: vi.fn().mockReturnValue(false),
-			killSession: vi.fn().mockResolvedValue(undefined),
-			createSession: vi.fn().mockResolvedValue({ pid: 1234, cwd: '/test', name: 'test-session' }),
-			sendCtrlC: vi.fn().mockResolvedValue(undefined),
-			clearCurrentCommandLine: vi.fn().mockResolvedValue(undefined),
-			sendMessage: vi.fn().mockResolvedValue(undefined),
-			sendKey: vi.fn().mockResolvedValue(undefined),
-			sendEscape: vi.fn().mockResolvedValue(undefined),
-			sendEnter: vi.fn().mockResolvedValue(undefined),
-			capturePane: vi.fn().mockReturnValue('❯ '), // Claude at prompt by default
-			setEnvironmentVariable: vi.fn().mockResolvedValue(undefined),
-			getSession: vi.fn().mockReturnValue(mockSession), // For event-driven delivery
-			listSessions: vi.fn().mockReturnValue([]), // For scanForStuckMessages rewind detection
-			writeRaw: vi.fn(), // For rewind mode recovery
+			sessionExists: jest.fn().mockReturnValue(false),
+			killSession: jest.fn().mockResolvedValue(undefined),
+			createSession: jest.fn().mockResolvedValue({ pid: 1234, cwd: '/test', name: 'test-session' }),
+			sendCtrlC: jest.fn().mockResolvedValue(undefined),
+			clearCurrentCommandLine: jest.fn().mockResolvedValue(undefined),
+			sendMessage: jest.fn().mockResolvedValue(undefined),
+			sendKey: jest.fn().mockResolvedValue(undefined),
+			sendEscape: jest.fn().mockResolvedValue(undefined),
+			sendEnter: jest.fn().mockResolvedValue(undefined),
+			capturePane: jest.fn().mockReturnValue('❯ '), // Claude at prompt by default
+			setEnvironmentVariable: jest.fn().mockResolvedValue(undefined),
+			getSession: jest.fn().mockReturnValue(mockSession), // For event-driven delivery
+			listSessions: jest.fn().mockReturnValue([]), // For scanForStuckMessages rewind detection
+			writeRaw: jest.fn(), // For rewind mode recovery
 		};
 
 		// Mock RuntimeService
 		mockRuntimeService = {
-			clearDetectionCache: vi.fn(),
-			detectRuntimeWithCommand: vi.fn().mockResolvedValue(true),
-			executeRuntimeInitScript: vi.fn().mockResolvedValue(undefined),
-			waitForRuntimeReady: vi.fn().mockResolvedValue(true),
+			clearDetectionCache: jest.fn(),
+			detectRuntimeWithCommand: jest.fn().mockResolvedValue(true),
+			executeRuntimeInitScript: jest.fn().mockResolvedValue(undefined),
+			waitForRuntimeReady: jest.fn().mockResolvedValue(true),
 		};
 
 		// Setup session module mocks
@@ -174,27 +173,27 @@ describe('AgentRegistrationService', () => {
 
 		// Mock StorageService
 		mockStorageService = {
-			updateAgentStatus: vi.fn().mockResolvedValue(undefined),
-			updateOrchestratorStatus: vi.fn().mockResolvedValue(undefined),
-			getOrchestratorStatus: vi.fn().mockResolvedValue({ agentStatus: 'active' }),
-			getTeams: vi.fn().mockResolvedValue([]),
-			getMemberPrompt: vi.fn().mockResolvedValue(null),
+			updateAgentStatus: jest.fn().mockResolvedValue(undefined),
+			updateOrchestratorStatus: jest.fn().mockResolvedValue(undefined),
+			getOrchestratorStatus: jest.fn().mockResolvedValue({ agentStatus: 'active' }),
+			getTeams: jest.fn().mockResolvedValue([]),
+			getMemberPrompt: jest.fn().mockResolvedValue(null),
 		} as any;
 
-		mockReadFile = vi.mocked(fsPromises.readFile);
+		mockReadFile = jest.mocked(fsPromises.readFile);
 		mockReadFile.mockResolvedValue('{"roles": [{"key": "orchestrator", "promptFile": "orchestrator-prompt.md"}]}');
 
-		mockAccess = vi.mocked(fsPromises.access);
+		mockAccess = jest.mocked(fsPromises.access);
 		mockAccess.mockRejectedValue(new Error('ENOENT: no such file'));
 
 		// Mock SessionStatePersistence
 		(sessionModule.getSessionStatePersistence as any).mockReturnValue({
-			registerSession: vi.fn(),
-			unregisterSession: vi.fn(),
-			isSessionRegistered: vi.fn().mockReturnValue(false),
-			isRestoredSession: vi.fn().mockReturnValue(false),
-			getSessionId: vi.fn().mockReturnValue(undefined),
-			updateSessionId: vi.fn(),
+			registerSession: jest.fn(),
+			unregisterSession: jest.fn(),
+			isSessionRegistered: jest.fn().mockReturnValue(false),
+			isRestoredSession: jest.fn().mockReturnValue(false),
+			getSessionId: jest.fn().mockReturnValue(undefined),
+			updateSessionId: jest.fn(),
 		});
 
 		service = new AgentRegistrationService(null, '/test/project', mockStorageService);
@@ -396,10 +395,10 @@ describe('AgentRegistrationService', () => {
 			// Override settings mock to enable tokenTracking
 			const { getSettingsService } = require('../settings/settings.service.js');
 			(getSettingsService as any).mockReturnValue({
-				getSettings: vi.fn().mockResolvedValue({
+				getSettings: jest.fn().mockResolvedValue({
 					general: { autoResumeOnRestart: true, tokenTracking: true },
 				}),
-				getApiKey: vi.fn().mockResolvedValue(undefined),
+				getApiKey: jest.fn().mockResolvedValue(undefined),
 			});
 
 			mockSessionHelper.sessionExists
@@ -428,10 +427,10 @@ describe('AgentRegistrationService', () => {
 			// Explicitly reset settings mock to have tokenTracking disabled
 			const { getSettingsService } = require('../settings/settings.service.js');
 			(getSettingsService as any).mockReturnValue({
-				getSettings: vi.fn().mockResolvedValue({
+				getSettings: jest.fn().mockResolvedValue({
 					general: { autoResumeOnRestart: true, tokenTracking: false },
 				}),
-				getApiKey: vi.fn().mockResolvedValue(undefined),
+				getApiKey: jest.fn().mockResolvedValue(undefined),
 			});
 
 			mockSessionHelper.sessionExists
@@ -459,10 +458,10 @@ describe('AgentRegistrationService', () => {
 		it('should NOT set CLAUDE_CODE_ENABLE_TELEMETRY for non-claude-code runtimes even when tokenTracking is enabled', async () => {
 			const { getSettingsService } = require('../settings/settings.service.js');
 			(getSettingsService as any).mockReturnValue({
-				getSettings: vi.fn().mockResolvedValue({
+				getSettings: jest.fn().mockResolvedValue({
 					general: { autoResumeOnRestart: true, tokenTracking: true },
 				}),
-				getApiKey: vi.fn().mockResolvedValue(undefined),
+				getApiKey: jest.fn().mockResolvedValue(undefined),
 			});
 
 			mockSessionHelper.sessionExists
@@ -749,17 +748,17 @@ describe('AgentRegistrationService', () => {
 				name: 'test-session',
 				pid: 1234,
 				cwd: '/test',
-				onData: vi.fn().mockImplementation((callback: (data: string) => void) => {
+				onData: jest.fn().mockImplementation((callback: (data: string) => void) => {
 					// Emit outputs from sequence at specified delays
 					outputSequence.forEach(({ output, delayMs }) => {
 						setTimeout(() => callback(output), delayMs);
 					});
-					return vi.fn(); // unsubscribe function
+					return jest.fn(); // unsubscribe function
 				}),
-				onExit: vi.fn().mockReturnValue(vi.fn()),
-				write: vi.fn(),
-				resize: vi.fn(),
-				kill: vi.fn(),
+				onExit: jest.fn().mockReturnValue(jest.fn()),
+				write: jest.fn(),
+				resize: jest.fn(),
+				kill: jest.fn(),
 			};
 		};
 
@@ -894,14 +893,14 @@ describe('AgentRegistrationService', () => {
 				name: 'test-session',
 				pid: 1234,
 				cwd: '/test',
-				onData: vi.fn().mockImplementation(() => {
+				onData: jest.fn().mockImplementation(() => {
 					// Don't emit anything - will cause timeout
-					return vi.fn();
+					return jest.fn();
 				}),
-				onExit: vi.fn().mockReturnValue(vi.fn()),
-				write: vi.fn(),
-				resize: vi.fn(),
-				kill: vi.fn(),
+				onExit: jest.fn().mockReturnValue(jest.fn()),
+				write: jest.fn(),
+				resize: jest.fn(),
+				kill: jest.fn(),
 			};
 			mockSessionHelper.getSession.mockReturnValue(mockSession);
 			// IMPORTANT: Return non-prompt output so immediate check fails
@@ -1382,12 +1381,12 @@ describe('AgentRegistrationService', () => {
 		it('should inject --resume flag for restored Claude Code sessions with stored session ID', async () => {
 			// Mark session as restored with a stored session ID
 			(sessionModule.getSessionStatePersistence as any).mockReturnValue({
-				registerSession: vi.fn(),
-				unregisterSession: vi.fn(),
-				isSessionRegistered: vi.fn().mockReturnValue(false),
-				isRestoredSession: vi.fn().mockReturnValue(true),
-				getSessionId: vi.fn().mockReturnValue('abc-123-session-uuid'),
-				updateSessionId: vi.fn(),
+				registerSession: jest.fn(),
+				unregisterSession: jest.fn(),
+				isSessionRegistered: jest.fn().mockReturnValue(false),
+				isRestoredSession: jest.fn().mockReturnValue(true),
+				getSessionId: jest.fn().mockReturnValue('abc-123-session-uuid'),
+				updateSessionId: jest.fn(),
 			});
 
 			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
@@ -1413,12 +1412,12 @@ describe('AgentRegistrationService', () => {
 		it('should not inject --resume flag when no stored session ID exists', async () => {
 			// Session is restored but no session ID stored
 			(sessionModule.getSessionStatePersistence as any).mockReturnValue({
-				registerSession: vi.fn(),
-				unregisterSession: vi.fn(),
-				isSessionRegistered: vi.fn().mockReturnValue(false),
-				isRestoredSession: vi.fn().mockReturnValue(true),
-				getSessionId: vi.fn().mockReturnValue(undefined),
-				updateSessionId: vi.fn(),
+				registerSession: jest.fn(),
+				unregisterSession: jest.fn(),
+				isSessionRegistered: jest.fn().mockReturnValue(false),
+				isRestoredSession: jest.fn().mockReturnValue(true),
+				getSessionId: jest.fn().mockReturnValue(undefined),
+				updateSessionId: jest.fn(),
 			});
 
 			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
@@ -1463,12 +1462,12 @@ describe('AgentRegistrationService', () => {
 
 		it('should not inject --resume flag for non-Claude runtimes', async () => {
 			(sessionModule.getSessionStatePersistence as any).mockReturnValue({
-				registerSession: vi.fn(),
-				unregisterSession: vi.fn(),
-				isSessionRegistered: vi.fn().mockReturnValue(false),
-				isRestoredSession: vi.fn().mockReturnValue(true),
-				getSessionId: vi.fn().mockReturnValue('abc-123-session-uuid'),
-				updateSessionId: vi.fn(),
+				registerSession: jest.fn(),
+				unregisterSession: jest.fn(),
+				isSessionRegistered: jest.fn().mockReturnValue(false),
+				isRestoredSession: jest.fn().mockReturnValue(true),
+				getSessionId: jest.fn().mockReturnValue('abc-123-session-uuid'),
+				updateSessionId: jest.fn(),
 			});
 
 			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
@@ -1494,17 +1493,17 @@ describe('AgentRegistrationService', () => {
 			// Force getSettingsService to throw
 			const { getSettingsService } = require('../settings/settings.service.js');
 			getSettingsService.mockReturnValueOnce({
-				getSettings: vi.fn().mockRejectedValue(new Error('Settings unavailable')),
-				getApiKey: vi.fn().mockResolvedValue(undefined),
+				getSettings: jest.fn().mockRejectedValue(new Error('Settings unavailable')),
+				getApiKey: jest.fn().mockResolvedValue(undefined),
 			});
 
 			(sessionModule.getSessionStatePersistence as any).mockReturnValue({
-				registerSession: vi.fn(),
-				unregisterSession: vi.fn(),
-				isSessionRegistered: vi.fn().mockReturnValue(false),
-				isRestoredSession: vi.fn().mockReturnValue(true),
-				getSessionId: vi.fn().mockReturnValue('abc-123'),
-				updateSessionId: vi.fn(),
+				registerSession: jest.fn(),
+				unregisterSession: jest.fn(),
+				isSessionRegistered: jest.fn().mockReturnValue(false),
+				isRestoredSession: jest.fn().mockReturnValue(true),
+				getSessionId: jest.fn().mockReturnValue('abc-123'),
+				updateSessionId: jest.fn(),
 			});
 
 			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
@@ -1618,16 +1617,16 @@ describe('AgentRegistrationService', () => {
 				name: 'test-session',
 				pid: 1234,
 				cwd: '/test',
-				onData: vi.fn().mockImplementation((callback: (data: string) => void) => {
+				onData: jest.fn().mockImplementation((callback: (data: string) => void) => {
 					outputSequence.forEach(({ output, delayMs }) => {
 						setTimeout(() => callback(output), delayMs);
 					});
-					return vi.fn();
+					return jest.fn();
 				}),
-				onExit: vi.fn().mockReturnValue(vi.fn()),
-				write: vi.fn(),
-				resize: vi.fn(),
-				kill: vi.fn(),
+				onExit: jest.fn().mockReturnValue(jest.fn()),
+				write: jest.fn(),
+				resize: jest.fn(),
+				kill: jest.fn(),
 			};
 		};
 
@@ -2664,16 +2663,16 @@ describe('AgentRegistrationService', () => {
 
 		beforeEach(() => {
 			mockCrewlyRuntime = {
-				initializeInProcess: vi.fn().mockResolvedValue(undefined),
-				handleMessage: vi.fn().mockResolvedValue({
+				initializeInProcess: jest.fn().mockResolvedValue(undefined),
+				handleMessage: jest.fn().mockResolvedValue({
 					text: 'Done',
 					steps: 1,
 					usage: { input: 50, output: 25 },
 					toolCalls: [],
 					finishReason: 'stop',
 				}),
-				isReady: vi.fn().mockReturnValue(true),
-				shutdown: vi.fn(),
+				isReady: jest.fn().mockReturnValue(true),
+				shutdown: jest.fn(),
 			};
 
 			// When RuntimeServiceFactory.create is called with CREWLY_AGENT, return the mock
@@ -2909,7 +2908,7 @@ describe('AgentRegistrationService', () => {
 				finishReason: 'stop',
 			});
 
-			const routeSpy = vi.spyOn(service as any, 'routeInProcessResponseToChat');
+			const routeSpy = jest.spyOn(service as any, 'routeInProcessResponseToChat');
 
 			const result = await service.sendMessageToAgent(
 				'crewly-chat',
@@ -2946,7 +2945,7 @@ describe('AgentRegistrationService', () => {
 				finishReason: 'stop',
 			});
 
-			const routeSpy = vi.spyOn(service as any, 'routeInProcessResponseToChat');
+			const routeSpy = jest.spyOn(service as any, 'routeInProcessResponseToChat');
 
 			const result = await service.sendMessageToAgent(
 				'crewly-slack',
@@ -2971,8 +2970,8 @@ describe('AgentRegistrationService', () => {
 		let mockWriteFileFs: any;
 
 		beforeEach(() => {
-			mockMkdir = vi.mocked(fsPromises.mkdir);
-			mockWriteFileFs = vi.mocked(fsPromises.writeFile);
+			mockMkdir = jest.mocked(fsPromises.mkdir);
+			mockWriteFileFs = jest.mocked(fsPromises.writeFile);
 			mockMkdir.mockResolvedValue(undefined);
 			mockWriteFileFs.mockResolvedValue(undefined);
 			mockReadFile.mockResolvedValue('# Agent Config Template Content');
@@ -3086,7 +3085,7 @@ describe('AgentRegistrationService', () => {
 		let mockWriteFileFn: any;
 
 		beforeEach(() => {
-			mockWriteFileFn = vi.mocked(fsPromises.writeFile);
+			mockWriteFileFn = jest.mocked(fsPromises.writeFile);
 			mockWriteFileFn.mockResolvedValue(undefined);
 		});
 
@@ -3157,7 +3156,7 @@ describe('AgentRegistrationService', () => {
 				],
 			} as any;
 			mockStorageService.getTeams.mockResolvedValue([mockTeam]);
-			mockStorageService.saveTeam = vi.fn().mockResolvedValue(undefined);
+			mockStorageService.saveTeam = jest.fn().mockResolvedValue(undefined);
 
 			const result = await (service as any).registerMemberActive(
 				'dev-session',
@@ -3177,7 +3176,7 @@ describe('AgentRegistrationService', () => {
 				],
 			} as any;
 			mockStorageService.getTeams.mockResolvedValue([mockTeam]);
-			mockStorageService.saveTeam = vi.fn().mockResolvedValue(undefined);
+			mockStorageService.saveTeam = jest.fn().mockResolvedValue(undefined);
 
 			const result = await (service as any).registerMemberActive(
 				'new-session',

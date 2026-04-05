@@ -4,28 +4,27 @@
  * @module services/browser/browser-relay-adapter.service.test
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { BrowserRelayAdapter } from './browser-relay-adapter.service.js';
 
 // Mock logger
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
 			createComponentLogger: () => ({
-				info: vi.fn(),
-				debug: vi.fn(),
-				warn: vi.fn(),
-				error: vi.fn(),
+				info: jest.fn(),
+				debug: jest.fn(),
+				warn: jest.fn(),
+				error: jest.fn(),
 			}),
 		}),
 	},
 }));
 
 // Mock CloudSyncService
-const mockSendMessage = vi.fn().mockResolvedValue(undefined);
-const mockGetState = vi.fn().mockReturnValue('syncing');
+const mockSendMessage = jest.fn().mockResolvedValue(undefined);
+const mockGetState = jest.fn().mockReturnValue('syncing');
 
-vi.mock('../cloud/cloud-sync.service.js', () => ({
+jest.mock('../cloud/cloud-sync.service.js', () => ({
 	CloudSyncService: {
 		getInstance: () => ({
 			sendMessage: mockSendMessage,
@@ -37,7 +36,7 @@ vi.mock('../cloud/cloud-sync.service.js', () => ({
 describe('BrowserRelayAdapter', () => {
 	beforeEach(() => {
 		BrowserRelayAdapter.resetInstance();
-		vi.clearAllMocks();
+		jest.clearAllMocks();
 		mockGetState.mockReturnValue('syncing');
 	});
 

@@ -1,5 +1,6 @@
+// @vitest-environment jsdom
 /**
- * Tests for TaskRow component — V3
+ * Tests for TaskRow component — V4
  *
  * @module components/TaskTracking/TaskRow.test
  */
@@ -180,5 +181,64 @@ describe('TaskRow', () => {
   it('hides schedule indicator when no scheduleId', () => {
     render(<TaskRow task={baseTask} />);
     expect(screen.queryByTestId('task-schedule')).not.toBeInTheDocument();
+  });
+
+  // =========================================================================
+  // Assign Agent tests
+  // =========================================================================
+
+  const mockAgents = [
+    { sessionName: 'dev-leo', name: 'Leo', role: 'developer', agentStatus: 'active', workingStatus: 'idle' },
+    { sessionName: 'dev-max', name: 'Max', role: 'developer', agentStatus: 'active', workingStatus: 'in_progress' },
+  ];
+
+  it('renders Assign button when agents are available and task is not done', () => {
+    const task = { ...baseTask, status: 'classified', assignedSessions: [] };
+    render(<TaskRow task={task} availableAgents={mockAgents} onAssignAgent={vi.fn()} />);
+    expect(screen.getByTestId('task-assign-btn')).toBeInTheDocument();
+  });
+
+  it('hides Assign button for completed tasks', () => {
+    const task = { ...baseTask, status: 'completed', assignedSessions: [] };
+    render(<TaskRow task={task} availableAgents={mockAgents} onAssignAgent={vi.fn()} />);
+    expect(screen.queryByTestId('task-assign-btn')).not.toBeInTheDocument();
+  });
+
+  it('hides Assign button when no agents are available', () => {
+    render(<TaskRow task={baseTask} />);
+    expect(screen.queryByTestId('task-assign-btn')).not.toBeInTheDocument();
+  });
+
+  it('opens assign dropdown on Assign button click', () => {
+    const task = { ...baseTask, status: 'classified', assignedSessions: [] };
+    render(<TaskRow task={task} availableAgents={mockAgents} onAssignAgent={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('task-assign-btn'));
+    expect(screen.getByTestId('assign-dropdown')).toBeInTheDocument();
+  });
+
+  it('shows available agents in dropdown (excluding already-assigned)', () => {
+    const task = { ...baseTask, status: 'in_progress', assignedSessions: ['dev-max'] };
+    render(<TaskRow task={task} availableAgents={mockAgents} onAssignAgent={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('task-assign-btn'));
+    // Only Leo should be shown (Max is already assigned)
+    expect(screen.getByTestId('assign-agent-dev-leo')).toBeInTheDocument();
+    expect(screen.queryByTestId('assign-agent-dev-max')).not.toBeInTheDocument();
+  });
+
+  it('calls onAssignAgent when an agent is selected', () => {
+    const onAssign = vi.fn();
+    const task = { ...baseTask, status: 'classified', assignedSessions: [] };
+    render(<TaskRow task={task} availableAgents={mockAgents} onAssignAgent={onAssign} />);
+    fireEvent.click(screen.getByTestId('task-assign-btn'));
+    fireEvent.click(screen.getByTestId('assign-agent-dev-leo'));
+    expect(onAssign).toHaveBeenCalledWith('task-1', 'dev-leo');
+  });
+
+  it('shows "busy" indicator for in_progress agents', () => {
+    const task = { ...baseTask, status: 'classified', assignedSessions: [] };
+    render(<TaskRow task={task} availableAgents={mockAgents} onAssignAgent={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('task-assign-btn'));
+    const maxBtn = screen.getByTestId('assign-agent-dev-max');
+    expect(maxBtn.querySelector('.task-assign-agent-busy')).toHaveTextContent('busy');
   });
 });

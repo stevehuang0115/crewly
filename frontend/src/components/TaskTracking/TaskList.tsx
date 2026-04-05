@@ -1,15 +1,18 @@
 /**
- * Task List Component — V3 (Data orchestration)
+ * Task List Component — V4 (Data orchestration)
  *
  * Fetches intent tasks from the API and exposes data to the parent page.
- * Handles grouping, filtering, and search logic.
- * Renders MessageGroupCards inside a task feed.
+ * Handles grouping, filtering, search, and agent assignment.
+ *
+ * V4 adds: fetches available agents from teams API, passes to TaskRow
+ * for "Assign Agent" functionality.
  *
  * @module components/TaskTracking/TaskList
  */
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { MessageGroupCard } from './MessageGroupCard';
+import type { AvailableAgent } from './TaskRow';
 import type {
   IntentTaskSummary,
   MessageGroup,
@@ -56,6 +59,7 @@ const FILTER_EMPTY_MESSAGES: Record<string, string> = {
 
 /**
  * Task feed component that fetches, filters, and renders message groups.
+ * Also loads available agents for task assignment.
  *
  * @param props - Component props
  * @returns Task feed JSX element
@@ -72,6 +76,7 @@ export const TaskList: React.FC<TaskListProps> = ({
   const [stats, setStats] = useState<TaskStatistics | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [availableAgents, setAvailableAgents] = useState<AvailableAgent[]>([]);
 
   /**
    * Fetch all message groups from the API (always unfiltered to preserve originalMessage).
@@ -110,15 +115,44 @@ export const TaskList: React.FC<TaskListProps> = ({
     }
   }, [onStatsLoaded]);
 
+  /**
+   * Fetch available agents from teams API for assignment dropdown.
+   */
+  const fetchAgents = useCallback(async () => {
+    try {
+      const res = await fetch('/api/teams');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.data)) {
+        const agents: AvailableAgent[] = [];
+        for (const team of data.data) {
+          if (Array.isArray(team.members)) {
+            for (const member of team.members) {
+              agents.push({
+                sessionName: member.sessionName,
+                name: member.name,
+                role: member.role,
+                agentStatus: member.agentStatus,
+                workingStatus: member.workingStatus,
+              });
+            }
+          }
+        }
+        setAvailableAgents(agents);
+      }
+    } catch {
+      // Agents list is non-critical, silently ignore
+    }
+  }, []);
+
   /** Initial data load */
   useEffect(() => {
     setIsLoading(true);
     onLoadingChange?.(true);
-    Promise.all([fetchGroups(), fetchStats()]).finally(() => {
+    Promise.all([fetchGroups(), fetchStats(), fetchAgents()]).finally(() => {
       setIsLoading(false);
       onLoadingChange?.(false);
     });
-  }, [fetchGroups, fetchStats, onLoadingChange]);
+  }, [fetchGroups, fetchStats, fetchAgents, onLoadingChange]);
 
   /**
    * Handle task toggle (status change) — refetch data after toggle.
@@ -126,6 +160,28 @@ export const TaskList: React.FC<TaskListProps> = ({
   const handleToggle = useCallback(async (taskId: string) => {
     try {
       const res = await fetch(`/api/intent-tasks/${taskId}/toggle`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        await Promise.all([fetchGroups(), fetchStats()]);
+      }
+    } catch {
+      // Silently fail
+    }
+  }, [fetchGroups, fetchStats]);
+
+  /**
+   * Handle agent assignment — update task with assigned session, refetch data.
+   */
+  const handleAssignAgent = useCallback(async (taskId: string, sessionName: string) => {
+    try {
+      const res = await fetch(`/api/intent-tasks/${taskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assignedSessions: [sessionName],
+          status: 'in_progress',
+        }),
+      });
       const data = await res.json();
       if (data.success) {
         await Promise.all([fetchGroups(), fetchStats()]);
@@ -195,11 +251,11 @@ export const TaskList: React.FC<TaskListProps> = ({
     onError?.(null);
     setIsLoading(true);
     onLoadingChange?.(true);
-    Promise.all([fetchGroups(), fetchStats()]).finally(() => {
+    Promise.all([fetchGroups(), fetchStats(), fetchAgents()]).finally(() => {
       setIsLoading(false);
       onLoadingChange?.(false);
     });
-  }, [fetchGroups, fetchStats, onError, onLoadingChange]);
+  }, [fetchGroups, fetchStats, fetchAgents, onError, onLoadingChange]);
 
   // Error state
   if (error) {
@@ -269,6 +325,8 @@ export const TaskList: React.FC<TaskListProps> = ({
           group={group}
           defaultExpanded={index < 2}
           onTaskToggle={handleToggle}
+          onAssignAgent={handleAssignAgent}
+          availableAgents={availableAgents}
         />
       ))}
     </div>

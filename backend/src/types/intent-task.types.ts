@@ -283,17 +283,36 @@ export interface DecomposeMessageInput {
 }
 
 /**
- * Request body for updating a task's status
+ * Request body for updating a task's status and metadata.
+ * Supports updating intent description, level, and category
+ * (useful when orchestrator LLM refines understanding).
  */
 export interface UpdateIntentTaskInput {
   /** New status */
   status?: IntentTaskStatus;
+  /** Updated intent description (for LLM-driven refinement) */
+  intent?: string;
+  /** Updated complexity level */
+  level?: IntentLevel;
+  /** Updated category */
+  category?: IntentCategory;
   /** Result summary (when completing) */
   result?: string;
   /** Additional sessions to assign */
   assignedSessions?: string[];
   /** Schedule ID to associate */
   scheduleId?: string;
+}
+
+/**
+ * Request body for creating multiple intent tasks in a single batch.
+ * Used by the orchestrator to create all tasks from one chat message at once.
+ */
+export interface BatchCreateIntentTaskInput {
+  /** Array of tasks to create */
+  tasks: CreateIntentTaskInput[];
+  /** The original user message that produced these tasks */
+  originalMessage?: string;
 }
 
 /**

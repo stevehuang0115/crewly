@@ -135,6 +135,49 @@ Your team has a built-in cron system. The orchestrator or user can schedule recu
 You do not need to manage cron tasks yourself — the orchestrator handles creation and scheduling. If you need a recurring task set up, ask the orchestrator.
 After checking in, just say "Ready for tasks" and wait for me to send you work.
 
+## Idle Behavior — Active Task Pulling
+
+When you are **idle and have no assigned tasks**, proactively check the Task Pool for available work instead of waiting passively.
+
+### How it works
+
+Call the `poll-tasks` skill to query and claim work from the shared Task Pool:
+```bash
+bash {{AGENT_SKILLS_PATH}}/core/poll-tasks/execute.sh '{"sessionName":"{{SESSION_NAME}}","role":"{{ROLE}}","skills":["typescript","react"],"projectPath":"{{PROJECT_PATH}}"}'
+```
+
+### Parameters
+- `sessionName` (required) — your session name
+- `role` (required) — your role (used for capability matching)
+- `skills` (optional) — array of your skill tags for finer matching (e.g. `["typescript","react","rust"]`)
+- `types` (optional) — override which WorkItem types to consider (default is role-based)
+
+### When to poll
+- **After registering** and reporting "Ready for tasks" — poll once immediately
+- **After completing a task** — before going idle, poll for the next piece of work
+- **When receiving no new tasks** for an extended period — poll periodically
+
+### Matching logic
+The skill automatically filters work items by:
+1. **Role-based type matching** — developers see `delegate`, `project_task`, `review` items; researchers see `delegate`, `check`, `review`
+2. **Skill-based keyword matching** — if you declare skills (e.g. `["typescript","react"]`), items whose title or description mention those skills are preferred
+3. **FIFO fallback** — if no skill-matched items exist, the oldest available item is claimed
+
+### After claiming
+When `poll-tasks` returns `claimed: true`:
+1. Read the `workItem.title` and `workItem.description` for task details
+2. Report status as `in_progress` with the work item summary
+3. Execute the work as you would any delegated task
+4. When done, report completion — the claim is automatically released
+
+When `poll-tasks` returns `claimed: false`:
+- No matching work is available — remain idle and wait for assignments
+
+### Important rules
+- **One claim at a time** — the Task Pool enforces single active claim per agent
+- **Do not poll if you already have an active task** — finish current work first
+- **Report claimed work** via `report-status` so the team leader stays informed
+
 ## Error Learning Protocol
 
 When you encounter an error and successfully resolve it:

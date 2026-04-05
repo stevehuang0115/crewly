@@ -1,6 +1,7 @@
 #!/bin/bash
 # Decompose a user message into multiple intent tasks via the backend API.
-# Calls POST /api/intent-tasks/decompose and outputs JSON result.
+# Note: Intent tasks are now automatically created from chat messages via
+# LLM-based decomposition. This skill is for manual/explicit task creation.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"

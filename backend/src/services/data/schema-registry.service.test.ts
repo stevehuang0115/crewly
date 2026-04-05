@@ -5,26 +5,25 @@
  * validation rules (required, type, max_length, enum, array min_items, datetime).
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { SchemaRegistryService } from './schema-registry.service.js';
 import type { SchemaDefinition } from '../../types/data-object.types.js';
 
 // Mock fs modules
-vi.mock('fs/promises');
-vi.mock('fs', () => ({
-  existsSync: vi.fn(),
+jest.mock('fs/promises');
+jest.mock('fs', () => ({
+  existsSync: jest.fn(),
 }));
 
 // Mock logger
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        warn: vi.fn(),
-        debug: vi.fn(),
-        info: vi.fn(),
+        warn: jest.fn(),
+        debug: jest.fn(),
+        info: jest.fn(),
       }),
     }),
   },
@@ -58,7 +57,7 @@ describe('SchemaRegistryService', () => {
   beforeEach(() => {
     SchemaRegistryService.resetInstance();
     service = SchemaRegistryService.getInstance();
-    vi.clearAllMocks();
+    jest.clearAllMocks();
   });
 
   afterEach(() => {
@@ -91,11 +90,11 @@ describe('SchemaRegistryService', () => {
   describe('loadSchemas', () => {
     it('loads schemas from sink sub-directories', async () => {
       const schema = makeSteveInputsSchema();
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readdir).mockResolvedValue([
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'steve-inputs', isDirectory: () => true } as unknown as import('fs').Dirent,
       ] as unknown as import('fs').Dirent[]);
-      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(schema));
+      jest.mocked(fs.readFile).mockResolvedValue(JSON.stringify(schema));
 
       await service.loadSchemas('/project');
 
@@ -104,8 +103,8 @@ describe('SchemaRegistryService', () => {
     });
 
     it('skips directories starting with underscore', async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readdir).mockResolvedValue([
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readdir).mockResolvedValue([
         { name: '_inbox', isDirectory: () => true } as unknown as import('fs').Dirent,
       ] as unknown as import('fs').Dirent[]);
 
@@ -115,7 +114,7 @@ describe('SchemaRegistryService', () => {
     });
 
     it('handles non-existent sinks directory gracefully', async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
+      jest.mocked(existsSync).mockReturnValue(false);
 
       await service.loadSchemas('/project');
 
@@ -123,11 +122,11 @@ describe('SchemaRegistryService', () => {
     });
 
     it('skips schemas missing id or fields', async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readdir).mockResolvedValue([
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'bad-sink', isDirectory: () => true } as unknown as import('fs').Dirent,
       ] as unknown as import('fs').Dirent[]);
-      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ name: 'No ID' }));
+      jest.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ name: 'No ID' }));
 
       await service.loadSchemas('/project');
 
@@ -135,8 +134,8 @@ describe('SchemaRegistryService', () => {
     });
 
     it('skips non-directory entries', async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readdir).mockResolvedValue([
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'readme.md', isDirectory: () => false } as unknown as import('fs').Dirent,
       ] as unknown as import('fs').Dirent[]);
 
@@ -146,11 +145,11 @@ describe('SchemaRegistryService', () => {
     });
 
     it('handles malformed JSON gracefully', async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readdir).mockResolvedValue([
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'bad-json', isDirectory: () => true } as unknown as import('fs').Dirent,
       ] as unknown as import('fs').Dirent[]);
-      vi.mocked(fs.readFile).mockResolvedValue('not valid json {{');
+      jest.mocked(fs.readFile).mockResolvedValue('not valid json {{');
 
       await service.loadSchemas('/project');
 
@@ -158,10 +157,10 @@ describe('SchemaRegistryService', () => {
     });
 
     it('skips directories without _schema.json', async () => {
-      vi.mocked(existsSync)
+      jest.mocked(existsSync)
         .mockReturnValueOnce(true)   // sinksDir exists
         .mockReturnValueOnce(false); // _schema.json does not exist
-      vi.mocked(fs.readdir).mockResolvedValue([
+      jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'no-schema', isDirectory: () => true } as unknown as import('fs').Dirent,
       ] as unknown as import('fs').Dirent[]);
 

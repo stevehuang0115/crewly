@@ -5,31 +5,30 @@
  * registerSink (in-memory + persistence).
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { SinkRegistryService } from './sink-registry.service.js';
 import type { SinkDefinition } from '../../types/data-object.types.js';
 
 // Mock fs modules
-vi.mock('fs/promises');
-vi.mock('fs', () => ({
-  existsSync: vi.fn(),
+jest.mock('fs/promises');
+jest.mock('fs', () => ({
+  existsSync: jest.fn(),
 }));
 
 // Mock atomicWriteFile
-vi.mock('../../utils/file-io.utils.js', () => ({
-  atomicWriteFile: vi.fn().mockResolvedValue(undefined),
+jest.mock('../../utils/file-io.utils.js', () => ({
+  atomicWriteFile: jest.fn().mockResolvedValue(undefined),
 }));
 
 // Mock logger
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        warn: vi.fn(),
-        debug: vi.fn(),
-        info: vi.fn(),
+        warn: jest.fn(),
+        debug: jest.fn(),
+        info: jest.fn(),
       }),
     }),
   },
@@ -69,7 +68,7 @@ describe('SinkRegistryService', () => {
   beforeEach(() => {
     SinkRegistryService.resetInstance();
     service = SinkRegistryService.getInstance();
-    vi.clearAllMocks();
+    jest.clearAllMocks();
   });
 
   afterEach(() => {
@@ -105,8 +104,8 @@ describe('SinkRegistryService', () => {
         version: 1,
         sinks: [makeSteveInputsSink(), makeMarketingSink()],
       };
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(registry));
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readFile).mockResolvedValue(JSON.stringify(registry));
 
       await service.loadSinks('/project');
 
@@ -115,7 +114,7 @@ describe('SinkRegistryService', () => {
     });
 
     it('handles non-existent _sinks.json gracefully', async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
+      jest.mocked(existsSync).mockReturnValue(false);
 
       await service.loadSinks('/project');
 
@@ -127,8 +126,8 @@ describe('SinkRegistryService', () => {
         version: 1,
         sinks: [{ name: 'No ID', tags: [], directory: 'x', schema_id: 'x' }],
       };
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(registry));
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readFile).mockResolvedValue(JSON.stringify(registry));
 
       await service.loadSinks('/project');
 
@@ -136,8 +135,8 @@ describe('SinkRegistryService', () => {
     });
 
     it('handles missing sinks array gracefully', async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ version: 1 }));
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ version: 1 }));
 
       await service.loadSinks('/project');
 
@@ -145,8 +144,8 @@ describe('SinkRegistryService', () => {
     });
 
     it('handles malformed JSON gracefully', async () => {
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFile).mockResolvedValue('broken json {{');
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readFile).mockResolvedValue('broken json {{');
 
       await service.loadSinks('/project');
 
@@ -168,8 +167,8 @@ describe('SinkRegistryService', () => {
         version: 1,
         sinks: [makeSteveInputsSink(), makeMarketingSink()],
       };
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(registry));
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readFile).mockResolvedValue(JSON.stringify(registry));
 
       await service.loadSinks('/project');
 
@@ -190,8 +189,8 @@ describe('SinkRegistryService', () => {
         version: 1,
         sinks: [makeSteveInputsSink(), makeMarketingSink()],
       };
-      vi.mocked(existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(registry));
+      jest.mocked(existsSync).mockReturnValue(true);
+      jest.mocked(fs.readFile).mockResolvedValue(JSON.stringify(registry));
       await service.loadSinks('/project');
     });
 
@@ -238,7 +237,7 @@ describe('SinkRegistryService', () => {
 
   describe('registerSink', () => {
     it('adds a new sink to the in-memory registry', async () => {
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      jest.mocked(fs.mkdir).mockResolvedValue(undefined);
 
       const sink = makeSteveInputsSink();
       await service.registerSink('/project', sink);
@@ -247,7 +246,7 @@ describe('SinkRegistryService', () => {
     });
 
     it('creates sinks directory and sink data directory', async () => {
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      jest.mocked(fs.mkdir).mockResolvedValue(undefined);
 
       await service.registerSink('/project', makeSteveInputsSink());
 
@@ -257,7 +256,7 @@ describe('SinkRegistryService', () => {
 
     it('persists the registry via atomicWriteFile', async () => {
       const { atomicWriteFile } = await import('../../utils/file-io.utils.js');
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      jest.mocked(fs.mkdir).mockResolvedValue(undefined);
 
       await service.registerSink('/project', makeSteveInputsSink());
 
@@ -267,7 +266,7 @@ describe('SinkRegistryService', () => {
       );
 
       // Verify the written content is valid JSON with our sink
-      const writtenContent = vi.mocked(atomicWriteFile).mock.calls[0][1] as string;
+      const writtenContent = jest.mocked(atomicWriteFile).mock.calls[0][1] as string;
       const parsed = JSON.parse(writtenContent);
       expect(parsed.version).toBe(1);
       expect(parsed.sinks).toHaveLength(1);
@@ -275,7 +274,7 @@ describe('SinkRegistryService', () => {
     });
 
     it('overwrites an existing sink with the same id', async () => {
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+      jest.mocked(fs.mkdir).mockResolvedValue(undefined);
 
       const sink = makeSteveInputsSink();
       await service.registerSink('/project', sink);

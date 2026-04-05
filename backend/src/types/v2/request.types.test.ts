@@ -4,7 +4,6 @@
  * @module types/v2/request.types.test
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   REQUEST_STATUSES,
   TERMINAL_REQUEST_STATUSES,

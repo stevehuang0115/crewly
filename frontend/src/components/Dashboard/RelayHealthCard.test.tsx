@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * RelayHealthCard Component Tests
  *

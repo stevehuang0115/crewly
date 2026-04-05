@@ -26,6 +26,48 @@ function getService(): TaskPoolService {
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/task-pool/add — Add a WorkItem to the pool
+// ---------------------------------------------------------------------------
+
+/**
+ * Adds a WorkItem to the Task Pool.
+ *
+ * This is the HTTP entry point for the V3 pull-mode task path.
+ * Used by delegate-task and other orchestration flows to queue
+ * execution-ready WorkItems.
+ *
+ * Request body: a WorkItem object (id, type, owner, title, status='queued', etc.)
+ *
+ * @param req - Express request with WorkItem body
+ * @param res - Express response
+ */
+export async function addItem(req: Request, res: Response): Promise<void> {
+  try {
+    const workItem = req.body;
+
+    if (!workItem || typeof workItem !== 'object') {
+      res.status(400).json({ success: false, error: 'Request body must be a WorkItem object' });
+      return;
+    }
+
+    await getService().addToPool(workItem);
+
+    res.status(201).json({
+      success: true,
+      message: `WorkItem ${workItem.id} added to pool`,
+      data: { workItemId: workItem.id },
+    });
+  } catch (error) {
+    const message = (error as Error).message;
+    if (message.includes('Invalid WorkItem') || message.includes('status must be')) {
+      res.status(400).json({ success: false, error: message });
+    } else {
+      res.status(500).json({ success: false, error: message });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/task-pool — List available WorkItems
 // ---------------------------------------------------------------------------
 
