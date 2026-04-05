@@ -4,6 +4,7 @@
  * @module services/intent-task/intent-task-follow-up.service.test
  */
 
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -229,7 +230,7 @@ describe('IntentTaskFollowUpService', () => {
       followUpService.onFollowUpTriggered(scheduleId);
 
       expect(events).toHaveLength(1);
-      expect(events[0].status).toBe('classified');
+      expect(events[0].status).toBe('pending');
     });
 
     it('should emit follow-up-needed when task is pending', () => {

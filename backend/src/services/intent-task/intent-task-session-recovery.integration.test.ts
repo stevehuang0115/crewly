@@ -7,6 +7,7 @@
  * @module services/intent-task/intent-task-session-recovery.integration.test
  */
 
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -184,7 +185,7 @@ describe('IntentTaskService — Session-less Recovery', () => {
       expect(restored.getTask(t1.id)!.status).toBe('completed');
       expect(restored.getTask(t2.id)!.status).toBe('failed');
       expect(restored.getTask(t2.id)!.result).toBe('Error occurred');
-      expect(restored.getTask(t3.id)!.status).toBe('classified');
+      expect(restored.getTask(t3.id)!.status).toBe('pending');
     });
   });
 

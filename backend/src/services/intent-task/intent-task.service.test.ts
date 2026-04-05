@@ -4,6 +4,7 @@
  * @module services/intent-task/intent-task.service.test
  */
 
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -165,7 +166,7 @@ describe('IntentTaskService', () => {
       expect(task.intent).toBe('Fix the login bug');
       expect(task.level).toBe('L1');
       expect(task.category).toBe('debugging');
-      expect(task.status).toBe('classified');
+      expect(task.status).toBe('pending');
       expect(task.runs).toHaveLength(0);
       expect(task.totalInputTokens).toBe(0);
       expect(task.totalOutputTokens).toBe(0);
@@ -799,7 +800,7 @@ describe('IntentTaskService', () => {
 
       const stats = service.getStatistics();
       expect(stats.totalTasks).toBe(3);
-      expect(stats.byStatus.classified).toBe(2);
+      expect(stats.byStatus.pending).toBe(2);
       expect(stats.byStatus.completed).toBe(1);
       expect(stats.byLevel.L0).toBe(1);
       expect(stats.byLevel.L1).toBe(1);
@@ -986,7 +987,7 @@ describe('IntentTaskService', () => {
       const unresolved = service.getUnresolvedTasks();
       expect(unresolved).toHaveLength(2);
       const statuses = unresolved.map((t) => t.status);
-      expect(statuses).toContain('classified');
+      expect(statuses).toContain('pending');
       expect(statuses).toContain('in_progress');
       expect(statuses).not.toContain('completed');
       expect(statuses).not.toContain('failed');
@@ -1245,6 +1246,171 @@ describe('IntentTaskService', () => {
       const summaries = service.listTaskSummaries();
       const summary = summaries.find((s) => s.id === task.id)!;
       expect(summary.totalSkillCost).toBe(0.15);
+    });
+  });
+
+  // ===========================================================================
+  // V3: Batch Create Tasks
+  // ===========================================================================
+
+  describe('batchCreateTasks', () => {
+    it('should create multiple tasks with shared messageId', () => {
+      const service = IntentTaskService.getInstance();
+      const tasks = service.batchCreateTasks({
+        tasks: [
+          { intent: '部署到 staging', level: 'L1', category: 'deployment' },
+          { intent: '检查错误日志', level: 'L0', category: 'debugging' },
+        ],
+        originalMessage: '帮我部署一下然后检查日志',
+      });
+
+      expect(tasks).toHaveLength(2);
+      // All tasks share same messageId
+      expect(tasks[0].messageId).toBe(tasks[1].messageId);
+      // Intents preserved
+      expect(tasks[0].intent).toBe('部署到 staging');
+      expect(tasks[1].intent).toBe('检查错误日志');
+      // Level and category preserved
+      expect(tasks[0].level).toBe('L1');
+      expect(tasks[0].category).toBe('deployment');
+      expect(tasks[1].level).toBe('L0');
+      expect(tasks[1].category).toBe('debugging');
+      // Order assigned
+      expect(tasks[0].order).toBe(0);
+      expect(tasks[1].order).toBe(1);
+    });
+
+    it('should store originalMessage for message group display', () => {
+      const service = IntentTaskService.getInstance();
+      service.batchCreateTasks({
+        tasks: [
+          { intent: 'Task A' },
+          { intent: 'Task B' },
+        ],
+        originalMessage: 'Do A and B',
+      });
+
+      const groups = service.listMessageGroups();
+      expect(groups).toHaveLength(1);
+      expect(groups[0].originalMessage).toBe('Do A and B');
+      expect(groups[0].totalCount).toBe(2);
+    });
+
+    it('should return empty array for empty tasks input', () => {
+      const service = IntentTaskService.getInstance();
+      const tasks = service.batchCreateTasks({ tasks: [] });
+      expect(tasks).toHaveLength(0);
+    });
+
+    it('should generate fallback originalMessage from intents when not provided', () => {
+      const service = IntentTaskService.getInstance();
+      service.batchCreateTasks({
+        tasks: [
+          { intent: 'Fix the bug' },
+          { intent: 'Deploy it' },
+        ],
+      });
+
+      const groups = service.listMessageGroups();
+      expect(groups).toHaveLength(1);
+      expect(groups[0].originalMessage).toBe('Fix the bug; Deploy it');
+    });
+
+    it('should auto-classify level and category when not provided', () => {
+      const service = IntentTaskService.getInstance();
+      const tasks = service.batchCreateTasks({
+        tasks: [
+          { intent: 'Fix the login bug' },
+        ],
+      });
+
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].level).toBeDefined();
+      expect(tasks[0].category).toBe('debugging');
+    });
+
+    it('should persist batch-created tasks', () => {
+      const service = IntentTaskService.getInstance();
+      service.batchCreateTasks({
+        tasks: [
+          { intent: '任务一', level: 'L1', category: 'code_change' },
+          { intent: '任务二', level: 'L0', category: 'query' },
+        ],
+        originalMessage: '做任务一和任务二',
+      });
+      service.flushSync();
+
+      IntentTaskService.resetInstance();
+      const service2 = IntentTaskService.getInstance();
+
+      const groups = service2.listMessageGroups();
+      expect(groups).toHaveLength(1);
+      expect(groups[0].originalMessage).toBe('做任务一和任务二');
+      expect(groups[0].tasks).toHaveLength(2);
+    });
+  });
+
+  // ===========================================================================
+  // V3: Extended updateTask — intent, level, category
+  // ===========================================================================
+
+  describe('updateTask extended fields', () => {
+    it('should update intent description', () => {
+      const service = IntentTaskService.getInstance();
+      const task = service.createTask({ intent: 'Original' });
+
+      service.updateTask(task.id, { intent: 'Refined description' });
+
+      const updated = service.getTask(task.id)!;
+      expect(updated.intent).toBe('Refined description');
+    });
+
+    it('should update level', () => {
+      const service = IntentTaskService.getInstance();
+      const task = service.createTask({ intent: 'Test', level: 'L0' });
+
+      service.updateTask(task.id, { level: 'L2' });
+
+      const updated = service.getTask(task.id)!;
+      expect(updated.level).toBe('L2');
+    });
+
+    it('should update category', () => {
+      const service = IntentTaskService.getInstance();
+      const task = service.createTask({ intent: 'Test', category: 'other' });
+
+      service.updateTask(task.id, { category: 'deployment' });
+
+      const updated = service.getTask(task.id)!;
+      expect(updated.category).toBe('deployment');
+    });
+
+    it('should not update intent to empty string', () => {
+      const service = IntentTaskService.getInstance();
+      const task = service.createTask({ intent: 'Keep this' });
+
+      service.updateTask(task.id, { intent: '   ' });
+
+      const updated = service.getTask(task.id)!;
+      expect(updated.intent).toBe('Keep this');
+    });
+
+    it('should update multiple fields at once', () => {
+      const service = IntentTaskService.getInstance();
+      const task = service.createTask({ intent: 'Old', level: 'L0', category: 'query' });
+
+      service.updateTask(task.id, {
+        intent: 'New description',
+        level: 'L1',
+        category: 'code_change',
+        status: 'in_progress',
+      });
+
+      const updated = service.getTask(task.id)!;
+      expect(updated.intent).toBe('New description');
+      expect(updated.level).toBe('L1');
+      expect(updated.category).toBe('code_change');
+      expect(updated.status).toBe('in_progress');
     });
   });
 });
