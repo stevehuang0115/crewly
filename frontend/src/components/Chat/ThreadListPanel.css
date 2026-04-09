@@ -12,6 +12,13 @@
   background-color: var(--color-bg-primary);
 }
 
+.thread-list-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-right: 0.5rem;
+}
+
 .thread-list-scroll {
   flex: 1;
   overflow-y: auto;

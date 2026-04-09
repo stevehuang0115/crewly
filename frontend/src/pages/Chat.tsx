@@ -2,7 +2,7 @@
  * Chat Page
  *
  * Thread-based chat interface with two-pane layout: thread list on the left,
- * thread detail on the right. Supports channel type filtering.
+ * thread detail on the right. Supports channel type filtering and new chat creation.
  *
  * @module pages/Chat
  */
@@ -19,6 +19,7 @@ import './Chat.css';
  * Features:
  * - Two-pane layout: thread list + thread detail
  * - Channel type filtering (All, Slack, Crewly, etc.)
+ * - "+ New Chat" button to create conversations
  * - Responsive: single pane on mobile with toggle
  * - Real-time message updates via WebSocket
  *
@@ -29,6 +30,7 @@ export const Chat: React.FC = () => {
     conversations,
     currentConversation,
     selectConversation,
+    createConversation,
     channelFilter,
     setChannelFilter,
   } = useChat();
@@ -50,6 +52,15 @@ export const Chat: React.FC = () => {
     setMobileView('list');
   }, []);
 
+  /** Handle creating a new chat conversation */
+  const handleNewChat = useCallback(async () => {
+    const conversation = await createConversation();
+    if (conversation?.id) {
+      await selectConversation(conversation.id);
+      setMobileView('detail');
+    }
+  }, [createConversation, selectConversation]);
+
   return (
     <div className="chat-page thread-layout">
       <header className="chat-page-header">
@@ -67,6 +78,7 @@ export const Chat: React.FC = () => {
             onSelectThread={handleSelectThread}
             channelFilter={channelFilter}
             onChannelFilterChange={setChannelFilter}
+            onNewChat={handleNewChat}
           />
         </aside>
 

@@ -1,7 +1,7 @@
 /**
  * Navigation Component
  *
- * Sidebar navigation with 4 functional groups (Work / Communicate / Tools / System)
+ * Sidebar navigation with grouped sections (Work / Communicate / Tools / Cloud / System Operations)
  * following the IA Joint Recommendations "Workplace" model.
  * Includes pinned favorites at the top of the Work group.
  *
@@ -26,6 +26,8 @@ import {
 	Star,
 	Cloud,
 	ClipboardList,
+	Target,
+	Inbox,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
@@ -53,7 +55,7 @@ interface NavGroup {
 
 /**
  * Navigation groups following the "Workplace" model from IA recommendations:
- * Work (primary monitoring) → Communicate (messaging) → Tools (extensions) → System (config)
+ * Work (primary monitoring) -> Communicate (messaging) -> Tools (extensions) -> Cloud -> System Operations (config)
  */
 const NAV_GROUPS: NavGroup[] = [
 	{
@@ -62,7 +64,7 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Dashboard', href: '/', icon: Home },
 			{ name: 'Projects', href: '/projects', icon: FolderOpen },
 			{ name: 'Teams', href: '/teams', icon: Users },
-			{ name: 'Tasks', href: '/tasks', icon: ClipboardList },
+			{ name: 'Objectives', href: '/missions', icon: Target },
 		],
 	},
 	{
@@ -75,7 +77,7 @@ const NAV_GROUPS: NavGroup[] = [
 		label: 'TOOLS',
 		items: [
 			{ name: 'Marketplace', href: '/marketplace', icon: Store },
-			{ name: 'Schedules & Cron', href: '/scheduled-checkins', icon: Clock },
+			{ name: 'Schedules', href: '/scheduled-checkins', icon: Clock },
 		],
 	},
 	{
@@ -85,8 +87,10 @@ const NAV_GROUPS: NavGroup[] = [
 		],
 	},
 	{
-		label: 'SYSTEM',
+		label: 'SYSTEM OPERATIONS',
 		items: [
+			{ name: 'Execution Logs', href: '/workitems', icon: ClipboardList },
+			{ name: 'Incoming Pipeline', href: '/requests', icon: Inbox },
 			{ name: 'Usage', href: '/usage', icon: DollarSign },
 			{ name: 'Security', href: '/security', icon: Shield },
 			{ name: 'Settings', href: '/settings', icon: Settings },
@@ -205,7 +209,7 @@ const PinnedFavoritesSection: React.FC<{
 /**
  * Main sidebar navigation component.
  *
- * Renders 4 grouped navigation sections (Work, Communicate, Tools, System)
+ * Renders grouped navigation sections (Work, Communicate, Tools, Cloud, System Operations)
  * with pinned favorites at the top of the Work group. Includes logo,
  * cloud auth status, QR code display, and collapse toggle.
  *
@@ -266,7 +270,7 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 							<div className="px-4 py-1 mb-1">
 								<span
 									className="text-[10px] font-semibold text-text-secondary-dark uppercase tracking-wider"
-									data-testid={`nav-group-${group.label.toLowerCase()}`}
+									data-testid={`nav-group-${group.label.toLowerCase().replace(/\s+/g, '-')}`}
 								>
 									{group.label}
 								</span>

@@ -25,6 +25,10 @@ import { Auth } from './pages/Auth';
 import { Pricing } from './pages/Pricing';
 import { CloudPortal } from './pages/CloudPortal';
 import { TasksPage } from './pages/TasksPage';
+import { Missions } from './pages/Missions';
+import { MissionDetail } from './pages/MissionDetail';
+import { WorkItems } from './pages/WorkItems';
+import { RequestsPage } from './pages/RequestsPage';
 
 
 function App() {
@@ -60,6 +64,12 @@ function App() {
               <Route path="pricing" element={<Pricing />} />
               <Route path="cloud" element={<CloudPortal />} />
               <Route path="tasks" element={<TasksPage />} />
+              <Route path="missions" element={<Missions />} />
+              <Route path="missions/:id" element={<MissionDetail />} />
+              <Route path="workitems" element={<WorkItems />} />
+              <Route path="workitems/:id" element={<WorkItems />} />
+              <Route path="requests" element={<RequestsPage />} />
+              <Route path="requests/:id" element={<RequestsPage />} />
 
               <Route
                 path="chat"
