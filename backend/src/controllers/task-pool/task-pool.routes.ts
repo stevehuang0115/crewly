@@ -36,6 +36,9 @@ export function createTaskPoolRouter(): Router {
   // List available work items
   router.get('/', listAvailable);
 
+  // Alias: /all returns the same list (used by frontend Execution Logs page)
+  router.get('/all', listAvailable);
+
   // Add a work item to the pool
   router.post('/add', addItem);
 

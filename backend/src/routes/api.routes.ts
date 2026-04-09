@@ -34,6 +34,7 @@ import { createCrossMachineRouter } from '../controllers/cross-machine/index.js'
 import { createDataRouter } from '../controllers/data/data.routes.js';
 import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
 import { createTaskPoolRouter } from '../controllers/task-pool/task-pool.routes.js';
+import { createRequestRouter } from '../controllers/request/request.routes.js';
 import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
 import { createFissionRouter } from '../controllers/fission/fission.routes.js';
 import { createMissionPolicyRouter } from '../controllers/mission/mission-policy.routes.js';
@@ -131,6 +132,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Intent Task routes for task decomposition, tracking, and lifecycle
   router.use('/intent-tasks', createIntentTaskRouter());
+
+  // Request routes for V3 incoming pipeline
+  router.use('/requests', createRequestRouter());
 
   // Task Pool routes for V2 work item pool management
   router.use('/task-pool', createTaskPoolRouter());
