@@ -121,6 +121,7 @@ export async function createTask(this: ApiController, req: Request, res: Respons
 			sessionName,
 			milestone = 'delegated',
 			outputSchema,
+			requestId,
 		} = req.body;
 
 		if (!projectPath) {
@@ -218,6 +219,35 @@ export async function createTask(this: ApiController, req: Request, res: Respons
 			} catch (trackingError) {
 				logger.warn('Failed to track task assignment', { error: trackingError instanceof Error ? trackingError.message : String(trackingError) });
 				// Non-fatal - the file was still created
+			}
+		}
+
+		// V3 Hook: emit v3:task_delegated for automatic WorkItem creation.
+		// Uses explicit requestId only — no time-window fallback — to avoid
+		// mis-association in high-concurrency scenarios.
+		if (sessionName && eventBusService) {
+			try {
+				const taskIdForEvent = trackedTaskId || `${sanitizedName}_${timestamp}`;
+				(eventBusService as any).emit('v3:task_delegated', {
+					taskId: taskIdForEvent,
+					title: task,
+					description: task,
+					assignedTo: sessionName,
+					priority,
+					projectPath,
+					milestone,
+					requestId: requestId || undefined,
+					timestamp: new Date().toISOString(),
+				});
+				logger.debug('Emitted v3:task_delegated', {
+					taskId: taskIdForEvent,
+					assignedTo: sessionName,
+					requestId: requestId || undefined,
+				});
+			} catch (err) {
+				logger.warn('Failed to emit v3:task_delegated (non-fatal)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
 			}
 		}
 

@@ -26,6 +26,7 @@ import { PoolStorage } from '../task-pool/pool-storage.js';
 import { StorageService } from '../core/storage.service.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { TokenUsageService } from '../monitoring/token-usage.service.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -387,6 +388,57 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         error: error instanceof Error ? error.message : String(error),
       });
       return false;
+    }
+  }
+
+  /**
+   * Backfill token usage on completed WorkItems that still show 0 tokens.
+   *
+   * Scans all done/failed WorkItems with zero inputTokens, looks up token
+   * usage from TokenUsageService by the agent session (target field), and
+   * writes the data to the WorkItem.
+   *
+   * @returns Number of WorkItems updated
+   */
+  async backfillTokenUsage(): Promise<number> {
+    try {
+      const pool = TaskPoolService.getInstance();
+      const allItems = await pool.getAllItems();
+      const tokenService = TokenUsageService.getInstance();
+      const sessionUsage = tokenService.getUsageBySessions();
+
+      // Build a lookup map: sessionName -> usage summary
+      const usageMap = new Map(sessionUsage.map(s => [s.sessionName, s]));
+
+      let updated = 0;
+      for (const wi of allItems) {
+        // Only backfill done/failed items with no token data
+        if (wi.status !== 'done' && wi.status !== 'failed') continue;
+        if ((wi.inputTokens ?? 0) > 0 || (wi.outputTokens ?? 0) > 0) continue;
+        if (!wi.target) continue;
+
+        const usage = usageMap.get(wi.target);
+        if (!usage) continue;
+
+        const totalInput = usage.totalInput || 0;
+        const totalOutput = usage.totalOutput || 0;
+        const totalCost = usage.cost || 0;
+
+        if (totalInput > 0 || totalOutput > 0) {
+          await pool.updateTokenUsage(wi.id, totalInput, totalOutput, totalCost);
+          updated++;
+        }
+      }
+
+      if (updated > 0) {
+        this.logger.debug('Backfilled token usage on WorkItems', { count: updated });
+      }
+      return updated;
+    } catch (error) {
+      this.logger.debug('Token backfill failed (non-fatal)', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 0;
     }
   }
 

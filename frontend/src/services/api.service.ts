@@ -1119,6 +1119,55 @@ class ApiService {
       throw new Error(response.data.error || 'Failed to reset token usage');
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // V3 Pipeline APIs (Requests, WorkItems, Missions)
+  // ---------------------------------------------------------------------------
+
+  async getRequests(): Promise<unknown[]> {
+    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/requests`);
+    const d = response.data.data as Record<string, unknown>;
+    return (Array.isArray(d) ? d : (d?.data as unknown[]) || []) as unknown[];
+  }
+
+  async getRequest(id: string): Promise<unknown> {
+    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/requests/${id}`);
+    if (!response.data.success || !response.data.data) throw new Error('Request not found');
+    return response.data.data;
+  }
+
+  async updateRequest(id: string, updates: Record<string, unknown>): Promise<void> {
+    const response = await axios.put<ApiResponse<unknown>>(`${API_BASE}/requests/${id}`, updates);
+    if (!response.data.success) throw new Error(response.data.error || 'Failed to update request');
+  }
+
+  async getWorkItems(): Promise<unknown[]> {
+    const response = await axios.get<ApiResponse<unknown[]>>(`${API_BASE}/task-pool/all`);
+    return response.data.data || [];
+  }
+
+  async getWorkItem(id: string): Promise<unknown> {
+    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/task-pool/${id}`);
+    if (!response.data.success || !response.data.data) throw new Error('Work item not found');
+    return response.data.data;
+  }
+
+  async getWorkItemsByRequest(requestId: string): Promise<unknown[]> {
+    const items = await this.getWorkItems();
+    return (items as Array<Record<string, unknown>>).filter(i => i.requestId === requestId);
+  }
+
+  async getMissions(): Promise<unknown[]> {
+    const response = await axios.get<ApiResponse<unknown[]>>(`${API_BASE}/missions`);
+    const d = response.data.data;
+    return Array.isArray(d) ? d : [];
+  }
+
+  async getMission(id: string): Promise<unknown> {
+    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/missions/${id}`);
+    if (!response.data.success || !response.data.data) throw new Error('Mission not found');
+    return response.data.data;
+  }
 }
 
 /** Singleton instance of the API service */

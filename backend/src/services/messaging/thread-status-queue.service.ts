@@ -499,6 +499,25 @@ export class ThreadStatusQueueService {
   }
 
   /**
+   * Finds a thread status entry by its queueMessageId.
+   * Returns the most recently updated entry if multiple match.
+   *
+   * @param queueMessageId - The queue message ID to search for
+   * @returns The most recently updated matching entry, or null
+   */
+  getByQueueMessageId(queueMessageId: string): ThreadStatusEntry | null {
+    let best: ThreadStatusEntry | null = null;
+    for (const entry of this.entries.values()) {
+      if (entry.queueMessageId === queueMessageId) {
+        if (!best || entry.updatedAt > best.updatedAt) {
+          best = entry;
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
    * Expires entries that have been in a non-terminal status longer than maxAgeMinutes.
    * Transitions them to `expired`.
    *
