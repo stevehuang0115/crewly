@@ -600,6 +600,41 @@ export class TaskPoolService {
   }
 
   /**
+   * Update token usage and cost on a WorkItem.
+   * Called after task completion when token data is available from TokenUsageService.
+   *
+   * @param workItemId - The work item ID
+   * @param inputTokens - Number of input tokens consumed
+   * @param outputTokens - Number of output tokens generated
+   * @param cost - Total cost in USD
+   * @returns True if the update was applied, false if WorkItem not found
+   */
+  async updateTokenUsage(
+    workItemId: string,
+    inputTokens: number,
+    outputTokens: number,
+    cost: number,
+  ): Promise<boolean> {
+    const workItem = await this.storage.findWorkItem(workItemId);
+    if (!workItem) return false;
+
+    await this.storage.updateWorkItem(workItemId, (wi) => {
+      wi.inputTokens = inputTokens;
+      wi.outputTokens = outputTokens;
+      wi.cost = cost;
+    });
+
+    await this.storage.flush();
+    this.logger.debug('WorkItem token usage updated', {
+      workItemId,
+      inputTokens,
+      outputTokens,
+      cost,
+    });
+    return true;
+  }
+
+  /**
    * Marks a claim as 'expiring' (lease expired, within grace period).
    * Used by the Reconciler fast loop.
    *

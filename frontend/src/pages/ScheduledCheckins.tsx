@@ -27,7 +27,7 @@ import {
 type PageTab = 'messages' | 'cron';
 
 export const ScheduledCheckins: React.FC = () => {
-  const [pageTab, setPageTab] = useState<PageTab>('messages');
+  const [pageTab, setPageTab] = useState<PageTab>('cron');
   const [activeTab, setActiveTab] = useState<ActiveTab>('active');
 
   const {
@@ -57,22 +57,14 @@ export const ScheduledCheckins: React.FC = () => {
   const activeMessages = scheduledMessages.filter((msg) => msg.isActive);
   const completedMessages = scheduledMessages.filter((msg) => !msg.isActive);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[300px]">
-        <LoadingSpinner text="Loading scheduled messages..." />
-      </div>
-    );
-  }
-
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
       {/* Header */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Schedules & Cron</h2>
+          <h2 className="text-3xl font-bold tracking-tight">Schedules</h2>
           <p className="text-sm text-text-secondary-dark mt-1">
-            Manage scheduled messages, system checks, and cron jobs
+            Manage scheduled messages, system checks, and automated jobs
           </p>
         </div>
         {pageTab === 'messages' && (
@@ -115,7 +107,12 @@ export const ScheduledCheckins: React.FC = () => {
       </div>
 
       {/* Tab 1: Scheduled Messages */}
-      {pageTab === 'messages' && (
+      {pageTab === 'messages' && loading && (
+        <div className="flex items-center justify-center min-h-[200px]">
+          <LoadingSpinner text="Loading scheduled messages..." />
+        </div>
+      )}
+      {pageTab === 'messages' && !loading && (
         <>
           <TabNavigation
             activeTab={activeTab}

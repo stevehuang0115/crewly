@@ -73,6 +73,8 @@ export interface ReconcilerDataProvider {
   getAvailablePoolItems?(): Promise<WorkItem[]>;
   /** Execute a wake action — rehydrate a suspended agent or start an inactive one */
   executeWakeAction?(action: WakeAction): Promise<boolean>;
+  /** Backfill token usage data on completed WorkItems that have 0 tokens */
+  backfillTokenUsage?(): Promise<number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +193,15 @@ export class ReconcilerService {
 
       // 6. Apply all corrections
       await this.applyCorrections(result.corrections, result);
+
+      // 7. Backfill token usage on completed WorkItems with 0 tokens
+      if (this.dataProvider.backfillTokenUsage) {
+        try {
+          await this.dataProvider.backfillTokenUsage();
+        } catch {
+          // Token backfill is non-fatal
+        }
+      }
     });
   }
 
