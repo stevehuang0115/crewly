@@ -78,6 +78,15 @@ temp/
 *.temp
 test-mcp-registration.js
 
+# Internal/operational data (not for public repo)
+ops/
+.playwright-mcp/
+.crewly/tmp/
+.crewly/knowledge/*.db
+.crewly/knowledge/*.db-wal
+.crewly/knowledge/*.db-shm
+.crewly/knowledge/.json-archive/
+
 # Cache directories
 .cache/
 .parcel-cache/
