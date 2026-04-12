@@ -61,7 +61,7 @@ export const RequestsPage: React.FC = () => {
       {/* Page header */}
       <div className="flex flex-col gap-1" data-testid="requests-page-header">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold tracking-tight text-text-primary-dark">Incoming Pipeline</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-text-primary-dark">Requests</h1>
           <p className="text-sm text-text-secondary-dark">
             Monitor and triage incoming work from all channels.
           </p>

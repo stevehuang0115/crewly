@@ -54,8 +54,14 @@ interface NavGroup {
 }
 
 /**
- * Navigation groups following the "Workplace" model from IA recommendations:
- * Work (primary monitoring) -> Communicate (messaging) -> Tools (extensions) -> Cloud -> System Operations (config)
+ * Navigation groups — streamlined IA with fewer sections:
+ * Work (daily use) -> Tools (extensions + automation) -> System (operations + config)
+ *
+ * Changes from original:
+ * - Chat merged into WORK (was alone in COMMUNICATE)
+ * - Cloud Portal moved to SYSTEM (was its own section)
+ * - Usage + Security moved into SYSTEM alongside Settings
+ * - Renamed: "Execution Logs" → "Work Items", "Incoming Pipeline" → "Requests"
  */
 const NAV_GROUPS: NavGroup[] = [
 	{
@@ -65,11 +71,6 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Projects', href: '/projects', icon: FolderOpen },
 			{ name: 'Teams', href: '/teams', icon: Users },
 			{ name: 'Objectives', href: '/missions', icon: Target },
-		],
-	},
-	{
-		label: 'COMMUNICATE',
-		items: [
 			{ name: 'Chat', href: '/chat', icon: MessageSquare },
 		],
 	},
@@ -81,19 +82,14 @@ const NAV_GROUPS: NavGroup[] = [
 		],
 	},
 	{
-		label: 'CLOUD',
+		label: 'SYSTEM',
 		items: [
-			{ name: 'Cloud Portal', href: '/cloud', icon: Cloud },
-		],
-	},
-	{
-		label: 'SYSTEM OPERATIONS',
-		items: [
-			{ name: 'Execution Logs', href: '/workitems', icon: ClipboardList },
-			{ name: 'Incoming Pipeline', href: '/requests', icon: Inbox },
+			{ name: 'Work Items', href: '/workitems', icon: ClipboardList },
+			{ name: 'Requests', href: '/requests', icon: Inbox },
 			{ name: 'Usage', href: '/usage', icon: DollarSign },
 			{ name: 'Security', href: '/security', icon: Shield },
 			{ name: 'Settings', href: '/settings', icon: Settings },
+			{ name: 'Cloud Portal', href: '/cloud', icon: Cloud },
 		],
 	},
 ];

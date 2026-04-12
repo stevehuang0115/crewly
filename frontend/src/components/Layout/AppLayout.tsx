@@ -92,6 +92,7 @@ export const AppLayout: React.FC = () => {
         icon={Terminal}
         onClick={toggleTerminal}
         variant="primary"
+        title={isTerminalOpen ? 'Close Terminal' : 'Open Terminal'}
         aria-label={isTerminalOpen ? 'Close Terminal' : 'Open Terminal'}
       />
 

@@ -21,6 +21,9 @@ import { Badge } from '../components/UI/Badge';
 import { StatusBadge } from '../components/UI/StatusBadge';
 import type { StatusType } from '../components/UI/StatusBadge';
 import type { BadgeVariant } from '../components/UI/Badge';
+import { Tabs, TabList, TabTrigger } from '../components/UI/Tabs';
+import { Alert } from '../components/UI/Alert';
+import { Modal, ModalBody, ModalFooter } from '../components/UI/Modal';
 import { SkeletonRows } from '../components/UI/SkeletonRows';
 import { apiService } from '../services/api.service';
 
@@ -190,6 +193,7 @@ export const Missions: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   /**
    * Fetches all missions from the backend.
@@ -264,7 +268,7 @@ export const Missions: React.FC = () => {
               variant="primary"
               size="sm"
               icon={Plus}
-              onClick={() => navigate('/missions/new')}
+              onClick={() => setShowCreateModal(true)}
               data-testid="missions-new"
             >
               New Objective
@@ -287,26 +291,18 @@ export const Missions: React.FC = () => {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        {/* Status filter buttons */}
-        <div className="flex items-center gap-1 flex-wrap">
-          {filterButtons.map((fb) => (
-            <button
-              key={fb.key}
-              onClick={() => setStatusFilter(fb.key)}
-              className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
-                statusFilter === fb.key
-                  ? 'bg-primary/10 text-primary border-primary/30'
-                  : 'bg-surface-dark text-text-secondary-dark border-border-dark hover:text-text-primary-dark'
-              }`}
-              data-testid={`filter-${fb.key}`}
-            >
-              {fb.label}
-              {statusCounts[fb.key] !== undefined && (
-                <span className="ml-1 opacity-60">({statusCounts[fb.key]})</span>
-              )}
-            </button>
-          ))}
-        </div>
+        <Tabs defaultValue="all" onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+          <TabList>
+            {filterButtons.map((fb) => (
+              <TabTrigger key={fb.key} value={fb.key}>
+                {fb.label}
+                {statusCounts[fb.key] !== undefined && (
+                  <span className="ml-1 opacity-60">({statusCounts[fb.key]})</span>
+                )}
+              </TabTrigger>
+            ))}
+          </TabList>
+        </Tabs>
 
         {/* Search */}
         <div className="relative flex-1 min-w-[200px] max-w-[400px]">
@@ -331,17 +327,12 @@ export const Missions: React.FC = () => {
 
       {/* Error */}
       {error && !loading && (
-        <Card variant="default" padding="lg" data-testid="missions-error">
-          <div className="text-center py-8">
-            <p className="text-red-400 mb-2">{error}</p>
-            <button
-              onClick={loadMissions}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        </Card>
+        <Alert variant="error" title="Failed to load objectives" onClose={() => setError(null)} data-testid="missions-error">
+          {error}
+          <Button variant="ghost" size="sm" onClick={loadMissions} className="mt-2">
+            Retry
+          </Button>
+        </Alert>
       )}
 
       {/* Empty state */}
@@ -404,10 +395,124 @@ export const Missions: React.FC = () => {
           ))}
         </div>
       )}
+      {/* Create Objective Modal */}
+      <CreateMissionModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onCreated={() => { setShowCreateModal(false); loadMissions(); }}
+      />
     </div>
   );
 };
 
 Missions.displayName = 'Missions';
+
+// =============================================================================
+// Create Mission Modal
+// =============================================================================
+
+interface CreateMissionModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}
+
+const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose, onCreated }) => {
+  const [objective, setObjective] = useState('');
+  const [ownerTeamId, setOwnerTeamId] = useState('');
+  const [cadence, setCadence] = useState('0 9 * * 1');
+  const [successCriteria, setSuccessCriteria] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  const handleSubmit = async () => {
+    setFormError('');
+    if (!objective.trim()) { setFormError('Objective is required'); return; }
+    if (!ownerTeamId.trim()) { setFormError('Team ID is required'); return; }
+
+    try {
+      setSubmitting(true);
+      await apiService.createMission({
+        objective: objective.trim(),
+        ownerTeamId: ownerTeamId.trim(),
+        cadence: cadence.trim() || '0 9 * * 1',
+        successCriteria: successCriteria.trim()
+          ? successCriteria.split('\n').map(s => s.trim()).filter(Boolean)
+          : [],
+      });
+      setObjective('');
+      setOwnerTeamId('');
+      setCadence('0 9 * * 1');
+      setSuccessCriteria('');
+      onCreated();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Failed to create objective');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="New Objective" size="md">
+      <ModalBody>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Objective</label>
+            <input
+              className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-accent-blue/50"
+              value={objective}
+              onChange={(e) => setObjective(e.target.value)}
+              placeholder="What should this team achieve?"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Owner Team ID</label>
+            <input
+              className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark font-mono focus:outline-none focus:border-accent-blue/50"
+              value={ownerTeamId}
+              onChange={(e) => setOwnerTeamId(e.target.value)}
+              placeholder="e.g. crewly-product-leo"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Review Cadence (cron)</label>
+            <input
+              className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark font-mono focus:outline-none focus:border-accent-blue/50"
+              value={cadence}
+              onChange={(e) => setCadence(e.target.value)}
+              placeholder="0 9 * * 1"
+            />
+            <p className="mt-1 text-xs text-text-secondary-dark">How often the system reviews progress (default: weekly Monday 9am)</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Success Criteria (one per line)</label>
+            <textarea
+              className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark resize-none focus:outline-none focus:border-accent-blue/50"
+              rows={3}
+              value={successCriteria}
+              onChange={(e) => setSuccessCriteria(e.target.value)}
+              placeholder={"All tests passing\nDeployed to staging\n95% code coverage"}
+            />
+          </div>
+
+          {formError && (
+            <Alert variant="error">{formError}</Alert>
+          )}
+        </div>
+      </ModalBody>
+      <ModalFooter>
+        <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>Cancel</Button>
+        <Button variant="primary" size="sm" onClick={handleSubmit} disabled={submitting}>
+          {submitting ? 'Creating...' : 'Create Objective'}
+        </Button>
+      </ModalFooter>
+    </Modal>
+  );
+};
 
 export default Missions;

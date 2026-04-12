@@ -17,6 +17,9 @@ import {
 import { Card } from '../components/UI/Card';
 import { Badge } from '../components/UI/Badge';
 import { StatusBadge } from '../components/UI/StatusBadge';
+import { Tabs, TabList, TabTrigger } from '../components/UI/Tabs';
+import { Alert } from '../components/UI/Alert';
+import { Button } from '../components/UI/Button';
 import { SkeletonRows } from '../components/UI/SkeletonRows';
 import type { WorkItem, WorkItemStatus } from '../components/WorkItemDetail';
 import {
@@ -186,7 +189,7 @@ export const WorkItems: React.FC = () => {
       {/* Page header */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
-          <h1 className="text-2xl font-bold text-text-primary-dark">Execution Logs</h1>
+          <h1 className="text-2xl font-bold text-text-primary-dark">Work Items</h1>
           <button
             onClick={loadItems}
             disabled={loading}
@@ -207,26 +210,18 @@ export const WorkItems: React.FC = () => {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        {/* Status filter buttons */}
-        <div className="flex items-center gap-1 flex-wrap">
-          {filterButtons.map((fb) => (
-            <button
-              key={fb.key}
-              onClick={() => setStatusFilter(fb.key)}
-              className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
-                statusFilter === fb.key
-                  ? 'bg-primary/10 text-primary border-primary/30'
-                  : 'bg-surface-dark text-text-secondary-dark border-border-dark hover:text-text-primary-dark'
-              }`}
-              data-testid={`filter-${fb.key}`}
-            >
-              {fb.label}
-              {statusCounts[fb.key] !== undefined && (
-                <span className="ml-1 opacity-60">({statusCounts[fb.key]})</span>
-              )}
-            </button>
-          ))}
-        </div>
+        <Tabs defaultValue="all" onValueChange={(v) => setStatusFilter(v)}>
+          <TabList>
+            {filterButtons.map((fb) => (
+              <TabTrigger key={fb.key} value={fb.key}>
+                {fb.label}
+                {statusCounts[fb.key] !== undefined && (
+                  <span className="ml-1 opacity-60">({statusCounts[fb.key]})</span>
+                )}
+              </TabTrigger>
+            ))}
+          </TabList>
+        </Tabs>
 
         {/* Search */}
         <div className="relative flex-1 min-w-[200px] max-w-[400px]">
@@ -251,17 +246,12 @@ export const WorkItems: React.FC = () => {
 
       {/* Error */}
       {error && !loading && (
-        <Card variant="default" padding="lg" data-testid="workitems-error">
-          <div className="text-center py-8">
-            <p className="text-red-400 mb-2">{error}</p>
-            <button
-              onClick={loadItems}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        </Card>
+        <Alert variant="error" title="Failed to load work items" onClose={() => setError(null)} data-testid="workitems-error">
+          {error}
+          <Button variant="ghost" size="sm" onClick={loadItems} className="mt-2">
+            Retry
+          </Button>
+        </Alert>
       )}
 
       {/* Empty state */}
