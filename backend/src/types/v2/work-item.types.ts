@@ -152,6 +152,8 @@ export interface WorkItem {
   outputTokens: number;
   /** Cost in USD for this WorkItem */
   cost: number;
+  /** Extensible metadata (dependency tracking, skill requirements, etc.) */
+  metadata?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +176,7 @@ export interface CreateWorkItemInput {
   triggerId?: string;
   projectTaskId?: string;
   missionId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -354,5 +357,6 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     inputTokens: 0,
     outputTokens: 0,
     cost: 0,
+    metadata: input.metadata,
   };
 }

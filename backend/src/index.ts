@@ -1292,6 +1292,19 @@ export class CrewlyServer {
 				});
 			}
 
+			// Start AgentAutoClaimService — auto-assign work to idle agents
+			try {
+				const { AgentAutoClaimService } = await import('./services/v3/agent-auto-claim.service.js');
+				const autoClaimService = AgentAutoClaimService.getInstance();
+				autoClaimService.initialize(this.eventBusService);
+				autoClaimService.start();
+				this.logger.info('AgentAutoClaimService started — idle agents will auto-claim work');
+			} catch (autoClaimErr) {
+				this.logger.warn('AgentAutoClaimService initialization failed (non-critical)', {
+					error: autoClaimErr instanceof Error ? autoClaimErr.message : String(autoClaimErr),
+				});
+			}
+
 			// Start Slack image cleanup (download temp files)
 			try {
 				const { getSlackImageService: getImgService } = await import('./services/slack/slack-image.service.js');
