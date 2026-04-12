@@ -1,5 +1,5 @@
 /**
- * Tests for Slack Controller
+ * Tests for Slack Controller — message sending, connection management, and chat persistence
  *
  * @module controllers/slack/slack.controller.test
  */

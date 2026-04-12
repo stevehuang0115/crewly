@@ -1,3 +1,4 @@
+// Tool registry tests — tools, sensitivity levels, markdown conversion, glob matching
 import { describe, it, expect, beforeEach, jest, afterEach } from '@jest/globals';
 import { createTools, getToolNames, TOOL_SENSITIVITY, stripNotifyMarkers, convertMarkdownToSlackMrkdwn, globToRegExp, walkAndMatch, searchFileContents } from './tool-registry.js';
 import { CrewlyApiClient } from './api-client.js';

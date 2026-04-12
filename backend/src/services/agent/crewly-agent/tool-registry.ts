@@ -940,6 +940,8 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
 
         const body: Record<string, string> = { channelId: resolvedChannelId, text: cleanText };
         if (resolvedThreadTs) body.threadTs = resolvedThreadTs;
+        if (conversationId) body.conversationId = conversationId;
+        if (sessionName) body.senderSessionName = sessionName;
         const result = await client.post('/slack/send', body);
         if (result.success) {
           lastSlackSendMs = Date.now();
