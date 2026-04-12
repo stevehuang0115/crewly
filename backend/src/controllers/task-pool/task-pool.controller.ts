@@ -17,7 +17,11 @@ import {
 } from '../../services/task-pool/task-pool.service.js';
 import { TaskProjectionService } from '../../services/v3/task-projection.service.js';
 import type { TokenUsage } from '../../types/v3/task-record.types.js';
+import type { RequestStatus } from '../../types/v2/request.types.js';
 import { formatError } from '../../utils/format-error.js';
+import { LoggerService } from '../../services/core/logger.service.js';
+
+const logger = LoggerService.getInstance().createComponentLogger('TaskPoolController');
 
 /**
  * Maps service-layer errors to appropriate HTTP status codes and sends a JSON error response.
@@ -102,7 +106,7 @@ export async function addItem(req: Request, res: Response): Promise<void> {
         requestId: workItem.requestId,
         workItemId: workItem.id,
         triggerId: workItem.triggerId,
-      }).catch(() => { /* non-blocking */ });
+      }).catch((err) => { logger.debug('TaskRecord creation failed (non-fatal)', { error: formatError(err) }); });
     }
 
     res.status(201).json({
@@ -188,7 +192,7 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
       const records = projection.listRecords({ workItemId: workItem.id });
       const record = records[0];
       if (record) {
-        projection.markStarted(record.id, agentId.trim()).catch(() => { /* non-blocking */ });
+        projection.markStarted(record.id, agentId.trim()).catch((err) => { logger.debug('TaskProjection update failed (non-fatal)', { error: formatError(err) }); });
       }
     }
 
@@ -265,10 +269,6 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Capture requestId BEFORE completing (item may be harder to find after status change)
-    const preCompleteItem = (await getService().getAllItems()).find(wi => wi.id === workItemId);
-    const cascadeRequestId = preCompleteItem?.requestId;
-
     await getService().completeItem(workItemId, result);
 
     // V3.1: Project task completion
@@ -277,48 +277,18 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
       const records = projection.listRecords({ workItemId });
       const record = records[0];
       if (record) {
-        projection.markDone(record.id, agentId, tokenUsage).catch(() => { /* non-blocking */ });
+        projection.markDone(record.id, agentId, tokenUsage).catch((err) => {
+          logger.debug('TaskRecord markDone failed (non-fatal)', { error: formatError(err) });
+        });
         // Roll up token usage to Request
         if (tokenUsage && record.requestId) {
-          rollUpTokensToRequest(record.requestId, tokenUsage, projection);
+          rollUpTokensToRequest(record.requestId, tokenUsage);
         }
       }
     }
 
-    // Cascade: update parent Request status if all WorkItems are done
-    if (cascadeRequestId) {
-      setImmediate(async () => {
-        try {
-          const { RequestService } = await import('../../services/v3/request.service.js');
-          const { isValidRequestTransition } = await import('../../types/v2/request.types.js');
-          const requestService = RequestService.getInstance();
-          const request = await requestService.getById(cascadeRequestId);
-          if (!request || request.status === 'done' || request.status === 'cancelled') return;
-
-          const allItems = await getService().getAllItems();
-          const siblings = allItems.filter(wi => wi.requestId === cascadeRequestId);
-          const statuses = siblings.map(wi => wi.status);
-
-          let newStatus: string | null = null;
-          if (statuses.every(s => s === 'done')) newStatus = 'done';
-          else if (statuses.some(s => s === 'running')) newStatus = 'running';
-          else if (statuses.some(s => s === 'done')) newStatus = 'running';
-
-          if (newStatus && newStatus !== request.status) {
-            // Handle multi-step transitions (e.g. blocked → running → done)
-            if (isValidRequestTransition(request.status, newStatus as any)) {
-              await requestService.update(cascadeRequestId, { status: newStatus as any });
-            } else if (newStatus === 'done' && isValidRequestTransition(request.status, 'running')) {
-              // Transition through running first, then to done
-              await requestService.update(cascadeRequestId, { status: 'running' });
-              await requestService.update(cascadeRequestId, { status: 'done' });
-            }
-          }
-        } catch {
-          // non-fatal cascade
-        }
-      });
-    }
+    // NOTE: Request status cascade is handled by V3DataService.onTaskCompleted
+    // via the EventBus — no duplicate cascade needed here.
 
     res.json({ success: true, message: `WorkItem ${workItemId} completed` });
   } catch (error) {
@@ -363,7 +333,7 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
       const records = projection.listRecords({ workItemId });
       const record = records[0];
       if (record) {
-        projection.markBlocked(record.id, agentId, reason).catch(() => { /* non-blocking */ });
+        projection.markBlocked(record.id, agentId, reason).catch((err) => { logger.debug('TaskProjection update failed (non-fatal)', { error: formatError(err) }); });
       }
     }
 
@@ -415,7 +385,7 @@ export async function failItemHandler(req: Request, res: Response): Promise<void
       const records = projection.listRecords({ workItemId });
       const record = records[0];
       if (record) {
-        projection.markFailed(record.id, agentId, errorMsg).catch(() => { /* non-blocking */ });
+        projection.markFailed(record.id, agentId, errorMsg).catch((err) => { logger.debug('TaskProjection update failed (non-fatal)', { error: formatError(err) }); });
       }
     }
 
@@ -666,8 +636,8 @@ async function validateWorkItem(workItem: Record<string, unknown>): Promise<stri
         );
       }
     }
-  } catch {
-    // Non-critical: validation failures should not break pool insertion
+  } catch (err) {
+    logger.debug('WorkItem validation check failed (non-fatal)', { error: formatError(err) });
   }
 
   return errors;
@@ -684,9 +654,7 @@ async function validateWorkItem(workItem: Record<string, unknown>): Promise<stri
 function rollUpTokensToRequest(
   requestId: string,
   tokenUsage: TokenUsage,
-  projection: TaskProjectionService,
 ): void {
-  void projection; // used for type checking only
   setImmediate(async () => {
     try {
       const { RequestService } = await import('../../services/v3/request.service.js');
@@ -704,8 +672,8 @@ function rollUpTokensToRequest(
       if (request.missionId && tokenUsage.estimatedCostUsd) {
         rollUpTokensToMission(request.missionId, tokenUsage);
       }
-    } catch {
-      // Non-critical — token roll-up failures should never break agent flow
+    } catch (err) {
+      logger.debug('Token roll-up to Request failed (non-fatal)', { requestId, error: formatError(err) });
     }
   });
 }
@@ -728,8 +696,8 @@ function rollUpTokensToMission(missionId: string, tokenUsage: TokenUsage): void 
       mission.totalCost = (mission.totalCost || 0) + (tokenUsage.estimatedCostUsd || 0);
       mission.updatedAt = new Date().toISOString();
       await _saveMission(mission);
-    } catch {
-      // Non-critical — mission roll-up must never interfere with agent flow
+    } catch (err) {
+      logger.debug('Token roll-up to Mission failed (non-fatal)', { missionId, error: formatError(err) });
     }
   });
 }

@@ -378,8 +378,11 @@ export class V3DataService {
             areas: newAreas.map(a => a.area),
           });
         }
-      } catch {
-        // Non-fatal — growth tracking is best-effort
+      } catch (err) {
+        this.logger.debug('Growth area extraction failed (non-fatal)', {
+          sessionName: event.sessionName,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
 
       // Cascade: update parent Request status
@@ -627,7 +630,7 @@ export class V3DataService {
 
       const statuses = childItems.map((wi) => wi.status);
 
-      let newStatus: string;
+      let newStatus: import('../../types/v2/request.types.js').RequestStatus;
       const allQueued = statuses.every((s) => s === 'queued' || s === 'scheduled');
       if (statuses.every((s) => s === 'done')) {
         newStatus = 'done';
@@ -649,8 +652,8 @@ export class V3DataService {
         return;
       }
 
-      if (newStatus !== request.status && isValidRequestTransition(request.status, newStatus as any)) {
-        await requestService.update(requestId, { status: newStatus as any });
+      if (newStatus !== request.status && isValidRequestTransition(request.status, newStatus)) {
+        await requestService.update(requestId, { status: newStatus });
         this.logger.info('Request status cascaded from WorkItems', {
           requestId,
           previousStatus: request.status,

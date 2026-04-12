@@ -233,13 +233,19 @@ export class TaskProjectionService {
               mission.updatedAt = new Date().toISOString();
               await _saveMission(mission);
               this.logger.debug('Token roll-up to mission complete', { missionId: request.missionId });
-            } catch {
-              // Non-critical
+            } catch (err) {
+              this.logger.debug('Mission token roll-up failed (non-fatal)', {
+                missionId: request.missionId,
+                error: err instanceof Error ? err.message : String(err),
+              });
             }
           });
         }
-      } catch {
-        // Non-critical — never let roll-up failures bubble up
+      } catch (err) {
+        this.logger.debug('Request token roll-up failed (non-fatal)', {
+          requestId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     });
   }

@@ -1,5 +1,5 @@
 /**
- * Task Pool Controller Tests
+ * Task Pool Controller Tests — HTTP handlers for Task Pool API
  *
  * @module controllers/task-pool/task-pool.controller.test
  */
