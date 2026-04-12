@@ -95,7 +95,7 @@ const CronTaskRow: React.FC<CronTaskRowProps> = ({ task, teamMap, onToggle, onDe
       </td>
 
       {/* Team */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px]">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px] hidden sm:table-cell">
         <span className="truncate block" title={teamName}>{teamName}</span>
       </td>
 
@@ -108,7 +108,7 @@ const CronTaskRow: React.FC<CronTaskRowProps> = ({ task, teamMap, onToggle, onDe
       </td>
 
       {/* Task */}
-      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[220px]">
+      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[220px] hidden md:table-cell">
         <div className="flex items-center gap-1.5">
           <Bot className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="truncate" title={desc}>{displayName}</span>
@@ -121,12 +121,12 @@ const CronTaskRow: React.FC<CronTaskRowProps> = ({ task, teamMap, onToggle, onDe
       </td>
 
       {/* Next Fire */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(task.nextRunAt)}
       </td>
 
       {/* Last Fire */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(task.lastRunAt)}
       </td>
 
@@ -192,7 +192,7 @@ const TriggerRow: React.FC<TriggerRowProps> = ({ trigger, onPause, onResume, onC
       </td>
 
       {/* Team — V3 triggers show createdBy */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden sm:table-cell">
         <span className="capitalize">{trigger.createdBy}</span>
       </td>
 
@@ -202,7 +202,7 @@ const TriggerRow: React.FC<TriggerRowProps> = ({ trigger, onPause, onResume, onC
         </span>
       </td>
 
-      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[180px]">
+      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[180px] hidden md:table-cell">
         <span className="truncate block">{triggerActionSummary(trigger)}</span>
       </td>
 
@@ -210,11 +210,11 @@ const TriggerRow: React.FC<TriggerRowProps> = ({ trigger, onPause, onResume, onC
         <StatusBadge status={mapTriggerStatus(trigger.status)}>{trigger.status}</StatusBadge>
       </td>
 
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(trigger.nextFireAt)}
       </td>
 
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(trigger.lastFiredAt)}
       </td>
 
@@ -500,12 +500,12 @@ const TriggersTable: React.FC<TriggersTableProps> = ({
       <thead className="bg-background-dark/60 border-b border-border-dark">
         <tr>
           <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Type</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Team</th>
+          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden sm:table-cell">Team</th>
           <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Schedule / Event</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Task / Action</th>
+          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden md:table-cell">Task / Action</th>
           <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Status</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Next Fire</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Last Fire</th>
+          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden lg:table-cell">Next Fire</th>
+          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden lg:table-cell">Last Fire</th>
           <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Actions</th>
         </tr>
       </thead>
