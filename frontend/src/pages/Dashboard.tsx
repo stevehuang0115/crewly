@@ -19,6 +19,9 @@ import { RelayHealthCard } from '@/components/Dashboard/RelayHealthCard';
 import { AgentStreamPanel } from '@/components/ExecutionFeed/AgentStreamPanel';
 import { assignDefaultAvatars } from '@/utils/team.utils';
 import { logSilentError } from '@/utils/error-handling';
+import { ScoreCard, ScoreCardGrid } from '@/components/UI/ScoreCard';
+import { Alert } from '@/components/UI/Alert';
+import { Button } from '@/components/UI/Button';
 
 
 interface ProjectProgress {
@@ -34,17 +37,6 @@ interface ProjectProgress {
     total: number;
   };
 }
-
-/**
- * StatCard component for displaying dashboard statistics
- * Defined outside Dashboard to prevent recreation on every render
- */
-const StatCard: React.FC<{title: string; value: string | number}> = ({title, value}) => (
-  <div className="bg-surface-dark p-6 rounded-lg border border-border-dark transition-all hover:shadow-lg hover:border-primary/50">
-    <p className="text-sm font-medium text-text-secondary-dark">{title}</p>
-    <p className="text-3xl font-bold mt-1">{value}</p>
-  </div>
-);
 
 /**
  * Dashboard component - main application landing page
@@ -211,14 +203,11 @@ export const Dashboard: React.FC = () => {
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-64 text-center">
-        <p className="text-red-400 mb-4">{error}</p>
-        <button
-          onClick={loadData}
-          className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
-        >
-          Retry
-        </button>
+      <div className="max-w-7xl mx-auto p-6">
+        <Alert variant="error" title="Dashboard failed to load" onClose={() => setError(null)}>
+          {error}
+          <Button variant="ghost" size="sm" onClick={loadData} className="mt-2">Retry</Button>
+        </Alert>
       </div>
     );
   }
@@ -248,17 +237,14 @@ export const Dashboard: React.FC = () => {
         />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-        <StatCard title="Projects" value={projects.length} />
-        <StatCard title="Teams" value={teams.length} />
-        <StatCard title="Active Projects" value={projects.filter(p => p.status === 'active').length} />
-        <StatCard title="Running Agents" value={teams.flatMap(t => t.members).filter(m => m.agentStatus === 'active').length} />
-      </div>
-
-      {/* Cloud Relay Health */}
-      <div className="mb-10">
-        <RelayHealthCard />
-      </div>
+      <ScoreCardGrid variant="horizontal" className="grid-cols-2 lg:grid-cols-4 mb-6">
+        <ScoreCard label="Projects" value={projects.length} />
+        <ScoreCard label="Teams" value={teams.length} />
+        <ScoreCard label="Active Projects" value={projects.filter(p => p.status === 'active').length} />
+        <ScoreCard label="Running Agents">
+          <span className="text-emerald-400">{teams.flatMap(t => t.members).filter(m => m.agentStatus === 'active').length}</span>
+        </ScoreCard>
+      </ScoreCardGrid>
 
       {/* Agent Activity — live streaming output (visible only when an agent is active) */}
       {activeAgentSession && (
@@ -320,6 +306,11 @@ export const Dashboard: React.FC = () => {
             />
           </div>
         </section>
+      </div>
+
+      {/* Cloud Relay — informational, below main content */}
+      <div className="mt-10">
+        <RelayHealthCard />
       </div>
     </div>
   );
