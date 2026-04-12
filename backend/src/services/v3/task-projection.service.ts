@@ -416,12 +416,24 @@ export class TaskProjectionService {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Merges two TokenUsage objects by summing token counts and costs.
+ * Uses the latest model name (from `b`), falling back to `a`.
+ *
+ * @param a - Existing token usage
+ * @param b - New token usage to accumulate
+ * @returns Merged token usage
+ */
 function mergeTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  const costA = a.estimatedCostUsd ?? 0;
+  const costB = b.estimatedCostUsd ?? 0;
+  const hasCost = a.estimatedCostUsd !== undefined || b.estimatedCostUsd !== undefined;
+
   return {
     promptTokens: (a.promptTokens || 0) + (b.promptTokens || 0),
     completionTokens: (a.completionTokens || 0) + (b.completionTokens || 0),
     totalTokens: (a.totalTokens || 0) + (b.totalTokens || 0),
     model: b.model || a.model,
-    estimatedCostUsd: ((a.estimatedCostUsd || 0) + (b.estimatedCostUsd || 0)) || undefined,
+    estimatedCostUsd: hasCost ? costA + costB : undefined,
   };
 }

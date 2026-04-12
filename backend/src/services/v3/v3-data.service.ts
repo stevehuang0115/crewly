@@ -25,7 +25,7 @@ import { RequestService } from './request.service.js';
 import { RequestTracker } from './request-tracker.service.js';
 import { createWorkItem, type WorkItem } from '../../types/v2/work-item.types.js';
 import { createMission, CONSERVATIVE_POLICY, type CreateMissionInput } from '../../types/v2/mission.types.js';
-import { isValidRequestTransition, type IntentCategory, type IntentLevel } from '../../types/v2/request.types.js';
+import { isValidRequestTransition, type IntentCategory, type IntentLevel, type RequestStatus } from '../../types/v2/request.types.js';
 import { ensureDir, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { ProjectTaskWatcherService } from './project-task-watcher.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
@@ -207,7 +207,7 @@ export class V3DataService {
     taskId: string | undefined,
     sessionName: string,
     logContext: string,
-  ): Promise<import('../../types/v2/work-item.types.js').WorkItem | null> {
+  ): Promise<WorkItem | null> {
     const taskPool = TaskPoolService.getInstance();
     const items = await taskPool.getAllItems();
 
@@ -338,7 +338,7 @@ export class V3DataService {
 
         // Find usage for the agent session that completed this task
         const sessionSummary = sessionUsage.find(s => s.sessionName === event.sessionName);
-        if (sessionSummary && match) {
+        if (sessionSummary) {
           const totalInput = sessionSummary.totalInput || 0;
           const totalOutput = sessionSummary.totalOutput || 0;
           const totalCost = sessionSummary.cost || 0;
@@ -630,7 +630,7 @@ export class V3DataService {
 
       const statuses = childItems.map((wi) => wi.status);
 
-      let newStatus: import('../../types/v2/request.types.js').RequestStatus;
+      let newStatus: RequestStatus;
       const allQueued = statuses.every((s) => s === 'queued' || s === 'scheduled');
       if (statuses.every((s) => s === 'done')) {
         newStatus = 'done';

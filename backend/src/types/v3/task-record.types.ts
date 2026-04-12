@@ -16,6 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 // Enums
 // ---------------------------------------------------------------------------
 
+/** How the task was originated — determines projection behavior. */
 export type TaskRecordType =
   | 'self_execution'  // Agent decided to do it themselves
   | 'delegation'      // Agent delegated to another agent
@@ -23,6 +24,7 @@ export type TaskRecordType =
   | 'reconcile'       // System-initiated reconciliation task
   | 'trigger_action'; // Fired by TriggerEngine
 
+/** Lifecycle status of a TaskRecord. */
 export type TaskRecordStatus =
   | 'created'
   | 'assigned'
@@ -31,6 +33,7 @@ export type TaskRecordStatus =
   | 'done'
   | 'failed';
 
+/** Discrete event types emitted during task execution. */
 export type TaskEventType =
   | 'task_created'
   | 'task_assigned'
@@ -108,6 +111,7 @@ export interface TaskEvent {
 // Input Types
 // ---------------------------------------------------------------------------
 
+/** Input for creating a new TaskRecord. */
 export interface CreateTaskRecordInput {
   title: string;
   type: TaskRecordType;
@@ -119,6 +123,7 @@ export interface CreateTaskRecordInput {
   triggerId?: string;
 }
 
+/** Partial update fields for an existing TaskRecord. */
 export interface UpdateTaskRecordInput {
   status?: TaskRecordStatus;
   assignedAt?: string;
@@ -128,6 +133,7 @@ export interface UpdateTaskRecordInput {
   tokenUsage?: TokenUsage;
 }
 
+/** Input for recording a TaskEvent. */
 export interface RecordTaskEventInput {
   taskId: string;
   eventType: TaskEventType;
@@ -139,6 +145,12 @@ export interface RecordTaskEventInput {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates a new TaskRecord with generated ID and timestamps.
+ *
+ * @param input - Creation parameters
+ * @returns A new TaskRecord in 'created' status
+ */
 export function createTaskRecord(input: CreateTaskRecordInput): TaskRecord {
   const now = new Date().toISOString();
   return {
@@ -157,6 +169,12 @@ export function createTaskRecord(input: CreateTaskRecordInput): TaskRecord {
   };
 }
 
+/**
+ * Creates a new TaskEvent with generated ID and timestamp.
+ *
+ * @param input - Event parameters
+ * @returns A new TaskEvent
+ */
 export function createTaskEvent(input: RecordTaskEventInput): TaskEvent {
   return {
     id: uuidv4(),
