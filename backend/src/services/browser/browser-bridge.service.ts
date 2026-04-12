@@ -345,7 +345,9 @@ export class BrowserBridgeService {
 	 * @returns True if connected via direct WS or relay is available
 	 */
 	isConnected(): boolean {
-		if (this.clients.size > 0) return true;
+		// Check for an active (OPEN) direct WS client — not just map size,
+		// because stale clients with readyState !== OPEN can linger briefly.
+		if (this.getActiveClient() !== null) return true;
 
 		// Check relay fallback
 		try {

@@ -77,7 +77,7 @@ const NAV_GROUPS: NavGroup[] = [
 		label: 'TOOLS',
 		items: [
 			{ name: 'Marketplace', href: '/marketplace', icon: Store },
-			{ name: 'Schedules', href: '/scheduled-checkins', icon: Clock },
+			{ name: 'Triggers', href: '/triggers', icon: Clock },
 		],
 	},
 	{

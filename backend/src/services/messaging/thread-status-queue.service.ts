@@ -161,6 +161,8 @@ export class ThreadStatusQueueService {
       this.persistPath = path.join(crewlyHome, THREAD_STATUS_CONSTANTS.STORAGE_FILE);
       this.logger.info('Initialized', { persistPath: this.persistPath });
     }
+    // Register as singleton so getInstance() returns the fully-initialized instance
+    ThreadStatusQueueService.instance = this;
   }
 
   /**

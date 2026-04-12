@@ -206,11 +206,12 @@ export class V3DataService {
         return;
       }
 
-      // Resolve requestId from the event payload ONLY. The requestId should be
-      // set explicitly at the delegation site (task-management controller or
-      // tool-registry) rather than inferred via time-window correlation.
-      // This eliminates cross-conversation mislinks (Bug 2).
-      const resolvedRequestId = event.requestId || undefined;
+      // Resolve requestId: prefer explicit value from the event payload,
+      // fall back to RequestTracker time-window correlation for orchestrator
+      // skill-based delegations that don't pass requestId explicitly.
+      const resolvedRequestId = event.requestId
+        || RequestTracker.getInstance().getActiveRequestId()
+        || undefined;
 
       const workItem = createWorkItem({
         type: 'delegate',
@@ -343,6 +344,22 @@ export class V3DataService {
         sessionName: event.sessionName,
         taskId: event.taskId,
       });
+
+      // Growth: extract growth areas from the task title/description (keyword-based, no LLM)
+      try {
+        const { GrowthAreasService } = await import('../ai/self-improvement/growth-areas.service.js');
+        const growthService = new GrowthAreasService();
+        const text = match.title + ' ' + (match.description || '');
+        const newAreas = await growthService.extractFromText(event.sessionName, text);
+        if (newAreas.length > 0) {
+          this.logger.info('Growth areas extracted from completed task', {
+            sessionName: event.sessionName,
+            areas: newAreas.map(a => a.area),
+          });
+        }
+      } catch {
+        // Non-fatal — growth tracking is best-effort
+      }
 
       // Cascade: update parent Request status
       await this.cascadeRequestStatus(match.requestId);

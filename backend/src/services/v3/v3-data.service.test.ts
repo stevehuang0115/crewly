@@ -4,54 +4,37 @@
  * @module services/v3/v3-data.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 
-// Shared mock state — use vi.hoisted() so they're available in vi.mock factories
-const {
-  mockAddToPool,
-  mockGetAllItems,
-  mockCompleteItem,
-  mockFailItem,
-  mockUpdateItemStatus,
-  mockRequestCreate,
-  mockRequestGetById,
-  mockRequestUpdate,
-  mockRequestLinkWorkItem,
-  mockRequestListAll,
-  mockFindBySource,
-  mockAtomicWriteJson,
-  mockWriteFile,
-} = vi.hoisted(() => ({
-  mockAddToPool: vi.fn().mockResolvedValue(undefined),
-  mockGetAllItems: vi.fn().mockResolvedValue([]),
-  mockCompleteItem: vi.fn().mockResolvedValue(undefined),
-  mockFailItem: vi.fn().mockResolvedValue(undefined),
-  mockUpdateItemStatus: vi.fn().mockResolvedValue(undefined),
-  mockRequestCreate: vi.fn().mockResolvedValue({ id: 'req-123', title: 'test' }),
-  mockRequestGetById: vi.fn().mockResolvedValue(null),
-  mockRequestUpdate: vi.fn().mockResolvedValue(undefined),
-  mockRequestLinkWorkItem: vi.fn().mockResolvedValue(undefined),
-  mockRequestListAll: vi.fn().mockResolvedValue([]),
-  mockFindBySource: vi.fn().mockResolvedValue(null),
-  mockAtomicWriteJson: vi.fn().mockResolvedValue(undefined),
-  mockWriteFile: vi.fn().mockResolvedValue(undefined),
-}));
+// Shared mock state
+const mockAddToPool = jest.fn().mockResolvedValue(undefined);
+const mockGetAllItems = jest.fn().mockResolvedValue([]);
+const mockCompleteItem = jest.fn().mockResolvedValue(undefined);
+const mockFailItem = jest.fn().mockResolvedValue(undefined);
+const mockUpdateItemStatus = jest.fn().mockResolvedValue(undefined);
+const mockRequestCreate = jest.fn().mockResolvedValue({ id: 'req-123', title: 'test' });
+const mockRequestGetById = jest.fn().mockResolvedValue(null);
+const mockRequestUpdate = jest.fn().mockResolvedValue(undefined);
+const mockRequestLinkWorkItem = jest.fn().mockResolvedValue(undefined);
+const mockRequestListAll = jest.fn().mockResolvedValue([]);
+const mockFindBySource = jest.fn().mockResolvedValue(null);
+const mockAtomicWriteJson = jest.fn().mockResolvedValue(undefined);
+const mockWriteFile = jest.fn().mockResolvedValue(undefined);
 
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        debug: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
+        info: jest.fn(),
+        debug: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
       }),
     }),
   },
 }));
 
-vi.mock('../task-pool/task-pool.service.js', () => ({
+jest.mock('../task-pool/task-pool.service.js', () => ({
   TaskPoolService: {
     getInstance: () => ({
       getAllItems: mockGetAllItems,
@@ -63,7 +46,7 @@ vi.mock('../task-pool/task-pool.service.js', () => ({
   },
 }));
 
-vi.mock('./request.service.js', () => ({
+jest.mock('./request.service.js', () => ({
   RequestService: {
     getInstance: () => ({
       create: mockRequestCreate,
@@ -76,21 +59,21 @@ vi.mock('./request.service.js', () => ({
   },
 }));
 
-vi.mock('../../utils/file-io.utils.js', () => ({
-  ensureDir: vi.fn().mockResolvedValue(undefined),
+jest.mock('../../utils/file-io.utils.js', () => ({
+  ensureDir: jest.fn().mockResolvedValue(undefined),
   atomicWriteJson: mockAtomicWriteJson,
-  safeReadJson: vi.fn().mockResolvedValue(null),
+  safeReadJson: jest.fn().mockResolvedValue(null),
 }));
 
-vi.mock('fs/promises', () => ({
+jest.mock('fs/promises', () => ({
   writeFile: mockWriteFile,
-  readdir: vi.fn().mockResolvedValue([]),
+  readdir: jest.fn().mockResolvedValue([]),
 }));
 
-vi.mock('./project-task-watcher.service.js', () => ({
-  ProjectTaskWatcherService: vi.fn().mockImplementation(() => ({
-    start: vi.fn().mockResolvedValue(undefined),
-    dispose: vi.fn(),
+jest.mock('./project-task-watcher.service.js', () => ({
+  ProjectTaskWatcherService: jest.fn().mockImplementation(() => ({
+    start: jest.fn().mockResolvedValue(undefined),
+    dispose: jest.fn(),
   })),
 }));
 
@@ -120,7 +103,7 @@ describe('V3DataService', () => {
     eventBus = new EventEmitter();
     RequestTracker.resetInstance();
     service = new V3DataService(eventBus, '/tmp/test-project');
-    vi.clearAllMocks();
+    jest.clearAllMocks();
     mockGetAllItems.mockResolvedValue([]);
     mockFindBySource.mockResolvedValue(null);
     mockRequestGetById.mockResolvedValue(null);

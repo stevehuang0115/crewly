@@ -424,6 +424,13 @@ export class ActivityMonitorService {
         }, now);
 
         this.lastTerminalOutputs.set('orchestrator', orchestratorOutput);
+
+        // Track orchestrator PTY token usage (same as team members)
+        this.tryRecordPtyTokenUsage(
+          CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+          orchestratorOutput,
+          'claude-code'
+        );
       } else {
         // Orchestrator not running, set to idle
         if (workingStatusData.orchestrator.workingStatus !== 'idle') {

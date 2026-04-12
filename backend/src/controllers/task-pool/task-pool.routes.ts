@@ -12,6 +12,9 @@ import {
   listAvailable,
   claimItem,
   releaseItem,
+  completeItem,
+  blockItem,
+  failItemHandler,
   getStats,
   heartbeat,
   extendLease,
@@ -53,6 +56,15 @@ export function createTaskPoolRouter(): Router {
 
   // Release a work item back to pool
   router.post('/release/:workItemId', releaseItem);
+
+  // Complete a work item (V3.1 — agent-reported completion with token usage)
+  router.post('/complete/:workItemId', completeItem);
+
+  // Block a work item (V3.1 — agent-reported blocked state)
+  router.post('/block/:workItemId', blockItem);
+
+  // Fail a work item (V3.1 — agent-reported failure)
+  router.post('/fail/:workItemId', failItemHandler);
 
   // Revoke a claim and release work item
   router.post('/revoke/:claimId', revokeAndRelease);

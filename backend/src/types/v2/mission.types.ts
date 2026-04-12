@@ -165,6 +165,11 @@ export interface Mission {
   nextReviewAt?: string;
   /** Accumulated learnings from execution */
   learnings: string[];
+  /** Accumulated token usage across all Requests in this mission */
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  /** Accumulated cost in USD across all Requests */
+  totalCost?: number;
 }
 
 // ---------------------------------------------------------------------------

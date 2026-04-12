@@ -4,14 +4,13 @@
  * @module services/v3/request.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RequestService, type RequestPlan } from './request.service.js';
 
 // Mock file I/O
 const mockFiles = new Map<string, string>();
 
-vi.mock('fs/promises', () => ({
-  readdir: vi.fn().mockImplementation(async () => {
+jest.mock('fs/promises', () => ({
+  readdir: jest.fn().mockImplementation(async () => {
     const entries: string[] = [];
     for (const key of mockFiles.keys()) {
       const filename = key.split('/').pop() || '';
@@ -21,26 +20,26 @@ vi.mock('fs/promises', () => ({
   }),
 }));
 
-vi.mock('../../utils/file-io.utils.js', () => ({
-  ensureDir: vi.fn().mockResolvedValue(undefined),
-  atomicWriteJson: vi.fn().mockImplementation(async (filePath: string, data: unknown) => {
+jest.mock('../../utils/file-io.utils.js', () => ({
+  ensureDir: jest.fn().mockResolvedValue(undefined),
+  atomicWriteJson: jest.fn().mockImplementation(async (filePath: string, data: unknown) => {
     mockFiles.set(filePath, JSON.stringify(data));
   }),
-  safeReadJson: vi.fn().mockImplementation(async (filePath: string, fallback: unknown) => {
+  safeReadJson: jest.fn().mockImplementation(async (filePath: string, fallback: unknown) => {
     const content = mockFiles.get(filePath);
     if (!content) return fallback;
     return JSON.parse(content);
   }),
 }));
 
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        debug: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
+        info: jest.fn(),
+        debug: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
       }),
     }),
   },
@@ -53,7 +52,7 @@ describe('RequestService', () => {
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
   });
 
   describe('create', () => {
@@ -126,15 +125,18 @@ describe('RequestService', () => {
 
     it('should throw on invalid status transition', async () => {
       const service = RequestService.getInstance('/tmp/test-project');
-
       const created = await service.create({
         sourceConversationItemId: 'conv-invalid',
         title: 'Invalid transition test',
         description: 'Testing invalid transition',
       });
 
+      // Transition to done first (terminal state)
+      await service.update(created.id, { status: 'done' });
+
+      // done -> running is invalid
       await expect(
-        service.update(created.id, { status: 'done' }),
+        service.update(created.id, { status: 'running' }),
       ).rejects.toThrow('Invalid status transition');
     });
 
@@ -204,10 +206,17 @@ describe('RequestService', () => {
   describe('plan', () => {
     it('should return empty tasks for short messages', async () => {
       const service = RequestService.getInstance('/tmp/test-project');
-      const plan = await service.plan('OK');
+      const plan = await service.plan('.');
       expect(plan.tasks).toHaveLength(0);
       expect(plan.strategy).toBe('none');
       expect(plan.reasoning).toContain('too short');
+    });
+
+    it('should return tasks for 2-character messages (e.g. OK)', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const plan = await service.plan('OK');
+      expect(plan.tasks.length).toBeGreaterThan(0);
+      expect(plan.strategy).not.toBe('none');
     });
 
     it('should return empty tasks for empty string', async () => {

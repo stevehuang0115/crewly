@@ -24,6 +24,7 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { ClaimService } from '../task-pool/claim.service.js';
 import { PoolStorage } from '../task-pool/pool-storage.js';
 import { StorageService } from '../core/storage.service.js';
+import { RequestService } from '../v3/request.service.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
@@ -113,8 +114,19 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * @returns Active Requests
    */
   async getActiveRequests(): Promise<Request[]> {
-    // TODO: Wire to Request storage when implemented
-    return [];
+    try {
+      const service = RequestService.getInstance();
+      const all = await service.listAll();
+      // Filter for non-terminal statuses: anything except 'done' or 'cancelled'
+      return all.filter(
+        (r) => r.status !== 'done' && r.status !== 'cancelled',
+      );
+    } catch (error) {
+      this.logger.error('Failed to get active Requests', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
   }
 
   /**
@@ -212,11 +224,15 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           reason: correction.reason,
         });
       } else if (correction.entityType === 'request') {
-        // TODO: Wire to Request storage when implemented
-        this.logger.info('Request correction skipped (storage not implemented)', {
+        const service = RequestService.getInstance();
+        await service.update(correction.entityId, {
+          status: correction.newState as Request['status'],
+        });
+        this.logger.info('Applied request correction', {
           requestId: correction.entityId,
           from: correction.previousState,
           to: correction.newState,
+          reason: correction.reason,
         });
       }
     } catch (error) {

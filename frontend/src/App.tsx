@@ -7,6 +7,7 @@ import { Teams } from './pages/Teams';
 import { TeamDetail } from './pages/TeamDetail';
 import { Assignments } from './pages/Assignments';
 import { ScheduledCheckins } from './pages/ScheduledCheckins';
+import { Triggers } from './pages/Triggers';
 import { Factory } from './pages/Factory';
 import { Settings } from './pages/Settings';
 import { Chat } from './pages/Chat';
@@ -53,6 +54,7 @@ function App() {
               <Route path="teams/:id" element={<TeamDetail />} />
               <Route path="assignments" element={<Assignments />} />
               <Route path="scheduled-checkins" element={<ScheduledCheckins />} />
+              <Route path="triggers" element={<Triggers />} />
               <Route path="factory" element={<Factory />} />
               <Route path="marketplace" element={<Marketplace />} />
               <Route path="marketplace/:id" element={<MarketplaceDetail />} />

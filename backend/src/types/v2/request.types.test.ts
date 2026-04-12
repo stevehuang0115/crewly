@@ -89,6 +89,11 @@ describe('Request Types', () => {
     it('should allow open → ready', () => {
       expect(isValidRequestTransition('open', 'ready')).toBe(true);
     });
+
+    it('should allow open → done (auto-close dangling)', () => {
+      expect(isValidRequestTransition('open', 'done')).toBe(true);
+    });
+
     it('should allow open → cancelled', () => {
       expect(isValidRequestTransition('open', 'cancelled')).toBe(true);
     });

@@ -63,6 +63,18 @@ jest.mock('../core/logger.service.js', () => ({
   },
 }));
 
+const mockRequestService = {
+  listAll: jest.fn().mockResolvedValue([]),
+  update: jest.fn().mockResolvedValue(undefined),
+  getInstance: () => mockRequestService,
+};
+
+jest.mock('../v3/request.service.js', () => ({
+  RequestService: {
+    getInstance: () => mockRequestService,
+  },
+}));
+
 import { LiveReconcilerDataProvider } from './reconciler-data-provider.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { StorageService } from '../core/storage.service.js';
@@ -110,6 +122,34 @@ describe('LiveReconcilerDataProvider', () => {
 
       const result = await provider.getActiveWorkItems();
 
+      expect(result).toEqual([]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // getActiveRequests
+  // -----------------------------------------------------------------------
+
+  describe('getActiveRequests', () => {
+    it('returns non-terminal requests from RequestService', async () => {
+      const requests = [
+        { id: 'req-1', status: 'open' },
+        { id: 'req-2', status: 'running' },
+        { id: 'req-3', status: 'done' },
+        { id: 'req-4', status: 'cancelled' },
+        { id: 'req-5', status: 'ready' },
+      ];
+      mockRequestService.listAll.mockResolvedValue(requests);
+
+      const result = await provider.getActiveRequests();
+
+      expect(result).toHaveLength(3);
+      expect(result.map(r => r.id)).toEqual(['req-1', 'req-2', 'req-5']);
+    });
+
+    it('returns empty on error', async () => {
+      mockRequestService.listAll.mockRejectedValue(new Error('Storage error'));
+      const result = await provider.getActiveRequests();
       expect(result).toEqual([]);
     });
   });
@@ -221,6 +261,20 @@ describe('LiveReconcilerDataProvider', () => {
       });
 
       expect(mockPool.updateItemStatus).toHaveBeenCalledWith('wi-1', 'blocked');
+    });
+
+    it('updates request status via RequestService', async () => {
+      await provider.applyCorrection({
+        entityType: 'request',
+        entityId: 'req-1',
+        previousState: 'running',
+        newState: 'done',
+        reason: 'All tasks completed',
+        evidence: 'cascade=done',
+        correctedAt: new Date().toISOString(),
+      });
+
+      expect(mockRequestService.update).toHaveBeenCalledWith('req-1', { status: 'done' });
     });
   });
 

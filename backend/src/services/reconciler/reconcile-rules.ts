@@ -197,8 +197,10 @@ export function reconcileRequestStatus(
 
   if (allDone) {
     expectedStatus = request.requiresConfirmation ? 'waiting_confirmation' : 'done';
-  } else if (anyRunning || hasQueued) {
-    expectedStatus = 'running';
+  } else if (anyRunning) {
+    expectedStatus = 'running'; // At least one task is actively running
+  } else if (hasQueued) {
+    expectedStatus = 'ready'; // Plan exists, tasks queued, none running yet
   } else if (allBlockedOrFailed) {
     expectedStatus = 'blocked';
   }

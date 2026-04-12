@@ -180,6 +180,9 @@ async function sendToolCommand(
 	const instance = resolveInstanceParam(req);
 	const agentName = extractAgentName(req);
 
+	// Collect errors from each path for diagnostics if all fail
+	const errors: string[] = [];
+
 	// Path 1: If a specific instance is requested AND proxy is available, use proxy
 	if (instance && proxy.isAvailable()) {
 		try {
@@ -187,11 +190,8 @@ async function sendToolCommand(
 			res.json(result);
 			return;
 		} catch (err) {
-			res.status(504).json({
-				success: false,
-				error: (err as Error).message,
-			});
-			return;
+			errors.push(`proxy(instance=${instance}): ${(err as Error).message}`);
+			// Fall through to try other paths
 		}
 	}
 
@@ -202,11 +202,8 @@ async function sendToolCommand(
 			res.json(result);
 			return;
 		} catch (err) {
-			res.status(504).json({
-				success: false,
-				error: (err as Error).message,
-			});
-			return;
+			errors.push(`direct-ws: ${(err as Error).message}`);
+			// Fall through to try proxy path
 		}
 	}
 
@@ -217,18 +214,18 @@ async function sendToolCommand(
 			res.json(result);
 			return;
 		} catch (err) {
-			res.status(504).json({
-				success: false,
-				error: (err as Error).message,
-			});
-			return;
+			errors.push(`proxy-relay: ${(err as Error).message}`);
+			// Fall through to error response
 		}
 	}
 
-	// No path available
+	// No path available or all paths failed
+	const errorDetail = errors.length > 0
+		? `All connection paths failed: ${errors.join('; ')}`
+		: 'No Chrome browser connected. Please connect the Crewly Chrome Extension first.';
 	res.status(503).json({
 		success: false,
-		error: 'No Chrome browser connected. Please connect the Crewly Chrome Extension first.',
+		error: errorDetail,
 		code: 'NO_BROWSER_CLIENT',
 	});
 }

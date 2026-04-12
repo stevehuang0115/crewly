@@ -15,6 +15,8 @@ import {
   TaskPoolService,
   type PoolFilters,
 } from '../../services/task-pool/task-pool.service.js';
+import { TaskProjectionService } from '../../services/v3/task-projection.service.js';
+import type { TokenUsage } from '../../types/v3/task-record.types.js';
 
 /**
  * Get the TaskPoolService singleton.
@@ -23,6 +25,19 @@ import {
  */
 function getService(): TaskPoolService {
   return TaskPoolService.getInstance();
+}
+
+/**
+ * Get the TaskProjectionService singleton (non-throwing).
+ *
+ * @returns TaskProjectionService instance or null if unavailable
+ */
+function getProjection(): TaskProjectionService | null {
+  try {
+    return TaskProjectionService.getInstance();
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -50,7 +65,27 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // V3.1 Task Validator
+    const validationErrors = await validateWorkItem(workItem);
+    if (validationErrors.length > 0) {
+      res.status(400).json({ success: false, errors: validationErrors });
+      return;
+    }
+
     await getService().addToPool(workItem);
+
+    // V3.1: Project WorkItem entry as a TaskRecord
+    const projection = getProjection();
+    if (projection) {
+      projection.createRecord({
+        title: workItem.title || `WorkItem ${workItem.id}`,
+        type: workItem.type === 'delegate' ? 'delegation' : 'self_execution',
+        ownerAgent: workItem.target || workItem.owner || 'system',
+        requestId: workItem.requestId,
+        workItemId: workItem.id,
+        triggerId: workItem.triggerId,
+      }).catch(() => { /* non-blocking */ });
+    }
 
     res.status(201).json({
       success: true,
@@ -133,6 +168,17 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // V3.1: Project task assignment
+    const projection = getProjection();
+    if (projection) {
+      const workItem = result.workItem;
+      const records = projection.listRecords({ workItemId: workItem.id });
+      const record = records[0];
+      if (record) {
+        projection.markStarted(record.id, agentId.trim()).catch(() => { /* non-blocking */ });
+      }
+    }
+
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(500).json({ success: false, error: (error as Error).message });
@@ -168,6 +214,213 @@ export async function releaseItem(req: Request, res: Response): Promise<void> {
     await getService().releaseBack(workItemId, releaseReason);
 
     res.json({ success: true, message: `WorkItem ${workItemId} released back to pool` });
+  } catch (error) {
+    const message = (error as Error).message;
+    if (message.includes('not found')) {
+      res.status(404).json({ success: false, error: message });
+    } else if (message.includes('status must be')) {
+      res.status(409).json({ success: false, error: message });
+    } else {
+      res.status(500).json({ success: false, error: message });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/task-pool/complete/:workItemId — Complete a WorkItem
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks a running WorkItem as completed ('done').
+ *
+ * Request body:
+ * ```json
+ * { "agentId": "crewly-product-leo-member-n", "tokenUsage": { ... }, "result": { ... } }
+ * ```
+ *
+ * @param req - Express request with workItemId param
+ * @param res - Express response
+ */
+export async function completeItem(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    const { agentId, tokenUsage, result } = req.body as {
+      agentId?: string;
+      tokenUsage?: TokenUsage;
+      result?: Record<string, unknown>;
+    };
+
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'workItemId param is required' });
+      return;
+    }
+    if (!agentId) {
+      res.status(400).json({ success: false, error: 'agentId is required' });
+      return;
+    }
+
+    // Capture requestId BEFORE completing (item may be harder to find after status change)
+    const preCompleteItem = (await getService().getAllItems()).find(wi => wi.id === workItemId);
+    const cascadeRequestId = preCompleteItem?.requestId;
+
+    await getService().completeItem(workItemId, result);
+
+    // V3.1: Project task completion
+    const projection = getProjection();
+    if (projection) {
+      const records = projection.listRecords({ workItemId });
+      const record = records[0];
+      if (record) {
+        projection.markDone(record.id, agentId, tokenUsage).catch(() => { /* non-blocking */ });
+        // Roll up token usage to Request
+        if (tokenUsage && record.requestId) {
+          rollUpTokensToRequest(record.requestId, tokenUsage, projection);
+        }
+      }
+    }
+
+    // Cascade: update parent Request status if all WorkItems are done
+    if (cascadeRequestId) {
+      setImmediate(async () => {
+        try {
+          const { RequestService } = await import('../../services/v3/request.service.js');
+          const { isValidRequestTransition } = await import('../../types/v2/request.types.js');
+          const requestService = RequestService.getInstance();
+          const request = await requestService.getById(cascadeRequestId);
+          if (!request || request.status === 'done' || request.status === 'cancelled') return;
+
+          const allItems = await getService().getAllItems();
+          const siblings = allItems.filter(wi => wi.requestId === cascadeRequestId);
+          const statuses = siblings.map(wi => wi.status);
+
+          let newStatus: string | null = null;
+          if (statuses.every(s => s === 'done')) newStatus = 'done';
+          else if (statuses.some(s => s === 'running')) newStatus = 'running';
+          else if (statuses.some(s => s === 'done')) newStatus = 'running';
+
+          if (newStatus && newStatus !== request.status) {
+            // Handle multi-step transitions (e.g. blocked → running → done)
+            if (isValidRequestTransition(request.status, newStatus as any)) {
+              await requestService.update(cascadeRequestId, { status: newStatus as any });
+            } else if (newStatus === 'done' && isValidRequestTransition(request.status, 'running')) {
+              // Transition through running first, then to done
+              await requestService.update(cascadeRequestId, { status: 'running' });
+              await requestService.update(cascadeRequestId, { status: 'done' });
+            }
+          }
+        } catch {
+          // non-fatal cascade
+        }
+      });
+    }
+
+    res.json({ success: true, message: `WorkItem ${workItemId} completed` });
+  } catch (error) {
+    const message = (error as Error).message;
+    if (message.includes('not found')) {
+      res.status(404).json({ success: false, error: message });
+    } else if (message.includes('status must be')) {
+      res.status(409).json({ success: false, error: message });
+    } else {
+      res.status(500).json({ success: false, error: message });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/task-pool/block/:workItemId — Block a WorkItem
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks a WorkItem as blocked.
+ *
+ * Request body:
+ * ```json
+ * { "agentId": "crewly-product-leo-member-n", "reason": "waiting for X" }
+ * ```
+ *
+ * @param req - Express request with workItemId param
+ * @param res - Express response
+ */
+export async function blockItem(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    const { agentId, reason } = req.body as { agentId?: string; reason?: string };
+
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'workItemId param is required' });
+      return;
+    }
+    if (!agentId) {
+      res.status(400).json({ success: false, error: 'agentId is required' });
+      return;
+    }
+
+    await getService().updateItemStatus(workItemId, 'blocked');
+
+    // V3.1: Project task blocked
+    const projection = getProjection();
+    if (projection) {
+      const records = projection.listRecords({ workItemId });
+      const record = records[0];
+      if (record) {
+        projection.markBlocked(record.id, agentId, reason).catch(() => { /* non-blocking */ });
+      }
+    }
+
+    res.json({ success: true, message: `WorkItem ${workItemId} blocked` });
+  } catch (error) {
+    const message = (error as Error).message;
+    if (message.includes('not found')) {
+      res.status(404).json({ success: false, error: message });
+    } else {
+      res.status(500).json({ success: false, error: message });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/task-pool/fail/:workItemId — Fail a WorkItem
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks a running WorkItem as failed.
+ *
+ * Request body:
+ * ```json
+ * { "agentId": "crewly-product-leo-member-n", "error": "something went wrong" }
+ * ```
+ *
+ * @param req - Express request with workItemId param
+ * @param res - Express response
+ */
+export async function failItemHandler(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    const { agentId, error: errorMsg } = req.body as { agentId?: string; error?: string };
+
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'workItemId param is required' });
+      return;
+    }
+    if (!agentId) {
+      res.status(400).json({ success: false, error: 'agentId is required' });
+      return;
+    }
+
+    await getService().failItem(workItemId, errorMsg || 'unknown error');
+
+    // V3.1: Project task failure
+    const projection = getProjection();
+    if (projection) {
+      const records = projection.listRecords({ workItemId });
+      const record = records[0];
+      if (record) {
+        projection.markFailed(record.id, agentId, errorMsg).catch(() => { /* non-blocking */ });
+      }
+    }
+
+    res.json({ success: true, message: `WorkItem ${workItemId} failed` });
   } catch (error) {
     const message = (error as Error).message;
     if (message.includes('not found')) {
@@ -359,6 +612,135 @@ export async function revokeAndRelease(req: Request, res: Response): Promise<voi
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Valid WorkItemTypes accepted at the pool entry point. */
+const VALID_POOL_TYPES = new Set(['delegate', 'check', 'notify', 'review', 'project_task', 'cron_run', 'confirm', 'reconcile']);
+
+/** Max WorkItems allowed per Request in a single planning pass. */
+const MAX_WORK_ITEMS_PER_REQUEST = 20;
+
+/**
+ * Validates a WorkItem before it enters the pool.
+ * Returns a list of validation error strings (empty = valid).
+ *
+ * Checks:
+ * 1. Schema: required fields present, type is valid
+ * 2. Quantity: no more than MAX_WORK_ITEMS_PER_REQUEST per requestId
+ * 3. Duplicate: workItemId must not already exist in pool
+ *
+ * @param workItem - The WorkItem to validate
+ * @returns Array of error strings
+ */
+async function validateWorkItem(workItem: Record<string, unknown>): Promise<string[]> {
+  const errors: string[] = [];
+
+  // 1. Schema Check
+  if (!workItem.id || typeof workItem.id !== 'string') {
+    errors.push('WorkItem.id is required and must be a string');
+  }
+  if (!workItem.title || typeof workItem.title !== 'string') {
+    errors.push('WorkItem.title is required');
+  }
+  if (!workItem.type || typeof workItem.type !== 'string') {
+    errors.push('WorkItem.type is required');
+  } else if (!VALID_POOL_TYPES.has(workItem.type)) {
+    errors.push(`WorkItem.type "${workItem.type}" is invalid; must be one of: ${[...VALID_POOL_TYPES].join(', ')}`);
+  }
+  if (!workItem.owner || typeof workItem.owner !== 'string') {
+    errors.push('WorkItem.owner is required');
+  }
+
+  if (errors.length > 0) return errors; // Bail out early on schema errors
+
+  try {
+    const svc = getService();
+    const allItems = await svc.getAllItems();
+
+    // 2. Duplicate detection
+    const duplicate = allItems.find((wi) => wi.id === workItem.id);
+    if (duplicate) {
+      errors.push(`WorkItem.id "${workItem.id}" already exists in pool (status: ${duplicate.status})`);
+    }
+
+    // 3. Per-request quantity cap
+    const requestId = workItem.requestId as string | undefined;
+    if (requestId) {
+      const requestItems = allItems.filter(
+        (wi) => wi.requestId === requestId && wi.status !== 'done' && wi.status !== 'cancelled',
+      );
+      if (requestItems.length >= MAX_WORK_ITEMS_PER_REQUEST) {
+        errors.push(
+          `Request ${requestId} already has ${requestItems.length} active WorkItems (max ${MAX_WORK_ITEMS_PER_REQUEST}). Possible infinite decomposition loop.`,
+        );
+      }
+    }
+  } catch {
+    // Non-critical: validation failures should not break pool insertion
+  }
+
+  return errors;
+}
+
+/**
+ * Asynchronously rolls up token usage from a completed TaskRecord to its parent Request.
+ * Non-blocking — errors are swallowed to avoid slowing down API responses.
+ *
+ * @param requestId - The parent Request ID
+ * @param tokenUsage - Token usage to roll up
+ * @param projection - TaskProjectionService instance
+ */
+function rollUpTokensToRequest(
+  requestId: string,
+  tokenUsage: TokenUsage,
+  projection: TaskProjectionService,
+): void {
+  void projection; // used for type checking only
+  setImmediate(async () => {
+    try {
+      const { RequestService } = await import('../../services/v3/request.service.js');
+      const requestService = RequestService.getInstance();
+      const request = await requestService.getById(requestId);
+      if (!request) return;
+
+      await requestService.update(requestId, {
+        totalInputTokens: (request.totalInputTokens || 0) + (tokenUsage.promptTokens || 0),
+        totalOutputTokens: (request.totalOutputTokens || 0) + (tokenUsage.completionTokens || 0),
+        totalCost: (request.totalCost || 0) + (tokenUsage.estimatedCostUsd || 0),
+      });
+
+      // Cascade up to Mission if this Request belongs to one
+      if (request.missionId && tokenUsage.estimatedCostUsd) {
+        rollUpTokensToMission(request.missionId, tokenUsage);
+      }
+    } catch {
+      // Non-critical — token roll-up failures should never break agent flow
+    }
+  });
+}
+
+/**
+ * Asynchronously rolls up token usage from a Request to its parent Mission.
+ * Errors are swallowed — this must never block agent-facing operations.
+ *
+ * @param missionId - The parent Mission ID
+ * @param tokenUsage - Token counts to accumulate
+ */
+function rollUpTokensToMission(missionId: string, tokenUsage: TokenUsage): void {
+  setImmediate(async () => {
+    try {
+      const { _loadMission, _saveMission } = await import('../mission/mission-policy.controller.js');
+      const mission = await _loadMission(missionId);
+      if (!mission) return;
+      mission.totalInputTokens = (mission.totalInputTokens || 0) + (tokenUsage.promptTokens || 0);
+      mission.totalOutputTokens = (mission.totalOutputTokens || 0) + (tokenUsage.completionTokens || 0);
+      mission.totalCost = (mission.totalCost || 0) + (tokenUsage.estimatedCostUsd || 0);
+      mission.updatedAt = new Date().toISOString();
+      await _saveMission(mission);
+    } catch {
+      // Non-critical — mission roll-up must never interfere with agent flow
+    }
+  });
+}
 
 /**
  * Parses optional filter query parameters into a PoolFilters object.

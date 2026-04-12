@@ -35,6 +35,8 @@ import {
   getRequestPriorityLabel,
   getSourceLabel,
   formatRequestTime,
+  formatCost,
+  formatTokens,
 } from './request-tracking.types';
 
 // =============================================================================
@@ -190,11 +192,23 @@ export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
             </div>
             <div className="flex items-center gap-3 text-xs text-text-secondary-dark/60">
               <Badge variant="default" size="sm">{getSourceLabel(request.source)}</Badge>
-              <span className="text-text-secondary-dark">
-                Requester: {request.requester}
-              </span>
+              {request.ownerAgent && (
+                <span className="text-text-secondary-dark">
+                  {request.ownerAgent}
+                </span>
+              )}
+              {request.totalCost > 0 && (
+                <span className="text-emerald-400 font-medium" title={`${formatTokens(request.totalInputTokens)} in / ${formatTokens(request.totalOutputTokens)} out`}>
+                  {formatCost(request.totalCost)}
+                </span>
+              )}
+              {(request.totalInputTokens > 0 || request.totalOutputTokens > 0) && (
+                <span className="text-text-secondary-dark/50">
+                  {formatTokens(request.totalInputTokens + request.totalOutputTokens)} tokens
+                </span>
+              )}
               <span className="ml-auto whitespace-nowrap">
-                Updated: {formatRequestTime(request.updatedAt)}
+                {formatRequestTime(request.updatedAt)}
               </span>
               {request.missionLink && (
                 <span className="whitespace-nowrap">

@@ -375,6 +375,12 @@ export class CrewlyServer {
 						error: err instanceof Error ? err.message : String(err),
 					});
 				}
+
+				// V3: Auto-close open Requests when the orchestrator goes idle
+				// Handles direct responses (no WorkItem delegation)
+				if (event.sessionName === ORCHESTRATOR_SESSION_NAME) {
+					setImmediate(() => this.autoCloseOpenRequests());
+				}
 			}
 		});
 
@@ -479,9 +485,9 @@ export class CrewlyServer {
 					directives: {
 						defaultSrc: ["'self'"],
 						styleSrc: ["'self'", "'unsafe-inline'"],
-						scriptSrc: ["'self'"],
-						imgSrc: ["'self'", 'data:', 'https:'],
-						connectSrc: ["'self'", 'ws:', 'wss:'],
+						scriptSrc: ["'self'", "'unsafe-eval'"],
+						imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
+						connectSrc: ["'self'", 'ws:', 'wss:', 'blob:'],
 						// Disable upgrade-insecure-requests for HTTP-only deployments (ESTestNode)
 						// Without this, browsers on HTTP upgrade all asset requests to HTTPS → ERR_SSL_PROTOCOL_ERROR
 						upgradeInsecureRequests: null,
@@ -661,6 +667,22 @@ export class CrewlyServer {
 				targetPort: this.config.webPort,
 				headless: this.config.headless,
 			});
+
+			// Truncate service.log on startup — it's a raw stdout pipe duplicate of the
+			// daily crewly-YYYY-MM-DD.log files and grows unbounded otherwise.
+			try {
+				const serviceLogPath = path.join(this.config.crewlyHome, 'logs', 'service.log');
+				const { stat, truncate } = await import('fs/promises');
+				const logStat = await stat(serviceLogPath).catch(() => null);
+				if (logStat && logStat.size > 10 * 1024 * 1024) { // truncate if > 10MB
+					await truncate(serviceLogPath, 0);
+					this.logger.info('Truncated service.log on startup', {
+						previousSizeMB: Math.round(logStat.size / 1024 / 1024),
+					});
+				}
+			} catch {
+				// Non-critical
+			}
 
 			if (this.config.headless) {
 				this.logger.info('Headless mode active: API-only, no frontend serving');
@@ -973,6 +995,40 @@ export class CrewlyServer {
 				});
 			}
 
+			// Backfill: mark Slack threads for done Requests as terminal so the
+			// resume notification won't re-send already-answered conversations.
+			try {
+				const { RequestService } = await import('./services/v3/request.service.js');
+				const reqSvc = RequestService.getInstance();
+				const allReqs = await reqSvc.listAll();
+				let backfilled = 0;
+				for (const req of allReqs) {
+					if (req.status !== 'done') continue;
+					const scid = req.sourceConversationItemId || '';
+					if (!scid.startsWith('slack-')) continue;
+					const m = scid.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
+					if (!m) continue;
+					const [, channelId, t1, t2] = m;
+					const threadKey = `${channelId}:${t1}.${t2}`;
+					if (this.threadStatusQueueService.get(threadKey)) continue;
+					this.threadStatusQueueService.trackInbound({
+						threadKey,
+						conversationId: scid,
+						source: 'slack',
+						messagePreview: req.title.slice(0, 200),
+					});
+					this.threadStatusQueueService.markReplied(threadKey, 'replied_completed');
+					backfilled++;
+				}
+				if (backfilled > 0) {
+					this.logger.info('Backfilled thread status for done Requests', { count: backfilled });
+				}
+			} catch (err) {
+				this.logger.warn('Thread status backfill failed (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+
 			// #247: Replay pending messages that arrived while the orchestrator was offline.
 			// This must happen after loadPersistedState() (so we know what's already queued)
 			// but before the queue processor starts (so replayed messages are ready for delivery).
@@ -1086,6 +1142,150 @@ export class CrewlyServer {
 			} catch (cronErr) {
 				this.logger.warn('CronTaskService initialization failed (non-critical)', {
 					error: cronErr instanceof Error ? cronErr.message : String(cronErr),
+				});
+			}
+
+			// Start TriggerEngine (V3 unified trigger system) and wire action handler
+			try {
+				const { TriggerEngine } = await import('./services/v3/trigger-engine.service.js');
+				const { TaskProjectionService } = await import('./services/v3/task-projection.service.js');
+				const triggerEngine = TriggerEngine.getInstance();
+				const taskProjection = TaskProjectionService.getInstance();
+
+				// Load TaskProjection state from disk
+				await taskProjection.load();
+
+				// Wire EventBus so signal triggers can subscribe to events
+				triggerEngine.setEventBus(this.eventBusService);
+
+				// Wire action handler — executes the effect when a trigger fires
+				triggerEngine.setActionHandler(async (trigger, action) => {
+					const triggerId = trigger.id;
+					const logger = this.logger;
+
+					// 1. sendMessage — enqueue a message to the orchestrator session
+					if (action.sendMessage) {
+						const { target, message } = action.sendMessage;
+						try {
+							// Format with trigger context so Agent knows why it was woken
+							const formattedContent = `[SYSTEM ALERT] Trigger '${triggerId}' says: ${message}`;
+							this.messageQueueService.enqueue({
+								content: formattedContent,
+								conversationId: target || 'system',
+								source: 'system_event',
+							});
+							logger.info('TriggerEngine: sendMessage enqueued', { triggerId, target });
+						} catch (err) {
+							logger.warn('TriggerEngine: sendMessage failed', {
+								triggerId,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
+					}
+
+					// 2. createWorkItem — push a new WorkItem into the task pool
+					if (action.createWorkItem) {
+						try {
+							const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+							const { createWorkItem } = await import('./types/v2/work-item.types.js');
+							const template = action.createWorkItem;
+							const workItem = createWorkItem({
+								title: template.title || `Triggered task (${trigger.id})`,
+								description: template.description || `Auto-created by trigger ${trigger.id}`,
+								type: template.type ?? 'delegate',
+								owner: template.owner ?? 'orchestrator',
+								target: template.target,
+								triggerId,
+								requestId: template.requestId,
+							});
+							await TaskPoolService.getInstance().addToPool(workItem);
+
+							// Project as a trigger_action TaskRecord
+							await taskProjection.createRecord({
+								title: workItem.title,
+								type: 'trigger_action',
+								ownerAgent: 'system',
+								triggerId,
+								workItemId: workItem.id,
+							});
+							logger.info('TriggerEngine: WorkItem enqueued', { triggerId, workItemId: workItem.id });
+						} catch (err) {
+							logger.warn('TriggerEngine: createWorkItem failed', {
+								triggerId,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
+					}
+
+					// 3. wakeWorkItemId — re-queue a suspended/blocked WorkItem with context note
+					if (action.wakeWorkItemId) {
+						try {
+							const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+							const taskPool = TaskPoolService.getInstance();
+
+							// Append system note to description so Agent knows why it was woken
+							const wakeNote = `\n\n[SYSTEM NOTE] Woken automatically by Trigger '${triggerId}' at ${new Date().toISOString()}.`;
+							await taskPool.updateItemStatus(action.wakeWorkItemId, 'queued');
+							// Append wake reason to WorkItem description via storage
+							try {
+								const item = (await taskPool.getAllItems()).find(wi => wi.id === action.wakeWorkItemId);
+								if (item) {
+									await taskPool.updateTokenUsage(action.wakeWorkItemId, item.inputTokens, item.outputTokens, item.cost);
+									// We use the storage directly through the service — patch description via a minimal re-add isn't feasible,
+									// so we write the note to the task projection instead:
+									await taskProjection.createRecord({
+										title: `[TRIGGER WAKE] ${item.title}`,
+										type: 'trigger_action',
+										ownerAgent: 'system',
+										triggerId,
+										workItemId: item.id,
+										requestId: item.requestId,
+									});
+								}
+							} catch { /* non-critical */ }
+
+							logger.info('TriggerEngine: WorkItem woken', { triggerId, workItemId: action.wakeWorkItemId, note: wakeNote });
+						} catch (err) {
+							logger.warn('TriggerEngine: wakeWorkItemId failed', {
+								triggerId,
+								workItemId: action.wakeWorkItemId,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
+					}
+
+					// 4. runReconciler — trigger a targeted reconciliation cycle
+					if (action.runReconciler && this.reconcilerService) {
+						try {
+							await this.reconcilerService.runFull();
+							logger.info('TriggerEngine: Reconciler run triggered', { triggerId });
+						} catch (err) {
+							logger.warn('TriggerEngine: runReconciler failed', {
+								triggerId,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
+					}
+				});
+
+				await triggerEngine.start();
+				this.logger.info('TriggerEngine started with action handler wired');
+			} catch (triggerErr) {
+				this.logger.warn('TriggerEngine initialization failed (non-critical)', {
+					error: triggerErr instanceof Error ? triggerErr.message : String(triggerErr),
+				});
+			}
+
+			// Start V3DataService — listens for v3:task_delegated / v3:task_completed events
+			// and links WorkItems to their parent Requests via requestService.linkWorkItem().
+			// Must be initialized after EventBusService is ready.
+			try {
+				const { V3DataService } = await import('./services/v3/v3-data.service.js');
+				new V3DataService(this.eventBusService, process.cwd());
+				this.logger.info('V3DataService started — WorkItem↔Request linking active');
+			} catch (v3Err) {
+				this.logger.warn('V3DataService initialization failed (non-critical)', {
+					error: v3Err instanceof Error ? v3Err.message : String(v3Err),
 				});
 			}
 
@@ -1790,6 +1990,207 @@ export class CrewlyServer {
 		this.healthMonitoringInterval = setInterval(() => {
 			this.logMemoryUsage();
 		}, 30000);
+
+		// V3: Periodic TTL-based auto-close for open Requests (every 2 min)
+		// Catches direct orchestrator responses that finish within a single poll cycle
+		// and never trigger the EventBus agent:idle event
+		setInterval(() => this.autoCloseOpenRequests(), 2 * 60 * 1000);
+
+		// Purge done Requests and WorkItems older than 24h (every hour)
+		setInterval(() => this.purgeCompletedData(), 60 * 60 * 1000);
+		// Run once at startup after a short delay
+		setTimeout(() => this.purgeCompletedData(), 30 * 1000);
+	}
+
+	/**
+	 * Removes done/cancelled Requests older than 24h from disk,
+	 * and purges done/cancelled/failed WorkItems from the task pool.
+	 * Memory, knowledge, and learnings are never purged.
+	 */
+	private purgeCompletedData(): void {
+		setImmediate(async () => {
+			const RETENTION_MS = 24 * 60 * 60 * 1000;
+			const cutoff = Date.now() - RETENTION_MS;
+
+			// 1. Purge done Requests
+			try {
+				const { RequestService } = await import('./services/v3/request.service.js');
+				const svc = RequestService.getInstance();
+				const all = await svc.listAll();
+				let purgedRequests = 0;
+				for (const req of all) {
+					if (req.status !== 'done' && req.status !== 'cancelled') continue;
+					const completedAt = req.completedAt ? new Date(req.completedAt).getTime() : 0;
+					const createdAt = new Date(req.createdAt).getTime();
+					const age = completedAt || createdAt;
+					if (age < cutoff) {
+						await svc.delete(req.id);
+						purgedRequests++;
+					}
+				}
+				if (purgedRequests > 0) {
+					this.logger.info('Purged old completed Requests', { count: purgedRequests });
+				}
+			} catch (err) {
+				this.logger.warn('Request purge failed (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+
+			// 2. Purge done/cancelled/failed WorkItems from pool
+			try {
+				const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+				const pool = TaskPoolService.getInstance();
+				const allItems = await pool.getAllItems();
+				const terminalStatuses = new Set(['done', 'cancelled', 'failed']);
+				let purgedItems = 0;
+				for (const wi of allItems) {
+					if (!terminalStatuses.has(wi.status)) continue;
+					const completedAt = wi.completedAt ? new Date(wi.completedAt).getTime() : 0;
+					const createdAt = new Date(wi.createdAt).getTime();
+					const age = completedAt || createdAt;
+					if (age < cutoff) {
+						await pool.removeItem(wi.id);
+						purgedItems++;
+					}
+				}
+				if (purgedItems > 0) {
+					this.logger.info('Purged old completed WorkItems', { count: purgedItems });
+				}
+			} catch (err) {
+				this.logger.warn('WorkItem purge failed (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		});
+	}
+
+	/**
+	 * Closes open Requests that were created within the last 10 minutes.
+	 * Used to handle direct orchestrator responses that don't go through WorkItems.
+	 * Also rolls up orchestrator token usage and sets ownerAgent for the Request.
+	 *
+	 * Token source varies by runtime:
+	 *   - claude-code: reads session JSONL (TUI status bar not capturable from PTY)
+	 *   - gemini-cli / codex-cli: reads from TokenUsageService (fed by PTY parser)
+	 *   - crewly-agent: reads from TokenUsageService (fed by SDK)
+	 */
+	private autoCloseOpenRequests(): void {
+		setImmediate(async () => {
+			try {
+				const { RequestService } = await import('./services/v3/request.service.js');
+				const { TokenUsageService } = await import('./services/monitoring/token-usage.service.js');
+				const { getTokensSince } = await import('./services/monitoring/claude-session-tokens.service.js');
+				const { getSessionStatePersistence } = await import('./services/session/session-state-persistence.js');
+				const svc = RequestService.getInstance();
+				const tokenSvc = TokenUsageService.getInstance();
+				const all = await svc.listAll();
+				const cutoff = Date.now() - 10 * 60 * 1000; // 10 min window
+				const minAgeMs = 3 * 60 * 1000; // Don't close requests younger than 3 min — gives orchestrator time to delegate
+
+				// Resolve orchestrator runtime type once per cycle
+				const persistence = getSessionStatePersistence();
+				const orcMeta = persistence.getSessionMetadata(ORCHESTRATOR_SESSION_NAME);
+				const orcRuntimeType = orcMeta?.runtimeType || 'claude-code';
+
+				for (const req of all) {
+					if (req.status !== 'open') continue;
+					const reqAge = Date.now() - new Date(req.createdAt).getTime();
+					if (reqAge > 10 * 60 * 1000) continue; // older than 10 min — skip
+					if (reqAge < minAgeMs) continue; // too young — orchestrator may still be delegating
+
+					const update: Parameters<typeof svc.update>[1] = { status: 'done' };
+
+					// Roll up orchestrator tokens only for direct responses (no WorkItem delegation)
+					if (req.workItemIds.length === 0) {
+						const since = new Date(req.createdAt);
+						let inputTokens = 0;
+						let outputTokens = 0;
+						let cost = 0;
+
+						if (orcRuntimeType === 'claude-code') {
+							// Claude Code: read from session JSONL (ground truth from API)
+							// Falls back to auto-detecting the latest session file if ID unknown.
+							// Use current time as upper bound to avoid counting tokens from
+							// subsequent requests in the same session.
+							const sessionId = persistence.getSessionId(ORCHESTRATOR_SESSION_NAME) || null;
+							const summary = await getTokensSince(
+								this.config.crewlyHome,
+								sessionId,
+								since,
+								new Date(), // upper bound — only count tokens within this request's window
+							);
+							if (summary && summary.turnCount > 0) {
+								inputTokens = summary.inputTokens;
+								outputTokens = summary.outputTokens;
+								cost = summary.cost;
+							}
+						} else {
+							// Gemini CLI / Codex CLI / crewly-agent: read from TokenUsageService
+							// (fed by PTY terminal output parser or SDK)
+							const usage = tokenSvc.getSessionUsageSince(
+								ORCHESTRATOR_SESSION_NAME,
+								since,
+							);
+							inputTokens = usage.inputTokens;
+							outputTokens = usage.outputTokens;
+							cost = usage.cost;
+						}
+
+						if (inputTokens > 0 || outputTokens > 0) {
+							update.totalInputTokens = (req.totalInputTokens || 0) + inputTokens;
+							update.totalOutputTokens = (req.totalOutputTokens || 0) + outputTokens;
+							update.totalCost = (req.totalCost || 0) + cost;
+						}
+						update.ownerAgent = ORCHESTRATOR_SESSION_NAME;
+					}
+
+					await svc.update(req.id, update);
+
+					// Mark the corresponding Slack/chat thread as terminal so the
+					// SessionHandoff resume notification won't re-send it after restart.
+					if (req.sourceConversationItemId.startsWith('slack-')) {
+						try {
+							const { ThreadStatusQueueService } = await import('./services/messaging/thread-status-queue.service.js');
+							const tsq = ThreadStatusQueueService.getInstance();
+							// sourceConversationItemId format: "slack-{channelId}-{messageTs}"
+							// messageTs format in the ID uses hyphens: "1775935980-197679"
+							// Slack threadTs uses dots: "1775935980.197679"
+							const match = req.sourceConversationItemId.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
+							if (match) {
+								const channelId = match[1];
+								const threadTs = `${match[2]}.${match[3]}`;
+								const threadKey = `${channelId}:${threadTs}`;
+								// Create entry if not tracked, then mark terminal
+								if (!tsq.get(threadKey)) {
+									tsq.trackInbound({
+										threadKey,
+										conversationId: req.sourceConversationItemId,
+										source: 'slack',
+										messagePreview: req.title,
+									});
+								}
+								tsq.markReplied(threadKey, 'replied_completed');
+							}
+						} catch {
+							// Non-critical — thread status is best-effort
+						}
+					}
+
+					this.logger.debug('V3 Request auto-closed', {
+						requestId: req.id,
+						ownerAgent: update.ownerAgent,
+						inputTokens: update.totalInputTokens,
+						outputTokens: update.totalOutputTokens,
+						cost: update.totalCost,
+					});
+				}
+			} catch (err) {
+				this.logger.warn('V3 Request auto-close failed (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		});
 	}
 
 	private logMemoryUsage(): void {
@@ -1913,6 +2314,18 @@ export class CrewlyServer {
 				await this.threadStatusQueueService.persist();
 			} catch (error) {
 				this.logger.warn('Failed to flush thread status queue', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Flush task pool (WorkItems) to disk — prevents data loss on restart
+			try {
+				const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+				const pool = TaskPoolService.getInstance();
+				await pool.flush();
+				this.logger.info('Task pool flushed to disk');
+			} catch (error) {
+				this.logger.warn('Failed to flush task pool', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}

@@ -60,6 +60,14 @@ export interface RequestItem {
   updatedAt: string;
   /** Child work items (optional) */
   childItems?: RequestChildItem[];
+  /** Total input tokens consumed */
+  totalInputTokens: number;
+  /** Total output tokens consumed */
+  totalOutputTokens: number;
+  /** Total cost in USD */
+  totalCost: number;
+  /** Agent that handled the request directly (no WorkItem delegation) */
+  ownerAgent?: string;
 }
 
 /**
@@ -102,6 +110,8 @@ export interface RequestStatistics {
   waitingConfirmation: number;
   /** Number of completed requests */
   done: number;
+  /** Total cost across all requests in USD */
+  totalCost: number;
 }
 
 // =============================================================================
@@ -203,6 +213,28 @@ export function formatRequestTime(isoDate: string): string {
 }
 
 /**
+ * Formats a cost value as a USD string.
+ *
+ * @param cost - Cost in USD
+ * @returns Formatted string (e.g. "$1.53" or "$0.00")
+ */
+export function formatCost(cost: number): string {
+  if (cost === 0) return '$0.00';
+  if (cost < 0.01) return `$${cost.toFixed(4)}`;
+  return `$${cost.toFixed(2)}`;
+}
+
+/**
+ * Formats a token count with comma separators.
+ *
+ * @param tokens - Token count
+ * @returns Formatted string (e.g. "485,688")
+ */
+export function formatTokens(tokens: number): string {
+  return tokens.toLocaleString();
+}
+
+/**
  * Computes statistics from a list of requests.
  *
  * @param requests - Array of request items
@@ -215,5 +247,6 @@ export function computeRequestStats(requests: RequestItem[]): RequestStatistics 
     blocked: requests.filter((r) => r.status === 'blocked').length,
     waitingConfirmation: requests.filter((r) => r.status === 'waiting_confirmation').length,
     done: requests.filter((r) => r.status === 'done').length,
+    totalCost: requests.reduce((sum, r) => sum + (r.totalCost || 0), 0),
   };
 }

@@ -145,6 +145,16 @@ require_param "sessionName (--session)" "$SESSION_NAME"
 require_param "status (--status)" "$STATUS"
 require_param "summary (--summary)" "$SUMMARY"
 
+# Gate: before_mark_done — reject empty or trivially short summaries
+# This prevents agents from marking tasks done without meaningful output.
+if [ "$STATUS" = "done" ]; then
+  SUMMARY_LEN=${#SUMMARY}
+  if [ "$SUMMARY_LEN" -lt 20 ]; then
+    echo "{\"error\":\"before_mark_done gate failed: summary too short (${SUMMARY_LEN} chars, minimum 20). Provide a meaningful summary of what was accomplished.\"}" >&2
+    error_exit "Summary must be at least 20 characters when reporting done (got ${SUMMARY_LEN})"
+  fi
+fi
+
 # Map simple status strings to InProgressTaskStatus values
 map_status_to_state() {
   case "$1" in
@@ -209,4 +219,38 @@ fi
 # Auto-persist key findings as project knowledge when task is done (#127, #219).
 if [ "$STATUS" = "done" ] && [ -n "$SUMMARY" ]; then
   auto_remember "$SESSION_NAME" "[COMPLETED] Task completed by ${SESSION_NAME}: ${SUMMARY}" "decision" "project" "$PROJECT_PATH"
+fi
+
+# Growth: record learning and extract growth areas on task completion.
+# Uses existing APIs — no additional LLM calls. The agent's own summary
+# is the learning input; keyword extraction identifies growth areas.
+if [ "$STATUS" = "done" ] && [ -n "$SUMMARY" ] && [ -n "$PROJECT_PATH" ]; then
+  # Record as a structured learning entry (appends to what_worked.md)
+  LEARN_BODY=$(jq -n \
+    --arg agentId "$SESSION_NAME" \
+    --arg content "$SUMMARY" \
+    --arg projectPath "$PROJECT_PATH" \
+    --arg type "success" \
+    '{agentId: $agentId, content: $content, projectPath: $projectPath, type: $type}')
+  api_call POST "/memory/record-learning" "$LEARN_BODY" 2>/dev/null || true
+
+  # Extract growth areas from summary (keyword-based, no LLM)
+  GROWTH_BODY=$(jq -n \
+    --arg sessionName "$SESSION_NAME" \
+    --arg text "$SUMMARY" \
+    '{sessionName: $sessionName, text: $text}')
+  api_call POST "/growth/extract-areas" "$GROWTH_BODY" 2>/dev/null || true
+fi
+
+# Growth: record failures for learning when task fails or is blocked.
+if [ "$STATUS" = "failed" ] || [ "$STATUS" = "blocked" ]; then
+  if [ -n "$SUMMARY" ] && [ -n "$PROJECT_PATH" ]; then
+    FAIL_BODY=$(jq -n \
+      --arg agentId "$SESSION_NAME" \
+      --arg content "$SUMMARY" \
+      --arg projectPath "$PROJECT_PATH" \
+      --arg type "failure" \
+      '{agentId: $agentId, content: $content, projectPath: $projectPath, type: $type}')
+    api_call POST "/memory/record-learning" "$FAIL_BODY" 2>/dev/null || true
+  fi
 fi

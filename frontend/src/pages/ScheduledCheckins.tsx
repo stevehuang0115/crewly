@@ -26,10 +26,13 @@ import {
 /** Top-level page tabs */
 type PageTab = 'messages' | 'cron';
 
-export const ScheduledCheckins: React.FC = () => {
-  const [pageTab, setPageTab] = useState<PageTab>('cron');
+/**
+ * Inner component for the Messages tab — isolates the useScheduledMessages hook
+ * so it only runs when the messages tab is active. This prevents hook failures
+ * from crashing the entire page (including the Cron tab).
+ */
+const ScheduledMessagesTab: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('active');
-
   const {
     scheduledMessages,
     scheduledChecks,
@@ -57,6 +60,106 @@ export const ScheduledCheckins: React.FC = () => {
   const activeMessages = scheduledMessages.filter((msg) => msg.isActive);
   const completedMessages = scheduledMessages.filter((msg) => !msg.isActive);
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[200px]">
+        <LoadingSpinner text="Loading scheduled messages..." />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <TabNavigation
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        activeMessages={activeMessages}
+        completedMessages={completedMessages}
+      />
+      <div>
+        {activeTab === 'active' ? (
+          activeMessages.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+              {activeMessages.map((message) => (
+                <ScheduledMessageCard
+                  key={message.id}
+                  message={message}
+                  onEdit={handleEdit}
+                  onDelete={handleDelete}
+                  onToggleActive={handleToggleActive}
+                  onRunNow={handleRunNow}
+                  formatDate={formatDate}
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState type="active" onCreateMessage={handleCreate} />
+          )
+        ) : (
+          completedMessages.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+              {completedMessages.map((message) => (
+                <ScheduledMessageCard
+                  key={message.id}
+                  message={message}
+                  onEdit={handleEdit}
+                  onDelete={handleDelete}
+                  onToggleActive={handleToggleActive}
+                  onRunNow={handleRunNow}
+                  formatDate={formatDate}
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState type="completed" onCreateMessage={handleCreate} />
+          )
+        )}
+      </div>
+
+      {/* Scheduled Checks */}
+      {scheduledChecks.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-lg font-semibold mb-4">System Checks</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {scheduledChecks.map((check) => (
+              <ScheduledCheckCard key={check.id} check={check} onCancel={handleCancelCheck} formatDate={formatDate} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Delivery Logs */}
+      {deliveryLogs.length > 0 && (
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold">Delivery Logs</h3>
+            <button onClick={clearDeliveryLogs} className="text-sm text-text-secondary-dark hover:text-text-primary-dark">
+              Clear Logs
+            </button>
+          </div>
+          <DeliveryLogsTable deliveryLogs={deliveryLogs} formatDate={formatDate} onClearLogs={clearDeliveryLogs} />
+        </div>
+      )}
+
+      <MessageForm
+        isOpen={showCreateModal}
+        editingMessage={editingMessage}
+        formData={formData}
+        setFormData={setFormData}
+        teamOptions={teamOptions}
+        onSubmit={handleSubmit}
+        onClose={handleCloseModal}
+      />
+
+      <AlertComponent />
+      <ConfirmComponent />
+    </>
+  );
+};
+
+export const ScheduledCheckins: React.FC = () => {
+  const [pageTab, setPageTab] = useState<PageTab>('cron');
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
       {/* Header */}
@@ -67,15 +170,6 @@ export const ScheduledCheckins: React.FC = () => {
             Manage scheduled messages, system checks, and automated jobs
           </p>
         </div>
-        {pageTab === 'messages' && (
-          <button
-            className="bg-primary text-white hover:bg-primary/90 font-semibold flex items-center justify-center gap-2 transition-colors h-10 px-4 rounded-lg text-sm"
-            onClick={handleCreate}
-          >
-            <Plus className="w-4 h-4" />
-            New Scheduled Message
-          </button>
-        )}
       </div>
 
       {/* Top-level page tabs: Scheduled Messages | Cron Jobs */}
@@ -106,90 +200,8 @@ export const ScheduledCheckins: React.FC = () => {
         </button>
       </div>
 
-      {/* Tab 1: Scheduled Messages */}
-      {pageTab === 'messages' && loading && (
-        <div className="flex items-center justify-center min-h-[200px]">
-          <LoadingSpinner text="Loading scheduled messages..." />
-        </div>
-      )}
-      {pageTab === 'messages' && !loading && (
-        <>
-          <TabNavigation
-            activeTab={activeTab}
-            setActiveTab={setActiveTab}
-            activeMessages={activeMessages}
-            completedMessages={completedMessages}
-          />
-
-          <div>
-            {activeTab === 'active' ? (
-              activeMessages.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-                  {activeMessages.map((message) => (
-                    <ScheduledMessageCard
-                      key={message.id}
-                      message={message}
-                      onEdit={handleEdit}
-                      onDelete={handleDelete}
-                      onToggleActive={handleToggleActive}
-                      onRunNow={handleRunNow}
-                      formatDate={formatDate}
-                      onCardClick={handleEdit}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <EmptyState type="active" onCreateMessage={handleCreate} />
-              )
-            ) : completedMessages.length > 0 ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-                {completedMessages.map((message) => (
-                  <ScheduledMessageCard
-                    key={message.id}
-                    message={message}
-                    onEdit={handleEdit}
-                    onDelete={handleDelete}
-                    onToggleActive={handleToggleActive}
-                    onRunNow={handleRunNow}
-                    formatDate={formatDate}
-                    onCardClick={handleEdit}
-                  />
-                ))}
-              </div>
-            ) : (
-              <EmptyState type="completed" />
-            )}
-          </div>
-
-          {/* System Checks — same heading style as CronJobPanel */}
-          {scheduledChecks.length > 0 && (
-            <div className="mb-8">
-              <div className="flex items-center gap-2 mb-4">
-                <h3 className="text-lg font-semibold text-text-primary-dark">System Checks</h3>
-                <span className="text-xs text-text-secondary-dark bg-surface-dark px-2 py-0.5 rounded-full">
-                  {scheduledChecks.length}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {scheduledChecks.map((check) => (
-                  <ScheduledCheckCard
-                    key={check.id}
-                    check={check}
-                    onCancel={handleCancelCheck}
-                    formatDate={formatDate}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          <DeliveryLogsTable
-            deliveryLogs={deliveryLogs}
-            formatDate={formatDate}
-            onClearLogs={clearDeliveryLogs}
-          />
-        </>
-      )}
+      {/* Tab 1: Scheduled Messages (isolated component to prevent hook crash) */}
+      {pageTab === 'messages' && <ScheduledMessagesTab />}
 
       {/* Tab 2: Cron Jobs */}
       {pageTab === 'cron' && (
@@ -197,19 +209,6 @@ export const ScheduledCheckins: React.FC = () => {
           <CronJobPanel />
         </div>
       )}
-
-      <MessageForm
-        isOpen={showCreateModal}
-        editingMessage={editingMessage}
-        formData={formData}
-        setFormData={setFormData}
-        onClose={handleCloseModal}
-        onSubmit={handleSubmit}
-        teamOptions={teamOptions}
-      />
-
-      <AlertComponent />
-      <ConfirmComponent />
     </div>
   );
 };

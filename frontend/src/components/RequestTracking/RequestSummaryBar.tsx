@@ -28,10 +28,10 @@ interface RequestSummaryBarProps {
  * A single stat card matching the Dashboard StatCard pattern.
  *
  * @param props.title - Stat label
- * @param props.value - Stat value
+ * @param props.value - Stat value (number or string)
  * @param props.accent - Optional text color class for the value (e.g. 'text-red-400')
  */
-const StatCard: React.FC<{ title: string; value: number; accent?: string }> = ({
+const StatCard: React.FC<{ title: string; value: number | string; accent?: string }> = ({
   title,
   value,
   accent,
@@ -58,7 +58,7 @@ export const RequestSummaryBar: React.FC<RequestSummaryBarProps> = ({ stats }) =
 
   return (
     <div
-      className="grid grid-cols-2 md:grid-cols-5 gap-4"
+      className="grid grid-cols-2 md:grid-cols-6 gap-4"
       data-testid="request-summary-bar"
     >
       <StatCard title="Total Incoming" value={stats.total} />
@@ -66,6 +66,7 @@ export const RequestSummaryBar: React.FC<RequestSummaryBarProps> = ({ stats }) =
       <StatCard title="Blocked" value={stats.blocked} accent="text-red-400" />
       <StatCard title="Waiting" value={stats.waitingConfirmation} accent="text-yellow-400" />
       <StatCard title="Done" value={stats.done} accent="text-blue-400" />
+      <StatCard title="Total Cost" value={stats.totalCost > 0 ? `$${stats.totalCost.toFixed(2)}` : '$0.00'} accent="text-emerald-400" />
     </div>
   );
 };

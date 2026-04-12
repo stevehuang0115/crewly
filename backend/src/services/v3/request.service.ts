@@ -213,11 +213,30 @@ export class RequestService {
     if (updates.projectTaskId !== undefined) request.projectTaskId = updates.projectTaskId;
     if (updates.result !== undefined) request.result = updates.result;
     if (updates.tags !== undefined) request.tags = updates.tags;
+    if (updates.totalInputTokens !== undefined) request.totalInputTokens = updates.totalInputTokens;
+    if (updates.totalOutputTokens !== undefined) request.totalOutputTokens = updates.totalOutputTokens;
+    if (updates.totalCost !== undefined) request.totalCost = updates.totalCost;
+    if (updates.ownerAgent !== undefined) request.ownerAgent = updates.ownerAgent;
 
     request.updatedAt = new Date().toISOString();
     await this.save(request);
     this.logger.debug('Request updated', { id, status: request.status });
     return request;
+  }
+
+  /**
+   * Deletes a Request from disk. Used for purging old completed Requests.
+   *
+   * @param id - The Request ID to delete
+   */
+  public async delete(id: string): Promise<void> {
+    const filePath = this.getFilePath(id);
+    try {
+      await fs.unlink(filePath);
+      this.logger.debug('Request deleted', { id });
+    } catch {
+      // File may not exist — ignore
+    }
   }
 
   /**
@@ -279,7 +298,7 @@ export class RequestService {
    * ```
    */
   public async plan(message: string, options?: PlanOptions): Promise<RequestPlan> {
-    if (!message || message.trim().length < 3) {
+    if (!message || message.trim().length < 2) {
       return {
         message,
         tasks: [],

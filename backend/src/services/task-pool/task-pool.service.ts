@@ -270,9 +270,9 @@ export class TaskPoolService {
     if (!workItem) {
       throw new Error(`WorkItem not found: ${workItemId}`);
     }
-    if (workItem.status !== 'running') {
+    if (workItem.status !== 'running' && workItem.status !== 'blocked') {
       throw new Error(
-        `Cannot release WorkItem: status must be 'running', got '${workItem.status}'`,
+        `Cannot release WorkItem: status must be 'running' or 'blocked', got '${workItem.status}'`,
       );
     }
 
@@ -286,11 +286,15 @@ export class TaskPoolService {
       });
     }
 
-    // Revert item to queued
+    // Revert item to queued. Preserve target when unblocking so the
+    // same agent can re-claim via target filter.
+    const wasBlocked = workItem.status === 'blocked';
     await this.storage.updateWorkItem(workItemId, (wi) => {
       wi.status = 'queued';
       wi.startedAt = undefined;
-      wi.target = undefined;
+      if (!wasBlocked) {
+        wi.target = undefined;
+      }
       wi.retryCount += 1;
     });
 
@@ -548,6 +552,24 @@ export class TaskPoolService {
    */
   async getAllItems(): Promise<WorkItem[]> {
     return this.storage.getWorkItems();
+  }
+
+  /**
+   * Removes a WorkItem from the pool entirely.
+   * Used for purging old completed/cancelled items.
+   *
+   * @param workItemId - ID of the item to remove
+   */
+  async removeItem(workItemId: string): Promise<void> {
+    await this.storage.removeWorkItem(workItemId);
+  }
+
+  /**
+   * Forces an immediate flush of pool data to disk.
+   * Called during graceful shutdown to prevent data loss.
+   */
+  async flush(): Promise<void> {
+    await this.storage.flush();
   }
 
   /**

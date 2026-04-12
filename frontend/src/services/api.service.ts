@@ -1168,6 +1168,130 @@ class ApiService {
     if (!response.data.success || !response.data.data) throw new Error('Mission not found');
     return response.data.data;
   }
+
+  // ---------------------------------------------------------------------------
+  // Trigger API
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Lists all triggers, optionally filtered by status.
+   *
+   * @param status - Optional status filter (active | paused | exhausted | cancelled)
+   * @returns Promise resolving to array of triggers
+   */
+  async getTriggers(status?: string): Promise<import('../types/trigger.types').Trigger[]> {
+    const params: Record<string, string> = {};
+    if (status) params.status = status;
+    const response = await axios.get<ApiResponse<import('../types/trigger.types').Trigger[]>>(
+      `${API_BASE}/triggers`,
+      { params },
+    );
+    return response.data.data || [];
+  }
+
+  /**
+   * Returns trigger engine health and counts.
+   *
+   * @returns Promise resolving to engine status summary
+   */
+  async getTriggerEngineStatus(): Promise<import('../types/trigger.types').TriggerEngineStatus> {
+    const response = await axios.get<ApiResponse<import('../types/trigger.types').TriggerEngineStatus>>(
+      `${API_BASE}/triggers/status`,
+    );
+    if (!response.data.data) throw new Error('Failed to get trigger status');
+    return response.data.data;
+  }
+
+  /**
+   * Creates a new trigger.
+   *
+   * @param input - Trigger creation data
+   * @returns Promise resolving to the created trigger
+   */
+  async createTrigger(
+    input: import('../types/trigger.types').CreateTriggerInput,
+  ): Promise<import('../types/trigger.types').Trigger> {
+    const response = await axios.post<ApiResponse<import('../types/trigger.types').Trigger>>(
+      `${API_BASE}/triggers`,
+      input,
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to create trigger');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Pauses an active trigger.
+   *
+   * @param id - Trigger UUID
+   * @returns Promise resolving to the updated trigger
+   */
+  async pauseTrigger(id: string): Promise<import('../types/trigger.types').Trigger> {
+    const response = await axios.post<ApiResponse<import('../types/trigger.types').Trigger>>(
+      `${API_BASE}/triggers/${id}/pause`,
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to pause trigger');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Resumes a paused trigger.
+   *
+   * @param id - Trigger UUID
+   * @returns Promise resolving to the updated trigger
+   */
+  async resumeTrigger(id: string): Promise<import('../types/trigger.types').Trigger> {
+    const response = await axios.post<ApiResponse<import('../types/trigger.types').Trigger>>(
+      `${API_BASE}/triggers/${id}/resume`,
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to resume trigger');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Cancels a trigger permanently.
+   *
+   * @param id - Trigger UUID
+   * @returns Promise resolving to the updated trigger
+   */
+  async cancelTrigger(id: string): Promise<import('../types/trigger.types').Trigger> {
+    const response = await axios.post<ApiResponse<import('../types/trigger.types').Trigger>>(
+      `${API_BASE}/triggers/${id}/cancel`,
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to cancel trigger');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Lists active EventBus subscriptions.
+   *
+   * @returns Array of event subscriptions
+   */
+  async getEventSubscriptions(): Promise<import('../types/trigger.types').EventSubscription[]> {
+    const response = await axios.get<ApiResponse<import('../types/trigger.types').EventSubscription[]>>(
+      `${API_BASE}/events/subscriptions`,
+    );
+    return response.data.data || [];
+  }
+
+  /**
+   * Deletes a trigger.
+   *
+   * @param id - Trigger UUID
+   */
+  async deleteTrigger(id: string): Promise<void> {
+    const response = await axios.delete<ApiResponse<void>>(`${API_BASE}/triggers/${id}`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete trigger');
+    }
+  }
 }
 
 /** Singleton instance of the API service */

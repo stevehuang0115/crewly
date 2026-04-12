@@ -55,6 +55,7 @@ const DOW_NAMES: Record<string, string> = {
  * @returns Human-readable schedule description
  */
 export function cronToHuman(expr: string): string {
+  if (!expr) return 'No schedule';
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return expr;
   const [min, hour, dom, , dow] = parts;

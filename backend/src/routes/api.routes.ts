@@ -39,6 +39,9 @@ import { createReconcilerRouter } from '../controllers/reconciler/reconciler.rou
 import { createFissionRouter } from '../controllers/fission/fission.routes.js';
 import { createMissionPolicyRouter } from '../controllers/mission/mission-policy.routes.js';
 import { createV2WorkspaceRouter } from '../controllers/v2-workspace/workspace.routes.js';
+import { createTriggerRouter } from '../controllers/trigger/trigger.routes.js';
+import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
+import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -151,6 +154,15 @@ export function createApiRoutes(apiController: ApiController): Router {
   // V2 Shared Workspace routes — versioned JSON CRUD with CAS
   router.use('/v2/workspaces', createV2WorkspaceRouter());
 
+  // Trigger routes — unified TimeTrigger, SignalTrigger, CompoundTrigger management
+  router.use('/triggers', createTriggerRouter());
+
+  // Growth routes — agent growth area tracking (keyword-based, no LLM)
+  router.use('/growth', createGrowthRouter());
+
+  // Task Projection routes — V3.1 TaskRecord + TaskEvent observability layer
+  router.use('/task-projection', taskProjectionRouter);
+
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here
   registerTaskManagementRoutes(router, apiController);
@@ -166,6 +178,11 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Unified Scheduler (cron + interval + idle — consolidation)
   router.use('/unified-scheduler', createUnifiedSchedulerRoutes());
+
+  // Relay devices stub (prevents 404 noise from dashboard relay health card)
+  router.get('/relay/devices', (_req, res) => {
+    res.json({ success: true, data: { devices: [], client: { state: 'offline', sessionId: null } } });
+  });
 
   return router;
 }

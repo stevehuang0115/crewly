@@ -140,6 +140,8 @@ export interface Request {
   totalOutputTokens: number;
   /** Total cost in USD */
   totalCost: number;
+  /** Session name of the agent that handled this Request directly (no WorkItem delegation) */
+  ownerAgent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +180,12 @@ export interface UpdateRequestInput {
   projectTaskId?: string;
   result?: string;
   tags?: string[];
+  /** Token roll-up fields — incremented by V3.1 task completion hooks */
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalCost?: number;
+  /** Session name of the agent that handled this Request directly */
+  ownerAgent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +197,7 @@ export interface UpdateRequestInput {
  * Key = current status, Value = set of allowed next statuses.
  */
 export const REQUEST_TRANSITIONS: Record<RequestStatus, ReadonlySet<RequestStatus>> = {
-  open: new Set(['ready', 'cancelled']),
+  open: new Set(['ready', 'done', 'cancelled']),
   ready: new Set(['running', 'cancelled']),
   running: new Set(['blocked', 'waiting_confirmation', 'done', 'cancelled']),
   blocked: new Set(['running', 'cancelled']),

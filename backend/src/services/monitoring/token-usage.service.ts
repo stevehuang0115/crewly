@@ -373,6 +373,42 @@ export class TokenUsageService {
   }
 
   /**
+   * Get token usage events for a specific session recorded after a given timestamp.
+   * Used to compute the token delta for a single Request when the orchestrator
+   * handles the work directly (no WorkItem delegation).
+   *
+   * @param sessionName - The session to query (e.g. 'crewly-orc')
+   * @param since - Only return events recorded at or after this time
+   * @param until - Only return events before this time (defaults to now)
+   * @returns Aggregated input tokens, output tokens, and cost in the window
+   */
+  getSessionUsageSince(
+    sessionName: string,
+    since: Date,
+    until?: Date,
+  ): { inputTokens: number; outputTokens: number; cost: number } {
+    const record = this.sessions.get(sessionName);
+    if (!record) return { inputTokens: 0, outputTokens: 0, cost: 0 };
+
+    const sinceMs = since.getTime();
+    const untilMs = until ? until.getTime() : Infinity;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cost = 0;
+
+    for (const event of record.events) {
+      const eventMs = new Date(event.timestamp).getTime();
+      if (eventMs >= sinceMs && eventMs <= untilMs) {
+        inputTokens += event.input;
+        outputTokens += event.output;
+        cost += calculateCost(event.input, event.output, event.model);
+      }
+    }
+
+    return { inputTokens, outputTokens, cost };
+  }
+
+  /**
    * Clear all tracked token usage data.
    */
   resetUsage(): void {
