@@ -219,8 +219,8 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     // in the frontend thread detail panel.
     if (conversationId) {
       try {
-        const { ChatService } = await import('../../services/chat/chat.service.js');
-        const chatService = ChatService.getInstance();
+        const { getChatService } = await import('../../services/chat/chat.service.js');
+        const chatService = getChatService();
         await chatService.addDirectMessage(
           conversationId,
           text,
