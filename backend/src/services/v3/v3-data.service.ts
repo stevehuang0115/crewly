@@ -187,6 +187,58 @@ export class V3DataService {
   }
 
   // ---------------------------------------------------------------------------
+  // WorkItem Matching (shared by completed/failed/blocked handlers)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Finds the WorkItem matching a task event using a two-tier strategy:
+   * 1. Match by projectTaskId (most precise)
+   * 2. Fall back to sessionName + status (running first, then queued)
+   *
+   * If the matched WorkItem is 'queued', it is transitioned to 'running'
+   * since completeItem/failItem require 'running' status.
+   *
+   * @param taskId - The project task ID (may be undefined)
+   * @param sessionName - The agent session name
+   * @param logContext - Context string for debug logging
+   * @returns The matched WorkItem (with status fix applied), or null
+   */
+  private async findMatchingWorkItem(
+    taskId: string | undefined,
+    sessionName: string,
+    logContext: string,
+  ): Promise<import('../../types/v2/work-item.types.js').WorkItem | null> {
+    const taskPool = TaskPoolService.getInstance();
+    const items = await taskPool.getAllItems();
+
+    // Tier 1: precise match by projectTaskId
+    let match = taskId
+      ? items.find((wi) => wi.projectTaskId === taskId && wi.status !== 'done' && wi.status !== 'failed')
+      : undefined;
+
+    // Tier 2: match by sessionName + active status (running first, then queued)
+    if (!match) {
+      match = items.find((wi) => wi.target === sessionName && wi.status === 'running');
+    }
+    if (!match) {
+      match = items.find((wi) => wi.target === sessionName && wi.status === 'queued');
+    }
+
+    if (!match) {
+      this.logger.debug(`No matching WorkItem found for ${logContext}`, { sessionName, taskId });
+      return null;
+    }
+
+    // Bug 1 fix: completeItem/failItem require status === 'running', but WorkItems
+    // created via delegation start as 'queued' and may never be claimed.
+    if (match.status === 'queued') {
+      await taskPool.updateItemStatus(match.id, 'running');
+    }
+
+    return match;
+  }
+
+  // ---------------------------------------------------------------------------
   // Event Handlers (all fire-and-forget)
   // ---------------------------------------------------------------------------
 
@@ -273,41 +325,10 @@ export class V3DataService {
    */
   private async onTaskCompleted(event: TaskCompletedEvent): Promise<void> {
     try {
+      const match = await this.findMatchingWorkItem(event.taskId, event.sessionName, 'completed task');
+      if (!match) return;
+
       const taskPool = TaskPoolService.getInstance();
-      const items = await taskPool.getAllItems();
-
-      // Tier 1: precise match by projectTaskId
-      let match = event.taskId
-        ? items.find((wi) => wi.projectTaskId === event.taskId && wi.status !== 'done' && wi.status !== 'failed')
-        : undefined;
-
-      // Tier 2: match by sessionName + active status (running first, then queued)
-      if (!match) {
-        match = items.find(
-          (wi) => wi.target === event.sessionName && wi.status === 'running',
-        );
-      }
-      if (!match) {
-        match = items.find(
-          (wi) => wi.target === event.sessionName && wi.status === 'queued',
-        );
-      }
-
-      if (!match) {
-        this.logger.debug('No matching WorkItem found for completed task', {
-          sessionName: event.sessionName,
-          taskId: event.taskId,
-        });
-        return;
-      }
-
-      // Bug 1 fix: completeItem() requires status === 'running', but WorkItems
-      // created via delegation start as 'queued' and may never be claimed.
-      // Transition queued → running first so completeItem() succeeds.
-      if (match.status === 'queued') {
-        await taskPool.updateItemStatus(match.id, 'running');
-      }
-
       await taskPool.completeItem(match.id);
 
       // Look up token usage for this work item
@@ -380,40 +401,10 @@ export class V3DataService {
    */
   private async onTaskFailed(event: TaskCompletedEvent): Promise<void> {
     try {
+      const match = await this.findMatchingWorkItem(event.taskId, event.sessionName, 'failed task');
+      if (!match) return;
+
       const taskPool = TaskPoolService.getInstance();
-      const items = await taskPool.getAllItems();
-
-      // Tier 1: precise match by projectTaskId
-      let match = event.taskId
-        ? items.find((wi) => wi.projectTaskId === event.taskId && wi.status !== 'done' && wi.status !== 'failed')
-        : undefined;
-
-      // Tier 2: match by sessionName + active status
-      if (!match) {
-        match = items.find(
-          (wi) => wi.target === event.sessionName && wi.status === 'running',
-        );
-      }
-      if (!match) {
-        match = items.find(
-          (wi) => wi.target === event.sessionName && wi.status === 'queued',
-        );
-      }
-
-      if (!match) {
-        this.logger.debug('No matching WorkItem found for failed task', {
-          sessionName: event.sessionName,
-          taskId: event.taskId,
-        });
-        return;
-      }
-
-      // Bug 1 fix: failItem() requires status === 'running'.
-      // Transition queued → running first so failItem() succeeds.
-      if (match.status === 'queued') {
-        await taskPool.updateItemStatus(match.id, 'running');
-      }
-
       await taskPool.failItem(match.id, `Task failed for session ${event.sessionName}`);
 
       this.logger.info('WorkItem auto-failed', {
@@ -585,34 +576,10 @@ export class V3DataService {
    */
   private async onTaskBlocked(event: TaskBlockedEvent): Promise<void> {
     try {
+      const match = await this.findMatchingWorkItem(event.taskId, event.sessionName, 'blocked task');
+      if (!match) return;
+
       const taskPool = TaskPoolService.getInstance();
-      const items = await taskPool.getAllItems();
-
-      // Tier 1: precise match by taskId → projectTaskId
-      let match = event.taskId
-        ? items.find((wi) => wi.projectTaskId === event.taskId && wi.status !== 'done' && wi.status !== 'failed')
-        : undefined;
-
-      // Tier 2: match by sessionName + active status
-      if (!match) {
-        match = items.find(
-          (wi) => wi.target === event.sessionName && wi.status === 'running',
-        );
-      }
-      if (!match) {
-        match = items.find(
-          (wi) => wi.target === event.sessionName && wi.status === 'queued',
-        );
-      }
-
-      if (!match) {
-        this.logger.debug('No matching WorkItem found for blocked task', {
-          sessionName: event.sessionName,
-          taskId: event.taskId,
-        });
-        return;
-      }
-
       await taskPool.updateItemStatus(match.id, 'blocked');
 
       this.logger.info('WorkItem auto-blocked', {

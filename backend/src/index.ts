@@ -265,6 +265,22 @@ export class CrewlyServer {
 			this.apiController.agentRegistrationService
 		);
 		this.schedulerService.setTaskTrackingService(this.taskTrackingService);
+		// Initialize message queue services (with disk persistence)
+		// NOTE: Must be created before services that depend on them (scheduler, thread status queue)
+		this.messageQueueService = new MessageQueueService(this.config.crewlyHome);
+		const responseRouter = new ResponseRouterService();
+		this.queueProcessorService = new QueueProcessorService(
+			this.messageQueueService,
+			responseRouter,
+			this.apiController.agentRegistrationService
+		);
+
+		// Initialize event bus service for agent lifecycle pub/sub
+		// NOTE: Must be created before services that depend on it (agent registration, thread status queue)
+		this.eventBusService = new EventBusService();
+		this.eventBusService.setMessageQueueService(this.messageQueueService);
+
+		// Now wire services that depend on messageQueueService and eventBusService
 		this.schedulerService.setMessageQueueService(this.messageQueueService);
 		this.schedulerService.setActivityMonitor(this.activityMonitorService);
 
@@ -293,15 +309,6 @@ export class CrewlyServer {
 		// Connect teams.json watcher to team activity service for real-time updates
 		this.teamsJsonWatcherService.setTeamActivityService(this.teamActivityWebSocketService);
 
-		// Initialize message queue services (with disk persistence)
-		this.messageQueueService = new MessageQueueService(this.config.crewlyHome);
-		const responseRouter = new ResponseRouterService();
-		this.queueProcessorService = new QueueProcessorService(
-			this.messageQueueService,
-			responseRouter,
-			this.apiController.agentRegistrationService
-		);
-
 		// Initialize thread status queue for tracking inbound message lifecycle
 		this.threadStatusQueueService = new ThreadStatusQueueService(this.config.crewlyHome);
 		responseRouter.setThreadStatusQueue(this.threadStatusQueueService);
@@ -318,10 +325,6 @@ export class CrewlyServer {
 
 		// Initialize system resource alert service for proactive monitoring
 		this.systemResourceAlertService = new SystemResourceAlertService();
-
-		// Initialize event bus service for agent lifecycle pub/sub
-		this.eventBusService = new EventBusService();
-		this.eventBusService.setMessageQueueService(this.messageQueueService);
 		this.teamsJsonWatcherService.setEventBusService(this.eventBusService);
 		this.activityMonitorService.setEventBusService(this.eventBusService);
 		setEventBusControllerService(this.eventBusService);

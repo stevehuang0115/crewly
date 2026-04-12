@@ -17,6 +17,24 @@ import {
 } from '../../services/task-pool/task-pool.service.js';
 import { TaskProjectionService } from '../../services/v3/task-projection.service.js';
 import type { TokenUsage } from '../../types/v3/task-record.types.js';
+import { formatError } from '../../utils/format-error.js';
+
+/**
+ * Maps service-layer errors to appropriate HTTP status codes and sends a JSON error response.
+ *
+ * @param res - Express response
+ * @param error - The caught error
+ */
+function handleServiceError(res: Response, error: unknown): void {
+  const message = formatError(error);
+  if (message.includes('not found')) {
+    res.status(404).json({ success: false, error: message });
+  } else if (message.includes('status must be') || message.includes('Invalid')) {
+    res.status(409).json({ success: false, error: message });
+  } else {
+    res.status(500).json({ success: false, error: message });
+  }
+}
 
 /**
  * Get the TaskPoolService singleton.
@@ -93,12 +111,7 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       data: { workItemId: workItem.id },
     });
   } catch (error) {
-    const message = (error as Error).message;
-    if (message.includes('Invalid WorkItem') || message.includes('status must be')) {
-      res.status(400).json({ success: false, error: message });
-    } else {
-      res.status(500).json({ success: false, error: message });
-    }
+    handleServiceError(res, error);
   }
 }
 
@@ -215,14 +228,7 @@ export async function releaseItem(req: Request, res: Response): Promise<void> {
 
     res.json({ success: true, message: `WorkItem ${workItemId} released back to pool` });
   } catch (error) {
-    const message = (error as Error).message;
-    if (message.includes('not found')) {
-      res.status(404).json({ success: false, error: message });
-    } else if (message.includes('status must be')) {
-      res.status(409).json({ success: false, error: message });
-    } else {
-      res.status(500).json({ success: false, error: message });
-    }
+    handleServiceError(res, error);
   }
 }
 
@@ -316,14 +322,7 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
 
     res.json({ success: true, message: `WorkItem ${workItemId} completed` });
   } catch (error) {
-    const message = (error as Error).message;
-    if (message.includes('not found')) {
-      res.status(404).json({ success: false, error: message });
-    } else if (message.includes('status must be')) {
-      res.status(409).json({ success: false, error: message });
-    } else {
-      res.status(500).json({ success: false, error: message });
-    }
+    handleServiceError(res, error);
   }
 }
 
@@ -422,14 +421,7 @@ export async function failItemHandler(req: Request, res: Response): Promise<void
 
     res.json({ success: true, message: `WorkItem ${workItemId} failed` });
   } catch (error) {
-    const message = (error as Error).message;
-    if (message.includes('not found')) {
-      res.status(404).json({ success: false, error: message });
-    } else if (message.includes('status must be')) {
-      res.status(409).json({ success: false, error: message });
-    } else {
-      res.status(500).json({ success: false, error: message });
-    }
+    handleServiceError(res, error);
   }
 }
 

@@ -29,6 +29,7 @@ import { Button, Modal, ModalBody, ModalFooter, useConfirm } from '../components
 import { useTriggers } from '../hooks/useTriggers';
 import { useCronTasks } from '../hooks/useCronTasks';
 import { apiService } from '../services/api.service';
+import { formatDate, statusBadgeClass, triggerConfigSummary, triggerActionSummary } from '../components/Triggers/helpers';
 import type { Trigger, TriggerType, CreateTriggerInput, EventSubscription } from '../types/trigger.types';
 import type { CronTask } from '../types/cron-task.types';
 
@@ -36,52 +37,11 @@ import type { CronTask } from '../types/cron-task.types';
 // Helpers
 // =============================================================================
 
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 function triggerTypeIcon(type: TriggerType): React.ReactNode {
   switch (type) {
     case 'time': return <Clock className="w-3.5 h-3.5" />;
     case 'signal': return <Zap className="w-3.5 h-3.5" />;
     case 'compound': return <GitBranch className="w-3.5 h-3.5" />;
-  }
-}
-
-function triggerConfigSummary(trigger: Trigger): string {
-  const c = trigger.config;
-  if (c.type === 'time') {
-    if (c.cronExpression) return c.cronExpression;
-    if (c.fireAt) return `Once at ${formatDate(c.fireAt)}`;
-    if (c.delayMs) return `Delay ${Math.round(c.delayMs / 60000)}m`;
-    return '—';
-  }
-  if (c.type === 'signal') return c.eventType;
-  if (c.type === 'compound') return `${c.operator.toUpperCase()} (${c.conditions.length})`;
-  return '—';
-}
-
-function triggerActionSummary(trigger: Trigger): string {
-  const a = trigger.action;
-  if (a.sendMessage) return `→ ${a.sendMessage.target}`;
-  if (a.createWorkItem) return 'Create WorkItem';
-  if (a.wakeWorkItemId) return `Wake WorkItem`;
-  if (a.runReconciler) return 'Run Reconciler';
-  return '—';
-}
-
-function triggerStatusClass(status: Trigger['status']): string {
-  switch (status) {
-    case 'active': return 'bg-green-500/15 text-green-400 border border-green-500/20';
-    case 'paused': return 'bg-yellow-500/15 text-yellow-400 border border-yellow-500/20';
-    case 'exhausted': return 'bg-blue-500/15 text-blue-400 border border-blue-500/20';
-    case 'cancelled': return 'bg-red-500/15 text-red-400 border border-red-500/20';
   }
 }
 
@@ -144,9 +104,7 @@ const CronTaskRow: React.FC<CronTaskRowProps> = ({ task, teamMap, onToggle, onDe
       {/* Status */}
       <td className="px-4 py-3 whitespace-nowrap">
         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${
-          task.enabled
-            ? 'bg-green-500/15 text-green-400 border border-green-500/20'
-            : 'bg-surface-dark text-text-secondary-dark border border-border-dark'
+          statusBadgeClass(task.enabled ? 'active' : 'paused')
         }`}>
           {task.enabled ? 'active' : 'paused'}
         </span>
@@ -239,7 +197,7 @@ const TriggerRow: React.FC<TriggerRowProps> = ({ trigger, onPause, onResume, onC
       </td>
 
       <td className="px-4 py-3 whitespace-nowrap">
-        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${triggerStatusClass(trigger.status)}`}>
+        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${statusBadgeClass(trigger.status)}`}>
           {trigger.status}
         </span>
       </td>
