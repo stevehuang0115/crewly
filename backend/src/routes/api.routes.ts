@@ -25,11 +25,23 @@ import { createKnowledgeRouter } from '../controllers/knowledge/index.js';
 import { createTemplateRouter } from '../controllers/template/index.js';
 import { createAuditorRouter } from '../controllers/auditor/auditor.routes.js';
 import { createPaymentRouter } from '../controllers/payment/payment.routes.js';
+import { createProvisioningRouter } from '../controllers/provisioning/provisioning.routes.js';
 import { createCloudRouter } from '../controllers/cloud/index.js';
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
+import { createDataRouter } from '../controllers/data/data.routes.js';
+import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
+import { createTaskPoolRouter } from '../controllers/task-pool/task-pool.routes.js';
+import { createRequestRouter } from '../controllers/request/request.routes.js';
+import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
+import { createFissionRouter } from '../controllers/fission/fission.routes.js';
+import { createMissionPolicyRouter } from '../controllers/mission/mission-policy.routes.js';
+import { createV2WorkspaceRouter } from '../controllers/v2-workspace/workspace.routes.js';
+import { createTriggerRouter } from '../controllers/trigger/trigger.routes.js';
+import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
+import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -99,6 +111,9 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Payment routes for Stripe checkout, subscriptions, and webhooks
   router.use('/payment', createPaymentRouter());
 
+  // Provisioning routes for DigitalOcean deployment management
+  router.use('/provisioning', createProvisioningRouter());
+
   // Cloud routes for connect, disconnect, validate, status, templates, and Google OAuth
   router.use('/cloud', createCloudRouter());
 
@@ -115,6 +130,39 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Cross-machine communication routes for Slack-based inter-machine messaging
   router.use('/cross-machine', createCrossMachineRouter());
 
+  // Data Architecture V2 — Unified Data Model, Schemas, Sinks
+  router.use('/v2/data', createDataRouter());
+
+  // Intent Task routes for task decomposition, tracking, and lifecycle
+  router.use('/intent-tasks', createIntentTaskRouter());
+
+  // Request routes for V3 incoming pipeline
+  router.use('/requests', createRequestRouter());
+
+  // Task Pool routes for V2 work item pool management
+  router.use('/task-pool', createTaskPoolRouter());
+
+  // Reconciler routes for status monitoring, manual trigger, and history
+  router.use('/reconciler', createReconcilerRouter());
+
+  // Fission guardrail routes for config, stats, violations, and pre-checks
+  router.use('/fission', createFissionRouter());
+
+  // Mission policy routes for CRUD and dry-run policy checks
+  router.use('/missions', createMissionPolicyRouter());
+
+  // V2 Shared Workspace routes — versioned JSON CRUD with CAS
+  router.use('/v2/workspaces', createV2WorkspaceRouter());
+
+  // Trigger routes — unified TimeTrigger, SignalTrigger, CompoundTrigger management
+  router.use('/triggers', createTriggerRouter());
+
+  // Growth routes — agent growth area tracking (keyword-based, no LLM)
+  router.use('/growth', createGrowthRouter());
+
+  // Task Projection routes — V3.1 TaskRecord + TaskEvent observability layer
+  router.use('/task-projection', taskProjectionRouter);
+
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here
   registerTaskManagementRoutes(router, apiController);
@@ -130,6 +178,11 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Unified Scheduler (cron + interval + idle — consolidation)
   router.use('/unified-scheduler', createUnifiedSchedulerRoutes());
+
+  // Relay devices stub (prevents 404 noise from dashboard relay health card)
+  router.get('/relay/devices', (_req, res) => {
+    res.json({ success: true, data: { devices: [], client: { state: 'offline', sessionId: null } } });
+  });
 
   return router;
 }

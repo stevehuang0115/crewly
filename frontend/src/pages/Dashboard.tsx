@@ -7,7 +7,7 @@
  * @module pages/Dashboard
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { ProjectCard } from '@/components/Cards/ProjectCard';
 import TeamsGridCard from '@/components/Teams/TeamsGridCard';
@@ -15,6 +15,10 @@ import { CreateCard } from '@/components/Cards/CreateCard';
 import { Team, Project } from '@/types';
 import { apiService } from '@/services/api.service';
 import { HealthBar } from '@/components/Dashboard/HealthBar';
+import { RelayHealthCard } from '@/components/Dashboard/RelayHealthCard';
+import { AgentStreamPanel } from '@/components/ExecutionFeed/AgentStreamPanel';
+import { assignDefaultAvatars } from '@/utils/team.utils';
+import { logSilentError } from '@/utils/error-handling';
 
 
 interface ProjectProgress {
@@ -58,7 +62,17 @@ export const Dashboard: React.FC = () => {
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamsMap, setTeamsMap] = useState<Record<string, Team[]>>({});
   const [projectProgress, setProjectProgress] = useState<Record<string, ProjectProgress>>({});
+  const [intentTaskStats, setIntentTaskStats] = useState<{ inProgress: number; completed: number }>({ inProgress: 0, completed: 0 });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Derive the first active agent session name for the stream panel
+  const activeAgentSession = useMemo(() => {
+    const activeMember = teams
+      .flatMap(t => t.members)
+      .find(m => m.agentStatus === 'active');
+    return activeMember?.sessionName ?? null;
+  }, [teams]);
 
   useEffect(() => {
     loadData();
@@ -100,8 +114,8 @@ export const Dashboard: React.FC = () => {
         progressLabel,
         progressBreakdown: breakdown
       };
-    } catch (error) {
-      console.error(`Error calculating progress for project ${projectId}:`, error);
+    } catch (err) {
+      logSilentError(err, { context: `Calculating progress for project ${projectId}` });
       return {
         projectId,
         progressPercent: 0,
@@ -114,6 +128,7 @@ export const Dashboard: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
+      setError(null);
       const [projectList, teamList] = await Promise.all([
         apiService.getProjects(),
         apiService.getTeams()
@@ -132,26 +147,26 @@ export const Dashboard: React.FC = () => {
 
       setProjectProgress(progressMap);
 
-      // Avatar choices for migration (only need to define once)
-      const avatarChoices = [
-        'https://picsum.photos/seed/1/64',
-        'https://picsum.photos/seed/2/64',
-        'https://picsum.photos/seed/3/64',
-        'https://picsum.photos/seed/4/64',
-        'https://picsum.photos/seed/5/64',
-        'https://picsum.photos/seed/6/64',
-      ];
-
-      // Migrate teams without avatars (do once, reuse for both teams and teamsMap)
+      // Migrate teams without avatars using shared utility
       const migratedTeams = teamList.map(team => ({
         ...team,
-        members: team.members.map((member, index) => ({
-          ...member,
-          avatar: member.avatar || avatarChoices[index % avatarChoices.length]
-        }))
+        members: assignDefaultAvatars(team.members),
       }));
 
       setTeams(migratedTeams);
+
+      // Fetch intent task statistics for the HealthBar
+      try {
+        const intentStats = await apiService.getIntentTaskStatistics();
+        if (intentStats.byStatus) {
+          setIntentTaskStats({
+            inProgress: intentStats.byStatus['in_progress'] || 0,
+            completed: intentStats.byStatus['completed'] || 0,
+          });
+        }
+      } catch {
+        // Intent task stats are non-critical
+      }
 
       // Create teams map for projects (reuse migratedTeams)
       const teamsMapping = projectList.reduce((acc, project) => {
@@ -164,8 +179,9 @@ export const Dashboard: React.FC = () => {
         return acc;
       }, {} as Record<string, Team[]>);
       setTeamsMap(teamsMapping);
-    } catch (error) {
-      console.error('Error loading dashboard data:', error);
+    } catch (err) {
+      logSilentError(err, { context: 'Loading dashboard data', level: 'error' });
+      setError('Failed to load dashboard data. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -193,6 +209,20 @@ export const Dashboard: React.FC = () => {
     );
   }
 
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-64 text-center">
+        <p className="text-red-400 mb-4">{error}</p>
+        <button
+          onClick={loadData}
+          className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   // Show top 2 projects and more teams on dashboard
   const topProjects = projects.slice(0, 2);
   const topTeams = teams.slice(0, 6);
@@ -212,19 +242,34 @@ export const Dashboard: React.FC = () => {
           runningAgents={teams.flatMap(t => t.members).filter(m => m.agentStatus === 'active').length}
           projectCount={projects.length}
           teamCount={teams.length}
-          tasksInProgress={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.inProgress, 0)}
-          tasksCompleted={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.done, 0)}
-          relayConnected={false}
+          tasksInProgress={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.inProgress, 0) + intentTaskStats.inProgress}
+          tasksCompleted={Object.values(projectProgress).reduce((sum, p) => sum + p.progressBreakdown.done, 0) + intentTaskStats.completed}
           onFactoryClick={navigateToFactory}
         />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
         <StatCard title="Projects" value={projects.length} />
         <StatCard title="Teams" value={teams.length} />
         <StatCard title="Active Projects" value={projects.filter(p => p.status === 'active').length} />
         <StatCard title="Running Agents" value={teams.flatMap(t => t.members).filter(m => m.agentStatus === 'active').length} />
       </div>
+
+      {/* Cloud Relay Health */}
+      <div className="mb-10">
+        <RelayHealthCard />
+      </div>
+
+      {/* Agent Activity — live streaming output (visible only when an agent is active) */}
+      {activeAgentSession && (
+        <section className="mb-10" data-testid="agent-activity-section">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true" />
+            <h3 className="text-xl font-semibold">Agent Activity</h3>
+          </div>
+          <AgentStreamPanel sessionName={activeAgentSession} maxHeight="360px" />
+        </section>
+      )}
 
       <div className="space-y-10">
         <section>

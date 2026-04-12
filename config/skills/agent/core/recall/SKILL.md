@@ -42,18 +42,31 @@ Retrieve stored memories relevant to a given context or query. Use this to look 
 
 ## Parameters
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `agentId` | Yes | Your agent ID |
-| `context` | Yes | Search context or query describing what you want to recall |
-| `scope` | No | Filter by scope: `"project"`, `"team"`, or `"global"` |
-| `limit` | No | Maximum number of results to return |
-| `projectPath` | No | Filter by project path |
+| Flag | JSON Field | Required | Description |
+|------|-----------|----------|-------------|
+| `--agent` / `-a` | `agentId` | Yes | Your agent ID / session name |
+| `--context` / `-c` | `context` | Yes | Search query (or pipe via stdin) |
+| `--scope` / `-s` | `scope` | No | Filter: `project`, `team`, or `global` |
+| `--limit` / `-l` | `limit` | No | Max number of results |
+| `--project` / `-p` | `projectPath` | No | Filter by project path |
 
-## Example
+## Examples — CLI Flags (preferred)
 
 ```bash
-bash config/skills/agent/recall/execute.sh '{"agentId":"dev-1","context":"authentication implementation patterns","scope":"project","limit":5}'
+# Search project memory
+bash execute.sh --agent dev-1 --context "authentication implementation patterns" --scope project --project /projects/app
+
+# Quick recall with limit
+bash execute.sh --agent dev-1 --context "deployment process" --limit 5
+
+# Context via stdin
+echo "how does the relay service work" | bash execute.sh --agent dev-1 --project /projects/app
+```
+
+## Examples — Legacy JSON (backward compatible)
+
+```bash
+bash execute.sh '{"agentId":"dev-1","context":"authentication patterns","scope":"project","limit":5}'
 ```
 
 ## Output

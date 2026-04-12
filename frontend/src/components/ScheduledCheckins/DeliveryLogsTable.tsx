@@ -10,7 +10,7 @@ interface DeliveryLogsTableProps {
 }
 
 export const DeliveryLogsTable: React.FC<DeliveryLogsTableProps> = ({
-  deliveryLogs,
+  deliveryLogs = [],
   formatDate,
   onClearLogs
 }) => {  const { showConfirm, ConfirmComponent } = useConfirm();

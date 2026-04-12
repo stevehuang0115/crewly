@@ -6,21 +6,75 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT=$(read_json_input "${1:-}")
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"to\":\"agent-session\",\"task\":\"...\"}' or echo '{...}' | execute.sh"
+# --- Input parsing: CLI flags (preferred) or legacy JSON ---
+INPUT_JSON=""
+TO=""
+TASK=""
+PRIORITY="normal"
+CONTEXT=""
+PROJECT_PATH=""
+TASK_TYPE="general"
+TEAM_ID=""
+FORCE_CROSS_TEAM="false"
 
-TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')
-TASK=$(printf '%s' "$INPUT" | jq -r '.task // empty')
-PRIORITY=$(printf '%s' "$INPUT" | jq -r '.priority // "normal"')
-CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
-PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
-# #150: Task type classification — 'technical' tasks can bypass PM routing
-TASK_TYPE=$(printf '%s' "$INPUT" | jq -r '.taskType // "general"')
-# #180: Cross-team validation
-TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
-FORCE_CROSS_TEAM=$(printf '%s' "$INPUT" | jq -r '.forceCrossTeam // "false"')
-require_param "to" "$TO"
-require_param "task" "$TASK"
+# Detect legacy JSON argument
+if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
+  INPUT_JSON="$1"
+  shift || true
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --to|-t)         TO="$2";              shift 2 ;;
+    --task|-T)       TASK="$2";             shift 2 ;;
+    --task-file)     TASK="$(cat "$2")";    shift 2 ;;
+    --priority|-P)   PRIORITY="$2";         shift 2 ;;
+    --context|-c)    CONTEXT="$2";          shift 2 ;;
+    --project|-p)    PROJECT_PATH="$2";     shift 2 ;;
+    --task-type)     TASK_TYPE="$2";        shift 2 ;;
+    --team|-g)       TEAM_ID="$2";          shift 2 ;;
+    --force-cross-team) FORCE_CROSS_TEAM="true"; shift ;;
+    --json|-j)       INPUT_JSON="$2";       shift 2 ;;
+    --help|-h)
+      echo "Usage: execute.sh --to agent-session --task 'implement feature' --priority high --project /path [--team teamId] [--context 'extra info']"
+      exit 0
+      ;;
+    --)              shift; break ;;
+    *)
+      if [[ -z "$INPUT_JSON" && ${1:0:1} == '{' ]]; then
+        INPUT_JSON="$1"; shift
+      else
+        error_exit "Unknown argument: $1"
+      fi
+      ;;
+  esac
+done
+
+# Read task from stdin if not yet provided
+if [ -z "$INPUT_JSON" ] && [ -z "$TASK" ] && [ ! -t 0 ]; then
+  STDIN_DATA="$(cat)"
+  if [[ ${STDIN_DATA:0:1} == '{' ]]; then
+    INPUT_JSON="$STDIN_DATA"
+  else
+    TASK="$STDIN_DATA"
+  fi
+fi
+
+# Parse JSON if provided (backward compatible)
+if [ -n "$INPUT_JSON" ]; then
+  INPUT=$(read_json_input "$INPUT_JSON")
+  [ -z "$TO" ] && TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')
+  [ -z "$TASK" ] && TASK=$(printf '%s' "$INPUT" | jq -r '.task // empty')
+  [ "$PRIORITY" = "normal" ] && { P=$(printf '%s' "$INPUT" | jq -r '.priority // empty'); [ -n "$P" ] && PRIORITY="$P"; }
+  [ -z "$CONTEXT" ] && CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
+  [ -z "$PROJECT_PATH" ] && PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+  [ "$TASK_TYPE" = "general" ] && { TT=$(printf '%s' "$INPUT" | jq -r '.taskType // empty'); [ -n "$TT" ] && TASK_TYPE="$TT"; }
+  [ -z "$TEAM_ID" ] && TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
+  [ "$FORCE_CROSS_TEAM" = "false" ] && FORCE_CROSS_TEAM=$(printf '%s' "$INPUT" | jq -r '.forceCrossTeam // "false"')
+fi
+
+require_param "to (--to)" "$TO"
+require_param "task (--task)" "$TASK"
 
 # #180: Validate target agent belongs to the specified team
 if [ -n "$TEAM_ID" ] && [ "$FORCE_CROSS_TEAM" != "true" ]; then
@@ -47,6 +101,8 @@ if [ "$TASK_TYPE" = "technical" ] && [ -n "$TEAM_ID" ]; then
 fi
 
 # Structured message parameters (for hierarchical teams)
+# Default INPUT to empty JSON if not set (when using --flag mode)
+INPUT="${INPUT:-{}}"
 TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
 PARENT_TASK_ID=$(printf '%s' "$INPUT" | jq -r '.parentTaskId // empty')
 EXPECTED_ARTIFACTS=$(printf '%s' "$INPUT" | jq -c '.expectedArtifacts // empty')
@@ -117,10 +173,35 @@ else
   TASK_MESSAGE="${TASK_MESSAGE}\n\nBefore reporting done, persist key findings using: bash ${CREWLY_ROOT}/config/skills/agent/core/remember/execute.sh '{\"agentId\":\"${TO}\",\"content\":\"<key findings>\",\"category\":\"pattern\",\"scope\":\"project\",\"projectPath\":\"${PROJECT_PATH}\"}'"
 fi
 
-# Deliver the task message with fallback strategy:
-# 1. Try reliable delivery with waitForReady (15s timeout)
-# 2. If agent not ready, fall back to force mode (direct PTY write)
-# 3. If both fail, output error to stdout (so orchestrator can see it) and exit 1
+# --- STEP 1: CREATE (assign) — track the work BEFORE waking the agent ---
+# This ensures no ghost tasks: if tracking fails, the agent is never woken.
+TASK_FILE_PATH=""
+TASK_ID=""
+
+if [ -n "$PROJECT_PATH" ]; then
+  CREATE_BODY=$(jq -n \
+    --arg projectPath "$PROJECT_PATH" \
+    --arg task "$TASK" \
+    --arg priority "$PRIORITY" \
+    --arg sessionName "$TO" \
+    --arg milestone "delegated" \
+    '{projectPath: $projectPath, task: $task, priority: $priority, sessionName: $sessionName, milestone: $milestone}')
+  CREATE_RESULT=$(api_call POST "/task-management/create" "$CREATE_BODY" 2>/dev/null || echo '{"success":false}')
+  CREATE_OK=$(echo "$CREATE_RESULT" | jq -r '.success // "false"' 2>/dev/null)
+  TASK_FILE_PATH=$(echo "$CREATE_RESULT" | jq -r '.taskPath // empty' 2>/dev/null || true)
+  TASK_ID=$(echo "$CREATE_RESULT" | jq -r '.taskId // empty' 2>/dev/null || true)
+
+  if [ "$CREATE_OK" != "true" ]; then
+    echo "{\"warning\":\"Task tracking failed (task-management/create returned: ${CREATE_OK}). Agent will be woken but task is untracked.\"}" >&2
+  fi
+fi
+
+# --- STEP 2: WAKE — deliver the message to the agent ---
+# Append complete-task instructions if we have the task path from step 1
+if [ -n "$TASK_FILE_PATH" ]; then
+  TASK_MESSAGE="${TASK_MESSAGE}\n\nAfter finishing and calling report-status, also run: bash ${CREWLY_ROOT}/config/skills/agent/core/complete-task/execute.sh '{\"absoluteTaskPath\":\"${TASK_FILE_PATH}\",\"sessionName\":\"${TO}\",\"summary\":\"<brief summary>\"}'"
+fi
+
 BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, waitForReady: true, waitTimeout: 15000}')
 
 DELIVER_OK=true
@@ -134,32 +215,6 @@ if [ "$DELIVER_OK" = "false" ]; then
     echo '{"error":"Failed to deliver task to '"$TO"'. Session may not exist or agent is not running."}'
     exit 1
   }
-fi
-
-# Track the task file path and task ID from create response for monitoring linkage
-TASK_FILE_PATH=""
-TASK_ID=""
-
-# Create task file in project's .crewly/tasks/ directory
-if [ -n "$PROJECT_PATH" ]; then
-  CREATE_BODY=$(jq -n \
-    --arg projectPath "$PROJECT_PATH" \
-    --arg task "$TASK" \
-    --arg priority "$PRIORITY" \
-    --arg sessionName "$TO" \
-    --arg milestone "delegated" \
-    '{projectPath: $projectPath, task: $task, priority: $priority, sessionName: $sessionName, milestone: $milestone}')
-  CREATE_RESULT=$(api_call POST "/task-management/create" "$CREATE_BODY" 2>/dev/null || true)
-  TASK_FILE_PATH=$(echo "$CREATE_RESULT" | jq -r '.taskPath // empty' 2>/dev/null || true)
-  TASK_ID=$(echo "$CREATE_RESULT" | jq -r '.taskId // empty' 2>/dev/null || true)
-
-  # Deliver a follow-up message with complete-task instructions now that taskPath is known (#137).
-  # This ensures agents call complete-task with the exact path, not just report-status.
-  if [ -n "$TASK_FILE_PATH" ]; then
-    COMPLETE_INSTR="After finishing and calling report-status, also run: bash ${CREWLY_ROOT}/config/skills/agent/core/complete-task/execute.sh '{\"absoluteTaskPath\":\"${TASK_FILE_PATH}\",\"sessionName\":\"${TO}\",\"summary\":\"<brief summary>\"}'"
-    FOLLOWUP_BODY=$(jq -n --arg message "$COMPLETE_INSTR" '{message: $message, force: true}')
-    api_call POST "/terminal/${TO}/deliver" "$FOLLOWUP_BODY" 2>/dev/null || true
-  fi
 fi
 
 # --- Auto-monitoring setup ---

@@ -4,7 +4,7 @@
  * @module services/agent/crewly-agent/agent-stream.service.test
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import {
   AgentStreamService,
   type AgentStreamEvent,
@@ -35,12 +35,12 @@ describe('AgentStreamService', () => {
   describe('emitTextChunk', () => {
     it('should emit a text_chunk event with correct shape', () => {
       const service = AgentStreamService.getInstance();
-      const handler = vi.fn();
+      const handler = jest.fn();
       service.on('stream', handler);
 
       service.emitTextChunk('test-agent', 'Hello ');
 
-      expect(handler).toHaveBeenCalledOnce();
+      expect(handler).toHaveBeenCalledTimes(1);
       const event = handler.mock.calls[0][0] as TextChunkEvent;
       expect(event.type).toBe('text_chunk');
       expect(event.sessionName).toBe('test-agent');
@@ -52,7 +52,7 @@ describe('AgentStreamService', () => {
   describe('emitToolCallStart', () => {
     it('should emit a tool_call_start event with args preview', () => {
       const service = AgentStreamService.getInstance();
-      const handler = vi.fn();
+      const handler = jest.fn();
       service.on('stream', handler);
 
       service.emitToolCallStart('test-agent', 'bash_exec', { command: 'ls -la' });
@@ -65,7 +65,7 @@ describe('AgentStreamService', () => {
 
     it('should truncate long args to 200 chars', () => {
       const service = AgentStreamService.getInstance();
-      const handler = vi.fn();
+      const handler = jest.fn();
       service.on('stream', handler);
 
       const longArg = 'x'.repeat(300);
@@ -79,7 +79,7 @@ describe('AgentStreamService', () => {
   describe('emitToolCallFinish', () => {
     it('should emit a tool_call_finish event with duration', () => {
       const service = AgentStreamService.getInstance();
-      const handler = vi.fn();
+      const handler = jest.fn();
       service.on('stream', handler);
 
       service.emitToolCallFinish('test-agent', 'bash_exec', { command: 'pwd' }, '/home/user', 42);
@@ -93,7 +93,7 @@ describe('AgentStreamService', () => {
 
     it('should handle null result gracefully', () => {
       const service = AgentStreamService.getInstance();
-      const handler = vi.fn();
+      const handler = jest.fn();
       service.on('stream', handler);
 
       service.emitToolCallFinish('test-agent', 'send_message', {}, null, 10);
@@ -106,7 +106,7 @@ describe('AgentStreamService', () => {
   describe('emitStepFinish', () => {
     it('should emit a step_finish event', () => {
       const service = AgentStreamService.getInstance();
-      const handler = vi.fn();
+      const handler = jest.fn();
       service.on('stream', handler);
 
       service.emitStepFinish('test-agent', 3, true);
@@ -121,15 +121,15 @@ describe('AgentStreamService', () => {
   describe('multiple subscribers', () => {
     it('should deliver events to all subscribers', () => {
       const service = AgentStreamService.getInstance();
-      const handler1 = vi.fn();
-      const handler2 = vi.fn();
+      const handler1 = jest.fn();
+      const handler2 = jest.fn();
       service.on('stream', handler1);
       service.on('stream', handler2);
 
       service.emitTextChunk('test-agent', 'hello');
 
-      expect(handler1).toHaveBeenCalledOnce();
-      expect(handler2).toHaveBeenCalledOnce();
+      expect(handler1).toHaveBeenCalledTimes(1);
+      expect(handler2).toHaveBeenCalledTimes(1);
     });
 
     it('should filter by sessionName at subscriber level', () => {

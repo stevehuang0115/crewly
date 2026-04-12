@@ -1,12 +1,14 @@
 /**
  * Thread List Panel Component
  *
- * Displays a scrollable list of conversation threads with channel filtering.
+ * Displays a scrollable list of conversation threads with channel filtering
+ * and a "+ New Chat" button for creating new conversations.
  *
  * @module components/Chat/ThreadListPanel
  */
 
 import React from 'react';
+import { Plus } from 'lucide-react';
 import type { ChatConversation, ChatChannelType } from '../../types/chat.types';
 import { ChannelFilterBar } from './ChannelFilterBar';
 import { ThreadPreview } from './ThreadPreview';
@@ -27,6 +29,8 @@ interface ThreadListPanelProps {
   channelFilter: ChatChannelType | null;
   /** Callback when channel filter changes */
   onChannelFilterChange: (filter: ChatChannelType | null) => void;
+  /** Callback to create a new chat conversation */
+  onNewChat?: () => void;
 }
 
 // =============================================================================
@@ -34,7 +38,7 @@ interface ThreadListPanelProps {
 // =============================================================================
 
 /**
- * Panel listing all conversation threads with channel filter bar.
+ * Panel listing all conversation threads with channel filter bar and new chat button.
  *
  * Conversations are sorted by updatedAt desc. Respects channel filter.
  *
@@ -47,6 +51,7 @@ export const ThreadListPanel: React.FC<ThreadListPanelProps> = ({
   onSelectThread,
   channelFilter,
   onChannelFilterChange,
+  onNewChat,
 }) => {
   /** Apply channel filter */
   const filteredConversations = channelFilter
@@ -60,11 +65,24 @@ export const ThreadListPanel: React.FC<ThreadListPanelProps> = ({
 
   return (
     <div className="thread-list-panel" data-testid="thread-list-panel">
-      <ChannelFilterBar
-        activeFilter={channelFilter}
-        onFilterChange={onChannelFilterChange}
-        conversations={conversations}
-      />
+      <div className="thread-list-header">
+        <ChannelFilterBar
+          activeFilter={channelFilter}
+          onFilterChange={onChannelFilterChange}
+          conversations={conversations}
+        />
+        {onNewChat && (
+          <button
+            onClick={onNewChat}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-primary bg-primary/10 hover:bg-primary/20 rounded-lg transition-colors flex-shrink-0"
+            data-testid="new-chat-button"
+            aria-label="Start a new chat"
+          >
+            <Plus className="h-4 w-4" />
+            New Chat
+          </button>
+        )}
+      </div>
 
       <div className="thread-list-scroll">
         {sortedConversations.length === 0 ? (

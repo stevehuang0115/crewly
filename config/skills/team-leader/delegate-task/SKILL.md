@@ -34,24 +34,41 @@ Assigns a task to a worker within the Team Leader's subordinate scope. Validates
 - When `handle-failure` decides to `reassign` a task
 - When a new worker needs to be given work
 
-## Usage
-
-```bash
-bash {{SKILLS_PATH}}/team-leader/delegate-task/execute.sh '{"to":"worker-session","task":"Implement login form","priority":"high","teamId":"team-123","tlMemberId":"tl-member-id","projectPath":"/path/to/project"}'
-```
-
 ## Parameters
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `to` | Yes | Target worker's PTY session name |
-| `task` | Yes | Task description (skill paths auto-resolved to absolute) |
-| `priority` | No | Task priority: `low`, `normal`, `high` (default: `normal`) |
-| `context` | No | Additional context for the worker |
-| `teamId` | No | Team ID for hierarchy validation |
-| `tlMemberId` | No | TL's member ID for hierarchy validation |
-| `projectPath` | No | Project path; creates task file in `.crewly/tasks/` |
-| `monitor` | No | Auto-monitoring config (same as orchestrator delegate-task) |
+| Flag | JSON Field | Required | Description |
+|------|-----------|----------|-------------|
+| `--to` / `-t` | `to` | Yes | Target worker's PTY session name |
+| `--task` / `-T` | `task` | Yes | Task description (or pipe via stdin) |
+| `--task-file` | — | No | Read task description from a file path |
+| `--priority` / `-P` | `priority` | No | Priority: `low`, `normal`, `high` (default: `normal`) |
+| `--context` / `-c` | `context` | No | Additional context for the worker |
+| `--project` / `-p` | `projectPath` | No | Project path; creates task file in `.crewly/tasks/` |
+| `--team` / `-g` | `teamId` | No | Team ID for hierarchy validation |
+| `--tl-member` | `tlMemberId` | No | TL's member ID for hierarchy validation |
+| `--from` | `fromSession` | No | Delegating TL's session name (for monitoring) |
+
+## Usage — CLI Flags (preferred)
+
+```bash
+# Basic delegation
+bash execute.sh --to worker-session --task "Implement login form" --priority high --project /path/to/project
+
+# With hierarchy validation
+bash execute.sh --to worker-session --task "Implement login form" --priority high --team team-123 --tl-member tl-member-id --project /path/to/project
+
+# Task from stdin (for long descriptions with special characters)
+echo "Implement the OAuth2 flow — it's critical for launch" | bash execute.sh --to worker-session --priority high --project /path
+
+# Task from file
+bash execute.sh --to worker-session --task-file /tmp/task-description.txt --priority high --project /path
+```
+
+## Usage — Legacy JSON (backward compatible)
+
+```bash
+bash execute.sh '{"to":"worker-session","task":"Implement login form","priority":"high","teamId":"team-123","tlMemberId":"tl-member-id","projectPath":"/path/to/project"}'
+```
 
 ## Hierarchy Validation
 

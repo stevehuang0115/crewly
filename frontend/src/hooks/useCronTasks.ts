@@ -64,7 +64,12 @@ export function useCronTasks(): UseCronTasksResult {
     try {
       const data = await apiService.getCronTasks();
       if (isMountedRef.current) {
-        setTasks(data);
+        // Normalize: some tasks use 'schedule' instead of 'cronExpression'
+        const normalized = data.map((t: any) => ({
+          ...t,
+          cronExpression: t.cronExpression || t.schedule || '',
+        }));
+        setTasks(normalized);
         setError(null);
       }
     } catch (err) {

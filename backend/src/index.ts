@@ -76,7 +76,9 @@ import { setMessageQueueService as setChatMessageQueueService, setThreadStatusQu
 import { setMessageQueueService as setMessagingControllerQueueService } from './controllers/messaging/messaging.controller.js';
 import { createMessagingRouter } from './controllers/messaging/messaging.routes.js';
 import { SystemResourceAlertService } from './services/monitoring/system-resource-alert.service.js';
+import { TokenUsageService } from './services/monitoring/token-usage.service.js';
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
+import { RedisCacheService } from './services/cache/redis-cache.service.js';
 import { OrchestratorRestartService } from './services/orchestrator/orchestrator-restart.service.js';
 import { IdleDetectionService } from './services/agent/idle-detection.service.js';
 import { AgentSuspendService } from './services/agent/agent-suspend.service.js';
@@ -92,6 +94,12 @@ import { AuditorSchedulerService } from './services/agent/auditor-scheduler.serv
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
 import { AddonLoaderService } from './services/addon/addon-loader.service.js';
 import { CronTaskService } from './services/workflow/cron-task.service.js';
+import { ReconcilerService, type ReconcilerDataProvider } from './services/reconciler/reconciler.service.js';
+import { LiveReconcilerDataProvider } from './services/reconciler/reconciler-data-provider.js';
+import { setReconcilerService } from './controllers/reconciler/reconciler.controller.js';
+import { FissionGuardService, type FissionDataProvider } from './services/fission/fission-guard.service.js';
+import { setFissionGuardService } from './controllers/fission/fission.controller.js';
+import { TaskPoolService } from './services/task-pool/task-pool.service.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -160,6 +168,7 @@ export class CrewlyServer {
 	private eventBusService!: EventBusService;
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
+	private reconcilerService: ReconcilerService | null = null;
 
 	// Shutdown state
 	private isShuttingDown = false;
@@ -256,6 +265,22 @@ export class CrewlyServer {
 			this.apiController.agentRegistrationService
 		);
 		this.schedulerService.setTaskTrackingService(this.taskTrackingService);
+		// Initialize message queue services (with disk persistence)
+		// NOTE: Must be created before services that depend on them (scheduler, thread status queue)
+		this.messageQueueService = new MessageQueueService(this.config.crewlyHome);
+		const responseRouter = new ResponseRouterService();
+		this.queueProcessorService = new QueueProcessorService(
+			this.messageQueueService,
+			responseRouter,
+			this.apiController.agentRegistrationService
+		);
+
+		// Initialize event bus service for agent lifecycle pub/sub
+		// NOTE: Must be created before services that depend on it (agent registration, thread status queue)
+		this.eventBusService = new EventBusService();
+		this.eventBusService.setMessageQueueService(this.messageQueueService);
+
+		// Now wire services that depend on messageQueueService and eventBusService
 		this.schedulerService.setMessageQueueService(this.messageQueueService);
 		this.schedulerService.setActivityMonitor(this.activityMonitorService);
 
@@ -284,15 +309,6 @@ export class CrewlyServer {
 		// Connect teams.json watcher to team activity service for real-time updates
 		this.teamsJsonWatcherService.setTeamActivityService(this.teamActivityWebSocketService);
 
-		// Initialize message queue services (with disk persistence)
-		this.messageQueueService = new MessageQueueService(this.config.crewlyHome);
-		const responseRouter = new ResponseRouterService();
-		this.queueProcessorService = new QueueProcessorService(
-			this.messageQueueService,
-			responseRouter,
-			this.apiController.agentRegistrationService
-		);
-
 		// Initialize thread status queue for tracking inbound message lifecycle
 		this.threadStatusQueueService = new ThreadStatusQueueService(this.config.crewlyHome);
 		responseRouter.setThreadStatusQueue(this.threadStatusQueueService);
@@ -309,10 +325,6 @@ export class CrewlyServer {
 
 		// Initialize system resource alert service for proactive monitoring
 		this.systemResourceAlertService = new SystemResourceAlertService();
-
-		// Initialize event bus service for agent lifecycle pub/sub
-		this.eventBusService = new EventBusService();
-		this.eventBusService.setMessageQueueService(this.messageQueueService);
 		this.teamsJsonWatcherService.setEventBusService(this.eventBusService);
 		this.activityMonitorService.setEventBusService(this.eventBusService);
 		setEventBusControllerService(this.eventBusService);
@@ -366,8 +378,89 @@ export class CrewlyServer {
 						error: err instanceof Error ? err.message : String(err),
 					});
 				}
+
+				// V3: Auto-close open Requests when the orchestrator goes idle
+				// Handles direct responses (no WorkItem delegation)
+				if (event.sessionName === ORCHESTRATOR_SESSION_NAME) {
+					setImmediate(() => this.autoCloseOpenRequests());
+				}
 			}
 		});
+
+		// Initialize Reconciler Service (V2 — system truth recomputation)
+		{
+			const reconcilerLogger = LoggerService.getInstance().createComponentLogger('ReconcilerInit');
+
+			// Live data provider — connects Reconciler to Task Pool, Claim Service,
+			// Storage Service, and Agent Suspend for real reconciliation including
+			// Hybrid Wake (auto-rehydrating suspended agents when tasks go unclaimed).
+			const liveDataProvider = new LiveReconcilerDataProvider();
+
+			this.reconcilerService = new ReconcilerService(liveDataProvider);
+			setReconcilerService(this.reconcilerService);
+
+			// Subscribe EventBus events for targeted reconciliation
+			if (this.reconcilerService) {
+				const reconciler = this.reconcilerService;
+				const eventTypes = ['agent:idle', 'task:completed', 'task:failed', 'agent:inactive'] as const;
+				for (const eventType of eventTypes) {
+					this.eventBusService.subscribe({
+						eventType,
+						filter: {},
+						subscriberSession: '__reconciler__',
+						oneShot: false,
+						ttlMinutes: 525_600, // 1 year — permanent subscription
+					});
+				}
+
+				// Listen for all published events and trigger targeted reconciliation
+				this.eventBusService.on('event_published', (payload: { eventType: string; sessionName: string }) => {
+					const targetedEventTypes = ['task:completed', 'task:failed', 'agent:idle', 'agent:inactive'];
+					if (targetedEventTypes.includes(payload.eventType)) {
+						reconciler.runFast().catch((err) => {
+							reconcilerLogger.warn('Event-triggered fast reconcile failed', {
+								eventType: payload.eventType,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						});
+					}
+				});
+			}
+
+			reconcilerLogger.info('ReconcilerService initialized and wired to EventBus');
+		}
+
+		// Initialize Fission Guard Service
+		{
+			const fissionLogger = LoggerService.getInstance().createComponentLogger('FissionInit');
+			try {
+				const taskPool = TaskPoolService.getInstance();
+
+				// FissionDataProvider backed by TaskPoolService storage
+				const fissionDataProvider: FissionDataProvider = {
+					async getWorkItemById(id: string) {
+						const items = await taskPool.getAllItems();
+						return items.find((i) => i.id === id) ?? null;
+					},
+					async countMissionWorkItems(missionId: string) {
+						const items = await taskPool.getAllItems();
+						return items.filter((i) => i.missionId === missionId).length;
+					},
+					async countChildWorkItems(parentWorkItemId: string) {
+						const items = await taskPool.getAllItems();
+						return items.filter((i) => i.parentWorkItemId === parentWorkItemId).length;
+					},
+				};
+
+				const fissionService = FissionGuardService.init(fissionDataProvider);
+				setFissionGuardService(fissionService);
+				fissionLogger.info('FissionGuardService initialized');
+			} catch (fissionErr) {
+				fissionLogger.warn('FissionGuardService initialization failed (non-fatal)', {
+					error: fissionErr instanceof Error ? fissionErr.message : String(fissionErr),
+				});
+			}
+		}
 
 		// Broadcast queue events via Socket.IO
 		this.messageQueueService.on('enqueued', (msg) => {
@@ -395,9 +488,9 @@ export class CrewlyServer {
 					directives: {
 						defaultSrc: ["'self'"],
 						styleSrc: ["'self'", "'unsafe-inline'"],
-						scriptSrc: ["'self'"],
-						imgSrc: ["'self'", 'data:', 'https:'],
-						connectSrc: ["'self'", 'ws:', 'wss:'],
+						scriptSrc: ["'self'", "'unsafe-eval'"],
+						imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
+						connectSrc: ["'self'", 'ws:', 'wss:', 'blob:'],
 						// Disable upgrade-insecure-requests for HTTP-only deployments (ESTestNode)
 						// Without this, browsers on HTTP upgrade all asset requests to HTTPS → ERR_SSL_PROTOCOL_ERROR
 						upgradeInsecureRequests: null,
@@ -578,6 +671,22 @@ export class CrewlyServer {
 				headless: this.config.headless,
 			});
 
+			// Truncate service.log on startup — it's a raw stdout pipe duplicate of the
+			// daily crewly-YYYY-MM-DD.log files and grows unbounded otherwise.
+			try {
+				const serviceLogPath = path.join(this.config.crewlyHome, 'logs', 'service.log');
+				const { stat, truncate } = await import('fs/promises');
+				const logStat = await stat(serviceLogPath).catch(() => null);
+				if (logStat && logStat.size > 10 * 1024 * 1024) { // truncate if > 10MB
+					await truncate(serviceLogPath, 0);
+					this.logger.info('Truncated service.log on startup', {
+						previousSizeMB: Math.round(logStat.size / 1024 / 1024),
+					});
+				}
+			} catch {
+				// Non-critical
+			}
+
 			if (this.config.headless) {
 				this.logger.info('Headless mode active: API-only, no frontend serving');
 			}
@@ -641,6 +750,16 @@ export class CrewlyServer {
 			} catch (loadError) {
 				this.logger.debug('No persisted session state to load (first run or cleared)', {
 					error: loadError instanceof Error ? loadError.message : String(loadError),
+				});
+			}
+
+			// Initialize Redis cache (non-blocking — falls back to memory if Redis is unavailable)
+			try {
+				const redisConnected = await RedisCacheService.getInstance().connect();
+				this.logger.info('Redis cache initialized', { connected: redisConnected, backend: redisConnected ? 'redis' : 'memory' });
+			} catch (cacheErr) {
+				this.logger.info('Redis cache not available, using in-memory fallback', {
+					error: cacheErr instanceof Error ? cacheErr.message : String(cacheErr),
 				});
 			}
 
@@ -796,6 +915,34 @@ export class CrewlyServer {
 				});
 			}
 
+			// Connect BrowserProxyService to Cloud Relay (lazy — does not block startup)
+			try {
+				const { BrowserProxyService } = await import('./services/browser/browser-proxy.service.js');
+				const { CloudClientService } = await import('./services/cloud/cloud-client.service.js');
+				const cloudClient = CloudClientService.getInstance();
+				const browserProxy = BrowserProxyService.getInstance();
+
+				// Wire up token resolver so reconnects always use the freshest JWT
+				browserProxy.setTokenResolver(() => cloudClient.getToken());
+
+				// Subscribe to token refresh events so the proxy updates in real-time
+				cloudClient.onTokenRefresh((newToken: string) => {
+					browserProxy.updateToken(newToken);
+				});
+
+				const relayToken = cloudClient.getToken();
+				if (relayToken) {
+					browserProxy.connect(relayToken);
+					this.logger.info('BrowserProxyService connecting to Cloud Relay');
+				} else {
+					this.logger.debug('BrowserProxyService skipped — no cloud token available');
+				}
+			} catch (error) {
+				this.logger.warn('Failed to initialize BrowserProxyService (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Start team activity WebSocket service
 			this.logger.info('Starting team activity WebSocket service...');
 			this.teamActivityWebSocketService.start();
@@ -847,6 +994,40 @@ export class CrewlyServer {
 				await this.threadStatusQueueService.loadPersistedState();
 			} catch (err) {
 				this.logger.warn('Failed to load thread status queue state (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+
+			// Backfill: mark Slack threads for done Requests as terminal so the
+			// resume notification won't re-send already-answered conversations.
+			try {
+				const { RequestService } = await import('./services/v3/request.service.js');
+				const reqSvc = RequestService.getInstance();
+				const allReqs = await reqSvc.listAll();
+				let backfilled = 0;
+				for (const req of allReqs) {
+					if (req.status !== 'done') continue;
+					const scid = req.sourceConversationItemId || '';
+					if (!scid.startsWith('slack-')) continue;
+					const m = scid.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
+					if (!m) continue;
+					const [, channelId, t1, t2] = m;
+					const threadKey = `${channelId}:${t1}.${t2}`;
+					if (this.threadStatusQueueService.get(threadKey)) continue;
+					this.threadStatusQueueService.trackInbound({
+						threadKey,
+						conversationId: scid,
+						source: 'slack',
+						messagePreview: req.title.slice(0, 200),
+					});
+					this.threadStatusQueueService.markReplied(threadKey, 'replied_completed');
+					backfilled++;
+				}
+				if (backfilled > 0) {
+					this.logger.info('Backfilled thread status for done Requests', { count: backfilled });
+				}
+			} catch (err) {
+				this.logger.warn('Thread status backfill failed (non-critical)', {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			}
@@ -967,6 +1148,150 @@ export class CrewlyServer {
 				});
 			}
 
+			// Start TriggerEngine (V3 unified trigger system) and wire action handler
+			try {
+				const { TriggerEngine } = await import('./services/v3/trigger-engine.service.js');
+				const { TaskProjectionService } = await import('./services/v3/task-projection.service.js');
+				const triggerEngine = TriggerEngine.getInstance();
+				const taskProjection = TaskProjectionService.getInstance();
+
+				// Load TaskProjection state from disk
+				await taskProjection.load();
+
+				// Wire EventBus so signal triggers can subscribe to events
+				triggerEngine.setEventBus(this.eventBusService);
+
+				// Wire action handler — executes the effect when a trigger fires
+				triggerEngine.setActionHandler(async (trigger, action) => {
+					const triggerId = trigger.id;
+					const logger = this.logger;
+
+					// 1. sendMessage — enqueue a message to the orchestrator session
+					if (action.sendMessage) {
+						const { target, message } = action.sendMessage;
+						try {
+							// Format with trigger context so Agent knows why it was woken
+							const formattedContent = `[SYSTEM ALERT] Trigger '${triggerId}' says: ${message}`;
+							this.messageQueueService.enqueue({
+								content: formattedContent,
+								conversationId: target || 'system',
+								source: 'system_event',
+							});
+							logger.info('TriggerEngine: sendMessage enqueued', { triggerId, target });
+						} catch (err) {
+							logger.warn('TriggerEngine: sendMessage failed', {
+								triggerId,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
+					}
+
+					// 2. createWorkItem — push a new WorkItem into the task pool
+					if (action.createWorkItem) {
+						try {
+							const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+							const { createWorkItem } = await import('./types/v2/work-item.types.js');
+							const template = action.createWorkItem;
+							const workItem = createWorkItem({
+								title: template.title || `Triggered task (${trigger.id})`,
+								description: template.description || `Auto-created by trigger ${trigger.id}`,
+								type: template.type ?? 'delegate',
+								owner: template.owner ?? 'orchestrator',
+								target: template.target,
+								triggerId,
+								requestId: template.requestId,
+							});
+							await TaskPoolService.getInstance().addToPool(workItem);
+
+							// Project as a trigger_action TaskRecord
+							await taskProjection.createRecord({
+								title: workItem.title,
+								type: 'trigger_action',
+								ownerAgent: 'system',
+								triggerId,
+								workItemId: workItem.id,
+							});
+							logger.info('TriggerEngine: WorkItem enqueued', { triggerId, workItemId: workItem.id });
+						} catch (err) {
+							logger.warn('TriggerEngine: createWorkItem failed', {
+								triggerId,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
+					}
+
+					// 3. wakeWorkItemId — re-queue a suspended/blocked WorkItem with context note
+					if (action.wakeWorkItemId) {
+						try {
+							const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+							const taskPool = TaskPoolService.getInstance();
+
+							// Append system note to description so Agent knows why it was woken
+							const wakeNote = `\n\n[SYSTEM NOTE] Woken automatically by Trigger '${triggerId}' at ${new Date().toISOString()}.`;
+							await taskPool.updateItemStatus(action.wakeWorkItemId, 'queued');
+							// Append wake reason to WorkItem description via storage
+							try {
+								const item = (await taskPool.getAllItems()).find(wi => wi.id === action.wakeWorkItemId);
+								if (item) {
+									await taskPool.updateTokenUsage(action.wakeWorkItemId, item.inputTokens, item.outputTokens, item.cost);
+									// We use the storage directly through the service — patch description via a minimal re-add isn't feasible,
+									// so we write the note to the task projection instead:
+									await taskProjection.createRecord({
+										title: `[TRIGGER WAKE] ${item.title}`,
+										type: 'trigger_action',
+										ownerAgent: 'system',
+										triggerId,
+										workItemId: item.id,
+										requestId: item.requestId,
+									});
+								}
+							} catch { /* non-critical */ }
+
+							logger.info('TriggerEngine: WorkItem woken', { triggerId, workItemId: action.wakeWorkItemId, note: wakeNote });
+						} catch (err) {
+							logger.warn('TriggerEngine: wakeWorkItemId failed', {
+								triggerId,
+								workItemId: action.wakeWorkItemId,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
+					}
+
+					// 4. runReconciler — trigger a targeted reconciliation cycle
+					if (action.runReconciler && this.reconcilerService) {
+						try {
+							await this.reconcilerService.runFull();
+							logger.info('TriggerEngine: Reconciler run triggered', { triggerId });
+						} catch (err) {
+							logger.warn('TriggerEngine: runReconciler failed', {
+								triggerId,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
+					}
+				});
+
+				await triggerEngine.start();
+				this.logger.info('TriggerEngine started with action handler wired');
+			} catch (triggerErr) {
+				this.logger.warn('TriggerEngine initialization failed (non-critical)', {
+					error: triggerErr instanceof Error ? triggerErr.message : String(triggerErr),
+				});
+			}
+
+			// Start V3DataService — listens for v3:task_delegated / v3:task_completed events
+			// and links WorkItems to their parent Requests via requestService.linkWorkItem().
+			// Must be initialized after EventBusService is ready.
+			try {
+				const { V3DataService } = await import('./services/v3/v3-data.service.js');
+				new V3DataService(this.eventBusService, process.cwd());
+				this.logger.info('V3DataService started — WorkItem↔Request linking active');
+			} catch (v3Err) {
+				this.logger.warn('V3DataService initialization failed (non-critical)', {
+					error: v3Err instanceof Error ? v3Err.message : String(v3Err),
+				});
+			}
+
 			// Start Slack image cleanup (download temp files)
 			try {
 				const { getSlackImageService: getImgService } = await import('./services/slack/slack-image.service.js');
@@ -1012,6 +1337,37 @@ export class CrewlyServer {
 
 			// Start periodic task file system sync (#137) — cleans up stale tracking entries
 			this.taskTrackingService.startAutoSync();
+
+			// Initialize token usage tracking: load persisted data and start periodic flush
+			try {
+				const tokenUsageService = TokenUsageService.getInstance();
+				await tokenUsageService.loadFromDisk();
+				tokenUsageService.startPeriodicFlush();
+				this.logger.info('Token usage tracking initialized');
+			} catch (tokenErr) {
+				this.logger.warn('Token usage initialization failed (non-fatal)', {
+					error: tokenErr instanceof Error ? tokenErr.message : String(tokenErr),
+				});
+			}
+
+			// Start Reconciler: run initial full reconcile and start loops
+			if (this.reconcilerService) {
+				try {
+					this.logger.info('Running initial full reconciliation...');
+					const initialResult = await this.reconcilerService.runFull();
+					this.logger.info('Initial reconciliation complete', {
+						durationMs: initialResult.durationMs,
+						corrections: initialResult.corrections.length,
+						errors: initialResult.errors.length,
+					});
+					this.reconcilerService.start();
+					this.logger.info('Reconciler loops started (fast: 10s, full: 60s)');
+				} catch (reconcilerErr) {
+					this.logger.warn('Reconciler startup failed (non-fatal)', {
+						error: reconcilerErr instanceof Error ? reconcilerErr.message : String(reconcilerErr),
+					});
+				}
+			}
 
 			// Start HTTP server with enhanced error handling
 			await this.startHttpServer();
@@ -1637,6 +1993,207 @@ export class CrewlyServer {
 		this.healthMonitoringInterval = setInterval(() => {
 			this.logMemoryUsage();
 		}, 30000);
+
+		// V3: Periodic TTL-based auto-close for open Requests (every 2 min)
+		// Catches direct orchestrator responses that finish within a single poll cycle
+		// and never trigger the EventBus agent:idle event
+		setInterval(() => this.autoCloseOpenRequests(), 2 * 60 * 1000);
+
+		// Purge done Requests and WorkItems older than 24h (every hour)
+		setInterval(() => this.purgeCompletedData(), 60 * 60 * 1000);
+		// Run once at startup after a short delay
+		setTimeout(() => this.purgeCompletedData(), 30 * 1000);
+	}
+
+	/**
+	 * Removes done/cancelled Requests older than 24h from disk,
+	 * and purges done/cancelled/failed WorkItems from the task pool.
+	 * Memory, knowledge, and learnings are never purged.
+	 */
+	private purgeCompletedData(): void {
+		setImmediate(async () => {
+			const RETENTION_MS = 24 * 60 * 60 * 1000;
+			const cutoff = Date.now() - RETENTION_MS;
+
+			// 1. Purge done Requests
+			try {
+				const { RequestService } = await import('./services/v3/request.service.js');
+				const svc = RequestService.getInstance();
+				const all = await svc.listAll();
+				let purgedRequests = 0;
+				for (const req of all) {
+					if (req.status !== 'done' && req.status !== 'cancelled') continue;
+					const completedAt = req.completedAt ? new Date(req.completedAt).getTime() : 0;
+					const createdAt = new Date(req.createdAt).getTime();
+					const age = completedAt || createdAt;
+					if (age < cutoff) {
+						await svc.delete(req.id);
+						purgedRequests++;
+					}
+				}
+				if (purgedRequests > 0) {
+					this.logger.info('Purged old completed Requests', { count: purgedRequests });
+				}
+			} catch (err) {
+				this.logger.warn('Request purge failed (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+
+			// 2. Purge done/cancelled/failed WorkItems from pool
+			try {
+				const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+				const pool = TaskPoolService.getInstance();
+				const allItems = await pool.getAllItems();
+				const terminalStatuses = new Set(['done', 'cancelled', 'failed']);
+				let purgedItems = 0;
+				for (const wi of allItems) {
+					if (!terminalStatuses.has(wi.status)) continue;
+					const completedAt = wi.completedAt ? new Date(wi.completedAt).getTime() : 0;
+					const createdAt = new Date(wi.createdAt).getTime();
+					const age = completedAt || createdAt;
+					if (age < cutoff) {
+						await pool.removeItem(wi.id);
+						purgedItems++;
+					}
+				}
+				if (purgedItems > 0) {
+					this.logger.info('Purged old completed WorkItems', { count: purgedItems });
+				}
+			} catch (err) {
+				this.logger.warn('WorkItem purge failed (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		});
+	}
+
+	/**
+	 * Closes open Requests that were created within the last 10 minutes.
+	 * Used to handle direct orchestrator responses that don't go through WorkItems.
+	 * Also rolls up orchestrator token usage and sets ownerAgent for the Request.
+	 *
+	 * Token source varies by runtime:
+	 *   - claude-code: reads session JSONL (TUI status bar not capturable from PTY)
+	 *   - gemini-cli / codex-cli: reads from TokenUsageService (fed by PTY parser)
+	 *   - crewly-agent: reads from TokenUsageService (fed by SDK)
+	 */
+	private autoCloseOpenRequests(): void {
+		setImmediate(async () => {
+			try {
+				const { RequestService } = await import('./services/v3/request.service.js');
+				const { TokenUsageService } = await import('./services/monitoring/token-usage.service.js');
+				const { getTokensSince } = await import('./services/monitoring/claude-session-tokens.service.js');
+				const { getSessionStatePersistence } = await import('./services/session/session-state-persistence.js');
+				const svc = RequestService.getInstance();
+				const tokenSvc = TokenUsageService.getInstance();
+				const all = await svc.listAll();
+				const cutoff = Date.now() - 10 * 60 * 1000; // 10 min window
+				const minAgeMs = 3 * 60 * 1000; // Don't close requests younger than 3 min — gives orchestrator time to delegate
+
+				// Resolve orchestrator runtime type once per cycle
+				const persistence = getSessionStatePersistence();
+				const orcMeta = persistence.getSessionMetadata(ORCHESTRATOR_SESSION_NAME);
+				const orcRuntimeType = orcMeta?.runtimeType || 'claude-code';
+
+				for (const req of all) {
+					if (req.status !== 'open') continue;
+					const reqAge = Date.now() - new Date(req.createdAt).getTime();
+					if (reqAge > 10 * 60 * 1000) continue; // older than 10 min — skip
+					if (reqAge < minAgeMs) continue; // too young — orchestrator may still be delegating
+
+					const update: Parameters<typeof svc.update>[1] = { status: 'done' };
+
+					// Roll up orchestrator tokens only for direct responses (no WorkItem delegation)
+					if (req.workItemIds.length === 0) {
+						const since = new Date(req.createdAt);
+						let inputTokens = 0;
+						let outputTokens = 0;
+						let cost = 0;
+
+						if (orcRuntimeType === 'claude-code') {
+							// Claude Code: read from session JSONL (ground truth from API)
+							// Falls back to auto-detecting the latest session file if ID unknown.
+							// Use current time as upper bound to avoid counting tokens from
+							// subsequent requests in the same session.
+							const sessionId = persistence.getSessionId(ORCHESTRATOR_SESSION_NAME) || null;
+							const summary = await getTokensSince(
+								this.config.crewlyHome,
+								sessionId,
+								since,
+								new Date(), // upper bound — only count tokens within this request's window
+							);
+							if (summary && summary.turnCount > 0) {
+								inputTokens = summary.inputTokens;
+								outputTokens = summary.outputTokens;
+								cost = summary.cost;
+							}
+						} else {
+							// Gemini CLI / Codex CLI / crewly-agent: read from TokenUsageService
+							// (fed by PTY terminal output parser or SDK)
+							const usage = tokenSvc.getSessionUsageSince(
+								ORCHESTRATOR_SESSION_NAME,
+								since,
+							);
+							inputTokens = usage.inputTokens;
+							outputTokens = usage.outputTokens;
+							cost = usage.cost;
+						}
+
+						if (inputTokens > 0 || outputTokens > 0) {
+							update.totalInputTokens = (req.totalInputTokens || 0) + inputTokens;
+							update.totalOutputTokens = (req.totalOutputTokens || 0) + outputTokens;
+							update.totalCost = (req.totalCost || 0) + cost;
+						}
+						update.ownerAgent = ORCHESTRATOR_SESSION_NAME;
+					}
+
+					await svc.update(req.id, update);
+
+					// Mark the corresponding Slack/chat thread as terminal so the
+					// SessionHandoff resume notification won't re-send it after restart.
+					if (req.sourceConversationItemId.startsWith('slack-')) {
+						try {
+							const { ThreadStatusQueueService } = await import('./services/messaging/thread-status-queue.service.js');
+							const tsq = ThreadStatusQueueService.getInstance();
+							// sourceConversationItemId format: "slack-{channelId}-{messageTs}"
+							// messageTs format in the ID uses hyphens: "1775935980-197679"
+							// Slack threadTs uses dots: "1775935980.197679"
+							const match = req.sourceConversationItemId.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
+							if (match) {
+								const channelId = match[1];
+								const threadTs = `${match[2]}.${match[3]}`;
+								const threadKey = `${channelId}:${threadTs}`;
+								// Create entry if not tracked, then mark terminal
+								if (!tsq.get(threadKey)) {
+									tsq.trackInbound({
+										threadKey,
+										conversationId: req.sourceConversationItemId,
+										source: 'slack',
+										messagePreview: req.title,
+									});
+								}
+								tsq.markReplied(threadKey, 'replied_completed');
+							}
+						} catch {
+							// Non-critical — thread status is best-effort
+						}
+					}
+
+					this.logger.debug('V3 Request auto-closed', {
+						requestId: req.id,
+						ownerAgent: update.ownerAgent,
+						inputTokens: update.totalInputTokens,
+						outputTokens: update.totalOutputTokens,
+						cost: update.totalCost,
+					});
+				}
+			} catch (err) {
+				this.logger.warn('V3 Request auto-close failed (non-critical)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		});
 	}
 
 	private logMemoryUsage(): void {
@@ -1699,6 +2256,13 @@ export class CrewlyServer {
 				});
 			}
 
+			// Disconnect Redis cache
+			try {
+				RedisCacheService.getInstance().disconnect();
+			} catch {
+				// Non-critical — ignore
+			}
+
 			// Save PTY session state and force-kill all child processes
 			this.logger.info('Saving PTY session state and force-killing child processes...');
 			try {
@@ -1757,9 +2321,27 @@ export class CrewlyServer {
 				});
 			}
 
+			// Flush task pool (WorkItems) to disk — prevents data loss on restart
+			try {
+				const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+				const pool = TaskPoolService.getInstance();
+				await pool.flush();
+				this.logger.info('Task pool flushed to disk');
+			} catch (error) {
+				this.logger.warn('Failed to flush task pool', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Stop system resource alert monitoring
 			if (this.systemResourceAlertService) {
 				this.systemResourceAlertService.stopMonitoring();
+			}
+
+			// Stop Reconciler loops (V2)
+			if (this.reconcilerService) {
+				this.reconcilerService.stop();
+				this.logger.info('Reconciler stopped');
 			}
 
 			// Stop NOTIFY reconciliation service
@@ -1799,6 +2381,14 @@ export class CrewlyServer {
 			try {
 				const { BrowserBridgeService } = await import('./services/browser/browser-bridge.service.js');
 				BrowserBridgeService.getInstance().stop();
+			} catch {
+				// May not have been initialized
+			}
+
+			// Disconnect BrowserProxyService from Cloud Relay
+			try {
+				const { BrowserProxyService } = await import('./services/browser/browser-proxy.service.js');
+				BrowserProxyService.getInstance().disconnect();
 			} catch {
 				// May not have been initialized
 			}

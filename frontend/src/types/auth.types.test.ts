@@ -17,12 +17,17 @@ describe('Auth Types', () => {
       expect(isValidUserPlan('pro')).toBe(true);
     });
 
-    it('should accept "enterprise"', () => {
-      expect(isValidUserPlan('enterprise')).toBe(true);
+    it('should accept "starter"', () => {
+      expect(isValidUserPlan('starter')).toBe(true);
+    });
+
+    it('should accept "max"', () => {
+      expect(isValidUserPlan('max')).toBe(true);
     });
 
     it('should reject invalid strings', () => {
       expect(isValidUserPlan('premium')).toBe(false);
+      expect(isValidUserPlan('enterprise')).toBe(false);
       expect(isValidUserPlan('')).toBe(false);
     });
 
@@ -68,8 +73,12 @@ describe('Auth Types', () => {
       expect(isUserProfile(noName)).toBe(false);
     });
 
-    it('should accept profile with enterprise plan', () => {
-      expect(isUserProfile({ ...validProfile, plan: 'enterprise' })).toBe(true);
+    it('should accept profile with max plan', () => {
+      expect(isUserProfile({ ...validProfile, plan: 'max' })).toBe(true);
+    });
+
+    it('should accept profile with starter plan', () => {
+      expect(isUserProfile({ ...validProfile, plan: 'starter' })).toBe(true);
     });
 
     it('should reject objects with invalid plan', () => {

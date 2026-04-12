@@ -318,6 +318,14 @@ export class MessageRouterService {
       return;
     }
 
+    // Handle browser command responses relayed from Chrome Extension
+    if (msg.type === 'browser_response') {
+      const { BrowserRelayAdapter } = await import('../browser/browser-relay-adapter.service.js');
+      const adapter = BrowserRelayAdapter.getInstance();
+      adapter.handleRelayResponse(msg.payload as { id: string; success: boolean; result?: unknown; error?: string });
+      return;
+    }
+
     // Only handle agent_message type beyond this point
     if (msg.type !== 'agent_message') return;
 

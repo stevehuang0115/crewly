@@ -4,6 +4,7 @@
  * @module services/agent/crewly-agent/approval-queue.service.test
  */
 
+import { describe, it, expect, beforeEach } from '@jest/globals';
 import { ApprovalQueueService } from './approval-queue.service.js';
 import type { ToolSensitivity } from './types.js';
 

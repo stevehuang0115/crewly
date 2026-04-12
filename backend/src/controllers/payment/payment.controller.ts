@@ -50,7 +50,7 @@ export const handleCreateCheckout = asyncHandler(async (req: Request, res: Respo
 	};
 
 	if (!planId || !isValidPlanId(planId)) {
-		res.status(400).json({ success: false, error: 'planId must be one of: free, pro, enterprise' });
+		res.status(400).json({ success: false, error: 'planId must be one of: starter, pro, max' });
 		return;
 	}
 

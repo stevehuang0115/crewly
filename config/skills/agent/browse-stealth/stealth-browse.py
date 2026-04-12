@@ -285,9 +285,14 @@ def main():
         }))
         sys.exit(1)
 
-    # Ensure Chrome is running with CDP
+    # Connect to Chrome via CDP on the specified port.
+    # For custom ports, connect directly. For default port (9222), fall back to
+    # ensure_chrome_running() which can auto-launch Chrome if needed.
     try:
-        ws_url = ensure_chrome_running()
+        if args.cdp_port != CDP_PORT:
+            ws_url = get_ws_url(args.cdp_port)
+        else:
+            ws_url = ensure_chrome_running()
     except Exception as e:
         print(json.dumps({"success": False, "error": f"chrome_launch_failed: {e}"}))
         sys.exit(1)

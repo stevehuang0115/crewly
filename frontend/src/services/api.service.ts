@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, KnowledgeDocument, KnowledgeDocumentSummary, KnowledgeScope, CloudStatus, CloudConnectResult, SessionUsageSummary } from '../types';
+import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, KnowledgeDocument, KnowledgeDocumentSummary, KnowledgeScope, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary } from '../types';
 import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
 
@@ -424,6 +424,39 @@ class ApiService {
    */
   async dismissPreviousSessions(): Promise<void> {
     await axios.post(`${API_BASE}/sessions/previous/dismiss`);
+  }
+
+  // ============ Intent Task Methods ============
+
+  /**
+   * Fetches aggregate intent task statistics.
+   *
+   * @returns Promise resolving to statistics with task counts by status, level, tokens, and cost
+   */
+  async getIntentTaskStatistics(): Promise<{
+    totalTasks: number;
+    byStatus: Record<string, number>;
+    byLevel: Record<string, number>;
+    totalTokens: number;
+    totalCost: number;
+    llmCost: number;
+    skillCost: number;
+    totalMessages: number;
+  }> {
+    const response = await axios.get<ApiResponse<{
+      totalTasks: number;
+      byStatus: Record<string, number>;
+      byLevel: Record<string, number>;
+      totalTokens: number;
+      totalCost: number;
+      llmCost: number;
+      skillCost: number;
+      totalMessages: number;
+    }>>(`${API_BASE}/intent-tasks/statistics`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to get intent task statistics');
+    }
+    return response.data.data;
   }
 
   // ============ Task Methods (from markdown files) ============
@@ -916,7 +949,7 @@ class ApiService {
   /**
    * Creates a Stripe Checkout Session for upgrading to a paid plan.
    *
-   * @param planId - Plan to subscribe to ('solo', 'pro', 'team', 'enterprise')
+   * @param planId - Plan to subscribe to ('starter', 'pro', 'max')
    * @param interval - Billing interval ('month' or 'year')
    * @param successUrl - URL to redirect to after successful payment
    * @param cancelUrl - URL to redirect to if payment is cancelled
@@ -973,6 +1006,70 @@ class ApiService {
     return response.data.data;
   }
 
+  // ============ Provisioning Methods ============
+
+  /**
+   * Trigger a new full-stack deployment (DigitalOcean droplet + Crewly OSS + Pro addon).
+   *
+   * @param config - Deployment configuration
+   * @returns Deployment ID and status URL
+   * @throws Error if the request fails
+   */
+  async createDeployment(config: {
+    dropletName: string;
+    region?: string;
+    size?: string;
+    apiKeys?: {
+      anthropicApiKey?: string;
+      googleApiKey?: string;
+      crewlyCloudApiKey?: string;
+    };
+    customerId?: string;
+    installPro?: boolean;
+    registerCloud?: boolean;
+  }): Promise<{ deploymentId: string; statusUrl: string }> {
+    const response = await axios.post<{ deploymentId: string; message: string; statusUrl: string }>(
+      `${API_BASE}/provisioning/deployments`,
+      config
+    );
+    return { deploymentId: response.data.deploymentId, statusUrl: response.data.statusUrl };
+  }
+
+  /**
+   * Get the current status of a deployment.
+   *
+   * @param deploymentId - The deployment to check
+   * @returns Deployment status including phase, progress, and any errors
+   * @throws Error if the deployment is not found
+   */
+  async getDeploymentStatus(deploymentId: string): Promise<{
+    currentPhase: string;
+    success: boolean;
+    dropletId?: number;
+    ipAddress?: string;
+    error?: string;
+  }> {
+    const response = await axios.get(`${API_BASE}/provisioning/deployments/${deploymentId}/status`);
+    return response.data;
+  }
+
+  /**
+   * List all deployments, optionally filtered.
+   *
+   * @param filters - Optional filters for completion status or customer
+   * @returns Array of deployment records
+   */
+  async listDeployments(filters?: {
+    complete?: boolean;
+    customerId?: string;
+  }): Promise<{ deployments: Array<{ deploymentId: string; currentPhase: string; success: boolean }>; total: number }> {
+    const params = new URLSearchParams();
+    if (filters?.complete !== undefined) params.set('complete', String(filters.complete));
+    if (filters?.customerId) params.set('customerId', filters.customerId);
+    const response = await axios.get(`${API_BASE}/provisioning/deployments?${params.toString()}`);
+    return response.data;
+  }
+
   // ============ Relay Methods ============
 
   /**
@@ -1002,6 +1099,16 @@ class ApiService {
   }
 
   /**
+   * Fetches token usage data aggregated by task ID.
+   *
+   * @returns Promise resolving to array of per-task usage summaries
+   */
+  async getTokenUsageByTask(): Promise<TaskUsageSummary[]> {
+    const response = await axios.get<ApiResponse<TaskUsageSummary[]>>(`${API_BASE}/monitoring/token-usage/by-task`);
+    return response.data.data || [];
+  }
+
+  /**
    * Resets all token usage counters to zero.
    *
    * @throws Error if the reset request fails
@@ -1010,6 +1117,179 @@ class ApiService {
     const response = await axios.post<ApiResponse<void>>(`${API_BASE}/monitoring/token-usage/reset`);
     if (!response.data.success) {
       throw new Error(response.data.error || 'Failed to reset token usage');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // V3 Pipeline APIs (Requests, WorkItems, Missions)
+  // ---------------------------------------------------------------------------
+
+  async getRequests(): Promise<unknown[]> {
+    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/requests`);
+    const d = response.data.data as Record<string, unknown>;
+    return (Array.isArray(d) ? d : (d?.data as unknown[]) || []) as unknown[];
+  }
+
+  async getRequest(id: string): Promise<unknown> {
+    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/requests/${id}`);
+    if (!response.data.success || !response.data.data) throw new Error('Request not found');
+    return response.data.data;
+  }
+
+  async updateRequest(id: string, updates: Record<string, unknown>): Promise<void> {
+    const response = await axios.put<ApiResponse<unknown>>(`${API_BASE}/requests/${id}`, updates);
+    if (!response.data.success) throw new Error(response.data.error || 'Failed to update request');
+  }
+
+  async getWorkItems(): Promise<unknown[]> {
+    const response = await axios.get<ApiResponse<unknown[]>>(`${API_BASE}/task-pool/all`);
+    return response.data.data || [];
+  }
+
+  async getWorkItem(id: string): Promise<unknown> {
+    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/task-pool/${id}`);
+    if (!response.data.success || !response.data.data) throw new Error('Work item not found');
+    return response.data.data;
+  }
+
+  async getWorkItemsByRequest(requestId: string): Promise<unknown[]> {
+    const items = await this.getWorkItems();
+    return (items as Array<Record<string, unknown>>).filter(i => i.requestId === requestId);
+  }
+
+  async getMissions(): Promise<unknown[]> {
+    const response = await axios.get<ApiResponse<unknown[]>>(`${API_BASE}/missions`);
+    const d = response.data.data;
+    return Array.isArray(d) ? d : [];
+  }
+
+  async getMission(id: string): Promise<unknown> {
+    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/missions/${id}`);
+    if (!response.data.success || !response.data.data) throw new Error('Mission not found');
+    return response.data.data;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trigger API
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Lists all triggers, optionally filtered by status.
+   *
+   * @param status - Optional status filter (active | paused | exhausted | cancelled)
+   * @returns Promise resolving to array of triggers
+   */
+  async getTriggers(status?: string): Promise<import('../types/trigger.types').Trigger[]> {
+    const params: Record<string, string> = {};
+    if (status) params.status = status;
+    const response = await axios.get<ApiResponse<import('../types/trigger.types').Trigger[]>>(
+      `${API_BASE}/triggers`,
+      { params },
+    );
+    return response.data.data || [];
+  }
+
+  /**
+   * Returns trigger engine health and counts.
+   *
+   * @returns Promise resolving to engine status summary
+   */
+  async getTriggerEngineStatus(): Promise<import('../types/trigger.types').TriggerEngineStatus> {
+    const response = await axios.get<ApiResponse<import('../types/trigger.types').TriggerEngineStatus>>(
+      `${API_BASE}/triggers/status`,
+    );
+    if (!response.data.data) throw new Error('Failed to get trigger status');
+    return response.data.data;
+  }
+
+  /**
+   * Creates a new trigger.
+   *
+   * @param input - Trigger creation data
+   * @returns Promise resolving to the created trigger
+   */
+  async createTrigger(
+    input: import('../types/trigger.types').CreateTriggerInput,
+  ): Promise<import('../types/trigger.types').Trigger> {
+    const response = await axios.post<ApiResponse<import('../types/trigger.types').Trigger>>(
+      `${API_BASE}/triggers`,
+      input,
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to create trigger');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Pauses an active trigger.
+   *
+   * @param id - Trigger UUID
+   * @returns Promise resolving to the updated trigger
+   */
+  async pauseTrigger(id: string): Promise<import('../types/trigger.types').Trigger> {
+    const response = await axios.post<ApiResponse<import('../types/trigger.types').Trigger>>(
+      `${API_BASE}/triggers/${id}/pause`,
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to pause trigger');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Resumes a paused trigger.
+   *
+   * @param id - Trigger UUID
+   * @returns Promise resolving to the updated trigger
+   */
+  async resumeTrigger(id: string): Promise<import('../types/trigger.types').Trigger> {
+    const response = await axios.post<ApiResponse<import('../types/trigger.types').Trigger>>(
+      `${API_BASE}/triggers/${id}/resume`,
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to resume trigger');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Cancels a trigger permanently.
+   *
+   * @param id - Trigger UUID
+   * @returns Promise resolving to the updated trigger
+   */
+  async cancelTrigger(id: string): Promise<import('../types/trigger.types').Trigger> {
+    const response = await axios.post<ApiResponse<import('../types/trigger.types').Trigger>>(
+      `${API_BASE}/triggers/${id}/cancel`,
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to cancel trigger');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Lists active EventBus subscriptions.
+   *
+   * @returns Array of event subscriptions
+   */
+  async getEventSubscriptions(): Promise<import('../types/trigger.types').EventSubscription[]> {
+    const response = await axios.get<ApiResponse<import('../types/trigger.types').EventSubscription[]>>(
+      `${API_BASE}/events/subscriptions`,
+    );
+    return response.data.data || [];
+  }
+
+  /**
+   * Deletes a trigger.
+   *
+   * @param id - Trigger UUID
+   */
+  async deleteTrigger(id: string): Promise<void> {
+    const response = await axios.delete<ApiResponse<void>>(`${API_BASE}/triggers/${id}`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete trigger');
     }
   }
 }

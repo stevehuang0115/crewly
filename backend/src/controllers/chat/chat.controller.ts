@@ -98,6 +98,33 @@ export async function sendMessage(
     const chatService = getChatService();
     const result = await chatService.sendMessage(input);
 
+    // V3 Request creation — fire-and-forget, never blocks the response
+    setImmediate(async () => {
+      try {
+        const { RequestService } = await import('../../services/v3/request.service.js');
+        const requestSvc = RequestService.getInstance();
+        // Deduplicate: one Request per conversation message
+        const existing = await requestSvc.findBySourceConversationItemId(result.message.id);
+        if (!existing) {
+          const request = await requestSvc.create({
+            title: content.length > 80 ? content.slice(0, 77) + '...' : content,
+            description: content,
+            sourceConversationItemId: result.message.id,
+            priority: 'normal',
+            tags: ['chat-ui'],
+          });
+          // Set active request for RequestTracker time-window correlation
+          const { RequestTracker } = await import('../../services/v3/request-tracker.service.js');
+          RequestTracker.getInstance().setActiveRequest(request.id);
+          logger.debug('V3 Request created from chat message', { messageId: result.message.id, requestId: request.id });
+        }
+      } catch (err) {
+        logger.warn('V3 Request creation failed (non-critical)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+
     // Enqueue message for orchestrator processing if enabled (default: true)
     let orchestratorStatus: { forwarded: boolean; queued?: boolean; queueId?: string; error?: string } = { forwarded: false };
 
@@ -171,6 +198,7 @@ export async function sendMessage(
         orchestrator: orchestratorStatus,
       },
     });
+
   } catch (error) {
     if (error instanceof MessageValidationError) {
       res.status(400).json({

@@ -16,7 +16,6 @@ const defaultProps: HealthBarProps = {
   teamCount: 2,
   tasksInProgress: 4,
   tasksCompleted: 12,
-  relayConnected: true,
   onFactoryClick: vi.fn(),
 };
 
@@ -50,16 +49,6 @@ describe('HealthBar', () => {
     expect(el.textContent).toContain('12 done');
   });
 
-  it('shows relay connected status', () => {
-    render(<HealthBar {...defaultProps} relayConnected={true} />);
-    expect(screen.getByTestId('health-relay').textContent).toContain('Connected');
-  });
-
-  it('shows relay offline status', () => {
-    render(<HealthBar {...defaultProps} relayConnected={false} />);
-    expect(screen.getByTestId('health-relay').textContent).toContain('Offline');
-  });
-
   it('shows security shield indicator', () => {
     render(<HealthBar {...defaultProps} />);
     expect(screen.getByTestId('health-security').textContent).toContain('Secure');
@@ -81,7 +70,6 @@ describe('HealthBar', () => {
         teamCount={0}
         tasksInProgress={0}
         tasksCompleted={0}
-        relayConnected={false}
         onFactoryClick={vi.fn()}
       />,
     );

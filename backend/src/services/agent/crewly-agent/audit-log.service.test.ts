@@ -6,7 +6,8 @@
  * @module services/agent/crewly-agent/audit-log.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -100,7 +101,7 @@ describe('AuditLogService', () => {
 
     it('should log an approval_expired event', () => {
       service.logApprovalEvent(
-        'approval-3', 'sess-1', 'curl', 'external', 'approval_expired', 'auto-expire',
+        'approval-3', 'sess-1', 'curl', 'destructive', 'approval_expired', 'auto-expire',
       );
       const rows = service.query({ limit: 10 });
       expect(rows[0].action).toBe('approval_expired');

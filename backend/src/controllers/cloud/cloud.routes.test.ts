@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 /**
  * Tests for Cloud Routes
  *
@@ -12,24 +11,24 @@ import { createCloudRouter } from './cloud.routes.js';
 // Mocks — stub out controller handlers before importing routes
 // ---------------------------------------------------------------------------
 
-vi.mock('./cloud.controller.js', () => ({
-  connectToCloud: vi.fn((_req, res) => res.status(200).json({ success: true })),
-  disconnectFromCloud: vi.fn((_req, res) => res.status(200).json({ success: true })),
-  validateCloudToken: vi.fn((_req, res) => res.status(200).json({ success: true })),
-  refreshCloudToken: vi.fn((_req, res) => res.status(200).json({ success: true })),
-  getCloudStatus: vi.fn((_req, res) => res.status(200).json({ success: true })),
-  getCloudTemplates: vi.fn((_req, res) => res.status(200).json({ success: true })),
-  sendCloudMessage: vi.fn((_req, res) => res.status(200).json({ success: true })),
-  getDeviceId: vi.fn((_req, res) => res.status(200).json({ success: true })),
-  getDevicesFromSync: vi.fn((_req, res) => res.status(200).json({ success: true })),
-  verifyLicense: vi.fn((_req, res) => res.status(200).json({ success: true })),
+jest.mock('./cloud.controller.js', () => ({
+  connectToCloud: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  disconnectFromCloud: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  validateCloudToken: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  refreshCloudToken: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  getCloudStatus: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  getCloudTemplates: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  sendCloudMessage: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  getDeviceId: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  getDevicesFromSync: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  verifyLicense: jest.fn((_req, res) => res.status(200).json({ success: true })),
 }));
 
-vi.mock('./cloud-google-auth.controller.js', () => ({
-  cloudGoogleStart: vi.fn((_req, res) => res.redirect('https://accounts.google.com')),
-  cloudGoogleCallback: vi.fn((_req, res) => res.redirect('https://crewlyai.com')),
-  cloudGoogleUrl: vi.fn((_req, res) => res.status(200).json({ success: true, data: { url: 'https://accounts.google.com' } })),
-  cloudGoogleCallbackPost: vi.fn((_req, res) => res.status(200).json({ success: true, data: {} })),
+jest.mock('./cloud-google-auth.controller.js', () => ({
+  cloudGoogleStart: jest.fn((_req, res) => res.redirect('https://accounts.google.com')),
+  cloudGoogleCallback: jest.fn((_req, res) => res.redirect('https://crewlyai.com')),
+  cloudGoogleUrl: jest.fn((_req, res) => res.status(200).json({ success: true, data: { url: 'https://accounts.google.com' } })),
+  cloudGoogleCallbackPost: jest.fn((_req, res) => res.status(200).json({ success: true, data: {} })),
 }));
 
 // ---------------------------------------------------------------------------

@@ -3266,9 +3266,13 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 					const compressDetected = recentOutput.includes('/compress') ||
 						recentOutput.includes('Context compressed') ||
 						recentOutput.includes('Compressing context');
-					// Check for Gemini CLI error indicators in the status bar area (#130).
+					// Check for Gemini CLI error indicators ONLY in the status bar area (#130).
+					// The ✖ marker must be in the bottom status lines, not in content area —
+					// checking the full 40-line output causes false positives when ✖ appears
+					// in normal response content (e.g., diffs, lists), triggering spurious
+					// F12 keypresses that open DevTools or disrupt the TUI.
 					const statusArea = recentOutput.split('\n').slice(-GEMINI_ERROR_STATE_CONSTANTS.STATUS_AREA_LINES).join('\n');
-					const errorStateDetected = recentOutput.includes(GEMINI_ERROR_STATE_CONSTANTS.ERROR_MARKER) ||
+					const errorStateDetected = statusArea.includes(GEMINI_ERROR_STATE_CONSTANTS.ERROR_MARKER) ||
 						GEMINI_ERROR_STATE_CONSTANTS.ERROR_COUNT_PATTERN.test(statusArea);
 					const needsResize = attempt > 1 || compressDetected || errorStateDetected;
 

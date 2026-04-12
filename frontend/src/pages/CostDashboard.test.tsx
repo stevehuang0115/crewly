@@ -60,7 +60,7 @@ describe('CostDashboard', () => {
       expect(screen.getByTestId('cost-dashboard')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('Cost Dashboard')).toBeInTheDocument();
+    expect(screen.getByText('Usage')).toBeInTheDocument();
     expect(screen.getByTestId('budget-status-bar')).toBeInTheDocument();
     expect(screen.getByTestId('token-summary-cards')).toBeInTheDocument();
     expect(screen.getByTestId('agent-usage-table')).toBeInTheDocument();

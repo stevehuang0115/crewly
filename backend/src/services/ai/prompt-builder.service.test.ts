@@ -1,37 +1,36 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PromptBuilderService } from './prompt-builder.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { TeamMemberSessionConfig } from '../../types/index.js';
 
 // Mock dependencies
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
-		getInstance: vi.fn().mockReturnValue({
-			createComponentLogger: vi.fn().mockReturnValue({
-				info: vi.fn(),
-				debug: vi.fn(),
-				warn: vi.fn(),
-				error: vi.fn(),
+		getInstance: jest.fn().mockReturnValue({
+			createComponentLogger: jest.fn().mockReturnValue({
+				info: jest.fn(),
+				debug: jest.fn(),
+				warn: jest.fn(),
+				error: jest.fn(),
 			}),
 		}),
 	},
 }));
 
-vi.mock('fs/promises', () => ({
-	readFile: vi.fn(),
-	access: vi.fn(),
+jest.mock('fs/promises', () => ({
+	readFile: jest.fn(),
+	access: jest.fn(),
 }));
 
 // Import the mocked module so we can access mock functions
 import * as fsPromises from 'fs/promises';
 
 // Mock MemoryService
-const mockInitializeForSession = vi.fn().mockResolvedValue(undefined);
-const mockGetFullContext = vi.fn().mockResolvedValue('');
+const mockInitializeForSession = jest.fn().mockResolvedValue(undefined);
+const mockGetFullContext = jest.fn().mockResolvedValue('');
 
-vi.mock('../memory/memory.service.js', () => ({
+jest.mock('../memory/memory.service.js', () => ({
 	MemoryService: {
-		getInstance: vi.fn(() => ({
+		getInstance: jest.fn(() => ({
 			initializeForSession: mockInitializeForSession,
 			getFullContext: mockGetFullContext,
 		})),
@@ -39,37 +38,37 @@ vi.mock('../memory/memory.service.js', () => ({
 }));
 
 // Mock SOPService
-const mockGenerateSOPContext = vi.fn().mockResolvedValue('');
+const mockGenerateSOPContext = jest.fn().mockResolvedValue('');
 
-vi.mock('../sop/sop.service.js', () => ({
+jest.mock('../sop/sop.service.js', () => ({
 	SOPService: {
-		getInstance: vi.fn(() => ({
+		getInstance: jest.fn(() => ({
 			generateSOPContext: mockGenerateSOPContext,
 		})),
 	},
 }));
 
 // Mock RoleService - return null to force file fallback for testing file paths
-const mockGetRoleByName = vi.fn().mockResolvedValue(null);
+const mockGetRoleByName = jest.fn().mockResolvedValue(null);
 
-vi.mock('../settings/role.service.js', () => ({
-	getRoleService: vi.fn(() => ({
+jest.mock('../settings/role.service.js', () => ({
+	getRoleService: jest.fn(() => ({
 		getRoleByName: mockGetRoleByName,
 	})),
 }));
 
 describe('PromptBuilderService', () => {
 	let service: PromptBuilderService;
-	let mockReadFile: ReturnType<typeof vi.fn>;
-	let mockAccess: ReturnType<typeof vi.fn>;
+	let mockReadFile: jest.Mock;
+	let mockAccess: jest.Mock;
 	const savedModularEnv = process.env.CREWLY_USE_MODULAR_PROMPTS;
 
 	beforeEach(() => {
-		vi.clearAllMocks();
+		jest.clearAllMocks();
 		// Default to legacy path for existing tests; the feature-flag describe block overrides this
 		process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
-		mockReadFile = vi.mocked(fsPromises.readFile);
-		mockAccess = vi.mocked(fsPromises.access);
+		mockReadFile = jest.mocked(fsPromises.readFile);
+		mockAccess = jest.mocked(fsPromises.access);
 		service = new PromptBuilderService('/test/project');
 	});
 

@@ -113,6 +113,15 @@ You have bash skills that let you store and retrieve knowledge that persists acr
   bash {{AGENT_SKILLS_PATH}}/core/record-learning/execute.sh '{"agentId":"{{SESSION_NAME}}","agentRole":"{{ROLE}}","projectPath":"{{PROJECT_PATH}}","learning":"Current progress: [what was done]. Remaining: [what is left]. Key findings: [important notes]"}'
   ```
 
+## Recurring Tasks (Cron System)
+
+Your team has a built-in cron system. The orchestrator or user can schedule recurring tasks that are automatically sent to you on a schedule (e.g., daily reports, weekly checks). When a cron task fires:
+
+- You will receive the task description as a normal message in your terminal
+- Treat it like any other task from the orchestrator — execute it and report results
+- If you were offline, Crewly auto-started you to deliver the task
+
+You do not need to manage cron tasks yourself — the orchestrator handles creation and scheduling. If you need a recurring task set up, ask the orchestrator.
 After checking in, just say "Ready for tasks" and wait for me to send you work.
 
 ## Error Learning Protocol

@@ -8,6 +8,8 @@ import { apiService } from '@/services/api.service';
 import { Plus, Search, Filter, Folder, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
 import { usePinnedFavorites } from '@/hooks/usePinnedFavorites';
+import { assignDefaultAvatars } from '@/utils/team.utils';
+import { logSilentError } from '@/utils/error-handling';
 
 export const Projects: React.FC = () => {
   const navigate = useNavigate();
@@ -18,6 +20,7 @@ export const Projects: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [showCreator, setShowCreator] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [progressMap, setProgressMap] = useState<Record<string, {
     percent: number;
@@ -46,13 +49,15 @@ export const Projects: React.FC = () => {
   const loadProjects = async () => {
     try {
       setLoading(true);
+      setError(null);
       const list = await apiService.getProjects();
       setProjects(list);
       // Calculate progress and teams asynchronously
-      calculateProgressForProjects(list).catch(err => console.error('Progress calc failed:', err));
-      loadTeamsForProjects(list).catch(err => console.error('Teams loading failed:', err));
-    } catch (error) {
-      console.error('Error loading projects:', error);
+      calculateProgressForProjects(list).catch(err => logSilentError(err, { context: 'Progress calc failed' }));
+      loadTeamsForProjects(list).catch(err => logSilentError(err, { context: 'Teams loading failed' }));
+    } catch (err) {
+      logSilentError(err, { context: 'Loading projects', level: 'error' });
+      setError('Failed to load projects. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -64,16 +69,16 @@ export const Projects: React.FC = () => {
         const tasks = await apiService.getAllTasks(p.id);
         const total = tasks.length;
         if (total === 0) return [p.id, { percent: 0, active: 0, total: 0, open: 0, inProgress: 0, pending: 0, done: 0, blocked: 0 }] as const;
-        const open = tasks.filter((t: any) => t.status === 'open').length;
-        const inProgress = tasks.filter((t: any) => t.status === 'in_progress').length;
-        const pending = tasks.filter((t: any) => t.status === 'pending').length;
-        const done = tasks.filter((t: any) => t.status === 'done' || t.status === 'completed').length;
-        const blocked = tasks.filter((t: any) => t.status === 'blocked').length;
+        const open = tasks.filter((t: { status?: string }) => t.status === 'open').length;
+        const inProgress = tasks.filter((t: { status?: string }) => t.status === 'in_progress').length;
+        const pending = tasks.filter((t: { status?: string }) => t.status === 'pending').length;
+        const done = tasks.filter((t: { status?: string }) => t.status === 'done' || t.status === 'completed').length;
+        const blocked = tasks.filter((t: { status?: string }) => t.status === 'blocked').length;
         const active = open + inProgress + pending;
         const percent = Math.round((done / total) * 100);
         return [p.id, { percent, active, total, open, inProgress, pending, done, blocked }] as const;
       } catch (e) {
-        console.warn('Failed to load tasks for project', p.id, e);
+        logSilentError(e, { context: `Loading tasks for project ${p.id}`, level: 'warn' });
         return [p.id, { percent: 0, active: 0, total: 0, open: 0, inProgress: 0, pending: 0, done: 0, blocked: 0 }] as const;
       }
     }));
@@ -84,21 +89,9 @@ export const Projects: React.FC = () => {
     try {
       const allTeams = await apiService.getTeams();
 
-      const avatarChoices = [
-        'https://picsum.photos/seed/1/64',
-        'https://picsum.photos/seed/2/64',
-        'https://picsum.photos/seed/3/64',
-        'https://picsum.photos/seed/4/64',
-        'https://picsum.photos/seed/5/64',
-        'https://picsum.photos/seed/6/64',
-      ];
-
       const migratedTeams = allTeams.map(team => ({
         ...team,
-        members: team.members.map((member: any, index: number) => ({
-          ...member,
-          avatar: member.avatar || avatarChoices[index % avatarChoices.length]
-        }))
+        members: assignDefaultAvatars(team.members),
       }));
 
       const entries = list.map(project => {
@@ -111,8 +104,8 @@ export const Projects: React.FC = () => {
       });
 
       setTeamsMap(Object.fromEntries(entries));
-    } catch (error) {
-      console.error('Failed to load teams for projects:', error);
+    } catch (err) {
+      logSilentError(err, { context: 'Loading teams for projects' });
     }
   };
 
@@ -122,9 +115,9 @@ export const Projects: React.FC = () => {
       setProjects(prev => [newProject, ...prev]);
       setShowCreator(false);
       navigate(`/projects/${newProject.id}`);
-    } catch (error) {
-      console.error('Error creating project:', error);
-      throw error;
+    } catch (err) {
+      logSilentError(err, { context: 'Creating project', level: 'error' });
+      throw err;
     }
   };
 
@@ -139,8 +132,8 @@ export const Projects: React.FC = () => {
       setProjects(prev =>
         prev.map(p => p.id === projectId ? updated : p)
       );
-    } catch (error) {
-      console.error('Error archiving project:', error);
+    } catch (err) {
+      logSilentError(err, { context: 'Archiving project', level: 'error' });
     }
   };
 
@@ -173,6 +166,20 @@ export const Projects: React.FC = () => {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <LoadingSpinner size="xl" text="Loading projects..." />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
+        <p className="text-red-400 mb-4">{error}</p>
+        <button
+          onClick={loadProjects}
+          className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
+        >
+          Retry
+        </button>
       </div>
     );
   }

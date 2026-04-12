@@ -105,6 +105,31 @@ export function startMessageRouter(): void {
 }
 
 /**
+ * Start the BrowserRelayAdapter auto-discovery to listen for Chrome Extension
+ * devices coming online via CloudSync. When a device with role 'browser' is
+ * detected, the adapter automatically sets its device ID as the relay target.
+ *
+ * Non-blocking: failures are logged but do not affect other services.
+ */
+export function startBrowserRelayAutoDiscovery(): void {
+	try {
+		import('../browser/browser-relay-adapter.service.js').then(({ BrowserRelayAdapter }) => {
+			const adapter = BrowserRelayAdapter.getInstance();
+			adapter.startAutoDiscovery();
+			logger.info('BrowserRelayAdapter auto-discovery started for extension device detection');
+		}).catch((err) => {
+			logger.warn('Failed to start BrowserRelayAdapter auto-discovery (non-fatal)', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
+	} catch (err) {
+		logger.warn('Failed to start BrowserRelayAdapter auto-discovery (non-fatal)', {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+/**
  * Attempt to restore Cloud connection from persisted config.
  *
  * Called during backend startup. If ~/.crewly/cloud/config.json exists
@@ -201,6 +226,9 @@ export async function initializeCloudIfConfigured(): Promise<CloudInitResult> {
 
 			// Start MessageRouterService to enable cross-device agent communication
 			startMessageRouter();
+
+			// Start browser extension auto-discovery via CloudSync device events
+			startBrowserRelayAutoDiscovery();
 		} catch (syncError) {
 			logger.warn('CloudSyncService start failed during initialization (non-fatal)', {
 				error: syncError instanceof Error ? syncError.message : String(syncError),

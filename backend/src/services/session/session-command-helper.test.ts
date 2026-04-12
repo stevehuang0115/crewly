@@ -300,12 +300,25 @@ describe('SessionCommandHelper', () => {
 	});
 
 	describe('KEY_CODES', () => {
-		it('should have correct key codes', () => {
+		it('should have correct key codes for control keys', () => {
 			expect(KEY_CODES['Enter']).toBe('\r');
 			expect(KEY_CODES['C-c']).toBe('\x03');
 			expect(KEY_CODES['C-u']).toBe('\x15');
 			expect(KEY_CODES['Escape']).toBe('\x1b');
 			expect(KEY_CODES['Tab']).toBe('\t');
+		});
+
+		it('should have correct escape sequences for function keys', () => {
+			expect(KEY_CODES['F1']).toBe('\x1bOP');
+			expect(KEY_CODES['F5']).toBe('\x1b[15~');
+			expect(KEY_CODES['F12']).toBe('\x1b[24~');
+		});
+
+		it('should send F12 escape sequence (not literal text) to PTY', async () => {
+			await helper.sendKey('test-session', 'F12');
+			// Must send the escape sequence, NOT the literal string "F12"
+			expect(mockSession.write).toHaveBeenCalledWith('\x1b[24~');
+			expect(mockSession.write).not.toHaveBeenCalledWith('F12');
 		});
 	});
 

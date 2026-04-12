@@ -11,11 +11,14 @@
 import { Router } from 'express';
 import {
 	getStatus,
+	getInstances,
+	connectProxy,
 	navigate,
 	screenshot,
 	readText,
 	getTabs,
 	execute,
+	executeJs,
 	click,
 	fill,
 	type,
@@ -43,8 +46,14 @@ import {
 export function createBrowserRouter(): Router {
 	const router = Router();
 
-	// GET /api/browser/status — connection status
+	// GET /api/browser/status — connection status (includes proxy + instances)
 	router.get('/status', getStatus);
+
+	// GET /api/browser/instances — list connected browser instances
+	router.get('/instances', getInstances);
+
+	// POST /api/browser/proxy/connect — manually connect proxy to Cloud Relay
+	router.post('/proxy/connect', connectProxy);
 
 	// GET /api/browser/tabs — list open tabs
 	router.get('/tabs', getTabs);
@@ -64,8 +73,11 @@ export function createBrowserRouter(): Router {
 	// POST /api/browser/read-text — read page text
 	router.post('/read-text', readText);
 
-	// POST /api/browser/execute — execute JavaScript
+	// POST /api/browser/execute — execute safe predefined operations
 	router.post('/execute', execute);
+
+	// POST /api/browser/execute-js — execute arbitrary JavaScript code
+	router.post('/execute-js', executeJs);
 
 	// POST /api/browser/click — click element or coordinates
 	router.post('/click', click);

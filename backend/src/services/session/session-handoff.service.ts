@@ -873,6 +873,19 @@ export class SessionHandoffService {
             });
             return false;
           }
+          // For chat-ui threads: also check by conversationId since chat-ui
+          // files use the conversation ID as the channelId, and the TSQ
+          // entries store the matching sourceConversationItemId.
+          if (thread.channelType === 'chat-ui') {
+            const byConvId = tsq.getByConversationId(thread.channelId);
+            if (byConvId && isTerminalStatus(byConvId.status)) {
+              this.logger.debug('Filtering out terminal chat-ui thread from resume', {
+                channelId: thread.channelId,
+                status: byConvId.status,
+              });
+              return false;
+            }
+          }
           return true;
         });
 

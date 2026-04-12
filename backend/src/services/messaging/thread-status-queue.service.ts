@@ -161,6 +161,8 @@ export class ThreadStatusQueueService {
       this.persistPath = path.join(crewlyHome, THREAD_STATUS_CONSTANTS.STORAGE_FILE);
       this.logger.info('Initialized', { persistPath: this.persistPath });
     }
+    // Register as singleton so getInstance() returns the fully-initialized instance
+    ThreadStatusQueueService.instance = this;
   }
 
   /**
@@ -490,6 +492,25 @@ export class ThreadStatusQueueService {
     let best: ThreadStatusEntry | null = null;
     for (const entry of this.entries.values()) {
       if (entry.conversationId === conversationId) {
+        if (!best || entry.updatedAt > best.updatedAt) {
+          best = entry;
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Finds a thread status entry by its queueMessageId.
+   * Returns the most recently updated entry if multiple match.
+   *
+   * @param queueMessageId - The queue message ID to search for
+   * @returns The most recently updated matching entry, or null
+   */
+  getByQueueMessageId(queueMessageId: string): ThreadStatusEntry | null {
+    let best: ThreadStatusEntry | null = null;
+    for (const entry of this.entries.values()) {
+      if (entry.queueMessageId === queueMessageId) {
         if (!best || entry.updatedAt > best.updatedAt) {
           best = entry;
         }

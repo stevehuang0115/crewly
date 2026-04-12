@@ -65,6 +65,14 @@ export interface ModuleConfig {
 	domainSOP?: string;
 	/** Risk policy name — loads config/risk-policies/{riskPolicy}.policy.md */
 	riskPolicy?: string;
+
+	// === Eval mode ===
+
+	/**
+	 * When true, the prompt assembler skips non-core modules to reduce token usage
+	 * during eval runs. Core modules: identity, soul, role-boundary, recovery.
+	 */
+	evalMode?: boolean;
 }
 
 /**

@@ -1,0 +1,73 @@
+/**
+ * Task Pool Routes
+ *
+ * Router configuration for Task Pool API endpoints.
+ *
+ * @module controllers/task-pool/task-pool.routes
+ */
+
+import { Router } from 'express';
+import {
+  addItem,
+  listAvailable,
+  claimItem,
+  releaseItem,
+  completeItem,
+  blockItem,
+  failItemHandler,
+  getStats,
+  heartbeat,
+  extendLease,
+  scanExpired,
+  revokeAndRelease,
+} from './task-pool.controller.js';
+
+/**
+ * Creates the task pool router with all endpoints.
+ *
+ * @returns Express router configured with task pool routes
+ */
+export function createTaskPoolRouter(): Router {
+  const router = Router();
+
+  // Pool statistics (must be before parameterized routes)
+  router.get('/stats', getStats);
+
+  // Scan for expired claims
+  router.get('/claims/expired', scanExpired);
+
+  // List available work items
+  router.get('/', listAvailable);
+
+  // Alias: /all returns the same list (used by frontend Execution Logs page)
+  router.get('/all', listAvailable);
+
+  // Add a work item to the pool
+  router.post('/add', addItem);
+
+  // Claim a work item
+  router.post('/claim', claimItem);
+
+  // Agent heartbeat for active claim
+  router.post('/heartbeat', heartbeat);
+
+  // Extend lease on a claim
+  router.post('/extend-lease', extendLease);
+
+  // Release a work item back to pool
+  router.post('/release/:workItemId', releaseItem);
+
+  // Complete a work item (V3.1 — agent-reported completion with token usage)
+  router.post('/complete/:workItemId', completeItem);
+
+  // Block a work item (V3.1 — agent-reported blocked state)
+  router.post('/block/:workItemId', blockItem);
+
+  // Fail a work item (V3.1 — agent-reported failure)
+  router.post('/fail/:workItemId', failItemHandler);
+
+  // Revoke a claim and release work item
+  router.post('/revoke/:claimId', revokeAndRelease);
+
+  return router;
+}

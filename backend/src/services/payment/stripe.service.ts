@@ -52,7 +52,7 @@ export interface SubscriptionRow {
 }
 
 /** Default plan ID when metadata is missing */
-const DEFAULT_PLAN_ID = 'pro' as const;
+const DEFAULT_PLAN_ID = 'starter' as const;
 
 /** Supabase table name for subscription records */
 const SUBSCRIPTIONS_TABLE = 'subscriptions' as const;
@@ -91,25 +91,31 @@ function extractInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
   return typeof sub === 'string' ? sub : sub?.id ?? null;
 }
 
-/** Maps plan+interval keys to environment variable names for Stripe Price IDs */
-const PRICE_ENV_VAR_MAP: Readonly<Record<string, string>> = {
-  'pro_month': 'STRIPE_PRICE_PRO_MONTHLY',
-  'pro_year': 'STRIPE_PRICE_PRO_YEARLY',
-  'enterprise_month': 'STRIPE_PRICE_ENTERPRISE_MONTHLY',
-  'enterprise_year': 'STRIPE_PRICE_ENTERPRISE_YEARLY',
+/**
+ * Stripe Price IDs for each plan + interval combination.
+ * All prices are configurable via environment variables.
+ * Hardcoded fallbacks match the Crewly Pro test Stripe account (acct_1TIFhT2clNTwFdMy).
+ *
+ * Pricing: Starter $49/mo, Pro $99/mo, Max $299/mo
+ */
+const STRIPE_PRICE_IDS: Readonly<Record<string, string | undefined>> = {
+  'starter_month': process.env['STRIPE_PRICE_STARTER_MONTHLY'] ?? 'price_1TIIEe2clNTwFdMygfhyKSUS',
+  'starter_year': process.env['STRIPE_PRICE_STARTER_YEARLY'],
+  'pro_month': process.env['STRIPE_PRICE_PRO_MONTHLY'] ?? 'price_1TIIEq2clNTwFdMyrUXd2LRD',
+  'pro_year': process.env['STRIPE_PRICE_PRO_YEARLY'],
+  'max_month': process.env['STRIPE_PRICE_MAX_MONTHLY'] ?? 'price_1TIIEq2clNTwFdMyjIWtvVys',
+  'max_year': process.env['STRIPE_PRICE_MAX_YEARLY'],
 };
 
 /**
  * Resolve a Stripe Price ID for a plan + interval combination.
- * Reads env vars at call time to support late-loaded configuration.
  *
- * @param planId - Plan identifier (pro, enterprise)
+ * @param planId - Plan identifier (starter, pro, max)
  * @param interval - Billing interval (month, year)
  * @returns Stripe Price ID or undefined
  */
 function resolvePriceId(planId: string, interval: string): string | undefined {
-  const envVar = PRICE_ENV_VAR_MAP[`${planId}_${interval}`];
-  return envVar ? process.env[envVar] : undefined;
+  return STRIPE_PRICE_IDS[`${planId}_${interval}`];
 }
 
 /**

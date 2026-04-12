@@ -8,6 +8,7 @@ import { resolveStepConfig } from '../../utils/prompt-resolver.js';
 import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.service.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { TaskPlanningService } from '../../services/agent/task-planning.service.js';
 import { TaskOutputValidatorService } from '../../services/quality/task-output-validator.service.js';
 import { TracingService } from '../../services/core/tracing.service.js';
 import { TRACING_CONSTANTS } from '../../constants.js';
@@ -20,6 +21,84 @@ const logger = LoggerService.getInstance().createComponentLogger('TaskManagement
 
 /** Module-level reference to EventBusService for auto-cleanup on task completion */
 let eventBusService: EventBusService | null = null;
+
+// ---------------------------------------------------------------------------
+// V3.1 Projection Hooks — fire-and-forget wrappers injected into legacy routes
+// ---------------------------------------------------------------------------
+
+/**
+ * Projects a legacy task-management accept into a TaskRecord (fire-and-forget).
+ * Called when an agent successfully calls /task-management/take-next.
+ *
+ * @param taskTitle - Task title parsed from the .md file
+ * @param taskPath - Absolute path to the task file (used as stable key in title)
+ * @param sessionName - Agent session that accepted the task
+ */
+function projectTaskAccepted(taskTitle: string, taskPath: string, sessionName: string): void {
+  setImmediate(async () => {
+    try {
+      const { TaskProjectionService } = await import('../../services/v3/task-projection.service.js');
+      const proj = TaskProjectionService.getInstance();
+      const record = await proj.createRecord({
+        title: taskTitle || basename(taskPath, '.md'),
+        type: 'self_execution',
+        ownerAgent: sessionName,
+      });
+      await proj.markStarted(record.id, sessionName);
+    } catch {
+      // Non-critical
+    }
+  });
+}
+
+/**
+ * Projects a legacy task completion into the most recent running TaskRecord for this agent.
+ * Called when /task-management/complete succeeds.
+ *
+ * @param sessionName - Agent session that completed the task
+ * @param taskTitle - Task title (for matching)
+ */
+function projectTaskCompleted(sessionName: string, taskTitle: string): void {
+  setImmediate(async () => {
+    try {
+      const { TaskProjectionService } = await import('../../services/v3/task-projection.service.js');
+      const proj = TaskProjectionService.getInstance();
+      // Find the most recent running TaskRecord for this agent
+      const records = proj.listRecords({ ownerAgent: sessionName, status: 'running' });
+      // Prefer an exact title match, fall back to most recent
+      const match = records.find(r => r.title === taskTitle) || records[records.length - 1];
+      if (match) {
+        await proj.markDone(match.id, sessionName);
+      }
+    } catch {
+      // Non-critical
+    }
+  });
+}
+
+/**
+ * Projects a legacy task block into the most recent running TaskRecord for this agent.
+ * Called when /task-management/block succeeds.
+ *
+ * @param sessionName - Agent session that blocked the task
+ * @param reason - Block reason
+ * @param taskTitle - Task title (for matching)
+ */
+function projectTaskBlocked(sessionName: string, reason: string, taskTitle: string): void {
+  setImmediate(async () => {
+    try {
+      const { TaskProjectionService } = await import('../../services/v3/task-projection.service.js');
+      const proj = TaskProjectionService.getInstance();
+      const records = proj.listRecords({ ownerAgent: sessionName, status: 'running' });
+      const match = records.find(r => r.title === taskTitle) || records[records.length - 1];
+      if (match) {
+        await proj.markBlocked(match.id, sessionName, reason);
+      }
+    } catch {
+      // Non-critical
+    }
+  });
+}
 
 /**
  * Publish a task:completed event to the EventBus (#137) and send a Slack
@@ -120,6 +199,7 @@ export async function createTask(this: ApiController, req: Request, res: Respons
 			sessionName,
 			milestone = 'delegated',
 			outputSchema,
+			requestId,
 		} = req.body;
 
 		if (!projectPath) {
@@ -166,6 +246,23 @@ export async function createTask(this: ApiController, req: Request, res: Respons
 
 		await writeFile(taskPath, taskContent, 'utf-8');
 
+		// Create planning files (plan.md, findings.md, progress.md) when task is assigned
+		if (sessionName) {
+			try {
+				const planningService = TaskPlanningService.getInstance();
+				await planningService.createPlanningFiles({
+					taskFilePath: taskPath,
+					taskTitle: task,
+					priority,
+					sessionName,
+				});
+			} catch (planErr) {
+				logger.warn('Failed to create planning files (non-fatal)', {
+					error: planErr instanceof Error ? planErr.message : String(planErr),
+				});
+			}
+		}
+
 		// If assigned, track via TaskTrackingService
 		let trackedTaskId: string | undefined;
 		if (sessionName) {
@@ -200,6 +297,35 @@ export async function createTask(this: ApiController, req: Request, res: Respons
 			} catch (trackingError) {
 				logger.warn('Failed to track task assignment', { error: trackingError instanceof Error ? trackingError.message : String(trackingError) });
 				// Non-fatal - the file was still created
+			}
+		}
+
+		// V3 Hook: emit v3:task_delegated for automatic WorkItem creation.
+		// Uses explicit requestId only — no time-window fallback — to avoid
+		// mis-association in high-concurrency scenarios.
+		if (sessionName && eventBusService) {
+			try {
+				const taskIdForEvent = trackedTaskId || `${sanitizedName}_${timestamp}`;
+				(eventBusService as any).emit('v3:task_delegated', {
+					taskId: taskIdForEvent,
+					title: task,
+					description: task,
+					assignedTo: sessionName,
+					priority,
+					projectPath,
+					milestone,
+					requestId: requestId || undefined,
+					timestamp: new Date().toISOString(),
+				});
+				logger.debug('Emitted v3:task_delegated', {
+					taskId: taskIdForEvent,
+					assignedTo: sessionName,
+					requestId: requestId || undefined,
+				});
+			} catch (err) {
+				logger.warn('Failed to emit v3:task_delegated (non-fatal)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
 			}
 		}
 
@@ -561,6 +687,8 @@ export async function completeTask(
 				completedAt: new Date().toISOString(),
 				monitoringCleanup: cleanupResultSchema,
 			});
+			// V3.1 Projection (fire-and-forget)
+			if (sessionName) projectTaskCompleted(sessionName, basename(taskPath, '.md'));
 			return;
 		}
 
@@ -603,6 +731,8 @@ export async function completeTask(
 			completedAt: new Date().toISOString(),
 			monitoringCleanup: cleanupResult,
 		});
+		// V3.1 Projection (fire-and-forget)
+		if (sessionName) projectTaskCompleted(sessionName, basename(taskPath, '.md'));
 	} catch (error) {
 		logger.error('Error completing task', { error: error instanceof Error ? error.message : String(error) });
 		res.status(500).json({ success: false, error: 'Failed to complete task' });
@@ -675,6 +805,9 @@ export async function blockTask(this: ApiController, req: Request, res: Response
 			blockReason: blockReason || 'No reason provided',
 			blockedAt: new Date().toISOString(),
 		});
+		// V3.1 Projection (fire-and-forget)
+		const { sessionName: blockSession } = req.body;
+		if (blockSession) projectTaskBlocked(blockSession, blockReason || 'unspecified', basename(taskPath, '.md'));
 	} catch (error) {
 		logger.error('Error blocking task', { error: error instanceof Error ? error.message : String(error) });
 		res.status(500).json({ success: false, error: 'Failed to block task' });
@@ -812,6 +945,12 @@ export async function takeNextTask(
 			totalAvailable: taskFiles.length,
 			openTasksPath,
 		});
+
+		// V3.1 Projection: record that this agent accepted a task (fire-and-forget)
+		const { sessionName: sn } = req.body;
+		if (sn) {
+			projectTaskAccepted(taskInfo.title || nextTaskFile, taskPath, sn);
+		}
 	} catch (error) {
 		logger.error('Error getting next task', { error: error instanceof Error ? error.message : String(error) });
 		res.status(500).json({ success: false, error: 'Failed to get next task' });
@@ -1809,6 +1948,20 @@ export async function completeTasksBySession(this: ApiController, req: Request, 
 					taskName: task.taskName,
 					sessionName,
 				});
+
+				// V3 Hook: emit v3:task_completed so V3DataService can cascade
+				// WorkItem → done and roll up Request status.
+				if (eventBusService) {
+					try {
+						(eventBusService as any).emit('v3:task_completed', {
+							taskId: task.id,
+							sessionName,
+							timestamp: new Date().toISOString(),
+						});
+					} catch {
+						// non-fatal
+					}
+				}
 			} catch (error) {
 				logger.warn('Failed to auto-complete task', {
 					taskId: task.id,

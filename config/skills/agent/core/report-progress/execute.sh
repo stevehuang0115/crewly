@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
 INPUT=$(read_json_input "${1:-}")
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"dev-1\",\"progress\":50,\"current\":\"Implementing tests\"}'"
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"dev-1\",\"progress\":50,\"current\":\"Implementing tests\",\"taskGroup\":\"delegated\"}'"
 
 SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
 PROGRESS=$(printf '%s' "$INPUT" | jq -r '.progress // empty')
@@ -20,6 +20,8 @@ BODY=$(printf '%s' "$INPUT" | jq '{
   progress: (.progress | tonumber),
   current: .current
 } +
+  (if .projectPath then {projectPath: .projectPath} else {} end) +
+  (if .taskGroup then {taskGroup: .taskGroup} else {} end) +
   (if .completed then {completed: .completed} else {} end) +
   (if .nextSteps then {nextSteps: .nextSteps} else {} end) +
   (if .blockers then {blockers: .blockers} else {} end) +

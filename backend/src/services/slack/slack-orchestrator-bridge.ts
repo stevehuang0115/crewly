@@ -360,6 +360,34 @@ export class SlackOrchestratorBridge extends EventEmitter {
           response = await this.handleControlCommand(command, context);
           break;
         default:
+          // V3 Request creation for Slack user messages — fire-and-forget
+          setImmediate(async () => {
+            try {
+              const { RequestService } = await import('../v3/request.service.js');
+              const svc = RequestService.getInstance();
+              const msgId = `slack-${message.channelId}-${message.ts}`;
+              const existing = await svc.findBySourceConversationItemId(msgId);
+              if (!existing) {
+                const title = (message.text || '').slice(0, 80) || 'Slack message';
+                const request = await svc.create({
+                  title: title.length === 80 ? title.slice(0, 77) + '...' : title,
+                  description: message.text || '',
+                  sourceConversationItemId: msgId,
+                  priority: 'normal',
+                  tags: ['slack'],
+                });
+                // Set active request for RequestTracker time-window correlation
+                // so downstream delegate-task calls can link WorkItems to this Request
+                const { RequestTracker } = await import('../v3/request-tracker.service.js');
+                RequestTracker.getInstance().setActiveRequest(request.id);
+                this.logger.debug('V3 Request created from Slack message', { msgId, requestId: request.id });
+              }
+            } catch (err) {
+              this.logger.warn('V3 Request creation from Slack failed (non-critical)', {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          });
           // Send to orchestrator for processing
           response = await this.sendToOrchestrator(message.text, context);
           isOrchestratorRoute = true;

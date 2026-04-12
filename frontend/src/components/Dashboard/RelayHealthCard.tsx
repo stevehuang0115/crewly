@@ -11,6 +11,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Monitor, Cpu, RefreshCw, Shield, Wifi, WifiOff, Activity } from 'lucide-react';
 import { formatRelativeTimeCompact } from '../../utils/time';
 
@@ -21,8 +22,11 @@ import { formatRelativeTimeCompact } from '../../utils/time';
 /** Relay local status endpoint. */
 const RELAY_STATUS_URL = '/api/relay/devices';
 
-/** Cloud devices proxy endpoint. */
-const CLOUD_DEVICES_URL = '/api/relay/cloud-devices';
+/** Cloud devices endpoint. */
+const CLOUD_DEVICES_URL = '/api/cloud/devices';
+
+/** Legacy cloud devices endpoint used as a fallback when needed. */
+const LEGACY_CLOUD_DEVICES_URL = '/api/relay/cloud-devices';
 
 /** Polling interval for latency pings (ms). */
 const PING_INTERVAL_MS = 5000;
@@ -36,13 +40,16 @@ const DEVICE_REFRESH_INTERVAL_MS = 30000;
 
 /** A relay device returned by the Cloud devices API. */
 interface CloudDevice {
-  sessionId: string;
-  role: 'orchestrator' | 'agent';
-  state: 'waiting' | 'paired' | 'disconnected';
-  pairedWith: string | null;
-  registeredAt: string;
-  lastHeartbeatAt: string;
+  sessionId?: string;
+  deviceId?: string;
+  role?: 'orchestrator' | 'agent';
+  state?: 'waiting' | 'paired' | 'disconnected';
+  status?: 'online' | 'offline';
+  pairedWith?: string | null;
+  registeredAt?: string;
+  lastHeartbeatAt?: string;
   name?: string;
+  deviceName?: string;
   isLocal?: boolean;
 }
 
@@ -65,6 +72,8 @@ const DEVICE_STATE_COLORS: Record<string, string> = {
   waiting: 'bg-yellow-400',
   paired: 'bg-emerald-400',
   disconnected: 'bg-gray-500',
+  online: 'bg-emerald-400',
+  offline: 'bg-gray-500',
 };
 
 /** Map device state to human-readable label. */
@@ -72,6 +81,8 @@ const DEVICE_STATE_LABELS: Record<string, string> = {
   waiting: 'Connecting',
   paired: 'Connected',
   disconnected: 'Offline',
+  online: 'Online',
+  offline: 'Offline',
 };
 
 /** Map overall relay state to status badge styling. */
@@ -112,41 +123,46 @@ async function measureLatency(): Promise<number | null> {
  */
 const DeviceRow: React.FC<{ device: CloudDevice }> = ({ device }) => {
   const Icon = device.role === 'orchestrator' ? Monitor : Cpu;
-  const stateColor = DEVICE_STATE_COLORS[device.state] ?? 'bg-gray-500';
-  const stateLabel = DEVICE_STATE_LABELS[device.state] ?? device.state;
-  const displayName = device.name ?? `${device.role} (${device.sessionId.slice(0, 8)}…)`;
+  const deviceStatus = device.status || device.state || 'disconnected';
+  const stateColor = DEVICE_STATE_COLORS[deviceStatus] ?? 'bg-gray-500';
+  const stateLabel = DEVICE_STATE_LABELS[deviceStatus] ?? deviceStatus;
+  const id = device.deviceId || device.sessionId || 'unknown-device';
+  const displayName = device.name || device.deviceName || (device.sessionId ? `${device.role || 'device'} (${device.sessionId.slice(0, 8)}...)` : id);
+  const heartbeatTime = device.lastHeartbeatAt || device.registeredAt;
 
   return (
     <div
-      data-testid={`relay-device-${device.sessionId}`}
-      className={`flex items-center justify-between py-2 px-3 rounded-md transition-colors ${
+      data-testid={`relay-device-${id}`}
+      className={`flex items-center justify-between p-4 rounded-xl border transition-colors ${
         device.isLocal
-          ? 'bg-primary/5 border border-primary/20'
-          : 'hover:bg-background-dark'
+          ? 'bg-primary/5 border-primary/20'
+          : 'border-border-dark bg-background-dark/50 hover:border-primary/20'
       }`}
     >
-      <div className="flex items-center gap-2.5 min-w-0">
-        <Icon className={`w-3.5 h-3.5 flex-shrink-0 ${device.isLocal ? 'text-primary' : 'text-text-secondary-dark'}`} />
+      <div className="flex items-center gap-3 min-w-0">
+        <div className={`p-2 rounded-lg ${device.isLocal ? 'bg-primary/10' : 'bg-surface-dark'}`}>
+          <Icon className={`w-4 h-4 flex-shrink-0 ${device.isLocal ? 'text-primary' : 'text-text-secondary-dark'}`} />
+        </div>
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs font-medium text-text-primary-dark truncate">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-text-primary-dark truncate">
               {displayName}
             </span>
             {device.isLocal && (
-              <span className="text-[9px] font-medium px-1 py-px rounded bg-primary/10 text-primary whitespace-nowrap">
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-primary/10 text-primary whitespace-nowrap">
                 You
               </span>
             )}
           </div>
-          <span className="text-[10px] text-text-secondary-dark">
-            {formatRelativeTimeCompact(device.lastHeartbeatAt)}
+          <span className="text-xs text-text-secondary-dark">
+            {heartbeatTime ? `Last seen ${formatRelativeTimeCompact(heartbeatTime)}` : 'Status unavailable'}
           </span>
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5 ml-2 flex-shrink-0">
-        <span className={`h-1.5 w-1.5 rounded-full ${stateColor}`} />
-        <span className="text-[10px] text-text-secondary-dark">{stateLabel}</span>
+      <div className="flex items-center gap-1.5 ml-3 flex-shrink-0">
+        <span className={`h-2 w-2 rounded-full ${stateColor}`} />
+        <span className="text-xs text-text-secondary-dark">{stateLabel}</span>
       </div>
     </div>
   );
@@ -169,6 +185,7 @@ const DeviceRow: React.FC<{ device: CloudDevice }> = ({ device }) => {
  * @returns RelayHealthCard component
  */
 export const RelayHealthCard: React.FC = () => {
+  const navigate = useNavigate();
   const [cardState, setCardState] = useState<CardState>('loading');
   const [relayStatus, setRelayStatus] = useState<RelayStatus | null>(null);
   const [devices, setDevices] = useState<CloudDevice[]>([]);
@@ -187,6 +204,30 @@ export const RelayHealthCard: React.FC = () => {
   const stopPolling = useCallback(() => {
     if (pingIntervalRef.current) { clearInterval(pingIntervalRef.current); pingIntervalRef.current = null; }
     if (deviceIntervalRef.current) { clearInterval(deviceIntervalRef.current); deviceIntervalRef.current = null; }
+  }, []);
+
+  const fetchCloudDevices = useCallback(async (): Promise<CloudDevice[]> => {
+    const response = await fetch(CLOUD_DEVICES_URL);
+    const data = await response.json();
+
+    if (response.ok && data.success && data.data) {
+      if (Array.isArray(data.data.devices) && data.data.devices.length > 0) {
+        return data.data.devices;
+      }
+
+      if (data.data.syncState && data.data.syncState !== 'stopped') {
+        return data.data.devices || [];
+      }
+    }
+
+    const legacyResponse = await fetch(LEGACY_CLOUD_DEVICES_URL);
+    const legacyData = await legacyResponse.json();
+
+    if (legacyResponse.ok && legacyData.success && Array.isArray(legacyData.data?.devices)) {
+      return legacyData.data.devices;
+    }
+
+    return data?.data?.devices || [];
   }, []);
 
   /**
@@ -229,19 +270,14 @@ export const RelayHealthCard: React.FC = () => {
       }
 
       // Fetch cloud devices
-      const devicesRes = await fetch(CLOUD_DEVICES_URL);
-      const devicesData = await devicesRes.json();
-
-      if (devicesRes.ok && devicesData.success && devicesData.data?.devices) {
-        setDevices(devicesData.data.devices);
-      }
+      setDevices(await fetchCloudDevices());
 
       setCardState('connected');
     } catch {
       setCardState('error');
       setError('Could not reach the server');
     }
-  }, [stopPolling]);
+  }, [fetchCloudDevices, stopPolling]);
 
   /**
    * Ping for latency measurement. Skips when endpoint is unavailable.
@@ -292,7 +328,7 @@ export const RelayHealthCard: React.FC = () => {
 
   const relayState = relayStatus?.state ?? 'disconnected';
   const statusBadge = RELAY_STATUS_BADGES[relayState] ?? RELAY_STATUS_BADGES.disconnected;
-  const pairedDevices = devices.filter((d) => d.state === 'paired');
+  const pairedDevices = devices.filter((d) => d.state === 'paired' || d.status === 'online');
   const isEncrypted = pairedDevices.length > 0; // E2EE is always active when paired
 
   // -------------------------------------------------------------------------
@@ -302,31 +338,48 @@ export const RelayHealthCard: React.FC = () => {
   return (
     <div
       data-testid="relay-health-card"
-      className="bg-surface-dark border border-border-dark rounded-lg p-5 transition-all hover:shadow-lg hover:border-primary/50"
+      className="bg-surface-dark border border-border-dark rounded-xl p-6 transition-all hover:shadow-lg hover:border-primary/50"
     >
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Wifi className="w-4 h-4 text-text-secondary-dark" />
-          <h3 className="text-sm font-semibold text-text-primary-dark">Cloud Relay</h3>
-          <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded border ${statusBadge.className}`}>
-            {statusBadge.label}
-          </span>
+      <div className="flex items-start justify-between gap-3 mb-5">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-xl bg-primary/10">
+            <Wifi className="w-4 h-4 text-primary" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-base font-semibold text-text-primary-dark">Cloud Relay</h3>
+              <span className={`px-2 py-0.5 text-[11px] font-medium rounded-full border ${statusBadge.className}`}>
+                {statusBadge.label}
+              </span>
+            </div>
+            <p className="text-sm text-text-secondary-dark mt-1">
+              Live device link health, latency, and secure pairing status.
+            </p>
+          </div>
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="p-1.5 text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors disabled:opacity-50"
-          aria-label="Refresh relay status"
-          data-testid="relay-refresh-button"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="flex items-center gap-2">
+          {isEncrypted && (
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-medium">
+              <Shield className="w-3.5 h-3.5" />
+              E2EE
+            </div>
+          )}
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="p-2 text-text-secondary-dark hover:text-text-primary-dark rounded-lg hover:bg-background-dark transition-colors disabled:opacity-50"
+            aria-label="Refresh relay status"
+            data-testid="relay-refresh-button"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
       </div>
 
       {/* Loading state */}
       {cardState === 'loading' && (
-        <div className="flex items-center justify-center py-8" data-testid="relay-loading">
+        <div className="flex items-center justify-center py-10" data-testid="relay-loading">
           <div className="w-5 h-5 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
         </div>
       )}
@@ -340,25 +393,33 @@ export const RelayHealthCard: React.FC = () => {
 
       {/* Disconnected state */}
       {cardState === 'disconnected' && (
-        <div className="text-center py-6" data-testid="relay-disconnected">
+        <div className="text-center py-8" data-testid="relay-disconnected">
           <WifiOff className="w-8 h-8 text-text-secondary-dark/30 mx-auto mb-2" />
-          <p className="text-xs text-text-secondary-dark font-medium">Not Connected</p>
-          <p className="text-[11px] text-text-secondary-dark/60 mt-0.5">
-            Enable Cloud Relay in Settings → Cloud
+          <p className="text-sm text-text-primary-dark font-medium">Not Connected</p>
+          <p className="text-sm text-text-secondary-dark mt-1 mb-4">
+            Enable Cloud Relay in Settings → Cloud to link another device.
           </p>
+          <button
+            type="button"
+            onClick={() => navigate('/settings?tab=cloud')}
+            className="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary/90 transition-colors"
+            data-testid="relay-settings-cta"
+          >
+            Open Cloud Settings
+          </button>
         </div>
       )}
 
       {/* Connected state */}
       {cardState === 'connected' && (
-        <div className="space-y-3">
+        <div className="space-y-4">
           {/* Stats row: Latency + Encryption + Device count */}
-          <div className="flex items-center gap-4 text-xs text-text-secondary-dark">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
             {/* Latency */}
-            <div className="flex items-center gap-1.5" data-testid="relay-latency">
-              <Activity className="w-3 h-3" />
-              <span>
-                Ping:{' '}
+            <div className="flex items-center gap-2 px-3 py-3 rounded-xl bg-background-dark/60 border border-border-dark" data-testid="relay-latency">
+              <Activity className="w-4 h-4 text-text-secondary-dark" />
+              <span className="text-text-secondary-dark">
+                Ping{' '}
                 <span className={`font-medium ${
                   latencyMs === null
                     ? 'text-gray-400'
@@ -374,29 +435,30 @@ export const RelayHealthCard: React.FC = () => {
             </div>
 
             {/* E2EE indicator */}
-            {isEncrypted && (
-              <div className="flex items-center gap-1" data-testid="relay-e2ee">
-                <Shield className="w-3 h-3 text-emerald-400" />
-                <span className="text-emerald-400 font-medium">E2EE</span>
-              </div>
-            )}
+            <div className="flex items-center gap-2 px-3 py-3 rounded-xl bg-background-dark/60 border border-border-dark" data-testid="relay-e2ee">
+              <Shield className={`w-4 h-4 ${isEncrypted ? 'text-emerald-400' : 'text-text-secondary-dark'}`} />
+              <span className={isEncrypted ? 'text-emerald-400 font-medium' : 'text-text-secondary-dark'}>
+                {isEncrypted ? 'E2EE active' : 'Secure standby'}
+              </span>
+            </div>
 
             {/* Device count */}
-            <div className="ml-auto flex items-center gap-1">
+            <div className="flex items-center gap-2 px-3 py-3 rounded-xl bg-background-dark/60 border border-border-dark text-text-secondary-dark">
+              <Wifi className="w-4 h-4" />
               <span>{devices.length} device{devices.length !== 1 ? 's' : ''}</span>
             </div>
           </div>
 
           {/* Device list */}
           {devices.length === 0 ? (
-            <div className="text-center py-4" data-testid="relay-no-devices">
+            <div className="text-center py-6 rounded-xl bg-background-dark/40 border border-border-dark" data-testid="relay-no-devices">
               <Monitor className="w-6 h-6 text-text-secondary-dark/30 mx-auto mb-1" />
-              <p className="text-[11px] text-text-secondary-dark">No devices found</p>
+              <p className="text-sm text-text-secondary-dark">No devices found</p>
             </div>
           ) : (
-            <div className="space-y-1" data-testid="relay-device-list">
+            <div className="space-y-2" data-testid="relay-device-list">
               {devices.map((device) => (
-                <DeviceRow key={device.sessionId} device={device} />
+                <DeviceRow key={device.deviceId || device.sessionId || `${device.name}-${device.role}`} device={device} />
               ))}
             </div>
           )}

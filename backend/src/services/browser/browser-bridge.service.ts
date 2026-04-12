@@ -66,12 +66,16 @@ export interface BrowserCommandResponse {
 
 /** Status information about the Crewly in Chrome bridge */
 export interface BrowserBridgeStatus {
-	/** Whether at least one Chrome Extension is connected */
+	/** Whether a Chrome Extension is reachable (direct WS or Cloud relay) */
 	connected: boolean;
-	/** Number of connected Chrome Extension clients */
+	/** Number of directly connected Chrome Extension clients via WebSocket */
 	clientCount: number;
 	/** WebSocket server path */
 	wsPath: string;
+	/** Whether the Cloud relay path to an Extension is available */
+	relayAvailable?: boolean;
+	/** Cloud device ID of the relay-connected Extension (null if not discovered) */
+	relayDeviceId?: string | null;
 }
 
 /**
@@ -267,8 +271,16 @@ export class BrowserBridgeService {
 		agentName?: string
 	): Promise<BrowserCommandResponse> {
 		const client = this.getActiveClient();
+
+		// Fallback to Cloud relay if no direct WS client connected
 		if (!client) {
-			throw new Error('No Chrome Extension connected');
+			const { BrowserRelayAdapter } = await import('./browser-relay-adapter.service.js');
+			const relayAdapter = BrowserRelayAdapter.getInstance();
+			if (relayAdapter.isAvailable()) {
+				this.logger.info('No direct WS client, routing via Cloud relay', { tool });
+				return relayAdapter.sendViaRelay(tool, params, timeoutMs, agentName);
+			}
+			throw new Error('No Chrome Extension connected (direct WS or Cloud relay)');
 		}
 
 		const id = `cmd-${++this.commandCounter}-${Date.now()}`;
@@ -296,25 +308,57 @@ export class BrowserBridgeService {
 	}
 
 	/**
-	 * Get the current bridge status.
+	 * Get the current bridge status, including relay availability.
 	 *
-	 * @returns Status information
+	 * @returns Status information with direct WS and relay details
 	 */
 	getStatus(): BrowserBridgeStatus {
+		const directConnected = this.clients.size > 0;
+		let relayAvailable = false;
+		let relayDeviceId: string | null = null;
+
+		try {
+			// Dynamic import avoided — use synchronous check
+			const { BrowserRelayAdapter } = require('./browser-relay-adapter.service.js');
+			const adapter = BrowserRelayAdapter.getInstance() as {
+				isAvailable: () => boolean;
+				getExtensionDeviceId: () => string | null;
+			};
+			relayAvailable = adapter.isAvailable();
+			relayDeviceId = adapter.getExtensionDeviceId();
+		} catch {
+			// Relay adapter not available
+		}
+
 		return {
-			connected: this.clients.size > 0,
+			connected: directConnected || relayAvailable,
 			clientCount: this.clients.size,
 			wsPath: BROWSER_BRIDGE_CONSTANTS.WS_PATH,
+			relayAvailable,
+			relayDeviceId,
 		};
 	}
 
 	/**
-	 * Check if at least one Chrome Extension client is connected.
+	 * Check if a Chrome Extension is reachable (direct WS or Cloud relay).
 	 *
-	 * @returns True if connected
+	 * @returns True if connected via direct WS or relay is available
 	 */
 	isConnected(): boolean {
-		return this.clients.size > 0;
+		// Check for an active (OPEN) direct WS client — not just map size,
+		// because stale clients with readyState !== OPEN can linger briefly.
+		if (this.getActiveClient() !== null) return true;
+
+		// Check relay fallback
+		try {
+			const { BrowserRelayAdapter } = require('./browser-relay-adapter.service.js');
+			const adapter = BrowserRelayAdapter.getInstance() as {
+				isAvailable: () => boolean;
+			};
+			return adapter.isAvailable();
+		} catch {
+			return false;
+		}
 	}
 
 	/**

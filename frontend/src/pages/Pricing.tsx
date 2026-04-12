@@ -1,7 +1,7 @@
 /**
  * Pricing Page
  *
- * Displays subscription plans (Free, Solo, Team, Enterprise) with a
+ * Displays subscription plans (Starter, Pro, Max) with a
  * monthly/yearly billing toggle. The currently active plan is indicated
  * and upgrade buttons redirect to the payment checkout flow.
  *
@@ -22,7 +22,7 @@ import { getYearlySavingsPercent } from '../types/payment-wall.types';
 
 /** Shape of a single pricing plan card */
 interface PricingPlan {
-  /** Unique plan identifier */
+  /** Unique plan identifier — matches Stripe plan IDs */
   id: string;
   /** Display name */
   name: string;
@@ -43,62 +43,69 @@ interface PricingPlan {
 /** Static plan data shown in the pricing grid */
 const PRICING_PLANS: PricingPlan[] = [
   {
-    id: 'free',
-    name: 'Free',
-    monthly: 0,
-    yearly: 0,
+    id: 'starter',
+    name: 'Starter',
+    monthly: 49,
+    yearly: 39,
     features: [
-      '2 teams',
-      '3 agents per team',
-      '3 projects',
+      '3 teams',
+      '5 agents per team',
+      '5 projects',
       '1 Cloud Relay session',
-      '5 marketplace templates',
-      '10 scheduled check-ins',
+      '10 marketplace templates',
+      '20 scheduled check-ins',
+      'Community support',
     ],
-    cta: 'Current Plan',
+    cta: 'Get Started',
     highlighted: false,
   },
   {
-    id: 'solo',
-    name: 'Solo',
-    monthly: 29,
-    yearly: 24,
+    id: 'pro',
+    name: 'Pro',
+    monthly: 99,
+    yearly: 79,
     features: [
-      'Unlimited teams',
-      'Unlimited agents',
-      'Unlimited projects',
-      'Unlimited Cloud Relay',
+      '10 teams',
+      '10 agents per team',
+      '20 projects',
+      '5 Cloud Relay sessions',
       'Full marketplace access',
       'Unlimited schedules',
+      'Cloud Portal with 1-click deploy',
       'Priority support',
     ],
-    cta: 'Upgrade to Solo',
+    cta: 'Upgrade to Pro',
     highlighted: true,
     badge: 'Popular',
   },
   {
-    id: 'team',
-    name: 'Team',
-    monthly: 99,
-    yearly: 82,
+    id: 'max',
+    name: 'Max',
+    monthly: 299,
+    yearly: 239,
     features: [
-      'Everything in Solo',
-      '5 team seats',
+      'Everything in Pro',
+      'Unlimited teams & agents',
+      'Unlimited projects',
+      'Unlimited Cloud Relay',
       'Shared team memory',
       'Slack deep integration',
-      'Priority queue',
       'Team analytics',
+      'Thread-based chat portal',
+      'Dedicated support',
     ],
-    cta: 'Upgrade to Team',
+    cta: 'Upgrade to Max',
     highlighted: false,
+    badge: 'Best Value',
   },
 ];
 
 /** Map from license plan value to pricing plan id */
 const LICENSE_TO_PLAN_ID: Record<string, string> = {
   free: 'free',
-  pro: 'solo',
-  enterprise: 'team',
+  starter: 'starter',
+  pro: 'pro',
+  max: 'max',
 };
 
 // ---------------------------------------------------------------------------
@@ -118,7 +125,7 @@ export const Pricing: React.FC = () => {
   const { license } = useAuth();
 
   const currentPlanId = license ? LICENSE_TO_PLAN_ID[license.plan] ?? 'free' : 'free';
-  const savingsPercent = getYearlySavingsPercent();
+  const savingsPercent = getYearlySavingsPercent('pro');
 
   const [upgrading, setUpgrading] = useState<string | null>(null);
 
@@ -135,7 +142,7 @@ export const Pricing: React.FC = () => {
       const result = await apiService.createCheckoutSession(
         planId,
         interval as 'month' | 'year',
-        `${window.location.origin}/settings?tab=cloud&upgraded=true`,
+        `${window.location.origin}/cloud?upgraded=true`,
         window.location.href
       );
       window.location.href = result.checkoutUrl;
@@ -171,7 +178,7 @@ export const Pricing: React.FC = () => {
           Choose Your Plan
         </h1>
         <p className="mt-3 text-lg text-text-secondary-dark">
-          Start free, upgrade when you're ready.
+          Start with Starter, upgrade as you grow.
         </p>
       </div>
 
@@ -234,9 +241,7 @@ export const Pricing: React.FC = () => {
                 <span className="text-4xl font-bold text-text-primary-dark" data-testid={`price-${plan.id}`}>
                   {getPrice(plan)}
                 </span>
-                {plan.monthly > 0 && (
-                  <span className="text-text-secondary-dark">/mo</span>
-                )}
+                <span className="text-text-secondary-dark">/mo</span>
               </div>
 
               {billingInterval === 'yearly' && plan.yearly > 0 && (

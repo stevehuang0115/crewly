@@ -1,6 +1,6 @@
 {
   "name": "crewly",
-  "version": "1.5.11",
+  "version": "1.2.0",
   "type": "module",
   "description": "Multi-agent orchestration platform for AI coding teams — coordinates Claude Code, Gemini CLI, and Codex agents with a real-time web dashboard",
   "main": "dist/cli/cli/src/index.js",
@@ -57,6 +57,7 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:headed": "playwright test --headed",
+    "eval:l4": "npx tsx backend/src/services/agent/crewly-agent/eval/run-eval-l4.ts",
     "lint": "eslint . --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
     "postinstall": "(npm rebuild node-pty --build-from-source 2>/dev/null || npm rebuild node-pty 2>/dev/null || true) && (npm rebuild better-sqlite3 2>/dev/null || true)",
@@ -88,6 +89,7 @@
     "dotenv": "^17.2.3",
     "express": "^4.18.2",
     "helmet": "^8.1.0",
+    "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.1.0",
     "morgan": "^1.10.1",

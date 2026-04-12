@@ -16,8 +16,8 @@ export type LimitType =
   | 'limit:marketplace'
   | 'limit:schedules';
 
-/** Subscription plan tiers */
-export type PlanTier = 'free' | 'pro' | 'enterprise';
+/** Subscription plan tiers (free = no subscription, others are Stripe plans) */
+export type PlanTier = 'free' | 'starter' | 'pro' | 'max';
 
 /** Billing interval for paid plans */
 export type BillingInterval = 'monthly' | 'yearly';
@@ -98,29 +98,35 @@ export const LIMIT_COPY: Record<LimitType, LimitCopy> = {
   },
 };
 
-/** Feature comparison list for Free vs Pro plans */
+/** Feature comparison list for Starter vs Pro vs Max plans */
 export const PLAN_FEATURES: PlanFeature[] = [
-  { label: 'Teams', freeValue: '2 teams', proValue: 'Unlimited', limitType: 'limit:teams' },
-  { label: 'Agents per team', freeValue: '3 agents', proValue: 'Unlimited', limitType: 'limit:agents_per_team' },
-  { label: 'Projects', freeValue: '3 projects', proValue: 'Unlimited', limitType: 'limit:projects' },
-  { label: 'Cloud Relay', freeValue: '1 session', proValue: 'Unlimited', limitType: 'limit:relay_sessions' },
+  { label: 'Teams', freeValue: '2 teams', proValue: '10 teams', limitType: 'limit:teams' },
+  { label: 'Agents per team', freeValue: '3 agents', proValue: '10 agents', limitType: 'limit:agents_per_team' },
+  { label: 'Projects', freeValue: '3 projects', proValue: '20 projects', limitType: 'limit:projects' },
+  { label: 'Cloud Relay', freeValue: '1 session', proValue: '5 sessions', limitType: 'limit:relay_sessions' },
   { label: 'Marketplace', freeValue: '5 templates', proValue: 'Full access', limitType: 'limit:marketplace' },
   { label: 'Schedules', freeValue: '10 check-ins', proValue: 'Unlimited', limitType: 'limit:schedules' },
 ];
 
-/** Pro plan pricing */
-export const PRO_PRICING: PlanPricing = {
-  monthly: 29,
-  yearly: 24,
+/** Pricing for each paid plan tier */
+export const PLAN_PRICING: Record<'starter' | 'pro' | 'max', PlanPricing> = {
+  starter: { monthly: 49, yearly: 39 },
+  pro: { monthly: 99, yearly: 79 },
+  max: { monthly: 299, yearly: 239 },
 };
 
+/** @deprecated Use PLAN_PRICING.pro instead */
+export const PRO_PRICING: PlanPricing = PLAN_PRICING.pro;
+
 /**
- * Calculate yearly savings percentage
+ * Calculate yearly savings percentage for a given plan tier
  *
+ * @param tier - Plan tier to calculate savings for (defaults to 'pro')
  * @returns Savings percentage as a whole number
  */
-export function getYearlySavingsPercent(): number {
-  return Math.round((1 - PRO_PRICING.yearly / PRO_PRICING.monthly) * 100);
+export function getYearlySavingsPercent(tier: 'starter' | 'pro' | 'max' = 'pro'): number {
+  const pricing = PLAN_PRICING[tier];
+  return Math.round((1 - pricing.yearly / pricing.monthly) * 100);
 }
 
 /** localStorage key prefix for payment wall counters */

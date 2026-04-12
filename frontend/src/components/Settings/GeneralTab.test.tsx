@@ -87,6 +87,7 @@ describe('GeneralTab', () => {
       expect(screen.getByLabelText('Max Concurrent Agents')).toBeInTheDocument();
       expect(screen.getByLabelText('Verbose Logging')).toBeInTheDocument();
       expect(screen.getByLabelText('Enable Auditor')).toBeInTheDocument();
+      expect(screen.getByLabelText('Agent Idle Timeout (minutes)')).toBeInTheDocument();
     });
 
     it('should render Enable Auditor toggle as unchecked by default', () => {
@@ -235,6 +236,30 @@ describe('GeneralTab', () => {
       fireEvent.change(input, { target: { value: '10' } });
 
       expect(input.value).toBe('10');
+    });
+
+    it('should render idle timeout with current value and allow changes', () => {
+      render(<GeneralTab />);
+
+      const input = screen.getByLabelText('Agent Idle Timeout (minutes)') as HTMLInputElement;
+      expect(input.value).toBe('30');
+
+      fireEvent.change(input, { target: { value: '60' } });
+
+      expect(input.value).toBe('60');
+
+      // Should enable save button
+      const saveButton = screen.getByText('Save Changes').closest('button');
+      expect(saveButton).not.toBeDisabled();
+    });
+
+    it('should allow setting idle timeout to 0 to disable suspension', () => {
+      render(<GeneralTab />);
+
+      const input = screen.getByLabelText('Agent Idle Timeout (minutes)') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: '0' } });
+
+      expect(input.value).toBe('0');
     });
   });
 

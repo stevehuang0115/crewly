@@ -6,10 +6,9 @@
  * - Projects count
  * - Teams count
  * - Tasks in-progress / completed
- * - Relay connection status indicator
  * - Security shield indicator
  *
- * Replaces the previous multi-row StatCards + RelayHealthCard layout.
+ * Replaces the previous multi-row stat summary at the top of the dashboard.
  *
  * @module components/Dashboard/HealthBar
  */
@@ -20,8 +19,6 @@ import {
   FolderOpen,
   Users,
   ListChecks,
-  Wifi,
-  WifiOff,
   Shield,
   Factory,
 } from 'lucide-react';
@@ -55,8 +52,6 @@ export interface HealthBarProps {
   tasksInProgress: number;
   /** Number of tasks completed today. */
   tasksCompleted: number;
-  /** Whether the Cloud Relay is connected. */
-  relayConnected: boolean;
   /** Navigate to 3D Factory view. */
   onFactoryClick: () => void;
 }
@@ -107,13 +102,8 @@ export const HealthBar: React.FC<HealthBarProps> = ({
   teamCount,
   tasksInProgress,
   tasksCompleted,
-  relayConnected,
   onFactoryClick,
 }) => {
-  const RelayIcon = relayConnected ? Wifi : WifiOff;
-  const relayColor = relayConnected ? 'text-emerald-400' : 'text-gray-500';
-  const relayLabel = relayConnected ? 'Connected' : 'Offline';
-
   return (
     <div
       data-testid="health-bar"
@@ -138,12 +128,6 @@ export const HealthBar: React.FC<HealthBarProps> = ({
       />
 
       <div className="w-px h-5 bg-border-dark hidden sm:block" />
-
-      {/* Relay status indicator */}
-      <div className="flex items-center gap-1.5 px-3 py-1" data-testid="health-relay">
-        <RelayIcon className={`w-4 h-4 ${relayColor} flex-shrink-0`} />
-        <span className={`text-xs font-medium ${relayColor}`}>{relayLabel}</span>
-      </div>
 
       {/* Security shield (static green for now) */}
       <div className="flex items-center gap-1 px-2 py-1" data-testid="health-security">

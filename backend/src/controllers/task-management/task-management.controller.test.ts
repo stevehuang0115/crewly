@@ -452,6 +452,102 @@ describe('Task Management Handlers', () => {
         });
       });
     });
+
+    describe('v3:task_delegated event emission', () => {
+      const mockEmit = jest.fn<any>();
+      const mockEventBus = { emit: mockEmit } as any;
+
+      beforeEach(() => {
+        mockEmit.mockClear();
+        setEventBusServiceForTaskCleanup(mockEventBus);
+        (existsSync as jest.Mock<any>).mockReturnValue(false);
+        (mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+        (writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+        mockStorageService.getProjects.mockResolvedValue([]);
+      });
+
+      afterEach(() => {
+        setEventBusServiceForTaskCleanup(null as any);
+      });
+
+      it('should emit v3:task_delegated with explicit requestId when provided', async () => {
+        mockReq.body!.requestId = 'req-explicit-123';
+
+        await createTask.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+        expect(mockEmit).toHaveBeenCalledWith(
+          'v3:task_delegated',
+          expect.objectContaining({
+            assignedTo: 'dev-session-1',
+            requestId: 'req-explicit-123',
+          })
+        );
+      });
+
+      it('should emit v3:task_delegated without requestId when not provided', async () => {
+        // No requestId in body
+        delete mockReq.body!.requestId;
+
+        await createTask.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+        expect(mockEmit).toHaveBeenCalledWith(
+          'v3:task_delegated',
+          expect.objectContaining({
+            assignedTo: 'dev-session-1',
+            requestId: undefined,
+          })
+        );
+      });
+
+      it('should NOT emit v3:task_delegated when no sessionName (unassigned task)', async () => {
+        mockReq.body!.sessionName = undefined;
+
+        await createTask.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+        expect(mockEmit).not.toHaveBeenCalledWith('v3:task_delegated', expect.anything());
+      });
+
+      it('should NOT emit v3:task_delegated when eventBusService is not set', async () => {
+        setEventBusServiceForTaskCleanup(null as any);
+
+        await createTask.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+        // Should not throw and response should still be sent
+        expect(jsonSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ success: true })
+        );
+      });
+
+      it('should include task metadata in the event payload', async () => {
+        mockReq.body!.requestId = 'req-456';
+
+        await createTask.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+        expect(mockEmit).toHaveBeenCalledWith(
+          'v3:task_delegated',
+          expect.objectContaining({
+            title: 'Implement feature X',
+            assignedTo: 'dev-session-1',
+            priority: 'high',
+            projectPath: '/test/project',
+            milestone: 'delegated',
+            requestId: 'req-456',
+          })
+        );
+      });
+
+      it('should not block task creation if emit throws', async () => {
+        mockEmit.mockImplementation(() => { throw new Error('EventBus failure'); });
+        mockReq.body!.requestId = 'req-789';
+
+        await createTask.call(fullMockApiController, mockReq as Request, mockRes as Response);
+
+        // Task should still be created successfully
+        expect(jsonSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ success: true })
+        );
+      });
+    });
   });
 
   describe('Helper function tests', () => {

@@ -22,7 +22,11 @@ import { createWorkspaceRouter } from './workspace/workspace.routes.js';
 import { createAgentStreamRouter } from './agent-stream/agent-stream.routes.js';
 
 /**
- * Creates the main API router that aggregates all feature routers
+ * Creates the main API router that aggregates all feature routers.
+ *
+ * NOTE: Intent-task routes are registered in api.routes.ts (not here)
+ * to avoid duplicate registration.
+ *
  * @param context - API context with services
  * @returns Express router configured with all API routes
  */

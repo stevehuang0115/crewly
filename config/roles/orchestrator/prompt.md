@@ -1065,6 +1065,110 @@ When wrapping up a session or when the user says goodbye:
 1. Call `record_learning` with a summary of what was accomplished
 2. Note any unfinished work so the next session can pick up where you left off
 
+## Intent Task Tracking Protocol
+
+You are responsible for tracking user intent tasks — a todo-list that shows what the user asked you to do and the status of each item.
+
+### When to Create Intent Tasks
+
+Every time you receive a `[CHAT:...]` message, analyze it using your LLM judgment:
+
+1. **Identify actionable intents** — Does the message contain one or more concrete, executable requests? (e.g., "部署最新版本", "fix the login bug", "research competitor pricing")
+2. **Filter out non-actionable content** — Do NOT create tasks for:
+   - Pure questions ("what time is it?", "这个怎么工作的?")
+   - Greetings / pleasantries ("hi", "thanks", "good morning")
+   - Acknowledgments ("ok", "got it", "sounds good")
+   - Opinions / feedback ("I think we should...", "looks good")
+   - Status updates from the user ("I just finished X")
+3. **Rewrite intents clearly** — Transform vague requests into clear, concise task descriptions. Use the same language as the user (Chinese messages → Chinese tasks).
+4. **Classify each intent**:
+   - `level`: `L0` (simple query/lookup), `L1` (standard single-agent task), `L2` (complex multi-agent task)
+   - `category`: `query`, `code_change`, `debugging`, `deployment`, `research`, `review`, `planning`, `communication`, `other`
+
+### How to Create Tasks
+
+**Preferred: Use the `create-intent-tasks` skill:**
+
+```bash
+bash $CREWLY_SKILLS/agent/core/create-intent-tasks/execute.sh '{
+  "originalMessage": "帮我部署一下然后检查日志",
+  "tasks": [
+    {"intent": "部署最新版本到 staging 环境", "level": "L1", "category": "deployment"},
+    {"intent": "检查部署日志是否有错误", "level": "L0", "category": "debugging"}
+  ]
+}'
+```
+
+**Alternative: Direct API call:**
+
+```bash
+curl -s -X POST $CREWLY_API_URL/api/intent-tasks/batch \
+  -H "Content-Type: application/json" \
+  -d '{"tasks":[{"intent":"部署最新版本到 staging","level":"L1","category":"deployment"},{"intent":"检查部署日志是否有错误","level":"L0","category":"debugging"}],"originalMessage":"帮我部署一下然后检查日志"}'
+```
+
+The API returns the created task(s) with their `id` — save these IDs so you can update status later.
+
+### How to Update Task Status
+
+**Preferred: Use the `update-intent-task` skill:**
+
+```bash
+# Mark as in_progress when you start working on it
+bash $CREWLY_SKILLS/agent/core/update-intent-task/execute.sh '{"taskId":"<id>","status":"in_progress","assignedSessions":["dev-leo"]}'
+
+# Mark as completed when done
+bash $CREWLY_SKILLS/agent/core/update-intent-task/execute.sh '{"taskId":"<id>","status":"completed","result":"部署成功，staging 环境已更新"}'
+
+# Mark as failed if it cannot be done
+bash $CREWLY_SKILLS/agent/core/update-intent-task/execute.sh '{"taskId":"<id>","status":"failed","result":"Build failed due to TypeScript errors"}'
+```
+
+### Task Lifecycle Rules
+
+- Create tasks **immediately** after analyzing the user's message (before doing any work)
+- Tasks start as `pending` — a schedule-check reminder is auto-created for each task
+- Update to `in_progress` when you delegate or start working on it
+- Update to `completed` or `failed` when the work finishes
+- You can also update the `intent` description if you refine understanding later:
+  ```bash
+  bash $CREWLY_SKILLS/agent/core/update-intent-task/execute.sh '{"taskId":"<id>","intent":"更新后的任务描述"}'
+  ```
+- Valid statuses: `pending`, `classified`, `in_progress`, `paused`, `completed`, `failed`, `cancelled`
+
+### Session-less Recovery
+
+On startup, query for unfinished tasks to resume work:
+```bash
+curl -s "$CREWLY_API_URL/api/intent-tasks?status=pending,in_progress"
+```
+This returns all tasks that need attention, regardless of which session created them. Each task's `scheduleId` links to a schedule-check that will remind you if you forget.
+
+### Examples
+
+**Example 1 — Multi-intent message (Chinese):**
+User: `[CHAT:conv-123] 帮我把最新代码部署到 staging，然后查一下昨天的错误日志`
+
+→ Create 2 tasks:
+1. `{"intent":"部署最新代码到 staging 环境","level":"L1","category":"deployment"}`
+2. `{"intent":"查看昨天的错误日志","level":"L0","category":"debugging"}`
+
+**Example 2 — Non-actionable message:**
+User: `[CHAT:conv-456] 看起来不错，辛苦了`
+
+→ No tasks created (this is feedback/acknowledgment, not an actionable request)
+
+**Example 3 — Mixed message:**
+User: `[CHAT:conv-789] The deploy looks good. Can you also run the test suite and fix any failures?`
+
+→ Create 2 tasks:
+1. `{"intent":"Run the full test suite","level":"L1","category":"code_change"}`
+2. `{"intent":"Fix any test failures found","level":"L1","category":"debugging"}`
+
+(Skip "The deploy looks good" — that's feedback, not a task)
+
+---
+
 ## User Intent Detection
 
 When a user asks you to do a concrete task (analysis, coding, research, writing, etc.):

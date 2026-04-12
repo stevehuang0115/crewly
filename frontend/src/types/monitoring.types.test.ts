@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import type {
   SessionUsageSummary,
+  TaskUsageSummary,
   BudgetConfig,
   TokenCostRate,
   AgentCostEntry,
@@ -50,6 +51,20 @@ describe('monitoring types', () => {
     };
 
     expect(rate.input).toBeLessThan(rate.output);
+  });
+
+  it('should accept valid TaskUsageSummary', () => {
+    const task: TaskUsageSummary = {
+      taskId: 'task-123',
+      totalInput: 5000,
+      totalOutput: 1500,
+      eventCount: 3,
+      cost: 0.0234,
+    };
+
+    expect(task.taskId).toBe('task-123');
+    expect(task.totalInput).toBe(5000);
+    expect(task.cost).toBeGreaterThan(0);
   });
 
   it('should accept valid AgentCostEntry', () => {

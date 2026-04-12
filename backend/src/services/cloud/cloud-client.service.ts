@@ -136,6 +136,8 @@ export class CloudClientService {
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   /** Guard to prevent concurrent refresh attempts */
   private refreshInProgress = false;
+  /** Callbacks invoked when the access token is refreshed */
+  private tokenRefreshCallbacks: Array<(newToken: string) => void> = [];
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('CloudClientService');
@@ -566,6 +568,16 @@ export class CloudClientService {
   }
 
   /**
+   * Register a callback to be invoked whenever the access token is refreshed.
+   * Used by BrowserProxyService to update its relay auth token in real-time.
+   *
+   * @param callback - Function receiving the new access token string
+   */
+  onTokenRefresh(callback: (newToken: string) => void): void {
+    this.tokenRefreshCallbacks.push(callback);
+  }
+
+  /**
    * Attempt to refresh the access token using the stored refresh token.
    *
    * Issues a new access token locally (since both access and refresh tokens
@@ -667,6 +679,15 @@ export class CloudClientService {
         }
       } catch {
         // CloudSyncService may not be available — non-fatal
+      }
+
+      // Notify token refresh subscribers (e.g. BrowserProxyService)
+      for (const callback of this.tokenRefreshCallbacks) {
+        try {
+          callback(newAccessToken);
+        } catch {
+          // Non-fatal — don't let one bad callback break the refresh chain
+        }
       }
 
       this.logger.info('Access token auto-refreshed successfully');

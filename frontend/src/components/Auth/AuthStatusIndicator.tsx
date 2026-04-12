@@ -21,15 +21,17 @@ import type { UserPlan } from '../../types/auth.types';
 /** Maps plan to badge variant. */
 const PLAN_BADGE_VARIANTS: Record<UserPlan, 'default' | 'primary'> = {
   free: 'default',
+  starter: 'primary',
   pro: 'primary',
-  enterprise: 'primary',
+  max: 'primary',
 };
 
 /** Maps plan to display label. */
 const PLAN_LABELS: Record<UserPlan, string> = {
   free: 'Free',
+  starter: 'Starter',
   pro: 'Pro',
-  enterprise: 'Enterprise',
+  max: 'Max',
 };
 
 // ---------------------------------------------------------------------------

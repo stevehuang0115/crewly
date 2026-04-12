@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Users } from 'lucide-react';
+import { Users, Clock } from 'lucide-react';
 import { Team, TeamMember, TeamMemberStatusChangeEvent } from '../types/index';
 import { useTerminal } from '../contexts/TerminalContext';
 import { StartTeamModal } from '../components/StartTeamModal';
@@ -13,6 +13,7 @@ import { webSocketService } from '../services/websocket.service';
 import { apiService } from '../services/api.service';
 import { assignDefaultAvatars } from '../utils/team.utils';
 import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
+import { CronJobPanel } from '@/components/Settings/CronJobPanel';
 
 export const TeamDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -653,6 +654,15 @@ export const TeamDetail: React.FC = () => {
       {/* Execution Feed — real-time agent activity for this team */}
       <div className="mt-6">
         <ExecutionFeed teamId={id} maxEvents={100} />
+      </div>
+
+      {/* Team Cron Jobs */}
+      <div className="mt-6">
+        <div className="flex items-center gap-2 mb-3">
+          <Clock className="w-5 h-5 text-text-secondary-dark" />
+          <h3 className="text-lg font-semibold">Cron Jobs</h3>
+        </div>
+        <CronJobPanel teamId={id} compact />
       </div>
 
       {/* Sub-teams section */}

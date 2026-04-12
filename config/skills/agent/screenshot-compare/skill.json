@@ -1,0 +1,10 @@
+{
+  "name": "screenshot-compare",
+  "displayName": "Screenshot Compare (Gemini Vision)",
+  "description": "Compare two UI screenshots using Gemini Vision API. Returns categorized diffs with severity and fix suggestions.",
+  "category": "qa",
+  "assignableRoles": ["*"],
+  "version": "1.0.0",
+  "author": "Crewly Team",
+  "requires": ["GEMINI_API_KEY"]
+}

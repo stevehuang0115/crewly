@@ -978,6 +978,38 @@ describe('Tool Registry', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('not found');
     });
+
+    it('should truncate files exceeding 2000 lines when no limit specified', async () => {
+      // Generate a file with 3000 lines
+      const lines = Array.from({ length: 3000 }, (_, i) => `Line ${i + 1} content here`);
+      const largeContent = lines.join('\n');
+      mockReadFile.mockResolvedValue(largeContent as any);
+
+      const result = await (tools.read_file as any).execute({
+        file_path: '/test/large-file.ts',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.totalLines).toBe(3000);
+      expect(result.truncated).toBe(true);
+      expect(result.shownLines).toBe(2000);
+      // Should only contain first 2000 lines
+      const outputLines = result.content.split('\n');
+      expect(outputLines.length).toBeLessThanOrEqual(2001); // 2000 lines + possible truncation msg
+    });
+
+    it('should not truncate small files', async () => {
+      const smallContent = 'line1\nline2\nline3';
+      mockReadFile.mockResolvedValue(smallContent as any);
+
+      const result = await (tools.read_file as any).execute({
+        file_path: '/test/small-file.ts',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.totalLines).toBe(3);
+      expect(result.truncated).toBeUndefined();
+    });
   });
 
   describe('write_file', () => {
@@ -1014,6 +1046,110 @@ describe('Tool Registry', () => {
 
       const result = await (tools.write_file as any).execute({
         file_path: '/protected/file.ts',
+        content: 'test',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('EACCES');
+    });
+  });
+
+  describe('read_file bash fallback', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require('os') as typeof import('os');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    const tmpDir: string = os.tmpdir();
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('should return error when fs.readFile fails with non-ENOENT error', async () => {
+      const tmpFile = `${tmpDir}/crewly-test-read-fallback-${Date.now()}.txt`;
+      fs.writeFileSync(tmpFile, 'line one\nline two\n');
+
+      // Mock fs.promises.readFile to fail with EPERM (not ENOENT)
+      const mockReadFile = jest.spyOn(fs.promises, 'readFile') as any;
+      mockReadFile.mockRejectedValue(new Error('EPERM: operation not permitted'));
+
+      try {
+        const result = await (tools.read_file as any).execute({
+          file_path: tmpFile,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('EPERM');
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
+    it('should not fallback for ENOENT errors', async () => {
+      const result = await (tools.read_file as any).execute({
+        file_path: '/nonexistent/crewly-test-no-such-file.ts',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('not found');
+      expect(result.fallback).toBeUndefined();
+    });
+
+    it('should return original error when both fs and bash fail', async () => {
+      // Mock readFile to fail with EPERM, use a non-existent file so bash cat also fails
+      const mockReadFile = jest.spyOn(fs.promises, 'readFile') as any;
+      mockReadFile.mockRejectedValue(new Error('EPERM'));
+
+      const result = await (tools.read_file as any).execute({
+        file_path: '/nonexistent/crewly-test-both-fail.ts',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('EPERM');
+    });
+  });
+
+  describe('write_file bash fallback', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require('os') as typeof import('os');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    const tmpDir: string = os.tmpdir();
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('should return error when fs.writeFile fails', async () => {
+      const tmpFile = `${tmpDir}/crewly-test-write-fallback-${Date.now()}.txt`;
+      const content = 'export const x = 1;\n';
+
+      // Mock writeFile to fail
+      const mockWriteFile = jest.spyOn(fs.promises, 'writeFile') as any;
+      mockWriteFile.mockRejectedValue(new Error('EPERM: operation not permitted'));
+
+      try {
+        const result = await (tools.write_file as any).execute({
+          file_path: tmpFile,
+          content,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('EPERM');
+      } finally {
+        try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+      }
+    });
+
+    it('should return original error when both fs and bash fail', async () => {
+      // Mock writeFile to fail; use an invalid path so bash cat > also fails
+      const mockWriteFile = jest.spyOn(fs.promises, 'writeFile') as any;
+      const mockMkdir = jest.spyOn(fs.promises, 'mkdir') as any;
+      mockWriteFile.mockRejectedValue(new Error('EACCES'));
+      mockMkdir.mockResolvedValue(undefined as any);
+
+      const result = await (tools.write_file as any).execute({
+        file_path: '/proc/nonexistent/crewly-test-both-fail.ts',
         content: 'test',
       });
 

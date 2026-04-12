@@ -1,0 +1,472 @@
+/* =============================================================================
+   Request Tracking — V3 Dark Theme Styles
+   Uses design tokens from styles/tokens.css for consistency with Dashboard,
+   Teams, Tasks, and other existing pages.
+   ============================================================================= */
+
+/* =============================================================================
+   RequestsPage — Page shell
+   ============================================================================= */
+
+.requests-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  padding: var(--space-xl);
+  max-width: 960px;
+  min-height: 100%;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+.requests-page-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.requests-page-title {
+  font-size: var(--font-size-3xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.requests-page-subtitle {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+/* =============================================================================
+   RequestSummaryBar — Stat cards
+   ============================================================================= */
+
+.request-summary-bar {
+  display: flex;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.request-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px var(--space-lg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  transition: border-color var(--transition-fast);
+  min-width: 120px;
+}
+
+.request-summary-card:hover {
+  border-color: var(--color-border-focus);
+}
+
+.request-summary-value {
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+  line-height: var(--line-height-tight);
+}
+
+.request-summary-label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.request-summary-card--blocked .request-summary-value {
+  color: var(--color-error);
+}
+
+.request-summary-card--waiting .request-summary-value {
+  color: var(--color-warning);
+}
+
+/* =============================================================================
+   RequestFilters — Search + filter chips
+   ============================================================================= */
+
+.request-filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.request-search-row {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+.request-search {
+  flex: 1;
+  padding: 10px 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.request-search::placeholder {
+  color: var(--color-text-muted);
+}
+
+.request-search:focus {
+  border-color: var(--color-border-focus);
+}
+
+.request-filter-chips {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.request-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.request-filter-chip:hover {
+  border-color: var(--color-border-focus);
+  color: var(--color-text-primary);
+}
+
+.request-filter-chip--active {
+  background: var(--color-primary-light);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.request-filter-chip-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  font-size: 0.65rem;
+  font-weight: var(--font-weight-bold);
+  background: var(--color-bg-hover);
+}
+
+.request-filter-chip--active .request-filter-chip-count {
+  background: var(--color-primary-light);
+}
+
+.request-filter-secondary {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.request-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.request-filter-btn:hover {
+  border-color: var(--color-border-focus);
+  color: var(--color-text-secondary);
+}
+
+/* =============================================================================
+   RequestRow — Single request item
+   ============================================================================= */
+
+.request-row {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  transition: border-color var(--transition-fast);
+}
+
+.request-row:hover {
+  border-color: var(--color-border-light);
+}
+
+.request-row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 14px var(--space-lg);
+  cursor: pointer;
+}
+
+.request-source-icon {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+  width: 28px;
+  text-align: center;
+}
+
+.request-row-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.request-row-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.request-row-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.request-row-bottom {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.request-row-source-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 2px var(--space-sm);
+  background: var(--color-bg-hover);
+  border-radius: var(--radius-sm);
+  font-size: 0.7rem;
+  text-transform: capitalize;
+}
+
+.request-row-requester {
+  color: var(--color-text-secondary);
+}
+
+.request-row-time {
+  color: var(--color-text-muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Status badge — uses same pattern as index.css .status-badge / .status-active etc. */
+.request-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.request-status-badge--active {
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+
+.request-status-badge--blocked {
+  background: var(--color-error-light);
+  color: var(--color-error);
+}
+
+.request-status-badge--waiting {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+
+.request-status-badge--completed {
+  background: var(--color-info-light);
+  color: var(--color-info);
+}
+
+/* Priority badge */
+.request-priority-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-sm);
+  border-radius: var(--radius-lg);
+  font-size: 0.65rem;
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.request-priority-badge--critical {
+  background: var(--color-error-light);
+  color: var(--color-error);
+}
+
+.request-priority-badge--high {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+
+.request-priority-badge--medium {
+  background: var(--color-info-light);
+  color: var(--color-info);
+}
+
+.request-priority-badge--low {
+  background: var(--color-bg-hover);
+  color: var(--color-text-muted);
+}
+
+/* Mission link */
+.request-mission-link {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.request-mission-link span {
+  color: var(--color-primary);
+}
+
+/* =============================================================================
+   RequestRow — Expandable child items
+   ============================================================================= */
+
+.request-children {
+  border-top: 1px solid var(--color-border);
+  padding: var(--space-sm) var(--space-lg) var(--space-md);
+}
+
+.request-child-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: var(--font-size-xs);
+}
+
+.request-child-item + .request-child-item {
+  border-top: 1px solid var(--color-border);
+}
+
+.request-child-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.request-child-dot--pending {
+  background: var(--color-text-muted);
+}
+
+.request-child-dot--in_progress {
+  background: var(--color-primary);
+}
+
+.request-child-dot--completed {
+  background: var(--color-success);
+}
+
+.request-child-label {
+  flex: 1;
+  color: var(--color-text-secondary);
+}
+
+.request-child-tag {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 0.65rem;
+  font-weight: var(--font-weight-semibold);
+  background: var(--color-error-light);
+  color: var(--color-error);
+}
+
+.request-child-assignee {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.request-child-date {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.request-child-progress {
+  width: 80px;
+  height: 6px;
+  background: var(--color-bg-hover);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.request-child-progress-fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 3px;
+  transition: width var(--transition-slow);
+}
+
+/* =============================================================================
+   RequestList — Feed
+   ============================================================================= */
+
+.request-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.request-list-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-3xl) var(--space-lg);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.request-list-empty-icon {
+  font-size: 2rem;
+  opacity: 0.5;
+}

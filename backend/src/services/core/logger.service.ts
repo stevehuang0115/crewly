@@ -64,7 +64,7 @@ export class LoggerService {
       level: raw.level ?? 'info',
       enableFileLogging: raw.enableFileLogging ?? false,
       logDir: raw.logDir ?? 'logs',
-      maxFiles: raw.maxFiles ?? 10,
+      maxFiles: raw.maxFiles ?? 3,
       format: raw.format ?? 'simple',
     };
   }

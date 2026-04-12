@@ -5,6 +5,7 @@
  * tool loading, and end-to-end execution via a mock MCP server.
  */
 
+import { describe, it, expect, jest } from '@jest/globals';
 import {
   MCP_TOOL_PREFIX,
   MCP_DEFAULT_SENSITIVITY,
@@ -27,21 +28,21 @@ import type { ToolSensitivity } from './types.js';
  */
 function createMockMcpClient(tools: McpToolInfo[] = []): McpClientService {
   return {
-    connectServer: jest.fn().mockResolvedValue(undefined),
-    disconnectServer: jest.fn().mockResolvedValue(undefined),
-    disconnectAll: jest.fn().mockResolvedValue(undefined),
-    listTools: jest.fn().mockReturnValue(tools),
-    callTool: jest.fn().mockResolvedValue({
+    connectServer: jest.fn<any>().mockResolvedValue(undefined),
+    disconnectServer: jest.fn<any>().mockResolvedValue(undefined),
+    disconnectAll: jest.fn<any>().mockResolvedValue(undefined),
+    listTools: jest.fn<any>().mockReturnValue(tools),
+    callTool: jest.fn<any>().mockResolvedValue({
       content: [{ type: 'text', text: 'mock result' }],
       isError: false,
     }),
-    refreshTools: jest.fn().mockResolvedValue(undefined),
-    getConnectedServers: jest.fn().mockReturnValue(
+    refreshTools: jest.fn<any>().mockResolvedValue(undefined),
+    getConnectedServers: jest.fn<any>().mockReturnValue(
       [...new Set(tools.map(t => t.serverName))],
     ),
-    isServerConnected: jest.fn().mockReturnValue(true),
-    getServerStatuses: jest.fn().mockReturnValue([]),
-    connectAll: jest.fn().mockResolvedValue(new Map()),
+    isServerConnected: jest.fn<any>().mockReturnValue(true),
+    getServerStatuses: jest.fn<any>().mockReturnValue([]),
+    connectAll: jest.fn<any>().mockResolvedValue(new Map()),
   } as unknown as McpClientService;
 }
 
@@ -206,7 +207,7 @@ describe('MCP Tool Bridge', () => {
 
     it('should return full content for multi-block results', async () => {
       const mcpClient = createMockMcpClient();
-      (mcpClient.callTool as jest.Mock).mockResolvedValue({
+      (mcpClient.callTool as jest.MockedFunction<any>).mockResolvedValue({
         content: [
           { type: 'text', text: 'line 1' },
           { type: 'text', text: 'line 2' },
@@ -223,7 +224,7 @@ describe('MCP Tool Bridge', () => {
 
     it('should handle error results from MCP server', async () => {
       const mcpClient = createMockMcpClient();
-      (mcpClient.callTool as jest.Mock).mockResolvedValue({
+      (mcpClient.callTool as jest.MockedFunction<any>).mockResolvedValue({
         content: [{ type: 'text', text: 'Permission denied' }],
         isError: true,
       });
@@ -237,7 +238,7 @@ describe('MCP Tool Bridge', () => {
 
     it('should return error result when callTool throws', async () => {
       const mcpClient = createMockMcpClient();
-      (mcpClient.callTool as jest.Mock).mockRejectedValue(new Error('Connection lost'));
+      (mcpClient.callTool as jest.MockedFunction<any>).mockRejectedValue(new Error('Connection lost'));
       const tool = convertMcpTool(mcpClient, SAMPLE_TOOL);
 
       const result = await tool.execute({ path: '/tmp' }) as { success: boolean; error: string };
@@ -307,7 +308,7 @@ describe('MCP Tool Bridge', () => {
     it('should return errors for failed connections', async () => {
       const mcpClient = createMockMcpClient([]);
       const failError = new Error('spawn ENOENT');
-      (mcpClient.connectAll as jest.Mock).mockResolvedValue(
+      (mcpClient.connectAll as jest.MockedFunction<any>).mockResolvedValue(
         new Map([['badserver', failError]]),
       );
 
@@ -322,7 +323,7 @@ describe('MCP Tool Bridge', () => {
     it('should still load tools from servers that connected successfully', async () => {
       const tools: McpToolInfo[] = [SAMPLE_TOOL];
       const mcpClient = createMockMcpClient(tools);
-      (mcpClient.connectAll as jest.Mock).mockResolvedValue(
+      (mcpClient.connectAll as jest.MockedFunction<any>).mockResolvedValue(
         new Map([['badserver', new Error('fail')]]),
       );
 

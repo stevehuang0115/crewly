@@ -14,6 +14,7 @@
     "src/**/__tests__/**",
     "src/controllers/payment/**",
     "src/services/payment/**",
+    "src/**/eval/fixtures/**",
     "../config/*.test.ts",
     "../config/*.test.js"
   ]

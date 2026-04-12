@@ -1,0 +1,169 @@
+/* TaskList component styles — V2 with message groups */
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+/* Stats Header */
+.task-stats {
+  display: flex;
+  gap: 24px;
+  padding: 12px 16px;
+  background: var(--color-neutral-50, #f9fafb);
+  border-radius: 8px;
+  border: 1px solid var(--color-neutral-200, #e5e7eb);
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.stat-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-neutral-900, #111827);
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: var(--color-neutral-500, #6b7280);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Filter Bar */
+.task-filter-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 0.8rem;
+  border: 1px solid var(--color-neutral-300, #d1d5db);
+  background: white;
+  color: var(--color-neutral-600, #4b5563);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.filter-chip:hover {
+  background: var(--color-neutral-50, #f9fafb);
+}
+
+.filter-chip.active {
+  background: var(--color-primary-50, #eff6ff);
+  border-color: var(--color-primary-300, #93c5fd);
+  color: var(--color-primary-700, #1d4ed8);
+}
+
+.filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  background: var(--color-neutral-200, #e5e7eb);
+}
+
+.filter-chip.active .filter-count {
+  background: var(--color-primary-200, #bfdbfe);
+}
+
+/* Message Groups (todo-list container) */
+.task-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.message-group {
+  background: white;
+  border-radius: 8px;
+  border: 1px solid var(--color-neutral-200, #e5e7eb);
+  overflow: hidden;
+}
+
+.message-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--color-neutral-50, #f9fafb);
+  border-bottom: 1px solid var(--color-neutral-200, #e5e7eb);
+}
+
+.message-text {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-neutral-800, #1f2937);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-right: 12px;
+}
+
+.message-progress {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-neutral-500, #6b7280);
+  background: var(--color-neutral-100, #f3f4f6);
+  padding: 2px 8px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.message-group-tasks {
+  display: flex;
+  flex-direction: column;
+}
+
+.message-group-tasks .task-row {
+  border-bottom: 1px solid var(--color-neutral-100, #f3f4f6);
+}
+
+.message-group-tasks .task-row:last-child {
+  border-bottom: none;
+}
+
+/* Loading / Empty / Error states */
+.task-list-loading,
+.task-list-empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--color-neutral-500, #6b7280);
+  font-size: 0.9rem;
+}
+
+.task-list-error {
+  padding: 16px;
+  background: var(--color-danger-50, #fef2f2);
+  border: 1px solid var(--color-danger-200, #fecaca);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.task-list-error button {
+  margin-top: 8px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--color-danger-300, #fca5a5);
+  background: white;
+  cursor: pointer;
+}

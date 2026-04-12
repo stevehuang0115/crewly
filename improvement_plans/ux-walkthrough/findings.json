@@ -1,0 +1,9 @@
+[
+  {
+    "page": "Chat",
+    "severity": "P1",
+    "category": "empty-state",
+    "issue": "No threads in chat",
+    "details": "Thread list is empty — check if empty state renders properly"
+  }
+]

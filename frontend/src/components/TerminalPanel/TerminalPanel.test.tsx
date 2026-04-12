@@ -990,6 +990,186 @@ describe('TerminalPanel', () => {
     });
   });
 
+  describe('Drag-to-Resize', () => {
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    it('renders resize handle with correct ARIA attributes', async () => {
+      await act(async () => {
+        render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+      });
+
+      const handle = screen.getByRole('separator', { name: /resize/i });
+      expect(handle).toBeInTheDocument();
+      expect(handle).toHaveAttribute('aria-orientation', 'vertical');
+      expect(handle).toHaveClass('cursor-col-resize');
+    });
+
+    it('hides resize handle on mobile (sm:block hidden)', async () => {
+      await act(async () => {
+        render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+      });
+
+      const handle = screen.getByRole('separator', { name: /resize/i });
+      expect(handle).toHaveClass('hidden', 'sm:block');
+    });
+
+    it('applies default panel width of 600px via inline style', async () => {
+      let container: HTMLElement;
+      await act(async () => {
+        const result = render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+        container = result.container;
+      });
+
+      const panel = container!.querySelector('.fixed.bg-surface-dark') as HTMLElement;
+      expect(panel.style.width).toBe('600px');
+    });
+
+    it('restores panel width from localStorage', async () => {
+      localStorage.setItem('crewly-terminal-panel-width', '800');
+
+      let container: HTMLElement;
+      await act(async () => {
+        const result = render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+        container = result.container;
+      });
+
+      const panel = container!.querySelector('.fixed.bg-surface-dark') as HTMLElement;
+      expect(panel.style.width).toBe('800px');
+    });
+
+    it('uses default width when localStorage has invalid value', async () => {
+      localStorage.setItem('crewly-terminal-panel-width', 'not-a-number');
+
+      let container: HTMLElement;
+      await act(async () => {
+        const result = render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+        container = result.container;
+      });
+
+      const panel = container!.querySelector('.fixed.bg-surface-dark') as HTMLElement;
+      expect(panel.style.width).toBe('600px');
+    });
+
+    it('changes panel width on drag (mousedown + mousemove + mouseup)', async () => {
+      let container: HTMLElement;
+      await act(async () => {
+        const result = render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+        container = result.container;
+      });
+
+      const handle = screen.getByRole('separator', { name: /resize/i });
+
+      // Start drag at x=400 (panel right edge minus 600 = approximately at left edge)
+      await act(async () => {
+        fireEvent.mouseDown(handle, { clientX: 400 });
+      });
+
+      // Drag left by 100px → panel should grow by 100px
+      await act(async () => {
+        fireEvent.mouseMove(document, { clientX: 300 });
+      });
+
+      // End drag
+      await act(async () => {
+        fireEvent.mouseUp(document);
+      });
+
+      const panel = container!.querySelector('.fixed.bg-surface-dark') as HTMLElement;
+      expect(panel.style.width).toBe('700px');
+    });
+
+    it('persists width to localStorage after drag ends', async () => {
+      await act(async () => {
+        render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+      });
+
+      const handle = screen.getByRole('separator', { name: /resize/i });
+
+      await act(async () => {
+        fireEvent.mouseDown(handle, { clientX: 400 });
+      });
+      await act(async () => {
+        fireEvent.mouseMove(document, { clientX: 350 });
+      });
+      await act(async () => {
+        fireEvent.mouseUp(document);
+      });
+
+      const stored = localStorage.getItem('crewly-terminal-panel-width');
+      expect(stored).toBe('650');
+    });
+
+    it('enforces minimum width of 300px', async () => {
+      let container: HTMLElement;
+      await act(async () => {
+        const result = render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+        container = result.container;
+      });
+
+      const handle = screen.getByRole('separator', { name: /resize/i });
+
+      // Start at 400, drag right by 500 → tries to shrink by 500 (600-500=100 < 300 min)
+      await act(async () => {
+        fireEvent.mouseDown(handle, { clientX: 400 });
+      });
+      await act(async () => {
+        fireEvent.mouseMove(document, { clientX: 900 });
+      });
+      await act(async () => {
+        fireEvent.mouseUp(document);
+      });
+
+      const panel = container!.querySelector('.fixed.bg-surface-dark') as HTMLElement;
+      expect(panel.style.width).toBe('300px');
+    });
+
+    it('refits terminal after drag ends', async () => {
+      await act(async () => {
+        render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+      });
+
+      mockFitAddonInstance.fit.mockClear();
+
+      const handle = screen.getByRole('separator', { name: /resize/i });
+
+      await act(async () => {
+        fireEvent.mouseDown(handle, { clientX: 400 });
+      });
+      await act(async () => {
+        fireEvent.mouseMove(document, { clientX: 350 });
+      });
+      await act(async () => {
+        fireEvent.mouseUp(document);
+      });
+
+      expect(mockFitAddonInstance.fit).toHaveBeenCalled();
+    });
+
+    it('sets col-resize cursor during drag', async () => {
+      await act(async () => {
+        render(<TerminalPanel isOpen={true} onClose={mockOnClose} />);
+      });
+
+      const handle = screen.getByRole('separator', { name: /resize/i });
+
+      await act(async () => {
+        fireEvent.mouseDown(handle, { clientX: 400 });
+      });
+
+      expect(document.body.style.cursor).toBe('col-resize');
+      expect(document.body.style.userSelect).toBe('none');
+
+      await act(async () => {
+        fireEvent.mouseUp(document);
+      });
+
+      expect(document.body.style.cursor).toBe('');
+      expect(document.body.style.userSelect).toBe('');
+    });
+  });
+
   describe('Resize State Re-request', () => {
     it('requests fresh terminal state after resize with debounce', async () => {
       vi.useFakeTimers();

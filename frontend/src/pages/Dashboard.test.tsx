@@ -29,6 +29,7 @@ vi.mock('../services/api.service', () => ({
     getProjects: vi.fn(),
     getTeams: vi.fn(),
     getAllTasks: vi.fn(),
+    getIntentTaskStatistics: vi.fn(),
   },
 }));
 
@@ -42,6 +43,13 @@ vi.mock('../contexts/TerminalContext', () => ({
 // Mock RelayHealthCard — self-contained component that polls APIs
 vi.mock('../components/Dashboard/RelayHealthCard', () => ({
   RelayHealthCard: () => <div data-testid="relay-health-card">Cloud Relay</div>,
+}));
+
+// Mock AgentStreamPanel — renders a stub with the sessionName it receives
+vi.mock('../components/ExecutionFeed/AgentStreamPanel', () => ({
+  AgentStreamPanel: ({ sessionName }: { sessionName: string | null }) => (
+    <div data-testid="agent-stream-panel">Streaming: {sessionName}</div>
+  ),
 }));
 
 const mockProjects = [
@@ -80,6 +88,28 @@ const mockTeams = [
   },
 ];
 
+/** Teams fixture with one active agent — used for Agent Activity section tests */
+const mockTeamsWithActiveAgent = [
+  {
+    id: 'team-1',
+    name: 'Test Team 1',
+    description: 'Team 1 description',
+    members: [
+      {
+        id: 'member-1',
+        name: 'Agent Leo',
+        role: 'developer',
+        sessionName: 'crewly-product-leo',
+        systemPrompt: '',
+        agentStatus: 'active' as const,
+        workingStatus: 'in_progress' as const,
+        runtimeType: 'claude-code' as const,
+      },
+    ],
+    updatedAt: new Date().toISOString(),
+  },
+];
+
 const TestWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <MemoryRouter>{children}</MemoryRouter>
 );
@@ -90,6 +120,16 @@ describe('Dashboard Page', () => {
     vi.mocked(apiService.getProjects).mockResolvedValue(mockProjects);
     vi.mocked(apiService.getTeams).mockResolvedValue(mockTeams);
     vi.mocked(apiService.getAllTasks).mockResolvedValue([]);
+    vi.mocked(apiService.getIntentTaskStatistics).mockResolvedValue({
+      totalTasks: 0,
+      byStatus: {},
+      byLevel: {},
+      totalTokens: 0,
+      totalCost: 0,
+      llmCost: 0,
+      skillCost: 0,
+      totalMessages: 0,
+    });
   });
 
   describe('Layout', () => {
@@ -118,7 +158,7 @@ describe('Dashboard Page', () => {
       });
     });
 
-    it('should not render RelayHealthCard (removed, CloudBar in header is sufficient)', async () => {
+    it('should render RelayHealthCard for live Cloud Relay status', async () => {
       render(
         <TestWrapper>
           <Dashboard />
@@ -129,7 +169,7 @@ describe('Dashboard Page', () => {
         expect(screen.getByText('Dashboard')).toBeInTheDocument();
       });
 
-      expect(screen.queryByTestId('relay-health-card')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('relay-health-card')).toBeInTheDocument();
     });
 
     it('should render teams section header', async () => {
@@ -267,6 +307,59 @@ describe('Dashboard Page', () => {
       });
 
       expect(screen.queryByText('Connect to Cloud')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Agent Activity Section', () => {
+    it('should NOT render agent activity section when no agents are active', async () => {
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Dashboard')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByTestId('agent-activity-section')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('agent-stream-panel')).not.toBeInTheDocument();
+    });
+
+    it('should render agent activity section when an agent is active', async () => {
+      vi.mocked(apiService.getTeams).mockResolvedValue(mockTeamsWithActiveAgent);
+
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('agent-activity-section')).toBeInTheDocument();
+      });
+
+      expect(screen.getByText('Agent Activity')).toBeInTheDocument();
+      expect(screen.getByTestId('agent-stream-panel')).toBeInTheDocument();
+      expect(screen.getByText('Streaming: crewly-product-leo')).toBeInTheDocument();
+    });
+
+    it('should render green pulsing dot in agent activity header', async () => {
+      vi.mocked(apiService.getTeams).mockResolvedValue(mockTeamsWithActiveAgent);
+
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('agent-activity-section')).toBeInTheDocument();
+      });
+
+      const section = screen.getByTestId('agent-activity-section');
+      const dot = section.querySelector('.animate-pulse.bg-emerald-400');
+      expect(dot).toBeInTheDocument();
     });
   });
 

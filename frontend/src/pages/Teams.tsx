@@ -170,7 +170,7 @@ export const Teams: React.FC = () => {
     }
   };
 
-  const handleCreateTeam = async (teamData: any) => {
+  const handleCreateTeam = async (teamData: Omit<Team, 'id' | 'createdAt' | 'updatedAt' | 'sessionName'>) => {
     try {
       const newTeam = await apiService.createTeam(teamData);
       setTeams(prev => [...prev, newTeam]);

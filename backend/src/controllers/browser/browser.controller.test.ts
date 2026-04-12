@@ -4,31 +4,30 @@
  * @module controllers/browser/browser.controller.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createBrowserRouter } from './browser.routes.js';
 import { BrowserBridgeService } from '../../services/browser/browser-bridge.service.js';
 
 // Mock logger
-vi.mock('../../services/core/logger.service.js', () => ({
+jest.mock('../../services/core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
 			createComponentLogger: () => ({
-				info: vi.fn(),
-				warn: vi.fn(),
-				error: vi.fn(),
-				debug: vi.fn(),
+				info: jest.fn(),
+				warn: jest.fn(),
+				error: jest.fn(),
+				debug: jest.fn(),
 			}),
 		}),
 	},
 }));
 
 // Mock ws module (not needed for controller tests but required by service import)
-vi.mock('ws', () => ({
-	WebSocketServer: vi.fn(() => ({
-		on: vi.fn(),
-		close: vi.fn(),
+jest.mock('ws', () => ({
+	WebSocketServer: jest.fn(() => ({
+		on: jest.fn(),
+		close: jest.fn(),
 	})),
 	WebSocket: { OPEN: 1, CLOSED: 3 },
 }));
@@ -51,7 +50,7 @@ describe('Browser Controller', () => {
 		it('should return disconnected status when no Chrome Extension is connected', async () => {
 			const res = await request(app).get('/api/browser/status');
 			expect(res.status).toBe(200);
-			expect(res.body).toEqual({
+			expect(res.body).toMatchObject({
 				connected: false,
 				clientCount: 0,
 				wsPath: '/ws/browser',

@@ -72,6 +72,30 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
   // Debounce timer for requesting fresh terminal state after resize
   const resizeStateRequestRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Drag-to-resize state: panel width in pixels (desktop only)
+  const DEFAULT_PANEL_WIDTH = 600;
+  const MIN_PANEL_WIDTH = 300;
+  const MAX_PANEL_WIDTH_RATIO = 0.85; // 85% of viewport
+  const PANEL_WIDTH_STORAGE_KEY = 'crewly-terminal-panel-width';
+
+  const getInitialWidth = (): number => {
+    try {
+      const stored = localStorage.getItem(PANEL_WIDTH_STORAGE_KEY);
+      if (stored) {
+        const parsed = parseInt(stored, 10);
+        if (!isNaN(parsed) && parsed >= MIN_PANEL_WIDTH) {
+          return Math.min(parsed, window.innerWidth * MAX_PANEL_WIDTH_RATIO);
+        }
+      }
+    } catch { /* localStorage unavailable */ }
+    return DEFAULT_PANEL_WIDTH;
+  };
+
+  const [panelWidth, setPanelWidth] = useState<number>(getInitialWidth);
+  const isDraggingRef = useRef<boolean>(false);
+  const dragStartXRef = useRef<number>(0);
+  const dragStartWidthRef = useRef<number>(0);
+
   // Ref to track the current session for use in recursive timeouts
   // This prevents stale closures in the retry logic
   const selectedSessionRef = useRef<string>(selectedSession);
@@ -755,6 +779,49 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
     setSwipeOffset(0);
   }, [onClose]);
 
+  // Drag-to-resize handlers (desktop only)
+  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    dragStartXRef.current = e.clientX;
+    dragStartWidthRef.current = panelWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, [panelWidth]);
+
+  useEffect(() => {
+    const handleResizeMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      // Panel is on the right side, so dragging left (decreasing clientX) increases width
+      const delta = dragStartXRef.current - e.clientX;
+      const maxWidth = window.innerWidth * MAX_PANEL_WIDTH_RATIO;
+      const newWidth = Math.max(MIN_PANEL_WIDTH, Math.min(maxWidth, dragStartWidthRef.current + delta));
+      setPanelWidth(newWidth);
+    };
+
+    const handleResizeMouseUp = () => {
+      if (!isDraggingRef.current) return;
+      isDraggingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      // Persist to localStorage
+      try {
+        localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(Math.round(panelWidth)));
+      } catch { /* localStorage unavailable */ }
+      // Refit terminal after drag ends
+      if (fitAddonRef.current && xtermRef.current) {
+        fitAddonRef.current.fit();
+      }
+    };
+
+    document.addEventListener('mousemove', handleResizeMouseMove);
+    document.addEventListener('mouseup', handleResizeMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleResizeMouseMove);
+      document.removeEventListener('mouseup', handleResizeMouseUp);
+    };
+  }, [panelWidth]);
+
   // Compute inline transform for swipe-in-progress feedback
   const panelStyle: React.CSSProperties = swipeOffset > 0
     ? { transform: `translateX(${swipeOffset}px)`, transition: 'none' }
@@ -775,9 +842,25 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
         ref={terminalPanelRef}
         className={`fixed top-0 right-0 h-full bg-surface-dark border-l border-border-dark flex flex-col z-50 transition-transform duration-300 ${
           isOpen ? 'translate-x-0' : 'translate-x-full'
-        } w-full sm:w-[600px]`}
-        style={isOpen ? panelStyle : undefined}
+        } max-sm:!w-full`}
+        style={{
+          ...(isOpen ? panelStyle : {}),
+          width: `${panelWidth}px`,
+          maxWidth: '85vw',
+        }}
       >
+        {/* Drag-to-resize handle — left edge, desktop only */}
+        <div
+          className="absolute left-0 top-0 h-full w-1.5 cursor-col-resize z-10 hidden sm:block group"
+          onMouseDown={handleResizeMouseDown}
+          aria-label="Resize terminal panel"
+          role="separator"
+          aria-orientation="vertical"
+        >
+          {/* Visual indicator on hover/drag */}
+          <div className="h-full w-full transition-colors group-hover:bg-primary/40 group-active:bg-primary/60" />
+        </div>
+
         {/* Header — larger touch targets on mobile, swipe gesture zone */}
         <div
           className="flex items-center justify-between p-3 sm:p-4 border-b border-border-dark"

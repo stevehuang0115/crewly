@@ -78,27 +78,35 @@ describe('Pricing', () => {
   it('renders all three plan cards', () => {
     render(<Pricing />);
 
-    expect(screen.getByTestId('plan-card-free')).toBeInTheDocument();
-    expect(screen.getByTestId('plan-card-solo')).toBeInTheDocument();
-    expect(screen.getByTestId('plan-card-team')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-card-starter')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-card-pro')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-card-max')).toBeInTheDocument();
   });
 
   it('renders the page heading and subtitle', () => {
     render(<Pricing />);
 
     expect(screen.getByText('Choose Your Plan')).toBeInTheDocument();
-    expect(screen.getByText("Start free, upgrade when you're ready.")).toBeInTheDocument();
+    expect(screen.getByText('Start with Starter, upgrade as you grow.')).toBeInTheDocument();
   });
 
-  it('shows "Current Plan" button on free tier when user is on free plan', () => {
+  it('shows upgrade buttons on all plans for free users', () => {
     render(<Pricing />);
 
-    const freeBtn = screen.getByTestId('cta-free');
-    expect(freeBtn).toHaveTextContent('Current Plan');
-    expect(freeBtn).toBeDisabled();
+    const starterBtn = screen.getByTestId('cta-starter');
+    expect(starterBtn).toHaveTextContent('Get Started');
+    expect(starterBtn).not.toBeDisabled();
+
+    const proBtn = screen.getByTestId('cta-pro');
+    expect(proBtn).toHaveTextContent('Upgrade to Pro');
+    expect(proBtn).not.toBeDisabled();
+
+    const maxBtn = screen.getByTestId('cta-max');
+    expect(maxBtn).toHaveTextContent('Upgrade to Max');
+    expect(maxBtn).not.toBeDisabled();
   });
 
-  it('shows "Current Plan" on solo tier when user is on pro plan', () => {
+  it('shows "Current Plan" on pro tier when user is on pro plan', () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       user: { ...mockUser, plan: 'pro' },
@@ -113,17 +121,17 @@ describe('Pricing', () => {
 
     render(<Pricing />);
 
-    const soloBtn = screen.getByTestId('cta-solo');
-    expect(soloBtn).toHaveTextContent('Current Plan');
-    expect(soloBtn).toBeDisabled();
+    const proBtn = screen.getByTestId('cta-pro');
+    expect(proBtn).toHaveTextContent('Current Plan');
+    expect(proBtn).toBeDisabled();
   });
 
   it('displays monthly prices by default', () => {
     render(<Pricing />);
 
-    expect(screen.getByTestId('price-free')).toHaveTextContent('$0');
-    expect(screen.getByTestId('price-solo')).toHaveTextContent('$29');
-    expect(screen.getByTestId('price-team')).toHaveTextContent('$99');
+    expect(screen.getByTestId('price-starter')).toHaveTextContent('$49');
+    expect(screen.getByTestId('price-pro')).toHaveTextContent('$99');
+    expect(screen.getByTestId('price-max')).toHaveTextContent('$299');
   });
 
   it('switches to yearly prices when billing toggle is clicked', () => {
@@ -131,8 +139,9 @@ describe('Pricing', () => {
 
     fireEvent.click(screen.getByTestId('billing-yearly'));
 
-    expect(screen.getByTestId('price-solo')).toHaveTextContent('$24');
-    expect(screen.getByTestId('price-team')).toHaveTextContent('$82');
+    expect(screen.getByTestId('price-starter')).toHaveTextContent('$39');
+    expect(screen.getByTestId('price-pro')).toHaveTextContent('$79');
+    expect(screen.getByTestId('price-max')).toHaveTextContent('$239');
   });
 
   it('switches back to monthly prices', () => {
@@ -141,31 +150,19 @@ describe('Pricing', () => {
     fireEvent.click(screen.getByTestId('billing-yearly'));
     fireEvent.click(screen.getByTestId('billing-monthly'));
 
-    expect(screen.getByTestId('price-solo')).toHaveTextContent('$29');
-  });
-
-  it('shows upgrade buttons on paid plans for free users', () => {
-    render(<Pricing />);
-
-    const soloBtn = screen.getByTestId('cta-solo');
-    expect(soloBtn).toHaveTextContent('Upgrade to Solo');
-    expect(soloBtn).not.toBeDisabled();
-
-    const teamBtn = screen.getByTestId('cta-team');
-    expect(teamBtn).toHaveTextContent('Upgrade to Team');
-    expect(teamBtn).not.toBeDisabled();
+    expect(screen.getByTestId('price-pro')).toHaveTextContent('$99');
   });
 
   it('calls createCheckoutSession when upgrade button is clicked', async () => {
     render(<Pricing />);
 
-    fireEvent.click(screen.getByTestId('cta-solo'));
+    fireEvent.click(screen.getByTestId('cta-pro'));
 
     await waitFor(() => {
       expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-        'solo',
+        'pro',
         'month',
-        expect.stringContaining('/settings?tab=cloud&upgraded=true'),
+        expect.stringContaining('/cloud?upgraded=true'),
         expect.any(String),
       );
     });
@@ -182,7 +179,7 @@ describe('Pricing', () => {
     expect(salesBtn).toHaveTextContent('Contact Sales');
   });
 
-  it('renders the "Popular" badge on the solo card', () => {
+  it('renders the "Popular" badge on the pro card', () => {
     render(<Pricing />);
 
     expect(screen.getByText('Popular')).toBeInTheDocument();
@@ -191,28 +188,28 @@ describe('Pricing', () => {
   it('renders feature lists with check icons', () => {
     render(<Pricing />);
 
-    expect(screen.getByText('2 teams')).toBeInTheDocument();
-    expect(screen.getByText('Unlimited teams')).toBeInTheDocument();
-    expect(screen.getByText('5 team seats')).toBeInTheDocument();
+    expect(screen.getByText('3 teams')).toBeInTheDocument();
+    expect(screen.getByText('Priority support')).toBeInTheDocument();
+    expect(screen.getByText('Everything in Pro')).toBeInTheDocument();
     expect(screen.getAllByTestId('check-icon').length).toBeGreaterThanOrEqual(3);
   });
 
   it('shows yearly savings percentage on the toggle button', () => {
     render(<Pricing />);
 
-    // getYearlySavingsPercent returns 17 for 29 -> 24
-    expect(screen.getByTestId('billing-yearly')).toHaveTextContent(/Save 17%/);
+    // getYearlySavingsPercent('pro') returns 20 for 49 -> 39
+    expect(screen.getByTestId('billing-yearly')).toHaveTextContent(/Save 20%/);
   });
 
   it('passes yearly interval when billing is set to yearly', async () => {
     render(<Pricing />);
 
     fireEvent.click(screen.getByTestId('billing-yearly'));
-    fireEvent.click(screen.getByTestId('cta-team'));
+    fireEvent.click(screen.getByTestId('cta-max'));
 
     await waitFor(() => {
       expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-        'team',
+        'max',
         'year',
         expect.any(String),
         expect.any(String),

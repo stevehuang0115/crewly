@@ -7,6 +7,7 @@ import { Teams } from './pages/Teams';
 import { TeamDetail } from './pages/TeamDetail';
 import { Assignments } from './pages/Assignments';
 import { ScheduledCheckins } from './pages/ScheduledCheckins';
+import { Triggers } from './pages/Triggers';
 import { Factory } from './pages/Factory';
 import { Settings } from './pages/Settings';
 import { Chat } from './pages/Chat';
@@ -22,6 +23,13 @@ import { AuthProvider } from './contexts/AuthContext';
 import { PaymentWallProvider } from './contexts/PaymentWallContext';
 import { AuthCallback } from './pages/AuthCallback';
 import { Auth } from './pages/Auth';
+import { Pricing } from './pages/Pricing';
+import { CloudPortal } from './pages/CloudPortal';
+import { TasksPage } from './pages/TasksPage';
+import { Missions } from './pages/Missions';
+import { MissionDetail } from './pages/MissionDetail';
+import { WorkItems } from './pages/WorkItems';
+import { RequestsPage } from './pages/RequestsPage';
 
 
 function App() {
@@ -46,13 +54,24 @@ function App() {
               <Route path="teams/:id" element={<TeamDetail />} />
               <Route path="assignments" element={<Assignments />} />
               <Route path="scheduled-checkins" element={<ScheduledCheckins />} />
+              <Route path="triggers" element={<Triggers />} />
               <Route path="factory" element={<Factory />} />
               <Route path="marketplace" element={<Marketplace />} />
               <Route path="marketplace/:id" element={<MarketplaceDetail />} />
               <Route path="knowledge" element={<Knowledge />} />
               <Route path="security" element={<SecurityOverview />} />
               <Route path="monitoring/costs" element={<CostDashboard />} />
+              <Route path="usage" element={<CostDashboard />} />
               <Route path="settings" element={<Settings />} />
+              <Route path="pricing" element={<Pricing />} />
+              <Route path="cloud" element={<CloudPortal />} />
+              <Route path="tasks" element={<TasksPage />} />
+              <Route path="missions" element={<Missions />} />
+              <Route path="missions/:id" element={<MissionDetail />} />
+              <Route path="workitems" element={<WorkItems />} />
+              <Route path="workitems/:id" element={<WorkItems />} />
+              <Route path="requests" element={<RequestsPage />} />
+              <Route path="requests/:id" element={<RequestsPage />} />
 
               <Route
                 path="chat"

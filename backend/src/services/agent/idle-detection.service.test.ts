@@ -4,38 +4,37 @@
  * @module services/agent/idle-detection.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AGENT_SUSPEND_CONSTANTS } from '../../constants.js';
 
 // Mock LoggerService
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
 			createComponentLogger: () => ({
-				info: vi.fn(),
-				debug: vi.fn(),
-				warn: vi.fn(),
-				error: vi.fn(),
+				info: jest.fn(),
+				debug: jest.fn(),
+				warn: jest.fn(),
+				error: jest.fn(),
 			}),
 		}),
 	},
 }));
 
 // Mock settings service
-const mockGetSettings = vi.fn().mockResolvedValue({
+const mockGetSettings = jest.fn().mockResolvedValue({
 	general: { agentIdleTimeoutMinutes: 30 },
 });
 
-vi.mock('../settings/index.js', () => ({
+jest.mock('../settings/index.js', () => ({
 	getSettingsService: () => ({
 		getSettings: mockGetSettings,
 	}),
 }));
 
 // Mock storage service
-const mockGetTeams = vi.fn();
-const mockUpdateAgentStatus = vi.fn().mockResolvedValue(undefined);
-vi.mock('../core/storage.service.js', () => ({
+const mockGetTeams = jest.fn();
+const mockUpdateAgentStatus = jest.fn().mockResolvedValue(undefined);
+jest.mock('../core/storage.service.js', () => ({
 	StorageService: {
 		getInstance: () => ({
 			getTeams: mockGetTeams,
@@ -45,39 +44,39 @@ vi.mock('../core/storage.service.js', () => ({
 }));
 
 // Mock AgentSuspendService
-const mockSuspendAgent = vi.fn().mockResolvedValue(true);
-const mockIsSuspended = vi.fn().mockReturnValue(false);
-const mockIsRehydrating = vi.fn().mockReturnValue(false);
+const mockSuspendAgent = jest.fn().mockResolvedValue(true);
+const mockIsSuspended = jest.fn().mockReturnValue(false);
+const mockIsRehydrating = jest.fn().mockReturnValue(false);
 
-vi.mock('./agent-suspend.service.js', () => ({
+jest.mock('./agent-suspend.service.js', () => ({
 	AgentSuspendService: {
 		getInstance: () => ({
 			suspendAgent: mockSuspendAgent,
 			isSuspended: mockIsSuspended,
 			isRehydrating: mockIsRehydrating,
 		}),
-		resetInstance: vi.fn(),
+		resetInstance: jest.fn(),
 	},
 }));
 
 // Mock PtyActivityTrackerService
-const mockIsIdleFor = vi.fn();
-const mockClearSession = vi.fn();
+const mockIsIdleFor = jest.fn();
+const mockClearSession = jest.fn();
 
-vi.mock('./pty-activity-tracker.service.js', () => ({
+jest.mock('./pty-activity-tracker.service.js', () => ({
 	PtyActivityTrackerService: {
 		getInstance: () => ({
 			isIdleFor: mockIsIdleFor,
 			clearSession: mockClearSession,
 		}),
-		resetInstance: vi.fn(),
+		resetInstance: jest.fn(),
 	},
 }));
 
 // Mock session backend
-const mockKillSession = vi.fn().mockResolvedValue(undefined);
-const mockSessionExists = vi.fn().mockReturnValue(true);
-vi.mock('../session/index.js', () => ({
+const mockKillSession = jest.fn().mockResolvedValue(undefined);
+const mockSessionExists = jest.fn().mockReturnValue(true);
+jest.mock('../session/index.js', () => ({
 	getSessionBackendSync: () => ({
 		killSession: mockKillSession,
 		sessionExists: mockSessionExists,
@@ -85,8 +84,8 @@ vi.mock('../session/index.js', () => ({
 }));
 
 // Mock ActivityMonitorService
-const mockGetWorkingStatus = vi.fn().mockResolvedValue('idle');
-vi.mock('../monitoring/activity-monitor.service.js', () => ({
+const mockGetWorkingStatus = jest.fn().mockResolvedValue('idle');
+jest.mock('../monitoring/activity-monitor.service.js', () => ({
 	ActivityMonitorService: {
 		getInstance: () => ({
 			getWorkingStatusForSession: mockGetWorkingStatus,
@@ -100,17 +99,17 @@ import { IdleDetectionService } from './idle-detection.service.js';
 describe('IdleDetectionService', () => {
 	beforeEach(() => {
 		IdleDetectionService.resetInstance();
-		vi.clearAllMocks();
+		jest.clearAllMocks();
 		mockGetSettings.mockResolvedValue({ general: { agentIdleTimeoutMinutes: 30 } });
 		mockIsSuspended.mockReturnValue(false);
 		mockIsRehydrating.mockReturnValue(false);
 		mockGetWorkingStatus.mockResolvedValue('idle');
-		vi.useFakeTimers();
+		jest.useFakeTimers();
 	});
 
 	afterEach(() => {
 		IdleDetectionService.resetInstance();
-		vi.useRealTimers();
+		jest.useRealTimers();
 	});
 
 	describe('getInstance', () => {
@@ -186,7 +185,7 @@ describe('IdleDetectionService', () => {
 		});
 
 		it('should stop idle agents when registration service is set', async () => {
-			const mockTerminate = vi.fn().mockResolvedValue({ success: true });
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
 			mockGetTeams.mockResolvedValue([{
 				id: 'team1',
 				members: [{ id: 'dev1', sessionName: 'agent-dev', role: 'developer', agentStatus: 'active' }],

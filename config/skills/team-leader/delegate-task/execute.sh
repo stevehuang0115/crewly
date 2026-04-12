@@ -6,19 +6,76 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT=$(read_json_input "${1:-}")
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"to\":\"worker-session\",\"task\":\"...\"}' or echo '{...}' | execute.sh"
+# --- Input parsing: CLI flags (preferred) or legacy JSON ---
+INPUT_JSON=""
+TO=""
+TASK=""
+PRIORITY="normal"
+CONTEXT=""
+PROJECT_PATH=""
+TEAM_ID=""
+TL_MEMBER_ID=""
+FROM_SESSION=""
 
-TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')
-TASK=$(printf '%s' "$INPUT" | jq -r '.task // empty')
-PRIORITY=$(printf '%s' "$INPUT" | jq -r '.priority // "normal"')
-CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
-PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
-TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
-TL_MEMBER_ID=$(printf '%s' "$INPUT" | jq -r '.tlMemberId // empty')
-FROM_SESSION=$(printf '%s' "$INPUT" | jq -r '.fromSession // empty')
-require_param "to" "$TO"
-require_param "task" "$TASK"
+# Detect legacy JSON argument
+if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
+  INPUT_JSON="$1"
+  shift || true
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --to|-t)       TO="$2";            shift 2 ;;
+    --task|-T)     TASK="$2";           shift 2 ;;
+    --task-file)   TASK="$(cat "$2")";  shift 2 ;;
+    --priority|-P) PRIORITY="$2";       shift 2 ;;
+    --context|-c)  CONTEXT="$2";        shift 2 ;;
+    --project|-p)  PROJECT_PATH="$2";   shift 2 ;;
+    --team|-g)     TEAM_ID="$2";        shift 2 ;;
+    --tl-member)   TL_MEMBER_ID="$2";   shift 2 ;;
+    --from)        FROM_SESSION="$2";   shift 2 ;;
+    --json|-j)     INPUT_JSON="$2";     shift 2 ;;
+    --help|-h)
+      echo "Usage: execute.sh --to worker-session --task 'implement feature' --priority high --project /path [--team teamId] [--tl-member memberId]"
+      exit 0
+      ;;
+    --)            shift; break ;;
+    *)
+      if [[ -z "$INPUT_JSON" && ${1:0:1} == '{' ]]; then
+        INPUT_JSON="$1"; shift
+      else
+        error_exit "Unknown argument: $1"
+      fi
+      ;;
+  esac
+done
+
+# Read task from stdin if not yet provided
+if [ -z "$INPUT_JSON" ] && [ -z "$TASK" ] && [ ! -t 0 ]; then
+  STDIN_DATA="$(cat)"
+  if [[ ${STDIN_DATA:0:1} == '{' ]]; then
+    INPUT_JSON="$STDIN_DATA"
+  else
+    TASK="$STDIN_DATA"
+  fi
+fi
+
+# Parse JSON if provided (backward compatible)
+INPUT="{}"
+if [ -n "$INPUT_JSON" ]; then
+  INPUT=$(read_json_input "$INPUT_JSON")
+  [ -z "$TO" ] && TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')
+  [ -z "$TASK" ] && TASK=$(printf '%s' "$INPUT" | jq -r '.task // empty')
+  [ "$PRIORITY" = "normal" ] && { P=$(printf '%s' "$INPUT" | jq -r '.priority // empty'); [ -n "$P" ] && PRIORITY="$P"; }
+  [ -z "$CONTEXT" ] && CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
+  [ -z "$PROJECT_PATH" ] && PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+  [ -z "$TEAM_ID" ] && TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
+  [ -z "$TL_MEMBER_ID" ] && TL_MEMBER_ID=$(printf '%s' "$INPUT" | jq -r '.tlMemberId // empty')
+  [ -z "$FROM_SESSION" ] && FROM_SESSION=$(printf '%s' "$INPUT" | jq -r '.fromSession // empty')
+fi
+
+require_param "to (--to)" "$TO"
+require_param "task (--task)" "$TASK"
 
 # Resolve Crewly root from this script path:
 # config/skills/team-leader/delegate-task/execute.sh -> project root

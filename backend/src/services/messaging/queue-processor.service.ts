@@ -114,6 +114,13 @@ export class QueueProcessorService extends EventEmitter {
   /** Thread status queue for tracking message lifecycle across restarts */
   private threadStatusQueue: ThreadStatusQueueService | null = null;
 
+  /**
+   * Optional Task Pool routing callback. When set, task-assignment messages
+   * (content starting with "[TASK]") are routed through the Task Pool before
+   * delivery, allowing the Reconciler to manage assignment lifecycle.
+   */
+  private taskPoolRouter: ((messageContent: string, targetSession: string) => Promise<boolean>) | null = null;
+
   constructor(
     queueService: MessageQueueService,
     responseRouter: ResponseRouterService,
@@ -133,6 +140,18 @@ export class QueueProcessorService extends EventEmitter {
    */
   setThreadStatusQueue(service: ThreadStatusQueueService): void {
     this.threadStatusQueue = service;
+  }
+
+  /**
+   * Set the Task Pool routing callback.
+   * When provided, messages with "[TASK]" prefix are offered to the Task Pool
+   * before standard delivery. If the callback returns true, the message is
+   * considered routed and delivery is skipped.
+   *
+   * @param router - Async callback that returns true if the message was routed to the pool
+   */
+  setTaskPoolRouter(router: (messageContent: string, targetSession: string) => Promise<boolean>): void {
+    this.taskPoolRouter = router;
   }
 
   /**
@@ -286,6 +305,31 @@ export class QueueProcessorService extends EventEmitter {
         source: message.source,
         conversationId: message.conversationId,
       });
+
+      // Task Pool routing: if a Task Pool router is configured, offer task
+      // assignment messages to the pool before standard delivery. Messages
+      // with "[TASK]" prefix are candidates for pool-based assignment.
+      if (this.taskPoolRouter && message.content.startsWith('[TASK]')) {
+        const deliveryTarget = message.targetSession || ORCHESTRATOR_SESSION_NAME;
+        try {
+          const routed = await this.taskPoolRouter(message.content, deliveryTarget);
+          if (routed) {
+            this.logger.info('Message routed to Task Pool, skipping direct delivery', {
+              messageId: message.id,
+              targetSession: deliveryTarget,
+            });
+            this.queueService.markCompleted(message.id);
+            clearInterval(keepaliveInterval);
+            return;
+          }
+        } catch (poolErr) {
+          this.logger.warn('Task Pool routing failed, falling through to direct delivery', {
+            messageId: message.id,
+            error: poolErr instanceof Error ? poolErr.message : String(poolErr),
+          });
+          // Fall through to normal delivery
+        }
+      }
 
       const isSystemEvent = message.source === MESSAGE_SOURCES.SYSTEM_EVENT;
 
@@ -979,4 +1023,5 @@ export class QueueProcessorService extends EventEmitter {
       // because we still need to verify the agent actually processes it.
     }
   }
+
 }

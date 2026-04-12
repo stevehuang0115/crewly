@@ -41,19 +41,32 @@ Store a memory entry for future recall. Use this to persist important context, d
 
 ## Parameters
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `agentId` | Yes | Your agent ID |
-| `content` | Yes | The content to remember |
-| `category` | Yes | Memory category. Agent scope supports `fact`, `pattern`, `preference`. Project scope supports `pattern`, `decision`, `gotcha`, `relationship`, `user_preference` |
-| `scope` | Yes | Memory scope: `"agent"` or `"project"` |
-| `projectPath` | No | Associated project path |
-| `metadata` | No | Additional metadata object |
+| Flag | JSON Field | Required | Description |
+|------|-----------|----------|-------------|
+| `--agent` / `-a` | `agentId` | Yes | Your agent ID / session name |
+| `--content` / `-c` | `content` | Yes | Content to remember (or pipe via stdin) |
+| `--content-file` | — | No | Read content from a file path |
+| `--category` / `-C` | `category` | Yes | Category: `pattern`, `decision`, `gotcha`, `fact`, `preference`, `relationship`, `user_preference` |
+| `--scope` / `-s` | `scope` | Yes | Scope: `agent` or `project` |
+| `--project` / `-p` | `projectPath` | No | Project path (required for `project` scope) |
 
-## Example
+## Examples — CLI Flags (preferred)
 
 ```bash
-bash config/skills/agent/core/remember/execute.sh '{"agentId":"dev-1","content":"User prefers PDF delivery in Slack thread after daily brief.","category":"user_preference","scope":"project","projectPath":"/projects/app"}'
+# Store a project-wide pattern
+bash execute.sh --agent dev-1 --content "User prefers PDF delivery in Slack thread" --category user_preference --scope project --project /projects/app
+
+# Content via stdin (for text with special characters)
+echo "Jest mock resets are required between tests — don't forget" | bash execute.sh --agent dev-1 --category gotcha --scope project --project /projects/app
+
+# Content from file
+bash execute.sh --agent dev-1 --content-file /tmp/finding.txt --category decision --scope project --project /projects/app
+```
+
+## Examples — Legacy JSON (backward compatible)
+
+```bash
+bash execute.sh '{"agentId":"dev-1","content":"User prefers PDF delivery","category":"user_preference","scope":"project","projectPath":"/projects/app"}'
 ```
 
 ## Output

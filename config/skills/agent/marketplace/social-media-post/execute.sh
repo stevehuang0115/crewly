@@ -125,7 +125,7 @@ for platform in "${PLATFORM_ARRAY[@]}"; do
   esac
 done
 
-# Output JSON
+# Output JSON with publishing policy reminder
 jq -n \
   --arg topic "$TOPIC" \
   --arg tone "$TONE" \
@@ -133,5 +133,6 @@ jq -n \
   '{
     topic: $topic,
     tone: $tone,
-    posts: $posts
+    posts: $posts,
+    policy: "DRAFT ONLY. X/Twitter is Tier B — must be manually published by Steve. Share draft + compose URL via Slack. Unauthorized publishing = P0 incident."
   }'

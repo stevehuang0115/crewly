@@ -26,6 +26,42 @@ export interface SessionUsageSummary {
   totalOutput: number;
   /** Number of LLM events recorded */
   eventCount: number;
+  /** Server-computed cost in USD */
+  cost?: number;
+  /** Per-model usage breakdown */
+  modelBreakdown?: ModelUsageBreakdown[];
+}
+
+/**
+ * Token usage breakdown for a specific model.
+ * Returned by the backend as part of SessionUsageSummary.
+ */
+export interface ModelUsageBreakdown {
+  /** Model identifier (e.g. 'claude-sonnet-4-20250514') */
+  model: string;
+  /** Input tokens for this model */
+  inputTokens: number;
+  /** Output tokens for this model */
+  outputTokens: number;
+  /** Computed cost for this model in USD */
+  cost: number;
+}
+
+/**
+ * Token usage summary aggregated by task ID.
+ * Returned by the GET /api/monitoring/token-usage/by-task endpoint.
+ */
+export interface TaskUsageSummary {
+  /** Task identifier (or 'unassigned' for events without a task) */
+  taskId: string;
+  /** Total input tokens consumed for this task */
+  totalInput: number;
+  /** Total output tokens consumed for this task */
+  totalOutput: number;
+  /** Number of LLM events for this task */
+  eventCount: number;
+  /** Server-computed cost in USD */
+  cost: number;
 }
 
 // =============================================================================

@@ -243,7 +243,7 @@ export interface QueueStatus {
 /**
  * Cloud subscription tier levels
  */
-export type CloudTier = 'free' | 'pro' | 'enterprise';
+export type CloudTier = 'free' | 'starter' | 'pro' | 'max';
 
 /**
  * Cloud connection status

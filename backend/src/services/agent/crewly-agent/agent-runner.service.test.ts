@@ -717,6 +717,57 @@ describe('AgentRunnerService', () => {
 
       expect(budget.contextWindowSize).toBe(128_000); // default fallback
     });
+
+    it('should not split tool_call/tool_result pairs during compaction', async () => {
+      // Create a runner with low maxHistoryMessages so compaction triggers
+      const config: CrewlyAgentConfig = {
+        ...baseConfig,
+        maxHistoryMessages: 14,
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+
+      // Manually set messages to simulate tool call pairs at the split boundary
+      // Position 0-3: older messages, 4: assistant (tool_call), 5: tool (result), 6-13: recent
+      const messages: Array<{ role: string; content: string | object }> = [];
+      for (let i = 0; i < 4; i++) {
+        messages.push({ role: 'user', content: `Old message ${i}` });
+      }
+      // Tool call pair that could get split
+      messages.push({ role: 'assistant', content: [{ type: 'tool_use', id: 'tc1', name: 'bash', input: {} }] });
+      messages.push({ role: 'tool', content: 'tool result for tc1' });
+      // More recent messages
+      for (let i = 0; i < 8; i++) {
+        messages.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `Recent ${i}` });
+      }
+      (r as any).state.messages = messages;
+
+      // Trigger compaction via requestCompaction
+      mockGenerateText.mockResolvedValueOnce({
+        text: '[Summary] Compacted state',
+        steps: [],
+        usage: { inputTokens: 50, outputTokens: 30 },
+        finishReason: 'stop',
+      });
+
+      const result = await r.requestCompaction();
+      expect(result.compacted).toBe(true);
+
+      // Verify: no tool-role message should be the first in the kept recent set
+      // The compaction should have included the assistant tool_call message when it
+      // found the tool result at the split boundary
+      const state = r.getState();
+      if (state.messages.length > 1) {
+        // First message after summary should not be a bare 'tool' role
+        // (it's OK if it's 'user' or 'assistant')
+        const secondMsg = state.messages[1];
+        if (secondMsg.role === 'tool') {
+          // If a tool message is kept, the preceding assistant must also be kept
+          expect(state.messages[0].role).toBe('assistant');
+        }
+      }
+    });
   });
 
   describe('budgetWarning in run result', () => {
@@ -1906,5 +1957,214 @@ describe('ToolCallLoopDetector', () => {
     // 5th should trigger
     detector.recordToolCall('bash', { command: 'ls' }, 'ok');
     expect(detector.loopDetected).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P1: Eval Mode — stripDelegationInstructions
+// ---------------------------------------------------------------------------
+
+describe('AgentRunnerService.stripDelegationInstructions (P1)', () => {
+  it('should remove "delegate 80% of execution tasks" instruction', () => {
+    const prompt = 'You are a TL. delegate 80% of execution tasks to workers. Always verify.';
+    const result = AgentRunnerService.stripDelegationInstructions(prompt);
+    expect(result).not.toContain('delegate 80% of execution tasks');
+    expect(result).toContain('Always verify');
+  });
+
+  it('should remove DELEGATION-FIRST PROTOCOL sections', () => {
+    const prompt = [
+      '## Some section',
+      'DELEGATION-FIRST PROTOCOL: Your core loop:',
+      '1. Analyze',
+      '2. Decompose',
+      '3. Delegate',
+      '',
+      '## Next section',
+      'Important stuff',
+    ].join('\n');
+    const result = AgentRunnerService.stripDelegationInstructions(prompt);
+    expect(result).not.toContain('DELEGATION-FIRST PROTOCOL');
+    expect(result).toContain('Important stuff');
+  });
+
+  it('should remove "Target: delegate 70–80% of execution tasks"', () => {
+    const prompt = 'Be efficient. Target: delegate 70–80% of execution tasks. Also code.';
+    const result = AgentRunnerService.stripDelegationInstructions(prompt);
+    expect(result).not.toContain('Target: delegate 70–80%');
+    expect(result).toContain('Also code');
+  });
+
+  it('should inject eval mode override instructions', () => {
+    const prompt = 'You are a developer.';
+    const result = AgentRunnerService.stripDelegationInstructions(prompt);
+    expect(result).toContain('## Eval Mode Active');
+    expect(result).toContain('Implement directly');
+    expect(result).toContain('Create all output files');
+    expect(result).toContain('Self-check before stopping');
+  });
+
+  it('should handle empty prompt', () => {
+    const result = AgentRunnerService.stripDelegationInstructions('');
+    expect(result).toContain('## Eval Mode Active');
+  });
+
+  it('should clean up consecutive blank lines', () => {
+    const prompt = 'Line 1\n\n\n\n\n\nLine 2';
+    const result = AgentRunnerService.stripDelegationInstructions(prompt);
+    // Should not have more than 3 consecutive newlines
+    expect(result).not.toMatch(/\n{4,}/);
+  });
+
+  it('should apply delegation stripping when evalMode=true in constructor', () => {
+    const config: CrewlyAgentConfig = {
+      model: { provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' },
+      maxSteps: 10,
+      sessionName: 'eval-test',
+      apiBaseUrl: 'http://localhost:8787',
+      systemPrompt: 'You are a TL. delegate 80% of execution tasks. Be thorough.',
+      maxHistoryMessages: 20,
+      compactionThreshold: 0.8,
+      evalMode: true,
+    };
+    const evalRunner = new AgentRunnerService(config);
+    const state = evalRunner.getState();
+    expect(state.systemPrompt).not.toContain('delegate 80% of execution tasks');
+    expect(state.systemPrompt).toContain('## Eval Mode Active');
+  });
+
+  it('should NOT strip delegation when evalMode is false/undefined', () => {
+    const config: CrewlyAgentConfig = {
+      model: { provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' },
+      maxSteps: 10,
+      sessionName: 'normal-test',
+      apiBaseUrl: 'http://localhost:8787',
+      systemPrompt: 'delegate 80% of execution tasks',
+      maxHistoryMessages: 20,
+      compactionThreshold: 0.8,
+    };
+    const normalRunner = new AgentRunnerService(config);
+    const state = normalRunner.getState();
+    expect(state.systemPrompt).toContain('delegate 80% of execution tasks');
+    expect(state.systemPrompt).not.toContain('## Eval Mode Active');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0: Stop Hook — extractExpectedOutputFiles & checkMissingDeliverables
+// ---------------------------------------------------------------------------
+
+describe('AgentRunnerService.extractExpectedOutputFiles (P0)', () => {
+  it('should extract file names from "create X.ts" pattern', () => {
+    const prompt = 'Create health.controller.ts with a GET /health endpoint.';
+    const files = AgentRunnerService.extractExpectedOutputFiles(prompt);
+    expect(files).toContain('health.controller.ts');
+  });
+
+  it('should extract file names from "write team-health.json" pattern', () => {
+    const prompt = 'Analyze team status and write team-health.json with the results.';
+    const files = AgentRunnerService.extractExpectedOutputFiles(prompt);
+    expect(files).toContain('team-health.json');
+  });
+
+  it('should extract file names from "produce a file called X" pattern', () => {
+    const prompt = 'Produce a file called report.md with your findings.';
+    const files = AgentRunnerService.extractExpectedOutputFiles(prompt);
+    expect(files).toContain('report.md');
+  });
+
+  it('should extract file names from backtick-quoted paths', () => {
+    const prompt = 'Implement `user.service.ts` and `user.controller.ts` with the API.';
+    const files = AgentRunnerService.extractExpectedOutputFiles(prompt);
+    expect(files).toContain('user.service.ts');
+    expect(files).toContain('user.controller.ts');
+  });
+
+  it('should extract file from "output to X" pattern', () => {
+    const prompt = 'Save output to results.json after processing.';
+    const files = AgentRunnerService.extractExpectedOutputFiles(prompt);
+    expect(files).toContain('results.json');
+  });
+
+  it('should not extract glob patterns', () => {
+    const prompt = 'Create *.ts files in the directory.';
+    const files = AgentRunnerService.extractExpectedOutputFiles(prompt);
+    expect(files).toEqual([]);
+  });
+
+  it('should return empty array for prompts with no file mentions', () => {
+    const prompt = 'Check the team status and report back.';
+    const files = AgentRunnerService.extractExpectedOutputFiles(prompt);
+    expect(files).toEqual([]);
+  });
+
+  it('should deduplicate file names', () => {
+    const prompt = 'Create health.controller.ts. Implement health.controller.ts with exports.';
+    const files = AgentRunnerService.extractExpectedOutputFiles(prompt);
+    const healthFiles = files.filter(f => f === 'health.controller.ts');
+    expect(healthFiles.length).toBe(1);
+  });
+});
+
+describe('AgentRunnerService.checkMissingDeliverables (P0)', () => {
+  it('should return empty when all files are written', () => {
+    const expected = ['health.controller.ts', 'health.controller.test.ts'];
+    const toolCalls = [
+      { toolName: 'write_file', args: { file_path: '/tmp/health.controller.ts' }, result: 'ok' },
+      { toolName: 'write_file', args: { file_path: '/tmp/health.controller.test.ts' }, result: 'ok' },
+    ];
+    const missing = AgentRunnerService.checkMissingDeliverables(expected, toolCalls);
+    expect(missing).toEqual([]);
+  });
+
+  it('should return missing files when not written', () => {
+    const expected = ['health.controller.ts', 'health.controller.test.ts'];
+    const toolCalls = [
+      { toolName: 'write_file', args: { file_path: '/tmp/health.controller.ts' }, result: 'ok' },
+    ];
+    const missing = AgentRunnerService.checkMissingDeliverables(expected, toolCalls);
+    expect(missing).toContain('health.controller.test.ts');
+    expect(missing).not.toContain('health.controller.ts');
+  });
+
+  it('should match by basename when full path differs', () => {
+    const expected = ['report.json'];
+    const toolCalls = [
+      { toolName: 'write_file', args: { file_path: '/workspace/output/report.json' }, result: 'ok' },
+    ];
+    const missing = AgentRunnerService.checkMissingDeliverables(expected, toolCalls);
+    expect(missing).toEqual([]);
+  });
+
+  it('should also check edit_file tool calls', () => {
+    const expected = ['config.ts'];
+    const toolCalls = [
+      { toolName: 'edit_file', args: { file_path: '/src/config.ts' }, result: 'ok' },
+    ];
+    const missing = AgentRunnerService.checkMissingDeliverables(expected, toolCalls);
+    expect(missing).toEqual([]);
+  });
+
+  it('should return all files when no write tools were used', () => {
+    const expected = ['a.ts', 'b.ts'];
+    const toolCalls = [
+      { toolName: 'read_file', args: { file_path: '/src/a.ts' }, result: 'content' },
+    ];
+    const missing = AgentRunnerService.checkMissingDeliverables(expected, toolCalls);
+    expect(missing).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('should return empty when expectedFiles is empty', () => {
+    const missing = AgentRunnerService.checkMissingDeliverables([], []);
+    expect(missing).toEqual([]);
+  });
+
+  it('should handle write_file with path arg (alternative naming)', () => {
+    const expected = ['data.json'];
+    const toolCalls = [
+      { toolName: 'write_file', args: { path: '/tmp/data.json' }, result: 'ok' },
+    ];
+    const missing = AgentRunnerService.checkMissingDeliverables(expected, toolCalls);
+    expect(missing).toEqual([]);
   });
 });
