@@ -55,6 +55,11 @@ export function registerTaskManagementRoutes(router: Router, apiController: ApiC
   // Working memory (Memory v2 Phase 2)
   router.post('/task-management/save-working-notes', (req, res) => taskMgmtHandlers.saveWorkingNotes.call(apiController, req, res));
 
+  // Checklist Management — TL acceptance checklist alignment
+  router.post('/task-management/:taskId/checklist', (req, res) => taskMgmtHandlers.submitChecklist.call(apiController, req, res));
+  router.post('/task-management/:taskId/checklist/approve', (req, res) => taskMgmtHandlers.approveChecklist.call(apiController, req, res));
+  router.get('/task-management/:taskId/checklist', (req, res) => taskMgmtHandlers.getChecklist.call(apiController, req, res));
+
   // In-Progress Tasks Routes
   router.get('/in-progress-tasks', (req, res) => inProgressHandlers.getInProgressTasks.call(apiController, req, res));
 }

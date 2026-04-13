@@ -21,6 +21,7 @@ WORKER_ID=$(printf '%s' "$INPUT" | jq -r '.workerId // empty')
 TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
 PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 TEMPLATE_ID=$(printf '%s' "$INPUT" | jq -r '.templateId // empty')
+CHECKLIST_PATH=$(printf '%s' "$INPUT" | jq -r '.checklistPath // empty')
 CHECKS=$(printf '%s' "$INPUT" | jq -c '.checks // []')
 
 # At least taskPath or taskId is needed
@@ -42,6 +43,47 @@ if [ -n "$TASK_ID" ]; then
   OUTPUT_DATA=$(api_call POST "/task-management/get-output" "$OUTPUT_BODY" 2>/dev/null || echo '{}')
   TASK_OUTPUT_FROM_ID=$(echo "$OUTPUT_DATA" | jq -r '.data.output // empty' 2>/dev/null || true)
   [ -z "$TASK_OUTPUT" ] && TASK_OUTPUT="$TASK_OUTPUT_FROM_ID"
+fi
+
+# =============================================================================
+# Pre-approved checklist loading (from design-checklist skill)
+# =============================================================================
+
+# If checklistPath is provided, load pre-approved checklist items as checks.
+# This takes priority over template pipeline and inline checks.
+if [ -n "$CHECKLIST_PATH" ] && [ -f "$CHECKLIST_PATH" ]; then
+  CHECKLIST_DATA=$(cat "$CHECKLIST_PATH" 2>/dev/null || echo '{}')
+  CHECKLIST_STATUS=$(echo "$CHECKLIST_DATA" | jq -r '.status // "unknown"' 2>/dev/null || true)
+
+  if [ "$CHECKLIST_STATUS" = "approved" ]; then
+    # Convert checklist items to verification checks
+    CHECKS=$(echo "$CHECKLIST_DATA" | jq -c '
+      [.items[] | {
+        name: .id,
+        type: .type,
+        command: (.command // empty),
+        pattern: (.pattern // empty),
+        description: .description,
+        critical: (.critical // false)
+      }]
+    ' 2>/dev/null || echo '[]')
+
+    PASS_POLICY=$(echo "$CHECKLIST_DATA" | jq -r '.passPolicy // "critical_only"' 2>/dev/null || echo "critical_only")
+  else
+    echo '{"error":"Checklist exists but is not approved (status: '"$CHECKLIST_STATUS"'). Approve first via POST /api/task-management/'$TASK_ID'/checklist/approve"}' >&2
+    # Fall through to template/inline checks
+  fi
+
+# If no checklistPath but taskId, try to find checklist automatically
+elif [ -n "$TASK_ID" ] && [ -n "$PROJECT_PATH" ]; then
+  AUTO_CHECKLIST="${PROJECT_PATH}/.crewly/tasks/checklist-${TASK_ID}.json"
+  if [ -f "$AUTO_CHECKLIST" ]; then
+    CHECKLIST_STATUS=$(jq -r '.status // "unknown"' "$AUTO_CHECKLIST" 2>/dev/null || true)
+    if [ "$CHECKLIST_STATUS" = "approved" ]; then
+      CHECKS=$(jq -c '[.items[] | {name: .id, type: .type, command: (.command // empty), pattern: (.pattern // empty), description: .description, critical: (.critical // false)}]' "$AUTO_CHECKLIST" 2>/dev/null || echo '[]')
+      PASS_POLICY=$(jq -r '.passPolicy // "critical_only"' "$AUTO_CHECKLIST" 2>/dev/null || echo "critical_only")
+    fi
+  fi
 fi
 
 # =============================================================================

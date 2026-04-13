@@ -1305,6 +1305,19 @@ export class CrewlyServer {
 				});
 			}
 
+			// Start TLAutoVerifyService — auto-trigger TL verification on worker task completion
+			try {
+				const { TLAutoVerifyService } = await import('./services/v3/tl-auto-verify.service.js');
+				const tlVerifyService = TLAutoVerifyService.getInstance();
+				tlVerifyService.initialize(this.eventBusService);
+				tlVerifyService.start();
+				this.logger.info('TLAutoVerifyService started — worker completions trigger TL verification');
+			} catch (tlVerifyErr) {
+				this.logger.warn('TLAutoVerifyService initialization failed (non-critical)', {
+					error: tlVerifyErr instanceof Error ? tlVerifyErr.message : String(tlVerifyErr),
+				});
+			}
+
 			// Initialize MissionExecutorService — Mission lifecycle + decomposition processing
 			try {
 				const { MissionExecutorService } = await import('./services/v3/mission-executor.service.js');

@@ -2372,3 +2372,117 @@ export async function saveWorkingNotes(this: ApiController, req: Request, res: R
 		res.status(400).json({ success: false, error: msg });
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Checklist Management — TL acceptance checklist alignment
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /task-management/:taskId/checklist
+ * Submit or update a checklist for a task. Called by the TL's design-checklist skill.
+ *
+ * @param req.params.taskId - Task ID
+ * @param req.body - Checklist JSON (items, objective, etc.)
+ */
+export async function submitChecklist(this: ApiContext, req: Request, res: Response): Promise<void> {
+	try {
+		const { taskId } = req.params;
+		const checklist = req.body;
+
+		if (!taskId || !checklist?.items || !Array.isArray(checklist.items)) {
+			res.status(400).json({ success: false, error: 'taskId and items[] are required' });
+			return;
+		}
+
+		// Store checklist in project's .crewly/tasks/ directory
+		const projectPath = checklist.projectPath || process.cwd();
+		const checklistDir = join(projectPath, '.crewly', 'tasks');
+		await mkdir(checklistDir, { recursive: true });
+
+		const checklistPath = join(checklistDir, `checklist-${taskId}.json`);
+		const checklistData = {
+			...checklist,
+			taskId,
+			status: 'pending_approval',
+			submittedAt: new Date().toISOString(),
+		};
+
+		await writeFile(checklistPath, JSON.stringify(checklistData, null, 2));
+
+		logger.info('Checklist submitted for approval', { taskId, itemCount: checklist.items.length });
+
+		res.status(201).json({
+			success: true,
+			data: { taskId, checklistPath, status: 'pending_approval', itemCount: checklist.items.length },
+		});
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		logger.error('Error submitting checklist', { error: msg });
+		res.status(500).json({ success: false, error: msg });
+	}
+}
+
+/**
+ * POST /task-management/:taskId/checklist/approve
+ * Approve (or adjust) a pending checklist. Called by Orchestrator or user.
+ *
+ * @param req.params.taskId - Task ID
+ * @param req.body.adjustments - Optional adjustments to checklist items
+ */
+export async function approveChecklist(this: ApiContext, req: Request, res: Response): Promise<void> {
+	try {
+		const { taskId } = req.params;
+		const { adjustments, projectPath: reqProjectPath } = req.body;
+
+		const projectPath = reqProjectPath || process.cwd();
+		const checklistPath = join(projectPath, '.crewly', 'tasks', `checklist-${taskId}.json`);
+
+		let checklist;
+		try {
+			const raw = await readFile(checklistPath, 'utf-8');
+			checklist = JSON.parse(raw);
+		} catch {
+			res.status(404).json({ success: false, error: `Checklist not found for task ${taskId}` });
+			return;
+		}
+
+		// Apply adjustments if provided
+		if (adjustments && Array.isArray(adjustments)) {
+			checklist.items = adjustments;
+		}
+
+		checklist.status = 'approved';
+		checklist.approvedAt = new Date().toISOString();
+		checklist.approvedBy = req.body.approvedBy || 'orchestrator';
+
+		await writeFile(checklistPath, JSON.stringify(checklist, null, 2));
+
+		logger.info('Checklist approved', { taskId, approvedBy: checklist.approvedBy });
+
+		res.json({
+			success: true,
+			data: { taskId, status: 'approved', itemCount: checklist.items.length },
+		});
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		logger.error('Error approving checklist', { error: msg });
+		res.status(500).json({ success: false, error: msg });
+	}
+}
+
+/**
+ * GET /task-management/:taskId/checklist
+ * Get the current checklist for a task.
+ */
+export async function getChecklist(this: ApiContext, req: Request, res: Response): Promise<void> {
+	try {
+		const { taskId } = req.params;
+		const projectPath = (req.query.projectPath as string) || process.cwd();
+		const checklistPath = join(projectPath, '.crewly', 'tasks', `checklist-${taskId}.json`);
+
+		const raw = await readFile(checklistPath, 'utf-8');
+		res.json({ success: true, data: JSON.parse(raw) });
+	} catch {
+		res.status(404).json({ success: false, error: 'Checklist not found' });
+	}
+}
