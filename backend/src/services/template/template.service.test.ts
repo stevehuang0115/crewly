@@ -433,4 +433,65 @@ describe('TemplateService', () => {
       expect(result).not.toBeNull();
     });
   });
+
+  // =========================================================================
+  // isTierSufficient
+  // =========================================================================
+
+  describe('isTierSufficient', () => {
+    it('should return true when tiers match', () => {
+      const service = TemplateService.getInstance(tempDir);
+      expect(service.isTierSufficient('pro', 'pro')).toBe(true);
+    });
+
+    it('should return true when user tier exceeds required', () => {
+      const service = TemplateService.getInstance(tempDir);
+      expect(service.isTierSufficient('enterprise', 'pro')).toBe(true);
+      expect(service.isTierSufficient('pro', 'free')).toBe(true);
+    });
+
+    it('should return false when user tier is insufficient', () => {
+      const service = TemplateService.getInstance(tempDir);
+      expect(service.isTierSufficient('free', 'pro')).toBe(false);
+      expect(service.isTierSufficient('free', 'enterprise')).toBe(false);
+      expect(service.isTierSufficient('pro', 'enterprise')).toBe(false);
+    });
+
+    it('should allow free user for free tier', () => {
+      const service = TemplateService.getInstance(tempDir);
+      expect(service.isTierSufficient('free', 'free')).toBe(true);
+    });
+  });
+
+  // =========================================================================
+  // listTemplates requiredTier
+  // =========================================================================
+
+  describe('listTemplates with requiredTier', () => {
+    it('should include requiredTier in template summary', () => {
+      const proTemplate = {
+        ...createValidTemplateJson(),
+        id: 'pro-tmpl',
+        requiredTier: 'pro',
+      };
+      const dir = join(tempDir, 'pro-tmpl');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'template.json'), JSON.stringify(proTemplate));
+
+      const service = TemplateService.getInstance(tempDir);
+      const list = service.listTemplates();
+      expect(list).toHaveLength(1);
+      expect(list[0].requiredTier).toBe('pro');
+    });
+
+    it('should have undefined requiredTier for free templates', () => {
+      const dir = join(tempDir, 'free-tmpl');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'template.json'), JSON.stringify(createValidTemplateJson()));
+
+      const service = TemplateService.getInstance(tempDir);
+      const list = service.listTemplates();
+      expect(list[0].requiredTier).toBeUndefined();
+    });
+  });
 });

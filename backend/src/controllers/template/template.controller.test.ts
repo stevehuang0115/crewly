@@ -11,12 +11,14 @@ import {
   handleListTemplates,
   handleGetTemplate,
   handleCreateTeamFromTemplate,
+  handleDeployTemplate,
 } from './template.controller.js';
 
 // Mock TemplateService
 const mockListTemplates = jest.fn();
 const mockGetTemplate = jest.fn();
 const mockCreateTeamFromTemplate = jest.fn();
+const mockIsTierSufficient = jest.fn();
 
 jest.mock('../../services/template/template.service.js', () => ({
   TemplateService: {
@@ -24,6 +26,29 @@ jest.mock('../../services/template/template.service.js', () => ({
       listTemplates: mockListTemplates,
       getTemplate: mockGetTemplate,
       createTeamFromTemplate: mockCreateTeamFromTemplate,
+      isTierSufficient: mockIsTierSufficient,
+    }),
+  },
+}));
+
+// Mock CloudClientService for tier resolution
+const mockGetTier = jest.fn().mockReturnValue('free');
+
+jest.mock('../../services/cloud/cloud-client.service.js', () => ({
+  CloudClientService: {
+    getInstance: () => ({
+      getTier: mockGetTier,
+    }),
+  },
+}));
+
+// Mock StorageService for deploy handler
+const mockSaveTeam = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('../../services/core/storage.service.js', () => ({
+  StorageService: {
+    getInstance: () => ({
+      saveTeam: mockSaveTeam,
     }),
   },
 }));
@@ -92,21 +117,50 @@ describe('TemplateController', () => {
     mockListTemplates.mockReset();
     mockGetTemplate.mockReset();
     mockCreateTeamFromTemplate.mockReset();
+    mockIsTierSufficient.mockReset();
+    mockGetTier.mockReset().mockReturnValue('free');
+    mockSaveTeam.mockReset().mockResolvedValue(undefined);
   });
 
   // ========================= handleListTemplates =========================
 
   describe('handleListTemplates', () => {
-    it('should return all templates with success envelope', async () => {
+    it('should return all templates with accessible annotation', async () => {
       mockListTemplates.mockReturnValue([sampleSummary]);
+      mockIsTierSufficient.mockReturnValue(true);
 
       const req = createMockReq();
       await handleListTemplates(req as any, mockRes as any);
 
-      expect(mockRes.json).toHaveBeenCalledWith({
-        success: true,
-        data: [sampleSummary],
-      });
+      const data = mockRes.json.mock.calls[0][0].data;
+      expect(data).toHaveLength(1);
+      expect(data[0].accessible).toBe(true);
+    });
+
+    it('should mark pro templates as inaccessible for free users', async () => {
+      const proTemplate = { ...sampleSummary, requiredTier: 'pro' };
+      mockListTemplates.mockReturnValue([proTemplate]);
+      mockIsTierSufficient.mockReturnValue(false);
+      mockGetTier.mockReturnValue('free');
+
+      const req = createMockReq();
+      await handleListTemplates(req as any, mockRes as any);
+
+      const data = mockRes.json.mock.calls[0][0].data;
+      expect(data[0].accessible).toBe(false);
+    });
+
+    it('should mark pro templates as accessible for pro users', async () => {
+      const proTemplate = { ...sampleSummary, requiredTier: 'pro' };
+      mockListTemplates.mockReturnValue([proTemplate]);
+      mockIsTierSufficient.mockReturnValue(true);
+      mockGetTier.mockReturnValue('pro');
+
+      const req = createMockReq();
+      await handleListTemplates(req as any, mockRes as any);
+
+      const data = mockRes.json.mock.calls[0][0].data;
+      expect(data[0].accessible).toBe(true);
     });
 
     it('should return empty array when no templates exist', async () => {
@@ -125,14 +179,14 @@ describe('TemplateController', () => {
       const devTemplate = { ...sampleSummary, category: 'development' };
       const contentTemplate = { ...sampleSummary, id: 'blog-team', category: 'content' };
       mockListTemplates.mockReturnValue([devTemplate, contentTemplate]);
+      mockIsTierSufficient.mockReturnValue(true);
 
       const req = createMockReq({ query: { category: 'development' } });
       await handleListTemplates(req as any, mockRes as any);
 
-      expect(mockRes.json).toHaveBeenCalledWith({
-        success: true,
-        data: [devTemplate],
-      });
+      const data = mockRes.json.mock.calls[0][0].data;
+      expect(data).toHaveLength(1);
+      expect(data[0].id).toBe('dev-fullstack');
     });
 
     it('should return empty array when category filter matches nothing', async () => {
@@ -216,7 +270,7 @@ describe('TemplateController', () => {
       });
       await handleCreateTeamFromTemplate(req as any, mockRes as any);
 
-      expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'My Team', undefined);
+      expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'My Team', undefined, 'free');
       expect(mockRes.status).toHaveBeenCalledWith(201);
       expect(mockRes.json).toHaveBeenCalledWith({
         success: true,
@@ -237,6 +291,7 @@ describe('TemplateController', () => {
         'dev-fullstack',
         'My Team',
         { 'team-leader': 'Alice' },
+        'free',
       );
     });
 
@@ -249,7 +304,7 @@ describe('TemplateController', () => {
       });
       await handleCreateTeamFromTemplate(req as any, mockRes as any);
 
-      expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'My Team', undefined);
+      expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'My Team', undefined, 'free');
     });
 
     it('should return 400 when teamName is missing', async () => {
@@ -302,7 +357,7 @@ describe('TemplateController', () => {
       });
     });
 
-    it('should return 500 when service throws', async () => {
+    it('should return 500 when service throws generic error', async () => {
       mockCreateTeamFromTemplate.mockImplementation(() => { throw new Error('Create failed'); });
 
       const req = createMockReq({
@@ -316,6 +371,112 @@ describe('TemplateController', () => {
         success: false,
         error: 'Create failed',
       });
+    });
+
+    it('should return 403 when tier is insufficient', async () => {
+      mockCreateTeamFromTemplate.mockImplementation(() => {
+        throw new Error('Template "Pro Dev" requires pro plan. Current plan: free. Upgrade at https://crewlyai.com/pricing');
+      });
+
+      const req = createMockReq({
+        params: { id: 'pro-dev' },
+        body: { teamName: 'My Team' },
+      });
+      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: false,
+        error: expect.stringContaining('requires pro plan'),
+      });
+    });
+
+    it('should pass pro tier to service when user is pro', async () => {
+      mockGetTier.mockReturnValue('pro');
+      mockCreateTeamFromTemplate.mockReturnValue(sampleCreateResult);
+
+      const req = createMockReq({
+        params: { id: 'dev-fullstack' },
+        body: { teamName: 'My Team' },
+      });
+      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+
+      expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'My Team', undefined, 'pro');
+    });
+  });
+
+  // ========================= handleDeployTemplate =========================
+
+  describe('handleDeployTemplate', () => {
+    it('should deploy template and save to storage', async () => {
+      mockCreateTeamFromTemplate.mockReturnValue(sampleCreateResult);
+      mockGetTemplate.mockReturnValue(sampleTemplate);
+
+      const req = createMockReq({
+        params: { id: 'dev-fullstack' },
+        body: { teamName: 'Deploy Team' },
+      });
+      await handleDeployTemplate(req as any, mockRes as any);
+
+      expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'Deploy Team', undefined, 'free');
+      expect(mockSaveTeam).toHaveBeenCalled();
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const data = mockRes.json.mock.calls[0][0].data;
+      expect(data.deployed).toBe(true);
+    });
+
+    it('should return 400 when teamName is missing', async () => {
+      const req = createMockReq({
+        params: { id: 'dev-fullstack' },
+        body: {},
+      });
+      await handleDeployTemplate(req as any, mockRes as any);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 404 when template not found', async () => {
+      mockCreateTeamFromTemplate.mockReturnValue(null);
+
+      const req = createMockReq({
+        params: { id: 'nonexistent' },
+        body: { teamName: 'Team' },
+      });
+      await handleDeployTemplate(req as any, mockRes as any);
+
+      expect(mockRes.status).toHaveBeenCalledWith(404);
+    });
+
+    it('should return 403 when tier is insufficient for deploy', async () => {
+      mockCreateTeamFromTemplate.mockImplementation(() => {
+        throw new Error('Template "Pro" requires pro plan. Current plan: free. Upgrade at https://crewlyai.com/pricing');
+      });
+
+      const req = createMockReq({
+        params: { id: 'pro-dev' },
+        body: { teamName: 'Team' },
+      });
+      await handleDeployTemplate(req as any, mockRes as any);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+    });
+
+    it('should assign projectId when provided', async () => {
+      const teamResult = {
+        ...sampleCreateResult,
+        team: { ...sampleCreateResult.team, members: [{ id: 'a', name: 'Lead', role: 'team-leader' }] },
+      };
+      mockCreateTeamFromTemplate.mockReturnValue(teamResult);
+      mockGetTemplate.mockReturnValue(sampleTemplate);
+
+      const req = createMockReq({
+        params: { id: 'dev-fullstack' },
+        body: { teamName: 'Team', projectId: 'proj-123' },
+      });
+      await handleDeployTemplate(req as any, mockRes as any);
+
+      const savedTeam = mockSaveTeam.mock.calls[0][0];
+      expect(savedTeam.projectIds).toEqual(['proj-123']);
     });
   });
 });
