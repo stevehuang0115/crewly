@@ -185,8 +185,27 @@ export function reconcileRequestStatus(
   if (TERMINAL_REQUEST_STATUSES.has(request.status)) return null;
   if (workItems.length === 0 && request.status === 'open') return null;
 
+  // Dangling request: non-open status but no WorkItems left — close it.
+  // Try 'done' first (valid from running, waiting_confirmation).
+  // Fall back to 'cancelled' (valid from ready, blocked, running).
+  if (workItems.length === 0 && request.status !== 'open') {
+    let newState: RequestStatus = 'done';
+    if (!isValidRequestTransition(request.status, newState)) {
+      newState = 'cancelled';
+    }
+    if (!isValidRequestTransition(request.status, newState)) return null;
+    return createCorrection({
+      entityType: 'request',
+      entityId: request.id,
+      previousState: request.status,
+      newState,
+      reason: 'Dangling request: non-open status with 0 WorkItems',
+      evidence: `Request status was "${request.status}" but has no associated WorkItems`,
+    });
+  }
+
   const statuses = workItems.map(wi => wi.status);
-  const allDone = statuses.length > 0 && statuses.every(s => s === 'done' || s === 'cancelled');
+  const allDone = statuses.length > 0 && statuses.every(s => s === 'done' || s === 'verified' || s === 'cancelled');
   const anyRunning = statuses.some(s => s === 'running');
   const allBlockedOrFailed = statuses.length > 0 && statuses.every(
     s => s === 'blocked' || s === 'failed' || s === 'cancelled'

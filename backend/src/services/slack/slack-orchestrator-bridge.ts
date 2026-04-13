@@ -368,10 +368,11 @@ export class SlackOrchestratorBridge extends EventEmitter {
               const msgId = `slack-${message.channelId}-${message.ts}`;
               const existing = await svc.findBySourceConversationItemId(msgId);
               if (!existing) {
-                const title = (message.text || '').slice(0, 80) || 'Slack message';
+                const { generateRequestTitle } = await import('../v3/v3-data.service.js');
+                const rawText = message.text || '';
                 const request = await svc.create({
-                  title: title.length === 80 ? title.slice(0, 77) + '...' : title,
-                  description: message.text || '',
+                  title: generateRequestTitle(rawText, 'other'),
+                  description: rawText,
                   sourceConversationItemId: msgId,
                   priority: 'normal',
                   tags: ['slack'],
