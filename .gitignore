@@ -93,6 +93,7 @@ test-mcp-registration.js
 
 # Internal/operational data (not for public repo)
 ops/
+improvement_plans/
 .playwright-mcp/
 .crewly/tmp/
 .crewly/knowledge/*.db
