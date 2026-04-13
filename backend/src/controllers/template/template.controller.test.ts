@@ -18,7 +18,6 @@ import {
 const mockListTemplates = jest.fn();
 const mockGetTemplate = jest.fn();
 const mockCreateTeamFromTemplate = jest.fn();
-const mockIsTierSufficient = jest.fn();
 
 jest.mock('../../services/template/template.service.js', () => ({
   TemplateService: {
@@ -26,7 +25,6 @@ jest.mock('../../services/template/template.service.js', () => ({
       listTemplates: mockListTemplates,
       getTemplate: mockGetTemplate,
       createTeamFromTemplate: mockCreateTeamFromTemplate,
-      isTierSufficient: mockIsTierSufficient,
     }),
   },
 }));
@@ -38,6 +36,17 @@ jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
     getInstance: () => ({
       getTier: mockGetTier,
+    }),
+  },
+}));
+
+// Mock SkillTierService for tier comparison
+const mockIsTierSufficient = jest.fn().mockReturnValue(true);
+
+jest.mock('../../services/skill/skill-tier.service.js', () => ({
+  SkillTierService: {
+    getInstance: () => ({
+      isTierSufficient: mockIsTierSufficient,
     }),
   },
 }));
@@ -111,9 +120,11 @@ const sampleCreateResult = {
 
 describe('TemplateController', () => {
   let mockRes: ReturnType<typeof createMockRes>;
+  const next = jest.fn();
 
   beforeEach(() => {
     mockRes = createMockRes();
+    next.mockReset();
     mockListTemplates.mockReset();
     mockGetTemplate.mockReset();
     mockCreateTeamFromTemplate.mockReset();
@@ -130,7 +141,7 @@ describe('TemplateController', () => {
       mockIsTierSufficient.mockReturnValue(true);
 
       const req = createMockReq();
-      await handleListTemplates(req as any, mockRes as any);
+      await handleListTemplates(req as any, mockRes as any, next);
 
       const data = mockRes.json.mock.calls[0][0].data;
       expect(data).toHaveLength(1);
@@ -144,7 +155,7 @@ describe('TemplateController', () => {
       mockGetTier.mockReturnValue('free');
 
       const req = createMockReq();
-      await handleListTemplates(req as any, mockRes as any);
+      await handleListTemplates(req as any, mockRes as any, next);
 
       const data = mockRes.json.mock.calls[0][0].data;
       expect(data[0].accessible).toBe(false);
@@ -157,7 +168,7 @@ describe('TemplateController', () => {
       mockGetTier.mockReturnValue('pro');
 
       const req = createMockReq();
-      await handleListTemplates(req as any, mockRes as any);
+      await handleListTemplates(req as any, mockRes as any, next);
 
       const data = mockRes.json.mock.calls[0][0].data;
       expect(data[0].accessible).toBe(true);
@@ -167,7 +178,7 @@ describe('TemplateController', () => {
       mockListTemplates.mockReturnValue([]);
 
       const req = createMockReq();
-      await handleListTemplates(req as any, mockRes as any);
+      await handleListTemplates(req as any, mockRes as any, next);
 
       expect(mockRes.json).toHaveBeenCalledWith({
         success: true,
@@ -182,7 +193,7 @@ describe('TemplateController', () => {
       mockIsTierSufficient.mockReturnValue(true);
 
       const req = createMockReq({ query: { category: 'development' } });
-      await handleListTemplates(req as any, mockRes as any);
+      await handleListTemplates(req as any, mockRes as any, next);
 
       const data = mockRes.json.mock.calls[0][0].data;
       expect(data).toHaveLength(1);
@@ -193,7 +204,7 @@ describe('TemplateController', () => {
       mockListTemplates.mockReturnValue([sampleSummary]);
 
       const req = createMockReq({ query: { category: 'research' } });
-      await handleListTemplates(req as any, mockRes as any);
+      await handleListTemplates(req as any, mockRes as any, next);
 
       expect(mockRes.json).toHaveBeenCalledWith({
         success: true,
@@ -205,7 +216,7 @@ describe('TemplateController', () => {
       mockListTemplates.mockImplementation(() => { throw new Error('Load failed'); });
 
       const req = createMockReq();
-      await handleListTemplates(req as any, mockRes as any);
+      await handleListTemplates(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(500);
       expect(mockRes.json).toHaveBeenCalledWith({
@@ -222,7 +233,7 @@ describe('TemplateController', () => {
       mockGetTemplate.mockReturnValue(sampleTemplate);
 
       const req = createMockReq({ params: { id: 'dev-fullstack' } });
-      await handleGetTemplate(req as any, mockRes as any);
+      await handleGetTemplate(req as any, mockRes as any, next);
 
       expect(mockGetTemplate).toHaveBeenCalledWith('dev-fullstack');
       expect(mockRes.json).toHaveBeenCalledWith({
@@ -235,7 +246,7 @@ describe('TemplateController', () => {
       mockGetTemplate.mockReturnValue(null);
 
       const req = createMockReq({ params: { id: 'nonexistent' } });
-      await handleGetTemplate(req as any, mockRes as any);
+      await handleGetTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(404);
       expect(mockRes.json).toHaveBeenCalledWith({
@@ -248,7 +259,7 @@ describe('TemplateController', () => {
       mockGetTemplate.mockImplementation(() => { throw new Error('Read failed'); });
 
       const req = createMockReq({ params: { id: 'dev-fullstack' } });
-      await handleGetTemplate(req as any, mockRes as any);
+      await handleGetTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(500);
       expect(mockRes.json).toHaveBeenCalledWith({
@@ -262,13 +273,14 @@ describe('TemplateController', () => {
 
   describe('handleCreateTeamFromTemplate', () => {
     it('should create team from template', async () => {
+      mockGetTemplate.mockReturnValue(sampleTemplate);
       mockCreateTeamFromTemplate.mockReturnValue(sampleCreateResult);
 
       const req = createMockReq({
         params: { id: 'dev-fullstack' },
         body: { teamName: 'My Team' },
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'My Team', undefined, 'free');
       expect(mockRes.status).toHaveBeenCalledWith(201);
@@ -279,13 +291,14 @@ describe('TemplateController', () => {
     });
 
     it('should pass name overrides when provided', async () => {
+      mockGetTemplate.mockReturnValue(sampleTemplate);
       mockCreateTeamFromTemplate.mockReturnValue(sampleCreateResult);
 
       const req = createMockReq({
         params: { id: 'dev-fullstack' },
         body: { teamName: 'My Team', nameOverrides: { 'team-leader': 'Alice' } },
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith(
         'dev-fullstack',
@@ -296,13 +309,14 @@ describe('TemplateController', () => {
     });
 
     it('should trim teamName', async () => {
+      mockGetTemplate.mockReturnValue(sampleTemplate);
       mockCreateTeamFromTemplate.mockReturnValue(sampleCreateResult);
 
       const req = createMockReq({
         params: { id: 'dev-fullstack' },
         body: { teamName: '  My Team  ' },
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'My Team', undefined, 'free');
     });
@@ -312,7 +326,7 @@ describe('TemplateController', () => {
         params: { id: 'dev-fullstack' },
         body: {},
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
       expect(mockRes.json).toHaveBeenCalledWith({
@@ -326,7 +340,7 @@ describe('TemplateController', () => {
         params: { id: 'dev-fullstack' },
         body: { teamName: '   ' },
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
     });
@@ -336,19 +350,19 @@ describe('TemplateController', () => {
         params: { id: 'dev-fullstack' },
         body: { teamName: 123 },
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
     });
 
     it('should return 404 when template not found', async () => {
-      mockCreateTeamFromTemplate.mockReturnValue(null);
+      mockGetTemplate.mockReturnValue(null);
 
       const req = createMockReq({
         params: { id: 'nonexistent' },
         body: { teamName: 'My Team' },
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(404);
       expect(mockRes.json).toHaveBeenCalledWith({
@@ -358,13 +372,14 @@ describe('TemplateController', () => {
     });
 
     it('should return 500 when service throws generic error', async () => {
+      mockGetTemplate.mockReturnValue(sampleTemplate);
       mockCreateTeamFromTemplate.mockImplementation(() => { throw new Error('Create failed'); });
 
       const req = createMockReq({
         params: { id: 'dev-fullstack' },
         body: { teamName: 'My Team' },
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(500);
       expect(mockRes.json).toHaveBeenCalledWith({
@@ -374,32 +389,34 @@ describe('TemplateController', () => {
     });
 
     it('should return 403 when tier is insufficient', async () => {
-      mockCreateTeamFromTemplate.mockImplementation(() => {
-        throw new Error('Template "Pro Dev" requires pro plan. Current plan: free. Upgrade at https://crewlyai.com/pricing');
-      });
+      const proTemplate = { ...sampleTemplate, requiredTier: 'pro' };
+      mockGetTemplate.mockReturnValue(proTemplate);
+      mockIsTierSufficient.mockReturnValue(false);
 
       const req = createMockReq({
         params: { id: 'pro-dev' },
         body: { teamName: 'My Team' },
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(403);
       expect(mockRes.json).toHaveBeenCalledWith({
         success: false,
         error: expect.stringContaining('requires pro plan'),
       });
+      expect(mockCreateTeamFromTemplate).not.toHaveBeenCalled();
     });
 
     it('should pass pro tier to service when user is pro', async () => {
       mockGetTier.mockReturnValue('pro');
+      mockGetTemplate.mockReturnValue(sampleTemplate);
       mockCreateTeamFromTemplate.mockReturnValue(sampleCreateResult);
 
       const req = createMockReq({
         params: { id: 'dev-fullstack' },
         body: { teamName: 'My Team' },
       });
-      await handleCreateTeamFromTemplate(req as any, mockRes as any);
+      await handleCreateTeamFromTemplate(req as any, mockRes as any, next);
 
       expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'My Team', undefined, 'pro');
     });
@@ -416,7 +433,7 @@ describe('TemplateController', () => {
         params: { id: 'dev-fullstack' },
         body: { teamName: 'Deploy Team' },
       });
-      await handleDeployTemplate(req as any, mockRes as any);
+      await handleDeployTemplate(req as any, mockRes as any, next);
 
       expect(mockCreateTeamFromTemplate).toHaveBeenCalledWith('dev-fullstack', 'Deploy Team', undefined, 'free');
       expect(mockSaveTeam).toHaveBeenCalled();
@@ -430,35 +447,36 @@ describe('TemplateController', () => {
         params: { id: 'dev-fullstack' },
         body: {},
       });
-      await handleDeployTemplate(req as any, mockRes as any);
+      await handleDeployTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
     });
 
     it('should return 404 when template not found', async () => {
-      mockCreateTeamFromTemplate.mockReturnValue(null);
+      mockGetTemplate.mockReturnValue(null);
 
       const req = createMockReq({
         params: { id: 'nonexistent' },
         body: { teamName: 'Team' },
       });
-      await handleDeployTemplate(req as any, mockRes as any);
+      await handleDeployTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(404);
     });
 
     it('should return 403 when tier is insufficient for deploy', async () => {
-      mockCreateTeamFromTemplate.mockImplementation(() => {
-        throw new Error('Template "Pro" requires pro plan. Current plan: free. Upgrade at https://crewlyai.com/pricing');
-      });
+      const proTemplate = { ...sampleTemplate, requiredTier: 'pro' };
+      mockGetTemplate.mockReturnValue(proTemplate);
+      mockIsTierSufficient.mockReturnValue(false);
 
       const req = createMockReq({
         params: { id: 'pro-dev' },
         body: { teamName: 'Team' },
       });
-      await handleDeployTemplate(req as any, mockRes as any);
+      await handleDeployTemplate(req as any, mockRes as any, next);
 
       expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockCreateTeamFromTemplate).not.toHaveBeenCalled();
     });
 
     it('should assign projectId when provided', async () => {
@@ -473,7 +491,7 @@ describe('TemplateController', () => {
         params: { id: 'dev-fullstack' },
         body: { teamName: 'Team', projectId: 'proj-123' },
       });
-      await handleDeployTemplate(req as any, mockRes as any);
+      await handleDeployTemplate(req as any, mockRes as any, next);
 
       const savedTeam = mockSaveTeam.mock.calls[0][0];
       expect(savedTeam.projectIds).toEqual(['proj-123']);

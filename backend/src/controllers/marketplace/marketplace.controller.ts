@@ -28,13 +28,36 @@ import {
   reviewSubmission,
 } from '../../services/marketplace/index.js';
 import type { MarketplaceItemType, MarketplaceCategory, SortOption, SubmissionStatus } from '../../types/marketplace.types.js';
+import type { MarketplaceItem } from '../../types/marketplace.types.js';
 import { asyncHandler } from '../../utils/async-handler.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
-import { CLOUD_CONSTANTS } from '../../constants.js';
+import { SkillTierService } from '../../services/skill/skill-tier.service.js';
+import { CLOUD_CONSTANTS, type CloudTier } from '../../constants.js';
 
 const VALID_TYPES: MarketplaceItemType[] = ['skill', 'model', 'role', 'mcp_tool'];
 const VALID_SORTS: SortOption[] = ['popular', 'rating', 'newest'];
 const VALID_SUBMISSION_STATUSES: SubmissionStatus[] = ['pending', 'approved', 'rejected'];
+
+/**
+ * Checks if a premium marketplace item is accessible at the current tier.
+ * Returns true if the item is not premium or the user has sufficient tier.
+ * Sends a 403 response and returns false if blocked.
+ *
+ * @param item - The marketplace item to check
+ * @param res - Express response to write 403 to
+ * @returns true if accessible, false if 403 was sent
+ */
+function checkPremiumAccess(item: MarketplaceItem, res: Response): boolean {
+  if (item.metadata?.premium !== true) return true;
+  const currentTier = CloudClientService.getInstance().getTier();
+  const tierService = SkillTierService.getInstance();
+  if (tierService.isTierSufficient(currentTier, CLOUD_CONSTANTS.TIERS.PRO as CloudTier)) return true;
+  res.status(403).json({
+    success: false,
+    error: `"${item.name}" is a premium item and requires a Pro or Enterprise subscription. Upgrade at https://crewlyai.com/pricing`,
+  });
+  return false;
+}
 
 /**
  * GET /api/marketplace - List marketplace items with optional filters.
@@ -72,12 +95,13 @@ export const handleListItems = asyncHandler(async (req: Request, res: Response):
     sortBy: sortParam as SortOption | undefined,
   });
 
-  // Annotate items with tier accessibility
+  // Annotate items with tier accessibility using proper tier hierarchy
   const currentTier = CloudClientService.getInstance().getTier();
-  const isFreeUser = currentTier === CLOUD_CONSTANTS.TIERS.FREE;
+  const tierService = SkillTierService.getInstance();
   const annotated = items.map((item) => ({
     ...item,
-    accessible: !(item.metadata?.premium === true && isFreeUser),
+    accessible: item.metadata?.premium !== true ||
+      tierService.isTierSufficient(currentTier, CLOUD_CONSTANTS.TIERS.PRO as CloudTier),
   }));
 
   res.json({ success: true, data: annotated });
@@ -188,18 +212,7 @@ export const handleInstall = asyncHandler(async (req: Request, res: Response): P
     return;
   }
 
-  // Block installation of premium items for free-tier users
-  const isPremium = item.metadata?.premium === true;
-  if (isPremium) {
-    const currentTier = CloudClientService.getInstance().getTier();
-    if (currentTier === CLOUD_CONSTANTS.TIERS.FREE) {
-      res.status(403).json({
-        success: false,
-        error: `"${item.name}" is a premium item and requires a Pro or Enterprise subscription. Upgrade at https://crewlyai.com/pricing`,
-      });
-      return;
-    }
-  }
+  if (!checkPremiumAccess(item, res)) return;
 
   const result = await installItem(item);
   res.json(result);
@@ -245,18 +258,7 @@ export const handleUpdate = asyncHandler(async (req: Request, res: Response): Pr
     return;
   }
 
-  // Block updating premium items for free-tier users
-  const isPremium = item.metadata?.premium === true;
-  if (isPremium) {
-    const currentTier = CloudClientService.getInstance().getTier();
-    if (currentTier === CLOUD_CONSTANTS.TIERS.FREE) {
-      res.status(403).json({
-        success: false,
-        error: `"${item.name}" is a premium item and requires a Pro or Enterprise subscription. Upgrade at https://crewlyai.com/pricing`,
-      });
-      return;
-    }
-  }
+  if (!checkPremiumAccess(item, res)) return;
 
   const result = await updateItem(item);
   res.json(result);

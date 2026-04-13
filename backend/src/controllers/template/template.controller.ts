@@ -12,30 +12,10 @@ import type { Request, Response } from 'express';
 import { TemplateService } from '../../services/template/template.service.js';
 import type { TemplateSummary } from '../../services/template/template.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
+import { SkillTierService } from '../../services/skill/skill-tier.service.js';
+import { StorageService } from '../../services/core/storage.service.js';
+import { asyncHandler } from '../../utils/async-handler.js';
 import type { CloudTier } from '../../constants.js';
-
-/**
- * Wraps an async route handler with a standard try/catch that returns
- * a consistent JSON error response on unhandled exceptions.
- *
- * @param fn - The async handler function to wrap
- * @returns A wrapped handler that catches errors and responds with 500
- */
-function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
-  return async (req: Request, res: Response): Promise<void> => {
-    try {
-      await fn(req, res);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      // Surface tier-insufficient errors as 403 instead of 500
-      if (msg.includes('requires') && msg.includes('plan')) {
-        res.status(403).json({ success: false, error: msg });
-        return;
-      }
-      res.status(500).json({ success: false, error: msg });
-    }
-  };
-}
 
 /**
  * Resolves the current user's cloud tier from CloudClientService.
@@ -44,6 +24,27 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
  */
 function getCurrentTier(): CloudTier {
   return CloudClientService.getInstance().getTier();
+}
+
+/**
+ * Checks if the current user's tier is sufficient for a template's required tier.
+ * Sends a 403 response if insufficient.
+ *
+ * @param requiredTier - The tier required by the template
+ * @param userTier - The user's current tier
+ * @param templateName - Template name for error messages
+ * @param res - Express response to write 403 to
+ * @returns true if tier is sufficient, false if 403 was sent
+ */
+function checkTierOrReject(requiredTier: string | undefined, userTier: CloudTier, templateName: string, res: Response): boolean {
+  if (!requiredTier) return true;
+  const tierService = SkillTierService.getInstance();
+  if (tierService.isTierSufficient(userTier, requiredTier as CloudTier)) return true;
+  res.status(403).json({
+    success: false,
+    error: `Template "${templateName}" requires ${requiredTier} plan. Current plan: ${userTier}. Upgrade at https://crewlyai.com/pricing`,
+  });
+  return false;
 }
 
 /**
@@ -75,9 +76,10 @@ export const handleListTemplates = asyncHandler(async (req: Request, res: Respon
 
   // Annotate templates with tier accessibility for the current user
   const userTier = getCurrentTier();
+  const tierService = SkillTierService.getInstance();
   const annotated = templates.map((t: TemplateSummary) => ({
     ...t,
-    accessible: !t.requiredTier || service.isTierSufficient(userTier, t.requiredTier),
+    accessible: !t.requiredTier || tierService.isTierSufficient(userTier, t.requiredTier as CloudTier),
   }));
 
   res.json({ success: true, data: annotated });
@@ -141,8 +143,16 @@ export const handleCreateTeamFromTemplate = asyncHandler(async (req: Request, re
 
   const service = TemplateService.getInstance();
   const userTier = getCurrentTier();
-  const result = service.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
 
+  // Pre-check tier before calling service to avoid relying on thrown errors
+  const template = service.getTemplate(id);
+  if (!template) {
+    res.status(404).json({ success: false, error: `Template "${id}" not found` });
+    return;
+  }
+  if (!checkTierOrReject(template.requiredTier, userTier, template.name, res)) return;
+
+  const result = service.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
   if (!result) {
     res.status(404).json({ success: false, error: `Template "${id}" not found` });
     return;
@@ -177,8 +187,16 @@ export const handleDeployTemplate = asyncHandler(async (req: Request, res: Respo
 
   const templateService = TemplateService.getInstance();
   const userTier = getCurrentTier();
-  const result = templateService.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
 
+  // Pre-check tier before calling service
+  const template = templateService.getTemplate(id);
+  if (!template) {
+    res.status(404).json({ success: false, error: `Template "${id}" not found` });
+    return;
+  }
+  if (!checkTierOrReject(template.requiredTier, userTier, template.name, res)) return;
+
+  const result = templateService.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
   if (!result) {
     res.status(404).json({ success: false, error: `Template "${id}" not found` });
     return;
@@ -191,13 +209,10 @@ export const handleDeployTemplate = asyncHandler(async (req: Request, res: Respo
     }
   }
 
-  // Get template for mission/budget/qualityGate
-  const template = templateService.getTemplate(id);
-  if (template) {
-    result.team.mission = (template as any).mission || result.team.description;
-    result.team.budget = (template as any).budget;
-    result.team.qualityGate = (template as any).qualityGate;
-  }
+  // Copy mission/budget/qualityGate from template to team
+  result.team.mission = (template as any).mission || result.team.description;
+  result.team.budget = (template as any).budget;
+  result.team.qualityGate = (template as any).qualityGate;
 
   // Assign to project if specified
   if (projectId) {
@@ -211,8 +226,7 @@ export const handleDeployTemplate = asyncHandler(async (req: Request, res: Respo
     member.sessionName = `${teamSlug}-${memberSlug}-${member.id.slice(0, 8)}`;
   }
 
-  // Save team to storage via API (StorageService)
-  const { StorageService } = await import('../../services/core/storage.service.js');
+  // Save team to storage
   const storage = StorageService.getInstance();
   await storage.saveTeam(result.team);
 

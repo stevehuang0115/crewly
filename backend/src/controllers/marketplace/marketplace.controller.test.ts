@@ -65,6 +65,17 @@ jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   },
 }));
 
+// Mock SkillTierService for tier hierarchy comparison
+const mockIsTierSufficient = jest.fn().mockReturnValue(false);
+
+jest.mock('../../services/skill/skill-tier.service.js', () => ({
+  SkillTierService: {
+    getInstance: () => ({
+      isTierSufficient: mockIsTierSufficient,
+    }),
+  },
+}));
+
 describe('MarketplaceController', () => {
   let mockRes: { json: jest.Mock; status: jest.Mock };
   const next = jest.fn();
@@ -84,6 +95,7 @@ describe('MarketplaceController', () => {
     mockUninstallItem.mockReset();
     mockUpdateItem.mockReset();
     mockGetTier.mockReset().mockReturnValue('free');
+    mockIsTierSufficient.mockReset().mockReturnValue(false);
   });
 
   // ========================= handleListItems =========================
@@ -129,6 +141,7 @@ describe('MarketplaceController', () => {
       const items = [{ id: 'premium-skill', name: 'Premium', metadata: { premium: true } }];
       mockListItems.mockResolvedValue(items);
       mockGetTier.mockReturnValue('pro');
+      mockIsTierSufficient.mockReturnValue(true);
 
       await handleListItems(
         { query: {} } as any,
@@ -471,6 +484,7 @@ describe('MarketplaceController', () => {
       const result = { success: true, message: 'Installed' };
       mockGetItem.mockResolvedValue(premiumItem);
       mockGetTier.mockReturnValue('pro');
+      mockIsTierSufficient.mockReturnValue(true);
       mockInstallItem.mockResolvedValue(result);
 
       await handleInstall(
@@ -622,6 +636,7 @@ describe('MarketplaceController', () => {
       const result = { success: true, message: 'Updated' };
       mockGetItem.mockResolvedValue(premiumItem);
       mockGetTier.mockReturnValue('pro');
+      mockIsTierSufficient.mockReturnValue(true);
       mockUpdateItem.mockResolvedValue(result);
 
       await handleUpdate(
