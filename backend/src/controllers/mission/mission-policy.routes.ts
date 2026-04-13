@@ -15,6 +15,7 @@ import {
   updatePolicy,
   checkPolicy,
 } from './mission-policy.controller.js';
+import { MissionExecutorService, type DecompositionResult } from '../../services/v3/mission-executor.service.js';
 
 /** Resolve the missions directory from the project root. */
 function getMissionsDir(): string {
@@ -89,6 +90,66 @@ export function createMissionPolicyRouter(): Router {
 
   // Dry-run: check if an action is allowed
   router.post('/:id/policy/check', checkPolicy);
+
+  // --- Mission Execution Endpoints ---
+
+  // Submit decomposition result (from decompose-mission skill)
+  router.post('/:id/decompose', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const missionId = req.params.id;
+      const filePath = path.join(getMissionsDir(), `${missionId}.json`);
+
+      let mission;
+      try {
+        const raw = await fs.readFile(filePath, 'utf-8');
+        mission = JSON.parse(raw);
+      } catch {
+        res.status(404).json({ success: false, error: 'Mission not found' });
+        return;
+      }
+
+      const result = req.body as DecompositionResult;
+      if (!result.tasks || !Array.isArray(result.tasks)) {
+        res.status(400).json({ success: false, error: 'tasks array is required' });
+        return;
+      }
+
+      const executor = MissionExecutorService.getInstance();
+      const createdIds = await executor.processDecomposition(
+        { ...result, missionId },
+        mission,
+      );
+
+      res.status(201).json({ success: true, data: { createdIds, count: createdIds.length } });
+    } catch (err) { next(err); }
+  });
+
+  // Get mission progress
+  router.get('/:id/progress', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const executor = MissionExecutorService.getInstance();
+      const progress = await executor.checkProgress(req.params.id);
+      res.json({ success: true, data: progress });
+    } catch (err) { next(err); }
+  });
+
+  // Pause mission (freeze queued tasks)
+  router.post('/:id/pause', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const executor = MissionExecutorService.getInstance();
+      const frozenCount = await executor.pauseMission(req.params.id);
+      res.json({ success: true, data: { frozenCount } });
+    } catch (err) { next(err); }
+  });
+
+  // Resume mission (unfreeze tasks)
+  router.post('/:id/resume', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const executor = MissionExecutorService.getInstance();
+      const unfrozenCount = await executor.resumeMission(req.params.id);
+      res.json({ success: true, data: { unfrozenCount } });
+    } catch (err) { next(err); }
+  });
 
   return router;
 }
