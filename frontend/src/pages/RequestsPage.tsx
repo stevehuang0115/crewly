@@ -67,7 +67,7 @@ export const RequestsPage: React.FC = () => {
   ], []);
 
   return (
-    <div className="flex flex-col gap-6 p-6 max-w-[960px]" data-testid="requests-page">
+    <div className="flex flex-col gap-6 p-6 max-w-7xl mx-auto" data-testid="requests-page">
       {/* Page header */}
       <div className="flex flex-col gap-1" data-testid="requests-page-header">
         <div className="mb-8">

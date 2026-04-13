@@ -184,7 +184,7 @@ export const WorkItems: React.FC = () => {
   );
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto" data-testid="workitems-page">
+    <div className="p-6 max-w-7xl mx-auto" data-testid="workitems-page">
       {/* Page header */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">

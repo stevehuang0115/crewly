@@ -223,8 +223,8 @@ export const CloudPortal: React.FC = () => {
   // -----------------------------------------------------------------------
 
   return (
-    <div className="min-h-screen bg-background-dark px-4 py-8 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-4xl">
+    <div className="p-6">
+      <div className="mx-auto max-w-7xl">
         {/* Header */}
         <div className="mb-8 flex items-center gap-3">
           <Cloud className="h-8 w-8 text-primary" />

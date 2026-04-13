@@ -1,3 +1,4 @@
+// Layout + ScoreCard consistency
 /**
  * CloudPortal Page Tests
  *
