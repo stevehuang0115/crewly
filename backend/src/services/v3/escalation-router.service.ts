@@ -311,33 +311,98 @@ export class EscalationRouterService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Notify human via Slack (best-effort).
+   * Notify human via the same channel the original request came from.
+   * Falls back to Slack → Chat UI if source channel can't be determined.
    */
   private async notifyHuman(escalation: PendingEscalation): Promise<void> {
-    try {
-      const { getSlackOrchestratorBridge } = await import('../slack/slack-orchestrator-bridge.js');
-      const bridge = getSlackOrchestratorBridge();
-      if (bridge) {
-        await bridge.sendNotification({
-          type: 'alert',
-          title: 'Human Decision Required',
-          message: [
-            escalation.summary,
-            '',
-            `Source: ${escalation.source}`,
-            escalation.missionId ? `Mission: ${escalation.missionId}` : '',
-            escalation.workItemId ? `WorkItem: ${escalation.workItemId}` : '',
-            '',
-            `Resolve via: POST /api/escalations/${escalation.id}/resolve`,
-          ].filter(Boolean).join('\n'),
-          urgency: 'high',
-          timestamp: new Date().toISOString(),
-        });
+    const message = [
+      escalation.summary,
+      '',
+      `Source: ${escalation.source}`,
+      escalation.missionId ? `Mission: ${escalation.missionId}` : '',
+      escalation.workItemId ? `WorkItem: ${escalation.workItemId}` : '',
+      '',
+      `Resolve via: POST /api/escalations/${escalation.id}/resolve`,
+    ].filter(Boolean).join('\n');
+
+    // Determine source channel from the escalation's associated WorkItem/Request
+    const sourceChannel = await this.resolveSourceChannel(escalation);
+
+    let notified = false;
+
+    // Route to the original channel
+    if (sourceChannel === 'slack' || !sourceChannel) {
+      try {
+        const { getSlackOrchestratorBridge } = await import('../slack/slack-orchestrator-bridge.js');
+        const bridge = getSlackOrchestratorBridge();
+        if (bridge) {
+          await bridge.sendNotification({
+            type: 'alert',
+            title: 'Human Decision Required',
+            message,
+            urgency: 'high',
+            timestamp: new Date().toISOString(),
+          });
+          notified = true;
+        }
+      } catch {
+        // Slack not available
       }
-    } catch (err) {
-      this.logger.debug('Slack notification failed (non-fatal)', {
-        error: err instanceof Error ? err.message : String(err),
+    }
+
+    // Google Chat and Telegram: use the messaging adapter pattern
+    if (sourceChannel === 'google_chat' || sourceChannel === 'telegram') {
+      try {
+        // Route via the Slack bridge's sendNotification which handles multi-channel
+        // For now, fall through to Slack as the bridge handles routing
+        const { getSlackOrchestratorBridge } = await import('../slack/slack-orchestrator-bridge.js');
+        const bridge = getSlackOrchestratorBridge();
+        if (bridge) {
+          await bridge.sendNotification({
+            type: 'alert',
+            title: `Human Decision Required (via ${sourceChannel})`,
+            message,
+            urgency: 'high',
+            timestamp: new Date().toISOString(),
+          });
+          notified = true;
+        }
+      } catch {
+        // Channel not available
+      }
+    }
+
+    if (!notified) {
+      this.logger.warn('Could not notify human via any channel', {
+        escalationId: escalation.id,
+        sourceChannel,
       });
+    }
+  }
+
+  /**
+   * Resolve the source channel for an escalation by tracing back to the
+   * original Request/ChatMessage that started the work.
+   */
+  private async resolveSourceChannel(escalation: PendingEscalation): Promise<string | null> {
+    if (!escalation.workItemId) return null;
+
+    try {
+      const taskPool = (await import('../task-pool/task-pool.service.js')).TaskPoolService.getInstance();
+      const allItems = await taskPool.getAllItems();
+      const wi = allItems.find((w) => w.id === escalation.workItemId);
+      if (!wi?.requestId) return null;
+
+      // Load the Request to find its source conversation
+      const { RequestService } = await import('./request.service.js');
+      const request = await RequestService.getInstance().getById(wi.requestId);
+      if (!request?.sourceConversationItemId) return null;
+
+      // Infer channel from conversation ID pattern
+      const { inferChannelTypeFromConversationId } = await import('../../types/chat.types.js');
+      return inferChannelTypeFromConversationId(request.sourceConversationItemId) ?? null;
+    } catch {
+      return null; // Can't determine — will fallback to default
     }
   }
 

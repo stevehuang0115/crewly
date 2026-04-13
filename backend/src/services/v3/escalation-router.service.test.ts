@@ -4,6 +4,7 @@
  * @module services/v3/escalation-router.service.test
  */
 
+// EscalationRouter tests — channel-aware routing, resolve, policy escalation
 import { EscalationRouterService } from './escalation-router.service.js';
 import type { AlignmentRequest } from '../../types/v2/work-item.types.js';
 
