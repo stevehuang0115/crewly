@@ -1,5 +1,5 @@
 /**
- * Tests for the Crewly backend server headless mode and health endpoint.
+ * Tests for the Crewly backend server — headless mode, health endpoint, service initialization.
  *
  * Since backend/src/index.ts uses import.meta.url which is not supported in
  * Jest's CJS module mode, these tests validate the headless mode behavior

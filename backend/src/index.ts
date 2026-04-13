@@ -1305,6 +1305,17 @@ export class CrewlyServer {
 				});
 			}
 
+			// Initialize MissionExecutorService — Mission lifecycle + decomposition processing
+			try {
+				const { MissionExecutorService } = await import('./services/v3/mission-executor.service.js');
+				MissionExecutorService.getInstance();
+				this.logger.info('MissionExecutorService initialized — Mission decomposition + progress tracking ready');
+			} catch (missionErr) {
+				this.logger.warn('MissionExecutorService initialization failed (non-critical)', {
+					error: missionErr instanceof Error ? missionErr.message : String(missionErr),
+				});
+			}
+
 			// Start Slack image cleanup (download temp files)
 			try {
 				const { getSlackImageService: getImgService } = await import('./services/slack/slack-image.service.js');
