@@ -31,6 +31,14 @@ const WATCHER_DEBOUNCE_MS = 500;
 /** Subdirectories within a milestone folder that indicate actionable tasks. */
 const ACTIONABLE_STATUS_FOLDERS = ['open', 'in_progress'] as const;
 
+/**
+ * Maximum age (ms) for a task file to be considered during initial startup sync.
+ * Tasks older than this are assumed stale and skipped during initial scan.
+ * Live watcher still processes new files regardless of age.
+ * Default: 48 hours.
+ */
+const STARTUP_SYNC_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -231,7 +239,7 @@ export class ProjectTaskWatcherService {
           const milestone = parts[0];
           const statusFolder = parts[parts.length - 2];
 
-          await this.ensureWorkItemForTask(filePath, milestone, statusFolder);
+          await this.ensureWorkItemForTask(filePath, milestone, statusFolder, { skipStalenessCheck: true });
         } catch (err) {
           this.logger.warn('Failed to process new task file (non-fatal)', {
             filePath,
@@ -255,10 +263,26 @@ export class ProjectTaskWatcherService {
     filePath: string,
     milestone: string,
     statusFolder: string,
+    options?: { skipStalenessCheck?: boolean },
   ): Promise<boolean> {
     try {
       const parsed = await parseProjectTaskFile(filePath, milestone, statusFolder);
       if (!parsed) return false;
+
+      // Staleness check: skip old files during initial sync to prevent
+      // re-creating WorkItems for long-abandoned tasks on every restart
+      if (!options?.skipStalenessCheck) {
+        try {
+          const stat = await fs.stat(filePath);
+          const ageMs = Date.now() - stat.mtimeMs;
+          if (ageMs > STARTUP_SYNC_MAX_AGE_MS) {
+            return false;
+          }
+        } catch {
+          // If we can't stat the file, skip it
+          return false;
+        }
+      }
 
       const taskPool = TaskPoolService.getInstance();
       const existing = await taskPool.getAllItems();

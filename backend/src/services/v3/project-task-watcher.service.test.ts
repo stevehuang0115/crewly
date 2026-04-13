@@ -1,5 +1,6 @@
 /**
- * Tests for ProjectTaskWatcherService — automatic WorkItem creation from ProjectTask files.
+ * Tests for ProjectTaskWatcherService — automatic WorkItem creation from ProjectTask files
+ * with 48h staleness check on startup sync.
  *
  * @module services/v3/project-task-watcher.service.test
  */
