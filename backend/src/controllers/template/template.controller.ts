@@ -11,6 +11,8 @@
 import type { Request, Response } from 'express';
 import { TemplateService } from '../../services/template/template.service.js';
 import type { TemplateSummary } from '../../services/template/template.service.js';
+import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
+import type { CloudTier } from '../../constants.js';
 
 /**
  * Wraps an async route handler with a standard try/catch that returns
@@ -25,9 +27,23 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
       await fn(req, res);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+      // Surface tier-insufficient errors as 403 instead of 500
+      if (msg.includes('requires') && msg.includes('plan')) {
+        res.status(403).json({ success: false, error: msg });
+        return;
+      }
       res.status(500).json({ success: false, error: msg });
     }
   };
+}
+
+/**
+ * Resolves the current user's cloud tier from CloudClientService.
+ *
+ * @returns The current subscription tier (defaults to 'free' if not connected)
+ */
+function getCurrentTier(): CloudTier {
+  return CloudClientService.getInstance().getTier();
 }
 
 /**
@@ -57,7 +73,14 @@ export const handleListTemplates = asyncHandler(async (req: Request, res: Respon
     templates = templates.filter((t: TemplateSummary) => t.category === category);
   }
 
-  res.json({ success: true, data: templates });
+  // Annotate templates with tier accessibility for the current user
+  const userTier = getCurrentTier();
+  const annotated = templates.map((t: TemplateSummary) => ({
+    ...t,
+    accessible: !t.requiredTier || service.isTierSufficient(userTier, t.requiredTier),
+  }));
+
+  res.json({ success: true, data: annotated });
 });
 
 /**
@@ -117,7 +140,8 @@ export const handleCreateTeamFromTemplate = asyncHandler(async (req: Request, re
   }
 
   const service = TemplateService.getInstance();
-  const result = service.createTeamFromTemplate(id, teamName.trim(), nameOverrides);
+  const userTier = getCurrentTier();
+  const result = service.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
 
   if (!result) {
     res.status(404).json({ success: false, error: `Template "${id}" not found` });
@@ -152,7 +176,8 @@ export const handleDeployTemplate = asyncHandler(async (req: Request, res: Respo
   }
 
   const templateService = TemplateService.getInstance();
-  const result = templateService.createTeamFromTemplate(id, teamName.trim(), nameOverrides);
+  const userTier = getCurrentTier();
+  const result = templateService.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
 
   if (!result) {
     res.status(404).json({ success: false, error: `Template "${id}" not found` });

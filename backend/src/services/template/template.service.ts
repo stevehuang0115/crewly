@@ -57,6 +57,8 @@ export interface TemplateSummary {
   icon?: string;
   /** Where this template was loaded from */
   source: TemplateSource;
+  /** Minimum tier required to use this template */
+  requiredTier?: string;
 }
 
 // =============================================================================
@@ -162,7 +164,20 @@ export class TemplateService {
       tags: t.tags,
       icon: t.icon,
       source: 'local' as TemplateSource,
+      requiredTier: t.requiredTier,
     }));
+  }
+
+  /**
+   * Check whether a user's tier is sufficient for a required tier.
+   *
+   * @param userTier - The user's current cloud tier
+   * @param requiredTier - The minimum tier required
+   * @returns true if userTier >= requiredTier in the hierarchy
+   */
+  isTierSufficient(userTier: string, requiredTier: string): boolean {
+    const tierService = SkillTierService.getInstance();
+    return tierService.isTierSufficient(userTier as CloudTier, requiredTier as CloudTier);
   }
 
   /**

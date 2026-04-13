@@ -29,6 +29,8 @@ import {
 } from '../../services/marketplace/index.js';
 import type { MarketplaceItemType, MarketplaceCategory, SortOption, SubmissionStatus } from '../../types/marketplace.types.js';
 import { asyncHandler } from '../../utils/async-handler.js';
+import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
+import { CLOUD_CONSTANTS } from '../../constants.js';
 
 const VALID_TYPES: MarketplaceItemType[] = ['skill', 'model', 'role', 'mcp_tool'];
 const VALID_SORTS: SortOption[] = ['popular', 'rating', 'newest'];
@@ -69,7 +71,16 @@ export const handleListItems = asyncHandler(async (req: Request, res: Response):
     search: req.query.search as string | undefined,
     sortBy: sortParam as SortOption | undefined,
   });
-  res.json({ success: true, data: items });
+
+  // Annotate items with tier accessibility
+  const currentTier = CloudClientService.getInstance().getTier();
+  const isFreeUser = currentTier === CLOUD_CONSTANTS.TIERS.FREE;
+  const annotated = items.map((item) => ({
+    ...item,
+    accessible: !(item.metadata?.premium === true && isFreeUser),
+  }));
+
+  res.json({ success: true, data: annotated });
 });
 
 /**
@@ -176,6 +187,20 @@ export const handleInstall = asyncHandler(async (req: Request, res: Response): P
     res.status(404).json({ success: false, error: 'Item not found' });
     return;
   }
+
+  // Block installation of premium items for free-tier users
+  const isPremium = item.metadata?.premium === true;
+  if (isPremium) {
+    const currentTier = CloudClientService.getInstance().getTier();
+    if (currentTier === CLOUD_CONSTANTS.TIERS.FREE) {
+      res.status(403).json({
+        success: false,
+        error: `"${item.name}" is a premium item and requires a Pro or Enterprise subscription. Upgrade at https://crewlyai.com/pricing`,
+      });
+      return;
+    }
+  }
+
   const result = await installItem(item);
   res.json(result);
 });
@@ -219,6 +244,20 @@ export const handleUpdate = asyncHandler(async (req: Request, res: Response): Pr
     res.status(404).json({ success: false, error: 'Item not found' });
     return;
   }
+
+  // Block updating premium items for free-tier users
+  const isPremium = item.metadata?.premium === true;
+  if (isPremium) {
+    const currentTier = CloudClientService.getInstance().getTier();
+    if (currentTier === CLOUD_CONSTANTS.TIERS.FREE) {
+      res.status(403).json({
+        success: false,
+        error: `"${item.name}" is a premium item and requires a Pro or Enterprise subscription. Upgrade at https://crewlyai.com/pricing`,
+      });
+      return;
+    }
+  }
+
   const result = await updateItem(item);
   res.json(result);
 });
