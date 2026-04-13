@@ -8,7 +8,8 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { Store, Search, Download, Star, RefreshCw, Package, Check, ArrowUp, Upload, Clock, CheckCircle, XCircle, Plug } from 'lucide-react';
+import { Store, Download, Star, RefreshCw, Package, Check, ArrowUp, Upload, Clock, CheckCircle, XCircle, Plug } from 'lucide-react';
+import { PageToolbar } from '../components/UI/PageToolbar';
 import {
   fetchMarketplaceItems,
   installMarketplaceItem,
@@ -264,47 +265,28 @@ export default function Marketplace() {
       {viewMode === 'browse' && (
         <>
           {/* Filters */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
-            <div className="flex gap-1 bg-gray-900 rounded-lg p-1" role="tablist" aria-label="Filter by type">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.value}
-                  onClick={() => setActiveType(tab.value)}
-                  role="tab"
-                  aria-selected={activeType === tab.value}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                    activeType === tab.value ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-                <input
-                  type="text"
-                  placeholder="Search..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  aria-label="Search marketplace"
-                  className="bg-gray-900 border border-gray-700 rounded-lg pl-9 pr-3 py-1.5 text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-primary w-48"
-                />
-              </div>
+          <PageToolbar
+            tabs={tabs.map((tab) => ({ value: tab.value, label: tab.label }))}
+            activeTab={activeType}
+            onTabChange={(v) => setActiveType(v as typeof activeType)}
+            searchPlaceholder="Search..."
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchDebounceMs={0}
+            trailing={
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as SortOption)}
                 aria-label="Sort by"
-                className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-primary"
+                className="bg-surface-dark border border-border-dark rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
               >
                 {sortOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
-            </div>
-          </div>
+            }
+            className="mb-6"
+          />
 
           {/* Content */}
           {loading ? (

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Grid, List, Monitor, RefreshCw, GitBranch } from 'lucide-react';
+import { PageToolbar } from '../components/UI/PageToolbar';
 import { useAlert } from '../components/UI/Dialog';
 import TeamsGridCard from '@/components/Teams/TeamsGridCard';
 import { TeamModal } from '../components/Modals/TeamModal';
@@ -248,62 +249,40 @@ export const Teams: React.FC = () => {
         </button>
       </div>
 
-      {/* Search */}
-      <div className="flex flex-col md:flex-row items-center gap-4 mb-3">
-        <div className="relative flex-grow w-full md:w-auto">
-          <input
-            type="text"
-            placeholder="Search teams..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-surface-dark border border-border-dark rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
-          />
-        </div>
-      </div>
-
-      {/* Filter + view controls */}
-      <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm text-text-secondary-dark">Status:</span>
-          <button className={`chip ${statusFilter === 'all' ? 'chip--active' : ''}`} onClick={() => setStatusFilter('all')}>All</button>
-          <button className={`chip ${statusFilter === 'active' ? 'chip--active' : ''}`} onClick={() => setStatusFilter('active')}>Active</button>
-          <button className={`chip ${statusFilter === 'inactive' ? 'chip--active' : ''}`} onClick={() => setStatusFilter('inactive')}>Inactive</button>
-          <span className="ml-2 text-sm text-text-secondary-dark">Project:</span>
+      {/* Filter + search + view controls */}
+      <PageToolbar
+        tabs={[
+          { value: 'all', label: 'All', count: teams.filter(t => !t.parentTeamId).length },
+          { value: 'active', label: 'Active', count: teams.filter(t => !t.parentTeamId && t.members?.some(m => m.agentStatus === 'active')).length },
+          { value: 'inactive', label: 'Inactive', count: teams.filter(t => !t.parentTeamId && !t.members?.some(m => m.agentStatus === 'active')).length },
+        ]}
+        activeTab={statusFilter}
+        onTabChange={(v) => setStatusFilter(v as typeof statusFilter)}
+        searchPlaceholder="Search teams..."
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchDebounceMs={0}
+        viewModes={[
+          { value: 'grid', label: 'Grid view', icon: <Grid className="w-4 h-4" /> },
+          { value: 'list', label: 'List view', icon: <List className="w-4 h-4" /> },
+          { value: 'tree', label: 'Tree view', icon: <GitBranch className="w-4 h-4" /> },
+        ]}
+        activeViewMode={view}
+        onViewModeChange={(v) => setView(v as 'grid' | 'list' | 'tree')}
+        trailing={
           <select
             value={projectFilter}
             onChange={(e) => setProjectFilter(e.target.value)}
-            className="bg-surface-dark border border-border-dark rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            className="bg-surface-dark border border-border-dark rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
           >
-            <option value="all">All</option>
+            <option value="all">All Projects</option>
             {projectsForFilter.map(p => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setView('grid')}
-            className={`inline-flex items-center justify-center w-9 h-9 rounded-lg border border-border-dark ${view === 'grid' ? 'bg-primary/10 text-primary' : 'text-text-secondary-dark hover:text-text-primary-dark hover:border-primary/50'}`}
-            title="Grid view"
-          >
-            <Grid className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setView('list')}
-            className={`inline-flex items-center justify-center w-9 h-9 rounded-lg border border-border-dark ${view === 'list' ? 'bg-primary/10 text-primary' : 'text-text-secondary-dark hover:text-text-primary-dark hover:border-primary/50'}`}
-            title="List view"
-          >
-            <List className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setView('tree')}
-            className={`inline-flex items-center justify-center w-9 h-9 rounded-lg border border-border-dark ${view === 'tree' ? 'bg-primary/10 text-primary' : 'text-text-secondary-dark hover:text-text-primary-dark hover:border-primary/50'}`}
-            title="Tree view"
-          >
-            <GitBranch className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
+        }
+        className="mb-6"
+      />
 
       {/* Remote Devices (Pro + Cloud only) */}
       {showRemoteDevices && (
