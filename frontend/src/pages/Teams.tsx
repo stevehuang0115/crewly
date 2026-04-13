@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Grid, List, Monitor, RefreshCw, GitBranch } from 'lucide-react';
 import { PageToolbar } from '../components/UI/PageToolbar';
+import { Dropdown } from '../components/UI/Dropdown';
 import { useAlert } from '../components/UI/Dialog';
 import TeamsGridCard from '@/components/Teams/TeamsGridCard';
 import { TeamModal } from '../components/Modals/TeamModal';
@@ -270,16 +271,15 @@ export const Teams: React.FC = () => {
         activeViewMode={view}
         onViewModeChange={(v) => setView(v as 'grid' | 'list' | 'tree')}
         trailing={
-          <select
+          <Dropdown
+            options={[
+              { value: 'all', label: 'All Projects' },
+              ...projectsForFilter.map(p => ({ value: p.id, label: p.name })),
+            ]}
             value={projectFilter}
-            onChange={(e) => setProjectFilter(e.target.value)}
-            className="bg-surface-dark border border-border-dark rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
-          >
-            <option value="all">All Projects</option>
-            {projectsForFilter.map(p => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
+            onChange={setProjectFilter}
+            className="w-[160px]"
+          />
         }
         className="mb-6"
       />

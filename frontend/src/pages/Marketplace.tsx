@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Store, Download, Star, RefreshCw, Package, Check, ArrowUp, Upload, Clock, CheckCircle, XCircle, Plug } from 'lucide-react';
 import { PageToolbar } from '../components/UI/PageToolbar';
+import { Dropdown } from '../components/UI/Dropdown';
 import {
   fetchMarketplaceItems,
   installMarketplaceItem,
@@ -274,16 +275,13 @@ export default function Marketplace() {
             onSearchChange={setSearchQuery}
             searchDebounceMs={0}
             trailing={
-              <select
+              <Dropdown
+                options={sortOptions}
                 value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as SortOption)}
+                onChange={(v) => setSortBy(v as SortOption)}
                 aria-label="Sort by"
-                className="bg-surface-dark border border-border-dark rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
-              >
-                {sortOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+                className="w-[140px]"
+              />
             }
             className="mb-6"
           />
