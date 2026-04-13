@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * Request Detail Page Tests
+ * Request Detail Page Tests — approve/reject only for waiting_confirmation
  *
  * @module pages/RequestDetail.test
  */

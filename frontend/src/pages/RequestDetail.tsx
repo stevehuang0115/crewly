@@ -552,13 +552,11 @@ export const RequestDetail: React.FC = () => {
         <ProgressRail currentStatus={request.status} />
       </div>
 
-        {/* Approval / Rejection action area */}
-        {request.status !== 'done' && request.status !== 'cancelled' && (
+        {/* Approval / Rejection action area — only for requests awaiting confirmation */}
+        {request.requiresConfirmation && request.status === 'waiting_confirmation' && (
           <div className="flex gap-3 mt-4 p-4 bg-surface-dark rounded-lg border border-border-dark" data-testid="request-action-area">
             <span className="text-sm text-text-secondary-dark mr-auto flex items-center">
-              {request.requiresConfirmation
-                ? 'This request requires confirmation'
-                : 'Approve or reject this request'}
+              This request requires your confirmation before completing
             </span>
             <Button
               variant="secondary"
@@ -585,7 +583,7 @@ export const RequestDetail: React.FC = () => {
             <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wider mb-3">
               <span className="flex items-center gap-1.5">
                 <FileText className="h-4 w-4" />
-                Description
+                Original Message
               </span>
             </h2>
             {request.description ? (
