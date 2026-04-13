@@ -274,6 +274,8 @@ export async function syncSessionsToTokenUsageService(
 
       let sessionInput = 0;
       let sessionOutput = 0;
+      let sessionCacheRead = 0;
+      let sessionCacheCreate = 0;
       let model = '';
       let turnCount = 0;
 
@@ -286,10 +288,10 @@ export async function syncSessionsToTokenUsageService(
           if (!msg?.usage) continue;
 
           const u = msg.usage;
-          const input = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-          const output = u.output_tokens || 0;
-          sessionInput += input;
-          sessionOutput += output;
+          sessionInput += u.input_tokens || 0;
+          sessionOutput += u.output_tokens || 0;
+          sessionCacheRead += u.cache_read_input_tokens || 0;
+          sessionCacheCreate += u.cache_creation_input_tokens || 0;
           if (!model && msg.model) model = msg.model;
           turnCount++;
         } catch {
@@ -299,14 +301,28 @@ export async function syncSessionsToTokenUsageService(
 
       if (turnCount > 0) {
         const sessionId = file.replace('.jsonl', '');
-        // Record as a single aggregated event per session
+        const resolvedModel = model || 'claude-sonnet-4-6';
+
+        // Calculate cost with proper cache-aware pricing
+        const cost = calculateClaudeCost(
+          sessionInput, sessionOutput,
+          sessionCacheRead, sessionCacheCreate,
+          resolvedModel,
+        );
+
+        // Record only real input tokens (not cache) to avoid inflating counts.
+        // Pass pre-calculated cost via a dedicated method if available,
+        // otherwise record raw tokens and let the dashboard use our cost.
         tokenSvc.recordUsage(
           sessionId,
-          sessionId, // agentId — session-level granularity
+          sessionId,
           sessionInput,
           sessionOutput,
-          model || 'claude-opus-4-6',
+          resolvedModel,
         );
+
+        // Override the auto-calculated cost with our cache-aware cost
+        tokenSvc.overrideSessionCost(sessionId, cost);
         loaded++;
       }
     } catch {
