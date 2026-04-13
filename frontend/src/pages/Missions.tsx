@@ -12,7 +12,6 @@ import { useNavigate } from 'react-router-dom';
 import {
   RefreshCw,
   Target,
-  Search,
   Plus,
 } from 'lucide-react';
 import { Button } from '../components/UI/Button';
@@ -21,7 +20,7 @@ import { Badge } from '../components/UI/Badge';
 import { StatusBadge } from '../components/UI/StatusBadge';
 import type { StatusType } from '../components/UI/StatusBadge';
 import type { BadgeVariant } from '../components/UI/Badge';
-import { Tabs, TabList, TabTrigger } from '../components/UI/Tabs';
+import { PageToolbar } from '../components/UI/PageToolbar';
 import { Alert } from '../components/UI/Alert';
 import { Modal, ModalBody, ModalFooter } from '../components/UI/Modal';
 import { SkeletonRows } from '../components/UI/SkeletonRows';
@@ -290,33 +289,19 @@ export const Missions: React.FC = () => {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Tabs defaultValue="all" onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-          <TabList>
-            {filterButtons.map((fb) => (
-              <TabTrigger key={fb.key} value={fb.key}>
-                {fb.label}
-                {statusCounts[fb.key] !== undefined && (
-                  <span className="ml-1 opacity-60">({statusCounts[fb.key]})</span>
-                )}
-              </TabTrigger>
-            ))}
-          </TabList>
-        </Tabs>
-
-        {/* Search */}
-        <div className="relative flex-1 min-w-[200px] max-w-[400px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-secondary-dark" />
-          <input
-            type="text"
-            placeholder="Search by objective, team, strategy..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 text-sm bg-surface-dark border border-border-dark rounded-lg text-text-primary-dark placeholder:text-text-secondary-dark focus:outline-none focus:border-primary/50"
-            data-testid="missions-search"
-          />
-        </div>
-      </div>
+      <PageToolbar
+        tabs={filterButtons.map((fb) => ({
+          value: fb.key,
+          label: fb.label,
+          count: statusCounts[fb.key],
+        }))}
+        activeTab={statusFilter}
+        onTabChange={(v) => setStatusFilter(v as StatusFilter)}
+        searchPlaceholder="Search by objective, team, strategy..."
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchDebounceMs={0}
+      />
 
       {/* Loading */}
       {loading && (

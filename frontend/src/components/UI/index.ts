@@ -61,3 +61,6 @@ export type { PopupProps, FormPopupProps, ConfirmPopupProps } from './Popup';
 
 export { Avatar, AvatarGroup } from './Avatar';
 export type { AvatarProps, AvatarGroupProps, AvatarSize } from './Avatar';
+
+export { PageToolbar } from './PageToolbar';
+export type { PageToolbarProps, FilterTab, ViewMode, SecondaryFilter } from './PageToolbar';

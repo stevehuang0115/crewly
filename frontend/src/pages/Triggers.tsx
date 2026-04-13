@@ -25,7 +25,7 @@ import {
   Users,
   List,
 } from 'lucide-react';
-import { Button, Modal, ModalBody, ModalFooter, useConfirm, StatusBadge, Tabs, TabList, TabTrigger, Alert } from '../components/UI';
+import { Button, Modal, ModalBody, ModalFooter, useConfirm, StatusBadge, Alert, PageToolbar } from '../components/UI';
 import type { StatusType } from '../components/UI/StatusBadge';
 import { useTriggers } from '../hooks/useTriggers';
 import { useCronTasks } from '../hooks/useCronTasks';
@@ -779,35 +779,18 @@ export const Triggers: React.FC = () => {
       )}
 
       {/* Filter tabs + view mode toggle */}
-      <div className="flex items-center justify-between flex-shrink-0">
-        <Tabs defaultValue="all" onValueChange={(v) => setFilterTab(v as FilterTab)}>
-          <TabList>
-            {tabs.map(({ key, label, count }) => (
-              <TabTrigger key={key} value={key}>
-                {label}
-                {count > 0 && <span className="ml-1.5 text-xs opacity-60">({count})</span>}
-              </TabTrigger>
-            ))}
-          </TabList>
-        </Tabs>
-        {/* View mode toggle */}
-        <div className="flex items-center gap-1 mb-px">
-          <button
-            onClick={() => setViewMode('list')}
-            title="List view"
-            className={`p-1.5 rounded transition-colors ${viewMode === 'list' ? 'text-accent-blue bg-accent-blue/10' : 'text-text-secondary-dark hover:text-text-primary-dark'}`}
-          >
-            <List className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setViewMode('team')}
-            title="Group by team"
-            className={`p-1.5 rounded transition-colors ${viewMode === 'team' ? 'text-accent-blue bg-accent-blue/10' : 'text-text-secondary-dark hover:text-text-primary-dark'}`}
-          >
-            <Users className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
+      <PageToolbar
+        tabs={tabs.map(({ key, label, count }) => ({ value: key, label, count }))}
+        activeTab={filterTab}
+        onTabChange={(v) => setFilterTab(v as FilterTab)}
+        viewModes={[
+          { value: 'list', label: 'List view', icon: <List className="w-4 h-4" /> },
+          { value: 'team', label: 'Group by team', icon: <Users className="w-4 h-4" /> },
+        ]}
+        activeViewMode={viewMode}
+        onViewModeChange={(v) => setViewMode(v as 'list' | 'team')}
+        className="flex-shrink-0"
+      />
 
       {/* Content — scrollable */}
       <div className="flex-1 overflow-y-auto min-h-0">

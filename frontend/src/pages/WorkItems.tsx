@@ -12,12 +12,11 @@ import { useNavigate } from 'react-router-dom';
 import {
   RefreshCw,
   Inbox,
-  Search,
 } from 'lucide-react';
 import { Card } from '../components/UI/Card';
 import { Badge } from '../components/UI/Badge';
 import { StatusBadge } from '../components/UI/StatusBadge';
-import { Tabs, TabList, TabTrigger } from '../components/UI/Tabs';
+import { PageToolbar } from '../components/UI/PageToolbar';
 import { Alert } from '../components/UI/Alert';
 import { Button } from '../components/UI/Button';
 import { SkeletonRows } from '../components/UI/SkeletonRows';
@@ -209,33 +208,18 @@ export const WorkItems: React.FC = () => {
       {!loading && <WorkItemSummaryBar stats={summaryStats} />}
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Tabs defaultValue="all" onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-          <TabList>
-            {filterButtons.map((fb) => (
-              <TabTrigger key={fb.key} value={fb.key}>
-                {fb.label}
-                {statusCounts[fb.key] !== undefined && (
-                  <span className="ml-1 opacity-60">({statusCounts[fb.key]})</span>
-                )}
-              </TabTrigger>
-            ))}
-          </TabList>
-        </Tabs>
-
-        {/* Search */}
-        <div className="relative flex-1 min-w-[200px] max-w-[400px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-secondary-dark" />
-          <input
-            type="text"
-            placeholder="Search by title, ID, agent..."
-            value={searchInput}
-            onChange={(e) => handleSearchChange(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 text-sm bg-surface-dark border border-border-dark rounded-lg text-text-primary-dark placeholder:text-text-secondary-dark focus:outline-none focus:border-primary/50"
-            data-testid="workitems-search"
-          />
-        </div>
-      </div>
+      <PageToolbar
+        tabs={filterButtons.map((fb) => ({
+          value: fb.key,
+          label: fb.label,
+          count: statusCounts[fb.key],
+        }))}
+        activeTab={statusFilter}
+        onTabChange={(v) => setStatusFilter(v as StatusFilter)}
+        searchPlaceholder="Search by title, ID, agent..."
+        searchValue={searchInput}
+        onSearchChange={handleSearchChange}
+      />
 
       {/* Loading */}
       {loading && (
