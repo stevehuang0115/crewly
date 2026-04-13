@@ -8,7 +8,8 @@
  * @module services/template/template
  */
 
-import { readFileSync, readdirSync, existsSync, statSync, mkdirSync, copyFileSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, statSync, mkdirSync, copyFileSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { LoggerService } from '../core/logger.service.js';
 import { randomUUID } from 'crypto';
@@ -346,7 +347,7 @@ export class TemplateService {
       const normsFiles = readdirSync(normsSourceDir).filter(f => f.endsWith('.md'));
       if (normsFiles.length === 0) return;
 
-      const crewlyHome = join(process.env['HOME'] || '/tmp', '.crewly');
+      const crewlyHome = join(homedir(), '.crewly');
       const normsTargetDir = join(crewlyHome, 'teams', teamId, 'norms');
       mkdirSync(normsTargetDir, { recursive: true });
 
@@ -364,7 +365,6 @@ export class TemplateService {
             const templateJson = this.loadTemplateJson(templateId);
             if (templateJson?.norms) {
               config.norms = templateJson.norms;
-              const { writeFileSync } = require('fs');
               writeFileSync(teamConfigPath, JSON.stringify(config, null, 2));
             }
           } catch {

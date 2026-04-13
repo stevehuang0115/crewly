@@ -1,5 +1,5 @@
 /**
- * Tests for Template Service
+ * Tests for Template Service — loading, listing, tier checks, team creation
  *
  * @module services/template/template.test
  */

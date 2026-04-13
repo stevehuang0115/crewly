@@ -152,11 +152,7 @@ export const handleCreateTeamFromTemplate = asyncHandler(async (req: Request, re
   }
   if (!checkTierOrReject(template.requiredTier, userTier, template.name, res)) return;
 
-  const result = service.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
-  if (!result) {
-    res.status(404).json({ success: false, error: `Template "${id}" not found` });
-    return;
-  }
+  const result = service.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier)!;
 
   res.status(201).json({ success: true, data: result });
 });
@@ -196,11 +192,7 @@ export const handleDeployTemplate = asyncHandler(async (req: Request, res: Respo
   }
   if (!checkTierOrReject(template.requiredTier, userTier, template.name, res)) return;
 
-  const result = templateService.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
-  if (!result) {
-    res.status(404).json({ success: false, error: `Template "${id}" not found` });
-    return;
-  }
+  const result = templateService.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier)!;
 
   // Override runtime if specified (for crewly-pro/SMB deployments)
   if (defaultRuntime) {

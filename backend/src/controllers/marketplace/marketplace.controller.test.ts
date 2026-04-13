@@ -2,7 +2,7 @@
  * Tests for Marketplace Controller
  *
  * Validates the REST handlers for marketplace endpoints including
- * list, detail, install, uninstall, update, refresh, and error handling.
+ * list, detail, install, uninstall, update, refresh, tier gating, and error handling.
  *
  * @module controllers/marketplace/marketplace.controller.test
  */

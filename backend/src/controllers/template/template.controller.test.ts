@@ -2,7 +2,7 @@
  * Tests for Template Controller
  *
  * Validates the REST handlers for template endpoints including
- * list, get, create-team, filtering, and error handling.
+ * list, get, create-team, deploy, tier validation, and error handling.
  *
  * @module controllers/template/template.controller.test
  */

@@ -95,13 +95,13 @@ export const handleListItems = asyncHandler(async (req: Request, res: Response):
     sortBy: sortParam as SortOption | undefined,
   });
 
-  // Annotate items with tier accessibility using proper tier hierarchy
+  // Annotate items with tier accessibility — compute tier check once
   const currentTier = CloudClientService.getInstance().getTier();
-  const tierService = SkillTierService.getInstance();
+  const canAccessPremium = SkillTierService.getInstance()
+    .isTierSufficient(currentTier, CLOUD_CONSTANTS.TIERS.PRO as CloudTier);
   const annotated = items.map((item) => ({
     ...item,
-    accessible: item.metadata?.premium !== true ||
-      tierService.isTierSufficient(currentTier, CLOUD_CONSTANTS.TIERS.PRO as CloudTier),
+    accessible: item.metadata?.premium !== true || canAccessPremium,
   }));
 
   res.json({ success: true, data: annotated });
