@@ -258,6 +258,12 @@ export class TemplateService {
           excludedRoleSkills: role.excludedSkills,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
+          // Organization Model fields from template role
+          jobTitle: role.jobTitle,
+          jobDescription: role.jobDescription,
+          ownershipScope: role.ownershipScope,
+          responsibilityType: role.responsibilityType,
+          autonomyLevel: role.autonomyLevel,
         };
 
         members.push(member);
@@ -303,6 +309,10 @@ export class TemplateService {
       templateId: template.id,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      // Organization Model fields from template
+      mission: template.mission,
+      ownershipScope: template.ownershipScope,
+      serviceContract: template.serviceContract,
     };
 
     // Copy norms from template to team directory

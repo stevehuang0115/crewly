@@ -32,7 +32,7 @@ describe('RoleBoundaryModule', () => {
 	it('should have correct metadata', () => {
 		expect(module.name).toBe('role-boundary');
 		expect(module.priority).toBe(3);
-		expect(module.maxTokens).toBe(800);
+		expect(module.maxTokens).toBe(1200);
 		expect(module.compactable).toBe(false);
 	});
 
@@ -155,5 +155,96 @@ describe('RoleBoundaryModule', () => {
 		expect(executorResult).toContain('Structured Block Report');
 		expect(orchestratorResult).not.toContain('Structured Block Report');
 		expect(tlResult).not.toContain('Structured Block Report');
+	});
+
+	/**
+	 * All roles include the Guidance Priority Chain for conflict resolution.
+	 */
+	it('should include Guidance Priority Chain for all roles', async () => {
+		const orchestratorResult = await module.build({ ...baseConfig, orgRole: 'orchestrator' });
+		const tlResult = await module.build({ ...baseConfig, orgRole: 'team-lead' });
+		const executorResult = await module.build({ ...baseConfig, orgRole: 'executor' });
+
+		for (const result of [orchestratorResult, tlResult, executorResult]) {
+			expect(result).toContain('Guidance Priority Chain');
+			expect(result).toContain('System Safety / Risk Policy');
+			expect(result).toContain('Role Boundary');
+			expect(result).toContain('Explicit Task Contract');
+			expect(result).toContain('Team Norm');
+			expect(result).toContain('Relevant SOP');
+			expect(result).toContain('Memory / Heuristics');
+			expect(result).toContain('may NEVER override higher-priority constraints');
+		}
+	});
+
+	/**
+	 * All roles include Core Execution Principles.
+	 */
+	it('should include Core Execution Principles for all roles', async () => {
+		const orchestratorResult = await module.build({ ...baseConfig, orgRole: 'orchestrator' });
+		const tlResult = await module.build({ ...baseConfig, orgRole: 'team-lead' });
+		const executorResult = await module.build({ ...baseConfig, orgRole: 'executor' });
+
+		for (const result of [orchestratorResult, tlResult, executorResult]) {
+			expect(result).toContain('Core Execution Principles');
+			expect(result).toContain('Execute within delegated boundaries');
+			expect(result).toContain('Seek alignment before changing scope');
+			expect(result).toContain('Decomposition stays local');
+		}
+	});
+
+	/**
+	 * Executor includes Task Classification Gate for pre-execution classification.
+	 */
+	it('should include Task Classification Gate for executor', async () => {
+		const result = await module.build({ ...baseConfig, orgRole: 'executor' });
+
+		expect(result).toContain('Task Classification Gate');
+		expect(result).toContain('direct_execution');
+		expect(result).toContain('needs_alignment');
+		expect(result).toContain('Alignment Request');
+		expect(result).toContain('Scope change');
+		expect(result).toContain('Alignment target');
+	});
+
+	/**
+	 * Team Lead includes Task Contract Protocol for delegation.
+	 */
+	it('should include Task Contract Protocol for team-lead', async () => {
+		const result = await module.build({ ...baseConfig, orgRole: 'team-lead' });
+
+		expect(result).toContain('Task Contract Protocol');
+		expect(result).toContain('Non-goals');
+		expect(result).toContain('Acceptance criteria');
+		expect(result).toContain('Output format');
+		expect(result).toContain('Cutoff conditions');
+		expect(result).toContain('Escalation triggers');
+		expect(result).toContain('Decomposition Decision Rules');
+	});
+
+	/**
+	 * Orchestrator includes narrowed scope constraints.
+	 */
+	it('should include orchestrator scope constraints', async () => {
+		const result = await module.build({ ...baseConfig, orgRole: 'orchestrator' });
+
+		expect(result).toContain('Orchestrator Scope Constraints');
+		expect(result).toContain('Route, don\'t decide');
+		expect(result).toContain('Never decompose tasks');
+		expect(result).toContain('Never judge implementation quality');
+	});
+
+	/**
+	 * Executor includes Task Acceptance Protocol.
+	 */
+	it('should include Task Acceptance Protocol for executor', async () => {
+		const result = await module.build({ ...baseConfig, orgRole: 'executor' });
+
+		expect(result).toContain('Task Acceptance Protocol');
+		expect(result).toContain('understood_goal');
+		expect(result).toContain('planned_approach');
+		expect(result).toContain('out_of_scope');
+		expect(result).toContain('identified_risks');
+		expect(result).toContain('pre_classified');
 	});
 });
