@@ -27,8 +27,7 @@ import {
   getSubmission,
   reviewSubmission,
 } from '../../services/marketplace/index.js';
-import type { MarketplaceItemType, MarketplaceCategory, SortOption, SubmissionStatus } from '../../types/marketplace.types.js';
-import type { MarketplaceItem } from '../../types/marketplace.types.js';
+import type { MarketplaceItemType, MarketplaceCategory, SortOption, SubmissionStatus, MarketplaceItem } from '../../types/marketplace.types.js';
 import { asyncHandler } from '../../utils/async-handler.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { SkillTierService } from '../../services/skill/skill-tier.service.js';

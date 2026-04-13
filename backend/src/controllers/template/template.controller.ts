@@ -36,6 +36,13 @@ function getCurrentTier(): CloudTier {
  * @param res - Express response to write 403 to
  * @returns true if tier is sufficient, false if 403 was sent
  */
+/**
+ * Converts a name to a URL-safe slug (lowercase, hyphens only).
+ */
+function toSlug(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+}
+
 function checkTierOrReject(requiredTier: string | undefined, userTier: CloudTier, templateName: string, res: Response): boolean {
   if (!requiredTier) return true;
   const tierService = SkillTierService.getInstance();
@@ -152,7 +159,11 @@ export const handleCreateTeamFromTemplate = asyncHandler(async (req: Request, re
   }
   if (!checkTierOrReject(template.requiredTier, userTier, template.name, res)) return;
 
-  const result = service.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier)!;
+  const result = service.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
+  if (!result) {
+    res.status(500).json({ success: false, error: 'Failed to create team from template' });
+    return;
+  }
 
   res.status(201).json({ success: true, data: result });
 });
@@ -192,7 +203,11 @@ export const handleDeployTemplate = asyncHandler(async (req: Request, res: Respo
   }
   if (!checkTierOrReject(template.requiredTier, userTier, template.name, res)) return;
 
-  const result = templateService.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier)!;
+  const result = templateService.createTeamFromTemplate(id, teamName.trim(), nameOverrides, userTier);
+  if (!result) {
+    res.status(500).json({ success: false, error: 'Failed to create team from template' });
+    return;
+  }
 
   // Override runtime if specified (for crewly-pro/SMB deployments)
   if (defaultRuntime) {
@@ -212,10 +227,9 @@ export const handleDeployTemplate = asyncHandler(async (req: Request, res: Respo
   }
 
   // Generate session names for members
-  const teamSlug = teamName.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+  const teamSlug = toSlug(teamName.trim());
   for (const member of result.team.members) {
-    const memberSlug = member.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-    member.sessionName = `${teamSlug}-${memberSlug}-${member.id.slice(0, 8)}`;
+    member.sessionName = `${teamSlug}-${toSlug(member.name)}-${member.id.slice(0, 8)}`;
   }
 
   // Save team to storage
