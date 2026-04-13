@@ -29,7 +29,7 @@ import type { RequestStatistics, RequestPrimaryFilter, RequestSecondaryFilter } 
  */
 export const RequestsPage: React.FC = () => {
   const [stats, setStats] = useState<RequestStatistics | null>(null);
-  const [activeFilter, setActiveFilter] = useState<RequestPrimaryFilter>('all');
+  const [activeFilter, setActiveFilter] = useState<RequestPrimaryFilter>('active');
   const [secondaryFilters, setSecondaryFilters] = useState<Set<RequestSecondaryFilter>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
 

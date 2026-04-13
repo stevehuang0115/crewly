@@ -30,6 +30,7 @@ import { Missions } from './pages/Missions';
 import { MissionDetail } from './pages/MissionDetail';
 import { WorkItems } from './pages/WorkItems';
 import { RequestsPage } from './pages/RequestsPage';
+import { RequestDetail } from './pages/RequestDetail';
 
 
 function App() {
@@ -71,7 +72,7 @@ function App() {
               <Route path="workitems" element={<WorkItems />} />
               <Route path="workitems/:id" element={<WorkItems />} />
               <Route path="requests" element={<RequestsPage />} />
-              <Route path="requests/:id" element={<RequestsPage />} />
+              <Route path="requests/:id" element={<RequestDetail />} />
 
               <Route
                 path="chat"

@@ -1,5 +1,5 @@
 /**
- * App route tests.
+ * App route tests — includes RequestDetail route at /requests/:id.
  *
  * @vitest-environment jsdom
  * @module App.test
