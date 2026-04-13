@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { Store, Download, Star, RefreshCw, Package, Check, ArrowUp, Upload, Clock, CheckCircle, XCircle, Plug } from 'lucide-react';
+import { Download, Star, RefreshCw, Package, Check, ArrowUp, Upload, Clock, CheckCircle, XCircle, Plug } from 'lucide-react';
 import { PageToolbar } from '../components/UI/PageToolbar';
 import { Dropdown } from '../components/UI/Dropdown';
 import {
@@ -223,18 +223,16 @@ export default function Marketplace() {
     <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <Store className="w-6 h-6 text-primary" />
+        <div>
           <h1 className="text-2xl font-bold text-text-primary-dark">Marketplace</h1>
+          <p className="text-sm text-text-secondary-dark">Browse and install skills, models, and tools.</p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex gap-1 bg-gray-900 rounded-lg p-1" role="tablist" aria-label="View mode">
+          <div className="flex gap-1 bg-surface-dark border border-border-dark rounded-lg p-1">
             <button
               onClick={() => setViewMode('browse')}
-              role="tab"
-              aria-selected={viewMode === 'browse'}
-              className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                viewMode === 'browse' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white'
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                viewMode === 'browse' ? 'bg-primary/10 text-primary' : 'text-text-secondary-dark hover:text-text-primary-dark'
               }`}
             >
               <Package className="w-3.5 h-3.5" />
@@ -242,10 +240,8 @@ export default function Marketplace() {
             </button>
             <button
               onClick={() => setViewMode('submissions')}
-              role="tab"
-              aria-selected={viewMode === 'submissions'}
-              className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                viewMode === 'submissions' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white'
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                viewMode === 'submissions' ? 'bg-primary/10 text-primary' : 'text-text-secondary-dark hover:text-text-primary-dark'
               }`}
             >
               <Upload className="w-3.5 h-3.5" />
@@ -254,7 +250,7 @@ export default function Marketplace() {
           </div>
           <button
             onClick={handleRefresh}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-surface-dark hover:bg-background-dark text-text-secondary-dark hover:text-text-primary-dark border border-border-dark rounded-lg transition-colors"
             aria-label="Refresh marketplace"
           >
             <RefreshCw className="w-4 h-4" />
@@ -288,17 +284,17 @@ export default function Marketplace() {
 
           {/* Content */}
           {loading ? (
-            <div className="text-center py-16 text-gray-400" role="status">Loading marketplace...</div>
+            <div className="text-center py-16 text-text-secondary-dark" role="status">Loading marketplace...</div>
           ) : error ? (
             <div className="text-center py-16 text-red-400" role="alert">{error}</div>
           ) : items.length === 0 ? (
-            <div className="text-center py-16 text-gray-400">No items found.</div>
+            <div className="text-center py-16 text-text-secondary-dark">No items found.</div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {items.map((item) => (
                 <div
                   key={item.id}
-                  className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors"
+                  className="bg-surface-dark border border-border-dark rounded-xl p-5 hover:border-primary/30 transition-colors"
                   data-testid={`marketplace-item-${item.id}`}
                 >
                   {/* Card header */}
@@ -307,7 +303,7 @@ export default function Marketplace() {
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${typeBadgeColor[item.type]}`}>
                         {item.type}
                       </span>
-                      <span className="text-xs text-gray-500">v{item.version}</span>
+                      <span className="text-xs text-text-secondary-dark">v{item.version}</span>
                     </div>
                     {item.installStatus === 'installed' && (
                       <Check className="w-4 h-4 text-green-400" aria-label="Installed" />
@@ -319,10 +315,10 @@ export default function Marketplace() {
 
                   {/* Card body */}
                   <h3 className="text-base font-semibold text-white mb-1">{item.name}</h3>
-                  <p className="text-sm text-gray-400 mb-3 line-clamp-2">{item.description}</p>
+                  <p className="text-sm text-text-secondary-dark mb-3 line-clamp-2">{item.description}</p>
 
                   {/* Metadata */}
-                  <div className="flex items-center justify-between text-xs text-gray-500 mb-4">
+                  <div className="flex items-center justify-between text-xs text-text-secondary-dark mb-4">
                     <span>by {item.author}</span>
                     <div className="flex items-center gap-3">
                       <span className="flex items-center gap-1">
@@ -352,7 +348,7 @@ export default function Marketplace() {
                       <button
                         onClick={() => handleUninstall(item.id)}
                         disabled={operatingOn === item.id}
-                        className="flex-1 px-3 py-1.5 text-sm bg-gray-800 hover:bg-red-900/50 text-gray-300 hover:text-red-300 rounded-lg disabled:opacity-50 transition-colors"
+                        className="flex-1 px-3 py-1.5 text-sm bg-background-dark hover:bg-red-900/50 text-text-primary-dark hover:text-red-300 rounded-lg disabled:opacity-50 transition-colors"
                       >
                         {operatingOn === item.id ? 'Removing...' : 'Uninstall'}
                       </button>
@@ -370,7 +366,7 @@ export default function Marketplace() {
                         <button
                           onClick={() => handleUninstall(item.id)}
                           disabled={operatingOn === item.id}
-                          className="px-3 py-1.5 text-sm bg-gray-800 hover:bg-red-900/50 text-gray-300 hover:text-red-300 rounded-lg disabled:opacity-50 transition-colors"
+                          className="px-3 py-1.5 text-sm bg-background-dark hover:bg-red-900/50 text-text-primary-dark hover:text-red-300 rounded-lg disabled:opacity-50 transition-colors"
                         >
                           Remove
                         </button>
@@ -388,31 +384,31 @@ export default function Marketplace() {
         <>
           {/* Submissions header */}
           <div className="mb-6">
-            <p className="text-sm text-gray-400">
-              Submit skills via CLI: <code className="bg-gray-800 px-2 py-0.5 rounded text-xs text-gray-300">crewly publish path/to/skill --submit</code>
+            <p className="text-sm text-text-secondary-dark">
+              Submit skills via CLI: <code className="bg-background-dark px-2 py-0.5 rounded text-xs text-text-primary-dark">crewly publish path/to/skill --submit</code>
             </p>
           </div>
 
           {/* Submissions list */}
           {loading ? (
-            <div className="text-center py-16 text-gray-400" role="status">Loading submissions...</div>
+            <div className="text-center py-16 text-text-secondary-dark" role="status">Loading submissions...</div>
           ) : error ? (
             <div className="text-center py-16 text-red-400" role="alert">{error}</div>
           ) : submissions.length === 0 ? (
-            <div className="text-center py-16 text-gray-400">No submissions yet.</div>
+            <div className="text-center py-16 text-text-secondary-dark">No submissions yet.</div>
           ) : (
             <div className="space-y-3">
               {submissions.map((sub) => (
                 <div
                   key={sub.id}
-                  className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors"
+                  className="bg-surface-dark border border-border-dark rounded-xl p-5 hover:border-primary/30 transition-colors"
                   data-testid={`submission-${sub.id}`}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
                         <h3 className="text-base font-semibold text-white">{sub.name}</h3>
-                        <span className="text-xs text-gray-500">v{sub.version}</span>
+                        <span className="text-xs text-text-secondary-dark">v{sub.version}</span>
                         <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
                           sub.status === 'pending' ? 'bg-yellow-500/20 text-yellow-400' :
                           sub.status === 'approved' ? 'bg-green-500/20 text-green-400' :
@@ -424,14 +420,14 @@ export default function Marketplace() {
                           {sub.status}
                         </span>
                       </div>
-                      <p className="text-sm text-gray-400 mb-2">{sub.description}</p>
-                      <div className="flex items-center gap-4 text-xs text-gray-500">
+                      <p className="text-sm text-text-secondary-dark mb-2">{sub.description}</p>
+                      <div className="flex items-center gap-4 text-xs text-text-secondary-dark">
                         <span>by {sub.author}</span>
                         <span>{sub.category}</span>
                         <span>{new Date(sub.submittedAt).toLocaleDateString()}</span>
                       </div>
                       {sub.reviewNotes && (
-                        <p className="mt-2 text-xs text-gray-400 italic">Review: {sub.reviewNotes}</p>
+                        <p className="mt-2 text-xs text-text-secondary-dark italic">Review: {sub.reviewNotes}</p>
                       )}
                     </div>
                     {sub.status === 'pending' && (
@@ -447,7 +443,7 @@ export default function Marketplace() {
                         <button
                           onClick={() => handleReview(sub.id, 'reject')}
                           disabled={operatingOn === sub.id}
-                          className="px-3 py-1.5 text-sm bg-gray-800 hover:bg-red-900/50 text-gray-300 hover:text-red-300 rounded-lg disabled:opacity-50 transition-colors"
+                          className="px-3 py-1.5 text-sm bg-background-dark hover:bg-red-900/50 text-text-primary-dark hover:text-red-300 rounded-lg disabled:opacity-50 transition-colors"
                         >
                           Reject
                         </button>
