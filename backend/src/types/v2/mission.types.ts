@@ -98,6 +98,106 @@ export interface EscalationRule {
 }
 
 // ---------------------------------------------------------------------------
+// Execution Cadence
+// ---------------------------------------------------------------------------
+
+/**
+ * Who must approve phase transitions before downstream work unlocks.
+ * - 'none': phases advance automatically when all items verified/done
+ * - 'team_lead': team lead must explicitly approve the phase gate
+ * - 'human': a human operator must approve via dashboard/API
+ */
+export type PhaseGateApproval = 'none' | 'team_lead' | 'human';
+
+/** All valid PhaseGateApproval values. */
+export const PHASE_GATE_APPROVALS: readonly PhaseGateApproval[] = [
+  'none',
+  'team_lead',
+  'human',
+] as const;
+
+/**
+ * Defines when autonomous execution is permitted.
+ * Uses 24h format. If startHour > endHour, it wraps past midnight.
+ */
+export interface WorkHoursWindow {
+  /** Hour execution may start (0-23) */
+  startHour: number;
+  /** Hour execution must stop (0-23) */
+  endHour: number;
+  /** IANA timezone, e.g. "America/New_York", "UTC" */
+  timezone: string;
+  /** Days of week when work is allowed (0=Sun, 6=Sat). Empty array = every day. */
+  activeDays: number[];
+}
+
+/**
+ * Structured execution pacing for a Mission.
+ *
+ * Controls HOW FAST and WHEN autonomous work proceeds, separate from
+ * WHAT the team is allowed to do (capability gates on MissionPolicy).
+ */
+export interface ExecutionCadence {
+  /** Review schedule as cron expression (replaces top-level Mission.cadence) */
+  reviewSchedule: string;
+  /** Max WorkItems that may enter 'running' per calendar day (UTC). 0 = unlimited. */
+  dailyItemLimit: number;
+  /** When autonomous work is allowed. null = 24/7. */
+  workHours: WorkHoursWindow | null;
+  /** Approval required at phase boundaries */
+  phaseGateApproval: PhaseGateApproval;
+  /** If true, downstream phase WorkItems stay blocked until ALL upstream phase items reach 'verified'. */
+  requireVerificationGate: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Default ExecutionCadence values
+// ---------------------------------------------------------------------------
+
+/**
+ * Conservative cadence — slow, human-gated, business hours only.
+ */
+export const CONSERVATIVE_CADENCE: Readonly<ExecutionCadence> = {
+  reviewSchedule: '0 9 * * 1',
+  dailyItemLimit: 3,
+  workHours: {
+    startHour: 9,
+    endHour: 17,
+    timezone: 'UTC',
+    activeDays: [1, 2, 3, 4, 5],
+  },
+  phaseGateApproval: 'human',
+  requireVerificationGate: true,
+} as const;
+
+/**
+ * Moderate cadence — steady flow, TL-gated phases, extended hours.
+ */
+export const MODERATE_CADENCE: Readonly<ExecutionCadence> = {
+  reviewSchedule: '0 9 * * 1,4',
+  dailyItemLimit: 10,
+  workHours: {
+    startHour: 8,
+    endHour: 20,
+    timezone: 'UTC',
+    activeDays: [1, 2, 3, 4, 5],
+  },
+  phaseGateApproval: 'team_lead',
+  requireVerificationGate: true,
+} as const;
+
+/**
+ * Autonomous cadence — fast, self-advancing, 24/7.
+ */
+export const AUTONOMOUS_CADENCE: Readonly<ExecutionCadence> = {
+  reviewSchedule: '0 9 * * *',
+  dailyItemLimit: 0,
+  workHours: null,
+  phaseGateApproval: 'none',
+  requireVerificationGate: false,
+} as const;
+
+// ---------------------------------------------------------------------------
 // MissionPolicy
 // ---------------------------------------------------------------------------
 
@@ -126,6 +226,8 @@ export interface MissionPolicy {
   maxParallelExecutions: number;
   /** Rules for when to escalate to humans */
   escalationRules: EscalationRule[];
+  /** Execution pacing controls. If undefined, conservative defaults apply. */
+  executionCadence?: ExecutionCadence;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +252,7 @@ export interface Mission {
   currentStrategy: string;
   /** Active ProjectTask IDs under this mission */
   activeProjectTaskIds: string[];
-  /** Review cadence (cron expression, e.g., "0 9 * * 1") */
+  /** @deprecated Use policy.executionCadence.reviewSchedule instead */
   cadence: string;
   /** Autonomy policy governing what the team can do without user approval */
   policy: MissionPolicy;
@@ -271,6 +373,7 @@ export interface UpdatePolicyInput {
   canChangeUserVisibleBehaviorWithoutReview?: boolean;
   maxParallelExecutions?: number;
   escalationRules?: EscalationRule[];
+  executionCadence?: Partial<ExecutionCadence>;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +393,7 @@ export const CONSERVATIVE_POLICY: Readonly<Omit<MissionPolicy, 'missionId'>> = {
   canChangeUserVisibleBehaviorWithoutReview: false,
   maxParallelExecutions: 1,
   escalationRules: [],
+  executionCadence: CONSERVATIVE_CADENCE,
 } as const;
 
 /**
@@ -307,6 +411,7 @@ export const MODERATE_POLICY: Readonly<Omit<MissionPolicy, 'missionId'>> = {
   escalationRules: [
     { condition: 'failure_count', threshold: 3, escalateTo: 'team_lead', action: 'notify' },
   ],
+  executionCadence: MODERATE_CADENCE,
 } as const;
 
 /**
@@ -326,6 +431,7 @@ export const AUTONOMOUS_POLICY: Readonly<Omit<MissionPolicy, 'missionId'>> = {
     { condition: 'failure_count', threshold: 5, escalateTo: 'team_lead', action: 'notify' },
     { condition: 'security_concern', threshold: 1, escalateTo: 'user', action: 'block' },
   ],
+  executionCadence: AUTONOMOUS_CADENCE,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -379,12 +485,60 @@ export function isValidEscalationRule(rule: unknown): rule is EscalationRule {
 }
 
 /**
+ * Checks whether a string is a valid PhaseGateApproval.
+ */
+export function isValidPhaseGateApproval(value: string): value is PhaseGateApproval {
+  return (PHASE_GATE_APPROVALS as readonly string[]).includes(value);
+}
+
+/**
+ * Validates a WorkHoursWindow object.
+ */
+export function isValidWorkHoursWindow(value: unknown): value is WorkHoursWindow {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.startHour === 'number' &&
+    Number.isInteger(obj.startHour) &&
+    obj.startHour >= 0 && obj.startHour <= 23 &&
+    typeof obj.endHour === 'number' &&
+    Number.isInteger(obj.endHour) &&
+    obj.endHour >= 0 && obj.endHour <= 23 &&
+    typeof obj.timezone === 'string' &&
+    obj.timezone.length > 0 &&
+    Array.isArray(obj.activeDays) &&
+    (obj.activeDays as unknown[]).every(
+      (d: unknown) => typeof d === 'number' && Number.isInteger(d) && d >= 0 && d <= 6,
+    )
+  );
+}
+
+/**
+ * Validates an ExecutionCadence object.
+ */
+export function isValidExecutionCadence(value: unknown): value is ExecutionCadence {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.reviewSchedule === 'string' &&
+    obj.reviewSchedule.length > 0 &&
+    typeof obj.dailyItemLimit === 'number' &&
+    Number.isInteger(obj.dailyItemLimit) &&
+    obj.dailyItemLimit >= 0 &&
+    (obj.workHours === null || isValidWorkHoursWindow(obj.workHours)) &&
+    typeof obj.phaseGateApproval === 'string' &&
+    isValidPhaseGateApproval(obj.phaseGateApproval) &&
+    typeof obj.requireVerificationGate === 'boolean'
+  );
+}
+
+/**
  * Validates a MissionPolicy object.
  */
 export function isValidMissionPolicy(value: unknown): value is MissionPolicy {
   if (typeof value !== 'object' || value === null) return false;
   const obj = value as Record<string, unknown>;
-  return (
+  const baseValid = (
     typeof obj.missionId === 'string' &&
     typeof obj.canCreateTasks === 'boolean' &&
     typeof obj.canReprioritizeTasks === 'boolean' &&
@@ -397,6 +551,12 @@ export function isValidMissionPolicy(value: unknown): value is MissionPolicy {
     obj.maxParallelExecutions > 0 &&
     Array.isArray(obj.escalationRules)
   );
+  if (!baseValid) return false;
+  // executionCadence is optional; validate only if present
+  if (obj.executionCadence !== undefined && !isValidExecutionCadence(obj.executionCadence)) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -456,6 +616,26 @@ export function createMissionPolicy(
 export function createMission(input: CreateMissionInput): Mission {
   const now = new Date().toISOString();
   const id = uuidv4();
+  const reviewSchedule = input.cadence ?? '0 9 * * 1';
+
+  const basePolicy = createMissionPolicy(id, 'conservative');
+  const mergedPolicy: MissionPolicy = {
+    ...basePolicy,
+    ...input.policy,
+    missionId: id,
+    // Deep copy escalation rules from the merged result
+    escalationRules: [...(input.policy?.escalationRules ?? basePolicy.escalationRules).map(r => ({ ...r }))],
+  };
+
+  // Sync reviewSchedule into executionCadence if caller provided cadence but no executionCadence
+  if (!mergedPolicy.executionCadence) {
+    mergedPolicy.executionCadence = { ...CONSERVATIVE_CADENCE, reviewSchedule };
+  } else if (input.cadence && !input.policy?.executionCadence?.reviewSchedule) {
+    mergedPolicy.executionCadence = {
+      ...mergedPolicy.executionCadence,
+      reviewSchedule,
+    };
+  }
 
   return {
     id,
@@ -464,15 +644,52 @@ export function createMission(input: CreateMissionInput): Mission {
     successCriteria: input.successCriteria,
     currentStrategy: input.currentStrategy,
     activeProjectTaskIds: [],
-    cadence: input.cadence ?? '0 9 * * 1', // Weekly Monday 9am
-    policy: {
-      ...createMissionPolicy(id, 'conservative'),
-      ...input.policy,
-      missionId: id,
-    },
+    cadence: reviewSchedule,
+    policy: mergedPolicy,
     status: 'active',
     createdAt: now,
     updatedAt: now,
     learnings: [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ExecutionCadence Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the effective ExecutionCadence for a mission policy.
+ * Falls back to CONSERVATIVE_CADENCE when no cadence is defined.
+ *
+ * @param policy - The MissionPolicy to read from
+ * @returns Resolved ExecutionCadence (never undefined)
+ */
+export function getEffectiveCadence(policy: MissionPolicy): ExecutionCadence {
+  return policy.executionCadence ?? { ...CONSERVATIVE_CADENCE };
+}
+
+/**
+ * Merges a partial cadence update into an existing ExecutionCadence.
+ * Deep-merges workHours if both exist. Pass workHours: null to clear.
+ *
+ * @param existing - Current cadence
+ * @param updates - Partial fields to merge
+ * @returns New merged ExecutionCadence (does not mutate inputs)
+ */
+export function mergeExecutionCadence(
+  existing: ExecutionCadence,
+  updates: Partial<ExecutionCadence>,
+): ExecutionCadence {
+  return {
+    ...existing,
+    ...updates,
+    workHours: updates.workHours === null
+      ? null
+      : updates.workHours !== undefined
+        ? {
+            ...(existing.workHours ?? { startHour: 9, endHour: 17, timezone: 'UTC', activeDays: [1, 2, 3, 4, 5] }),
+            ...updates.workHours,
+          }
+        : existing.workHours,
   };
 }

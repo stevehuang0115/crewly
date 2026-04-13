@@ -1,9 +1,10 @@
+import { vi, describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import { PredictionCalibrationService } from './prediction-calibration.service.js';
 
-jest.mock('fs');
+vi.mock('fs');
 
-const mockedFs = fs as jest.Mocked<typeof fs>;
+const mockedFs = fs as unknown as vi.Mocked<typeof fs>;
 
 describe('PredictionCalibrationService', () => {
 	let service: PredictionCalibrationService;
@@ -11,7 +12,7 @@ describe('PredictionCalibrationService', () => {
 
 	beforeEach(() => {
 		service = new PredictionCalibrationService();
-		jest.resetAllMocks();
+		vi.resetAllMocks();
 		mockedFs.mkdirSync.mockReturnValue(undefined);
 		mockedFs.writeFileSync.mockReturnValue(undefined);
 	});

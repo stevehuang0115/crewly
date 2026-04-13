@@ -10,11 +10,13 @@ import {
   WORK_ITEM_STATUSES,
   TERMINAL_WORK_ITEM_STATUSES,
   WORK_ITEM_TRANSITIONS,
+  TRANSITION_PERMISSIONS,
   DEFAULT_MAX_RETRIES,
   isValidWorkItemType,
   isValidWorkItemStatus,
   isValidWorkItemOwner,
   isValidWorkItemTransition,
+  isTransitionPermitted,
   isWorkItem,
   validateCreateWorkItemInput,
   createWorkItem,
@@ -40,18 +42,25 @@ describe('WorkItem Types', () => {
   });
 
   describe('WORK_ITEM_STATUSES', () => {
-    it('should contain all 7 statuses', () => {
-      expect(WORK_ITEM_STATUSES).toHaveLength(7);
+    it('should contain all 13 statuses', () => {
+      expect(WORK_ITEM_STATUSES).toHaveLength(13);
+      expect(WORK_ITEM_STATUSES).toContain('proposed');
+      expect(WORK_ITEM_STATUSES).toContain('accepted');
+      expect(WORK_ITEM_STATUSES).toContain('escalated');
+      expect(WORK_ITEM_STATUSES).toContain('done_by_worker');
+      expect(WORK_ITEM_STATUSES).toContain('verified');
+      expect(WORK_ITEM_STATUSES).toContain('rejected');
     });
   });
 
   describe('TERMINAL_WORK_ITEM_STATUSES', () => {
-    it('should contain done and cancelled', () => {
+    it('should contain done, verified, and cancelled', () => {
       expect(TERMINAL_WORK_ITEM_STATUSES.has('done')).toBe(true);
+      expect(TERMINAL_WORK_ITEM_STATUSES.has('verified')).toBe(true);
       expect(TERMINAL_WORK_ITEM_STATUSES.has('cancelled')).toBe(true);
     });
-    it('should have exactly 2 entries', () => {
-      expect(TERMINAL_WORK_ITEM_STATUSES.size).toBe(2);
+    it('should have exactly 3 entries', () => {
+      expect(TERMINAL_WORK_ITEM_STATUSES.size).toBe(3);
     });
   });
 
@@ -142,6 +151,43 @@ describe('WorkItem Types', () => {
     it('should disallow queued → done (must go through running)', () => {
       expect(isValidWorkItemTransition('queued', 'done')).toBe(false);
     });
+
+    // New acceptance/verification flow transitions
+    it('should allow queued → proposed', () => {
+      expect(isValidWorkItemTransition('queued', 'proposed')).toBe(true);
+    });
+    it('should allow proposed → accepted', () => {
+      expect(isValidWorkItemTransition('proposed', 'accepted')).toBe(true);
+    });
+    it('should allow proposed → rejected', () => {
+      expect(isValidWorkItemTransition('proposed', 'rejected')).toBe(true);
+    });
+    it('should allow accepted → running', () => {
+      expect(isValidWorkItemTransition('accepted', 'running')).toBe(true);
+    });
+    it('should allow running → done_by_worker', () => {
+      expect(isValidWorkItemTransition('running', 'done_by_worker')).toBe(true);
+    });
+    it('should allow running → escalated', () => {
+      expect(isValidWorkItemTransition('running', 'escalated')).toBe(true);
+    });
+    it('should allow done_by_worker → verified', () => {
+      expect(isValidWorkItemTransition('done_by_worker', 'verified')).toBe(true);
+    });
+    it('should allow done_by_worker → rejected', () => {
+      expect(isValidWorkItemTransition('done_by_worker', 'rejected')).toBe(true);
+    });
+    it('should allow rejected → queued (re-queue)', () => {
+      expect(isValidWorkItemTransition('rejected', 'queued')).toBe(true);
+    });
+    it('should allow escalated → queued', () => {
+      expect(isValidWorkItemTransition('escalated', 'queued')).toBe(true);
+    });
+    it('should disallow verified → any (terminal)', () => {
+      for (const s of WORK_ITEM_STATUSES) {
+        expect(isValidWorkItemTransition('verified', s)).toBe(false);
+      }
+    });
   });
 
   describe('WORK_ITEM_TRANSITIONS completeness', () => {
@@ -149,6 +195,44 @@ describe('WorkItem Types', () => {
       for (const status of WORK_ITEM_STATUSES) {
         expect(WORK_ITEM_TRANSITIONS).toHaveProperty(status);
       }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Role-Based Transition Permissions
+  // -----------------------------------------------------------------------
+  describe('isTransitionPermitted', () => {
+    it('should always permit system role', () => {
+      expect(isTransitionPermitted('done_by_worker', 'verified', 'system')).toBe(true);
+      expect(isTransitionPermitted('proposed', 'accepted', 'system')).toBe(true);
+    });
+    it('should permit agent to accept proposals', () => {
+      expect(isTransitionPermitted('proposed', 'accepted', 'agent')).toBe(true);
+    });
+    it('should deny orchestrator from accepting proposals', () => {
+      expect(isTransitionPermitted('proposed', 'accepted', 'orchestrator')).toBe(false);
+    });
+    it('should permit team_lead to verify worker output', () => {
+      expect(isTransitionPermitted('done_by_worker', 'verified', 'team_lead')).toBe(true);
+    });
+    it('should deny agent from verifying their own output', () => {
+      expect(isTransitionPermitted('done_by_worker', 'verified', 'agent')).toBe(false);
+    });
+    it('should permit agent to report done_by_worker', () => {
+      expect(isTransitionPermitted('running', 'done_by_worker', 'agent')).toBe(true);
+    });
+    it('should permit agent to escalate', () => {
+      expect(isTransitionPermitted('running', 'escalated', 'agent')).toBe(true);
+    });
+    it('should permit any role for transitions without explicit permissions', () => {
+      // queued → running has no explicit permission entry
+      expect(isTransitionPermitted('queued', 'running', 'agent')).toBe(true);
+      expect(isTransitionPermitted('queued', 'running', 'orchestrator')).toBe(true);
+    });
+    it('should only allow TL or orchestrator to propose tasks', () => {
+      expect(isTransitionPermitted('queued', 'proposed', 'team_lead')).toBe(true);
+      expect(isTransitionPermitted('queued', 'proposed', 'orchestrator')).toBe(true);
+      expect(isTransitionPermitted('queued', 'proposed', 'agent')).toBe(false);
     });
   });
 

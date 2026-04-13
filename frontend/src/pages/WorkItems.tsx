@@ -210,7 +210,7 @@ export const WorkItems: React.FC = () => {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Tabs defaultValue="all" onValueChange={(v) => setStatusFilter(v)}>
+        <Tabs defaultValue="all" onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
           <TabList>
             {filterButtons.map((fb) => (
               <TabTrigger key={fb.key} value={fb.key}>

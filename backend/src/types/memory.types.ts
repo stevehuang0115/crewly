@@ -16,6 +16,25 @@
 export type RoleKnowledgeCategory = 'best-practice' | 'anti-pattern' | 'tool-usage' | 'workflow';
 
 /**
+ * Memory type classification — determines how a memory entry is used.
+ *
+ * Different memory types serve different purposes and should be injected
+ * differently (or not at all) into agent prompts:
+ *
+ * - **procedural**: How to do things — injected into worker prompts to guide execution
+ * - **risk**: What to avoid — injected early in prompts as warnings
+ * - **preference**: Style/approach preferences — injected with low weight, may be overridden
+ * - **domain**: Business/architecture facts — injected but flagged for freshness verification
+ * - **performance**: Agent strengths/weaknesses — injected into TL/orchestrator prompts for scheduling, NOT into worker prompts
+ */
+export type MemoryType =
+  | 'procedural'    // Steps, workflows, how-to knowledge
+  | 'risk'          // Failures, anti-patterns, prohibitions
+  | 'preference'    // Style, approach, team convention preferences
+  | 'domain'        // Business facts, architecture knowledge
+  | 'performance';  // Agent capability assessment (for scheduling, not self-use)
+
+/**
  * A single piece of role-specific knowledge learned by an agent
  *
  * @example
@@ -36,6 +55,12 @@ export interface RoleKnowledgeEntry {
   id: string;
   /** Category of knowledge */
   category: RoleKnowledgeCategory;
+  /**
+   * Memory type — determines injection strategy.
+   * Risk memories are injected as early warnings. Performance memories go to TL/orchestrator only.
+   * Defaults to 'procedural' for backward compatibility with existing entries.
+   */
+  memoryType?: MemoryType;
   /** The actual knowledge content */
   content: string;
   /** Task/Ticket ID where this was learned (optional) */

@@ -8,11 +8,12 @@
  * @module services/policy/default-policies
  */
 
-import type { MissionPolicy, UpdatePolicyInput } from '../../types/v2/index.js';
+import type { MissionPolicy, UpdatePolicyInput, ExecutionCadence } from '../../types/v2/index.js';
 import {
   CONSERVATIVE_POLICY,
   MODERATE_POLICY,
   AUTONOMOUS_POLICY,
+  CONSERVATIVE_CADENCE,
   createMissionPolicy,
 } from '../../types/v2/index.js';
 
@@ -82,11 +83,17 @@ export function createPolicyFromTemplate(
 
   if (!overrides) return base;
 
+  const { executionCadence: cadenceOverrides, ...restOverrides } = overrides;
   return {
     ...base,
-    ...overrides,
+    ...restOverrides,
     missionId, // Ensure missionId is never overridden
     escalationRules: overrides.escalationRules ?? base.escalationRules,
+    executionCadence: cadenceOverrides && base.executionCadence
+      ? { ...base.executionCadence, ...cadenceOverrides }
+      : cadenceOverrides
+        ? { ...CONSERVATIVE_CADENCE, ...cadenceOverrides } as ExecutionCadence
+        : base.executionCadence,
   };
 }
 
@@ -102,11 +109,17 @@ export function applyPolicyUpdate(
   existing: MissionPolicy,
   updates: UpdatePolicyInput,
 ): MissionPolicy {
+  const { executionCadence: cadenceUpdates, ...restUpdates } = updates;
   return {
     ...existing,
-    ...updates,
+    ...restUpdates,
     missionId: existing.missionId, // Never overwrite missionId
     escalationRules: updates.escalationRules ?? existing.escalationRules,
+    executionCadence: cadenceUpdates && existing.executionCadence
+      ? { ...existing.executionCadence, ...cadenceUpdates }
+      : cadenceUpdates
+        ? { ...CONSERVATIVE_CADENCE, ...cadenceUpdates } as ExecutionCadence
+        : existing.executionCadence,
   };
 }
 
