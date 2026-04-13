@@ -115,7 +115,7 @@ export class AgentAutoClaimService {
     // Startup recovery: check for queued tasks with offline target agents
     setTimeout(() => {
       this.recoverPendingTasks().catch((err) => {
-        this.logger.debug('Pending task recovery failed (non-fatal)', {
+        this.logger.warn('Pending task recovery failed', {
           error: err instanceof Error ? err.message : String(err),
         });
       });
@@ -377,38 +377,59 @@ export class AgentAutoClaimService {
       }
     }
 
-    // Escalate orphaned tasks to Orchestrator for human confirmation
+    // Escalate orphaned tasks — notify Orchestrator via Slack (reliable delivery)
     if (orphanedItems.length > 0) {
       try {
-        const { MessageQueueService } = await import('../messaging/message-queue.service.js');
-        const mq = new MessageQueueService(process.cwd());
-
         const orphanSummary = orphanedItems
           .map((wi) => `- "${wi.title.substring(0, 60)}" (target: ${wi.target})`)
           .join('\n');
 
-        mq.enqueue({
-          content: [
-            `[RECOVERY] ${orphanedItems.length} queued task(s) have target agents that no longer exist in any team.`,
-            '',
-            'These tasks may have been assigned before a restart to agents that have since been removed:',
-            orphanSummary,
-            '',
-            'Please review and either:',
-            '1. Re-assign these tasks to active agents via delegate-task',
-            '2. Cancel them if no longer needed',
-          ].join('\n'),
-          conversationId: `recovery-orphaned-tasks-${Date.now()}`,
-          source: 'system_event',
-          sourceMetadata: { type: 'task-recovery', orphanCount: orphanedItems.length },
-        });
+        const message = [
+          `[RECOVERY] ${orphanedItems.length} queued task(s) have target agents that no longer exist or could not be woken.`,
+          '',
+          orphanSummary,
+          '',
+          'Please re-assign via delegate-task or cancel if no longer needed.',
+        ].join('\n');
 
-        this.logger.info('Escalated orphaned tasks to Orchestrator', {
+        // Try Slack notification first (most reliable — goes directly to human)
+        try {
+          const { getSlackOrchestratorBridge } = await import('../slack/slack-orchestrator-bridge.js');
+          const bridge = getSlackOrchestratorBridge();
+          if (bridge) {
+            await bridge.sendNotification({
+              type: 'alert',
+              title: 'Task Recovery: Orphaned Tasks Need Attention',
+              message,
+              urgency: 'high',
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } catch {
+          // Slack not available — fall through
+        }
+
+        // Also create a persistent escalation record for tracking
+        try {
+          const { EscalationRouterService } = await import('./escalation-router.service.js');
+          const router = EscalationRouterService.getInstance();
+          for (const wi of orphanedItems) {
+            await router.routePolicyEscalation(
+              { id: 'system', objective: 'Task Recovery', policy: {} } as any,
+              { condition: 'scope_change', threshold: 0, escalateTo: 'user', action: 'notify' },
+              {},
+            );
+          }
+        } catch {
+          // Best-effort
+        }
+
+        this.logger.info('Escalated orphaned tasks for human review', {
           count: orphanedItems.length,
           targets: [...new Set(orphanedItems.map((wi) => wi.target))],
         });
       } catch (err) {
-        this.logger.debug('Failed to escalate orphaned tasks (non-fatal)', {
+        this.logger.warn('Failed to escalate orphaned tasks', {
           error: err instanceof Error ? err.message : String(err),
         });
       }
