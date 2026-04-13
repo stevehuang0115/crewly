@@ -112,6 +112,15 @@ export class AgentAutoClaimService {
       });
     }, POLLING_INTERVAL_MS);
 
+    // Startup recovery: check for queued tasks with offline target agents
+    setTimeout(() => {
+      this.recoverPendingTasks().catch((err) => {
+        this.logger.debug('Pending task recovery failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }, 15_000); // Wait 15s for agents to register after startup
+
     this.logger.info('AgentAutoClaimService started', {
       pollingIntervalMs: POLLING_INTERVAL_MS,
       minScoreThreshold: MIN_SCORE_THRESHOLD,
@@ -262,5 +271,135 @@ export class AgentAutoClaimService {
       sessionName,
       status: 'active',
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Startup Recovery — handle queued tasks with offline target agents
+  // ---------------------------------------------------------------------------
+
+  /**
+   * On startup, check for queued tasks whose target agents are offline.
+   * For each:
+   * - If agent exists in teams.json → attempt to wake via start-agent API
+   * - If agent does NOT exist → escalate to Orchestrator for human confirmation
+   */
+  private async recoverPendingTasks(): Promise<void> {
+    const taskPool = TaskPoolService.getInstance();
+    const availableItems = await taskPool.getAvailableItems();
+
+    // Find queued items with a specific target
+    const targetedItems = availableItems.filter((wi) => wi.target);
+    if (targetedItems.length === 0) return;
+
+    // Get all known agent sessions from teams
+    const knownSessions = new Set<string>();
+    const activeSessions = new Set<string>();
+
+    if (this.agentHealthProvider) {
+      const healthMap = await this.agentHealthProvider();
+      for (const [session, health] of healthMap) {
+        knownSessions.add(session);
+        if (health.status === 'active' || health.status === 'started') {
+          activeSessions.add(session);
+        }
+      }
+    } else {
+      // Fallback: load teams from API
+      try {
+        const axios = (await import('axios')).default;
+        const response = await axios.get('http://localhost:8787/api/teams');
+        for (const team of response.data?.data ?? []) {
+          for (const member of team.members ?? []) {
+            knownSessions.add(member.sessionName);
+            if (member.agentStatus === 'active' || member.agentStatus === 'starting') {
+              activeSessions.add(member.sessionName);
+            }
+          }
+        }
+      } catch {
+        return; // Can't determine agent status, skip recovery
+      }
+    }
+
+    const agentsToWake = new Set<string>();
+    const orphanedItems: typeof targetedItems = [];
+
+    for (const wi of targetedItems) {
+      if (!wi.target) continue;
+
+      if (activeSessions.has(wi.target)) {
+        // Agent is active — it should claim the task normally
+        continue;
+      }
+
+      if (knownSessions.has(wi.target)) {
+        // Agent exists but is offline → needs to be woken
+        agentsToWake.add(wi.target);
+      } else {
+        // Agent doesn't exist in any team → orphaned task
+        orphanedItems.push(wi);
+      }
+    }
+
+    // Wake known offline agents
+    for (const session of agentsToWake) {
+      try {
+        const axios = (await import('axios')).default;
+        await axios.post('http://localhost:8787/api/agents/start', {
+          sessionName: session,
+        });
+        this.logger.info('Waking offline agent for pending tasks', { sessionName: session });
+      } catch (err) {
+        this.logger.debug('Failed to wake agent (non-fatal)', {
+          sessionName: session,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Escalate orphaned tasks to Orchestrator for human confirmation
+    if (orphanedItems.length > 0) {
+      try {
+        const { MessageQueueService } = await import('../messaging/message-queue.service.js');
+        const mq = new MessageQueueService(process.cwd());
+
+        const orphanSummary = orphanedItems
+          .map((wi) => `- "${wi.title.substring(0, 60)}" (target: ${wi.target})`)
+          .join('\n');
+
+        mq.enqueue({
+          content: [
+            `[RECOVERY] ${orphanedItems.length} queued task(s) have target agents that no longer exist in any team.`,
+            '',
+            'These tasks may have been assigned before a restart to agents that have since been removed:',
+            orphanSummary,
+            '',
+            'Please review and either:',
+            '1. Re-assign these tasks to active agents via delegate-task',
+            '2. Cancel them if no longer needed',
+          ].join('\n'),
+          conversationId: `recovery-orphaned-tasks-${Date.now()}`,
+          source: 'system_event',
+          sourceMetadata: { type: 'task-recovery', orphanCount: orphanedItems.length },
+        });
+
+        this.logger.info('Escalated orphaned tasks to Orchestrator', {
+          count: orphanedItems.length,
+          targets: [...new Set(orphanedItems.map((wi) => wi.target))],
+        });
+      } catch (err) {
+        this.logger.debug('Failed to escalate orphaned tasks (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    if (agentsToWake.size > 0 || orphanedItems.length > 0) {
+      this.logger.info('Startup task recovery complete', {
+        agentsWoken: agentsToWake.size,
+        orphanedEscalated: orphanedItems.length,
+        totalTargetedQueued: targetedItems.length,
+      });
+    }
   }
 }

@@ -4,6 +4,7 @@
  * @module services/v3/agent-auto-claim.service.test
  */
 
+// AgentAutoClaimService tests — auto-claim + startup recovery
 import { AgentAutoClaimService } from './agent-auto-claim.service.js';
 
 // ---------------------------------------------------------------------------
