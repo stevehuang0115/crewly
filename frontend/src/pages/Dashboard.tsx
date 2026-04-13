@@ -66,6 +66,20 @@ export const Dashboard: React.FC = () => {
     return activeMember?.sessionName ?? null;
   }, [teams]);
 
+  /**
+   * Count projects that have at least one running agent in their assigned teams.
+   * A project is "active" when any team member assigned to it has agentStatus === 'active',
+   * rather than relying on the project.status field which requires explicit startProject calls.
+   */
+  const activeProjectCount = useMemo(() => {
+    return projects.filter(project => {
+      const assignedTeams = teamsMap[project.id] || [];
+      return assignedTeams.some(team =>
+        team.members.some(member => member.agentStatus === 'active')
+      );
+    }).length;
+  }, [projects, teamsMap]);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -217,11 +231,11 @@ export const Dashboard: React.FC = () => {
   const topTeams = teams.slice(0, 6);
 
   return (
-    <div className="max-w-7xl mx-auto">
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
+    <div className="p-6 max-w-7xl mx-auto">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
-          <p className="text-sm text-text-secondary-dark mt-1">Welcome back. Here's a summary of your teams and projects.</p>
+          <h1 className="text-2xl font-bold text-text-primary-dark">Dashboard</h1>
+          <p className="text-sm text-text-secondary-dark">Welcome back. Here's a summary of your teams and projects.</p>
         </div>
       </div>
 
@@ -240,7 +254,7 @@ export const Dashboard: React.FC = () => {
       <ScoreCardGrid variant="horizontal" className="grid-cols-2 lg:grid-cols-4 mb-6">
         <ScoreCard label="Projects" value={projects.length} />
         <ScoreCard label="Teams" value={teams.length} />
-        <ScoreCard label="Active Projects" value={projects.filter(p => p.status === 'active').length} />
+        <ScoreCard label="Active Projects" value={activeProjectCount} />
         <ScoreCard label="Running Agents">
           <span className="text-emerald-400">{teams.flatMap(t => t.members).filter(m => m.agentStatus === 'active').length}</span>
         </ScoreCard>

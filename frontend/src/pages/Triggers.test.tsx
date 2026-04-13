@@ -1,3 +1,4 @@
+// Layout standardization
 // Updated: PageToolbar adoption
 /**
  * Triggers Page Tests

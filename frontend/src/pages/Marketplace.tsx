@@ -225,7 +225,7 @@ export default function Marketplace() {
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <Store className="w-6 h-6 text-primary" />
-          <h1 className="text-2xl font-bold text-white">Marketplace</h1>
+          <h1 className="text-2xl font-bold text-text-primary-dark">Marketplace</h1>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex gap-1 bg-gray-900 rounded-lg p-1" role="tablist" aria-label="View mode">

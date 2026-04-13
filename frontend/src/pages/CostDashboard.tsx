@@ -93,12 +93,12 @@ export const CostDashboard: React.FC = () => {
   }
 
   return (
-    <div className="max-w-7xl mx-auto" data-testid="cost-dashboard">
+    <div className="p-6 max-w-7xl mx-auto" data-testid="cost-dashboard">
       {/* Header */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Usage</h2>
-          <p className="text-sm text-text-secondary-dark mt-1">
+          <h1 className="text-2xl font-bold text-text-primary-dark">Usage</h1>
+          <p className="text-sm text-text-secondary-dark">
             Monitor token usage and spending across all agents and tasks.
           </p>
         </div>

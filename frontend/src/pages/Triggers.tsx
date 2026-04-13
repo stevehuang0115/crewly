@@ -737,7 +737,7 @@ export const Triggers: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between flex-shrink-0">
         <div>
-          <h1 className="text-xl font-semibold text-text-primary-dark">Triggers</h1>
+          <h1 className="text-2xl font-bold text-text-primary-dark">Triggers</h1>
           <p className="mt-0.5 text-sm text-text-secondary-dark">
             Scheduled tasks and event-driven triggers for agent automation
           </p>

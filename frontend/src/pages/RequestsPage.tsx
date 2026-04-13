@@ -67,15 +67,13 @@ export const RequestsPage: React.FC = () => {
   ], []);
 
   return (
-    <div className="flex flex-col gap-6 p-6 max-w-7xl mx-auto" data-testid="requests-page">
+    <div className="p-6 max-w-7xl mx-auto" data-testid="requests-page">
       {/* Page header */}
-      <div className="flex flex-col gap-1" data-testid="requests-page-header">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold tracking-tight text-text-primary-dark">Requests</h1>
-          <p className="text-sm text-text-secondary-dark">
-            Monitor and triage incoming work from all channels.
-          </p>
-        </div>
+      <div className="mb-6" data-testid="requests-page-header">
+        <h1 className="text-2xl font-bold text-text-primary-dark">Requests</h1>
+        <p className="text-sm text-text-secondary-dark">
+          Monitor and triage incoming work from all channels.
+        </p>
       </div>
 
       {/* Summary bar */}

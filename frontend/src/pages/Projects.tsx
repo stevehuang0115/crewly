@@ -210,11 +210,11 @@ export const Projects: React.FC = () => {
   );
 
   return (
-    <div className="max-w-7xl mx-auto">
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
+    <div className="p-6 max-w-7xl mx-auto">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="page-title text-3xl font-bold tracking-tight">Projects</h1>
-          <p className="text-sm text-text-secondary-dark mt-1">Manage and monitor your Crewly projects</p>
+          <h1 className="text-2xl font-bold text-text-primary-dark">Projects</h1>
+          <p className="text-sm text-text-secondary-dark">Manage and monitor your Crewly projects</p>
         </div>
 
         <div className="flex items-center gap-3">
