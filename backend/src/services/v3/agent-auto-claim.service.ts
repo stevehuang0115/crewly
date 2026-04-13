@@ -341,19 +341,39 @@ export class AgentAutoClaimService {
       }
     }
 
-    // Wake known offline agents
+    // Wake known offline agents via correct team member start endpoint
     for (const session of agentsToWake) {
       try {
+        // Find team and member ID for this session
         const axios = (await import('axios')).default;
-        await axios.post('http://localhost:8787/api/agents/start', {
-          sessionName: session,
-        });
-        this.logger.info('Waking offline agent for pending tasks', { sessionName: session });
+        const teamsResp = await axios.get('http://localhost:8787/api/teams');
+        let teamId: string | null = null;
+        let memberId: string | null = null;
+
+        for (const team of teamsResp.data?.data ?? []) {
+          const member = (team.members ?? []).find((m: { sessionName: string }) => m.sessionName === session);
+          if (member) {
+            teamId = team.id;
+            memberId = member.id;
+            break;
+          }
+        }
+
+        if (teamId && memberId) {
+          await axios.post(`http://localhost:8787/api/teams/${teamId}/members/${memberId}/start`);
+          this.logger.info('Waking offline agent for pending tasks', { sessionName: session, teamId, memberId });
+        } else {
+          // Agent session exists in health map but not found in teams — treat as orphan
+          orphanedItems.push(...targetedItems.filter((wi) => wi.target === session));
+          this.logger.warn('Agent session in health map but not in teams', { sessionName: session });
+        }
       } catch (err) {
-        this.logger.debug('Failed to wake agent (non-fatal)', {
+        this.logger.warn('Failed to wake agent — will escalate to Orchestrator', {
           sessionName: session,
           error: err instanceof Error ? err.message : String(err),
         });
+        // Wake failed → escalate these tasks too
+        orphanedItems.push(...targetedItems.filter((wi) => wi.target === session));
       }
     }
 
