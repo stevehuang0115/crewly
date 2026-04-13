@@ -179,6 +179,28 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Unified Scheduler (cron + interval + idle — consolidation)
   router.use('/unified-scheduler', createUnifiedSchedulerRoutes());
 
+  // Escalation routes — human escalation resolution
+  router.get('/escalations', async (_req, res) => {
+    try {
+      const { EscalationRouterService } = await import('../services/v3/escalation-router.service.js');
+      const pending = await EscalationRouterService.getInstance().listPending();
+      res.json({ success: true, data: pending, count: pending.length });
+    } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
+  });
+
+  router.post('/escalations/:id/resolve', async (req, res) => {
+    try {
+      const { EscalationRouterService } = await import('../services/v3/escalation-router.service.js');
+      const { resolution, resolvedBy } = req.body;
+      if (!resolution) { res.status(400).json({ success: false, error: 'resolution is required' }); return; }
+      const result = await EscalationRouterService.getInstance().resolve(
+        req.params.id, resolution, resolvedBy || 'user',
+      );
+      if (!result) { res.status(404).json({ success: false, error: 'Escalation not found' }); return; }
+      res.json({ success: true, data: result });
+    } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
+  });
+
   // Relay devices stub (prevents 404 noise from dashboard relay health card)
   router.get('/relay/devices', (_req, res) => {
     res.json({ success: true, data: { devices: [], client: { state: 'offline', sessionId: null } } });
