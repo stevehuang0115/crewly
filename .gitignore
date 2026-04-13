@@ -78,6 +78,19 @@ temp/
 *.temp
 test-mcp-registration.js
 
+# Root-level debug/scratch files
+/screenshot_*
+/kill-*.sh
+/restart-*.sh
+/test-*.sh
+/test.sh
+/record-*.mjs
+/ui-*-screenshots.mjs
+
+# Internal business/competitive analysis docs
+/*-analysis.md
+/*-capability-report.md
+
 # Internal/operational data (not for public repo)
 ops/
 .playwright-mcp/
