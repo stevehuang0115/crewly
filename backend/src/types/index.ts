@@ -73,6 +73,17 @@ export interface TeamMember {
   domainSOP?: string;
   /** Risk policy name — loads config/risk-policies/{riskPolicy}.policy.md */
   riskPolicy?: string;
+
+  // === Organization Model fields ===
+
+  /** Job title: "Frontend Tech Lead", "Backend Developer", "QA Lead" */
+  jobTitle?: string;
+  /** What this member is responsible for in the team */
+  jobDescription?: string;
+  /** Ownership scope — domains, deliverables, and areas this member owns */
+  ownershipScope?: import('./team-template.types.js').OwnershipScope;
+  /** Accountability type — how this member is responsible */
+  responsibilityType?: import('./team-template.types.js').ResponsibilityType;
 }
 
 export interface Team {
@@ -120,6 +131,13 @@ export interface Team {
 
   /** Quality gate configuration for task review. */
   qualityGate?: TeamQualityGate;
+
+  // === Organization Model fields ===
+
+  /** Team-level ownership scope — what this team is responsible for */
+  ownershipScope?: import('./team-template.types.js').OwnershipScope;
+  /** Service contract — what the team accepts, avoids, and delivers */
+  serviceContract?: import('./team-template.types.js').ServiceContract;
 }
 
 /**

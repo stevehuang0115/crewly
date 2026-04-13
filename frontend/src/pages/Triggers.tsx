@@ -25,13 +25,27 @@ import {
   Users,
   List,
 } from 'lucide-react';
-import { Button, Modal, ModalBody, ModalFooter, useConfirm } from '../components/UI';
+import { Button, Modal, ModalBody, ModalFooter, useConfirm, StatusBadge, Tabs, TabList, TabTrigger, Alert } from '../components/UI';
+import type { StatusType } from '../components/UI/StatusBadge';
 import { useTriggers } from '../hooks/useTriggers';
 import { useCronTasks } from '../hooks/useCronTasks';
 import { apiService } from '../services/api.service';
-import { formatDate, statusBadgeClass, triggerConfigSummary, triggerActionSummary } from '../components/Triggers/helpers';
+import { formatDate, triggerConfigSummary, triggerActionSummary } from '../components/Triggers/helpers';
 import type { Trigger, TriggerType, CreateTriggerInput, EventSubscription } from '../types/trigger.types';
 import type { CronTask } from '../types/cron-task.types';
+
+/**
+ * Maps trigger status to shared StatusBadge StatusType.
+ */
+function mapTriggerStatus(status: string): StatusType {
+  switch (status) {
+    case 'active': return 'active';
+    case 'paused': return 'paused';
+    case 'exhausted': return 'completed';
+    case 'cancelled': return 'inactive';
+    default: return 'pending';
+  }
+}
 
 // =============================================================================
 // Helpers
@@ -81,7 +95,7 @@ const CronTaskRow: React.FC<CronTaskRowProps> = ({ task, teamMap, onToggle, onDe
       </td>
 
       {/* Team */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px]">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px] hidden sm:table-cell">
         <span className="truncate block" title={teamName}>{teamName}</span>
       </td>
 
@@ -94,7 +108,7 @@ const CronTaskRow: React.FC<CronTaskRowProps> = ({ task, teamMap, onToggle, onDe
       </td>
 
       {/* Task */}
-      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[220px]">
+      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[220px] hidden md:table-cell">
         <div className="flex items-center gap-1.5">
           <Bot className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="truncate" title={desc}>{displayName}</span>
@@ -103,20 +117,16 @@ const CronTaskRow: React.FC<CronTaskRowProps> = ({ task, teamMap, onToggle, onDe
 
       {/* Status */}
       <td className="px-4 py-3 whitespace-nowrap">
-        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${
-          statusBadgeClass(task.enabled ? 'active' : 'paused')
-        }`}>
-          {task.enabled ? 'active' : 'paused'}
-        </span>
+        <StatusBadge status={task.enabled ? 'active' : 'paused'} />
       </td>
 
       {/* Next Fire */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(task.nextRunAt)}
       </td>
 
       {/* Last Fire */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(task.lastRunAt)}
       </td>
 
@@ -182,7 +192,7 @@ const TriggerRow: React.FC<TriggerRowProps> = ({ trigger, onPause, onResume, onC
       </td>
 
       {/* Team — V3 triggers show createdBy */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden sm:table-cell">
         <span className="capitalize">{trigger.createdBy}</span>
       </td>
 
@@ -192,21 +202,19 @@ const TriggerRow: React.FC<TriggerRowProps> = ({ trigger, onPause, onResume, onC
         </span>
       </td>
 
-      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[180px]">
+      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[180px] hidden md:table-cell">
         <span className="truncate block">{triggerActionSummary(trigger)}</span>
       </td>
 
       <td className="px-4 py-3 whitespace-nowrap">
-        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${statusBadgeClass(trigger.status)}`}>
-          {trigger.status}
-        </span>
+        <StatusBadge status={mapTriggerStatus(trigger.status)}>{trigger.status}</StatusBadge>
       </td>
 
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(trigger.nextFireAt)}
       </td>
 
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(trigger.lastFiredAt)}
       </td>
 
@@ -492,12 +500,12 @@ const TriggersTable: React.FC<TriggersTableProps> = ({
       <thead className="bg-background-dark/60 border-b border-border-dark">
         <tr>
           <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Type</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Team</th>
+          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden sm:table-cell">Team</th>
           <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Schedule / Event</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Task / Action</th>
+          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden md:table-cell">Task / Action</th>
           <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Status</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Next Fire</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Last Fire</th>
+          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden lg:table-cell">Next Fire</th>
+          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden lg:table-cell">Last Fire</th>
           <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Actions</th>
         </tr>
       </thead>
@@ -765,29 +773,23 @@ export const Triggers: React.FC = () => {
 
       {/* Error */}
       {error && (
-        <div className="flex-shrink-0 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3">
+        <Alert variant="error" className="flex-shrink-0">
           {error}
-        </div>
+        </Alert>
       )}
 
       {/* Filter tabs + view mode toggle */}
-      <div className="flex items-center justify-between border-b border-border-dark flex-shrink-0">
-        <div className="flex items-center gap-1">
-          {tabs.map(({ key, label, count }) => (
-            <button
-              key={key}
-              onClick={() => setFilterTab(key)}
-              className={`px-3 py-2 text-sm transition-colors border-b-2 -mb-px ${
-                filterTab === key
-                  ? 'border-accent-blue text-text-primary-dark'
-                  : 'border-transparent text-text-secondary-dark hover:text-text-primary-dark'
-              }`}
-            >
-              {label}
-              {count > 0 && <span className="ml-1.5 text-xs text-text-secondary-dark">({count})</span>}
-            </button>
-          ))}
-        </div>
+      <div className="flex items-center justify-between flex-shrink-0">
+        <Tabs defaultValue="all" onValueChange={(v) => setFilterTab(v as FilterTab)}>
+          <TabList>
+            {tabs.map(({ key, label, count }) => (
+              <TabTrigger key={key} value={key}>
+                {label}
+                {count > 0 && <span className="ml-1.5 text-xs opacity-60">({count})</span>}
+              </TabTrigger>
+            ))}
+          </TabList>
+        </Tabs>
         {/* View mode toggle */}
         <div className="flex items-center gap-1 mb-px">
           <button

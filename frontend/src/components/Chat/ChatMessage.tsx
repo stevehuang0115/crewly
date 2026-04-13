@@ -107,11 +107,58 @@ function renderMaskedText(text: string, keyPrefix: string): React.ReactNode {
   );
 }
 
+/** Regex to detect Slack image references in message text. */
+const SLACK_IMAGE_PATTERN = /\[Slack Image:\s*"?\s*([^"[\]]*?)\s*"?\s*\((\d+)x(\d+)\),?\s*([^\]]*)\]/g;
+
+/**
+ * Renders Slack image references as visual placeholders instead of raw text.
+ */
+function renderSlackImagePlaceholders(text: string, keyPrefix: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  SLACK_IMAGE_PATTERN.lastIndex = 0;
+  while ((match = SLACK_IMAGE_PATTERN.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(<React.Fragment key={`${keyPrefix}-text-${lastIndex}`}>{text.slice(lastIndex, match.index)}</React.Fragment>);
+    }
+
+    const [, description, width, height, format] = match;
+    const label = description?.trim() || format?.trim() || 'Image';
+
+    parts.push(
+      <span
+        key={`${keyPrefix}-img-${match.index}`}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 my-1 rounded-lg bg-surface-dark border border-border-dark text-xs text-text-secondary-dark"
+        title={`${label} (${width}x${height})`}
+      >
+        <svg className="w-4 h-4 flex-shrink-0 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" />
+        </svg>
+        <span className="truncate max-w-[200px]">{label}</span>
+        <span className="opacity-50">{width}x{height}</span>
+      </span>
+    );
+    lastIndex = SLACK_IMAGE_PATTERN.lastIndex;
+  }
+
+  if (parts.length === 0) return null;
+  if (lastIndex < text.length) {
+    parts.push(<React.Fragment key={`${keyPrefix}-text-${lastIndex}`}>{text.slice(lastIndex)}</React.Fragment>);
+  }
+  return <>{parts}</>;
+}
+
 /**
  * Format message content - basic markdown support with sensitive data masking.
  * All text segments are passed through the security masking pipeline before rendering.
  */
 function formatContent(content: string): React.ReactNode {
+  // Render Slack image placeholders if present
+  const imageRendered = renderSlackImagePlaceholders(content, 'img');
+  if (imageRendered) return imageRendered;
+
   // Split by code blocks first
   const parts = content.split(/(```[\s\S]*?```)/g);
 

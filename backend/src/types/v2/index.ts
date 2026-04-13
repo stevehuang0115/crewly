@@ -146,6 +146,9 @@ export type {
   EscalationContext,
   CreateMissionInput,
   UpdatePolicyInput,
+  PhaseGateApproval,
+  WorkHoursWindow,
+  ExecutionCadence,
 } from './mission.types.js';
 
 export {
@@ -158,15 +161,24 @@ export {
   CONSERVATIVE_POLICY,
   MODERATE_POLICY,
   AUTONOMOUS_POLICY,
+  PHASE_GATE_APPROVALS,
+  CONSERVATIVE_CADENCE,
+  MODERATE_CADENCE,
+  AUTONOMOUS_CADENCE,
   isValidMissionStatus,
   isValidPolicyAction,
   isValidEscalationCondition,
   isValidMissionTransition,
   isValidEscalationRule,
+  isValidPhaseGateApproval,
+  isValidWorkHoursWindow,
+  isValidExecutionCadence,
   isValidMissionPolicy,
   isMission,
   createMissionPolicy,
   createMission,
+  getEffectiveCadence,
+  mergeExecutionCadence,
 } from './mission.types.js';
 
 // Workspace types

@@ -1,7 +1,7 @@
 /**
  * Dashboard Page Tests
  *
- * Tests for the cards-based Dashboard page.
+ * Tests for the Dashboard page with ScoreCard stats and project/team grids.
  *
  * @module pages/Dashboard.test
  */

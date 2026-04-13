@@ -257,6 +257,47 @@ export class TaskPoolService {
   }
 
   /**
+   * Claims a specific WorkItem by ID for an agent.
+   * Used by AgentAutoClaimService for score-based selection where the caller
+   * already identified the best item (not FIFO).
+   *
+   * @param agentId - Agent session name claiming the item
+   * @param workItemId - The specific WorkItem to claim
+   * @returns The claimed work item and claim, or null if unavailable
+   */
+  async claimSpecificItem(agentId: string, workItemId: string): Promise<ClaimResult | null> {
+    if (!agentId || typeof agentId !== 'string') {
+      throw new Error('agentId is required and must be a non-empty string');
+    }
+
+    const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
+    if (existingClaim) return null;
+
+    const workItem = await this.storage.findWorkItem(workItemId);
+    if (!workItem || workItem.status !== 'queued') return null;
+
+    const claims = await this.storage.getClaims();
+    if (claims.some((c) => c.workItemId === workItemId && c.status === 'active')) return null;
+
+    const updated = await this.storage.updateWorkItem(workItemId, (wi) => {
+      wi.status = 'running';
+      wi.startedAt = new Date().toISOString();
+      wi.target = agentId;
+    });
+    if (!updated) return null;
+
+    const claimInput: CreateClaimInput = { workItemId, agentId };
+    const claim = createTaskClaim(claimInput);
+    await this.storage.addClaim(claim);
+    await this.storage.flush();
+
+    this.logger.info('WorkItem claimed (specific)', { workItemId, agentId, claimId: claim.id });
+
+    const claimedItem = await this.storage.findWorkItem(workItemId);
+    return claimedItem ? { workItem: claimedItem, claim } : null;
+  }
+
+  /**
    * Releases a claimed WorkItem back to the pool.
    *
    * The item's status reverts to 'queued' and the claim is marked 'released'.

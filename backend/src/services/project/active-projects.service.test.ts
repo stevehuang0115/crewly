@@ -159,8 +159,7 @@ describe('ActiveProjectsService', () => {
       const result = await service.startProject('test-project');
 
       expect(result).toEqual({
-        checkInScheduleId: undefined,
-        gitCommitScheduleId: undefined
+        checkInScheduleId: undefined
       });
       expect(service.saveActiveProjectsData).toHaveBeenCalledWith({
         activeProjects: [{
@@ -220,9 +219,8 @@ describe('ActiveProjectsService', () => {
       const result = await service.startProject('test-project', mockMessageSchedulerService);
 
       expect(result.checkInScheduleId).toBe('mock-schedule-id');
-      expect(result.gitCommitScheduleId).toBe('mock-schedule-id');
-      expect(mockStorageService.saveScheduledMessage).toHaveBeenCalledTimes(2);
-      expect(mockMessageSchedulerService.scheduleMessage).toHaveBeenCalledTimes(2);
+      expect(mockStorageService.saveScheduledMessage).toHaveBeenCalledTimes(1);
+      expect(mockMessageSchedulerService.scheduleMessage).toHaveBeenCalledTimes(1);
     });
 
     it('should continue without scheduled messages if creation fails', async () => {
@@ -234,7 +232,6 @@ describe('ActiveProjectsService', () => {
       const result = await service.startProject('test-project', mockMessageSchedulerService);
 
       expect(result.checkInScheduleId).toBeUndefined();
-      expect(result.gitCommitScheduleId).toBeUndefined();
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to create scheduled messages for project'));
     });
   });
@@ -244,8 +241,7 @@ describe('ActiveProjectsService', () => {
       projectId: 'test-project',
       status: 'running',
       startedAt: '2023-01-01T00:00:00.000Z',
-      checkInScheduleId: 'checkin-id',
-      gitCommitScheduleId: 'commit-id'
+      checkInScheduleId: 'checkin-id'
     };
 
     beforeEach(() => {
@@ -292,8 +288,7 @@ describe('ActiveProjectsService', () => {
           projectId: 'test-project',
           status: 'running',
           startedAt: '2023-01-01T00:00:00.000Z',
-          checkInScheduleId: 'checkin-id',
-          gitCommitScheduleId: 'commit-id'
+          checkInScheduleId: 'checkin-id'
         }],
         lastUpdated: '2023-01-01T00:00:00.000Z',
         version: '1.0.0'
@@ -301,9 +296,8 @@ describe('ActiveProjectsService', () => {
 
       await service.stopProject('test-project', mockMessageSchedulerService);
 
-      // Source code calls cancelMessage, not deleteScheduledMessage
       expect(mockMessageSchedulerService.cancelMessage).toHaveBeenCalledWith('checkin-id');
-      expect(mockMessageSchedulerService.cancelMessage).toHaveBeenCalledWith('commit-id');
+      expect(mockMessageSchedulerService.cancelMessage).toHaveBeenCalledTimes(1);
     });
 
     it('should continue if cancelling scheduled messages fails', async () => {
@@ -313,8 +307,7 @@ describe('ActiveProjectsService', () => {
           projectId: 'test-project',
           status: 'running',
           startedAt: '2023-01-01T00:00:00.000Z',
-          checkInScheduleId: 'checkin-id',
-          gitCommitScheduleId: 'commit-id'
+          checkInScheduleId: 'checkin-id'
         }],
         lastUpdated: '2023-01-01T00:00:00.000Z',
         version: '1.0.0'
@@ -336,8 +329,7 @@ describe('ActiveProjectsService', () => {
     it('should stop then start project', async () => {
       const stopSpy = jest.spyOn(service, 'stopProject').mockResolvedValue();
       const startSpy = jest.spyOn(service, 'startProject').mockResolvedValue({
-        checkInScheduleId: 'new-checkin-id',
-        gitCommitScheduleId: 'new-commit-id'
+        checkInScheduleId: 'new-checkin-id'
       });
 
       const result = await service.restartProject('test-project', mockMessageSchedulerService);
@@ -345,8 +337,7 @@ describe('ActiveProjectsService', () => {
       expect(stopSpy).toHaveBeenCalledWith('test-project', mockMessageSchedulerService);
       expect(startSpy).toHaveBeenCalledWith('test-project', mockMessageSchedulerService);
       expect(result).toEqual({
-        checkInScheduleId: 'new-checkin-id',
-        gitCommitScheduleId: 'new-commit-id'
+        checkInScheduleId: 'new-checkin-id'
       });
     });
 

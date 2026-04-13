@@ -14,17 +14,26 @@ import {
   CONSERVATIVE_POLICY,
   MODERATE_POLICY,
   AUTONOMOUS_POLICY,
+  PHASE_GATE_APPROVALS,
+  CONSERVATIVE_CADENCE,
+  MODERATE_CADENCE,
+  AUTONOMOUS_CADENCE,
   isValidMissionStatus,
   isValidPolicyAction,
   isValidEscalationCondition,
   isValidMissionTransition,
   isValidEscalationRule,
+  isValidPhaseGateApproval,
+  isValidWorkHoursWindow,
+  isValidExecutionCadence,
   isValidMissionPolicy,
   isMission,
   createMissionPolicy,
   createMission,
+  getEffectiveCadence,
+  mergeExecutionCadence,
 } from './mission.types.js';
-import type { MissionPolicy, EscalationRule, CreateMissionInput } from './mission.types.js';
+import type { MissionPolicy, EscalationRule, CreateMissionInput, ExecutionCadence } from './mission.types.js';
 
 describe('Mission Types', () => {
   // -----------------------------------------------------------------------
@@ -307,6 +316,251 @@ describe('Mission Types', () => {
       const mission = createMission({ ...input, policy: { canCreateTasks: true } });
       expect(mission.policy.canCreateTasks).toBe(true);
       expect(mission.policy.canDeployToProd).toBe(false); // still conservative default
+    });
+    it('should sync cadence into executionCadence.reviewSchedule', () => {
+      const mission = createMission({ ...input, cadence: '0 0 * * *' });
+      expect(mission.policy.executionCadence?.reviewSchedule).toBe('0 0 * * *');
+    });
+    it('should default executionCadence to conservative', () => {
+      const mission = createMission(input);
+      expect(mission.policy.executionCadence).toBeDefined();
+      expect(mission.policy.executionCadence?.dailyItemLimit).toBe(CONSERVATIVE_CADENCE.dailyItemLimit);
+      expect(mission.policy.executionCadence?.phaseGateApproval).toBe('human');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // ExecutionCadence Validators
+  // -----------------------------------------------------------------------
+  describe('isValidPhaseGateApproval', () => {
+    it('should accept all valid values', () => {
+      for (const v of PHASE_GATE_APPROVALS) {
+        expect(isValidPhaseGateApproval(v)).toBe(true);
+      }
+    });
+    it('should reject invalid values', () => {
+      expect(isValidPhaseGateApproval('admin')).toBe(false);
+      expect(isValidPhaseGateApproval('')).toBe(false);
+    });
+  });
+
+  describe('isValidWorkHoursWindow', () => {
+    it('should accept valid work hours', () => {
+      expect(isValidWorkHoursWindow({
+        startHour: 9, endHour: 17, timezone: 'UTC', activeDays: [1, 2, 3, 4, 5],
+      })).toBe(true);
+    });
+    it('should accept empty activeDays (every day)', () => {
+      expect(isValidWorkHoursWindow({
+        startHour: 0, endHour: 23, timezone: 'America/New_York', activeDays: [],
+      })).toBe(true);
+    });
+    it('should reject hour out of range', () => {
+      expect(isValidWorkHoursWindow({
+        startHour: 25, endHour: 17, timezone: 'UTC', activeDays: [],
+      })).toBe(false);
+    });
+    it('should reject non-integer hour', () => {
+      expect(isValidWorkHoursWindow({
+        startHour: 9.5, endHour: 17, timezone: 'UTC', activeDays: [],
+      })).toBe(false);
+    });
+    it('should reject empty timezone', () => {
+      expect(isValidWorkHoursWindow({
+        startHour: 9, endHour: 17, timezone: '', activeDays: [],
+      })).toBe(false);
+    });
+    it('should reject invalid day number', () => {
+      expect(isValidWorkHoursWindow({
+        startHour: 9, endHour: 17, timezone: 'UTC', activeDays: [7],
+      })).toBe(false);
+    });
+    it('should reject null', () => {
+      expect(isValidWorkHoursWindow(null)).toBe(false);
+    });
+  });
+
+  describe('isValidExecutionCadence', () => {
+    it('should accept valid cadence', () => {
+      expect(isValidExecutionCadence(CONSERVATIVE_CADENCE)).toBe(true);
+      expect(isValidExecutionCadence(MODERATE_CADENCE)).toBe(true);
+      expect(isValidExecutionCadence(AUTONOMOUS_CADENCE)).toBe(true);
+    });
+    it('should accept cadence with null workHours', () => {
+      expect(isValidExecutionCadence({
+        ...CONSERVATIVE_CADENCE, workHours: null,
+      })).toBe(true);
+    });
+    it('should reject empty reviewSchedule', () => {
+      expect(isValidExecutionCadence({
+        ...CONSERVATIVE_CADENCE, reviewSchedule: '',
+      })).toBe(false);
+    });
+    it('should reject negative dailyItemLimit', () => {
+      expect(isValidExecutionCadence({
+        ...CONSERVATIVE_CADENCE, dailyItemLimit: -1,
+      })).toBe(false);
+    });
+    it('should reject non-integer dailyItemLimit', () => {
+      expect(isValidExecutionCadence({
+        ...CONSERVATIVE_CADENCE, dailyItemLimit: 2.5,
+      })).toBe(false);
+    });
+    it('should reject invalid phaseGateApproval', () => {
+      expect(isValidExecutionCadence({
+        ...CONSERVATIVE_CADENCE, phaseGateApproval: 'admin',
+      })).toBe(false);
+    });
+    it('should reject null', () => {
+      expect(isValidExecutionCadence(null)).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Cadence Constants
+  // -----------------------------------------------------------------------
+  describe('Cadence Constants', () => {
+    it('CONSERVATIVE_CADENCE should have human phase gate and verification', () => {
+      expect(CONSERVATIVE_CADENCE.phaseGateApproval).toBe('human');
+      expect(CONSERVATIVE_CADENCE.requireVerificationGate).toBe(true);
+      expect(CONSERVATIVE_CADENCE.dailyItemLimit).toBe(3);
+    });
+    it('MODERATE_CADENCE should have team_lead phase gate', () => {
+      expect(MODERATE_CADENCE.phaseGateApproval).toBe('team_lead');
+      expect(MODERATE_CADENCE.requireVerificationGate).toBe(true);
+      expect(MODERATE_CADENCE.dailyItemLimit).toBe(10);
+    });
+    it('AUTONOMOUS_CADENCE should have no phase gate and no verification', () => {
+      expect(AUTONOMOUS_CADENCE.phaseGateApproval).toBe('none');
+      expect(AUTONOMOUS_CADENCE.requireVerificationGate).toBe(false);
+      expect(AUTONOMOUS_CADENCE.dailyItemLimit).toBe(0);
+      expect(AUTONOMOUS_CADENCE.workHours).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Policy Templates include executionCadence
+  // -----------------------------------------------------------------------
+  describe('Policy Templates with ExecutionCadence', () => {
+    it('CONSERVATIVE_POLICY should include CONSERVATIVE_CADENCE', () => {
+      expect(CONSERVATIVE_POLICY.executionCadence).toEqual(CONSERVATIVE_CADENCE);
+    });
+    it('MODERATE_POLICY should include MODERATE_CADENCE', () => {
+      expect(MODERATE_POLICY.executionCadence).toEqual(MODERATE_CADENCE);
+    });
+    it('AUTONOMOUS_POLICY should include AUTONOMOUS_CADENCE', () => {
+      expect(AUTONOMOUS_POLICY.executionCadence).toEqual(AUTONOMOUS_CADENCE);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // isValidMissionPolicy with executionCadence
+  // -----------------------------------------------------------------------
+  describe('isValidMissionPolicy with executionCadence', () => {
+    it('should accept policy without executionCadence (backward compat)', () => {
+      const policy: MissionPolicy = {
+        missionId: 'test-mission',
+        canCreateTasks: false,
+        canReprioritizeTasks: false,
+        canCloseTasks: false,
+        canDeployToStaging: false,
+        canDeployToProd: false,
+        canSpendMoney: false,
+        canChangeUserVisibleBehaviorWithoutReview: false,
+        maxParallelExecutions: 1,
+        escalationRules: [],
+      };
+      expect(isValidMissionPolicy(policy)).toBe(true);
+    });
+    it('should accept policy with valid executionCadence', () => {
+      const policy: MissionPolicy = {
+        missionId: 'test-mission',
+        canCreateTasks: false,
+        canReprioritizeTasks: false,
+        canCloseTasks: false,
+        canDeployToStaging: false,
+        canDeployToProd: false,
+        canSpendMoney: false,
+        canChangeUserVisibleBehaviorWithoutReview: false,
+        maxParallelExecutions: 1,
+        escalationRules: [],
+        executionCadence: CONSERVATIVE_CADENCE,
+      };
+      expect(isValidMissionPolicy(policy)).toBe(true);
+    });
+    it('should reject policy with invalid executionCadence', () => {
+      const policy = {
+        missionId: 'test-mission',
+        canCreateTasks: false,
+        canReprioritizeTasks: false,
+        canCloseTasks: false,
+        canDeployToStaging: false,
+        canDeployToProd: false,
+        canSpendMoney: false,
+        canChangeUserVisibleBehaviorWithoutReview: false,
+        maxParallelExecutions: 1,
+        escalationRules: [],
+        executionCadence: { reviewSchedule: '' }, // invalid
+      };
+      expect(isValidMissionPolicy(policy)).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // getEffectiveCadence
+  // -----------------------------------------------------------------------
+  describe('getEffectiveCadence', () => {
+    it('should return policy cadence when defined', () => {
+      const policy = createMissionPolicy('m-1', 'autonomous');
+      const cadence = getEffectiveCadence(policy);
+      expect(cadence.dailyItemLimit).toBe(AUTONOMOUS_CADENCE.dailyItemLimit);
+      expect(cadence.phaseGateApproval).toBe('none');
+    });
+    it('should fall back to conservative when undefined', () => {
+      const policy: MissionPolicy = {
+        missionId: 'm-1',
+        canCreateTasks: false,
+        canReprioritizeTasks: false,
+        canCloseTasks: false,
+        canDeployToStaging: false,
+        canDeployToProd: false,
+        canSpendMoney: false,
+        canChangeUserVisibleBehaviorWithoutReview: false,
+        maxParallelExecutions: 1,
+        escalationRules: [],
+        // no executionCadence
+      };
+      const cadence = getEffectiveCadence(policy);
+      expect(cadence.dailyItemLimit).toBe(CONSERVATIVE_CADENCE.dailyItemLimit);
+      expect(cadence.phaseGateApproval).toBe('human');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // mergeExecutionCadence
+  // -----------------------------------------------------------------------
+  describe('mergeExecutionCadence', () => {
+    it('should merge partial updates', () => {
+      const result = mergeExecutionCadence(CONSERVATIVE_CADENCE, { dailyItemLimit: 20 });
+      expect(result.dailyItemLimit).toBe(20);
+      expect(result.reviewSchedule).toBe(CONSERVATIVE_CADENCE.reviewSchedule);
+      expect(result.phaseGateApproval).toBe(CONSERVATIVE_CADENCE.phaseGateApproval);
+    });
+    it('should clear workHours when set to null', () => {
+      const result = mergeExecutionCadence(CONSERVATIVE_CADENCE, { workHours: null });
+      expect(result.workHours).toBeNull();
+    });
+    it('should deep merge workHours', () => {
+      const result = mergeExecutionCadence(CONSERVATIVE_CADENCE, {
+        workHours: { startHour: 7, endHour: 22, timezone: 'UTC', activeDays: [1, 2, 3, 4, 5] },
+      });
+      expect(result.workHours?.startHour).toBe(7);
+      expect(result.workHours?.endHour).toBe(22);
+    });
+    it('should not mutate original', () => {
+      const original: ExecutionCadence = { ...CONSERVATIVE_CADENCE };
+      mergeExecutionCadence(original, { dailyItemLimit: 99 });
+      expect(original.dailyItemLimit).toBe(CONSERVATIVE_CADENCE.dailyItemLimit);
     });
   });
 });

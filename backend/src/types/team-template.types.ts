@@ -112,6 +112,41 @@ export interface VerificationPipeline {
 /**
  * A role definition within a template.
  */
+/**
+ * Defines what a team or member is responsible for.
+ * Used at both team-level (team's overall scope) and member-level (individual focus areas).
+ */
+export interface OwnershipScope {
+  /** Domain areas: "frontend", "backend", "infra", "data", "security" */
+  domains: string[];
+  /** What outcomes this owner delivers: "feature_delivery", "quality", "performance" */
+  deliverables: string[];
+  /** Specific product areas: "checkout-flow", "landing-page", "API gateway" */
+  areas?: string[];
+}
+
+/**
+ * Concrete delivery commitment — what the team accepts, avoids, and produces.
+ * Replaces vague capability tags with actionable service definitions.
+ */
+export interface ServiceContract {
+  /** Task types the team can handle: "mid-size product feature", "frontend bugfix" */
+  accepts: string[];
+  /** Task types the team should NOT handle: "production DBA changes", "security incident response" */
+  avoids: string[];
+  /** Expected deliverables: "PR", "test coverage report", "deployment notes" */
+  expectedOutput: string[];
+  /** Non-binding time estimates by complexity */
+  slaHint?: {
+    simpleTask?: string;      // e.g., "same day"
+    mediumTask?: string;      // e.g., "1-3 days"
+    complexTask?: string;     // e.g., "1-2 weeks"
+  };
+}
+
+/** How this role holder is accountable — determines task routing and verification ownership. */
+export type ResponsibilityType = 'delivery_owner' | 'quality_owner' | 'system_owner';
+
 export interface TemplateRole {
   /** Role identifier (matches TeamMember.role) */
   role: string;
@@ -137,6 +172,18 @@ export interface TemplateRole {
   runtimeOverride?: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'crewly-agent';
   /** Whether to enable browser automation for this role */
   enableBrowser?: boolean;
+
+  // --- Organization Model fields ---
+  /** Job title for this position: "Frontend Tech Lead", "Backend Developer" */
+  jobTitle?: string;
+  /** What this position is responsible for in the team */
+  jobDescription?: string;
+  /** What domains/deliverables this role owns (primarily for TL roles) */
+  ownershipScope?: OwnershipScope;
+  /** Accountability type — determines routing and verification ownership */
+  responsibilityType?: ResponsibilityType;
+  /** Default autonomy level for members in this role */
+  autonomyLevel?: 'directed' | 'bounded' | 'domain_autonomous';
 }
 
 // =============================================================================
@@ -182,6 +229,14 @@ export interface TeamTemplate {
   autoAssign?: boolean;
   /** Minimum cloud tier required to use this template (free if omitted) */
   requiredTier?: 'free' | 'pro' | 'enterprise';
+
+  // --- Organization Model fields ---
+  /** Team-level ownership scope — what this team is responsible for */
+  ownershipScope?: OwnershipScope;
+  /** Service contract — what the team accepts, avoids, and delivers */
+  serviceContract?: ServiceContract;
+  /** Team mission statement */
+  mission?: string;
 }
 
 // =============================================================================

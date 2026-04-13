@@ -596,24 +596,62 @@ export class AgentMemoryService implements IAgentMemoryService {
     const { roleKnowledge, preferences, performance } = memory;
 
     // v2: Filter using effective score (confidence × recency × verification)
+    // Exclude performance memories — those are for TL/orchestrator scheduling, not self-use
     const scored = roleKnowledge
-      .filter(k => !k.superseded)
+      .filter(k => !k.superseded && k.memoryType !== 'performance')
       .map(k => ({ entry: k, score: this.calculateEffectiveScore(k) }))
       .filter(s => s.score >= DECAY_CONSTANTS.MIN_EFFECTIVE_SCORE)
       .sort((a, b) => b.score - a.score)
       .slice(0, 20);
 
-    const knowledgeSection = scored.length > 0
-      ? `## Your Role Knowledge
+    // Group scored memories by type for structured injection
+    const riskMemories = scored.filter(s => s.entry.memoryType === 'risk');
+    const proceduralMemories = scored.filter(s =>
+      s.entry.memoryType === 'procedural' || !s.entry.memoryType);
+    const domainMemories = scored.filter(s => s.entry.memoryType === 'domain');
+    const preferenceMemories = scored.filter(s => s.entry.memoryType === 'preference');
 
-${scored.map(s => {
-  const k = s.entry;
-  const outcomeHint = k.sourceOutcome === 'success' ? ' ✓'
-    : k.sourceOutcome === 'failed' ? ' ✗'
-    : k.sourceOutcome === 'partial' ? ' ~'
-    : '';
-  return `- [${k.category}] ${k.content}${outcomeHint}`;
-}).join('\n')}`
+    const formatEntry = (s: { entry: RoleKnowledgeEntry; score: number }): string => {
+      const k = s.entry;
+      const outcomeHint = k.sourceOutcome === 'success' ? ' ✓'
+        : k.sourceOutcome === 'failed' ? ' ✗'
+        : k.sourceOutcome === 'partial' ? ' ~'
+        : '';
+      return `- [${k.category}] ${k.content}${outcomeHint}`;
+    };
+
+    const sections: string[] = [];
+
+    // Risk memories first — these are warnings that should be seen early
+    if (riskMemories.length > 0) {
+      sections.push(`### ⚠ Risk Knowledge (may not be overridden by SOPs or preferences)
+
+${riskMemories.map(formatEntry).join('\n')}`);
+    }
+
+    // Procedural memories — execution guidance
+    if (proceduralMemories.length > 0) {
+      sections.push(`### Procedural Knowledge
+
+${proceduralMemories.map(formatEntry).join('\n')}`);
+    }
+
+    // Domain memories — flagged for freshness verification
+    if (domainMemories.length > 0) {
+      sections.push(`### Domain Knowledge (verify freshness before relying on these)
+
+${domainMemories.map(formatEntry).join('\n')}`);
+    }
+
+    // Preference memories — lowest priority, may be refined by norms/SOPs
+    if (preferenceMemories.length > 0) {
+      sections.push(`### Preference Heuristics (lowest priority — may be overridden by team norms or SOPs)
+
+${preferenceMemories.map(formatEntry).join('\n')}`);
+    }
+
+    const knowledgeSection = sections.length > 0
+      ? `## Your Role Knowledge\n\n${sections.join('\n\n')}`
       : '';
 
     const preferencesSection = `## Your Preferences
@@ -636,6 +674,45 @@ ${performance.commonErrors.slice(0, 5).map(e => `- ${e.pattern} → ${e.resoluti
       .filter(s => s.trim())
       .join('\n\n')
       .trim();
+  }
+
+  /**
+   * Generate context for TL/orchestrator scheduling decisions.
+   *
+   * Returns performance memories for a specific agent — these are memories
+   * about what an agent is good/bad at, intended for task assignment decisions.
+   * Performance memories are NOT injected into the agent's own prompt.
+   *
+   * @param agentId - Agent whose performance memories to retrieve
+   * @returns Formatted performance memory context for scheduling use
+   */
+  public async generateSchedulingContext(agentId: string): Promise<string> {
+    const memory = await this.getCachedMemory(agentId);
+    if (!memory) {
+      return '';
+    }
+
+    const performanceMemories = memory.roleKnowledge
+      .filter(k => !k.superseded && k.memoryType === 'performance')
+      .map(k => ({ entry: k, score: this.calculateEffectiveScore(k) }))
+      .filter(s => s.score >= DECAY_CONSTANTS.MIN_EFFECTIVE_SCORE)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
+
+    if (performanceMemories.length === 0) {
+      return '';
+    }
+
+    return `### Agent Performance Profile (${agentId})
+
+${performanceMemories.map(s => {
+  const k = s.entry;
+  const outcomeHint = k.sourceOutcome === 'success' ? ' ✓'
+    : k.sourceOutcome === 'failed' ? ' ✗'
+    : k.sourceOutcome === 'partial' ? ' ~'
+    : '';
+  return `- ${k.content}${outcomeHint}`;
+}).join('\n')}`;
   }
 
   /**

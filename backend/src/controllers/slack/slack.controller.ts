@@ -188,7 +188,7 @@ router.post('/disconnect', async (req: Request, res: Response, next: NextFunctio
  */
 router.post('/send', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { channelId, text, threadTs } = req.body;
+    const { channelId, text, threadTs, conversationId, senderSessionName } = req.body;
 
     if (!channelId || !text) {
       res.status(400).json({
@@ -213,6 +213,28 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       text,
       threadTs,
     });
+
+    // Persist orchestrator/agent replies to chat store so they appear in the Chat UI.
+    // Without this, replies sent via reply_slack only go to Slack and are invisible
+    // in the frontend thread detail panel.
+    if (conversationId) {
+      try {
+        const { getChatService } = await import('../../services/chat/chat.service.js');
+        const chatService = getChatService();
+        await chatService.addDirectMessage(
+          conversationId,
+          text,
+          {
+            type: 'orchestrator',
+            id: senderSessionName || 'orchestrator',
+            name: senderSessionName ? senderSessionName.split('-').slice(1, 3).join('-') : 'Orchestrator',
+          },
+          { source: 'slack', slackChannelId: channelId, slackThreadTs: threadTs },
+        );
+      } catch {
+        // Non-fatal — Slack delivery succeeded, chat persistence is best-effort
+      }
+    }
 
     res.json({
       success: true,

@@ -27,12 +27,36 @@ import {
   getSubmission,
   reviewSubmission,
 } from '../../services/marketplace/index.js';
-import type { MarketplaceItemType, MarketplaceCategory, SortOption, SubmissionStatus } from '../../types/marketplace.types.js';
+import type { MarketplaceItemType, MarketplaceCategory, SortOption, SubmissionStatus, MarketplaceItem } from '../../types/marketplace.types.js';
 import { asyncHandler } from '../../utils/async-handler.js';
+import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
+import { SkillTierService } from '../../services/skill/skill-tier.service.js';
+import { CLOUD_CONSTANTS, type CloudTier } from '../../constants.js';
 
 const VALID_TYPES: MarketplaceItemType[] = ['skill', 'model', 'role', 'mcp_tool'];
 const VALID_SORTS: SortOption[] = ['popular', 'rating', 'newest'];
 const VALID_SUBMISSION_STATUSES: SubmissionStatus[] = ['pending', 'approved', 'rejected'];
+
+/**
+ * Checks if a premium marketplace item is accessible at the current tier.
+ * Returns true if the item is not premium or the user has sufficient tier.
+ * Sends a 403 response and returns false if blocked.
+ *
+ * @param item - The marketplace item to check
+ * @param res - Express response to write 403 to
+ * @returns true if accessible, false if 403 was sent
+ */
+function checkPremiumAccess(item: MarketplaceItem, res: Response): boolean {
+  if (item.metadata?.premium !== true) return true;
+  const currentTier = CloudClientService.getInstance().getTier();
+  const tierService = SkillTierService.getInstance();
+  if (tierService.isTierSufficient(currentTier, CLOUD_CONSTANTS.TIERS.PRO as CloudTier)) return true;
+  res.status(403).json({
+    success: false,
+    error: `"${item.name}" is a premium item and requires a Pro or Enterprise subscription. Upgrade at https://crewlyai.com/pricing`,
+  });
+  return false;
+}
 
 /**
  * GET /api/marketplace - List marketplace items with optional filters.
@@ -69,7 +93,17 @@ export const handleListItems = asyncHandler(async (req: Request, res: Response):
     search: req.query.search as string | undefined,
     sortBy: sortParam as SortOption | undefined,
   });
-  res.json({ success: true, data: items });
+
+  // Annotate items with tier accessibility — compute tier check once
+  const currentTier = CloudClientService.getInstance().getTier();
+  const canAccessPremium = SkillTierService.getInstance()
+    .isTierSufficient(currentTier, CLOUD_CONSTANTS.TIERS.PRO as CloudTier);
+  const annotated = items.map((item) => ({
+    ...item,
+    accessible: item.metadata?.premium !== true || canAccessPremium,
+  }));
+
+  res.json({ success: true, data: annotated });
 });
 
 /**
@@ -176,6 +210,9 @@ export const handleInstall = asyncHandler(async (req: Request, res: Response): P
     res.status(404).json({ success: false, error: 'Item not found' });
     return;
   }
+
+  if (!checkPremiumAccess(item, res)) return;
+
   const result = await installItem(item);
   res.json(result);
 });
@@ -219,6 +256,9 @@ export const handleUpdate = asyncHandler(async (req: Request, res: Response): Pr
     res.status(404).json({ success: false, error: 'Item not found' });
     return;
   }
+
+  if (!checkPremiumAccess(item, res)) return;
+
   const result = await updateItem(item);
   res.json(result);
 });

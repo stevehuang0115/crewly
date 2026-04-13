@@ -1630,6 +1630,12 @@ export class AgentRegistrationService {
 					capabilities: foundMember?.capabilities,
 					domainSOP: foundMember?.domainSOP,
 					riskPolicy: foundMember?.riskPolicy,
+					// Organization Model fields
+					jobTitle: foundMember?.jobTitle,
+					jobDescription: foundMember?.jobDescription,
+					ownershipScope: foundMember?.ownershipScope as ModuleConfig['ownershipScope'],
+					teamOwnershipScope: foundTeam?.ownershipScope as ModuleConfig['teamOwnershipScope'],
+					serviceContract: foundTeam?.serviceContract as ModuleConfig['serviceContract'],
 				};
 
 				const assembler = new PromptAssemblyService();

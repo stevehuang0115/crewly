@@ -1,5 +1,5 @@
 /**
- * Tests for Template Service
+ * Tests for Template Service — loading, listing, tier checks, team creation
  *
  * @module services/template/template.test
  */
@@ -431,6 +431,38 @@ describe('TemplateService', () => {
       const service = TemplateService.getInstance(tempDir);
       const result = service.createTeamFromTemplate('test-dev', 'Free Team');
       expect(result).not.toBeNull();
+    });
+  });
+
+  // =========================================================================
+  // listTemplates requiredTier
+  // =========================================================================
+
+  describe('listTemplates with requiredTier', () => {
+    it('should include requiredTier in template summary', () => {
+      const proTemplate = {
+        ...createValidTemplateJson(),
+        id: 'pro-tmpl',
+        requiredTier: 'pro',
+      };
+      const dir = join(tempDir, 'pro-tmpl');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'template.json'), JSON.stringify(proTemplate));
+
+      const service = TemplateService.getInstance(tempDir);
+      const list = service.listTemplates();
+      expect(list).toHaveLength(1);
+      expect(list[0].requiredTier).toBe('pro');
+    });
+
+    it('should have undefined requiredTier for free templates', () => {
+      const dir = join(tempDir, 'free-tmpl');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'template.json'), JSON.stringify(createValidTemplateJson()));
+
+      const service = TemplateService.getInstance(tempDir);
+      const list = service.listTemplates();
+      expect(list[0].requiredTier).toBeUndefined();
     });
   });
 });

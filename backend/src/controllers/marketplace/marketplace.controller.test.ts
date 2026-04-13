@@ -2,7 +2,7 @@
  * Tests for Marketplace Controller
  *
  * Validates the REST handlers for marketplace endpoints including
- * list, detail, install, uninstall, update, refresh, and error handling.
+ * list, detail, install, uninstall, update, refresh, tier gating, and error handling (50 tests).
  *
  * @module controllers/marketplace/marketplace.controller.test
  */
@@ -54,6 +54,28 @@ jest.mock('../../services/marketplace/index.js', () => ({
   getItemReadme: (...args: unknown[]) => mockGetItemReadme(...args),
 }));
 
+// Mock CloudClientService for tier checks
+const mockGetTier = jest.fn().mockReturnValue('free');
+
+jest.mock('../../services/cloud/cloud-client.service.js', () => ({
+  CloudClientService: {
+    getInstance: () => ({
+      getTier: mockGetTier,
+    }),
+  },
+}));
+
+// Mock SkillTierService for tier hierarchy comparison
+const mockIsTierSufficient = jest.fn().mockReturnValue(false);
+
+jest.mock('../../services/skill/skill-tier.service.js', () => ({
+  SkillTierService: {
+    getInstance: () => ({
+      isTierSufficient: mockIsTierSufficient,
+    }),
+  },
+}));
+
 describe('MarketplaceController', () => {
   let mockRes: { json: jest.Mock; status: jest.Mock };
   const next = jest.fn();
@@ -72,12 +94,14 @@ describe('MarketplaceController', () => {
     mockInstallItem.mockReset();
     mockUninstallItem.mockReset();
     mockUpdateItem.mockReset();
+    mockGetTier.mockReset().mockReturnValue('free');
+    mockIsTierSufficient.mockReset().mockReturnValue(false);
   });
 
   // ========================= handleListItems =========================
 
   describe('handleListItems', () => {
-    it('should return items with success envelope', async () => {
+    it('should return items with accessible annotation', async () => {
       const items = [{ id: 'skill-1', name: 'Deploy Skill' }];
       mockListItems.mockResolvedValue(items);
 
@@ -93,7 +117,40 @@ describe('MarketplaceController', () => {
         search: undefined,
         sortBy: undefined,
       });
-      expect(mockRes.json).toHaveBeenCalledWith({ success: true, data: items });
+      const data = mockRes.json.mock.calls[0][0].data;
+      expect(data).toHaveLength(1);
+      expect(data[0].accessible).toBe(true);
+    });
+
+    it('should mark premium items as inaccessible for free users', async () => {
+      const items = [{ id: 'premium-skill', name: 'Premium', metadata: { premium: true } }];
+      mockListItems.mockResolvedValue(items);
+      mockGetTier.mockReturnValue('free');
+
+      await handleListItems(
+        { query: {} } as any,
+        mockRes as any,
+        next,
+      );
+
+      const data = mockRes.json.mock.calls[0][0].data;
+      expect(data[0].accessible).toBe(false);
+    });
+
+    it('should mark premium items as accessible for pro users', async () => {
+      const items = [{ id: 'premium-skill', name: 'Premium', metadata: { premium: true } }];
+      mockListItems.mockResolvedValue(items);
+      mockGetTier.mockReturnValue('pro');
+      mockIsTierSufficient.mockReturnValue(true);
+
+      await handleListItems(
+        { query: {} } as any,
+        mockRes as any,
+        next,
+      );
+
+      const data = mockRes.json.mock.calls[0][0].data;
+      expect(data[0].accessible).toBe(true);
     });
 
     it('should pass filter parameters from query string', async () => {
@@ -402,6 +459,59 @@ describe('MarketplaceController', () => {
       expect(mockRes.status).toHaveBeenCalledWith(500);
       expect(mockInstallItem).not.toHaveBeenCalled();
     });
+
+    it('should return 403 when free user tries to install premium item', async () => {
+      const premiumItem = { id: 'pro-skill', name: 'Pro Skill', metadata: { premium: true } };
+      mockGetItem.mockResolvedValue(premiumItem);
+      mockGetTier.mockReturnValue('free');
+
+      await handleInstall(
+        { params: { id: 'pro-skill' } } as any,
+        mockRes as any,
+        next,
+      );
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: false,
+        error: expect.stringContaining('premium item'),
+      });
+      expect(mockInstallItem).not.toHaveBeenCalled();
+    });
+
+    it('should allow pro user to install premium item', async () => {
+      const premiumItem = { id: 'pro-skill', name: 'Pro Skill', metadata: { premium: true } };
+      const result = { success: true, message: 'Installed' };
+      mockGetItem.mockResolvedValue(premiumItem);
+      mockGetTier.mockReturnValue('pro');
+      mockIsTierSufficient.mockReturnValue(true);
+      mockInstallItem.mockResolvedValue(result);
+
+      await handleInstall(
+        { params: { id: 'pro-skill' } } as any,
+        mockRes as any,
+        next,
+      );
+
+      expect(mockInstallItem).toHaveBeenCalledWith(premiumItem);
+      expect(mockRes.json).toHaveBeenCalledWith(result);
+    });
+
+    it('should allow free user to install non-premium item', async () => {
+      const freeItem = { id: 'free-skill', name: 'Free Skill' };
+      const result = { success: true, message: 'Installed' };
+      mockGetItem.mockResolvedValue(freeItem);
+      mockGetTier.mockReturnValue('free');
+      mockInstallItem.mockResolvedValue(result);
+
+      await handleInstall(
+        { params: { id: 'free-skill' } } as any,
+        mockRes as any,
+        next,
+      );
+
+      expect(mockInstallItem).toHaveBeenCalledWith(freeItem);
+    });
   });
 
   // ========================= handleUninstall =========================
@@ -504,6 +614,39 @@ describe('MarketplaceController', () => {
 
       expect(mockRes.status).toHaveBeenCalledWith(500);
       expect(mockUpdateItem).not.toHaveBeenCalled();
+    });
+
+    it('should return 403 when free user tries to update premium item', async () => {
+      const premiumItem = { id: 'pro-skill', name: 'Pro Skill', metadata: { premium: true } };
+      mockGetItem.mockResolvedValue(premiumItem);
+      mockGetTier.mockReturnValue('free');
+
+      await handleUpdate(
+        { params: { id: 'pro-skill' } } as any,
+        mockRes as any,
+        next,
+      );
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockUpdateItem).not.toHaveBeenCalled();
+    });
+
+    it('should allow pro user to update premium item', async () => {
+      const premiumItem = { id: 'pro-skill', name: 'Pro Skill', metadata: { premium: true } };
+      const result = { success: true, message: 'Updated' };
+      mockGetItem.mockResolvedValue(premiumItem);
+      mockGetTier.mockReturnValue('pro');
+      mockIsTierSufficient.mockReturnValue(true);
+      mockUpdateItem.mockResolvedValue(result);
+
+      await handleUpdate(
+        { params: { id: 'pro-skill' } } as any,
+        mockRes as any,
+        next,
+      );
+
+      expect(mockUpdateItem).toHaveBeenCalledWith(premiumItem);
+      expect(mockRes.json).toHaveBeenCalledWith(result);
     });
   });
 

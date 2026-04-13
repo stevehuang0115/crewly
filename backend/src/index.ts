@@ -1292,6 +1292,43 @@ export class CrewlyServer {
 				});
 			}
 
+			// Start AgentAutoClaimService — auto-assign work to idle agents
+			try {
+				const { AgentAutoClaimService } = await import('./services/v3/agent-auto-claim.service.js');
+				const autoClaimService = AgentAutoClaimService.getInstance();
+				autoClaimService.initialize(this.eventBusService);
+				autoClaimService.start();
+				this.logger.info('AgentAutoClaimService started — idle agents will auto-claim work');
+			} catch (autoClaimErr) {
+				this.logger.warn('AgentAutoClaimService initialization failed (non-critical)', {
+					error: autoClaimErr instanceof Error ? autoClaimErr.message : String(autoClaimErr),
+				});
+			}
+
+			// Start TLAutoVerifyService — auto-trigger TL verification on worker task completion
+			try {
+				const { TLAutoVerifyService } = await import('./services/v3/tl-auto-verify.service.js');
+				const tlVerifyService = TLAutoVerifyService.getInstance();
+				tlVerifyService.initialize(this.eventBusService);
+				tlVerifyService.start();
+				this.logger.info('TLAutoVerifyService started — worker completions trigger TL verification');
+			} catch (tlVerifyErr) {
+				this.logger.warn('TLAutoVerifyService initialization failed (non-critical)', {
+					error: tlVerifyErr instanceof Error ? tlVerifyErr.message : String(tlVerifyErr),
+				});
+			}
+
+			// Initialize MissionExecutorService — Mission lifecycle + decomposition processing
+			try {
+				const { MissionExecutorService } = await import('./services/v3/mission-executor.service.js');
+				MissionExecutorService.getInstance();
+				this.logger.info('MissionExecutorService initialized — Mission decomposition + progress tracking ready');
+			} catch (missionErr) {
+				this.logger.warn('MissionExecutorService initialization failed (non-critical)', {
+					error: missionErr instanceof Error ? missionErr.message : String(missionErr),
+				});
+			}
+
 			// Start Slack image cleanup (download temp files)
 			try {
 				const { getSlackImageService: getImgService } = await import('./services/slack/slack-image.service.js');

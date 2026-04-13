@@ -15,7 +15,6 @@ export interface ActiveProject {
   startedAt: string;
   stoppedAt?: string;
   checkInScheduleId?: string;
-  gitCommitScheduleId?: string;
 }
 
 export interface ActiveProjectsData {
@@ -80,10 +79,9 @@ export class ActiveProjectsService {
     messageSchedulerService?: any
   ): Promise<{
     checkInScheduleId?: string;
-    gitCommitScheduleId?: string;
   }> {
     const data = await this.loadActiveProjectsData();
-    
+
     // Check if project is already running
     const existingProject = data.activeProjects.find(p => p.projectId === projectId);
     if (existingProject && existingProject.status === 'running') {
@@ -98,7 +96,6 @@ export class ActiveProjectsService {
     };
 
     let checkInScheduleId: string | undefined;
-    let gitCommitScheduleId: string | undefined;
 
     // Create scheduled messages if messageSchedulerService is provided
     if (messageSchedulerService) {
@@ -109,13 +106,6 @@ export class ActiveProjectsService {
           messageSchedulerService
         );
         projectEntry.checkInScheduleId = checkInScheduleId;
-
-        // Create 30-minute git commit schedule
-        gitCommitScheduleId = await this.createProjectGitCommitSchedule(
-          projectId,
-          messageSchedulerService
-        );
-        projectEntry.gitCommitScheduleId = gitCommitScheduleId;
 
       } catch (scheduleError) {
         this.logger.warn('Failed to create scheduled messages for project', { error: scheduleError instanceof Error ? scheduleError.message : String(scheduleError) });
@@ -134,8 +124,7 @@ export class ActiveProjectsService {
     await this.saveActiveProjectsData(data);
 
     return {
-      checkInScheduleId,
-      gitCommitScheduleId
+      checkInScheduleId
     };
   }
 
@@ -158,9 +147,6 @@ export class ActiveProjectsService {
         if (project.checkInScheduleId) {
           messageSchedulerService.cancelMessage(project.checkInScheduleId);
         }
-        if (project.gitCommitScheduleId) {
-          messageSchedulerService.cancelMessage(project.gitCommitScheduleId);
-        }
       } catch (scheduleError) {
         this.logger.warn('Failed to cancel scheduled messages for project', { error: scheduleError instanceof Error ? scheduleError.message : String(scheduleError) });
         // Continue with stopping project
@@ -173,7 +159,6 @@ export class ActiveProjectsService {
 
     // Remove schedule IDs since they're cancelled
     delete project.checkInScheduleId;
-    delete project.gitCommitScheduleId;
 
     data.activeProjects[projectIndex] = project;
 
@@ -185,7 +170,6 @@ export class ActiveProjectsService {
     messageSchedulerService?: any
   ): Promise<{
     checkInScheduleId?: string;
-    gitCommitScheduleId?: string;
   }> {
     // Stop project first (if running) then start it
     try {
@@ -305,46 +289,6 @@ Use: \`check_team_progress { "projectId": "${projectId}" }\``;
       targetProject: projectId,
       message: checkInMessage,
       delayAmount: 15,
-      delayUnit: 'minutes',
-      isRecurring: true,
-      isActive: true
-    });
-
-    if (this.storageService) {
-      await this.storageService.saveScheduledMessage(scheduledMessage);
-      messageSchedulerService?.scheduleMessage(scheduledMessage);
-    }
-
-    return scheduledMessage.id;
-  }
-
-  private async createProjectGitCommitSchedule(
-    projectId: string,
-    messageSchedulerService: any
-  ): Promise<string> {
-    const commitMessage = `💾 **30-Minute Git Commit Reminder**
-
-**Project ID**: ${projectId}
-
-**Task**: Ask the Technical Product Manager (TPM) or best available team member to commit current work.
-
-**Commit Instructions:**
-1. Review all changes made in the last 30 minutes
-2. Stage appropriate files for commit
-3. Create a meaningful commit message describing the work completed
-4. Push changes to the repository
-
-**Message to send to TPM:**
-"Please commit and push any current work for project ${projectId}. Include a descriptive commit message about the progress made in the last 30 minutes."
-
-**Fallback**: If TPM is unavailable, delegate this task to the most senior available team member.`;
-
-    const scheduledMessage = ScheduledMessageModel.create({
-      name: `Git Commit Reminder for Project ${projectId}`,
-      targetTeam: 'orchestrator',
-      targetProject: projectId,
-      message: commitMessage,
-      delayAmount: 30,
       delayUnit: 'minutes',
       isRecurring: true,
       isActive: true

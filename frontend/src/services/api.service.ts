@@ -1163,6 +1163,11 @@ class ApiService {
     return Array.isArray(d) ? d : [];
   }
 
+  async createMission(input: { objective: string; ownerTeamId: string; cadence?: string; successCriteria?: string[] }): Promise<unknown> {
+    const response = await axios.post<ApiResponse<unknown>>(`${API_BASE}/missions`, input);
+    return response.data.data;
+  }
+
   async getMission(id: string): Promise<unknown> {
     const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/missions/${id}`);
     if (!response.data.success || !response.data.data) throw new Error('Mission not found');

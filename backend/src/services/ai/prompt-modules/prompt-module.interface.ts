@@ -66,6 +66,19 @@ export interface ModuleConfig {
 	/** Risk policy name — loads config/risk-policies/{riskPolicy}.policy.md */
 	riskPolicy?: string;
 
+	// === Organization Model fields ===
+
+	/** Job title for this position: "Frontend Tech Lead" */
+	jobTitle?: string;
+	/** What this member is responsible for */
+	jobDescription?: string;
+	/** Member-level ownership scope */
+	ownershipScope?: { domains: string[]; deliverables: string[]; areas?: string[] };
+	/** Team-level ownership scope */
+	teamOwnershipScope?: { domains: string[]; deliverables: string[]; areas?: string[] };
+	/** Team's service contract */
+	serviceContract?: { accepts: string[]; avoids: string[]; expectedOutput: string[] };
+
 	// === Eval mode ===
 
 	/**

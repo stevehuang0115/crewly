@@ -49,7 +49,6 @@ interface FileTreeNode {
  */
 interface ScheduleInfo {
 	checkInScheduleId?: string;
-	gitCommitScheduleId?: string;
 }
 
 // Project Management
@@ -318,7 +317,7 @@ export async function startProject(this: ApiContext, req: Request, res: Response
 				teamId,
 				orchestrationStarted: true,
 				checkInScheduleId: scheduleInfo?.checkInScheduleId,
-				gitCommitScheduleId: scheduleInfo?.gitCommitScheduleId,
+
 				checkinScheduleId,
 			},
 		} as ApiResponse);
@@ -395,7 +394,7 @@ export async function restartProject(this: ApiContext, req: Request, res: Respon
 				projectId: id,
 				status: 'active',
 				checkInScheduleId: scheduleInfo?.checkInScheduleId,
-				gitCommitScheduleId: scheduleInfo?.gitCommitScheduleId,
+
 			},
 		} as ApiResponse);
 	} catch (error) {
