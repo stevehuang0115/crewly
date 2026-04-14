@@ -84,6 +84,8 @@ export interface TeamMember {
   ownershipScope?: import('./team-template.types.js').OwnershipScope;
   /** Accountability type — how this member is responsible */
   responsibilityType?: import('./team-template.types.js').ResponsibilityType;
+  /** Expert profile ID — loads thinking patterns from config/experts/{expertId}.md */
+  expertId?: string;
 }
 
 export interface Team {

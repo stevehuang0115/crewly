@@ -1,3 +1,4 @@
+// ExpertProfileModule integration
 import { estimateTokens, PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
 
 // Mock fs

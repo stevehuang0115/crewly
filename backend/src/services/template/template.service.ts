@@ -269,6 +269,7 @@ export class TemplateService {
           ownershipScope: role.ownershipScope,
           responsibilityType: role.responsibilityType,
           autonomyLevel: role.autonomyLevel,
+          expertId: role.expertId,
         };
 
         members.push(member);

@@ -184,6 +184,8 @@ export interface TemplateRole {
   responsibilityType?: ResponsibilityType;
   /** Default autonomy level for members in this role */
   autonomyLevel?: 'directed' | 'bounded' | 'domain_autonomous';
+  /** Expert profile ID — injects expert thinking patterns into this role's prompt */
+  expertId?: string;
 }
 
 // =============================================================================

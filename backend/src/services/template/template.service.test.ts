@@ -1,3 +1,4 @@
+// ExpertProfileModule integration
 /**
  * Tests for Template Service — loading, listing, tier checks, team creation
  *

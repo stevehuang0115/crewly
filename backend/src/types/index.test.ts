@@ -1,3 +1,4 @@
+// ExpertProfileModule integration
 import type { TeamMember, TeamMemberRole, Team } from './index';
 
 describe('Core Types - Hierarchy Extensions', () => {

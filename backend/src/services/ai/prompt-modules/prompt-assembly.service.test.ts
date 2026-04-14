@@ -1,3 +1,4 @@
+// ExpertProfileModule integration
 import { PromptAssemblyService } from './prompt-assembly.service.js';
 import { PromptModule, ModuleConfig, estimateTokens } from './prompt-module.interface.js';
 
