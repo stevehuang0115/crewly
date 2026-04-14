@@ -1329,6 +1329,16 @@ export class CrewlyServer {
 				});
 			}
 
+			// Start marketplace auto-update (check registry every 6 hours)
+			try {
+				const { startAutoUpdate } = await import('./services/marketplace/marketplace-auto-update.service.js');
+				startAutoUpdate();
+			} catch (autoUpdateErr) {
+				this.logger.warn('Marketplace auto-update startup failed (non-fatal)', {
+					error: autoUpdateErr instanceof Error ? autoUpdateErr.message : String(autoUpdateErr),
+				});
+			}
+
 			// Start Slack image cleanup (download temp files)
 			try {
 				const { getSlackImageService: getImgService } = await import('./services/slack/slack-image.service.js');

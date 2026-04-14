@@ -53,6 +53,15 @@ export function createMarketplaceRouter(): Router {
   router.get('/updates', handleListUpdates);
   router.post('/refresh', handleRefresh);
 
+  // Auto-update: trigger immediate check + apply
+  router.post('/auto-update', async (_req, res, next) => {
+    try {
+      const { checkAndApplyUpdates } = await import('../../services/marketplace/marketplace-auto-update.service.js');
+      const result = await checkAndApplyUpdates();
+      res.json({ success: true, data: result });
+    } catch (err) { next(err); }
+  });
+
   // Submission routes (static paths, must come before /:id)
   router.post('/submit', handleSubmit);
   router.get('/submissions', handleListSubmissions);
