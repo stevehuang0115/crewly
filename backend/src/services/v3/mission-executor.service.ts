@@ -34,6 +34,10 @@ export interface DecomposedTask {
   suggestedRole?: string;
   estimatedMinutes?: number;
   dependsOn?: string[];
+  /** Key Result this task contributes to (OKR linkage) */
+  krId?: string;
+  /** How this task contributes to the KR */
+  krContribution?: 'direct' | 'indirect' | 'measurement';
 }
 
 /** Decomposition result submitted by the decompose-mission skill. */
@@ -123,6 +127,8 @@ export class MissionExecutorService {
           estimatedMinutes: task.estimatedMinutes,
           priority: task.priority,
           _dependsOnTitles: task.dependsOn ?? [],
+          krId: task.krId,
+          krContribution: task.krContribution,
         },
       });
 
@@ -157,6 +163,21 @@ export class MissionExecutorService {
     // Add all items to pool (after dependency resolution)
     for (const wi of createdItems.values()) {
       await taskPool.addToPool(wi);
+    }
+
+    // Link WorkItems to KRs (OKR integration)
+    for (const task of result.tasks) {
+      if (task.krId) {
+        const workItemId = titleToId.get(task.title);
+        if (workItemId) {
+          try {
+            const { KRTrackingService } = await import('./kr-tracking.service.js');
+            await KRTrackingService.getInstance().linkWorkItem(mission.id, task.krId, workItemId);
+          } catch {
+            // KR linkage is best-effort — don't block decomposition
+          }
+        }
+      }
     }
 
     this.missionPhases.set(mission.id, result.phase);
@@ -272,6 +293,91 @@ export class MissionExecutorService {
 
     this.logger.info('Mission resumed', { missionId, unfrozenTasks: unfrozenCount });
     return unfrozenCount;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase Advancement
+  // ---------------------------------------------------------------------------
+
+  /** Result of a phase completion check. */
+  public static readonly PHASE_RESULT = {
+    NOT_COMPLETE: 'not_complete',
+    ADVANCED: 'advanced',
+    GATE_PENDING: 'gate_pending',
+  } as const;
+
+  /**
+   * Check if all WorkItems in the current phase are done/verified.
+   * If complete, advance to next phase based on phaseGateApproval policy.
+   *
+   * @param missionId - Mission to check
+   * @param phaseGateApproval - How phase transitions are approved
+   * @returns Phase advancement result
+   */
+  async checkPhaseCompletion(
+    missionId: string,
+    phaseGateApproval: 'none' | 'team_lead' | 'human' = 'none',
+  ): Promise<{ result: string; phase: number }> {
+    const currentPhase = this.missionPhases.get(missionId) ?? 1;
+    const taskPool = TaskPoolService.getInstance();
+    const allItems = await taskPool.getAllItems();
+
+    const phaseItems = allItems.filter(
+      (wi) => wi.missionId === missionId &&
+        (wi.metadata as Record<string, unknown>)?.phase === currentPhase,
+    );
+
+    if (phaseItems.length === 0) {
+      return { result: MissionExecutorService.PHASE_RESULT.NOT_COMPLETE, phase: currentPhase };
+    }
+
+    const allTerminal = phaseItems.every(
+      (wi) => wi.status === 'done' || wi.status === 'verified' || wi.status === 'cancelled',
+    );
+
+    if (!allTerminal) {
+      return { result: MissionExecutorService.PHASE_RESULT.NOT_COMPLETE, phase: currentPhase };
+    }
+
+    // All items in current phase are done
+    if (phaseGateApproval === 'none') {
+      const nextPhase = currentPhase + 1;
+      this.missionPhases.set(missionId, nextPhase);
+      this.logger.info('Phase auto-advanced', { missionId, from: currentPhase, to: nextPhase });
+      return { result: MissionExecutorService.PHASE_RESULT.ADVANCED, phase: nextPhase };
+    }
+
+    // Needs approval — return gate_pending for caller to handle
+    this.logger.info('Phase complete, awaiting approval', { missionId, phase: currentPhase, gateType: phaseGateApproval });
+    return { result: MissionExecutorService.PHASE_RESULT.GATE_PENDING, phase: currentPhase };
+  }
+
+  /**
+   * Cancel remaining queued/blocked tasks in current phase for replanning.
+   *
+   * @param missionId - Mission to replan
+   * @returns Number of cancelled tasks
+   */
+  async cancelRemainingPhaseTasks(missionId: string): Promise<number> {
+    const currentPhase = this.missionPhases.get(missionId) ?? 1;
+    const taskPool = TaskPoolService.getInstance();
+    const allItems = await taskPool.getAllItems();
+
+    const cancelableItems = allItems.filter(
+      (wi) =>
+        wi.missionId === missionId &&
+        (wi.metadata as Record<string, unknown>)?.phase === currentPhase &&
+        (wi.status === 'queued' || wi.status === 'blocked' || wi.status === 'scheduled'),
+    );
+
+    let cancelled = 0;
+    for (const wi of cancelableItems) {
+      await taskPool.updateItemStatus(wi.id, 'cancelled');
+      cancelled++;
+    }
+
+    this.logger.info('Cancelled remaining phase tasks for replan', { missionId, phase: currentPhase, cancelled });
+    return cancelled;
   }
 
   // ---------------------------------------------------------------------------
