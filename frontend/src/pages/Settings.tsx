@@ -1,26 +1,29 @@
 /**
  * Settings Page
  *
- * Main settings page with tab navigation for General, Roles, Skills, and Integrations sections.
+ * Main settings page with tab navigation for General, Roles, Skills, Integrations,
+ * API Keys, and System sections. Cloud management has been consolidated into the
+ * dedicated Cloud Portal page (/cloud).
+ *
+ * If a user navigates to /settings?tab=cloud, they are redirected to /cloud.
  *
  * @module pages/Settings
  */
 
-import React, { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Settings as SettingsIcon, User, Wrench, Link2, Key, Cloud, Monitor, LucideIcon } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import { Settings as SettingsIcon, User, Wrench, Link2, Key, Monitor, LucideIcon } from 'lucide-react';
 import { GeneralTab } from '../components/Settings/GeneralTab';
 import { RolesTab } from '../components/Settings/RolesTab';
 import { SkillsTab } from '../components/Settings/SkillsTab';
 import { IntegrationsTab } from '../components/Settings/IntegrationsTab';
 import { ApiKeysTab } from '../components/Settings/ApiKeysTab';
-import { CloudTab } from '../components/Settings/CloudTab';
 import { SystemTab } from '../components/Settings/SystemTab';
 
 /**
- * Available settings tabs
+ * Available settings tabs (Cloud removed -- consolidated to /cloud)
  */
-type SettingsTab = 'general' | 'roles' | 'skills' | 'integrations' | 'api-keys' | 'cloud' | 'system';
+type SettingsTab = 'general' | 'roles' | 'skills' | 'integrations' | 'api-keys' | 'system';
 
 /**
  * Tab configuration
@@ -32,16 +35,28 @@ interface TabConfig {
 }
 
 /** Valid tab IDs for URL parameter validation */
-const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'roles', 'skills', 'integrations', 'api-keys', 'cloud', 'system']);
+const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'roles', 'skills', 'integrations', 'api-keys', 'system']);
 
 /**
- * Settings page with tabbed navigation for managing Crewly configuration
+ * Settings page with tabbed navigation for managing Crewly configuration.
+ *
+ * Redirects /settings?tab=cloud to /cloud since Cloud management is now
+ * exclusively handled by the Cloud Portal page.
  *
  * @returns Settings page component
  */
 export const Settings: React.FC = () => {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const tabParam = searchParams.get('tab');
+
+  // Redirect ?tab=cloud to the dedicated Cloud Portal page
+  useEffect(() => {
+    if (tabParam === 'cloud') {
+      navigate('/cloud', { replace: true });
+    }
+  }, [tabParam, navigate]);
+
   const initialTab: SettingsTab = tabParam && VALID_TABS.has(tabParam) ? (tabParam as SettingsTab) : 'general';
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
 
@@ -51,7 +66,6 @@ export const Settings: React.FC = () => {
     { id: 'skills', label: 'Skills', icon: Wrench },
     { id: 'integrations', label: 'Integrations', icon: Link2 },
     { id: 'api-keys', label: 'API Keys', icon: Key },
-    { id: 'cloud', label: 'Cloud', icon: Cloud },
     { id: 'system', label: 'System', icon: Monitor },
   ];
 
@@ -70,8 +84,6 @@ export const Settings: React.FC = () => {
         return <IntegrationsTab />;
       case 'api-keys':
         return <ApiKeysTab />;
-      case 'cloud':
-        return <CloudTab />;
       case 'system':
         return <SystemTab />;
       default:

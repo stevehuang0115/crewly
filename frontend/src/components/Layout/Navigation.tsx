@@ -27,6 +27,7 @@ import {
 	ClipboardList,
 	Target,
 	Inbox,
+	Cloud,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
@@ -56,11 +57,7 @@ interface NavGroup {
  * Navigation groups — streamlined IA with fewer sections:
  * Work (daily use) -> Tools (extensions + automation) -> System (operations + config)
  *
- * Changes from original:
- * - Chat merged into WORK (was alone in COMMUNICATE)
- * - Cloud Portal removed from nav (consolidated to Settings > Cloud tab)
- * - Usage + Security moved into SYSTEM alongside Settings
- * - Renamed: "Execution Logs" -> "Work Items", "Incoming Pipeline" -> "Requests"
+ * Cloud Portal is the single entry point for all Cloud management.
  */
 const NAV_GROUPS: NavGroup[] = [
 	{
@@ -85,6 +82,7 @@ const NAV_GROUPS: NavGroup[] = [
 		items: [
 			{ name: 'Work Items', href: '/workitems', icon: ClipboardList },
 			{ name: 'Requests', href: '/requests', icon: Inbox },
+			{ name: 'Cloud Portal', href: '/cloud', icon: Cloud },
 			{ name: 'Usage', href: '/usage', icon: DollarSign },
 			{ name: 'Security', href: '/security', icon: Shield },
 			{ name: 'Settings', href: '/settings', icon: Settings },
