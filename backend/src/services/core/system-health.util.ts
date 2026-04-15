@@ -14,6 +14,9 @@ import * as os from 'os';
  */
 export const MEMORY_PRESSURE_SPAWN_THRESHOLD = 90;
 
+/** Cached total memory — never changes during process lifetime. */
+const cachedTotalMem = os.totalmem();
+
 /**
  * Check if the system is under memory pressure.
  * Returns true when memory usage exceeds the spawn threshold (90%).
@@ -21,9 +24,9 @@ export const MEMORY_PRESSURE_SPAWN_THRESHOLD = 90;
  * @returns true if system should NOT spawn new processes
  */
 export function isUnderMemoryPressure(): boolean {
-  const total = os.totalmem();
+  if (cachedTotalMem === 0) return false;
   const free = os.freemem();
-  const usedPercent = ((total - free) / total) * 100;
+  const usedPercent = ((cachedTotalMem - free) / cachedTotalMem) * 100;
   return usedPercent >= MEMORY_PRESSURE_SPAWN_THRESHOLD;
 }
 
@@ -32,11 +35,11 @@ export function isUnderMemoryPressure(): boolean {
  * @returns Object with totalMB, freeMB, usedPercent
  */
 export function getMemoryStats(): { totalMB: number; freeMB: number; usedPercent: number } {
-  const total = os.totalmem();
+  if (cachedTotalMem === 0) return { totalMB: 0, freeMB: 0, usedPercent: 0 };
   const free = os.freemem();
   return {
-    totalMB: Math.round(total / 1024 / 1024),
+    totalMB: Math.round(cachedTotalMem / 1024 / 1024),
     freeMB: Math.round(free / 1024 / 1024),
-    usedPercent: Math.round(((total - free) / total) * 100 * 10) / 10,
+    usedPercent: Math.round(((cachedTotalMem - free) / cachedTotalMem) * 100 * 10) / 10,
   };
 }

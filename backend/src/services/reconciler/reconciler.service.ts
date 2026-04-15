@@ -40,6 +40,7 @@ import {
   runPruningPass,
 } from './reconcile-rules.js';
 import type { AgentHealth } from './reconcile-rules.js';
+import { getSettingsService } from '../settings/index.js';
 
 // ---------------------------------------------------------------------------
 // Data Provider Interface (dependency injection)
@@ -449,7 +450,6 @@ export class ReconcilerService {
     // if we're at capacity. This is the primary control preventing resource exhaustion.
     let maxConcurrent = 50; // matches ConfigService default (MAX_CONCURRENT_AGENTS)
     try {
-      const { getSettingsService } = await import('../settings/index.js');
       const settings = await getSettingsService().getSettings();
       maxConcurrent = settings.general.maxConcurrentAgents;
     } catch {

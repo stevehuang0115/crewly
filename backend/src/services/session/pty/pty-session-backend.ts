@@ -491,7 +491,8 @@ export class PtySessionBackend implements ISessionBackend {
 		for (const terminalBuffer of this.terminalBuffers.values()) {
 			terminalBuffer.dispose();
 		}
-		for (const [name] of this.sessionLogStreams) {
+		const logStreamNames = Array.from(this.sessionLogStreams.keys());
+		for (const name of logStreamNames) {
 			this.closeSessionLogStream(name);
 		}
 		this.sessions.clear();

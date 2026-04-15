@@ -126,19 +126,22 @@ export class SystemResourceAlertService {
 		}
 
 		// Check CPU load (load average relative to number of cores)
-		const cpuLoadPercent = (metrics.cpu.loadAverage[0] / metrics.cpu.cores) * 100;
-		if (cpuLoadPercent >= THRESHOLDS.CPU_CRITICAL) {
-			await this.sendAlert(
-				'cpu_critical',
-				`CPU load at ${cpuLoadPercent.toFixed(0)}% of capacity (${metrics.cpu.loadAverage[0].toFixed(1)} load avg, ${metrics.cpu.cores} cores). System is overloaded.`,
-				'critical'
-			);
-		} else if (cpuLoadPercent >= THRESHOLDS.CPU_WARNING) {
-			await this.sendAlert(
-				'cpu_warning',
-				`CPU load at ${cpuLoadPercent.toFixed(0)}% of capacity. Consider reducing parallel workloads.`,
+		const loadAvg = metrics.cpu.loadAverage?.[0];
+		if (loadAvg != null && metrics.cpu.cores > 0) {
+			const cpuLoadPercent = (loadAvg / metrics.cpu.cores) * 100;
+			if (cpuLoadPercent >= THRESHOLDS.CPU_CRITICAL) {
+				await this.sendAlert(
+					'cpu_critical',
+					`CPU load at ${cpuLoadPercent.toFixed(0)}% of capacity (${loadAvg.toFixed(1)} load avg, ${metrics.cpu.cores} cores). System is overloaded.`,
+					'critical'
+				);
+			} else if (cpuLoadPercent >= THRESHOLDS.CPU_WARNING) {
+				await this.sendAlert(
+					'cpu_warning',
+					`CPU load at ${cpuLoadPercent.toFixed(0)}% of capacity. Consider reducing parallel workloads.`,
 				'warning'
-			);
+				);
+			}
 		}
 	}
 

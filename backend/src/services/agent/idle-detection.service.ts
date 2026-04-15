@@ -317,6 +317,11 @@ export class IdleDetectionService {
 					continue;
 				}
 
+				// Skip members with no session
+				if (!member.sessionName) {
+					continue;
+				}
+
 				// Never stop orchestrator
 				if (AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES.includes(
 					member.role as typeof AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES[number]

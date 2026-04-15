@@ -20,14 +20,16 @@ import {
   DEFAULT_ADAPTIVE_CONFIG,
 } from '../../types/scheduler.types.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
-// Mock os module (non-configurable in Node.js, so jest.spyOn doesn't work)
-const mockTotalmem = jest.fn(() => 16 * 1024 * 1024 * 1024); // 16GB
-const mockFreemem = jest.fn(() => 8 * 1024 * 1024 * 1024);   // 8GB (50% used)
-jest.mock('os', () => ({
-  ...jest.requireActual('os'),
-  totalmem: () => mockTotalmem(),
-  freemem: () => mockFreemem(),
+// Mock system-health utility used by scheduler for memory pressure checks
+var __mockUnderPressure = false;
+jest.mock('../core/system-health.util.js', () => ({
+  isUnderMemoryPressure: () => __mockUnderPressure,
+  getMemoryStats: () => ({ totalMB: 16384, freeMB: __mockUnderPressure ? 800 : 8192, usedPercent: __mockUnderPressure ? 95 : 50 }),
+  MEMORY_PRESSURE_SPAWN_THRESHOLD: 90,
 }));
+// Compat shims so existing test code works
+const mockTotalmem = { mockReturnValue: (_v: number) => { /* no-op, use __mockUnderPressure instead */ } };
+const mockFreemem = { mockReturnValue: (v: number) => { __mockUnderPressure = (1 - v / (16 * 1024 * 1024 * 1024)) * 100 >= 90; } };
 
 // Mock TaskPoolService for task-aware cleanup tests
 const mockGetAllItems = jest.fn().mockResolvedValue([]);
