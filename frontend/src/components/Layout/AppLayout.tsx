@@ -5,7 +5,6 @@ import { Navigation } from './Navigation';
 import { TerminalPanel } from '../TerminalPanel/TerminalPanel';
 import { OrchestratorStatusBanner } from '../OrchestratorStatusBanner';
 import { UpdateBanner } from '../UpdateBanner';
-import { CloudBar } from '../CloudBar';
 
 import { SessionResumePopup } from '../SessionResumePopup';
 import { TeamsRestorePopup } from '../TeamsRestorePopup';
@@ -77,7 +76,6 @@ export const AppLayout: React.FC = () => {
         </header>
 
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          <CloudBar />
           <UpdateBanner />
           <OrchestratorStatusBanner />
           <div className="flex-1 p-4 md:p-6 min-h-0 overflow-y-auto">

@@ -15,7 +15,6 @@ import { CreateCard } from '@/components/Cards/CreateCard';
 import { Team, Project } from '@/types';
 import { apiService } from '@/services/api.service';
 import { HealthBar } from '@/components/Dashboard/HealthBar';
-import { RelayHealthCard } from '@/components/Dashboard/RelayHealthCard';
 import { AgentStreamPanel } from '@/components/ExecutionFeed/AgentStreamPanel';
 import { assignDefaultAvatars } from '@/utils/team.utils';
 import { logSilentError } from '@/utils/error-handling';
@@ -320,11 +319,6 @@ export const Dashboard: React.FC = () => {
             />
           </div>
         </section>
-      </div>
-
-      {/* Cloud Relay — informational, below main content */}
-      <div className="mt-10">
-        <RelayHealthCard />
       </div>
     </div>
   );

@@ -41,11 +41,6 @@ vi.mock('../contexts/TerminalContext', () => ({
   }),
 }));
 
-// Mock RelayHealthCard — self-contained component that polls APIs
-vi.mock('../components/Dashboard/RelayHealthCard', () => ({
-  RelayHealthCard: () => <div data-testid="relay-health-card">Cloud Relay</div>,
-}));
-
 // Mock AgentStreamPanel — renders a stub with the sessionName it receives
 vi.mock('../components/ExecutionFeed/AgentStreamPanel', () => ({
   AgentStreamPanel: ({ sessionName }: { sessionName: string | null }) => (
@@ -200,20 +195,6 @@ describe('Dashboard Page', () => {
         const headings = screen.getAllByText('Projects');
         expect(headings.length).toBeGreaterThanOrEqual(1);
       });
-    });
-
-    it('should render RelayHealthCard for live Cloud Relay status', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Dashboard')).toBeInTheDocument();
-      });
-
-      expect(screen.queryByTestId('relay-health-card')).toBeInTheDocument();
     });
 
     it('should render teams section header', async () => {

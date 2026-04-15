@@ -29,10 +29,6 @@ vi.mock('../UpdateBanner', () => ({
   UpdateBanner: () => null
 }));
 
-vi.mock('../CloudBar', () => ({
-  CloudBar: () => null
-}));
-
 vi.mock('../SessionResumePopup', () => ({
   SessionResumePopup: () => null
 }));

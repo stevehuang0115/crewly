@@ -1,7 +1,7 @@
 /**
  * Navigation Component
  *
- * Sidebar navigation with grouped sections (Work / Communicate / Tools / Cloud / System Operations)
+ * Sidebar navigation with grouped sections (Work / Tools / System Operations)
  * following the IA Joint Recommendations "Workplace" model.
  * Includes pinned favorites at the top of the Work group.
  *
@@ -24,7 +24,6 @@ import {
 	DollarSign,
 	Pin,
 	Star,
-	Cloud,
 	ClipboardList,
 	Target,
 	Inbox,
@@ -59,9 +58,9 @@ interface NavGroup {
  *
  * Changes from original:
  * - Chat merged into WORK (was alone in COMMUNICATE)
- * - Cloud Portal moved to SYSTEM (was its own section)
+ * - Cloud Portal removed from nav (consolidated to Settings > Cloud tab)
  * - Usage + Security moved into SYSTEM alongside Settings
- * - Renamed: "Execution Logs" → "Work Items", "Incoming Pipeline" → "Requests"
+ * - Renamed: "Execution Logs" -> "Work Items", "Incoming Pipeline" -> "Requests"
  */
 const NAV_GROUPS: NavGroup[] = [
 	{
@@ -89,7 +88,6 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Usage', href: '/usage', icon: DollarSign },
 			{ name: 'Security', href: '/security', icon: Shield },
 			{ name: 'Settings', href: '/settings', icon: Settings },
-			{ name: 'Cloud Portal', href: '/cloud', icon: Cloud },
 		],
 	},
 ];
@@ -205,7 +203,7 @@ const PinnedFavoritesSection: React.FC<{
 /**
  * Main sidebar navigation component.
  *
- * Renders grouped navigation sections (Work, Communicate, Tools, Cloud, System Operations)
+ * Renders grouped navigation sections (Work, Tools, System Operations)
  * with pinned favorites at the top of the Work group. Includes logo,
  * cloud auth status, QR code display, and collapse toggle.
  *
