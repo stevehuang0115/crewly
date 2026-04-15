@@ -850,7 +850,6 @@ export class CrewlyServer {
 						agentHbSessionBackend,
 						this.apiController.agentRegistrationService,
 						this.storageService,
-						this.taskTrackingService
 					);
 					agentHeartbeatMonitor.start();
 					this.logger.info('AgentHeartbeatMonitorService started');

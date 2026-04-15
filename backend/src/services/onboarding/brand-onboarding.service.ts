@@ -24,6 +24,7 @@ import {
   OnboardingQuestion,
   OnboardingSession,
   OnboardingStatus,
+  type OnboardingPrefill,
 } from './brand-onboarding.types.js';
 
 // =============================================================================
@@ -339,6 +340,49 @@ export class BrandOnboardingService {
    */
   getQuestions(): OnboardingQuestion[] {
     return [...ONBOARDING_QUESTIONS];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Extended Session Management (for Portal/API routes)
+  // ---------------------------------------------------------------------------
+
+  listSessions(): OnboardingSession[] {
+    return Array.from(this.sessions.values());
+  }
+
+  setWebsiteUrl(sessionId: string, websiteUrl: string): OnboardingSession | null {
+    const session = this.getSession(sessionId);
+    if (!session) return null;
+    session.websiteUrl = websiteUrl;
+    session.updatedAt = new Date().toISOString();
+    this.sessions.set(sessionId, session);
+    this.persistSession(session);
+    return session;
+  }
+
+  setPrefill(sessionId: string, prefill: OnboardingPrefill): OnboardingSession | null {
+    const session = this.getSession(sessionId);
+    if (!session) return null;
+    session.prefill = prefill;
+    session.missingFields = ONBOARDING_QUESTIONS
+      .filter((q) => q.required)
+      .map((q) => q.id)
+      .filter((id) => !(prefill as Record<string, unknown>)[id]);
+    session.updatedAt = new Date().toISOString();
+    this.sessions.set(sessionId, session);
+    this.persistSession(session);
+    return session;
+  }
+
+  approveProfile(sessionId: string, profile: BrandProfile): OnboardingSession | null {
+    const session = this.getSession(sessionId);
+    if (!session) return null;
+    session.approvedProfile = profile;
+    session.status = 'completed';
+    session.updatedAt = new Date().toISOString();
+    this.sessions.set(sessionId, session);
+    this.persistSession(session);
+    return session;
   }
 
   // ---------------------------------------------------------------------------

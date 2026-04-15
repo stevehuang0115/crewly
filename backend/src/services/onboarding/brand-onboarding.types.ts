@@ -76,6 +76,49 @@ export interface OnboardingSession {
   updatedAt: string;
   /** Error message if status is 'failed' */
   error?: string;
+  /** Website URL for AI auto-extraction */
+  websiteUrl?: string;
+  /** AI-extracted prefill data */
+  prefill?: OnboardingPrefill;
+  /** Fields that still need manual input after AI extraction */
+  missingFields?: string[];
+  /** User-approved brand profile */
+  approvedProfile?: BrandProfile;
+}
+
+// =============================================================================
+// AI Prefill Types
+// =============================================================================
+
+/** Confidence level for AI-extracted prefill data. */
+export type PrefillConfidence = 'high' | 'medium' | 'low';
+
+/** A single field extracted from a website for onboarding prefill. */
+export interface PrefillField {
+  /** Extracted value */
+  value: string;
+  /** Source URLs where the data was found */
+  sourceUrls: string[];
+  /** Confidence of the extraction */
+  confidence: PrefillConfidence;
+  /** Method used for extraction */
+  extractionMethod: string;
+  /** Whether the user should review this value before use */
+  needsReview: boolean;
+}
+
+/** Complete AI-extracted prefill data for an onboarding session. */
+export interface OnboardingPrefill {
+  businessName?: PrefillField;
+  industry?: PrefillField;
+  description?: PrefillField;
+  targetCustomer?: PrefillField;
+  competitors?: PrefillField;
+  personality?: PrefillField;
+  tone?: PrefillField;
+  goals?: PrefillField;
+  platforms?: PrefillField;
+  contentExamples?: PrefillField;
 }
 
 // =============================================================================

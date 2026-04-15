@@ -286,6 +286,8 @@ export interface Mission {
   staleCycles?: number;
   /** Last OKR review result summary */
   lastReviewSummary?: string;
+  /** OKR time period for period-based lifecycle management */
+  period?: MissionPeriod;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +383,8 @@ export interface CreateMissionInput {
   currentStrategy: string;
   cadence?: string;
   policy?: Partial<MissionPolicy>;
+  /** OKR time period for period-based lifecycle management */
+  period?: MissionPeriod;
 }
 
 /**
@@ -676,6 +680,7 @@ export function createMission(input: CreateMissionInput): Mission {
     createdAt: now,
     updatedAt: now,
     learnings: [],
+    period: input.period,
   };
 }
 
@@ -718,4 +723,37 @@ export function mergeExecutionCadence(
           }
         : existing.workHours,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Mission Period Types & Helpers
+// ---------------------------------------------------------------------------
+
+export type MissionPeriodType = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'custom';
+
+export interface MissionPeriod {
+  type: MissionPeriodType;
+  startDate: string;
+  endDate: string;
+  label?: string;
+}
+
+export function isPeriodActive(period: MissionPeriod, now: Date = new Date()): boolean {
+  return now >= new Date(period.startDate) && now < new Date(period.endDate);
+}
+
+export function isPeriodPast(period: MissionPeriod, now: Date = new Date()): boolean {
+  return now >= new Date(period.endDate);
+}
+
+export function isPeriodFuture(period: MissionPeriod, now: Date = new Date()): boolean {
+  return now < new Date(period.startDate);
+}
+
+export function sortMissionsByPriority(missions: Mission[]): Mission[] {
+  return [...missions].sort((a, b) => {
+    if (a.status === 'active' && b.status !== 'active') return -1;
+    if (a.status !== 'active' && b.status === 'active') return 1;
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  });
 }

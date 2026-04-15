@@ -31,6 +31,7 @@ import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
+import { createWebsiteAnalysisRouter } from '../controllers/onboarding/website-analysis.routes.js';
 import { createDataRouter } from '../controllers/data/data.routes.js';
 import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
 import { createTaskPoolRouter } from '../controllers/task-pool/task-pool.routes.js';
@@ -129,6 +130,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Cross-machine communication routes for Slack-based inter-machine messaging
   router.use('/cross-machine', createCrossMachineRouter());
+
+  // Website Analysis routes for KR3 magic onboarding — SSE + sync analysis
+  router.use('/website-analysis', createWebsiteAnalysisRouter());
 
   // Data Architecture V2 — Unified Data Model, Schemas, Sinks
   router.use('/v2/data', createDataRouter());

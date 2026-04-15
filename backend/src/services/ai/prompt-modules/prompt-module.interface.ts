@@ -88,6 +88,8 @@ export interface ModuleConfig {
 	teamBudget?: { maxTokensPerDay?: number; maxUsdPerMonth?: number; alertThreshold?: number };
 	/** Team quality gate — injected so agents know review requirements */
 	teamQualityGate?: { reviewerId?: string; autoApprove?: boolean; minQualityScore?: number };
+	/** Absolute path to team norms directory (from template application) */
+	teamNormsPath?: string;
 
 	// === Eval mode ===
 

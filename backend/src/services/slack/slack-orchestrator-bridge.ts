@@ -1301,6 +1301,32 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
+   * Send a content approval notification to Slack.
+   *
+   * @param approvalId - The content approval ID
+   * @param channelId - Slack channel ID
+   * @param threadTs - Optional thread timestamp
+   * @returns The Slack message timestamp, or null if failed
+   */
+  async sendContentApproval(approvalId: string, channelId?: string, threadTs?: string): Promise<string | null> {
+    if (!channelId) return null;
+    try {
+      const messageTs = await this.slackService.sendMessage({
+        channelId,
+        text: `Content approval requested (ID: ${approvalId.slice(0, 8)}). Use the dashboard to approve/reject.`,
+        threadTs,
+      });
+      return messageTs ?? null;
+    } catch (err) {
+      this.logger.warn('Failed to send content approval to Slack', {
+        approvalId: approvalId.slice(0, 8),
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
    * Notify about task completion
    *
    * @param taskTitle - Title of completed task
