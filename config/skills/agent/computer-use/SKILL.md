@@ -1,8 +1,8 @@
 ---
 name: computer-use
 displayName: Computer Use
-description: "Self-contained macOS desktop control — screenshot, click, type, scroll, drag, focus, open-url, key combos, and app listing. All coordinates in screen points."
-version: 2.0.0
+description: "Self-contained macOS desktop control — screenshot, click, type, scroll, drag, focus, open-url, key combos, app listing, and visual element finding. All coordinates in screen points."
+version: 2.1.0
 category: automation
 skillType: claude-skill
 assignableRoles:
@@ -22,6 +22,9 @@ triggers:
   - open url
   - key combo
   - list apps
+  - find element
+  - find button
+  - find color
 tags:
   - automation
   - desktop
@@ -38,7 +41,7 @@ inputs:
   - name: action
     type: string
     required: true
-    description: "Action to perform: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps"
+    description: "Action to perform: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find"
   - name: x
     type: number
     required: false
@@ -101,11 +104,20 @@ inputs:
     type: number
     required: false
     description: "Drag end Y (for drag action)"
+  - name: mode
+    type: string
+    required: false
+    default: button
+    description: "Find mode: button (bright rectangles), avatar (colored circles), color (target RGB match). For find action."
+  - name: target
+    type: string
+    required: false
+    description: "Target color as 'r,g,b' (e.g. '0,120,215') for find action with mode=color"
 ---
 
 # Computer Use
 
-Self-contained macOS desktop control skill. Provides 10 actions for full programmatic interaction with the desktop.
+Self-contained macOS desktop control skill. Provides 11 actions for full programmatic interaction with the desktop.
 
 ## Key Design Decisions
 
@@ -113,6 +125,7 @@ Self-contained macOS desktop control skill. Provides 10 actions for full program
 - **Screen coordinate downscaling**: Screenshots are automatically downscaled by the backing scale factor so that 1 pixel = 1 screen point. This means screenshot coordinates directly match click/move coordinates.
 - **ABC input switching**: The type action automatically switches to English (ABC) keyboard layout before typing to avoid IME interference.
 - **No lib/ dependencies**: Fully self-contained in a single execute.sh file (sources only the shared `_common/lib.sh`).
+- **Pixel-level find**: The find action captures at full Retina resolution and uses Python/Pillow pixel scanning to locate UI elements by color and contrast, returning screen-point coordinates that work directly with click/move.
 
 ## Usage Examples
 
@@ -161,11 +174,24 @@ bash execute.sh '{"action":"open-url","url":"https://example.com","app":"Google 
 bash execute.sh '{"action":"list-apps"}'
 ```
 
+### find -- Locate UI elements by visual analysis
+```bash
+bash execute.sh '{"action":"find","mode":"button"}'
+bash execute.sh '{"action":"find","mode":"avatar"}'
+bash execute.sh '{"action":"find","mode":"color","target":"0,120,215"}'
+```
+Returns screen coordinates of found elements. Use with click to interact.
+
+**Modes:**
+- **button** -- Finds bright/white rectangular regions (buttons, panels, input fields) by scanning for horizontal runs of light pixels (r,g,b > 200) wider than 100px, then clustering vertically adjacent runs into distinct elements.
+- **avatar** -- Finds colored circles in the center half of the screen (account avatars, profile icons) by detecting saturated pixels, then clusters them and offsets coordinates rightward to target adjacent text/labels.
+- **color** -- Finds regions matching a specific RGB color with tolerance of 60 per channel. Pass `target` as `"r,g,b"` (e.g. `"0,120,215"` for Windows blue). Returns the centroid and up to 5 sample points.
+
 ## Requirements
 
 - macOS (Apple Silicon or Intel)
 - `jq` for JSON parsing
 - `sips`, `screencapture`, `osascript` (macOS built-in)
-- `python3` + `PIL`/`Pillow` (optional, for grid overlay and crop)
+- `python3` + `PIL`/`Pillow` (for grid overlay, crop, and find action)
 - Accessibility permission for click, type, key, scroll, drag, focus
-- Screen Recording permission for screenshot
+- Screen Recording permission for screenshot and find

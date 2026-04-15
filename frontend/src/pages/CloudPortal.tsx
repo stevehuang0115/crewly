@@ -5,7 +5,11 @@
  * status, deployed teams, and a "Deploy Team" wizard that triggers
  * DigitalOcean provisioning via the provisioning API.
  *
- * Flow: Payment success → Cloud Portal → Deploy Team → Chat with team
+ * Flow: Payment success -> Cloud Portal -> Deploy Team -> Chat with team
+ *
+ * Uses the backend `/api/cloud/status` endpoint as the source of truth
+ * for connection status and tier, falling back to subscription API and
+ * license context for plan information.
  *
  * @module pages/CloudPortal
  */
@@ -21,6 +25,7 @@ import {
   MessageSquare,
   Server,
   Globe,
+  Settings,
 } from 'lucide-react';
 import { Button } from '../components/UI';
 import { useAuth } from '../contexts/AuthContext';
@@ -55,6 +60,14 @@ interface SubscriptionInfo {
   currentPeriodEnd: string | null;
 }
 
+/** Cloud connection status from the backend */
+interface CloudStatusData {
+  connectionStatus: 'disconnected' | 'connected' | 'error' | 'token_expired';
+  cloudUrl: string | null;
+  tier: string;
+  lastSyncAt: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -78,8 +91,11 @@ const MAX_POLL_DURATION = 600000;
 /**
  * Cloud Portal page component.
  *
- * Shows the user's subscription status and allows them to deploy
- * a Crewly team to a DigitalOcean droplet with one click.
+ * Shows the user's cloud connection status, subscription tier, and allows
+ * them to deploy a Crewly team to a DigitalOcean droplet with one click.
+ *
+ * Fetches connection state from `/api/cloud/status` (backend source of truth)
+ * and enriches with subscription data when available.
  *
  * @returns The Cloud Portal page element
  */
@@ -88,6 +104,9 @@ export const CloudPortal: React.FC = () => {
   const [searchParams] = useSearchParams();
   const { license, user } = useAuth();
   const justUpgraded = searchParams.get('upgraded') === 'true';
+
+  const [cloudStatus, setCloudStatus] = useState<CloudStatusData | null>(null);
+  const [cloudStatusLoading, setCloudStatusLoading] = useState(true);
 
   const [subscription, setSubscription] = useState<SubscriptionInfo | null>(null);
   const [subLoading, setSubLoading] = useState(true);
@@ -101,8 +120,27 @@ export const CloudPortal: React.FC = () => {
   const [activeDeploymentId, setActiveDeploymentId] = useState<string | null>(null);
 
   // -----------------------------------------------------------------------
-  // Load subscription and deployments
+  // Load cloud status, subscription, and deployments
   // -----------------------------------------------------------------------
+
+  useEffect(() => {
+    const loadCloudStatus = async () => {
+      try {
+        const status = await apiService.getCloudStatus();
+        setCloudStatus({
+          connectionStatus: status.status === 'connected' ? 'connected' : status.status as CloudStatusData['connectionStatus'],
+          cloudUrl: status.cloudUrl,
+          tier: status.tier ?? 'free',
+          lastSyncAt: null,
+        });
+      } catch {
+        setCloudStatus(null);
+      } finally {
+        setCloudStatusLoading(false);
+      }
+    };
+    loadCloudStatus();
+  }, []);
 
   useEffect(() => {
     const loadSubscription = async () => {
@@ -214,8 +252,11 @@ export const CloudPortal: React.FC = () => {
   // Derived state
   // -----------------------------------------------------------------------
 
-  const planName = subscription?.plan ?? license?.plan ?? 'free';
+  const isCloudConnected = cloudStatus?.connectionStatus === 'connected';
+  const cloudTier = cloudStatus?.tier ?? 'free';
+  const planName = subscription?.plan ?? cloudTier ?? license?.plan ?? 'free';
   const isPaid = planName !== 'free';
+  const isLoading = cloudStatusLoading || subLoading;
   const readyDeployments = deployments.filter((d) => d.success && d.currentPhase === 'READY');
 
   // -----------------------------------------------------------------------
@@ -254,7 +295,7 @@ export const CloudPortal: React.FC = () => {
           </div>
         )}
 
-        {/* Subscription Status Card */}
+        {/* Cloud Connection + Subscription Status Card */}
         <div
           className="mb-6 rounded-xl border border-border-dark bg-surface-dark p-6"
           data-testid="subscription-card"
@@ -262,40 +303,62 @@ export const CloudPortal: React.FC = () => {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-semibold text-text-primary-dark">
-                Subscription
+                Cloud Status
               </h2>
-              {subLoading ? (
+              {isLoading ? (
                 <p className="mt-1 text-sm text-text-secondary-dark">Loading...</p>
-              ) : isPaid ? (
-                <div className="mt-1 flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                  <span className="text-sm text-emerald-400 font-medium capitalize">
-                    {planName} Plan — Active
-                  </span>
+              ) : isCloudConnected ? (
+                <div className="mt-1 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                    <span className="text-sm text-emerald-400 font-medium">
+                      Connected
+                    </span>
+                    <span className="px-2 py-0.5 text-xs font-medium rounded border bg-primary/10 text-primary border-primary/30 capitalize">
+                      {planName} Plan
+                    </span>
+                  </div>
+                  {cloudStatus?.cloudUrl && (
+                    <p className="text-xs text-text-secondary-dark">
+                      {cloudStatus.cloudUrl}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="mt-1 flex items-center gap-2">
                   <AlertCircle className="h-4 w-4 text-amber-400" />
                   <span className="text-sm text-amber-400">
-                    Free Plan — Upgrade to deploy teams
+                    Not connected to Cloud
                   </span>
                 </div>
               )}
             </div>
-            {!isPaid && (
-              <Button
-                variant="primary"
-                onClick={() => navigate('/pricing')}
-                data-testid="upgrade-btn"
-              >
-                Upgrade Now
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              {!isCloudConnected && (
+                <Button
+                  variant="primary"
+                  onClick={() => navigate('/settings', { state: { tab: 'cloud' } })}
+                  data-testid="connect-btn"
+                >
+                  <Settings className="mr-2 h-4 w-4" />
+                  Connect
+                </Button>
+              )}
+              {isCloudConnected && !isPaid && (
+                <Button
+                  variant="primary"
+                  onClick={() => navigate('/pricing')}
+                  data-testid="upgrade-btn"
+                >
+                  Upgrade Now
+                </Button>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Deploy New Team Section */}
-        {isPaid && (
+        {isPaid && isCloudConnected && (
           <div
             className="mb-6 rounded-xl border border-border-dark bg-surface-dark p-6"
             data-testid="deploy-section"
@@ -359,7 +422,7 @@ export const CloudPortal: React.FC = () => {
                 </h3>
                 <p className="mt-2 text-sm text-text-secondary-dark text-center max-w-md">
                   Creating server, installing Crewly OSS, adding Pro features, and connecting
-                  to Cloud. This usually takes 3–5 minutes.
+                  to Cloud. This usually takes 3-5 minutes.
                 </p>
                 {activeDeploymentId && (
                   <p className="mt-2 text-xs text-text-secondary-dark font-mono">
@@ -425,7 +488,7 @@ export const CloudPortal: React.FC = () => {
             </div>
           ) : readyDeployments.length === 0 ? (
             <p className="text-sm text-text-secondary-dark py-4">
-              No deployed teams yet. {isPaid ? 'Deploy your first team above!' : 'Upgrade to get started.'}
+              No deployed teams yet. {isPaid && isCloudConnected ? 'Deploy your first team above!' : 'Connect to Cloud and upgrade to get started.'}
             </p>
           ) : (
             <div className="space-y-3">

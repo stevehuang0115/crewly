@@ -9,6 +9,7 @@
 #   bash execute.sh '{"action":"screenshot"}'
 #   bash execute.sh '{"action":"click","x":500,"y":300}'
 #   bash execute.sh '{"action":"type","text":"hello"}'
+#   bash execute.sh '{"action":"find","mode":"button"}'
 #
 # All coordinates are in SCREEN POINTS (not backing pixels).
 # Screenshots are automatically downscaled to match screen coordinates.
@@ -453,6 +454,144 @@ do_list_apps() {
 }
 
 # ---------------------------------------------------------------------------
+# Action: find
+# Locates UI elements by pixel-level color/contrast analysis.
+# Takes a full-resolution screenshot, analyzes it with Python/Pillow,
+# and returns screen-point coordinates of found elements.
+# Modes: button (bright rectangles), avatar (colored circles), color (target RGB).
+# ---------------------------------------------------------------------------
+do_find() {
+  local mode target
+  mode=$(printf '%s' "$INPUT" | jq -r '.mode // "button"')
+  target=$(printf '%s' "$INPUT" | jq -r '.target // empty')
+
+  # Take a fresh screenshot at full resolution for analysis
+  local scan_file="/tmp/cu-find-scan.png"
+  screencapture -x "$scan_file" 2>/dev/null
+
+  # Get scale factor
+  local scale_int
+  scale_int=$(osascript -l JavaScript -e 'ObjC.import("AppKit"); Math.round($.NSScreen.mainScreen.backingScaleFactor);' 2>/dev/null || echo "2")
+
+  python3 -c "
+import json, sys
+from PIL import Image
+
+img = Image.open('${scan_file}')
+w, h = img.size
+scale = ${scale_int}
+
+mode = '${mode}'
+results = []
+
+if mode == 'button':
+    # Find white/light button-like regions on dark backgrounds
+    # or colored buttons. Scan for horizontal runs of bright pixels
+    # that differ from their surroundings (buttons have borders/contrast).
+
+    for y in range(0, h, 4):
+        in_bright = False
+        run_start = 0
+        for x in range(0, w, 2):
+            r, g, b = img.getpixel((x, y))[:3]
+            bright = r > 200 and g > 200 and b > 200
+            if bright and not in_bright:
+                run_start = x
+                in_bright = True
+            elif not bright and in_bright:
+                run_len = x - run_start
+                if run_len > 100:  # Wide enough to be a button
+                    results.append({
+                        'x': (run_start + x) // 2 // scale,
+                        'y': y // scale,
+                        'width': run_len // scale,
+                        'type': 'bright_region'
+                    })
+                in_bright = False
+
+    # Cluster nearby results into distinct buttons
+    if results:
+        clusters = []
+        results.sort(key=lambda r: (r['y'], r['x']))
+        current = [results[0]]
+        for i in range(1, len(results)):
+            if abs(results[i]['y'] - results[i-1]['y']) < 10 and abs(results[i]['x'] - results[i-1]['x']) < 50:
+                current.append(results[i])
+            else:
+                if len(current) >= 3:
+                    avg_x = sum(r['x'] for r in current) // len(current)
+                    avg_y = sum(r['y'] for r in current) // len(current)
+                    avg_w = max(r['width'] for r in current)
+                    clusters.append({'x': avg_x, 'y': avg_y, 'width': avg_w, 'height': len(current) * 4})
+                current = [results[i]]
+        if len(current) >= 3:
+            avg_x = sum(r['x'] for r in current) // len(current)
+            avg_y = sum(r['y'] for r in current) // len(current)
+            avg_w = max(r['width'] for r in current)
+            clusters.append({'x': avg_x, 'y': avg_y, 'width': avg_w, 'height': len(current) * 4})
+
+        print(json.dumps({'found': len(clusters), 'elements': clusters[:20]}))
+    else:
+        print(json.dumps({'found': 0, 'elements': []}))
+
+elif mode == 'avatar':
+    # Find colored circles (account avatars, icons)
+    for y in range(h // 4, 3 * h // 4, 2):
+        for x in range(w // 4, 3 * w // 4, 4):
+            r, g, b = img.getpixel((x, y))[:3]
+            sat = max(r,g,b) - min(r,g,b)
+            if sat > 40 and max(r,g,b) > 80 and min(r,g,b) < 200:
+                results.append((x, y))
+
+    if results:
+        # Cluster into distinct avatars
+        results.sort(key=lambda p: p[1])
+        clusters = [[results[0]]]
+        for i in range(1, len(results)):
+            if results[i][1] - results[i-1][1] < 10:
+                clusters[-1].append(results[i])
+            else:
+                clusters.append([results[i]])
+
+        avatars = []
+        for c in clusters:
+            if len(c) >= 5:
+                avg_x = sum(p[0] for p in c) // len(c) // scale
+                avg_y = sum(p[1] for p in c) // len(c) // scale
+                avatars.append({'x': avg_x + 50, 'y': avg_y})  # offset right to hit text area
+
+        print(json.dumps({'found': len(avatars), 'elements': avatars[:10]}))
+    else:
+        print(json.dumps({'found': 0, 'elements': []}))
+
+elif mode == 'color':
+    # Find regions matching a target color
+    # target format: 'r,g,b' with tolerance
+    tr, tg, tb = [int(c) for c in '${target}'.split(',')][:3] if '${target}' else (0, 0, 255)
+    tolerance = 60
+
+    for y in range(0, h, 4):
+        for x in range(0, w, 4):
+            r, g, b = img.getpixel((x, y))[:3]
+            if abs(r-tr) < tolerance and abs(g-tg) < tolerance and abs(b-tb) < tolerance:
+                results.append({'x': x // scale, 'y': y // scale})
+
+    if results:
+        # Cluster
+        center_x = sum(r['x'] for r in results) // len(results)
+        center_y = sum(r['y'] for r in results) // len(results)
+        print(json.dumps({'found': len(results), 'center': {'x': center_x, 'y': center_y}, 'elements': results[:5]}))
+    else:
+        print(json.dumps({'found': 0, 'elements': []}))
+
+else:
+    print(json.dumps({'error': f'Unknown find mode: {mode}'}))
+" 2>&1
+
+  rm -f "$scan_file"
+}
+
+# ---------------------------------------------------------------------------
 # Action dispatch
 # ---------------------------------------------------------------------------
 case "$ACTION" in
@@ -466,5 +605,6 @@ case "$ACTION" in
   focus)       do_focus ;;
   open-url)    do_open_url ;;
   list-apps)   do_list_apps ;;
-  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps" ;;
+  find)        do_find ;;
+  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find" ;;
 esac

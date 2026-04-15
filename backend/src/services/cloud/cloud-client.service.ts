@@ -272,6 +272,14 @@ export class CloudClientService {
         error: err instanceof Error ? err.message : String(err),
       });
     });
+
+    // Fetch relay token asynchronously (non-blocking)
+    // connectLocal skips Cloud API, but relay token requires Cloud-signed JWT
+    this.fetchRelayTokenFromValidate().catch((err) => {
+      this.logger.debug('Relay token fetch after connectLocal failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   /**
@@ -611,6 +619,7 @@ export class CloudClientService {
       const cloudUrl = this.cloudUrl || CLOUD_CONSTANTS.DEFAULT_CLOUD_URL;
       const cloudRefreshUrl = `${cloudUrl}/api/cloud/refresh`;
       let newAccessToken: string | null = null;
+      let relayToken: string | null = null;
 
       try {
         const response = await fetch(cloudRefreshUrl, {
@@ -621,9 +630,10 @@ export class CloudClientService {
         });
 
         if (response.ok) {
-          const data = await response.json() as { success?: boolean; accessToken?: string };
+          const data = await response.json() as { success?: boolean; accessToken?: string; relayToken?: string };
           if (data.success && data.accessToken) {
             newAccessToken = data.accessToken;
+            relayToken = data.relayToken ?? null;
             this.logger.info('Token refreshed via Cloud auth service');
           }
         }
@@ -691,15 +701,17 @@ export class CloudClientService {
       }
 
       // Notify token refresh subscribers (e.g. BrowserProxyService)
+      // Use relay token from Cloud refresh if available, otherwise use access token
+      const tokenForCallbacks = relayToken || newAccessToken;
       for (const callback of this.tokenRefreshCallbacks) {
         try {
-          callback(newAccessToken);
+          callback(tokenForCallbacks);
         } catch {
           // Non-fatal — don't let one bad callback break the refresh chain
         }
       }
 
-      this.logger.info('Access token auto-refreshed successfully');
+      this.logger.info('Access token auto-refreshed successfully', { hasRelayToken: !!relayToken });
 
       return true;
     } catch (error) {
@@ -766,6 +778,40 @@ export class CloudClientService {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Fetch relay token by calling Cloud validate endpoint.
+   * Used after connectLocal() to get a Cloud-signed relay JWT
+   * without blocking the connection flow.
+   *
+   * @returns Promise that resolves when relay token is fetched (or skipped)
+   */
+  private async fetchRelayTokenFromValidate(): Promise<void> {
+    if (!this.token || !this.cloudUrl) return;
+
+    const url = `${this.cloudUrl}${CLOUD_CONSTANTS.ENDPOINTS.AUTH_TOKEN}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.token}`,
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!response.ok) {
+      this.logger.debug('Relay token validate call failed', { status: response.status });
+      return;
+    }
+
+    const data = await response.json() as { data?: { relayToken?: string } };
+    if (data.data?.relayToken) {
+      this.logger.info('Relay token received from Cloud validate (after connectLocal)');
+      for (const callback of this.tokenRefreshCallbacks) {
+        callback(data.data.relayToken);
+      }
+    }
+  }
 
   /**
    * Throw if the client is not in a connected state.

@@ -14,28 +14,26 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap, Monitor, Cpu, Wifi, UserPlus, Link2 } from 'lucide-react';
+import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap, Monitor, Cpu, Wifi } from 'lucide-react';
 import { formatRelativeTimeCompact } from '../../utils/time';
 import { LoadingSpinner } from '../UI/LoadingSpinner';
 import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/cloud.constants';
-import { InviteDeviceModal } from './InviteDeviceModal';
-import { JoinRelayModal } from './JoinRelayModal';
 import { Card } from '../UI/Card';
 import { Alert } from '../UI/Alert';
 
 /**
- * Cloud API validation endpoint — proxied through the local OSS backend
+ * Cloud API validation endpoint -- proxied through the local OSS backend
  * to avoid CORS issues when validating tokens against api.crewlyai.com.
  */
 const CLOUD_VALIDATE_URL = '/api/cloud/validate';
 
-/** Backend cloud status endpoint — source of truth for connection state. */
+/** Backend cloud status endpoint -- source of truth for connection state. */
 const CLOUD_STATUS_URL = '/api/cloud/status';
 
-/** Cloud devices endpoint — reads from CloudSyncService or falls back to legacy proxy. */
+/** Cloud devices endpoint -- reads from CloudSyncService or falls back to legacy proxy. */
 const CLOUD_DEVICES_URL = '/api/cloud/devices';
 
-/** Legacy cloud devices endpoint — used as fallback when new endpoint returns empty. */
+/** Legacy cloud devices endpoint -- used as fallback when new endpoint returns empty. */
 const LEGACY_CLOUD_DEVICES_URL = '/api/relay/cloud-devices';
 
 // ---------------------------------------------------------------------------
@@ -108,7 +106,7 @@ function deduplicateDevices(devices: CloudDevice[]): CloudDevice[] {
   for (const device of devices) {
     const key = device.deviceId || device.sessionId;
     if (!key) {
-      // No usable key — keep as-is
+      // No usable key -- keep as-is
       seen.set(`__unkeyed_${seen.size}`, device);
       continue;
     }
@@ -222,7 +220,7 @@ const DeviceListSection: React.FC = () => {
           return;
         }
 
-        // New endpoint returned empty and sync is not active — try legacy endpoint
+        // New endpoint returned empty and sync is not active -- try legacy endpoint
         if (!data.data.syncState || data.data.syncState === 'stopped') {
           try {
             const legacyRes = await fetch(LEGACY_CLOUD_DEVICES_URL);
@@ -235,7 +233,7 @@ const DeviceListSection: React.FC = () => {
               return;
             }
           } catch {
-            // Legacy fallback failed — use whatever the new endpoint returned
+            // Legacy fallback failed -- use whatever the new endpoint returned
           }
         }
 
@@ -258,7 +256,7 @@ const DeviceListSection: React.FC = () => {
     fetchDevices();
   }, [fetchDevices]);
 
-  /** Deduplicated device list — used for both count and rendering. */
+  /** Deduplicated device list -- used for both count and rendering. */
   const uniqueDevices = useMemo(() => deduplicateDevices(devices), [devices]);
 
   return (
@@ -349,11 +347,9 @@ export const CloudTab: React.FC = () => {
   const [backendTier, setBackendTier] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showInviteModal, setShowInviteModal] = useState(false);
-  const [showJoinModal, setShowJoinModal] = useState(false);
 
   /**
-   * Check backend cloud status — the authoritative source of truth.
+   * Check backend cloud status -- the authoritative source of truth.
    *
    * The backend CloudClientService tracks the actual connection state.
    * Cloud connections made via CLI or auto-reconnect are reflected here
@@ -375,7 +371,7 @@ export const CloudTab: React.FC = () => {
         return isConnected;
       }
     } catch {
-      // Backend unreachable — fall through to localStorage check
+      // Backend unreachable -- fall through to localStorage check
     }
     setBackendConnected(false);
     setBackendTier(null);
@@ -417,12 +413,12 @@ export const CloudTab: React.FC = () => {
         });
         setError(null);
       } else {
-        // Invalid token — clear it
+        // Invalid token -- clear it
         localStorage.removeItem(CLOUD_TOKEN_KEY);
         setUser(null);
       }
     } catch {
-      // Connection failed — keep token but show error
+      // Connection failed -- keep token but show error
       setError('Could not reach CrewlyAI Cloud. Check your internet connection.');
     } finally {
       setLoading(false);
@@ -463,7 +459,7 @@ export const CloudTab: React.FC = () => {
         body: JSON.stringify({ token, ...(refreshToken && { refreshToken }) }),
       });
     } catch {
-      // Best-effort — the token is already stored in localStorage
+      // Best-effort -- the token is already stored in localStorage
     }
   }, []);
 
@@ -490,12 +486,15 @@ export const CloudTab: React.FC = () => {
     try {
       await fetch('/api/cloud/disconnect', { method: 'POST' });
     } catch {
-      // Best-effort — local state is already cleared
+      // Best-effort -- local state is already cleared
     }
   };
 
   /**
    * Get plan badge color class.
+   *
+   * @param plan - Plan name string
+   * @returns Tailwind CSS class string for the badge
    */
   const getPlanBadgeClass = (plan: string): string => {
     switch (plan) {
@@ -512,6 +511,9 @@ export const CloudTab: React.FC = () => {
       </div>
     );
   }
+
+  /** Resolved plan from user profile, backend status, or default. */
+  const resolvedPlan = user?.plan ?? backendTier ?? 'free';
 
   return (
     <div className="space-y-6">
@@ -532,10 +534,11 @@ export const CloudTab: React.FC = () => {
         </Alert>
       )}
 
-      {/* Connected State — show when backend reports connected OR user profile is validated */}
+      {/* Connected State -- show when backend reports connected OR user profile is validated */}
       {(user || backendConnected) ? (
         <>
           <div className="bg-surface-dark border border-border-dark rounded-lg p-5 space-y-4">
+            {/* User info and plan badge */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
@@ -562,11 +565,12 @@ export const CloudTab: React.FC = () => {
                 </div>
               </div>
 
-              <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getPlanBadgeClass(user?.plan ?? backendTier ?? 'free')}`}>
-                {(user?.plan ?? backendTier ?? 'free').charAt(0).toUpperCase() + (user?.plan ?? backendTier ?? 'free').slice(1)}
+              <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getPlanBadgeClass(resolvedPlan)}`}>
+                {resolvedPlan.charAt(0).toUpperCase() + resolvedPlan.slice(1)}
               </span>
             </div>
 
+            {/* Action buttons: Refresh and Disconnect */}
             <div className="flex items-center gap-2 pt-2 border-t border-border-dark">
               <button
                 onClick={async () => { await checkBackendStatus(); await validateToken(); }}
@@ -578,6 +582,7 @@ export const CloudTab: React.FC = () => {
               <button
                 onClick={handleDisconnect}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-rose-400 rounded-md hover:bg-background-dark transition-colors"
+                data-testid="cloud-disconnect-button"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 Disconnect
@@ -585,32 +590,8 @@ export const CloudTab: React.FC = () => {
             </div>
           </div>
 
-          {/* Relay Pairing Buttons */}
-          <div className="flex items-center gap-2" data-testid="relay-pairing-buttons">
-            <button
-              onClick={() => setShowInviteModal(true)}
-              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-text-primary-dark bg-primary/10 border border-primary/20 rounded-lg hover:bg-primary/20 transition-colors"
-              data-testid="invite-device-button"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              Invite Device
-            </button>
-            <button
-              onClick={() => setShowJoinModal(true)}
-              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-text-primary-dark bg-surface-dark border border-border-dark rounded-lg hover:bg-background-dark transition-colors"
-              data-testid="join-relay-button"
-            >
-              <Link2 className="w-3.5 h-3.5" />
-              Join Relay
-            </button>
-          </div>
-
           {/* Device Discovery List */}
           <DeviceListSection />
-
-          {/* Modals */}
-          <InviteDeviceModal isOpen={showInviteModal} onClose={() => setShowInviteModal(false)} />
-          <JoinRelayModal isOpen={showJoinModal} onClose={() => setShowJoinModal(false)} />
         </>
       ) : (
         /* Disconnected State */
