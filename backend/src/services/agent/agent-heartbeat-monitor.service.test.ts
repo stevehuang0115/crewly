@@ -67,8 +67,13 @@ jest.mock('../../websocket/terminal.gateway.js', () => ({
 	getTerminalGateway: jest.fn().mockReturnValue(mockGateway),
 }));
 
-jest.mock('fs/promises', () => ({
-	readFile: jest.fn().mockResolvedValue('# Task Content\nSome task details here.'),
+const mockGetAllItems = jest.fn().mockResolvedValue([]);
+jest.mock('../task-pool/task-pool.service.js', () => ({
+	TaskPoolService: {
+		getInstance: () => ({
+			getAllItems: mockGetAllItems,
+		}),
+	},
 }));
 
 import { AgentHeartbeatMonitorService } from './agent-heartbeat-monitor.service.js';
@@ -77,7 +82,6 @@ import { AgentHeartbeatService } from './agent-heartbeat.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { AGENT_HEARTBEAT_MONITOR_CONSTANTS } from '../../constants.js';
-import * as fsPromises from 'fs/promises';
 import type { Team } from '../../types/index.js';
 
 /**
@@ -107,9 +111,6 @@ describe('AgentHeartbeatMonitorService', () => {
 		getTeams: jest.Mock;
 		updateAgentStatus: jest.Mock;
 		findMemberBySessionName: jest.Mock;
-	};
-	let mockTaskTrackingService: {
-		getTasksForTeamMember: jest.Mock;
 	};
 	let mockTeams: Team[];
 
@@ -177,15 +178,10 @@ describe('AgentHeartbeatMonitorService', () => {
 			findMemberBySessionName: jest.fn().mockResolvedValue(null),
 		};
 
-		mockTaskTrackingService = {
-			getTasksForTeamMember: jest.fn().mockResolvedValue([]),
-		};
-
 		service.setDependencies(
 			mockSessionBackend as any,
 			mockAgentRegistrationService as any,
 			mockStorageService as any,
-			mockTaskTrackingService as any,
 		);
 
 		// Record initial activity so tracker has a baseline
@@ -603,7 +599,6 @@ describe('AgentHeartbeatMonitorService', () => {
 				backendWithoutCheck as any,
 				mockAgentRegistrationService as any,
 				mockStorageService as any,
-				mockTaskTrackingService as any,
 			);
 			setStartedAtInPast(service);
 
@@ -768,18 +763,21 @@ describe('AgentHeartbeatMonitorService', () => {
 
 	describe('task re-delivery', () => {
 		it('should re-deliver active tasks after restart', async () => {
-			mockTaskTrackingService.getTasksForTeamMember.mockResolvedValue([
+			mockGetAllItems.mockResolvedValue([
 				{
 					id: 'task-1',
-					taskName: 'Implement feature X',
-					taskFilePath: '/project/.crewly/tasks/m1/in_progress/01_feature_x.md',
-					status: 'assigned',
-					assignedTeamMemberId: 'member-1',
-					assignedSessionName: 'dev-agent-1',
-					assignedAt: new Date().toISOString(),
-					projectId: 'proj-1',
-					teamId: 'team-1',
-					targetRole: 'developer',
+					title: 'Implement feature X',
+					description: 'Implement the feature X with full test coverage',
+					target: 'dev-agent-1',
+					status: 'running',
+					type: 'delegate',
+					owner: 'agent',
+					retryCount: 0,
+					maxRetries: 3,
+					inputTokens: 0,
+					outputTokens: 0,
+					cost: 0,
+					createdAt: new Date().toISOString(),
 				},
 			]);
 
@@ -797,7 +795,7 @@ describe('AgentHeartbeatMonitorService', () => {
 			// Flush the async redeliverTasks promise (waits for REHYDRATION_TIMEOUT + task delays)
 			await jest.advanceTimersByTimeAsync(50_000);
 
-			expect(mockTaskTrackingService.getTasksForTeamMember).toHaveBeenCalledWith('member-1');
+			expect(mockGetAllItems).toHaveBeenCalled();
 			expect(mockSession.write).toHaveBeenCalledWith(
 				expect.stringContaining('[TASK RE-DELIVERY]')
 			);
@@ -807,7 +805,7 @@ describe('AgentHeartbeatMonitorService', () => {
 		});
 
 		it('should skip re-delivery when no tasks exist', async () => {
-			mockTaskTrackingService.getTasksForTeamMember.mockResolvedValue([]);
+			mockGetAllItems.mockResolvedValue([]);
 			setStartedAtInPast(service);
 
 			// Make truly idle with dead process
@@ -829,21 +827,22 @@ describe('AgentHeartbeatMonitorService', () => {
 		});
 
 		it('should handle missing task files gracefully', async () => {
-			mockTaskTrackingService.getTasksForTeamMember.mockResolvedValue([
+			mockGetAllItems.mockResolvedValue([
 				{
 					id: 'task-1',
-					taskName: 'Missing task',
-					taskFilePath: '/nonexistent/task.md',
-					status: 'active',
-					assignedTeamMemberId: 'member-1',
-					assignedSessionName: 'dev-agent-1',
-					assignedAt: new Date().toISOString(),
-					projectId: 'proj-1',
-					teamId: 'team-1',
-					targetRole: 'developer',
+					title: 'Missing task',
+					target: 'dev-agent-1',
+					status: 'running',
+					type: 'delegate',
+					owner: 'agent',
+					retryCount: 0,
+					maxRetries: 3,
+					inputTokens: 0,
+					outputTokens: 0,
+					cost: 0,
+					createdAt: new Date().toISOString(),
 				},
 			]);
-			(fsPromises.readFile as jest.Mock).mockRejectedValue(new Error('ENOENT'));
 
 			setStartedAtInPast(service);
 
@@ -860,26 +859,28 @@ describe('AgentHeartbeatMonitorService', () => {
 			await jest.advanceTimersByTimeAsync(50_000);
 
 			expect(mockSession.write).toHaveBeenCalledWith(
-				expect.stringContaining('(task file not found)')
+				expect.stringContaining('(no task description available)')
 			);
 		});
 
-		it('should truncate long task content', async () => {
-			const longContent = 'x'.repeat(3000);
-			(fsPromises.readFile as jest.Mock).mockResolvedValue(longContent);
+		it('should truncate long task description', async () => {
+			const longDescription = 'x'.repeat(3000);
 
-			mockTaskTrackingService.getTasksForTeamMember.mockResolvedValue([
+			mockGetAllItems.mockResolvedValue([
 				{
 					id: 'task-1',
-					taskName: 'Long task',
-					taskFilePath: '/project/task.md',
-					status: 'assigned',
-					assignedTeamMemberId: 'member-1',
-					assignedSessionName: 'dev-agent-1',
-					assignedAt: new Date().toISOString(),
-					projectId: 'proj-1',
-					teamId: 'team-1',
-					targetRole: 'developer',
+					title: 'Long task',
+					description: longDescription,
+					target: 'dev-agent-1',
+					status: 'running',
+					type: 'delegate',
+					owner: 'agent',
+					retryCount: 0,
+					maxRetries: 3,
+					inputTokens: 0,
+					outputTokens: 0,
+					cost: 0,
+					createdAt: new Date().toISOString(),
 				},
 			]);
 

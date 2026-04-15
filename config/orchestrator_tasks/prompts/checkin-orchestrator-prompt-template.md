@@ -30,8 +30,8 @@ This is a critical step to ensure accountability and prevent task stagnation. Yo
 
 1.  **Identify All In-Progress Tasks**:
 
-    -   Read the `~/.crewly/in_progress_tasks.json` file.
-    -   Filter the list to get all tasks associated with the current `{projectId}`.
+    -   Query the TaskPool API: `curl -s http://localhost:8787/api/pool/all` to get all WorkItems.
+    -   Filter for items with status `running` or `queued` associated with the current project agents.
 
 2.  **Send Status Enforcement Requests**:
     For **each** in-progress task identified, send a direct, non-negotiable status check message to the assigned agent.

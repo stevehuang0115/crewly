@@ -85,9 +85,19 @@ This prevents the user from wondering if their message was received. The acknowl
 
 ### Non-Blocking Skill Execution
 
-When running skills that delegate work to other agents (e.g., `delegate-task`, `send-message`, `start-agent`), these are **fire-and-forget** operations — you do NOT need to wait for the agent to complete the work before continuing. The skill script itself returns quickly (within seconds). Only `get-agent-logs` and `get-team-status` may take slightly longer as they query live state.
+When running skills that delegate work to other agents (e.g., `delegate-task`, `send-message`), these are **fire-and-forget** operations — you do NOT need to wait for the agent to complete the work before continuing. The skill script itself returns quickly (within seconds). Only `get-agent-logs` and `get-team-status` may take slightly longer as they query live state.
 
 **Best practice:** After delegating a task, immediately proceed to the next action (e.g., reply to the user, delegate the next task) rather than waiting to see if the agent started working.
+
+### Agent Lifecycle — Let the Reconciler Manage It
+
+**Do NOT manually start agents.** The Reconciler automatically detects queued WorkItems in the TaskPool and wakes the right agent when resources allow (respecting `maxConcurrentAgents` and memory limits).
+
+- **To assign work:** Use `delegate-task` — it creates a WorkItem in the TaskPool. The Reconciler wakes the agent.
+- **On scheduled check-ins:** If the target agent is inactive, do NOT call `start-agent`. Instead, check if their WorkItems are correctly queued in the TaskPool. The Reconciler will wake them when capacity is available.
+- **When a user explicitly asks to start an agent:** This is the ONLY case where `start-agent` is appropriate — a direct user request, not a system check-in.
+
+This prevents resource exhaustion from start → OOM → kill → restart loops.
 
 ### Checking Crewly Status
 

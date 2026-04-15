@@ -350,6 +350,27 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   async executeWakeAction(action: WakeAction): Promise<boolean> {
     const { agentSessionName, strategy } = action;
 
+    // Skip wake action under system memory pressure (>90% used).
+    // Prevents spawning new agent processes when the system is already low on memory,
+    // which would cause OOM → kill → reconciler wakes again → OOM loop.
+    try {
+      const os = await import('os');
+      const totalMem = os.totalmem();
+      const freeMem = os.freemem();
+      const memUsedPercent = ((totalMem - freeMem) / totalMem) * 100;
+      if (memUsedPercent >= 90) {
+        this.logger.warn('Skipping wake action due to memory pressure', {
+          agent: agentSessionName,
+          strategy,
+          memoryUsedPercent: memUsedPercent.toFixed(1),
+          freeMemMB: Math.round(freeMem / 1024 / 1024),
+        });
+        return false;
+      }
+    } catch {
+      // If memory check fails, proceed with wake
+    }
+
     this.logger.info('Executing wake action', {
       agent: agentSessionName,
       strategy,
@@ -369,15 +390,19 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         return await suspendService.rehydrateAgent(agentSessionName);
       } else if (strategy === 'start') {
         // For inactive agents, we need to start them via the registration service.
-        // The agent session creation is complex — use the start-agent API endpoint.
-        const response = await fetch(
-          `http://localhost:${process.env.PORT || 8787}/api/teams/members/start`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionName: agentSessionName }),
-          },
-        );
+        // The agent session creation is complex — use the team-member-start API endpoint.
+        const { teamId, memberId } = action;
+
+        let url = `http://localhost:${process.env.PORT || 8787}/api/teams/members/start`;
+        if (teamId && memberId) {
+          url = `http://localhost:${process.env.PORT || 8787}/api/teams/${teamId}/members/${memberId}/start`;
+        }
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionName: agentSessionName }),
+        });
 
         if (!response.ok) {
           const errorText = await response.text();

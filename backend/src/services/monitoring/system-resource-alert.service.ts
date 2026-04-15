@@ -19,6 +19,7 @@ import { MonitoringService } from './monitoring.service.js';
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import { getChatService } from '../chat/chat.service.js';
 import { SYSTEM_RESOURCE_ALERT_CONSTANTS } from '../../constants.js';
+import { IdleDetectionService } from '../agent/idle-detection.service.js';
 
 const { THRESHOLDS } = SYSTEM_RESOURCE_ALERT_CONSTANTS;
 
@@ -106,9 +107,14 @@ export class SystemResourceAlertService {
 		// Check memory usage
 		const memUsage = metrics.memory.percentage;
 		if (memUsage >= THRESHOLDS.MEMORY_CRITICAL) {
+			// Auto-stop idle agents to free memory before the system OOMs
+			const stoppedCount = await this.autoStopIdleAgents();
+			const stoppedMsg = stoppedCount > 0
+				? ` Auto-stopped ${stoppedCount} idle agent(s) to free memory.`
+				: '';
 			await this.sendAlert(
 				'memory_critical',
-				`Memory usage at ${memUsage.toFixed(1)}%. System may start killing processes. Consider stopping unused agents.`,
+				`Memory usage at ${memUsage.toFixed(1)}%. System may start killing processes.${stoppedMsg}`,
 				'critical'
 			);
 		} else if (memUsage >= THRESHOLDS.MEMORY_WARNING) {
@@ -133,6 +139,28 @@ export class SystemResourceAlertService {
 				`CPU load at ${cpuLoadPercent.toFixed(0)}% of capacity. Consider reducing parallel workloads.`,
 				'warning'
 			);
+		}
+	}
+
+	/**
+	 * Auto-stop idle agents to free memory during critical memory pressure.
+	 * Only stops agents that are idle (not actively working on tasks).
+	 *
+	 * @returns Number of agents stopped
+	 */
+	private async autoStopIdleAgents(): Promise<number> {
+		try {
+			const idleDetection = IdleDetectionService.getInstance();
+			const stoppedCount = await idleDetection.forceStopIdleAgents();
+			if (stoppedCount > 0) {
+				this.logger.warn('Auto-stopped idle agents due to memory pressure', { stoppedCount });
+			}
+			return stoppedCount;
+		} catch (error) {
+			this.logger.warn('Failed to auto-stop idle agents', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return 0;
 		}
 	}
 

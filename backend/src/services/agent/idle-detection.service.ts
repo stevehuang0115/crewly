@@ -288,4 +288,72 @@ export class IdleDetectionService {
 			}
 		}
 	}
+
+	/**
+	 * Emergency stop of idle agents during memory pressure.
+	 * Stops all non-orchestrator agents with workingStatus 'idle',
+	 * regardless of the configured idle timeout.
+	 *
+	 * Called by SystemResourceAlertService when memory usage is critical.
+	 *
+	 * @returns Number of agents stopped
+	 */
+	async forceStopIdleAgents(): Promise<number> {
+		let stoppedCount = 0;
+
+		let teams;
+		try {
+			teams = await StorageService.getInstance().getTeams();
+		} catch {
+			return 0;
+		}
+
+		const backend = getSessionBackendSync();
+
+		for (const team of teams) {
+			for (const member of team.members || []) {
+				if (member.agentStatus !== CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE &&
+					member.agentStatus !== CREWLY_CONSTANTS.AGENT_STATUSES.STARTED) {
+					continue;
+				}
+
+				// Never stop orchestrator
+				if (AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES.includes(
+					member.role as typeof AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES[number]
+				)) {
+					continue;
+				}
+
+				// Only stop agents that are idle
+				if (member.workingStatus === 'in_progress') {
+					continue;
+				}
+
+				this.logger.warn('Force-stopping idle agent due to memory pressure', {
+					sessionName: member.sessionName,
+					role: member.role,
+				});
+
+				try {
+					if (backend && member.sessionName && backend.sessionExists(member.sessionName)) {
+						await backend.killSession(member.sessionName);
+					}
+					PtyActivityTrackerService.getInstance().clearSession(member.sessionName);
+					await StorageService.getInstance().updateAgentStatus(
+						member.sessionName,
+						CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as any,
+						'idle_exit'
+					);
+					stoppedCount++;
+				} catch (err) {
+					this.logger.error('Failed to force-stop agent', {
+						sessionName: member.sessionName,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			}
+		}
+
+		return stoppedCount;
+	}
 }

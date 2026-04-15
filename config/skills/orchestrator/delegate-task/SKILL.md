@@ -1,6 +1,6 @@
 ---
 name: Delegate Task
-description: Send a structured task assignment to an agent with priority, context, and optional auto-monitoring. When monitor is provided, automatically subscribes to idle events and schedules fallback checks that are cleaned up on task completion. For formal task tracking, use assign-task instead. For simple messages, use send-message.
+description: Create a WorkItem in the TaskPool targeting a specific agent. The Reconciler will automatically wake the agent and deliver the task when resources are available. No direct agent start or auto-monitoring — the Reconciler handles lifecycle, retries, and resource control.
 version: 2.0.0
 category: management
 skillType: claude-skill
@@ -27,10 +27,11 @@ execution:
 
 # Delegate Task
 
-Sends a structured task assignment to an agent. When a `projectPath` is provided, also creates a task MD file in the project's `.crewly/tasks/delegated/in_progress/` directory for tracking.
+Creates a WorkItem in the TaskPool targeting a specific agent. The Reconciler automatically detects the queued item, wakes the agent (respecting `maxConcurrentAgents` and memory limits), and the auto-claim service delivers the task.
+
 The script auto-resolves `config/skills/...` references to absolute paths so delegated tasks remain runnable from any working directory.
 
-**Monitoring is enabled by default** — idle event subscriptions and recurring fallback checks (every 5 minutes) are automatically set up for every delegation. These are linked to the task and will be **automatically cleaned up** when the task is completed via `report-status` or `complete-task`. To disable monitoring, explicitly pass `"monitor": {"idleEvent": false, "fallbackCheckMinutes": 0}`.
+**No auto-monitoring** — the Reconciler handles stuck/unclaimed WorkItem detection, agent lifecycle, and retries. No recurring checks or idle subscriptions are created.
 
 ## Parameters
 
