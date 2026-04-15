@@ -23,6 +23,7 @@ import { MessageDeliveryLogModel } from '../../models/ScheduledMessage.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { AgentRegistrationService } from '../agent/agent-registration.service.js';
 import { RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, RuntimeType, type MessageSource } from '../../constants.js';
+import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import {
   ScheduledMessageType,
   EnhancedScheduledMessage,
@@ -1466,27 +1467,20 @@ export class SchedulerService extends EventEmitter {
       // Skip execution under system memory pressure (>90% used).
       // This prevents the scheduler from triggering agent starts when the system
       // is already OOM, which creates a kill → restart → OOM loop.
-      try {
-        const os = await import('os');
-        const totalMem = os.totalmem();
-        const freeMem = os.freemem();
-        const memUsedPercent = ((totalMem - freeMem) / totalMem) * 100;
-        if (memUsedPercent >= 90) {
-          this.logger.warn('Skipping recurring check due to memory pressure', {
-            checkId,
-            targetSession,
-            memoryUsedPercent: memUsedPercent.toFixed(1),
-            freeMemMB: Math.round(freeMem / 1024 / 1024),
-          });
-          // Schedule next execution normally — don't cancel, just skip this one
-          if (this.recurringChecks.has(checkId)) {
-            const nextTimeout = setTimeout(executeRecurring, intervalMinutes * 60 * 1000);
-            this.recurringTimeouts.set(checkId, nextTimeout);
-          }
-          return;
+      if (isUnderMemoryPressure()) {
+        const stats = getMemoryStats();
+        this.logger.warn('Skipping recurring check due to memory pressure', {
+          checkId,
+          targetSession,
+          memoryUsedPercent: stats.usedPercent,
+          freeMemMB: stats.freeMB,
+        });
+        // Schedule next execution normally — don't cancel, just skip this one
+        if (this.recurringChecks.has(checkId)) {
+          const nextTimeout = setTimeout(executeRecurring, intervalMinutes * 60 * 1000);
+          this.recurringTimeouts.set(checkId, nextTimeout);
         }
-      } catch {
-        // If memory check fails, proceed normally
+        return;
       }
 
       // Skip this occurrence if orchestrator recently checked the same agent manually.

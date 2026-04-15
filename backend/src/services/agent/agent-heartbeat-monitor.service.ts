@@ -39,6 +39,7 @@ import { getSessionStatePersistence } from '../session/session-state-persistence
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
 import type { ISessionBackend } from '../session/session-backend.interface.js';
+import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 
 /**
  * Number of consecutive dead-process checks before triggering a restart.
@@ -508,21 +509,14 @@ export class AgentHeartbeatMonitorService {
 		// Check system memory pressure before restarting — avoid respawning agents
 		// when the system is already under memory pressure, which causes an infinite
 		// kill → restart → OOM → kill loop.
-		try {
-			const os = await import('os');
-			const totalMem = os.totalmem();
-			const freeMem = os.freemem();
-			const usedPercent = ((totalMem - freeMem) / totalMem) * 100;
-			if (usedPercent >= 90) {
-				this.logger.warn('Skipping agent restart due to memory pressure', {
-					sessionName: state.sessionName,
-					memoryUsedPercent: usedPercent.toFixed(1),
-					freeMemMB: Math.round(freeMem / 1024 / 1024),
-				});
-				return;
-			}
-		} catch {
-			// If memory check fails, proceed with restart
+		if (isUnderMemoryPressure()) {
+			const stats = getMemoryStats();
+			this.logger.warn('Skipping agent restart due to memory pressure', {
+				sessionName: state.sessionName,
+				memoryUsedPercent: stats.usedPercent,
+				freeMemMB: stats.freeMB,
+			});
+			return;
 		}
 
 		// Check cooldown

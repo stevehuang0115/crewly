@@ -28,6 +28,7 @@ import { RequestService } from '../v3/request.service.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
+import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -353,22 +354,15 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     // Skip wake action under system memory pressure (>90% used).
     // Prevents spawning new agent processes when the system is already low on memory,
     // which would cause OOM → kill → reconciler wakes again → OOM loop.
-    try {
-      const os = await import('os');
-      const totalMem = os.totalmem();
-      const freeMem = os.freemem();
-      const memUsedPercent = ((totalMem - freeMem) / totalMem) * 100;
-      if (memUsedPercent >= 90) {
-        this.logger.warn('Skipping wake action due to memory pressure', {
-          agent: agentSessionName,
-          strategy,
-          memoryUsedPercent: memUsedPercent.toFixed(1),
-          freeMemMB: Math.round(freeMem / 1024 / 1024),
-        });
-        return false;
-      }
-    } catch {
-      // If memory check fails, proceed with wake
+    if (isUnderMemoryPressure()) {
+      const stats = getMemoryStats();
+      this.logger.warn('Skipping wake action due to memory pressure', {
+        agent: agentSessionName,
+        strategy,
+        memoryUsedPercent: stats.usedPercent,
+        freeMemMB: stats.freeMB,
+      });
+      return false;
     }
 
     this.logger.info('Executing wake action', {

@@ -324,7 +324,11 @@ export class IdleDetectionService {
 					continue;
 				}
 
-				// Only stop agents that are idle
+				// Only stop agents that are idle.
+				// NOTE: Intentionally checks member.workingStatus directly instead of
+				// ActivityMonitorService. This is the emergency OOM path — ActivityMonitorService
+				// may not be available or its state may lag behind reality. The raw
+				// workingStatus field from StorageService is the most reliable signal here.
 				if (member.workingStatus === 'in_progress') {
 					continue;
 				}

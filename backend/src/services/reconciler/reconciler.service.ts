@@ -447,7 +447,7 @@ export class ReconcilerService {
 
     // Respect maxConcurrentAgents — count currently active agents and skip wake
     // if we're at capacity. This is the primary control preventing resource exhaustion.
-    let maxConcurrent = 10; // default
+    let maxConcurrent = 50; // matches ConfigService default (MAX_CONCURRENT_AGENTS)
     try {
       const { getSettingsService } = await import('../settings/index.js');
       const settings = await getSettingsService().getSettings();
