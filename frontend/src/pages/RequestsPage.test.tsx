@@ -1,3 +1,6 @@
+// Layout standardization
+// Layout + ScoreCard consistency
+// Updated: PageToolbar adoption
 // @vitest-environment jsdom
 /**
  * Tests for RequestsPage

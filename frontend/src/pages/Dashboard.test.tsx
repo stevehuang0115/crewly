@@ -1,3 +1,4 @@
+// Layout standardization
 /**
  * Dashboard Page Tests
  *
@@ -94,6 +95,7 @@ const mockTeamsWithActiveAgent = [
     id: 'team-1',
     name: 'Test Team 1',
     description: 'Team 1 description',
+    projectIds: ['project-1'],
     members: [
       {
         id: 'member-1',
@@ -103,6 +105,48 @@ const mockTeamsWithActiveAgent = [
         systemPrompt: '',
         agentStatus: 'active' as const,
         workingStatus: 'in_progress' as const,
+        runtimeType: 'claude-code' as const,
+      },
+    ],
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+/** Teams fixture with active agent assigned to project — used for Active Projects metric tests */
+const mockTeamsWithActiveAgentAssigned = [
+  {
+    id: 'team-1',
+    name: 'Team Alpha',
+    description: 'Alpha team',
+    projectIds: ['project-1'],
+    members: [
+      {
+        id: 'member-1',
+        name: 'Agent Leo',
+        role: 'developer',
+        sessionName: 'crewly-product-leo',
+        systemPrompt: '',
+        agentStatus: 'active' as const,
+        workingStatus: 'in_progress' as const,
+        runtimeType: 'claude-code' as const,
+      },
+    ],
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'team-2',
+    name: 'Team Beta',
+    description: 'Beta team',
+    projectIds: ['project-2'],
+    members: [
+      {
+        id: 'member-2',
+        name: 'Agent Max',
+        role: 'developer',
+        sessionName: 'crewly-product-max',
+        systemPrompt: '',
+        agentStatus: 'inactive' as const,
+        workingStatus: 'idle' as const,
         runtimeType: 'claude-code' as const,
       },
     ],
@@ -293,6 +337,47 @@ describe('Dashboard Page', () => {
       await waitFor(() => {
         expect(screen.getByTestId('health-factory-btn')).toBeInTheDocument();
       });
+    });
+
+    it('should count active projects based on running agents, not project.status', async () => {
+      // project-1 has status 'active' but project-2 has status 'paused'
+      // With team-based counting, only project-1 should be active (team-1 has active agent assigned to it)
+      vi.mocked(apiService.getTeams).mockResolvedValue(mockTeamsWithActiveAgentAssigned);
+
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Active Projects')).toBeInTheDocument();
+      });
+
+      // Find the Active Projects ScoreCard value — should be 1 (only project-1 has active agents)
+      const activeProjectsLabel = screen.getByText('Active Projects');
+      const scoreCard = activeProjectsLabel.closest('.score-card');
+      expect(scoreCard).toBeInTheDocument();
+      const valueEl = scoreCard?.querySelector('.score-card__value');
+      expect(valueEl?.textContent).toBe('1');
+    });
+
+    it('should show 0 active projects when no agents are running', async () => {
+      // Default mockTeams has no members, so no active agents
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Active Projects')).toBeInTheDocument();
+      });
+
+      const activeProjectsLabel = screen.getByText('Active Projects');
+      const scoreCard = activeProjectsLabel.closest('.score-card');
+      const valueEl = scoreCard?.querySelector('.score-card__value');
+      expect(valueEl?.textContent).toBe('0');
     });
 
     it('should not render Connect to Cloud card', async () => {

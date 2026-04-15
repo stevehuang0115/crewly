@@ -117,7 +117,10 @@ fi
 TASK_MESSAGE="New task from Team Leader (priority: ${PRIORITY}):\n\n**[REQUIRED] When done, you MUST:** (1) Output a text summary of your work, findings, and any issues. (2) Call report-status:\nbash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"status\":\"done\",\"summary\":\"<brief summary>\",\"projectPath\":\"${PROJECT_PATH}\"}'\n\n---\n\n${TASK}"
 [ -n "$CONTEXT" ] && TASK_MESSAGE="${TASK_MESSAGE}\n\nContext: ${CONTEXT}"
 
-# Deliver the task message with fallback strategy
+# Deliver the task message with fallback strategy:
+# 1. Try normal delivery (waitForReady)
+# 2. If fails, try force delivery
+# 3. If still fails, auto-start the worker then retry
 BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, waitForReady: true, waitTimeout: 15000}')
 
 DELIVER_OK=true
@@ -126,8 +129,43 @@ api_call POST "/terminal/${TO}/deliver" "$BODY" || DELIVER_OK=false
 if [ "$DELIVER_OK" = "false" ]; then
   FORCE_BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, force: true}')
   api_call POST "/terminal/${TO}/deliver" "$FORCE_BODY" || {
-    echo '{"error":"Failed to deliver task to '"$TO"'. Session may not exist or agent is not running."}'
-    exit 1
+    # Worker likely offline — attempt auto-start if we have team context
+    STARTED=false
+    if [ -n "$TEAM_ID" ]; then
+      # Find worker's memberId from team data
+      WORKER_MEMBER_ID=""
+      if [ -n "$TEAM_DATA" ] && [ "$(echo "$TEAM_DATA" | jq -r '.success // false')" = "true" ]; then
+        WORKER_MEMBER_ID=$(echo "$TEAM_DATA" | jq -r --arg session "$TO" \
+          '.data.members[] | select(.sessionName == $session) | .id // empty' 2>/dev/null || true)
+      else
+        # Fetch team data if not already loaded
+        TEAM_DATA=$(api_call GET "/teams/${TEAM_ID}" 2>/dev/null || echo '{}')
+        WORKER_MEMBER_ID=$(echo "$TEAM_DATA" | jq -r --arg session "$TO" \
+          '.data.members[] | select(.sessionName == $session) | .id // empty' 2>/dev/null || true)
+      fi
+
+      if [ -n "$WORKER_MEMBER_ID" ]; then
+        echo '{"info":"Worker '"$TO"' appears offline — auto-starting..."}' >&2
+        START_RESULT=$(api_call POST "/teams/${TEAM_ID}/members/${WORKER_MEMBER_ID}/start" '{}' 2>/dev/null || true)
+        START_OK=$(echo "$START_RESULT" | jq -r '.success // false' 2>/dev/null || echo "false")
+
+        if [ "$START_OK" = "true" ]; then
+          echo '{"info":"Worker '"$TO"' start triggered — retrying delivery in 10s..."}' >&2
+          sleep 10
+          # Retry delivery after agent boots
+          RETRY_BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, waitForReady: true, waitTimeout: 30000}')
+          api_call POST "/terminal/${TO}/deliver" "$RETRY_BODY" && STARTED=true || {
+            # Final fallback: force deliver
+            api_call POST "/terminal/${TO}/deliver" "$FORCE_BODY" && STARTED=true || true
+          }
+        fi
+      fi
+    fi
+
+    if [ "$STARTED" = "false" ]; then
+      echo '{"error":"Failed to deliver task to '"$TO"'. Worker is offline and could not be auto-started. Ensure the worker is a team member with a valid session.","to":"'"$TO"'","teamId":"'"$TEAM_ID"'"}'
+      exit 1
+    fi
   }
 fi
 

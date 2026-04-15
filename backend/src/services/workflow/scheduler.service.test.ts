@@ -20,6 +20,26 @@ import {
   DEFAULT_ADAPTIVE_CONFIG,
 } from '../../types/scheduler.types.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+// Mock system-health utility used by scheduler for memory pressure checks
+var __mockUnderPressure = false;
+jest.mock('../core/system-health.util.js', () => ({
+  isUnderMemoryPressure: () => __mockUnderPressure,
+  getMemoryStats: () => ({ totalMB: 16384, freeMB: __mockUnderPressure ? 800 : 8192, usedPercent: __mockUnderPressure ? 95 : 50 }),
+  MEMORY_PRESSURE_SPAWN_THRESHOLD: 90,
+}));
+// Compat shims so existing test code works
+const mockTotalmem = { mockReturnValue: (_v: number) => { /* no-op, use __mockUnderPressure instead */ } };
+const mockFreemem = { mockReturnValue: (v: number) => { __mockUnderPressure = (1 - v / (16 * 1024 * 1024 * 1024)) * 100 >= 90; } };
+
+// Mock TaskPoolService for task-aware cleanup tests
+const mockGetAllItems = jest.fn().mockResolvedValue([]);
+jest.mock('../task-pool/task-pool.service.js', () => ({
+  TaskPoolService: {
+    getInstance: () => ({
+      getAllItems: mockGetAllItems,
+    }),
+  },
+}));
 
 // Mock dependencies
 jest.mock('../core/storage.service.js');
@@ -241,23 +261,14 @@ describe('SchedulerService', () => {
     it('should execute recurring checks multiple times', async () => {
       service.scheduleRecurringCheck('test-session', 1, 'Recurring message');
 
-      // First execution: advance timer, then flush microtasks to let async executeRecurring complete
+      // First execution: advance timer, then flush microtasks
+      // Extra ticks needed for: await import('os') (memory check), await executeCheck, etc.
       jest.advanceTimersByTime(60000);
-      await Promise.resolve(); // enter async executeRecurring
-      await Promise.resolve(); // await executeCheck
-      await Promise.resolve(); // await resolveRuntimeType
-      await Promise.resolve(); // await sendMessageToAgent
-      await Promise.resolve(); // await saveDeliveryLog
-      await Promise.resolve(); // schedule next timeout
+      for (let i = 0; i < 20; i++) await Promise.resolve();
 
       // Second execution
       jest.advanceTimersByTime(60000);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 20; i++) await Promise.resolve();
 
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(2);
     });
@@ -266,12 +277,7 @@ describe('SchedulerService', () => {
       const checkId = service.scheduleRecurringCheck('test-session', 1, 'Recurring message');
 
       jest.advanceTimersByTime(60000);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 20; i++) await Promise.resolve();
 
       const enhanced = service.getEnhancedMessage(checkId);
       expect(enhanced?.recurring?.currentOccurrence).toBe(1);
@@ -289,7 +295,7 @@ describe('SchedulerService', () => {
 
       // Helper to flush microtasks after advancing timer
       const flushMicrotasks = async () => {
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 20; i++) {
           await Promise.resolve();
         }
       };
@@ -921,7 +927,7 @@ describe('SchedulerService', () => {
       // Trigger first execution — the setTimeout fires the async callback
       jest.advanceTimersByTime(60000);
       // Flush microtasks to let async chain reach sendMessageToAgent
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 20; i++) {
         await Promise.resolve();
       }
 
@@ -931,7 +937,7 @@ describe('SchedulerService', () => {
       // Resolve the delivery
       resolveDelivery!();
       // Flush microtasks to let the rest of the chain complete
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 20; i++) {
         await Promise.resolve();
       }
 
@@ -948,7 +954,7 @@ describe('SchedulerService', () => {
       service.scheduleRecurringCheck('test-session', 1, 'Recurring message');
 
       const flushMicrotasks = async () => {
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 20; i++) {
           await Promise.resolve();
         }
       };
@@ -974,7 +980,7 @@ describe('SchedulerService', () => {
       service.scheduleRecurringCheck(ORCHESTRATOR_SESSION_NAME, 1, 'Recurring message');
 
       const flushMicrotasks = async () => {
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 20; i++) {
           await Promise.resolve();
         }
       };
@@ -1363,19 +1369,15 @@ describe('SchedulerService', () => {
       newService.setTaskTrackingService(mockTTS);
 
       expect(mockLogger.info).toHaveBeenCalledWith(
-        'TaskTrackingService integration enabled for task-aware cleanup'
+        'TaskTrackingService integration deprecated — using TaskPool for task-aware cleanup'
       );
     });
   });
 
   describe('task-aware schedule cleanup', () => {
-    let mockTaskTrackingService: { getAllInProgressTasks: jest.Mock };
-
     beforeEach(() => {
-      mockTaskTrackingService = {
-        getAllInProgressTasks: jest.fn().mockResolvedValue([]),
-      };
-      service.setTaskTrackingService(mockTaskTrackingService);
+      mockGetAllItems.mockResolvedValue([]);
+      service.setTaskTrackingService({ getAllInProgressTasks: jest.fn() }); // no-op but keeps compatibility
     });
 
     it('should accept taskId in scheduleRecurringCheck options', () => {
@@ -1391,8 +1393,8 @@ describe('SchedulerService', () => {
 
     it('should auto-cancel recurring check when linked task is completed (on execution)', async () => {
       // Task is still active initially
-      mockTaskTrackingService.getAllInProgressTasks.mockResolvedValue([
-        { id: 'task-abc', status: 'assigned' },
+      mockGetAllItems.mockResolvedValue([
+        { id: 'task-abc', status: 'running' },
       ]);
 
       const checkId = service.scheduleRecurringCheck(
@@ -1403,10 +1405,10 @@ describe('SchedulerService', () => {
       expect(service.getStats().recurringChecks).toBe(1);
 
       // Now simulate task completion — task no longer in active list
-      mockTaskTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockGetAllItems.mockResolvedValue([]);
 
       const flushMicrotasks = async () => {
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 20; i++) {
           await Promise.resolve();
         }
       };
@@ -1422,8 +1424,8 @@ describe('SchedulerService', () => {
     });
 
     it('should not auto-cancel recurring check when linked task is still active', async () => {
-      mockTaskTrackingService.getAllInProgressTasks.mockResolvedValue([
-        { id: 'task-active', status: 'assigned' },
+      mockGetAllItems.mockResolvedValue([
+        { id: 'task-active', status: 'running' },
       ]);
 
       service.scheduleRecurringCheck(
@@ -1432,7 +1434,7 @@ describe('SchedulerService', () => {
       );
 
       const flushMicrotasks = async () => {
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 20; i++) {
           await Promise.resolve();
         }
       };
@@ -1449,7 +1451,7 @@ describe('SchedulerService', () => {
       service.scheduleRecurringCheck('test-session', 1, 'No task check');
 
       const flushMicrotasks = async () => {
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 20; i++) {
           await Promise.resolve();
         }
       };
@@ -1464,7 +1466,7 @@ describe('SchedulerService', () => {
 
     it('should purge persisted recurring check on restore when task is completed', async () => {
       // Task is completed (not in active list)
-      mockTaskTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockGetAllItems.mockResolvedValue([]);
 
       const persistedChecks = [
         {
@@ -1495,8 +1497,8 @@ describe('SchedulerService', () => {
     });
 
     it('should restore persisted recurring check when task is still active', async () => {
-      mockTaskTrackingService.getAllInProgressTasks.mockResolvedValue([
-        { id: 'active-task-id', status: 'assigned' },
+      mockGetAllItems.mockResolvedValue([
+        { id: 'active-task-id', status: 'running' },
       ]);
 
       const persistedChecks = [
@@ -2147,6 +2149,141 @@ describe('SchedulerService', () => {
       await expect(service.restoreRecurringChecks()).resolves.not.toThrow();
 
       cleanupSpy.mockRestore();
+    });
+  });
+
+  describe('memory pressure handling', () => {
+    afterEach(() => {
+      mockTotalmem.mockReturnValue(16 * 1024 * 1024 * 1024);
+      mockFreemem.mockReturnValue(8 * 1024 * 1024 * 1024);
+    });
+
+    it('should skip recurring check execution under memory pressure (>=90% used)', async () => {
+      // Mock os.totalmem() to return 16GB, os.freemem() to return 1GB (93.75% used)
+      mockTotalmem.mockReturnValue(16 * 1024 * 1024 * 1024);
+      mockFreemem.mockReturnValue(1 * 1024 * 1024 * 1024);
+
+      service.scheduleRecurringCheck('test-session', 1, 'Pressure test message');
+
+      const flushMicrotasks = async () => {
+        for (let i = 0; i < 20; i++) {
+          await Promise.resolve();
+        }
+      };
+
+      // Trigger first execution
+      jest.advanceTimersByTime(60000);
+      await flushMicrotasks();
+
+      // executeCheck should NOT have been called — skipped due to memory pressure
+      expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Skipping recurring check due to memory pressure',
+        expect.objectContaining({
+          targetSession: 'test-session',
+        })
+      );
+
+      // The recurring check should still be active (not cancelled, just skipped)
+      expect(service.getStats().recurringChecks).toBe(1);
+    });
+
+    it('should execute normally when memory is available (<90% used)', async () => {
+      // Mock os.totalmem() to return 16GB, os.freemem() to return 8GB (50% used)
+      mockTotalmem.mockReturnValue(16 * 1024 * 1024 * 1024);
+      mockFreemem.mockReturnValue(8 * 1024 * 1024 * 1024);
+
+      service.scheduleRecurringCheck('test-session', 1, 'Normal test message');
+
+      const flushMicrotasks = async () => {
+        for (let i = 0; i < 20; i++) {
+          await Promise.resolve();
+        }
+      };
+
+      // Trigger first execution
+      jest.advanceTimersByTime(60000);
+      await flushMicrotasks();
+
+      // executeCheck SHOULD have been called — memory is fine
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+      expect(mockLogger.warn).not.toHaveBeenCalledWith(
+        'Skipping recurring check due to memory pressure',
+        expect.anything()
+      );
+    });
+
+    it('should schedule next execution after skipping due to memory pressure', async () => {
+      // First execution: high memory pressure (skip)
+      mockTotalmem.mockReturnValue(16 * 1024 * 1024 * 1024);
+      mockFreemem.mockReturnValue(1 * 1024 * 1024 * 1024);
+
+      service.scheduleRecurringCheck('test-session', 1, 'Pressure then normal');
+
+      const flushMicrotasks = async () => {
+        for (let i = 0; i < 20; i++) {
+          await Promise.resolve();
+        }
+      };
+
+      // First execution — skipped due to memory pressure
+      jest.advanceTimersByTime(60000);
+      await flushMicrotasks();
+
+      expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+
+      // Now restore normal memory and trigger second execution
+      mockFreemem.mockReturnValue(8 * 1024 * 1024 * 1024); // 50% used
+
+      jest.advanceTimersByTime(60000);
+      await flushMicrotasks();
+
+      // Second execution should succeed
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('should skip at exactly 90% memory usage', async () => {
+      // 90% used: 16GB total, 1.6GB free
+      mockTotalmem.mockReturnValue(16 * 1024 * 1024 * 1024);
+      mockFreemem.mockReturnValue(1.6 * 1024 * 1024 * 1024);
+
+      service.scheduleRecurringCheck('test-session', 1, 'Boundary test');
+
+      const flushMicrotasks = async () => {
+        for (let i = 0; i < 20; i++) {
+          await Promise.resolve();
+        }
+      };
+
+      jest.advanceTimersByTime(60000);
+      await flushMicrotasks();
+
+      // 90% is the threshold — should be skipped
+      expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Skipping recurring check due to memory pressure',
+        expect.anything()
+      );
+    });
+
+    it('should execute at 89% memory usage (just below threshold)', async () => {
+      // 89.375% used: 16GB total, 1.7GB free
+      mockTotalmem.mockReturnValue(16 * 1024 * 1024 * 1024);
+      mockFreemem.mockReturnValue(1.7 * 1024 * 1024 * 1024);
+
+      service.scheduleRecurringCheck('test-session', 1, 'Below threshold test');
+
+      const flushMicrotasks = async () => {
+        for (let i = 0; i < 20; i++) {
+          await Promise.resolve();
+        }
+      };
+
+      jest.advanceTimersByTime(60000);
+      await flushMicrotasks();
+
+      // Just below 90% — should execute
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
     });
   });
 });

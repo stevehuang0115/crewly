@@ -23,6 +23,7 @@ import { MessageDeliveryLogModel } from '../../models/ScheduledMessage.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { AgentRegistrationService } from '../agent/agent-registration.service.js';
 import { RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, RuntimeType, type MessageSource } from '../../constants.js';
+import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import {
   ScheduledMessageType,
   EnhancedScheduledMessage,
@@ -147,7 +148,7 @@ export class SchedulerService extends EventEmitter {
   private continuationService: IContinuationServiceLike | null = null;
   private activityMonitor: IActivityMonitorLike | null = null;
   private agentRegistrationService: AgentRegistrationService | null = null;
-  private taskTrackingService: ITaskTrackingServiceLike | null = null;
+  // Legacy taskTrackingService removed — using TaskPool for task-aware cleanup
   private messageQueueService: IMessageQueueServiceLike | null = null;
 
   // Per-session delivery guard: prevents concurrent deliveries to the same session.
@@ -293,15 +294,11 @@ export class SchedulerService extends EventEmitter {
   }
 
   /**
-   * Set the TaskTrackingService for task-aware schedule auto-cleanup.
-   * When set, recurring checks with a taskId will auto-cancel when
-   * their linked task is completed.
-   *
-   * @param service - TaskTrackingService instance
+   * Legacy — setTaskTrackingService is a no-op. Task-aware cleanup now uses TaskPool.
+   * @param _service - Ignored
    */
-  public setTaskTrackingService(service: ITaskTrackingServiceLike): void {
-    this.taskTrackingService = service;
-    this.logger.info('TaskTrackingService integration enabled for task-aware cleanup');
+  public setTaskTrackingService(_service: ITaskTrackingServiceLike): void {
+    this.logger.info('TaskTrackingService integration deprecated — using TaskPool for task-aware cleanup');
   }
 
   /**
@@ -348,28 +345,22 @@ export class SchedulerService extends EventEmitter {
   }
 
   /**
-   * Check if a task is completed or no longer active.
-   * Returns true if the task is not found in the active task list (completed/removed)
-   * or if the task's status is 'completed'. Returns false if still active.
+   * Check if a task has been completed by querying the TaskPool.
    *
-   * @param taskId - The task ID to check
+   * @param taskId - The task/work-item ID to check
    * @returns true if task is done/missing, false if still active
    */
   private async isTaskCompleted(taskId: string): Promise<boolean> {
-    if (!this.taskTrackingService) {
-      return false;
-    }
-
     try {
-      const tasks = await this.taskTrackingService.getAllInProgressTasks();
-      const task = tasks.find(t => t.id === taskId);
-      // Task not found means it was removed (completed)
-      if (!task) {
-        return true;
-      }
-      return task.status === 'completed';
+      const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+      const pool = TaskPoolService.getInstance();
+      const allItems = await pool.getAllItems();
+      const item = allItems.find(wi => wi.id === taskId);
+      // Item not found means it was removed (completed)
+      if (!item) return true;
+      return item.status === 'done' || item.status === 'cancelled';
     } catch (error) {
-      this.logger.debug('Failed to check task completion status', {
+      this.logger.debug('Failed to check task completion via TaskPool', {
         taskId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1471,6 +1462,25 @@ export class SchedulerService extends EventEmitter {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+      }
+
+      // Skip execution under system memory pressure (>90% used).
+      // This prevents the scheduler from triggering agent starts when the system
+      // is already OOM, which creates a kill → restart → OOM loop.
+      if (isUnderMemoryPressure()) {
+        const stats = getMemoryStats();
+        this.logger.warn('Skipping recurring check due to memory pressure', {
+          checkId,
+          targetSession,
+          memoryUsedPercent: stats.usedPercent,
+          freeMemMB: stats.freeMB,
+        });
+        // Schedule next execution normally — don't cancel, just skip this one
+        if (this.recurringChecks.has(checkId)) {
+          const nextTimeout = setTimeout(executeRecurring, intervalMinutes * 60 * 1000);
+          this.recurringTimeouts.set(checkId, nextTimeout);
+        }
+        return;
       }
 
       // Skip this occurrence if orchestrator recently checked the same agent manually.

@@ -6,6 +6,15 @@
  */
 
 
+// Mock os module (non-configurable in Node.js, so jest.spyOn doesn't work)
+const mockTotalmem = jest.fn(() => 16_000_000_000); // 16GB
+const mockFreemem = jest.fn(() => 8_000_000_000);   // 8GB (50% used)
+jest.mock('os', () => ({
+  ...jest.requireActual('os'),
+  totalmem: () => mockTotalmem(),
+  freemem: () => mockFreemem(),
+}));
+
 // Mock all service dependencies before importing
 jest.mock('../task-pool/task-pool.service.js', () => {
   const mockInstance = {
@@ -93,6 +102,8 @@ describe('LiveReconcilerDataProvider', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockTotalmem.mockReturnValue(16_000_000_000);
+    mockFreemem.mockReturnValue(8_000_000_000);
     provider = new LiveReconcilerDataProvider();
   });
 
@@ -429,6 +440,56 @@ describe('LiveReconcilerDataProvider', () => {
       expect(result).toBe(false);
 
       globalThis.fetch = originalFetch;
+    });
+
+    it('should skip wake action under memory pressure (>=90%)', async () => {
+      // Simulate >=90% memory usage
+      mockTotalmem.mockReturnValue(16_000_000_000); // 16GB
+      mockFreemem.mockReturnValue(800_000_000);      // 800MB free = 95% used
+
+      mockSuspend.isSuspended.mockReturnValue(true);
+      mockSuspend.rehydrateAgent.mockResolvedValue(true);
+
+      const action: WakeAction = {
+        workItemId: 'wi-1',
+        agentSessionName: 'agent-max',
+        strategy: 'rehydrate',
+        score: 75,
+        scoreBreakdown: { skillMatch: 40, urgency: 15, contextFamiliarity: 20, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      };
+
+      const result = await provider.executeWakeAction(action);
+
+      // Should return false without calling rehydrate because of memory pressure
+      expect(result).toBe(false);
+      expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
+
+    });
+
+    it('should proceed with wake action when memory usage is below 90%', async () => {
+      // Simulate normal memory usage (75% used)
+      mockTotalmem.mockReturnValue(16_000_000_000); // 16GB
+      mockFreemem.mockReturnValue(4_000_000_000);    // 4GB free = 75% used
+
+      mockSuspend.isSuspended.mockReturnValue(true);
+      mockSuspend.rehydrateAgent.mockResolvedValue(true);
+
+      const action: WakeAction = {
+        workItemId: 'wi-1',
+        agentSessionName: 'agent-max',
+        strategy: 'rehydrate',
+        score: 75,
+        scoreBreakdown: { skillMatch: 40, urgency: 15, contextFamiliarity: 20, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      };
+
+      const result = await provider.executeWakeAction(action);
+
+      // Should proceed and call rehydrate
+      expect(result).toBe(true);
+      expect(mockSuspend.rehydrateAgent).toHaveBeenCalledWith('agent-max');
+
     });
   });
 });

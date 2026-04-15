@@ -222,6 +222,12 @@ export interface MissionPolicy {
   canSpendMoney: boolean;
   /** Can team change user-visible behavior without human review */
   canChangeUserVisibleBehaviorWithoutReview: boolean;
+  /** Can team trigger a mission replan autonomously */
+  canReplanMission?: boolean;
+  /** Can team advance to next phase without approval */
+  canAdvancePhase?: boolean;
+  /** Can team adjust KR targets without approval */
+  canAdjustKRTargets?: boolean;
   /** Maximum concurrent executions allowed */
   maxParallelExecutions: number;
   /** Rules for when to escalate to humans */
@@ -272,6 +278,14 @@ export interface Mission {
   totalOutputTokens?: number;
   /** Accumulated cost in USD across all Requests */
   totalCost?: number;
+  /** Structured Key Result IDs (optional — missions without KRs use successCriteria strings) */
+  keyResultIds?: string[];
+  /** Current decomposition phase number */
+  currentPhase?: number;
+  /** Number of consecutive review cycles where KRs showed no progress */
+  staleCycles?: number;
+  /** Last OKR review result summary */
+  lastReviewSummary?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +302,10 @@ export type PolicyAction =
   | 'deploy_staging'
   | 'deploy_prod'
   | 'spend_money'
-  | 'change_user_visible_behavior';
+  | 'change_user_visible_behavior'
+  | 'replan_mission'
+  | 'advance_phase'
+  | 'adjust_kr_target';
 
 /** All valid policy actions. */
 export const POLICY_ACTIONS: readonly PolicyAction[] = [
@@ -299,6 +316,9 @@ export const POLICY_ACTIONS: readonly PolicyAction[] = [
   'deploy_prod',
   'spend_money',
   'change_user_visible_behavior',
+  'replan_mission',
+  'advance_phase',
+  'adjust_kr_target',
 ] as const;
 
 /**
@@ -312,6 +332,9 @@ export const ACTION_TO_POLICY_FIELD: Record<PolicyAction, keyof MissionPolicy> =
   deploy_prod: 'canDeployToProd',
   spend_money: 'canSpendMoney',
   change_user_visible_behavior: 'canChangeUserVisibleBehaviorWithoutReview',
+  replan_mission: 'canReplanMission',
+  advance_phase: 'canAdvancePhase',
+  adjust_kr_target: 'canAdjustKRTargets',
 };
 
 /**
@@ -371,6 +394,9 @@ export interface UpdatePolicyInput {
   canDeployToProd?: boolean;
   canSpendMoney?: boolean;
   canChangeUserVisibleBehaviorWithoutReview?: boolean;
+  canReplanMission?: boolean;
+  canAdvancePhase?: boolean;
+  canAdjustKRTargets?: boolean;
   maxParallelExecutions?: number;
   escalationRules?: EscalationRule[];
   executionCadence?: Partial<ExecutionCadence>;

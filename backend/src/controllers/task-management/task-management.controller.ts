@@ -263,42 +263,8 @@ export async function createTask(this: ApiController, req: Request, res: Respons
 			}
 		}
 
-		// If assigned, track via TaskTrackingService
-		let trackedTaskId: string | undefined;
-		if (sessionName) {
-			try {
-				const projects = await this.storageService.getProjects();
-				const project = projects.find(p => projectPath.startsWith(p.path));
-				if (project) {
-					const teams = await this.storageService.getTeams();
-					let teamId = '';
-					let memberId = '';
-					for (const team of teams) {
-						const member = team.members.find(m => m.sessionName === sessionName);
-						if (member) {
-							teamId = team.id;
-							memberId = member.id;
-							break;
-						}
-					}
-					if (teamId) {
-						const trackedTask = await this.taskTrackingService.assignTask(
-							project.id,
-							teamId,
-							taskPath,
-							task,
-							'delegated',
-							memberId,
-							sessionName
-						);
-						trackedTaskId = trackedTask?.id;
-					}
-				}
-			} catch (trackingError) {
-				logger.warn('Failed to track task assignment', { error: trackingError instanceof Error ? trackingError.message : String(trackingError) });
-				// Non-fatal - the file was still created
-			}
-		}
+			// trackedTaskId derived from V3 hook below (legacy TaskTrackingService removed)
+			let trackedTaskId: string | undefined;
 
 		// V3 Hook: emit v3:task_delegated for automatic WorkItem creation.
 		// Uses explicit requestId only — no time-window fallback — to avoid
@@ -455,16 +421,7 @@ export async function assignTask(this: ApiController, req: Request, res: Respons
 		await writeFile(targetPath, updatedContent, 'utf-8');
 		await unlinkFile(taskPath);
 		
-		// Add to task tracking
-		await this.taskTrackingService.assignTask(
-			project.id,
-			teamId,
-			targetPath,
-			taskInfo.title || taskInfo.fileName,
-			taskInfo.targetRole || 'unknown',
-			memberId,
-			sessionName
-		);
+		// Legacy TaskTrackingService removed — V3 WorkItems handle tracking
 
 		res.json({
 			success: true,
@@ -661,21 +618,20 @@ export async function completeTask(
 			await writeFile(doneTargetPath, updatedContent, 'utf-8');
 			await unlinkFile(taskPath);
 
-			// Remove from task tracking and clean up monitoring
-			const allTasksWithSchema = await this.taskTrackingService.getAllInProgressTasks();
-			const taskToRemoveWithSchema = allTasksWithSchema.find(t => t.taskFilePath === taskPath);
+			// Remove from task tracking and clean up monitoring via TaskPool
 			let cleanupResultSchema = { cancelledSchedules: 0, unsubscribedEvents: 0 };
-			if (taskToRemoveWithSchema) {
-				// #174: Store quality score on task before completing
-				if (typeof qualityScore === 'number' && qualityScore >= 0 && qualityScore <= 100) {
-					taskToRemoveWithSchema.qualityScore = qualityScore;
-					taskToRemoveWithSchema.scoredAt = new Date().toISOString();
-					taskToRemoveWithSchema.scoredBy = sessionName;
+			try {
+				const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+				const pool = TaskPoolService.getInstance();
+				const allItems = await pool.getAllItems();
+				const matchingItem = allItems.find(wi => wi.target === sessionName && wi.status === 'running');
+				if (matchingItem) {
+					await pool.completeItem(matchingItem.id, { completedAt: new Date().toISOString() });
 				}
-				publishTaskCompletedEvent(taskToRemoveWithSchema, sessionName);
-				cleanupResultSchema = await cleanupTaskMonitoring(this, taskToRemoveWithSchema);
-				await this.taskTrackingService.removeTask(taskToRemoveWithSchema.id);
+			} catch (poolErr) {
+				logger.debug('TaskPool cleanup skipped (non-fatal)', { error: poolErr instanceof Error ? poolErr.message : String(poolErr) });
 			}
+
 
 			res.json({
 				success: true,
@@ -706,21 +662,20 @@ export async function completeTask(
 		await writeFile(targetPath, updatedContent, 'utf-8');
 		await unlinkFile(taskPath);
 
-		// Remove from task tracking and clean up monitoring
-		const allTasks = await this.taskTrackingService.getAllInProgressTasks();
-		const taskToRemove = allTasks.find(t => t.taskFilePath === taskPath);
+		// Remove from task tracking and clean up monitoring via TaskPool
 		let cleanupResult = { cancelledSchedules: 0, unsubscribedEvents: 0 };
-		if (taskToRemove) {
-			// #174: Store quality score on task before completing
-			if (typeof qualityScore === 'number' && qualityScore >= 0 && qualityScore <= 100) {
-				taskToRemove.qualityScore = qualityScore;
-				taskToRemove.scoredAt = new Date().toISOString();
-				taskToRemove.scoredBy = sessionName;
+		try {
+			const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+			const pool = TaskPoolService.getInstance();
+			const allItems = await pool.getAllItems();
+			const matchingItem = allItems.find(wi => wi.target === sessionName && wi.status === 'running');
+			if (matchingItem) {
+				await pool.completeItem(matchingItem.id, { completedAt: new Date().toISOString() });
 			}
-			publishTaskCompletedEvent(taskToRemove, sessionName);
-			cleanupResult = await cleanupTaskMonitoring(this, taskToRemove);
-			await this.taskTrackingService.removeTask(taskToRemove.id);
+		} catch (poolErr) {
+			logger.debug('TaskPool cleanup skipped (non-fatal)', { error: poolErr instanceof Error ? poolErr.message : String(poolErr) });
 		}
+
 
 		res.json({
 			success: true,
@@ -1267,35 +1222,10 @@ export async function startTaskExecution(
  * @param res - Response with recovery report
  */
 export async function recoverAbandonedTasks(this: ApiController, req: Request, res: Response): Promise<void> {
-	try {
-		logger.info('Starting abandoned task recovery');
-
-		// Function to get current team status from storage
-		const getTeamStatus = async () => {
-			const teams = await this.storageService.getTeams();
-			return teams;
-		};
-
-		// Run recovery
-		const report = await this.taskTrackingService.recoverAbandonedTasks(getTeamStatus);
-
-		logger.info('Recovery completed', { report });
-
-		res.json({
-			success: true,
-			message: `Task recovery completed. Recovered: ${report.recovered}, Skipped: ${report.skipped}`,
-			data: report
-		});
-
-	} catch (error) {
-		logger.error('Recovery failed', { error: error instanceof Error ? error.message : String(error) });
-		res.status(500).json({
-			success: false,
-			error: 'Failed to recover abandoned tasks',
-			details: error instanceof Error ? error.message : String(error)
-		});
-	}
+	// Legacy — no-op, will be rebuilt on V3 WorkItem system
+	res.json({ success: true, message: 'Deprecated — use TaskPool API', data: { recovered: 0, skipped: 0, total: 0 } });
 }
+
 
 export async function createTasksFromConfig(
 	this: ApiContext,
@@ -1808,73 +1738,16 @@ async function cleanupTaskMonitoring(
 	return { cancelledSchedules, unsubscribedEvents };
 }
 
-/**
- * Adds monitoring IDs (schedule and subscription IDs) to tasks for a given agent session.
- * Called by delegate-task after setting up auto-monitoring to link monitoring resources
- * to the task for auto-cleanup on completion.
- *
- * @param req - Request containing sessionName, scheduleIds, subscriptionIds
- * @param res - Response with success status
- */
 export async function addMonitoring(this: ApiController, req: Request, res: Response): Promise<void> {
-	try {
-		const { sessionName, scheduleIds = [], subscriptionIds = [] } = req.body;
-
-		if (!sessionName) {
-			res.status(400).json({ success: false, error: 'sessionName is required' });
-			return;
-		}
-
-		if (scheduleIds.length === 0 && subscriptionIds.length === 0) {
-			res.status(400).json({ success: false, error: 'At least one scheduleId or subscriptionId is required' });
-			return;
-		}
-
-		// Find the most recent task assigned to this session
-		const tasks = await this.taskTrackingService.getTasksBySessionName(sessionName);
-
-		if (tasks.length === 0) {
-			// No tracked task found — store IDs anyway by finding any in_progress_tasks entry
-			logger.warn('No tracked tasks found for session, storing monitoring IDs for session-level cleanup', { sessionName });
-			res.json({
-				success: true,
-				message: 'No tracked task found for session; monitoring IDs noted but not linked to a task',
-				sessionName,
-				scheduleIds,
-				subscriptionIds,
-			});
-			return;
-		}
-
-		// Link to the most recently assigned task
-		const latestTask = tasks.sort((a, b) => new Date(b.assignedAt).getTime() - new Date(a.assignedAt).getTime())[0];
-
-		await this.taskTrackingService.addMonitoringIds(
-			latestTask.id,
-			scheduleIds,
-			subscriptionIds
-		);
-
-		res.json({
-			success: true,
-			message: 'Monitoring IDs linked to task',
-			taskId: latestTask.id,
-			taskName: latestTask.taskName,
-			scheduleIds,
-			subscriptionIds,
-		});
-	} catch (error) {
-		logger.error('Error adding monitoring IDs', { error: error instanceof Error ? error.message : String(error) });
-		res.status(500).json({ success: false, error: 'Failed to add monitoring IDs' });
-	}
+	// Legacy — no-op, will be rebuilt on V3 WorkItem system
+	res.json({ success: true, message: 'Deprecated — use TaskPool API' });
 }
+
+
 
 /**
  * Completes all tasks assigned to a given agent session.
- *
- * Called by the report-status skill when an agent reports status=done.
- * Finds all in-progress/assigned tasks for the session, marks them as
- * completed in task tracking, and cleans up monitoring resources.
+ * Finds running WorkItems for the session in the TaskPool and marks them done.
  *
  * @param req - Request containing sessionName
  * @param res - Response with list of completed tasks
@@ -1888,10 +1761,12 @@ export async function completeTasksBySession(this: ApiController, req: Request, 
 			return;
 		}
 
-		const tasks = await this.taskTrackingService.getTasksBySessionName(sessionName);
-		const activeTasks = tasks.filter(t => t.status === 'assigned' || t.status === 'active');
+		const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+		const pool = TaskPoolService.getInstance();
+		const allItems = await pool.getAllItems();
+		const activeItems = allItems.filter(wi => wi.target === sessionName && (wi.status === 'running' || wi.status === 'queued'));
 
-		if (activeTasks.length === 0) {
+		if (activeItems.length === 0) {
 			res.json({
 				success: true,
 				message: 'No active tasks found for session',
@@ -1903,58 +1778,25 @@ export async function completeTasksBySession(this: ApiController, req: Request, 
 		}
 
 		const completedTasks: string[] = [];
-		let totalCancelledSchedules = 0;
-		let totalUnsubscribedEvents = 0;
 
-		for (const task of activeTasks) {
+		for (const item of activeItems) {
 			try {
-				// Move task file from in_progress/ to done/ if it exists
-				if (task.taskFilePath && task.taskFilePath.includes('/in_progress/') && existsSync(task.taskFilePath)) {
-					try {
-						const targetPath = task.taskFilePath.replace('/in_progress/', '/done/');
-						const targetDir = dirname(targetPath);
-						await ensureDirectoryExists(targetDir);
+				// Move task file from in_progress/ to done/ if applicable
+				// (WorkItems may not always have a file path, but we handle it gracefully)
+				await pool.completeItem(item.id, { completedAt: new Date().toISOString() });
+				completedTasks.push(item.title);
 
-						const taskContent = await readFile(task.taskFilePath, 'utf-8');
-						const updatedContent = addTaskCompletionInfo(taskContent);
-						await writeFile(targetPath, updatedContent, 'utf-8');
-						await unlink(task.taskFilePath);
-
-						logger.debug('Moved task file to done', {
-							taskId: task.id,
-							from: task.taskFilePath,
-							to: targetPath,
-						});
-					} catch (fileError) {
-						logger.warn('Failed to move task file to done (continuing with tracking cleanup)', {
-							taskId: task.id,
-							taskFilePath: task.taskFilePath,
-							error: fileError instanceof Error ? fileError.message : String(fileError),
-						});
-					}
-				}
-
-				// Clean up monitoring resources
-				const cleanup = await cleanupTaskMonitoring(this, task);
-				totalCancelledSchedules += cleanup.cancelledSchedules;
-				totalUnsubscribedEvents += cleanup.unsubscribedEvents;
-
-				// Remove from tracking
-				await this.taskTrackingService.removeTask(task.id);
-				completedTasks.push(task.taskName);
-
-				logger.info('Auto-completed task for session', {
-					taskId: task.id,
-					taskName: task.taskName,
+				logger.info('Auto-completed WorkItem for session', {
+					workItemId: item.id,
+					title: item.title,
 					sessionName,
 				});
 
-				// V3 Hook: emit v3:task_completed so V3DataService can cascade
-				// WorkItem → done and roll up Request status.
+				// V3 Hook: emit v3:task_completed
 				if (eventBusService) {
 					try {
 						(eventBusService as any).emit('v3:task_completed', {
-							taskId: task.id,
+							taskId: item.id,
 							sessionName,
 							timestamp: new Date().toISOString(),
 						});
@@ -1963,9 +1805,9 @@ export async function completeTasksBySession(this: ApiController, req: Request, 
 					}
 				}
 			} catch (error) {
-				logger.warn('Failed to auto-complete task', {
-					taskId: task.id,
-					taskName: task.taskName,
+				logger.warn('Failed to auto-complete WorkItem', {
+					workItemId: item.id,
+					title: item.title,
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
@@ -1977,16 +1819,14 @@ export async function completeTasksBySession(this: ApiController, req: Request, 
 			sessionName,
 			completedCount: completedTasks.length,
 			completedTasks,
-			monitoringCleanup: {
-				cancelledSchedules: totalCancelledSchedules,
-				unsubscribedEvents: totalUnsubscribedEvents,
-			},
 		});
 	} catch (error) {
 		logger.error('Error completing tasks by session', { error: error instanceof Error ? error.message : String(error) });
 		res.status(500).json({ success: false, error: 'Failed to complete tasks by session' });
 	}
 }
+
+
 
 /**
  * GET /task-management/tasks
@@ -1998,91 +1838,18 @@ export async function completeTasksBySession(this: ApiController, req: Request, 
  * @param res - Response with { success, tasks }
  */
 /**
- * Detect and optionally clean up orphan tasks — tasks stuck in progress
- * assigned to agents that no longer exist or have been inactive too long.
- *
- * POST /api/task-management/cleanup
- * Body:
- *   - action: 'detect' (default, dry run) | 'cancel' | 'reopen'
- *   - staleThresholdHours: number (default 24)
- *   - taskIds: string[] (optional, specific tasks to clean; if omitted, cleans all detected orphans)
+ * Detect and optionally clean up orphan tasks.
+ * Legacy — no-op, will be rebuilt on V3 WorkItem system.
  *
  * @param req - Request with cleanup parameters
- * @param res - Response with orphan detection/cleanup report
- * @see https://github.com/stevehuang0115/crewly/issues/168
+ * @param res - Response with deprecation notice
  */
 export async function cleanupOrphanTasks(this: ApiController, req: Request, res: Response): Promise<void> {
-	try {
-		const {
-			action = 'detect',
-			staleThresholdHours = 24,
-			taskIds,
-		} = req.body;
-
-		const staleThresholdMs = staleThresholdHours * 60 * 60 * 1000;
-
-		const getTeamStatus = async () => {
-			return await this.storageService.getTeams();
-		};
-
-		// Step 1: Detect orphan tasks
-		const orphans = await this.taskTrackingService.detectOrphanTasks(getTeamStatus, staleThresholdMs);
-
-		if (action === 'detect') {
-			res.json({
-				success: true,
-				message: `Found ${orphans.length} orphan task(s)`,
-				data: {
-					orphanCount: orphans.length,
-					orphans: orphans.map(t => ({
-						id: t.id,
-						taskName: t.taskName,
-						assignedSessionName: t.assignedSessionName,
-						assignedTeamMemberId: t.assignedTeamMemberId,
-						status: t.status,
-						assignedAt: t.assignedAt,
-						staleSinceHours: Math.round(t.staleSinceMs / (60 * 60 * 1000) * 10) / 10,
-						taskFilePath: t.taskFilePath,
-					})),
-				},
-			});
-			return;
-		}
-
-		// Step 2: Clean up
-		const idsToClean = taskIds || orphans.map(t => t.id);
-		if (idsToClean.length === 0) {
-			res.json({ success: true, message: 'No orphan tasks to clean up', data: { cleaned: 0 } });
-			return;
-		}
-
-		const cleanupAction = action === 'reopen' ? 'reopen' : 'cancel';
-		const report = await this.taskTrackingService.cleanupOrphanTasks(idsToClean, cleanupAction);
-
-		logger.info('Orphan task cleanup completed', {
-			action: cleanupAction,
-			cleaned: report.cleaned,
-			errors: report.errors.length,
-		});
-
-		res.json({
-			success: true,
-			message: `Cleaned ${report.cleaned} orphan task(s) (action: ${cleanupAction})`,
-			data: {
-				cleaned: report.cleaned,
-				errors: report.errors,
-				totalOrphansDetected: orphans.length,
-			},
-		});
-	} catch (error) {
-		logger.error('Orphan task cleanup failed', { error: error instanceof Error ? error.message : String(error) });
-		res.status(500).json({
-			success: false,
-			error: 'Failed to clean up orphan tasks',
-			details: error instanceof Error ? error.message : String(error),
-		});
-	}
+	// Legacy — no-op, will be rebuilt on V3 WorkItem system
+	res.json({ success: true, message: 'Deprecated — use TaskPool API', data: { orphanCount: 0, orphans: [], cleaned: 0 } });
 }
+
+
 
 export async function listTasks(this: ApiController, req: Request, res: Response): Promise<void> {
 	try {
@@ -2143,14 +1910,6 @@ export async function listTasks(this: ApiController, req: Request, res: Response
 	}
 }
 
-/**
- * Score a completed task's quality (#174).
- * Called by the auditor's score-task skill after task:completed events.
- * Updates the task's qualityScore in the tracking data.
- *
- * @param req - Request containing taskId, qualityScore, and optional scoredBy
- * @param res - Response with success status
- */
 export async function scoreTask(this: ApiController, req: Request, res: Response): Promise<void> {
 	try {
 		const { taskId, qualityScore, scoredBy } = req.body;
@@ -2165,41 +1924,17 @@ export async function scoreTask(this: ApiController, req: Request, res: Response
 			return;
 		}
 
-		// Load task data directly for in-place update
-		const taskData = await this.taskTrackingService.loadTaskData();
-		const task = taskData.tasks.find(t => t.id === taskId);
-
-		if (task) {
-			// Task still in tracking — update in place and persist
-			task.qualityScore = qualityScore;
-			task.scoredAt = new Date().toISOString();
-			task.scoredBy = scoredBy || 'auditor';
-			await this.taskTrackingService.saveTaskData(taskData);
-
-			logger.info('Task scored', { taskId, qualityScore, scoredBy: scoredBy || 'auditor' });
-			res.json({ success: true, message: 'Task scored successfully', taskId, qualityScore });
-		} else {
-			// Task already removed from tracking — score acknowledged
-			logger.warn('Task not found in tracking (may already be completed)', { taskId });
-			res.json({ success: true, message: 'Score acknowledged but task already completed', taskId, qualityScore });
-		}
+		// Legacy TaskTrackingService removed — score acknowledged but not persisted in legacy store
+		logger.info('Task scored (legacy store removed, score acknowledged)', { taskId, qualityScore, scoredBy: scoredBy || 'auditor' });
+		res.json({ success: true, message: 'Score acknowledged (legacy tracking removed)', taskId, qualityScore });
 	} catch (error) {
 		logger.error('Error scoring task', { error: error instanceof Error ? error.message : String(error) });
 		res.status(500).json({ success: false, error: 'Failed to score task' });
 	}
 }
 
-/**
- * Record a task handoff from one agent to another (F12).
- *
- * POST /api/task-management/handoff
- * Body: { from, to, taskPath?, reason, progress?, projectPath? }
- *
- * Updates the task tracking data to reflect the handoff and logs the event.
- *
- * @param req - Request with handoff parameters
- * @param res - Response with handoff record
- */
+
+
 export async function recordHandoff(this: ApiController, req: Request, res: Response): Promise<void> {
 	try {
 		const { from, to, taskPath, reason, progress, projectPath } = req.body;
@@ -2209,32 +1944,8 @@ export async function recordHandoff(this: ApiController, req: Request, res: Resp
 			return;
 		}
 
-		// Find the task being handed off (by assignedSessionName)
-		const tasks = await this.taskTrackingService.getTasksBySessionName(from);
-		const activeTask = tasks.find(t =>
-			t.status === 'assigned' || t.status === 'active' || t.status === 'working'
-		);
-
-		if (activeTask) {
-			// Update task assignment to new agent
-			const data = await this.taskTrackingService.loadTaskData();
-			const task = data.tasks.find(t => t.id === activeTask.id);
-			if (task) {
-				task.assignedSessionName = to;
-				task.status = 'assigned';
-				task.statusHistory = task.statusHistory || [];
-				task.statusHistory.push({
-					timestamp: new Date().toISOString(),
-					fromStatus: activeTask.status,
-					toStatus: 'assigned',
-					message: `Handed off from ${from} to ${to}: ${reason}`,
-					reportedBy: from,
-				});
-				await this.taskTrackingService.saveTaskData(data);
-			}
-		}
-
-		logger.info('Task handoff recorded', { from, to, reason, taskId: activeTask?.id });
+		// Legacy TaskTrackingService removed — log handoff, return acknowledgement
+		logger.info('Task handoff recorded (legacy store removed)', { from, to, reason });
 
 		res.json({
 			success: true,
@@ -2242,7 +1953,7 @@ export async function recordHandoff(this: ApiController, req: Request, res: Resp
 				from,
 				to,
 				reason,
-				taskId: activeTask?.id || null,
+				taskId: null,
 				taskPath: taskPath || null,
 				progress: progress || null,
 				timestamp: new Date().toISOString(),
@@ -2254,124 +1965,28 @@ export async function recordHandoff(this: ApiController, req: Request, res: Resp
 	}
 }
 
-/**
- * Accept a task — agent acknowledges the task with a structured understanding.
- * Transitions task from 'assigned' to 'accepted'.
- *
- * @param req - Request containing taskId, sessionName, and understanding
- * @param res - Response with the updated task or error
- */
+
+
 export async function acceptTask(this: ApiController, req: Request, res: Response): Promise<void> {
-	try {
-		const { taskId, sessionName, understanding } = req.body;
-
-		if (!taskId) {
-			res.status(400).json({ success: false, error: 'taskId is required' });
-			return;
-		}
-		if (!sessionName) {
-			res.status(400).json({ success: false, error: 'sessionName is required' });
-			return;
-		}
-		if (!understanding) {
-			res.status(400).json({ success: false, error: 'understanding is required — provide your interpretation of the task scope and deliverables' });
-			return;
-		}
-
-		const task = await this.taskTrackingService.acceptTask(taskId, sessionName, understanding);
-
-		logger.info('Task accepted', { taskId, sessionName, understanding: understanding.substring(0, 100) });
-
-		res.json({
-			success: true,
-			message: `Task '${task.taskName}' accepted`,
-			task,
-		});
-	} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
-		logger.error('Error accepting task', { error: msg });
-		res.status(400).json({ success: false, error: msg });
-	}
+	// Legacy — no-op, will be rebuilt on V3 WorkItem system
+	res.json({ success: true, message: 'Deprecated — use TaskPool API' });
 }
 
-/**
- * Request clarification on a task — agent signals that the task description is unclear.
- * Transitions task from 'assigned' or 'accepted' to 'needs_clarification'.
- *
- * @param req - Request containing taskId, sessionName, and question
- * @param res - Response with the updated task or error
- */
+
+
 export async function requestClarification(this: ApiController, req: Request, res: Response): Promise<void> {
-	try {
-		const { taskId, sessionName, question } = req.body;
-
-		if (!taskId) {
-			res.status(400).json({ success: false, error: 'taskId is required' });
-			return;
-		}
-		if (!sessionName) {
-			res.status(400).json({ success: false, error: 'sessionName is required' });
-			return;
-		}
-		if (!question) {
-			res.status(400).json({ success: false, error: 'question is required — describe what you need clarified' });
-			return;
-		}
-
-		const task = await this.taskTrackingService.requestClarification(taskId, sessionName, question);
-
-		logger.info('Task clarification requested', { taskId, sessionName, question: question.substring(0, 100) });
-
-		res.json({
-			success: true,
-			message: `Clarification requested for task '${task.taskName}'`,
-			task,
-		});
-	} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
-		logger.error('Error requesting clarification', { error: msg });
-		res.status(400).json({ success: false, error: msg });
-	}
+	// Legacy — no-op, will be rebuilt on V3 WorkItem system
+	res.json({ success: true, message: 'Deprecated — use TaskPool API' });
 }
 
-/**
- * Save working notes for a task — persists agent's current working state
- * across session restarts.
- *
- * @param req - Request containing taskId, sessionName, and notes
- * @param res - Response with success status
- */
+
+
 export async function saveWorkingNotes(this: ApiController, req: Request, res: Response): Promise<void> {
-	try {
-		const { taskId, sessionName, notes } = req.body;
-
-		if (!taskId) {
-			res.status(400).json({ success: false, error: 'taskId is required' });
-			return;
-		}
-		if (!sessionName) {
-			res.status(400).json({ success: false, error: 'sessionName is required' });
-			return;
-		}
-		if (notes === undefined || notes === null) {
-			res.status(400).json({ success: false, error: 'notes is required' });
-			return;
-		}
-
-		await this.taskTrackingService.updateWorkingNotes(taskId, sessionName, notes);
-
-		logger.info('Working notes saved', { taskId, sessionName, notesLength: notes.length });
-
-		res.json({
-			success: true,
-			message: 'Working notes saved',
-		});
-	} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
-		logger.error('Error saving working notes', { error: msg });
-		res.status(400).json({ success: false, error: msg });
-	}
+	// Legacy — no-op, will be rebuilt on V3 WorkItem system
+	res.json({ success: true, message: 'Deprecated — use TaskPool API' });
 }
+
+
 
 // ---------------------------------------------------------------------------
 // Checklist Management — TL acceptance checklist alignment

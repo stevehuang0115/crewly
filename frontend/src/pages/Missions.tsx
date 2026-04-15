@@ -1,7 +1,7 @@
 /**
  * Missions Page -- V3
  *
- * Lists all Missions (displayed as "Objectives") with status filtering and search.
+ * Lists all Missions with status filtering and search.
  * Fetches real data from GET /api/missions.
  *
  * @module pages/Missions
@@ -12,7 +12,6 @@ import { useNavigate } from 'react-router-dom';
 import {
   RefreshCw,
   Target,
-  Search,
   Plus,
 } from 'lucide-react';
 import { Button } from '../components/UI/Button';
@@ -21,7 +20,7 @@ import { Badge } from '../components/UI/Badge';
 import { StatusBadge } from '../components/UI/StatusBadge';
 import type { StatusType } from '../components/UI/StatusBadge';
 import type { BadgeVariant } from '../components/UI/Badge';
-import { Tabs, TabList, TabTrigger } from '../components/UI/Tabs';
+import { PageToolbar } from '../components/UI/PageToolbar';
 import { Alert } from '../components/UI/Alert';
 import { Modal, ModalBody, ModalFooter } from '../components/UI/Modal';
 import { SkeletonRows } from '../components/UI/SkeletonRows';
@@ -182,9 +181,9 @@ const SuccessCriteriaPreview: React.FC<{ criteria: string[] }> = ({ criteria }) 
 // =============================================================================
 
 /**
- * Objectives list page -- displays all Missions as "Objectives" with status filters and search.
+ * Missions list page -- displays all Missions with status filters and search.
  *
- * @returns Objectives page JSX element
+ * @returns Missions page JSX element
  */
 export const Missions: React.FC = () => {
   const navigate = useNavigate();
@@ -205,7 +204,7 @@ export const Missions: React.FC = () => {
       const data = await apiService.getMissions();
       setMissions(data as Mission[]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load objectives');
+      setError(err instanceof Error ? err.message : 'Failed to load missions');
     } finally {
       setLoading(false);
     }
@@ -258,11 +257,11 @@ export const Missions: React.FC = () => {
   ];
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto" data-testid="missions-page">
+    <div className="p-6 max-w-7xl mx-auto" data-testid="missions-page">
       {/* Page header */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
-          <h1 className="text-2xl font-bold text-text-primary-dark">Objectives</h1>
+          <h1 className="text-2xl font-bold text-text-primary-dark">Missions</h1>
           <div className="flex items-center gap-2">
             <Button
               variant="primary"
@@ -271,7 +270,7 @@ export const Missions: React.FC = () => {
               onClick={() => setShowCreateModal(true)}
               data-testid="missions-new"
             >
-              New Objective
+              New Mission
             </Button>
             <button
               onClick={loadMissions}
@@ -285,38 +284,24 @@ export const Missions: React.FC = () => {
           </div>
         </div>
         <p className="text-sm text-text-secondary-dark">
-          Strategic goals and long-term objectives driving autonomous team performance.
+          Strategic missions driving autonomous team performance.
         </p>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Tabs defaultValue="all" onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-          <TabList>
-            {filterButtons.map((fb) => (
-              <TabTrigger key={fb.key} value={fb.key}>
-                {fb.label}
-                {statusCounts[fb.key] !== undefined && (
-                  <span className="ml-1 opacity-60">({statusCounts[fb.key]})</span>
-                )}
-              </TabTrigger>
-            ))}
-          </TabList>
-        </Tabs>
-
-        {/* Search */}
-        <div className="relative flex-1 min-w-[200px] max-w-[400px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-secondary-dark" />
-          <input
-            type="text"
-            placeholder="Search by objective, team, strategy..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 text-sm bg-surface-dark border border-border-dark rounded-lg text-text-primary-dark placeholder:text-text-secondary-dark focus:outline-none focus:border-primary/50"
-            data-testid="missions-search"
-          />
-        </div>
-      </div>
+      <PageToolbar
+        tabs={filterButtons.map((fb) => ({
+          value: fb.key,
+          label: fb.label,
+          count: statusCounts[fb.key],
+        }))}
+        activeTab={statusFilter}
+        onTabChange={(v) => setStatusFilter(v as StatusFilter)}
+        searchPlaceholder="Search by mission, team, strategy..."
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchDebounceMs={0}
+      />
 
       {/* Loading */}
       {loading && (
@@ -327,7 +312,7 @@ export const Missions: React.FC = () => {
 
       {/* Error */}
       {error && !loading && (
-        <Alert variant="error" title="Failed to load objectives" onClose={() => setError(null)} data-testid="missions-error">
+        <Alert variant="error" title="Failed to load missions" onClose={() => setError(null)} data-testid="missions-error">
           {error}
           <Button variant="ghost" size="sm" onClick={loadMissions} className="mt-2">
             Retry
@@ -341,8 +326,8 @@ export const Missions: React.FC = () => {
           <Target className="h-10 w-10 opacity-40" />
           <span className="text-sm">
             {missions.length === 0
-              ? 'No objectives created yet.'
-              : 'No objectives match the current filters.'}
+              ? 'No missions created yet.'
+              : 'No missions match the current filters.'}
           </span>
         </div>
       )}
@@ -395,7 +380,7 @@ export const Missions: React.FC = () => {
           ))}
         </div>
       )}
-      {/* Create Objective Modal */}
+      {/* Create Mission Modal */}
       <CreateMissionModal
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
@@ -446,7 +431,7 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
       setSuccessCriteria('');
       onCreated();
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Failed to create objective');
+      setFormError(err instanceof Error ? err.message : 'Failed to create mission');
     } finally {
       setSubmitting(false);
     }
@@ -455,7 +440,7 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
   if (!isOpen) return null;
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="New Objective" size="md">
+    <Modal isOpen={isOpen} onClose={onClose} title="New Mission" size="md">
       <ModalBody>
         <div className="space-y-4">
           <div>
@@ -508,7 +493,7 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
       <ModalFooter>
         <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>Cancel</Button>
         <Button variant="primary" size="sm" onClick={handleSubmit} disabled={submitting}>
-          {submitting ? 'Creating...' : 'Create Objective'}
+          {submitting ? 'Creating...' : 'Create Mission'}
         </Button>
       </ModalFooter>
     </Modal>

@@ -1,3 +1,8 @@
+// Design token migration
+// Layout standardization
+// Dropdown update
+// Updated: custom Dropdown component
+// Updated: PageToolbar adoption
 /**
  * Marketplace Page Tests
  *

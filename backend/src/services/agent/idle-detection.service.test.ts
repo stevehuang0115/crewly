@@ -330,4 +330,160 @@ describe('IdleDetectionService', () => {
 			expect(mockSuspendAgent).not.toHaveBeenCalled();
 		});
 	});
+
+	// ===== forceStopIdleAgents (memory pressure emergency stop) =====
+
+	describe('forceStopIdleAgents', () => {
+		it('should stop idle agents but skip orchestrator', async () => {
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [
+					{
+						id: 'orc1',
+						sessionName: 'crewly-orc',
+						role: 'orchestrator',
+						agentStatus: 'active',
+						workingStatus: 'idle',
+					},
+					{
+						id: 'dev1',
+						sessionName: 'agent-dev1',
+						role: 'developer',
+						agentStatus: 'active',
+						workingStatus: 'idle',
+					},
+					{
+						id: 'dev2',
+						sessionName: 'agent-dev2',
+						role: 'developer',
+						agentStatus: 'active',
+						workingStatus: 'in_progress',
+					},
+				],
+			}]);
+			mockSessionExists.mockReturnValue(true);
+
+			const service = IdleDetectionService.getInstance();
+			const stoppedCount = await service.forceStopIdleAgents();
+
+			// Only the idle non-orchestrator agent should be stopped
+			expect(stoppedCount).toBe(1);
+
+			// agent-dev1 (idle) should be killed and marked inactive
+			expect(mockKillSession).toHaveBeenCalledWith('agent-dev1');
+			expect(mockClearSession).toHaveBeenCalledWith('agent-dev1');
+			expect(mockUpdateAgentStatus).toHaveBeenCalledWith('agent-dev1', 'inactive', 'idle_exit');
+
+			// orchestrator should NOT be stopped
+			expect(mockKillSession).not.toHaveBeenCalledWith('crewly-orc');
+
+			// agent-dev2 (in_progress) should NOT be stopped
+			expect(mockKillSession).not.toHaveBeenCalledWith('agent-dev2');
+		});
+
+		it('should skip inactive agents', async () => {
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [
+					{
+						id: 'dev1',
+						sessionName: 'agent-dev1',
+						role: 'developer',
+						agentStatus: 'inactive',
+						workingStatus: 'idle',
+					},
+				],
+			}]);
+
+			const service = IdleDetectionService.getInstance();
+			const stoppedCount = await service.forceStopIdleAgents();
+
+			expect(stoppedCount).toBe(0);
+			expect(mockKillSession).not.toHaveBeenCalled();
+		});
+
+		it('should stop started agents that are idle', async () => {
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [
+					{
+						id: 'dev1',
+						sessionName: 'agent-dev1',
+						role: 'developer',
+						agentStatus: 'started',
+						workingStatus: 'idle',
+					},
+				],
+			}]);
+			mockSessionExists.mockReturnValue(true);
+
+			const service = IdleDetectionService.getInstance();
+			const stoppedCount = await service.forceStopIdleAgents();
+
+			expect(stoppedCount).toBe(1);
+			expect(mockKillSession).toHaveBeenCalledWith('agent-dev1');
+		});
+
+		it('should return 0 when getTeams fails', async () => {
+			mockGetTeams.mockRejectedValue(new Error('Storage error'));
+
+			const service = IdleDetectionService.getInstance();
+			const stoppedCount = await service.forceStopIdleAgents();
+
+			expect(stoppedCount).toBe(0);
+		});
+
+		it('should handle killSession failure gracefully and continue', async () => {
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [
+					{
+						id: 'dev1',
+						sessionName: 'agent-dev1',
+						role: 'developer',
+						agentStatus: 'active',
+						workingStatus: 'idle',
+					},
+					{
+						id: 'dev2',
+						sessionName: 'agent-dev2',
+						role: 'developer',
+						agentStatus: 'active',
+						workingStatus: 'idle',
+					},
+				],
+			}]);
+			mockSessionExists.mockReturnValue(true);
+			// First call fails, second succeeds
+			mockKillSession.mockRejectedValueOnce(new Error('Kill failed'));
+			mockKillSession.mockResolvedValueOnce(undefined);
+
+			const service = IdleDetectionService.getInstance();
+			const stoppedCount = await service.forceStopIdleAgents();
+
+			// The second agent should still be stopped even though first failed
+			expect(stoppedCount).toBe(1);
+		});
+
+		it('should skip auditor role agents (always-on)', async () => {
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [
+					{
+						id: 'aud1',
+						sessionName: 'crewly-auditor',
+						role: 'auditor',
+						agentStatus: 'active',
+						workingStatus: 'idle',
+					},
+				],
+			}]);
+
+			const service = IdleDetectionService.getInstance();
+			const stoppedCount = await service.forceStopIdleAgents();
+
+			expect(stoppedCount).toBe(0);
+			expect(mockKillSession).not.toHaveBeenCalled();
+		});
+	});
 });

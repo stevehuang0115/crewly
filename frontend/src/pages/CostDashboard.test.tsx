@@ -1,3 +1,4 @@
+// Layout standardization
 /**
  * CostDashboard Page Tests
  *

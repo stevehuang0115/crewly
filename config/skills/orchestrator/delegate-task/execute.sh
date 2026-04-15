@@ -110,12 +110,6 @@ CONTEXT_FILES=$(printf '%s' "$INPUT" | jq -c '.contextFiles // empty')
 DEADLINE_HINT=$(printf '%s' "$INPUT" | jq -r '.deadlineHint // empty')
 USE_STRUCTURED=$(printf '%s' "$INPUT" | jq -r '.structured // "false"')
 
-# Monitor parameters — enabled by default to ensure proactive progress notifications.
-# Use explicit null-check so that `false` / `0` are respected as opt-out values,
-# while omitted fields default to enabled (idleEvent=true, fallbackCheckMinutes=5).
-MONITOR_IDLE=$(printf '%s' "$INPUT" | jq -r 'if .monitor.idleEvent == null then true else .monitor.idleEvent end')
-MONITOR_FALLBACK_MINUTES=$(printf '%s' "$INPUT" | jq -r 'if .monitor.fallbackCheckMinutes == null then 5 else .monitor.fallbackCheckMinutes end')
-
 # Resolve Crewly root from this script path:
 # config/skills/orchestrator/delegate-task/execute.sh -> project root
 CREWLY_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
@@ -173,95 +167,46 @@ else
   TASK_MESSAGE="${TASK_MESSAGE}\n\nBefore reporting done, persist key findings using: bash ${CREWLY_ROOT}/config/skills/agent/core/remember/execute.sh '{\"agentId\":\"${TO}\",\"content\":\"<key findings>\",\"category\":\"pattern\",\"scope\":\"project\",\"projectPath\":\"${PROJECT_PATH}\"}'"
 fi
 
-# --- STEP 1: CREATE (assign) — track the work BEFORE waking the agent ---
-# This ensures no ghost tasks: if tracking fails, the agent is never woken.
-TASK_FILE_PATH=""
-TASK_ID=""
+# --- Create WorkItem in TaskPool ---
+# The Reconciler will detect the queued WorkItem, wake the target agent,
+# and the auto-claim service will deliver the task. No direct PTY delivery
+# or auto-monitoring needed — the Reconciler handles lifecycle and retries.
 
-if [ -n "$PROJECT_PATH" ]; then
-  CREATE_BODY=$(jq -n \
-    --arg projectPath "$PROJECT_PATH" \
-    --arg task "$TASK" \
-    --arg priority "$PRIORITY" \
-    --arg sessionName "$TO" \
-    --arg milestone "delegated" \
-    '{projectPath: $projectPath, task: $task, priority: $priority, sessionName: $sessionName, milestone: $milestone}')
-  CREATE_RESULT=$(api_call POST "/task-management/create" "$CREATE_BODY" 2>/dev/null || echo '{"success":false}')
-  CREATE_OK=$(echo "$CREATE_RESULT" | jq -r '.success // "false"' 2>/dev/null)
-  TASK_FILE_PATH=$(echo "$CREATE_RESULT" | jq -r '.taskPath // empty' 2>/dev/null || true)
-  TASK_ID=$(echo "$CREATE_RESULT" | jq -r '.taskId // empty' 2>/dev/null || true)
+# Map priority to WorkItem format
+WI_PRIORITY="medium"
+case "$PRIORITY" in
+  critical|urgent) WI_PRIORITY="critical" ;;
+  high)            WI_PRIORITY="high" ;;
+  low)             WI_PRIORITY="low" ;;
+  *)               WI_PRIORITY="medium" ;;
+esac
 
-  if [ "$CREATE_OK" != "true" ]; then
-    echo "{\"warning\":\"Task tracking failed (task-management/create returned: ${CREATE_OK}). Agent will be woken but task is untracked.\"}" >&2
-  fi
+WI_TITLE="${TITLE:-$(echo "$TASK" | head -c 200)}"
+
+POOL_BODY=$(jq -n \
+  --arg type "delegate" \
+  --arg owner "orchestrator" \
+  --arg target "$TO" \
+  --arg title "$WI_TITLE" \
+  --arg description "$TASK_MESSAGE" \
+  --arg priority "$WI_PRIORITY" \
+  --arg projectPath "${PROJECT_PATH:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end)')
+
+POOL_RESULT=$(api_call POST "/pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
+POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)
+WI_ID=$(echo "$POOL_RESULT" | jq -r '.data.id // .workItemId // empty' 2>/dev/null || true)
+
+if [ "$POOL_OK" != "true" ]; then
+  echo "{\"error\":\"Failed to create WorkItem in TaskPool\",\"details\":$(echo "$POOL_RESULT" | jq -c . 2>/dev/null || echo '{}')}"
+  exit 1
 fi
 
-# --- STEP 2: WAKE — deliver the message to the agent ---
-# Append complete-task instructions if we have the task path from step 1
-if [ -n "$TASK_FILE_PATH" ]; then
-  TASK_MESSAGE="${TASK_MESSAGE}\n\nAfter finishing and calling report-status, also run: bash ${CREWLY_ROOT}/config/skills/agent/core/complete-task/execute.sh '{\"absoluteTaskPath\":\"${TASK_FILE_PATH}\",\"sessionName\":\"${TO}\",\"summary\":\"<brief summary>\"}'"
-fi
-
-BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, waitForReady: true, waitTimeout: 15000}')
-
-DELIVER_OK=true
-api_call POST "/terminal/${TO}/deliver" "$BODY" || DELIVER_OK=false
-
-if [ "$DELIVER_OK" = "false" ]; then
-  # Agent not ready or session not found — retry with force mode (direct PTY write)
-  FORCE_BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, force: true}')
-  api_call POST "/terminal/${TO}/deliver" "$FORCE_BODY" || {
-    # Both delivery attempts failed — output error to stdout for orchestrator visibility
-    echo '{"error":"Failed to deliver task to '"$TO"'. Session may not exist or agent is not running."}'
-    exit 1
-  }
-fi
-
-# --- Auto-monitoring setup ---
-# Collect IDs for monitoring cleanup linkage
-COLLECTED_SCHEDULE_IDS="[]"
-COLLECTED_SUBSCRIPTION_IDS="[]"
-
-# Set up idle event subscription if requested
-if [ "$MONITOR_IDLE" = "true" ]; then
-  SUBSCRIBER_SESSION="${CREWLY_SESSION_NAME:-crewly-orc}"
-  SUB_BODY=$(jq -n \
-    --arg eventType "agent:idle" \
-    --arg sessionName "$TO" \
-    --arg subscriber "$SUBSCRIBER_SESSION" \
-    '{eventType: $eventType, filter: {sessionName: $sessionName}, subscriberSession: $subscriber, oneShot: true, ttlMinutes: 120}')
-  SUB_RESULT=$(api_call POST "/events/subscribe" "$SUB_BODY" 2>/dev/null || true)
-  SUB_ID=$(echo "$SUB_RESULT" | jq -r '.data.id // empty' 2>/dev/null || true)
-  if [ -n "$SUB_ID" ]; then
-    COLLECTED_SUBSCRIPTION_IDS=$(echo "$COLLECTED_SUBSCRIPTION_IDS" | jq --arg id "$SUB_ID" '. + [$id]')
-  fi
-fi
-
-# Set up fallback recurring schedule if requested
-if [ "$MONITOR_FALLBACK_MINUTES" != "0" ] && [ -n "$MONITOR_FALLBACK_MINUTES" ]; then
-  SCHEDULE_TARGET="${CREWLY_SESSION_NAME:-crewly-orc}"
-  SCHED_BODY=$(jq -n \
-    --arg target "$SCHEDULE_TARGET" \
-    --arg minutes "$MONITOR_FALLBACK_MINUTES" \
-    --arg message "Progress check: review ${TO} status — task: ${TASK:0:100}" \
-    --arg taskId "$TASK_ID" \
-    '{targetSession: $target, minutes: ($minutes | tonumber), intervalMinutes: ($minutes | tonumber), message: $message, isRecurring: true} + (if $taskId != "" then {taskId: $taskId} else {} end)' 2>/dev/null) || true
-  [ -n "$SCHED_BODY" ] && SCHED_RESULT=$(api_call POST "/schedule" "$SCHED_BODY" 2>/dev/null || true)
-  SCHED_ID=$(echo "$SCHED_RESULT" | jq -r '.checkId // .data.checkId // empty' 2>/dev/null || true)
-  if [ -n "$SCHED_ID" ]; then
-    COLLECTED_SCHEDULE_IDS=$(echo "$COLLECTED_SCHEDULE_IDS" | jq --arg id "$SCHED_ID" '. + [$id]')
-  fi
-fi
-
-# Store monitoring IDs for auto-cleanup if we have any
-HAS_SCHEDULE_IDS=$(echo "$COLLECTED_SCHEDULE_IDS" | jq 'length > 0')
-HAS_SUBSCRIPTION_IDS=$(echo "$COLLECTED_SUBSCRIPTION_IDS" | jq 'length > 0')
-
-if [ "$HAS_SCHEDULE_IDS" = "true" ] || [ "$HAS_SUBSCRIPTION_IDS" = "true" ]; then
-  MONITOR_BODY=$(jq -n \
-    --arg sessionName "$TO" \
-    --argjson scheduleIds "$COLLECTED_SCHEDULE_IDS" \
-    --argjson subscriptionIds "$COLLECTED_SUBSCRIPTION_IDS" \
-    '{sessionName: $sessionName, scheduleIds: $scheduleIds, subscriptionIds: $subscriptionIds}')
-  api_call POST "/task-management/add-monitoring" "$MONITOR_BODY" 2>/dev/null || true
-fi
+# Output result
+jq -n \
+  --arg success "true" \
+  --arg workItemId "${WI_ID:-}" \
+  --arg target "$TO" \
+  --arg priority "$WI_PRIORITY" \
+  --arg title "$WI_TITLE" \
+  '{success: true, workItemId: $workItemId, target: $target, priority: $priority, title: $title, message: "WorkItem created in TaskPool. Reconciler will wake the agent when resources are available."}'

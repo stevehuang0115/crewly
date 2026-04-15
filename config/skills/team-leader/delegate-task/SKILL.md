@@ -78,6 +78,16 @@ When `teamId` and `tlMemberId` are provided, the script fetches team data and va
 
 If validation fails, delegation is rejected with a hierarchy violation error.
 
+## Auto-Start Offline Workers
+
+If the target worker is offline (delivery fails), the skill automatically:
+1. Looks up the worker's `memberId` from team data
+2. Calls `POST /teams/:teamId/members/:memberId/start` to boot the worker
+3. Waits 10 seconds for the agent to initialize
+4. Retries task delivery
+
+This requires `--team` to be provided. Without team context, offline workers cannot be auto-started.
+
 ## Differences from Orchestrator delegate-task
 
 | Aspect | Orchestrator | Team Leader |

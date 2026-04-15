@@ -58,8 +58,8 @@ describe('Mission Types', () => {
   });
 
   describe('POLICY_ACTIONS', () => {
-    it('should contain 7 actions', () => {
-      expect(POLICY_ACTIONS).toHaveLength(7);
+    it('should contain 10 actions', () => {
+      expect(POLICY_ACTIONS).toHaveLength(10);
     });
   });
 

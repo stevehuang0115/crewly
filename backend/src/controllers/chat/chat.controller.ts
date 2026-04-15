@@ -106,8 +106,9 @@ export async function sendMessage(
         // Deduplicate: one Request per conversation message
         const existing = await requestSvc.findBySourceConversationItemId(result.message.id);
         if (!existing) {
+          const { generateRequestTitle } = await import('../../services/v3/v3-data.service.js');
           const request = await requestSvc.create({
-            title: content.length > 80 ? content.slice(0, 77) + '...' : content,
+            title: generateRequestTitle(content, 'other'),
             description: content,
             sourceConversationItemId: result.message.id,
             priority: 'normal',

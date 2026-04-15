@@ -28,6 +28,7 @@ import { RequestService } from '../v3/request.service.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
+import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -350,6 +351,20 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   async executeWakeAction(action: WakeAction): Promise<boolean> {
     const { agentSessionName, strategy } = action;
 
+    // Skip wake action under system memory pressure (>90% used).
+    // Prevents spawning new agent processes when the system is already low on memory,
+    // which would cause OOM → kill → reconciler wakes again → OOM loop.
+    if (isUnderMemoryPressure()) {
+      const stats = getMemoryStats();
+      this.logger.warn('Skipping wake action due to memory pressure', {
+        agent: agentSessionName,
+        strategy,
+        memoryUsedPercent: stats.usedPercent,
+        freeMemMB: stats.freeMB,
+      });
+      return false;
+    }
+
     this.logger.info('Executing wake action', {
       agent: agentSessionName,
       strategy,
@@ -369,15 +384,19 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         return await suspendService.rehydrateAgent(agentSessionName);
       } else if (strategy === 'start') {
         // For inactive agents, we need to start them via the registration service.
-        // The agent session creation is complex — use the start-agent API endpoint.
-        const response = await fetch(
-          `http://localhost:${process.env.PORT || 8787}/api/teams/members/start`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionName: agentSessionName }),
-          },
-        );
+        // The agent session creation is complex — use the team-member-start API endpoint.
+        const { teamId, memberId } = action;
+
+        let url = `http://localhost:${process.env.PORT || 8787}/api/teams/members/start`;
+        if (teamId && memberId) {
+          url = `http://localhost:${process.env.PORT || 8787}/api/teams/${teamId}/members/${memberId}/start`;
+        }
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionName: agentSessionName }),
+        });
 
         if (!response.ok) {
           const errorText = await response.text();

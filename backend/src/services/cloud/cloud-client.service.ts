@@ -205,9 +205,9 @@ export class CloudClientService {
       throw new Error(`Cloud authentication failed: ${response.status} ${errorText}`);
     }
 
-    // crewly-auth /api/cloud/validate returns { success, data: { plan, ... } }
+    // crewly-auth /api/cloud/validate returns { success, data: { plan, relayToken, ... } }
     // Also accept legacy { tier } format for forward compatibility
-    const data = (await response.json()) as { tier?: string; data?: { plan?: string } };
+    const data = (await response.json()) as { tier?: string; data?: { plan?: string; relayToken?: string } };
     const resolvedTier = data.data?.plan || data.tier;
 
     this.cloudUrl = cloudUrl;
@@ -217,7 +217,16 @@ export class CloudClientService {
     this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.CONNECTED;
     this.lastSyncAt = new Date().toISOString();
 
-    this.logger.info('Connected to CrewlyAI Cloud', { tier: this.tier });
+    // Use relay token from Cloud validate response for BrowserProxyService
+    if (data.data?.relayToken) {
+      this.logger.info('Relay token received from Cloud');
+      // Notify BrowserProxyService via token refresh callbacks
+      for (const callback of this.tokenRefreshCallbacks) {
+        callback(data.data.relayToken);
+      }
+    }
+
+    this.logger.info('Connected to CrewlyAI Cloud', { tier: this.tier, hasRelayToken: !!data.data?.relayToken });
 
     // Schedule proactive token refresh
     this.scheduleTokenRefresh(token);

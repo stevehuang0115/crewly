@@ -1636,6 +1636,11 @@ export class AgentRegistrationService {
 					ownershipScope: foundMember?.ownershipScope as ModuleConfig['ownershipScope'],
 					teamOwnershipScope: foundTeam?.ownershipScope as ModuleConfig['teamOwnershipScope'],
 					serviceContract: foundTeam?.serviceContract as ModuleConfig['serviceContract'],
+					expertId: foundMember?.expertId,
+					teamDescription: foundTeam?.description,
+					teamMission: foundTeam?.mission,
+					teamBudget: foundTeam?.budget as ModuleConfig['teamBudget'],
+					teamQualityGate: foundTeam?.qualityGate as ModuleConfig['teamQualityGate'],
 				};
 
 				const assembler = new PromptAssemblyService();

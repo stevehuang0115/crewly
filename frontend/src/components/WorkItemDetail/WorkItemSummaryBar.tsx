@@ -1,14 +1,14 @@
 /**
  * WorkItem Summary Bar Component
  *
- * Displays summary statistics for the work items list as a horizontal grid
- * of stat cards. Uses the same pattern as RequestSummaryBar
- * (bg-surface-dark, border-border-dark, Tailwind utility classes).
+ * Displays summary statistics for the work items list using the shared
+ * ScoreCard and ScoreCardGrid UI components.
  *
  * @module components/WorkItemDetail/WorkItemSummaryBar
  */
 
 import React from 'react';
+import { ScoreCard, ScoreCardGrid } from '../UI/ScoreCard';
 
 // =============================================================================
 // Types
@@ -40,28 +40,6 @@ interface WorkItemSummaryBarProps {
   /** Computed work item statistics (null during loading) */
   stats: WorkItemStatistics | null;
 }
-
-// =============================================================================
-// Sub-component
-// =============================================================================
-
-/**
- * A single stat card matching the Dashboard StatCard pattern.
- *
- * @param props.title - Stat label
- * @param props.value - Stat value
- * @param props.accent - Optional text color class for the value
- */
-const StatCard: React.FC<{ title: string; value: number; accent?: string }> = ({
-  title,
-  value,
-  accent,
-}) => (
-  <div className="bg-surface-dark p-4 rounded-lg border border-border-dark transition-all hover:shadow-lg hover:border-primary/50">
-    <p className="text-xs font-medium text-text-secondary-dark">{title}</p>
-    <p className={`text-2xl font-bold mt-1 ${accent ?? ''}`}>{value}</p>
-  </div>
-);
 
 // =============================================================================
 // Helpers
@@ -101,7 +79,6 @@ export function computeWorkItemStats(items: Array<{ status: string }>): WorkItem
       case 'blocked':
         stats.blocked++;
         break;
-      // 'cancelled' and others are counted in total but not shown as separate cards
     }
   }
 
@@ -113,8 +90,7 @@ export function computeWorkItemStats(items: Array<{ status: string }>): WorkItem
 // =============================================================================
 
 /**
- * Renders a 6-column grid of stat cards for the work items list.
- * Follows the RequestSummaryBar layout pattern.
+ * Renders a grid of stat cards for the work items list using shared ScoreCard.
  *
  * @param props.stats - Statistics to display
  * @returns Summary bar JSX element
@@ -123,16 +99,13 @@ export const WorkItemSummaryBar: React.FC<WorkItemSummaryBarProps> = ({ stats })
   if (!stats) return null;
 
   return (
-    <div
-      className="grid grid-cols-3 md:grid-cols-6 gap-3"
-      data-testid="workitem-summary-bar"
-    >
-      <StatCard title="Total" value={stats.total} />
-      <StatCard title="Running" value={stats.running} accent="text-blue-400" />
-      <StatCard title="Queued" value={stats.queued} accent="text-yellow-400" />
-      <StatCard title="Done" value={stats.done} accent="text-green-400" />
-      <StatCard title="Failed" value={stats.failed} accent="text-red-400" />
-      <StatCard title="Blocked" value={stats.blocked} accent="text-orange-400" />
-    </div>
+    <ScoreCardGrid variant="horizontal" className="grid-cols-3 md:grid-cols-6" data-testid="workitem-summary-bar">
+      <ScoreCard label="Total" value={stats.total} />
+      <ScoreCard label="Running"><span className="text-blue-400">{stats.running}</span></ScoreCard>
+      <ScoreCard label="Queued"><span className="text-yellow-400">{stats.queued}</span></ScoreCard>
+      <ScoreCard label="Done"><span className="text-green-400">{stats.done}</span></ScoreCard>
+      <ScoreCard label="Failed"><span className="text-red-400">{stats.failed}</span></ScoreCard>
+      <ScoreCard label="Blocked"><span className="text-orange-400">{stats.blocked}</span></ScoreCard>
+    </ScoreCardGrid>
   );
 };

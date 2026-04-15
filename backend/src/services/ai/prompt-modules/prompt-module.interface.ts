@@ -78,6 +78,16 @@ export interface ModuleConfig {
 	teamOwnershipScope?: { domains: string[]; deliverables: string[]; areas?: string[] };
 	/** Team's service contract */
 	serviceContract?: { accepts: string[]; avoids: string[]; expectedOutput: string[] };
+	/** Expert profile ID — loads config/experts/{expertId}.md or Pro expert library */
+	expertId?: string;
+	/** Team description — injected into agent prompt to guide team-aligned behavior */
+	teamDescription?: string;
+	/** Team mission / OKR statement — injected into agent prompt for goal alignment */
+	teamMission?: string;
+	/** Team budget configuration — injected so agents can respect cost constraints */
+	teamBudget?: { maxTokensPerDay?: number; maxUsdPerMonth?: number; alertThreshold?: number };
+	/** Team quality gate — injected so agents know review requirements */
+	teamQualityGate?: { reviewerId?: string; autoApprove?: boolean; minQualityScore?: number };
 
 	// === Eval mode ===
 

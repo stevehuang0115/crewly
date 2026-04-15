@@ -5,7 +5,8 @@ import { CreateCard } from '@/components/Cards/CreateCard';
 import { ProjectCreator } from '@/components/Modals/ProjectCreator';
 import { Project, Team } from '@/types';
 import { apiService } from '@/services/api.service';
-import { Plus, Search, Filter, Folder, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Filter, Folder, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
+import { PageToolbar } from '@/components/UI/PageToolbar';
 import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
 import { usePinnedFavorites } from '@/hooks/usePinnedFavorites';
 import { assignDefaultAvatars } from '@/utils/team.utils';
@@ -209,11 +210,11 @@ export const Projects: React.FC = () => {
   );
 
   return (
-    <div className="max-w-7xl mx-auto">
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
+    <div className="p-6 max-w-7xl mx-auto">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="page-title text-3xl font-bold tracking-tight">Projects</h1>
-          <p className="text-sm text-text-secondary-dark mt-1">Manage and monitor your Crewly projects</p>
+          <h1 className="text-2xl font-bold text-text-primary-dark">Projects</h1>
+          <p className="text-sm text-text-secondary-dark">Manage and monitor your Crewly projects</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -238,31 +239,20 @@ export const Projects: React.FC = () => {
       </div>
 
       {/* Search and Filter Controls */}
-      <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6">
-        <div className="relative w-full md:w-auto md:flex-grow max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary-dark w-5 h-5" />
-          <input
-            type="text"
-            placeholder="Search projects..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-surface-dark border border-border-dark rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
-          />
-        </div>
-
-        <div className="flex items-center gap-4">
-          <select
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
-            className="bg-surface-dark border border-border-dark rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
-          >
-            <option value="all">All Status</option>
-            <option value="active">Active</option>
-            <option value="paused">Paused</option>
-            <option value="completed">Completed</option>
-          </select>
-        </div>
-      </div>
+      <PageToolbar
+        tabs={[
+          { value: 'all', label: 'All', count: projects.length },
+          { value: 'active', label: 'Active', count: projects.filter(p => p.status === 'active').length },
+          { value: 'paused', label: 'Paused', count: projects.filter(p => p.status === 'paused').length },
+          { value: 'completed', label: 'Completed', count: projects.filter(p => p.status === 'completed').length },
+        ]}
+        activeTab={filterStatus}
+        onTabChange={setFilterStatus}
+        searchPlaceholder="Search projects..."
+        searchValue={searchTerm}
+        onSearchChange={setSearchTerm}
+        searchDebounceMs={0}
+      />
 
       {/* Active Projects Grid */}
       <div>

@@ -28,7 +28,6 @@
  * @module agent-heartbeat-monitor.service
  */
 
-import * as fs from 'fs/promises';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { AGENT_HEARTBEAT_MONITOR_CONSTANTS, AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_ROLE, SESSION_COMMAND_DELAYS, CREWLY_CONSTANTS } from '../../constants.js';
@@ -38,9 +37,9 @@ import { AgentSuspendService } from './agent-suspend.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { getSessionStatePersistence } from '../session/session-state-persistence.js';
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
-import { TaskTrackingService } from '../project/task-tracking.service.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
 import type { ISessionBackend } from '../session/session-backend.interface.js';
+import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 
 /**
  * Number of consecutive dead-process checks before triggering a restart.
@@ -91,7 +90,7 @@ export interface AgentMonitorState {
  * @example
  * ```typescript
  * const monitor = AgentHeartbeatMonitorService.getInstance();
- * monitor.setDependencies(sessionBackend, agentRegistrationService, storageService, taskTrackingService);
+ * monitor.setDependencies(sessionBackend, agentRegistrationService, storageService);
  * monitor.start();
  * ```
  */
@@ -112,7 +111,6 @@ export class AgentHeartbeatMonitorService {
 	private sessionBackend: ISessionBackend | null = null;
 	private agentRegistrationService: AgentRegistrationService | null = null;
 	private storageService: StorageService | null = null;
-	private taskTrackingService: TaskTrackingService | null = null;
 
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('AgentHeartbeatMonitor');
@@ -146,18 +144,15 @@ export class AgentHeartbeatMonitorService {
 	 * @param sessionBackend - Session backend for accessing agent PTY sessions
 	 * @param agentRegistrationService - For recreating agent sessions on restart
 	 * @param storageService - For querying teams and agent statuses
-	 * @param taskTrackingService - For querying in-progress tasks for re-delivery
 	 */
 	setDependencies(
 		sessionBackend: ISessionBackend,
 		agentRegistrationService: AgentRegistrationService,
-		storageService: StorageService,
-		taskTrackingService: TaskTrackingService
+		storageService: StorageService
 	): void {
 		this.sessionBackend = sessionBackend;
 		this.agentRegistrationService = agentRegistrationService;
 		this.storageService = storageService;
-		this.taskTrackingService = taskTrackingService;
 	}
 
 	/**
@@ -501,13 +496,26 @@ export class AgentHeartbeatMonitorService {
 	 * 4. Kill old PTY session
 	 * 5. Pre-set session ID for resume
 	 * 6. Recreate agent session via AgentRegistrationService
-	 * 7. Re-deliver in-progress tasks
+	 * 7. Re-deliver in-progress tasks from TaskPool
 	 * 8. Broadcast WebSocket event
 	 *
 	 * @param state - Agent monitor state
 	 */
 	private async triggerAgentRestart(state: AgentMonitorState): Promise<void> {
 		if (!this.sessionBackend || !this.agentRegistrationService) {
+			return;
+		}
+
+		// Check system memory pressure before restarting — avoid respawning agents
+		// when the system is already under memory pressure, which causes an infinite
+		// kill → restart → OOM → kill loop.
+		if (isUnderMemoryPressure()) {
+			const stats = getMemoryStats();
+			this.logger.warn('Skipping agent restart due to memory pressure', {
+				sessionName: state.sessionName,
+				memoryUsedPercent: stats.usedPercent,
+				freeMemMB: stats.freeMB,
+			});
 			return;
 		}
 
@@ -600,7 +608,7 @@ export class AgentHeartbeatMonitorService {
 				claudeSessionId: claudeSessionId ? '(resumed)' : '(fresh)',
 			});
 
-			// Re-deliver in-progress tasks (async, non-blocking)
+			// Re-deliver in-progress tasks from TaskPool (async, non-blocking)
 			this.redeliverTasks(state).catch((err) => {
 				this.logger.error('Task re-delivery failed after agent restart', {
 					sessionName: state.sessionName,
@@ -618,14 +626,14 @@ export class AgentHeartbeatMonitorService {
 	/**
 	 * Re-deliver in-progress tasks to a restarted agent.
 	 *
-	 * Waits for the agent to initialize, queries TaskTrackingService for
-	 * assigned/active tasks, reads task files, and writes summaries into
-	 * the agent's PTY session.
+	 * Waits for the agent to initialize, queries TaskPoolService for
+	 * running/queued WorkItems targeting this agent's session, and writes
+	 * task descriptions into the agent's PTY session.
 	 *
 	 * @param state - Agent monitor state
 	 */
 	private async redeliverTasks(state: AgentMonitorState): Promise<void> {
-		if (!this.taskTrackingService || !this.sessionBackend) {
+		if (!this.sessionBackend) {
 			return;
 		}
 
@@ -640,9 +648,22 @@ export class AgentHeartbeatMonitorService {
 			return;
 		}
 
-		// Query tasks for this team member
-		const tasks = await this.taskTrackingService.getTasksForTeamMember(state.memberId);
-		const activeTasks = tasks.filter(t => t.status === 'assigned' || t.status === 'active');
+		// Query tasks from TaskPool for this agent's session
+		let activeTasks: Array<{ title: string; description?: string }> = [];
+		try {
+			const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+			const pool = TaskPoolService.getInstance();
+			const allItems = await pool.getAllItems();
+			activeTasks = allItems.filter(
+				wi => wi.target === state.sessionName && wi.status !== 'done' && wi.status !== 'cancelled'
+			);
+		} catch (err) {
+			this.logger.warn('Failed to query TaskPool for task re-delivery', {
+				sessionName: state.sessionName,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return;
+		}
 
 		if (activeTasks.length === 0) {
 			this.logger.debug('No active tasks to re-deliver', { sessionName: state.sessionName });
@@ -660,24 +681,17 @@ export class AgentHeartbeatMonitorService {
 		}
 
 		for (const task of activeTasks) {
-			// Read task file content
-			let taskContent = '';
-			try {
-				taskContent = await fs.readFile(task.taskFilePath, 'utf-8');
-				// Truncate to 2000 chars
-				if (taskContent.length > 2000) {
-					taskContent = taskContent.slice(0, 2000) + '\n... (truncated)';
-				}
-			} catch {
-				taskContent = '(task file not found)';
-			}
+			const taskDescription = task.description || '(no task description available)';
+			// Truncate to 2000 chars
+			const truncatedDescription = taskDescription.length > 2000
+				? taskDescription.slice(0, 2000) + '\n... (truncated)'
+				: taskDescription;
 
 			const message = [
 				'[TASK RE-DELIVERY] You were working on this task before your session was restarted:',
-				`Task: ${task.taskName}`,
-				`File: ${task.taskFilePath}`,
+				`Task: ${task.title}`,
 				'---',
-				taskContent,
+				truncatedDescription,
 				'---',
 				'Please continue working on this task.',
 			].join('\n');

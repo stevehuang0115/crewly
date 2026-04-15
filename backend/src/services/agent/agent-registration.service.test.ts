@@ -1,3 +1,4 @@
+// ExpertProfileModule integration
 /**
  * Tests for AgentRegistrationService
  * Tests the multi-step agent initialization and registration process

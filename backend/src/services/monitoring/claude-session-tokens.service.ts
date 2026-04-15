@@ -225,3 +225,117 @@ export async function getTokensSince(
 
   return summary;
 }
+
+/**
+ * Scans all Claude Code session JSONL files for a project and feeds
+ * aggregated per-session token data into TokenUsageService.
+ *
+ * This bridges the gap between Claude Code's file-based token tracking
+ * and the in-memory TokenUsageService that powers the Usage dashboard.
+ * Should be called once during server startup.
+ *
+ * Only processes sessions modified in the last `maxAgeDays` to avoid
+ * scanning hundreds of old session files.
+ *
+ * @param projectPath - The project's working directory
+ * @param maxAgeDays - Only process sessions modified within this many days (default: 7)
+ * @returns Number of sessions loaded
+ */
+export async function syncSessionsToTokenUsageService(
+  projectPath: string,
+  maxAgeDays = 7,
+): Promise<number> {
+  const { TokenUsageService } = await import('./token-usage.service.js');
+  const tokenSvc = TokenUsageService.getInstance();
+
+  const slug = encodeProjectSlug(projectPath);
+  const dir = path.join(os.homedir(), '.claude', 'projects', slug);
+
+  let files: string[];
+  try {
+    files = await fs.readdir(dir);
+  } catch {
+    logger.debug('No Claude projects directory found', { dir });
+    return 0;
+  }
+
+  const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
+  const cutoffMs = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  let loaded = 0;
+
+  for (const file of jsonlFiles) {
+    const filePath = path.join(dir, file);
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.mtimeMs < cutoffMs) continue;
+
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+
+      let sessionInput = 0;
+      let sessionOutput = 0;
+      let sessionCacheRead = 0;
+      let sessionCacheCreate = 0;
+      let model = '';
+      let turnCount = 0;
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type !== 'assistant') continue;
+          const msg = entry.message;
+          if (!msg?.usage) continue;
+
+          const u = msg.usage;
+          sessionInput += u.input_tokens || 0;
+          sessionOutput += u.output_tokens || 0;
+          sessionCacheRead += u.cache_read_input_tokens || 0;
+          sessionCacheCreate += u.cache_creation_input_tokens || 0;
+          if (!model && msg.model) model = msg.model;
+          turnCount++;
+        } catch {
+          continue;
+        }
+      }
+
+      if (turnCount > 0) {
+        const sessionId = file.replace('.jsonl', '');
+        const resolvedModel = model || 'claude-sonnet-4-6';
+
+        // Calculate cost with proper cache-aware pricing
+        const cost = calculateClaudeCost(
+          sessionInput, sessionOutput,
+          sessionCacheRead, sessionCacheCreate,
+          resolvedModel,
+        );
+
+        // Record only real input tokens (not cache) to avoid inflating counts.
+        // Pass pre-calculated cost via a dedicated method if available,
+        // otherwise record raw tokens and let the dashboard use our cost.
+        tokenSvc.recordUsage(
+          sessionId,
+          sessionId,
+          sessionInput,
+          sessionOutput,
+          resolvedModel,
+        );
+
+        // Override the auto-calculated cost with our cache-aware cost
+        tokenSvc.overrideSessionCost(sessionId, cost);
+        loaded++;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  logger.info('Synced Claude Code sessions to TokenUsageService', {
+    projectPath,
+    scannedFiles: jsonlFiles.length,
+    loadedSessions: loaded,
+    maxAgeDays,
+  });
+
+  return loaded;
+}

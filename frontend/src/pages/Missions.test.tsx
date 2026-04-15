@@ -1,3 +1,5 @@
+// Layout + ScoreCard consistency
+// Updated: PageToolbar adoption
 /**
  * Missions Page Tests
  *

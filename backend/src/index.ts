@@ -1329,6 +1329,16 @@ export class CrewlyServer {
 				});
 			}
 
+			// Start marketplace auto-update (check registry every 6 hours)
+			try {
+				const { startAutoUpdate } = await import('./services/marketplace/marketplace-auto-update.service.js');
+				startAutoUpdate();
+			} catch (autoUpdateErr) {
+				this.logger.warn('Marketplace auto-update startup failed (non-fatal)', {
+					error: autoUpdateErr instanceof Error ? autoUpdateErr.message : String(autoUpdateErr),
+				});
+			}
+
 			// Start Slack image cleanup (download temp files)
 			try {
 				const { getSlackImageService: getImgService } = await import('./services/slack/slack-image.service.js');
@@ -1380,7 +1390,12 @@ export class CrewlyServer {
 				const tokenUsageService = TokenUsageService.getInstance();
 				await tokenUsageService.loadFromDisk();
 				tokenUsageService.startPeriodicFlush();
-				this.logger.info('Token usage tracking initialized');
+
+				// Sync Claude Code session JSONL files → TokenUsageService
+				// so the Usage dashboard has data from claude-code runtime agents
+				const { syncSessionsToTokenUsageService } = await import('./services/monitoring/claude-session-tokens.service.js');
+				const synced = await syncSessionsToTokenUsageService(this.config.crewlyHome, 7);
+				this.logger.info('Token usage tracking initialized', { syncedClaudeSessions: synced });
 			} catch (tokenErr) {
 				this.logger.warn('Token usage initialization failed (non-fatal)', {
 					error: tokenErr instanceof Error ? tokenErr.message : String(tokenErr),

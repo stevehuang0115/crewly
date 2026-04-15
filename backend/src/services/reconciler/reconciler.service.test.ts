@@ -11,6 +11,20 @@ import type { WorkItem, Request, TaskClaim, ReconcileCorrection, WakeAction } fr
 import type { AgentHealth } from './reconcile-rules.js';
 
 // ---------------------------------------------------------------------------
+// Mock settings service for maxConcurrentAgents tests
+// ---------------------------------------------------------------------------
+
+const mockGetSettings = jest.fn().mockResolvedValue({
+  general: { maxConcurrentAgents: 10 },
+});
+
+jest.mock('../settings/index.js', () => ({
+  getSettingsService: () => ({
+    getSettings: mockGetSettings,
+  }),
+}));
+
+// ---------------------------------------------------------------------------
 // Mock Data Provider
 // ---------------------------------------------------------------------------
 
@@ -61,6 +75,10 @@ describe('ReconcilerService', () => {
     service = new ReconcilerService(provider, {
       fastLoopIntervalMs: 10_000,
       fullLoopIntervalMs: 60_000,
+    });
+    // Reset settings mock to default
+    mockGetSettings.mockResolvedValue({
+      general: { maxConcurrentAgents: 10 },
     });
   });
 
@@ -595,6 +613,103 @@ describe('ReconcilerService', () => {
       const result = await service.runFast();
       expect(result.agentsWoken).toBe(0);
       expect(result.errors.some(e => e.includes('Connection timeout'))).toBe(true);
+    });
+
+    it('should skip Hybrid Wake when active agents >= maxConcurrentAgents', async () => {
+      // Set maxConcurrentAgents to 2
+      mockGetSettings.mockResolvedValue({
+        general: { maxConcurrentAgents: 2 },
+      });
+
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: THREE_MIN_AGO,
+        type: 'delegate',
+      });
+
+      // Two active agents already at capacity
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-1', {
+          sessionName: 'agent-1',
+          status: 'active',
+          role: 'developer',
+        }],
+        ['agent-2', {
+          sessionName: 'agent-2',
+          status: 'active',
+          role: 'developer',
+        }],
+        ['agent-suspended', {
+          sessionName: 'agent-suspended',
+          status: 'suspended',
+          role: 'developer',
+        }],
+      ]);
+
+      const executeWakeAction = jest.fn().mockResolvedValue(true);
+
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFast();
+
+      // executeWakeAction should NOT have been called because we are at capacity
+      expect(executeWakeAction).not.toHaveBeenCalled();
+      expect(result.agentsWoken).toBe(0);
+      expect(result.wakeActions).toHaveLength(0);
+    });
+
+    it('should allow Hybrid Wake when active agents < maxConcurrentAgents', async () => {
+      // Set maxConcurrentAgents to 5 (plenty of room)
+      mockGetSettings.mockResolvedValue({
+        general: { maxConcurrentAgents: 5 },
+      });
+
+      // Item must be older than 5 min when active agents exist (effectiveThreshold)
+      const TEN_MIN_AGO = new Date(Date.now() - 10 * 60_000).toISOString();
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: TEN_MIN_AGO,
+        type: 'delegate',
+      });
+
+      // Only 1 active agent, well under the limit
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-1', {
+          sessionName: 'agent-1',
+          status: 'active',
+          role: 'developer',
+          teamId: 'team-1',
+          memberId: 'member-1',
+        } as AgentHealth],
+        ['agent-suspended', {
+          sessionName: 'agent-suspended',
+          status: 'suspended',
+          role: 'developer',
+          teamId: 'team-1',
+          memberId: 'member-2',
+        } as AgentHealth],
+      ]);
+
+      const executeWakeAction = jest.fn().mockResolvedValue(true);
+
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAvailablePoolItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFast();
+
+      // executeWakeAction should be called because we have capacity
+      expect(executeWakeAction).toHaveBeenCalled();
+      expect(result.agentsWoken).toBe(1);
     });
   });
 });

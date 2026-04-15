@@ -34,10 +34,13 @@ import {
   detectExpiredClaims,
   reconcileRequestStatus,
   detectRecoverableWorkItems,
+  detectRetryableFailedWorkItems,
+  detectDependencyResolvedWorkItems,
   detectUnclaimedTasks,
   runPruningPass,
 } from './reconcile-rules.js';
 import type { AgentHealth } from './reconcile-rules.js';
+import { getSettingsService } from '../settings/index.js';
 
 // ---------------------------------------------------------------------------
 // Data Provider Interface (dependency injection)
@@ -171,10 +174,21 @@ export class ReconcilerService {
       const expired = detectExpiredClaims(claims);
       result.corrections.push(...expired.corrections);
 
-      // 3. Detect recoverable blocked WorkItems
+      // 3. Detect recoverable blocked WorkItems (agent back online)
       const recoverable = detectRecoverableWorkItems(workItems, agentHealthMap);
       result.corrections.push(...recoverable.corrections);
       result.workItemsRequeued += recoverable.recoverableIds.length;
+
+      // 3b. Auto-retry failed WorkItems with remaining retries
+      const retryable = detectRetryableFailedWorkItems(workItems);
+      result.corrections.push(...retryable.corrections);
+      result.workItemsRequeued += retryable.retriedIds.length;
+
+      // 3c. Unblock WorkItems whose dependencies are all resolved
+      const workItemMap = new Map(workItems.map(wi => [wi.id, wi]));
+      const unblocked = detectDependencyResolvedWorkItems(workItems, workItemMap);
+      result.corrections.push(...unblocked.corrections);
+      result.workItemsRequeued += unblocked.unblockedIds.length;
 
       // 4. Pruning pass (F4): TTL expiry + orphan cascade + deep cascade + stale queue detection
       const pruning = runPruningPass(workItems);
@@ -202,6 +216,10 @@ export class ReconcilerService {
           // Token backfill is non-fatal
         }
       }
+
+      // 8. Hybrid Wake: detect unclaimed tasks and wake dormant agents (H3)
+      // Call after status corrections to ensure we have current pool state.
+      await this.runHybridWake(workItems, agentHealthMap, result);
     });
   }
 
@@ -427,6 +445,27 @@ export class ReconcilerService {
   ): Promise<void> {
     // Only run if the provider supports wake actions
     if (!this.dataProvider.executeWakeAction) return;
+
+    // Respect maxConcurrentAgents — count currently active agents and skip wake
+    // if we're at capacity. This is the primary control preventing resource exhaustion.
+    let maxConcurrent = 50; // matches ConfigService default (MAX_CONCURRENT_AGENTS)
+    try {
+      const settings = await getSettingsService().getSettings();
+      maxConcurrent = settings.general.maxConcurrentAgents;
+    } catch {
+      // Use default if settings unavailable
+    }
+
+    let activeAgentCount = 0;
+    for (const agent of agentHealthMap.values()) {
+      if (agent.status === 'active') {
+        activeAgentCount++;
+      }
+    }
+
+    if (activeAgentCount >= maxConcurrent) {
+      return;
+    }
 
     // Use pool items if available, otherwise fall back to active work items
     const poolItems = this.dataProvider.getAvailablePoolItems

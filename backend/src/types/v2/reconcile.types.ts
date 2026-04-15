@@ -119,6 +119,10 @@ export interface WakeAction {
   scoreBreakdown: AgentScoreBreakdown;
   /** ISO8601 timestamp */
   triggeredAt: string;
+  /** Optional team ID for start strategy */
+  teamId?: string;
+  /** Optional member ID for start strategy */
+  memberId?: string;
 }
 
 /**

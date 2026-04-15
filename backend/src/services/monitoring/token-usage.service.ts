@@ -120,7 +120,7 @@ export const TOKEN_COSTS: Record<string, { input: number; output: number }> = {
 /**
  * Calculate the cost for a given number of tokens and model.
  *
- * @param inputTokens - Number of input tokens
+ * @param inputTokens - Number of input tokens (excluding cache tokens)
  * @param outputTokens - Number of output tokens
  * @param model - Model identifier
  * @returns Cost in USD
@@ -128,6 +128,28 @@ export const TOKEN_COSTS: Record<string, { input: number; output: number }> = {
 export function calculateCost(inputTokens: number, outputTokens: number, model: string): number {
   const rates = TOKEN_COSTS[model] || TOKEN_COSTS.default;
   return inputTokens * rates.input + outputTokens * rates.output;
+}
+
+/**
+ * Stores a pre-calculated cost override for a session.
+ * Used when the caller has more accurate cost data (e.g., cache-aware pricing
+ * from Claude Code JSONL files).
+ */
+const sessionCostOverrides = new Map<string, number>();
+
+/**
+ * Set a cost override for a session. When present, getSummary() uses this
+ * instead of recalculating from events.
+ */
+export function setSessionCostOverride(sessionName: string, cost: number): void {
+  sessionCostOverrides.set(sessionName, cost);
+}
+
+/**
+ * Get a cost override if one exists.
+ */
+export function getSessionCostOverride(sessionName: string): number | undefined {
+  return sessionCostOverrides.get(sessionName);
 }
 
 /**
@@ -235,6 +257,14 @@ export class TokenUsageService {
   }
 
   /**
+   * Set a cache-aware cost override for a session.
+   * Used when the caller has pre-calculated cost with proper cache pricing.
+   */
+  overrideSessionCost(sessionName: string, cost: number): void {
+    setSessionCostOverride(sessionName, cost);
+  }
+
+  /**
    * Get aggregated token usage for a specific agent across all sessions.
    *
    * @param agentId - The agent identifier to query
@@ -296,7 +326,10 @@ export class TokenUsageService {
         });
       }
 
-      const totalCost = modelBreakdown.reduce((sum, m) => sum + m.cost, 0);
+      const calculatedCost = modelBreakdown.reduce((sum, m) => sum + m.cost, 0);
+      // Use cache-aware cost override if available (from Claude JSONL sync)
+      const costOverride = !taskId ? getSessionCostOverride(record.sessionName) : undefined;
+      const totalCost = costOverride ?? calculatedCost;
 
       summaries.push({
         sessionName: record.sessionName,

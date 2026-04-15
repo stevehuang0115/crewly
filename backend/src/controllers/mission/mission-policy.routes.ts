@@ -15,7 +15,18 @@ import {
   updatePolicy,
   checkPolicy,
 } from './mission-policy.controller.js';
+import {
+  listKeyResults,
+  createKR,
+  getKR,
+  updateKR,
+  deleteKR,
+  measureKR,
+  getOKRSummary,
+} from './kr.controller.js';
 import { MissionExecutorService, type DecompositionResult } from '../../services/v3/mission-executor.service.js';
+import { OKRReviewService } from '../../services/v3/okr-review.service.js';
+import type { ReviewDecision } from '../../types/v2/key-result.types.js';
 
 /** Resolve the missions directory from the project root. */
 function getMissionsDir(): string {
@@ -91,6 +102,29 @@ export function createMissionPolicyRouter(): Router {
   // Dry-run: check if an action is allowed
   router.post('/:id/policy/check', checkPolicy);
 
+  // --- Key Result (OKR) Endpoints ---
+
+  // List KRs for a mission
+  router.get('/:id/key-results', listKeyResults);
+
+  // Create a KR
+  router.post('/:id/key-results', createKR);
+
+  // OKR aggregated summary
+  router.get('/:id/okr-summary', getOKRSummary);
+
+  // Get a single KR
+  router.get('/:id/key-results/:krId', getKR);
+
+  // Update a KR
+  router.put('/:id/key-results/:krId', updateKR);
+
+  // Delete a KR
+  router.delete('/:id/key-results/:krId', deleteKR);
+
+  // Record a measurement
+  router.post('/:id/key-results/:krId/measure', measureKR);
+
   // --- Mission Execution Endpoints ---
 
   // Submit decomposition result (from decompose-mission skill)
@@ -148,6 +182,31 @@ export function createMissionPolicyRouter(): Router {
       const executor = MissionExecutorService.getInstance();
       const unfrozenCount = await executor.resumeMission(req.params.id);
       res.json({ success: true, data: { unfrozenCount } });
+    } catch (err) { next(err); }
+  });
+
+  // --- OKR Review Endpoints ---
+
+  // Submit review decision (from review-mission skill)
+  router.post('/:id/review-decision', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const decision = req.body as ReviewDecision;
+      if (!decision.action) {
+        res.status(400).json({ success: false, error: 'action is required' });
+        return;
+      }
+      const reviewService = OKRReviewService.getInstance();
+      await reviewService.processReviewDecision(req.params.id, decision);
+      res.json({ success: true, message: `Review decision "${decision.action}" processed` });
+    } catch (err) { next(err); }
+  });
+
+  // Trigger an OKR review (manual or scheduled)
+  router.post('/:id/okr-review', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const reviewService = OKRReviewService.getInstance();
+      const result = await reviewService.executeReview(req.params.id);
+      res.json({ success: true, data: result });
     } catch (err) { next(err); }
   });
 

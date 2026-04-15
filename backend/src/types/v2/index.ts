@@ -181,6 +181,38 @@ export {
   mergeExecutionCadence,
 } from './mission.types.js';
 
+// Key Result types (OKR)
+export type {
+  KeyResult,
+  KRMetricType,
+  KRStatus,
+  KRMeasurementSource,
+  KRContribution,
+  KRMeasurement,
+  CreateKeyResultInput,
+  UpdateKeyResultInput,
+  MissionOKRSummary,
+  OKRRecommendation,
+  OKRReviewResult,
+  ReviewDecision,
+} from './key-result.types.js';
+
+export {
+  KR_METRIC_TYPES,
+  KR_STATUSES,
+  KR_MEASUREMENT_SOURCES,
+  MAX_MEASUREMENT_HISTORY,
+  isValidKRMetricType,
+  isValidKRStatus,
+  isValidKRMeasurementSource,
+  isKeyResult,
+  validateCreateKeyResultInput,
+  createKeyResult,
+  computeKRProgress,
+  deriveKRStatus,
+  deriveOKRRecommendation,
+} from './key-result.types.js';
+
 // Workspace types
 export type {
   Workspace,

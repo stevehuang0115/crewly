@@ -222,8 +222,8 @@ export class PtySessionBackend implements ISessionBackend {
 		const terminalBuffer = this.terminalBuffers.get(name);
 
 		if (session) {
-			this.logger.info('Killing session', { name });
-			session.kill();
+			this.logger.info('Killing session with forceKill (SIGTERM → SIGKILL)', { name });
+			await session.forceKill();
 			this.sessions.delete(name);
 		}
 
@@ -491,7 +491,8 @@ export class PtySessionBackend implements ISessionBackend {
 		for (const terminalBuffer of this.terminalBuffers.values()) {
 			terminalBuffer.dispose();
 		}
-		for (const [name] of this.sessionLogStreams) {
+		const logStreamNames = Array.from(this.sessionLogStreams.keys());
+		for (const name of logStreamNames) {
 			this.closeSessionLogStream(name);
 		}
 		this.sessions.clear();

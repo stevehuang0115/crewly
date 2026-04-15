@@ -712,4 +712,90 @@ describe('CloudClientService', () => {
       expect(r1 === false || r2 === false).toBe(true);
     });
   });
+
+  // ----- Relay token extraction from validate response ---------------------
+
+  describe('relay token extraction', () => {
+    it('should extract relayToken from validate response and fire callbacks', async () => {
+      // Mock fetch to return the crewly-auth /api/cloud/validate format
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, data: { plan: 'pro', relayToken: 'test-relay-jwt' } }),
+      );
+
+      // Register a tokenRefreshCallback before connecting
+      const callbackFn = jest.fn();
+      service.onTokenRefresh(callbackFn);
+
+      const result = await service.connect(CLOUD_URL, TOKEN);
+
+      expect(result).toEqual({ success: true, tier: 'pro' });
+      expect(service.isConnected()).toBe(true);
+      expect(service.getTier()).toBe('pro');
+
+      // Verify the callback was called with the relay token
+      expect(callbackFn).toHaveBeenCalledTimes(1);
+      expect(callbackFn).toHaveBeenCalledWith('test-relay-jwt');
+    });
+
+    it('should handle missing relayToken gracefully', async () => {
+      // Mock fetch to return validate format without relayToken
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, data: { plan: 'pro' } }),
+      );
+
+      const callbackFn = jest.fn();
+      service.onTokenRefresh(callbackFn);
+
+      const result = await service.connect(CLOUD_URL, TOKEN);
+
+      expect(result).toEqual({ success: true, tier: 'pro' });
+      expect(service.isConnected()).toBe(true);
+
+      // Callback should NOT have been called since there is no relayToken
+      expect(callbackFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle missing data object gracefully', async () => {
+      // Mock fetch to return legacy format with no data field
+      mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'enterprise' }));
+
+      const callbackFn = jest.fn();
+      service.onTokenRefresh(callbackFn);
+
+      const result = await service.connect(CLOUD_URL, TOKEN);
+
+      expect(result).toEqual({ success: true, tier: 'enterprise' });
+
+      // Callback should NOT have been called
+      expect(callbackFn).not.toHaveBeenCalled();
+    });
+
+    it('should fire multiple registered callbacks with relayToken', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, data: { plan: 'pro', relayToken: 'multi-relay-jwt' } }),
+      );
+
+      const callback1 = jest.fn();
+      const callback2 = jest.fn();
+      service.onTokenRefresh(callback1);
+      service.onTokenRefresh(callback2);
+
+      await service.connect(CLOUD_URL, TOKEN);
+
+      expect(callback1).toHaveBeenCalledWith('multi-relay-jwt');
+      expect(callback2).toHaveBeenCalledWith('multi-relay-jwt');
+    });
+
+    it('should resolve tier from data.plan when both data.plan and legacy tier are present', async () => {
+      // data.plan takes precedence over top-level tier
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ tier: 'free', data: { plan: 'enterprise', relayToken: 'jwt-123' } }),
+      );
+
+      const result = await service.connect(CLOUD_URL, TOKEN);
+
+      // data.plan should win
+      expect(result.tier).toBe('enterprise');
+    });
+  });
 });

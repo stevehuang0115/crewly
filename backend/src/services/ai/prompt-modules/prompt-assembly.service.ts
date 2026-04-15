@@ -9,6 +9,7 @@ import {
 } from './prompt-module.interface.js';
 import { IdentityModule } from './identity.module.js';
 import { SoulModule } from './soul.module.js';
+import { ExpertProfileModule } from './expert-profile.module.js';
 import { SkillsReferenceModule } from './skills-reference.module.js';
 import { MemoryReferenceModule } from './memory-reference.module.js';
 import { TeamReferenceModule } from './team-reference.module.js';
@@ -106,6 +107,7 @@ export class PromptAssemblyService {
 		this.modules = [
 			new IdentityModule(),
 			new SoulModule(),
+			new ExpertProfileModule(),
 			new RecoveryModule(),
 			new RoleBoundaryModule(),
 			new MemoryReferenceModule(),

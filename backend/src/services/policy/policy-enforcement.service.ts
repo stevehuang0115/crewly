@@ -194,6 +194,7 @@ export class PolicyEnforcementService {
       currentStrategy: '',
       activeProjectTaskIds: [],
       cadence: '',
+      priority: 'medium',
       policy,
       status: 'active',
       createdAt: new Date().toISOString(),
