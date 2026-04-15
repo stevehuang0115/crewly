@@ -1174,6 +1174,11 @@ export const CLOUD_CONSTANTS = {
 		/** Token expired or revoked — cloud API returned 401/403 */
 		TOKEN_EXPIRED: 'token_expired',
 	},
+	/** Cloud Relay API endpoints (relative to cloudUrl) */
+	RELAY_ENDPOINTS: {
+		/** List all devices registered to the authenticated user */
+		DEVICES: '/api/v1/relay/devices',
+	},
 } as const;
 
 /**

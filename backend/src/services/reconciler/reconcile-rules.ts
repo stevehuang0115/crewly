@@ -772,3 +772,88 @@ function countByStatus(statuses: string[]): Record<string, number> {
   }
   return counts;
 }
+
+// ---------------------------------------------------------------------------
+// Rule: Auto-Retry Failed WorkItems
+// ---------------------------------------------------------------------------
+
+/**
+ * Detects WorkItems in 'failed' status that still have remaining retries
+ * and can be automatically re-queued for another attempt.
+ *
+ * @param workItems - Active WorkItems to inspect
+ * @returns Corrections for retryable items and their IDs
+ */
+export function detectRetryableFailedWorkItems(
+  workItems: WorkItem[],
+): { corrections: ReconcileCorrection[]; retriedIds: string[] } {
+  const corrections: ReconcileCorrection[] = [];
+  const retriedIds: string[] = [];
+
+  for (const wi of workItems) {
+    if (wi.status !== 'failed') continue;
+    if (wi.retryCount >= wi.maxRetries) continue;
+
+    corrections.push(createCorrection({
+      entityType: 'work_item',
+      entityId: wi.id,
+      previousState: 'failed',
+      newState: 'queued',
+      reason: `Auto-retry failed WorkItem (attempt ${wi.retryCount + 1}/${wi.maxRetries})`,
+      evidence: `status=failed, retryCount=${wi.retryCount}, maxRetries=${wi.maxRetries}`,
+    }));
+    retriedIds.push(wi.id);
+  }
+
+  return { corrections, retriedIds };
+}
+
+// ---------------------------------------------------------------------------
+// Rule: Unblock Dependency-Resolved WorkItems
+// ---------------------------------------------------------------------------
+
+/**
+ * Detects WorkItems in 'blocked' status whose blocking dependencies
+ * (tracked via dependsOn array) have all reached terminal status.
+ * These items can be unblocked and re-queued.
+ *
+ * @param workItems - Active WorkItems to inspect
+ * @param workItemMap - Map of all WorkItems by ID for dependency lookup
+ * @returns Corrections for unblocked items and their IDs
+ */
+export function detectDependencyResolvedWorkItems(
+  workItems: WorkItem[],
+  workItemMap: Map<string, WorkItem>,
+): { corrections: ReconcileCorrection[]; unblockedIds: string[] } {
+  const corrections: ReconcileCorrection[] = [];
+  const unblockedIds: string[] = [];
+
+  for (const wi of workItems) {
+    if (wi.status !== 'blocked') continue;
+
+    // Check if this WorkItem has dependency tracking
+    const dependsOn = (wi as any).dependsOn as string[] | undefined;
+    if (!dependsOn || dependsOn.length === 0) continue;
+
+    // All dependencies must be in a terminal state
+    const allResolved = dependsOn.every(depId => {
+      const dep = workItemMap.get(depId);
+      if (!dep) return true; // Missing dependency treated as resolved
+      return TERMINAL_WORK_ITEM_STATUSES.has(dep.status);
+    });
+
+    if (allResolved) {
+      corrections.push(createCorrection({
+        entityType: 'work_item',
+        entityId: wi.id,
+        previousState: 'blocked',
+        newState: 'queued',
+        reason: `All dependencies resolved, unblocking WorkItem`,
+        evidence: `dependsOn=[${dependsOn.join(', ')}], all terminal`,
+      }));
+      unblockedIds.push(wi.id);
+    }
+  }
+
+  return { corrections, unblockedIds };
+}

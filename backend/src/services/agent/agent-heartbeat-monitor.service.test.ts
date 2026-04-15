@@ -6,7 +6,17 @@
  * - Server-side process liveness checks (isChildProcessAlive)
  * - 3-consecutive-dead-check restart logic
  * - No PTY input injection
+ * - Memory pressure skip for restarts
  */
+
+// Mock os module (non-configurable in Node.js, so jest.spyOn doesn't work)
+const mockTotalmem = jest.fn(() => 16_000_000_000); // 16GB
+const mockFreemem = jest.fn(() => 8_000_000_000);   // 8GB (50% used)
+jest.mock('os', () => ({
+	...jest.requireActual('os'),
+	totalmem: () => mockTotalmem(),
+	freemem: () => mockFreemem(),
+}));
 
 // Mock external dependencies
 jest.mock('../core/logger.service.js', () => ({
@@ -211,6 +221,8 @@ describe('AgentHeartbeatMonitorService', () => {
 		AgentHeartbeatMonitorService.resetInstance();
 		PtyActivityTrackerService.resetInstance();
 		jest.useRealTimers();
+		mockTotalmem.mockReturnValue(16_000_000_000);
+		mockFreemem.mockReturnValue(8_000_000_000);
 	});
 
 	describe('singleton', () => {
@@ -627,6 +639,50 @@ describe('AgentHeartbeatMonitorService', () => {
 			await service.performCheck();
 			await service.performCheck();
 			await expect(service.performCheck()).resolves.toBeUndefined();
+		});
+
+		it('should skip restart when memory usage >= 90%', async () => {
+			setStartedAtInPast(service);
+
+			// Make truly idle with dead process
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(false);
+
+			// Simulate high memory usage (95% used)
+			mockTotalmem.mockReturnValue(16_000_000_000); // 16GB
+			mockFreemem.mockReturnValue(800_000_000);      // 800MB free = 95% used
+
+			// Trigger 3 dead checks to cause restart attempt
+			await service.performCheck();
+			await service.performCheck();
+			await service.performCheck();
+
+			// Restart should NOT be attempted because of memory pressure
+			expect(mockSessionBackend.killSession).not.toHaveBeenCalled();
+			expect(mockAgentRegistrationService.createAgentSession).not.toHaveBeenCalled();
+
+		});
+
+		it('should proceed with restart when memory usage is below 90%', async () => {
+			setStartedAtInPast(service);
+
+			// Make truly idle with dead process
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(false);
+
+			// Simulate normal memory usage (70% used)
+			mockTotalmem.mockReturnValue(16_000_000_000); // 16GB
+			mockFreemem.mockReturnValue(4_800_000_000);    // 4.8GB free = 70% used
+
+			// Trigger 3 dead checks to cause restart attempt
+			await service.performCheck();
+			await service.performCheck();
+			await service.performCheck();
+
+			// Restart SHOULD proceed because memory is not under pressure
+			expect(mockSessionBackend.killSession).toHaveBeenCalledWith('dev-agent-1');
+			expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalled();
+
 		});
 	});
 
