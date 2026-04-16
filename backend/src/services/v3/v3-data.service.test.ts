@@ -8,6 +8,7 @@ import { EventEmitter } from 'events';
 
 // Shared mock state
 const mockAddToPool = jest.fn().mockResolvedValue(undefined);
+const mockClaimFromPool = jest.fn().mockResolvedValue({ workItem: { id: 'claimed-wi' }, claim: { agentId: 'test' } });
 const mockGetAllItems = jest.fn().mockResolvedValue([]);
 const mockCompleteItem = jest.fn().mockResolvedValue(undefined);
 const mockFailItem = jest.fn().mockResolvedValue(undefined);
@@ -39,6 +40,7 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
     getInstance: () => ({
       getAllItems: mockGetAllItems,
       addToPool: mockAddToPool,
+      claimFromPool: mockClaimFromPool,
       completeItem: mockCompleteItem,
       failItem: mockFailItem,
       updateItemStatus: mockUpdateItemStatus,
@@ -149,6 +151,42 @@ describe('V3DataService', () => {
       expect(addedItem.target).toBe('agent-leo');
       expect(addedItem.title).toBe('Implement feature X');
       expect(addedItem.projectTaskId).toBe('task-1');
+    });
+
+    it('should auto-claim WorkItem for target agent after addToPool', async () => {
+      const event: TaskDelegatedEvent = {
+        taskId: 'task-autoclaim',
+        title: 'Auto-claim test',
+        assignedTo: 'agent-max',
+        projectPath: '/tmp/test',
+        timestamp: new Date().toISOString(),
+      };
+
+      eventBus.emit('v3:task_delegated', event);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockAddToPool).toHaveBeenCalledTimes(1);
+      expect(mockClaimFromPool).toHaveBeenCalledTimes(1);
+      expect(mockClaimFromPool).toHaveBeenCalledWith('agent-max', { types: ['delegate'] });
+    });
+
+    it('should not fail if auto-claim throws', async () => {
+      mockClaimFromPool.mockRejectedValueOnce(new Error('No items to claim'));
+
+      const event: TaskDelegatedEvent = {
+        taskId: 'task-claim-fail',
+        title: 'Claim failure test',
+        assignedTo: 'agent-leo',
+        projectPath: '/tmp/test',
+        timestamp: new Date().toISOString(),
+      };
+
+      eventBus.emit('v3:task_delegated', event);
+      await new Promise((r) => setTimeout(r, 50));
+
+      // addToPool should still succeed even if claimFromPool fails
+      expect(mockAddToPool).toHaveBeenCalledTimes(1);
+      expect(mockClaimFromPool).toHaveBeenCalledTimes(1);
     });
 
     it('should skip duplicate WorkItems', async () => {

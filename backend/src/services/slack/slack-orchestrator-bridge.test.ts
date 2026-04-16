@@ -1388,7 +1388,7 @@ describe('SlackOrchestratorBridge', () => {
       // Simulate storing a pending reaction
       (bridge as any).pendingReactions.set('C123:1707.001', '1707.002');
 
-      await bridge.addCompletionReaction('C123', '1707.001');
+      await (bridge as any).addCompletionReaction('C123', '1707.001');
 
       expect(slackService.addReaction).toHaveBeenCalledWith('C123', '1707.002', 'white_check_mark');
       // Pending reaction should be consumed
@@ -1402,7 +1402,7 @@ describe('SlackOrchestratorBridge', () => {
       const slackService = (bridge as any).slackService;
       jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
 
-      await bridge.addCompletionReaction('C123', '1707.001');
+      await (bridge as any).addCompletionReaction('C123', '1707.001');
 
       expect(slackService.addReaction).not.toHaveBeenCalled();
     });
@@ -1417,7 +1417,7 @@ describe('SlackOrchestratorBridge', () => {
       (bridge as any).pendingReactions.set('C123:1707.001', '1707.002');
 
       // Should not throw
-      await expect(bridge.addCompletionReaction('C123', '1707.001')).resolves.toBeUndefined();
+      await expect((bridge as any).addCompletionReaction('C123', '1707.001')).resolves.toBeUndefined();
       // Pending reaction still consumed
       expect((bridge as any).pendingReactions.has('C123:1707.001')).toBe(false);
     });
@@ -1431,7 +1431,7 @@ describe('SlackOrchestratorBridge', () => {
 
       (bridge as any).pendingReactions.set('C123:1707.001', '1707.002');
 
-      await expect(bridge.addCompletionReaction('C123', '1707.001')).resolves.toBeUndefined();
+      await expect((bridge as any).addCompletionReaction('C123', '1707.001')).resolves.toBeUndefined();
     });
 
     it('should store pending reaction for orchestrator-routed messages', async () => {
@@ -1486,5 +1486,142 @@ describe('SlackOrchestratorBridge', () => {
       expect((bridge as any).pendingReactions.has('C123:1707.001')).toBe(true);
       expect((bridge as any).pendingReactions.get('C123:1707.001')).toBe('1707.002');
     }, 15000);
+  });
+
+  describe('sendContentApproval', () => {
+    it('should return null when channelId is not provided', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      await bridge.initialize();
+      const result = await bridge.sendContentApproval('test-id');
+      expect(result).toBeNull();
+    });
+
+    it('should return null when channelId is undefined', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      await bridge.initialize();
+      const result = await bridge.sendContentApproval('test-id', undefined);
+      expect(result).toBeNull();
+    });
+
+    it('should send Block Kit message with approve/reject buttons', async () => {
+      // Set up a mock approval in ContentApprovalService
+      const { ContentApprovalService } = await import('../onboarding/content-approval.service.js');
+      ContentApprovalService.resetInstance();
+      const approvalService = ContentApprovalService.getInstance();
+      const approval = approvalService.submit({
+        teamId: 'team-1',
+        submittedBy: 'agent-luna',
+        platform: 'Twitter',
+        contentType: 'post',
+        content: 'This is a great marketing post about our product #awesome',
+        hashtags: ['#marketing', '#ai'],
+        scheduledTime: '2026-04-16T10:00:00Z',
+      });
+
+      const bridge = new SlackOrchestratorBridge();
+      await bridge.initialize();
+      const slackService = (bridge as any).slackService;
+      const sendMessageSpy = jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1234.5678');
+
+      const result = await bridge.sendContentApproval(approval.id, 'C123', '1000.001');
+
+      expect(result).toBe('1234.5678');
+      expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+
+      const callArgs = sendMessageSpy.mock.calls[0][0] as any;
+      expect(callArgs.channelId).toBe('C123');
+      expect(callArgs.threadTs).toBe('1000.001');
+      expect(callArgs.text).toContain('Content approval requested');
+      expect(callArgs.blocks).toBeDefined();
+      expect(callArgs.blocks.length).toBeGreaterThanOrEqual(4);
+
+      // Verify header block
+      const headerBlock = callArgs.blocks.find((b: any) => b.type === 'header');
+      expect(headerBlock).toBeDefined();
+      expect(headerBlock.text.text).toContain('Content Approval Required');
+
+      // Verify actions block with buttons
+      const actionsBlock = callArgs.blocks.find((b: any) => b.type === 'actions');
+      expect(actionsBlock).toBeDefined();
+      expect(actionsBlock.elements).toHaveLength(2);
+      expect(actionsBlock.elements[0].action_id).toBe('content_approval_approve');
+      expect(actionsBlock.elements[0].value).toBe(approval.id);
+      expect(actionsBlock.elements[0].style).toBe('primary');
+      expect(actionsBlock.elements[1].action_id).toBe('content_approval_reject');
+      expect(actionsBlock.elements[1].value).toBe(approval.id);
+      expect(actionsBlock.elements[1].style).toBe('danger');
+
+      // Verify linkSlackMessage was called
+      const linkedApproval = approvalService.get(approval.id);
+      expect(linkedApproval?.slackChannelId).toBe('C123');
+      expect(linkedApproval?.slackMessageTs).toBe('1234.5678');
+
+      ContentApprovalService.resetInstance();
+    });
+
+    it('should handle missing approval gracefully with fallback blocks', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      await bridge.initialize();
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1234.5678');
+
+      const result = await bridge.sendContentApproval('nonexistent-id', 'C123');
+      expect(result).toBe('1234.5678');
+
+      const callArgs = slackService.sendMessage.mock.calls[0][0] as any;
+      // Should still produce blocks with N/A values
+      const sectionBlock = callArgs.blocks.find((b: any) => b.type === 'section' && b.fields);
+      expect(sectionBlock).toBeDefined();
+      expect(sectionBlock.fields[0].text).toContain('N/A');
+    });
+
+    it('should return null when sendMessage throws', async () => {
+      const { ContentApprovalService } = await import('../onboarding/content-approval.service.js');
+      ContentApprovalService.resetInstance();
+
+      const bridge = new SlackOrchestratorBridge();
+      await bridge.initialize();
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'sendMessage').mockRejectedValue(new Error('Slack API error'));
+
+      const result = await bridge.sendContentApproval('test-id', 'C123');
+      expect(result).toBeNull();
+
+      ContentApprovalService.resetInstance();
+    });
+
+    it('should include hashtags and scheduled time in meta section', async () => {
+      const { ContentApprovalService } = await import('../onboarding/content-approval.service.js');
+      ContentApprovalService.resetInstance();
+      const approvalService = ContentApprovalService.getInstance();
+      const approval = approvalService.submit({
+        teamId: 'team-1',
+        submittedBy: 'agent-luna',
+        platform: 'LinkedIn',
+        contentType: 'article',
+        content: 'Test content',
+        hashtags: ['#tech', '#startup'],
+        scheduledTime: '2026-04-20T14:00:00Z',
+      });
+
+      const bridge = new SlackOrchestratorBridge();
+      await bridge.initialize();
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('msg-ts');
+
+      await bridge.sendContentApproval(approval.id, 'C123');
+
+      const callArgs = slackService.sendMessage.mock.calls[0][0] as any;
+      const sectionBlocks = callArgs.blocks.filter((b: any) => b.type === 'section' && b.fields);
+      // There should be at least 2 section blocks with fields (main info + meta)
+      expect(sectionBlocks.length).toBeGreaterThanOrEqual(2);
+
+      // Find the meta section with hashtags
+      const allFieldTexts = sectionBlocks.flatMap((b: any) => b.fields.map((f: any) => f.text));
+      expect(allFieldTexts.some((t: string) => t.includes('#tech'))).toBe(true);
+      expect(allFieldTexts.some((t: string) => t.includes('2026-04-20'))).toBe(true);
+
+      ContentApprovalService.resetInstance();
+    });
   });
 });

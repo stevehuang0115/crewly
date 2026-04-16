@@ -186,6 +186,8 @@ export interface TemplateRole {
   autonomyLevel?: 'directed' | 'bounded' | 'domain_autonomous';
   /** Expert profile ID — injects expert thinking patterns into this role's prompt */
   expertId?: string;
+  /** Domain SOP ID — loads domain-specific standard operating procedures for this role */
+  domainSOP?: string;
 }
 
 // =============================================================================

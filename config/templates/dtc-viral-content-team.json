@@ -1,0 +1,58 @@
+{
+  "id": "dtc-viral-content-team",
+  "name": "DTC Viral Content Team",
+  "description": "High-conversion content team for solopreneurs and Shopify brands. Focused on viral hooks, scroll-stopping creative, and performance data.",
+  "version": "1.0.0",
+  "category": "marketing",
+  "targetVertical": "E-commerce / DTC",
+  "tags": ["dtc", "viral", "content", "shopify", "tiktok"],
+  "hierarchical": true,
+  "roles": [
+    {
+      "role": "content-lead",
+      "label": "Content Strategy Lead",
+      "expertId": "viral-alchemist",
+      "domainSOP": "content-production-pipeline",
+      "defaultName": "Vee",
+      "count": 1,
+      "hierarchyLevel": 1,
+      "canDelegate": true,
+      "defaultSkills": [
+        "decompose-goal",
+        "delegate-task",
+        "verify-output",
+        "content-calendar",
+        "report-status"
+      ]
+    },
+    {
+      "role": "writer",
+      "label": "Viral Copywriter",
+      "defaultName": "Ace",
+      "count": 1,
+      "hierarchyLevel": 2,
+      "reportsTo": "content-lead",
+      "defaultSkills": [
+        "social-media-post",
+        "conversion-copy",
+        "complete-task",
+        "request-help"
+      ]
+    },
+    {
+      "role": "creator",
+      "label": "UGC Content Creator",
+      "defaultName": "Coco",
+      "count": 1,
+      "hierarchyLevel": 2,
+      "reportsTo": "content-lead",
+      "defaultSkills": [
+        "image-generation",
+        "video-scripting",
+        "complete-task",
+        "request-help"
+      ]
+    }
+  ],
+  "mission": "Generate high-conversion viral content that drives traffic and sales for DTC brands."
+}

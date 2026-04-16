@@ -286,6 +286,17 @@ export class V3DataService {
         requestId: resolvedRequestId,
       });
 
+      // Auto-claim for the target agent so WorkItem transitions queued → running
+      try {
+        await taskPool.claimFromPool(event.assignedTo, { types: ['delegate'] });
+      } catch (claimErr) {
+        this.logger.debug('Auto-claim after delegation failed (non-fatal)', {
+          workItemId: workItem.id,
+          target: event.assignedTo,
+          error: claimErr instanceof Error ? claimErr.message : String(claimErr),
+        });
+      }
+
       // Link WorkItem to Request for bidirectional tracking
       if (resolvedRequestId) {
         try {

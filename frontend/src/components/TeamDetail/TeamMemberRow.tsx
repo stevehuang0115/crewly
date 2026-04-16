@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Play, Square, Loader2 } from 'lucide-react';
+import { Play, Square, Loader2, Sparkles } from 'lucide-react';
 import { TeamMember } from '@/types';
 import { OverflowMenu } from '@/components/UI/OverflowMenu';
+import { Badge } from '@/components/UI/Badge';
 
 interface TeamMemberRowProps {
   member: TeamMember;
@@ -89,7 +90,15 @@ export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, on
           )}
         </div>
         <div>
-          <div className="font-semibold">{member.name}</div>
+          <div className="flex items-center gap-2">
+            <span className="font-semibold">{member.name}</span>
+            {member.expertId && (
+              <Badge variant="info" size="sm" data-testid="expert-badge">
+                <Sparkles className="w-3 h-3 mr-1" />
+                Expert
+              </Badge>
+            )}
+          </div>
           <div className="text-sm text-text-secondary-dark">Session: {member.sessionName || 'Inactive'}</div>
         </div>
       </div>

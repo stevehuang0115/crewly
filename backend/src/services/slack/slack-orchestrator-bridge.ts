@@ -28,9 +28,13 @@ import {
   SlackImageInfo,
   SlackFileInfo,
   SlackFile,
+  SlackBlock,
+  SlackTextObject,
+  SlackElement,
   ParsedSlackCommand,
   parseCommandIntent,
 } from '../../types/slack.types.js';
+import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getSlackImageService } from './slack-image.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
@@ -1301,7 +1305,11 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
-   * Send a content approval notification to Slack.
+   * Send a content approval notification to Slack with Block Kit buttons.
+   *
+   * Posts a rich message with content preview and approve/reject buttons.
+   * Links the Slack message back to the approval record so interactive
+   * button clicks can resolve the approval.
    *
    * @param approvalId - The content approval ID
    * @param channelId - Slack channel ID
@@ -1311,11 +1319,80 @@ Just type naturally to chat with the orchestrator!`;
   async sendContentApproval(approvalId: string, channelId?: string, threadTs?: string): Promise<string | null> {
     if (!channelId) return null;
     try {
+      const approval = ContentApprovalService.getInstance().get(approvalId);
+      const fallbackText = `Content approval requested (ID: ${approvalId.slice(0, 8)}). Use the buttons to approve/reject.`;
+
+      const blocks: SlackBlock[] = [
+        {
+          type: 'header',
+          text: { type: 'plain_text', text: '\ud83d\udccb Content Approval Required', emoji: true },
+        },
+        {
+          type: 'section',
+          fields: [
+            { type: 'mrkdwn', text: `*Platform:*\n${approval?.platform ?? 'N/A'}` },
+            { type: 'mrkdwn', text: `*Type:*\n${approval?.contentType ?? 'N/A'}` },
+            { type: 'mrkdwn', text: `*Submitted by:*\n${approval?.submittedBy ?? 'Unknown'}` },
+            { type: 'mrkdwn', text: `*ID:*\n${approvalId.slice(0, 8)}` },
+          ],
+        },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*Content Preview:*\n${(approval?.content ?? '').slice(0, 300)}${(approval?.content ?? '').length > 300 ? '...' : ''}`,
+          },
+        },
+      ];
+
+      // Add hashtags and scheduled time if present
+      const metaFields: SlackTextObject[] = [];
+      if (approval?.hashtags && approval.hashtags.length > 0) {
+        metaFields.push({ type: 'mrkdwn', text: `*Hashtags:*\n${approval.hashtags.join(' ')}` });
+      }
+      if (approval?.scheduledTime) {
+        metaFields.push({ type: 'mrkdwn', text: `*Scheduled:*\n${approval.scheduledTime}` });
+      }
+      if (metaFields.length > 0) {
+        blocks.push({ type: 'section', fields: metaFields });
+      }
+
+      blocks.push({ type: 'divider' });
+
+      // Actions block with approve/reject buttons
+      blocks.push({
+        type: 'actions',
+        block_id: `content_approval_${approvalId}`,
+        elements: [
+          {
+            type: 'button',
+            action_id: 'content_approval_approve',
+            text: { type: 'plain_text', text: '\u2705 Approve', emoji: true },
+            value: approvalId,
+            style: 'primary',
+          } as SlackElement,
+          {
+            type: 'button',
+            action_id: 'content_approval_reject',
+            text: { type: 'plain_text', text: '\u274c Reject', emoji: true },
+            value: approvalId,
+            style: 'danger',
+          } as SlackElement,
+        ],
+      });
+
       const messageTs = await this.slackService.sendMessage({
         channelId,
-        text: `Content approval requested (ID: ${approvalId.slice(0, 8)}). Use the dashboard to approve/reject.`,
+        text: fallbackText,
         threadTs,
+        blocks,
       });
+
+      // Link the Slack message to the approval for tracking
+      if (messageTs) {
+        ContentApprovalService.getInstance().linkSlackMessage(approvalId, channelId, messageTs);
+      }
+
       return messageTs ?? null;
     } catch (err) {
       this.logger.warn('Failed to send content approval to Slack', {

@@ -1,0 +1,22 @@
+{
+  "id": "prop-manager-v1",
+  "name": "Property Management Resident Squad",
+  "description": "Triage Agent + Vendor Coordinator + Leasing Assistant for residential property managers. Handles maintenance requests, vendor dispatch, and leasing inquiries.",
+  "members": [
+    {
+      "name": "Triage Agent",
+      "role": "triage-agent",
+      "systemPrompt": "You are a property management triage agent. Handle initial tenant inquiries, categorize maintenance requests by urgency, and verify tenant information."
+    },
+    {
+      "name": "Vendor Coordinator",
+      "role": "vendor-coordinator",
+      "systemPrompt": "You are a vendor coordinator. Dispatch maintenance teams, collect quotes from vendors, and track work orders to completion."
+    },
+    {
+      "name": "Leasing Assistant",
+      "role": "leasing-assistant",
+      "systemPrompt": "You are a leasing assistant. Schedule property showings, follow up with applicants, and assist with lease drafting."
+    }
+  ]
+}

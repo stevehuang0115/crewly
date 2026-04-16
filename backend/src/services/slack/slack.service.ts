@@ -18,11 +18,13 @@ import type {
   SlackConversationContext,
   SlackNotification,
   SlackBlock,
+  SlackElement,
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 
 /**
  * Events emitted by SlackService
@@ -43,6 +45,10 @@ interface SlackApp {
   event: (
     eventType: string,
     handler: (args: AppMentionEventArgs) => Promise<void>
+  ) => void;
+  action: (
+    actionIdOrPattern: string | RegExp,
+    handler: (args: BlockActionEventArgs) => Promise<void>
   ) => void;
   error: (handler: (error: Error) => Promise<void>) => void;
   start: () => Promise<void>;
@@ -166,6 +172,27 @@ interface AppMentionEventArgs {
     team?: string;
     event_ts: string;
   };
+}
+
+/**
+ * Arguments for Slack block_actions interactive event.
+ * Received when a user clicks a button in a Block Kit message.
+ */
+interface BlockActionEventArgs {
+  action: {
+    action_id: string;
+    value?: string;
+    block_id?: string;
+    type: string;
+  };
+  body: {
+    user: { id: string; name?: string; username?: string };
+    channel?: { id: string };
+    message?: { ts: string };
+    container?: { channel_id: string; message_ts: string };
+  };
+  ack: () => Promise<void>;
+  respond: (msg: { text: string; replace_original?: boolean; response_type?: string }) => Promise<void>;
 }
 
 /**
@@ -356,6 +383,95 @@ export class SlackService extends EventEmitter {
       this.status.messagesReceived++;
       this.status.lastEventAt = new Date().toISOString();
       this.emit('message', incomingMessage);
+    });
+
+    // Handle content approval button clicks (Block Kit interactive actions)
+    this.app.action(/content_approval_(approve|reject)/, async ({ action, body, ack, respond }) => {
+      await ack();
+
+      const approvalId = action.value;
+      const actionType = action.action_id;
+      const slackUserName = body.user.name || body.user.username || body.user.id;
+      const channelId = body.channel?.id || body.container?.channel_id;
+      const messageTs = body.message?.ts || body.container?.message_ts;
+
+      if (!approvalId) {
+        await respond({ text: 'Error: Missing approval ID.', replace_original: false, response_type: 'ephemeral' });
+        return;
+      }
+
+      try {
+        const service = ContentApprovalService.getInstance();
+        const existing = service.get(approvalId);
+
+        if (!existing) {
+          await respond({ text: `Approval \`${approvalId.slice(0, 8)}\` not found.`, replace_original: false, response_type: 'ephemeral' });
+          return;
+        }
+
+        if (existing.status !== 'pending') {
+          await respond({
+            text: `This approval has already been ${existing.status} by ${existing.resolvedBy ?? 'someone'}.`,
+            replace_original: false,
+            response_type: 'ephemeral',
+          });
+          return;
+        }
+
+        const isApprove = actionType === 'content_approval_approve';
+        const result = isApprove
+          ? service.approve(approvalId, slackUserName)
+          : service.reject(approvalId, slackUserName);
+
+        if (!result) {
+          await respond({ text: 'Failed to resolve approval.', replace_original: false, response_type: 'ephemeral' });
+          return;
+        }
+
+        // Update the original message to replace buttons with status
+        const statusEmoji = isApprove ? '\u2705' : '\u274c';
+        const statusText = isApprove ? 'Approved' : 'Rejected';
+        const updatedText = `${statusEmoji} ${statusText} by @${slackUserName}`;
+
+        if (channelId && messageTs) {
+          const updatedBlocks: SlackBlock[] = [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: `~${existing.content.slice(0, 200)}~` },
+            },
+            {
+              type: 'context',
+              elements: [
+                { type: 'mrkdwn', text: `${updatedText} \u2022 ${new Date().toLocaleString()}` } as unknown as SlackElement,
+              ],
+            },
+          ];
+
+          await this.updateMessage(channelId, messageTs, updatedText, updatedBlocks);
+        }
+
+        this.emit('content_approval_resolved', {
+          approvalId,
+          action: isApprove ? 'approved' : 'rejected',
+          resolvedBy: slackUserName,
+        });
+
+        this.logger.info('Content approval resolved via Slack button', {
+          approvalId: approvalId.slice(0, 8),
+          action: statusText.toLowerCase(),
+          resolvedBy: slackUserName,
+        });
+      } catch (err) {
+        this.logger.error('Content approval action handler error', {
+          approvalId: approvalId?.slice(0, 8),
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await respond({
+          text: `Error processing approval: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          replace_original: false,
+          response_type: 'ephemeral',
+        });
+      }
     });
 
     // Handle errors

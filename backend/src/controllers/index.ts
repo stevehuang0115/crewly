@@ -20,6 +20,8 @@ import { selfImprovementRouter } from './self-improvement/index.js';
 import { createMemoryRouter } from './memory/index.js';
 import { createWorkspaceRouter } from './workspace/workspace.routes.js';
 import { createAgentStreamRouter } from './agent-stream/agent-stream.routes.js';
+import { createExpertRouter } from './expert/index.js';
+import { createContentApprovalsRouter } from './content-approvals/content-approvals.routes.js';
 
 /**
  * Creates the main API router that aggregates all feature routers.
@@ -52,6 +54,8 @@ export function createApiRouter(context: ApiContext): Router {
   router.use('/memory', createMemoryRouter());
   router.use('/workspace', createWorkspaceRouter());
   router.use('/agents', createAgentStreamRouter());
+  router.use('/experts', createExpertRouter());
+  router.use('/content-approvals', createContentApprovalsRouter());
 
   return router;
 }

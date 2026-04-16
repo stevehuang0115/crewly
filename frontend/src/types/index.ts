@@ -38,6 +38,9 @@ export interface TeamMember {
 
   /** Maximum number of concurrent tasks this member can handle. */
   maxConcurrentTasks?: number;
+
+  /** Expert profile ID — loads thinking patterns from config/experts/{expertId}.md */
+  expertId?: string;
 }
 
 /** Supported AI models for crewly-agent runtime dropdown */
@@ -363,3 +366,6 @@ export interface KnowledgeDocumentSummary {
 
 // Re-export monitoring types
 export * from './monitoring.types';
+
+// Re-export expert types
+export * from './expert.types';
