@@ -864,8 +864,8 @@ export const CloudPortal: React.FC = () => {
               <DeviceListSection />
             </div>
 
-            {/* Deploy New Team Section (paid tiers only) */}
-            {isPaid && (
+            {/* Deploy section — disabled in OSS, available on crewlyai.com Cloud Portal */}
+            {false && isPaid && (
               <div
                 className="mb-6 rounded-xl border border-border-dark bg-surface-dark p-6"
                 data-testid="deploy-section"
@@ -979,8 +979,8 @@ export const CloudPortal: React.FC = () => {
               </div>
             )}
 
-            {/* Deployed Teams List */}
-            <div
+            {/* Deployed Teams List — disabled in OSS, available on crewlyai.com Cloud Portal */}
+            {false && <div
               className="rounded-xl border border-border-dark bg-surface-dark p-6"
               data-testid="deployments-list"
             >
@@ -1029,7 +1029,7 @@ export const CloudPortal: React.FC = () => {
                   ))}
                 </div>
               )}
-            </div>
+            </div>}
           </>
         )}
       </div>
