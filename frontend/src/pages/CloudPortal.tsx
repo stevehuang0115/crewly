@@ -686,11 +686,15 @@ export const CloudPortal: React.FC = () => {
   // -----------------------------------------------------------------------
 
   /**
-   * Start the OAuth sign-in flow via crewlyai.com/cloud/auth.
+   * Start the OAuth sign-in flow via the Cloud auth service's direct callback.
+   * Uses the CLI-style flow: auth service exchanges code server-side and redirects
+   * back with ?token=&refreshToken= (bypasses crewlyai.com web frontend caching issues).
    */
   const handleSignIn = () => {
     const callbackUrl = `${window.location.origin}/auth/callback`;
-    window.location.href = buildCloudAuthRedirectUrl(callbackUrl);
+    // Direct flow: auth service GET /google/start?redirect=<callback>
+    // Server-side code exchange ensures refreshToken is always included
+    window.location.href = `https://api.crewlyai.com/api/cloud/google/start?redirect=${encodeURIComponent(callbackUrl)}`;
   };
 
   /**

@@ -1298,6 +1298,90 @@ class ApiService {
     }
   }
 
+  // ============ Onboarding Methods ============
+
+  /**
+   * Fetches an onboarding session by ID.
+   *
+   * @param sessionId - The onboarding session ID
+   * @returns Promise resolving to the onboarding session data
+   * @throws Error if the session is not found or request fails
+   */
+  async getOnboardingSession(sessionId: string): Promise<Record<string, unknown>> {
+    const response = await axios.get<ApiResponse<Record<string, unknown>>>(
+      `${API_BASE}/onboarding/sessions/${sessionId}`,
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to get onboarding session');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Creates a new onboarding session.
+   *
+   * @param params - Session creation parameters
+   * @param params.websiteUrl - The website URL to analyze
+   * @param params.teamId - Optional team ID to associate
+   * @returns Promise resolving to an object containing the new sessionId
+   * @throws Error if the request fails
+   */
+  async createOnboardingSession(params: {
+    websiteUrl: string;
+    teamId?: string;
+  }): Promise<{ sessionId: string }> {
+    const response = await axios.post<ApiResponse<{ id: string }>>(
+      `${API_BASE}/onboarding/sessions`,
+      {
+        websiteUrl: params.websiteUrl,
+        teamId: params.teamId || 'default',
+        templateId: 'default',
+      },
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Failed to create onboarding session');
+    }
+    return { sessionId: response.data.data.id };
+  }
+
+  /**
+   * Approves the user-reviewed onboarding profile.
+   *
+   * @param sessionId - The onboarding session ID
+   * @param profile - The approved profile data
+   * @returns Promise resolving when the profile is approved
+   * @throws Error if the request fails
+   */
+  async approveOnboardingProfile(
+    sessionId: string,
+    profile: Record<string, unknown>,
+  ): Promise<void> {
+    const response = await axios.post<ApiResponse<unknown>>(
+      `${API_BASE}/onboarding/sessions/${sessionId}/approve`,
+      profile,
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to approve onboarding profile');
+    }
+  }
+
+  /**
+   * Completes the onboarding flow for a session.
+   *
+   * @param sessionId - The onboarding session ID
+   * @returns Promise resolving when the onboarding is completed
+   * @throws Error if the request fails
+   */
+  async completeOnboarding(sessionId: string): Promise<void> {
+    const response = await axios.post<ApiResponse<unknown>>(
+      `${API_BASE}/onboarding/sessions/${sessionId}/complete`,
+      { teamKnowledgeDir: '.crewly/knowledge' },
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to complete onboarding');
+    }
+  }
+
   // ============ Expert Methods ============
 
   /**
