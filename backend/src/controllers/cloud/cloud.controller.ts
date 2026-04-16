@@ -170,8 +170,11 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
       logger.info('Connected to CrewlyAI Cloud (remote verification)', { tier: result.tier });
     }
 
-    // Store refresh token if provided separately
-    if (refreshToken && !client.getToken()) {
+    // Safety net: ensure refreshToken is persisted even if connect/connectLocal
+    // did not receive it (e.g. race condition or future refactor).
+    // Both connect() and connectLocal() already store refreshToken, but
+    // setRefreshToken() also re-persists config to disk as an extra guarantee.
+    if (refreshToken) {
       client.setRefreshToken(refreshToken);
     }
 
