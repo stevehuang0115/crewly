@@ -407,6 +407,118 @@ const DeviceListSection: React.FC = () => {
  *
  * @returns The Cloud Portal page element
  */
+
+// ---------------------------------------------------------------------------
+// Browser Extensions Section — shows Crewly in Chrome instances via Cloud Relay
+// ---------------------------------------------------------------------------
+
+interface BrowserInstance {
+  instanceId: string;
+  instanceName: string;
+  sessionId?: string;
+}
+
+const BrowserExtensionsSection: React.FC = () => {
+  const [instances, setInstances] = useState<BrowserInstance[]>([]);
+  const [proxyConnected, setProxyConnected] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const fetchInstances = useCallback(async () => {
+    try {
+      const resp = await fetch('/api/browser/instances');
+      if (resp.ok) {
+        const data = await resp.json();
+        setInstances(data.instances || []);
+        setProxyConnected(data.proxyConnected || false);
+      }
+    } catch {
+      // Non-fatal
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchInstances();
+    const interval = setInterval(fetchInstances, 15000);
+    return () => clearInterval(interval);
+  }, [fetchInstances]);
+
+  return (
+    <div
+      className="rounded-xl border border-border-dark bg-surface-dark p-5"
+      data-testid="browser-extensions-section"
+    >
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Globe className="h-4 w-4 text-text-secondary-dark" />
+          <h3 className="text-sm font-semibold text-text-primary-dark">
+            Browser Extensions
+          </h3>
+          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+            proxyConnected
+              ? 'bg-emerald-500/10 text-emerald-400'
+              : 'bg-amber-500/10 text-amber-400'
+          }`}>
+            {proxyConnected ? 'Relay Connected' : 'Relay Offline'}
+          </span>
+        </div>
+        <button
+          onClick={() => { setLoading(true); fetchInstances(); }}
+          className="text-text-secondary-dark hover:text-text-primary-dark p-1 rounded hover:bg-background-dark transition-colors"
+          title="Refresh"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-text-secondary-dark py-3">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span className="text-xs">Loading...</span>
+        </div>
+      ) : instances.length === 0 ? (
+        <div className="text-center py-6">
+          <Monitor className="h-8 w-8 text-text-secondary-dark mx-auto mb-2 opacity-40" />
+          <p className="text-xs text-text-secondary-dark">
+            No browser extensions connected
+          </p>
+          <p className="text-[10px] text-text-secondary-dark mt-1 opacity-60">
+            Install Crewly in Chrome and sign in to connect
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {instances.map((inst) => (
+            <div
+              key={inst.instanceId}
+              className="flex items-center justify-between rounded-lg border border-border-dark bg-background-dark px-4 py-3"
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex items-center justify-center w-8 h-8 rounded-full bg-indigo-500/10">
+                  <Globe className="h-4 w-4 text-indigo-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-text-primary-dark">
+                    {inst.instanceName}
+                  </p>
+                  <p className="text-[10px] text-text-secondary-dark font-mono">
+                    {inst.instanceId.slice(0, 8)}...
+                  </p>
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Online
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const CloudPortal: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -862,6 +974,11 @@ export const CloudPortal: React.FC = () => {
             {/* Connected Devices */}
             <div className="mb-6">
               <DeviceListSection />
+            </div>
+
+            {/* Browser Extensions (Crewly in Chrome) */}
+            <div className="mb-6">
+              <BrowserExtensionsSection />
             </div>
 
             {/* Deploy section — disabled in OSS, available on crewlyai.com Cloud Portal */}
