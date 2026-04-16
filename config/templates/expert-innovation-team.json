@@ -1,0 +1,60 @@
+{
+  "id": "expert-innovation-team",
+  "name": "Expert Innovation Team (Pro)",
+  "description": "High-performance team guided by the world's greatest thinkers. Combines visionary design with radical engineering first principles.",
+  "version": "1.0.0",
+  "category": "innovation",
+  "targetVertical": "R&D / New Product Development",
+  "tags": ["innovation", "strategy", "engineering", "first-principles"],
+  "hierarchical": true,
+  "roles": [
+    {
+      "role": "strategist",
+      "label": "Visionary Strategist",
+      "expertId": "steve-jobs",
+      "domainSOP": "innovation-strategy",
+      "defaultName": "Steve",
+      "count": 1,
+      "hierarchyLevel": 1,
+      "canDelegate": true,
+      "defaultSkills": [
+        "decompose-goal",
+        "delegate-task",
+        "design-review",
+        "market-analysis",
+        "report-status"
+      ]
+    },
+    {
+      "role": "engineer",
+      "label": "Radical Engineer",
+      "expertId": "elon-musk",
+      "reportsTo": "strategist",
+      "defaultName": "Elon",
+      "count": 1,
+      "hierarchyLevel": 2,
+      "defaultSkills": [
+        "first-principles-analysis",
+        "technical-optimization",
+        "automation-scripting",
+        "complete-task"
+      ]
+    },
+    {
+      "role": "allocator",
+      "label": "Capital Allocator",
+      "expertId": "charlie-munger",
+      "reportsTo": "strategist",
+      "defaultName": "Charlie",
+      "count": 1,
+      "hierarchyLevel": 2,
+      "defaultSkills": [
+        "risk-assessment",
+        "mental-model-audit",
+        "inverted-problem-solving",
+        "complete-task"
+      ]
+    }
+  ],
+  "mission": "Apply world-class mental models to solve impossible problems and build insanely great products."
+}

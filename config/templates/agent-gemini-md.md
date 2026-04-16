@@ -17,7 +17,9 @@ You are running inside Crewly, a multi-agent orchestration platform.
 2. **Always follow the Code Commit SOP** (9 steps, 3 review rounds) when the team has this norm
 3. **Always write tests** alongside code — one source file = one test file, co-located
 4. **Never run destructive git operations** (checkout --, reset --hard) without stashing first
-5. **Follow project coding standards** defined in CLAUDE.md (TypeScript strict, no hardcoded values, JSDoc comments)
+5. Follow project coding standards defined in CLAUDE.md (TypeScript strict, no hardcoded values, JSDoc comments)
+6. **CRITICAL: Manual Publishing Only** — ALL content publishing on ALL platforms (X, LinkedIn, XHS, etc.) must be done manually by Steve. Agents MUST NOT publish directly via remote-browser or any other tool. Only delivery of content packages to Steve via Slack is allowed. Refer to `config/domain-sops/content-publishing-policy.sop.md`.
+
 
 ## Gemini CLI Notes
 

@@ -23,6 +23,7 @@ jest.mock('@slack/bolt', () => ({
     receiver: { client: new EventEmitter() },
     message: jest.fn(),
     event: jest.fn(),
+    action: jest.fn(),
     error: jest.fn(),
     start: mockBoltStart,
     stop: mockBoltStop,
@@ -952,6 +953,7 @@ describe('SlackService', () => {
         receiver: { client: new EventEmitter() },
         message: jest.fn(),
         event: jest.fn(),
+        action: jest.fn(),
         error: jest.fn(),
         start: jest.fn().mockRejectedValue(new Error('invalid_auth')),
         stop: jest.fn().mockResolvedValue(undefined),
@@ -990,6 +992,7 @@ describe('SlackService', () => {
         receiver: { client: new EventEmitter() },
         message: jest.fn(),
         event: jest.fn(),
+        action: jest.fn(),
         error: jest.fn(),
         start: jest.fn().mockRejectedValue(new Error('ETIMEDOUT')),
         stop: jest.fn().mockResolvedValue(undefined),
@@ -1039,6 +1042,233 @@ describe('SlackService', () => {
       expect(isFatal(new Error('socket hang up'))).toBe(false);
       expect(isFatal(new Error('network error'))).toBe(false);
       expect(isFatal(new Error('ENOTFOUND'))).toBe(false);
+    });
+  });
+
+  describe('content approval block_actions handler', () => {
+    let service: SlackService;
+    let mockActionHandler: ((args: any) => Promise<void>) | null;
+
+    beforeEach(async () => {
+      resetSlackService();
+      jest.clearAllMocks();
+
+      // Capture the action handler registered during initialize
+      mockActionHandler = null;
+      const { App } = await import('@slack/bolt');
+      (App as jest.Mock).mockImplementation(() => ({
+        client: {
+          auth: { test: jest.fn().mockResolvedValue({ ok: true, team: 'T1' }) },
+          chat: { postMessage: jest.fn().mockResolvedValue({ ts: '100.1' }), update: jest.fn() },
+          reactions: { add: jest.fn() },
+          users: { info: jest.fn() },
+          files: { uploadV2: jest.fn(), info: jest.fn() },
+        },
+        receiver: { client: new EventEmitter() },
+        message: jest.fn(),
+        event: jest.fn(),
+        action: jest.fn().mockImplementation((_pattern: RegExp, handler: (args: any) => Promise<void>) => {
+          mockActionHandler = handler;
+        }),
+        error: jest.fn(),
+        start: jest.fn().mockResolvedValue(undefined),
+        stop: jest.fn().mockResolvedValue(undefined),
+      }));
+
+      service = new SlackService();
+      await service.initialize(mockConfig);
+    });
+
+    afterEach(() => {
+      const { ContentApprovalService } = require('../onboarding/content-approval.service.js');
+      ContentApprovalService.resetInstance();
+    });
+
+    it('should register an action handler for content_approval pattern', () => {
+      expect(mockActionHandler).not.toBeNull();
+    });
+
+    it('should approve an approval when approve button is clicked', async () => {
+      const { ContentApprovalService } = require('../onboarding/content-approval.service.js');
+      ContentApprovalService.resetInstance();
+      const approvalService = ContentApprovalService.getInstance();
+      const approval = approvalService.submit({
+        teamId: 'team-1',
+        submittedBy: 'agent-luna',
+        platform: 'Twitter',
+        contentType: 'post',
+        content: 'Test post content',
+      });
+
+      const ack = jest.fn().mockResolvedValue(undefined);
+      const respond = jest.fn().mockResolvedValue(undefined);
+
+      await mockActionHandler!({
+        action: { action_id: 'content_approval_approve', value: approval.id, type: 'button' },
+        body: {
+          user: { id: 'U123', name: 'steve' },
+          channel: { id: 'C123' },
+          message: { ts: '200.1' },
+        },
+        ack,
+        respond,
+      });
+
+      expect(ack).toHaveBeenCalledTimes(1);
+      const resolved = approvalService.get(approval.id);
+      expect(resolved?.status).toBe('approved');
+      expect(resolved?.resolvedBy).toBe('steve');
+    });
+
+    it('should reject an approval when reject button is clicked', async () => {
+      const { ContentApprovalService } = require('../onboarding/content-approval.service.js');
+      ContentApprovalService.resetInstance();
+      const approvalService = ContentApprovalService.getInstance();
+      const approval = approvalService.submit({
+        teamId: 'team-1',
+        submittedBy: 'agent-luna',
+        platform: 'Twitter',
+        contentType: 'post',
+        content: 'Test post content',
+      });
+
+      const ack = jest.fn().mockResolvedValue(undefined);
+      const respond = jest.fn().mockResolvedValue(undefined);
+
+      await mockActionHandler!({
+        action: { action_id: 'content_approval_reject', value: approval.id, type: 'button' },
+        body: {
+          user: { id: 'U456', name: 'bob' },
+          channel: { id: 'C123' },
+          message: { ts: '200.2' },
+        },
+        ack,
+        respond,
+      });
+
+      expect(ack).toHaveBeenCalledTimes(1);
+      const resolved = approvalService.get(approval.id);
+      expect(resolved?.status).toBe('rejected');
+      expect(resolved?.resolvedBy).toBe('bob');
+    });
+
+    it('should handle already-resolved approvals with ephemeral error', async () => {
+      const { ContentApprovalService } = require('../onboarding/content-approval.service.js');
+      ContentApprovalService.resetInstance();
+      const approvalService = ContentApprovalService.getInstance();
+      const approval = approvalService.submit({
+        teamId: 'team-1',
+        submittedBy: 'agent-luna',
+        platform: 'Twitter',
+        contentType: 'post',
+        content: 'Already approved content',
+      });
+      approvalService.approve(approval.id, 'alice');
+
+      const ack = jest.fn().mockResolvedValue(undefined);
+      const respond = jest.fn().mockResolvedValue(undefined);
+
+      await mockActionHandler!({
+        action: { action_id: 'content_approval_approve', value: approval.id, type: 'button' },
+        body: { user: { id: 'U123', name: 'steve' }, channel: { id: 'C123' }, message: { ts: '300.1' } },
+        ack,
+        respond,
+      });
+
+      expect(ack).toHaveBeenCalledTimes(1);
+      expect(respond).toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining('already been approved') })
+      );
+    });
+
+    it('should handle non-existent approval with ephemeral error', async () => {
+      const ack = jest.fn().mockResolvedValue(undefined);
+      const respond = jest.fn().mockResolvedValue(undefined);
+
+      await mockActionHandler!({
+        action: { action_id: 'content_approval_approve', value: 'nonexistent-id', type: 'button' },
+        body: { user: { id: 'U123', name: 'steve' }, channel: { id: 'C123' }, message: { ts: '400.1' } },
+        ack,
+        respond,
+      });
+
+      expect(ack).toHaveBeenCalledTimes(1);
+      expect(respond).toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining('not found') })
+      );
+    });
+
+    it('should handle missing approval ID with error', async () => {
+      const ack = jest.fn().mockResolvedValue(undefined);
+      const respond = jest.fn().mockResolvedValue(undefined);
+
+      await mockActionHandler!({
+        action: { action_id: 'content_approval_approve', value: undefined, type: 'button' },
+        body: { user: { id: 'U123', name: 'steve' }, channel: { id: 'C123' }, message: { ts: '500.1' } },
+        ack,
+        respond,
+      });
+
+      expect(ack).toHaveBeenCalledTimes(1);
+      expect(respond).toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining('Missing approval ID') })
+      );
+    });
+
+    it('should emit content_approval_resolved event on success', async () => {
+      const { ContentApprovalService } = require('../onboarding/content-approval.service.js');
+      ContentApprovalService.resetInstance();
+      const approvalService = ContentApprovalService.getInstance();
+      const approval = approvalService.submit({
+        teamId: 'team-1',
+        submittedBy: 'agent-luna',
+        platform: 'Twitter',
+        contentType: 'post',
+        content: 'Emit test content',
+      });
+
+      const emitSpy = jest.spyOn(service, 'emit');
+      const ack = jest.fn().mockResolvedValue(undefined);
+      const respond = jest.fn().mockResolvedValue(undefined);
+
+      await mockActionHandler!({
+        action: { action_id: 'content_approval_approve', value: approval.id, type: 'button' },
+        body: { user: { id: 'U123', name: 'steve' }, channel: { id: 'C123' }, message: { ts: '600.1' } },
+        ack,
+        respond,
+      });
+
+      expect(emitSpy).toHaveBeenCalledWith('content_approval_resolved', {
+        approvalId: approval.id,
+        action: 'approved',
+        resolvedBy: 'steve',
+      });
+    });
+
+    it('should fall back to user.id when name and username are absent', async () => {
+      const { ContentApprovalService } = require('../onboarding/content-approval.service.js');
+      ContentApprovalService.resetInstance();
+      const approvalService = ContentApprovalService.getInstance();
+      const approval = approvalService.submit({
+        teamId: 'team-1',
+        submittedBy: 'agent-luna',
+        platform: 'Twitter',
+        contentType: 'post',
+        content: 'Fallback user test',
+      });
+
+      const ack = jest.fn().mockResolvedValue(undefined);
+      const respond = jest.fn().mockResolvedValue(undefined);
+
+      await mockActionHandler!({
+        action: { action_id: 'content_approval_approve', value: approval.id, type: 'button' },
+        body: { user: { id: 'U999' }, channel: { id: 'C123' }, message: { ts: '700.1' } },
+        ack,
+        respond,
+      });
+
+      const resolved = approvalService.get(approval.id);
+      expect(resolved?.resolvedBy).toBe('U999');
     });
   });
 });

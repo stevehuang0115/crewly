@@ -1,0 +1,58 @@
+{
+  "id": "pragmatic-mvp-dev-team",
+  "name": "Pragmatic MVP Development Team",
+  "description": "Lean development team for founders building MVPs. Prioritizes maintainability, speed, and 'YAGNI' principles.",
+  "version": "1.0.0",
+  "category": "development",
+  "targetVertical": "Startup MVP",
+  "tags": ["mvp", "lean", "startup", "dev"],
+  "hierarchical": true,
+  "roles": [
+    {
+      "role": "architect",
+      "label": "Pragmatic Architect",
+      "expertId": "pragmatic-architect",
+      "defaultName": "Archie",
+      "count": 1,
+      "hierarchyLevel": 1,
+      "canDelegate": true,
+      "defaultSkills": [
+        "decompose-goal",
+        "delegate-task",
+        "architecture-review",
+        "tech-stack-selection",
+        "report-status"
+      ]
+    },
+    {
+      "role": "fullstack",
+      "label": "Fullstack Developer",
+      "defaultName": "Devin",
+      "count": 1,
+      "hierarchyLevel": 2,
+      "reportsTo": "architect",
+      "defaultSkills": [
+        "frontend-dev",
+        "backend-dev",
+        "unit-testing",
+        "complete-task",
+        "request-help"
+      ]
+    },
+    {
+      "role": "qa",
+      "label": "QA & Automation",
+      "defaultName": "Quinn",
+      "count": 1,
+      "hierarchyLevel": 2,
+      "reportsTo": "architect",
+      "defaultSkills": [
+        "e2e-testing",
+        "bug-reporting",
+        "performance-audit",
+        "complete-task"
+      ]
+    }
+  ],
+  "mission": "Build a robust, scalable MVP quickly by focusing only on what matters most."
+}

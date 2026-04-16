@@ -270,6 +270,7 @@ export class TemplateService {
           responsibilityType: role.responsibilityType,
           autonomyLevel: role.autonomyLevel,
           expertId: role.expertId,
+          domainSOP: role.domainSOP,
         };
 
         members.push(member);

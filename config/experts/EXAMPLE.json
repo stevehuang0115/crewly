@@ -1,0 +1,11 @@
+{
+  "id": "example-expert",
+  "version": "1.0.0",
+  "name": "Example Expert",
+  "category": "Strategy",
+  "intensity": 0.8,
+  "baseRoles": ["generalist", "team-leader"],
+  "tags": ["logic", "frameworks"],
+  "distillationDate": "2026-04-15",
+  "teacherModel": "claude-3-5-sonnet-20240620"
+}

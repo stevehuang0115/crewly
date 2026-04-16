@@ -466,4 +466,58 @@ describe('TemplateService', () => {
       expect(list[0].requiredTier).toBeUndefined();
     });
   });
+
+  // =========================================================================
+  // domainSOP field passthrough
+  // =========================================================================
+
+  describe('createTeamFromTemplate() domainSOP field', () => {
+    it('should pass domainSOP through to member config when set', () => {
+      const template = createValidTemplateJson();
+      template.roles[0].domainSOP = 'content-production-pipeline';
+
+      const dir = join(tempDir, 'sop-test');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'template.json'), JSON.stringify({ ...template, id: 'sop-test' }));
+
+      const service = TemplateService.getInstance(tempDir);
+      const result = service.createTeamFromTemplate('sop-test', 'SOP Team');
+
+      expect(result).not.toBeNull();
+      const tl = result!.team.members.find(m => m.role === 'team-leader');
+      expect(tl!.domainSOP).toBe('content-production-pipeline');
+    });
+
+    it('should leave domainSOP undefined when not set on role', () => {
+      const dir = join(tempDir, 'no-sop');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'template.json'), JSON.stringify({ ...createValidTemplateJson(), id: 'no-sop' }));
+
+      const service = TemplateService.getInstance(tempDir);
+      const result = service.createTeamFromTemplate('no-sop', 'No SOP Team');
+
+      expect(result).not.toBeNull();
+      for (const member of result!.team.members) {
+        expect(member.domainSOP).toBeUndefined();
+      }
+    });
+
+    it('should pass both expertId and domainSOP when both are set', () => {
+      const template = createValidTemplateJson();
+      template.roles[0].expertId = 'pragmatic-architect';
+      template.roles[0].domainSOP = 'customer-onboarding';
+
+      const dir = join(tempDir, 'both-test');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'template.json'), JSON.stringify({ ...template, id: 'both-test' }));
+
+      const service = TemplateService.getInstance(tempDir);
+      const result = service.createTeamFromTemplate('both-test', 'Both Team');
+
+      expect(result).not.toBeNull();
+      const tl = result!.team.members.find(m => m.role === 'team-leader');
+      expect(tl!.expertId).toBe('pragmatic-architect');
+      expect(tl!.domainSOP).toBe('customer-onboarding');
+    });
+  });
 });

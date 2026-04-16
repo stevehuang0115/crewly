@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, KnowledgeDocument, KnowledgeDocumentSummary, KnowledgeScope, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary } from '../types';
+import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, KnowledgeDocument, KnowledgeDocumentSummary, KnowledgeScope, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
 import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
 
@@ -1296,6 +1296,19 @@ class ApiService {
     if (!response.data.success) {
       throw new Error(response.data.error || 'Failed to delete trigger');
     }
+  }
+
+  // ============ Expert Methods ============
+
+  /**
+   * Fetches all available expert profiles.
+   *
+   * @returns Promise resolving to array of expert summaries
+   * @throws Error if the request fails
+   */
+  async getExperts(): Promise<ExpertSummary[]> {
+    const response = await axios.get<ApiResponse<ExpertSummary[]>>(`${API_BASE}/experts`);
+    return response.data.data || [];
   }
 }
 

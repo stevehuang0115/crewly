@@ -1513,31 +1513,30 @@ function addTaskUnblockInfo(content: string, unblockNote?: string): string {
 
 // Helper function to parse basic task information from markdown content
 function parseTaskInfo(content: string, fileName: string): ParsedTaskInfo {
-	const lines = content.split('\n');
-	const info: ParsedTaskInfo = { fileName };
+        const lines = content.split('\n');
+        const info: ParsedTaskInfo = { fileName };
 
-	// Extract title (first # heading)
-	const titleMatch = lines.find((line) => line.startsWith('# '));
-	if (titleMatch) {
-		info.title = titleMatch.substring(2).trim();
-	}
+        // Extract title (first # heading)
+        const titleMatch = lines.find((line) => line.startsWith('# '));
+        if (titleMatch) {
+                info.title = titleMatch.substring(2).trim();
+        }
 
-	// Extract target role from task information section
-	const targetRoleMatch = lines.find((line) => line.includes('**Target Role**:'));
-	if (targetRoleMatch) {
-		info.targetRole = targetRoleMatch.split('**Target Role**:')[1]?.trim();
-	}
+        // Extract metadata from the task information section (lines starting with - **Key**: Value)
+        lines.forEach(line => {
+                const match = line.match(/^- \*\*([^*]+)\*\*: (.*)$/);
+                if (match) {
+                        const key = match[1].trim().toLowerCase().replace(/ /g, '');
+                        const value = match[2].trim();
+                        // Map specific keys if needed, otherwise use the lowercased key
+                        if (key === 'targetrole') info.targetRole = value;
+                        else if (key === 'estimateddelay') info.estimatedDelay = value;
+                        else info[key] = value;
+                }
+        });
 
-	// Extract estimated delay
-	const delayMatch = lines.find((line) => line.includes('**Estimated Delay**:'));
-	if (delayMatch) {
-		const delayText = delayMatch.split('**Estimated Delay**:')[1]?.trim();
-		info.estimatedDelay = delayText;
-	}
-
-	return info;
+        return info;
 }
-
 /**
  * Reads a task file from the filesystem with security validation
  *
@@ -1579,14 +1578,17 @@ export async function readTask(this: ApiController, req: Request, res: Response)
 
 		// Read file content
 		const content = await readFile(taskPath, 'utf-8');
+		const metadata = parseTaskInfo(content, basename(taskPath));
 
 		res.json({
-			success: true,
-			content: content,
-			taskPath: taskPath,
-			fileSize: content.length,
-		});
-	} catch (error) {
+		        success: true,
+		        data: {
+		                content: content,
+		                metadata: metadata,
+		                taskPath: taskPath,
+		                fileSize: content.length,
+		        }
+		});	} catch (error) {
 		logger.error('Error reading task', { error: error instanceof Error ? error.message : String(error) });
 		res.status(500).json({ success: false, error: 'Failed to read task file' });
 	}

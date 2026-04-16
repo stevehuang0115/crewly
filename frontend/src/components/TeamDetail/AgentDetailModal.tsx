@@ -12,6 +12,7 @@ import { TeamMember, SUPPORTED_MODELS } from '../../types';
 import { rolesService } from '../../services/roles.service';
 import { RoleWithPrompt, ROLE_CATEGORY_DISPLAY_NAMES } from '../../types/role.types';
 import { useSkills } from '../../hooks/useSkills';
+import { ExpertSelector } from '../TeamBuilder/ExpertSelector';
 
 interface AgentDetailModalProps {
   /** The team member to display details for */
@@ -44,6 +45,7 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
   const [skillDisplayInfos, setSkillDisplayInfos] = useState<SkillDisplayInfo[]>([]);
   const [editedRuntime, setEditedRuntime] = useState<string>(member.runtimeType || 'claude-code');
   const [editedModelId, setEditedModelId] = useState<string>(member.modelId || '');
+  const [editedExpertId, setEditedExpertId] = useState<string | undefined>(member.expertId);
   const { skills: allSkills } = useSkills();
 
   useEffect(() => {
@@ -252,6 +254,20 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
             )}
           </div>
 
+          {/* Expert Profile Section */}
+          <div>
+            <ExpertSelector
+              value={editedExpertId}
+              onChange={(id) => {
+                if (isEditable) {
+                  setEditedExpertId(id);
+                }
+              }}
+              memberRole={member.role}
+              disabled={!isEditable}
+            />
+          </div>
+
           {/* Runtime Section */}
           <div>
             <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
@@ -326,6 +342,7 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
                   if (onSave) {
                     const updates: Partial<TeamMember> = {
                       runtimeType: editedRuntime as TeamMember['runtimeType'],
+                      expertId: editedExpertId,
                     };
                     if (editedRuntime === 'crewly-agent') {
                       updates.modelId = editedModelId || undefined;

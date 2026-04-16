@@ -1,0 +1,44 @@
+{
+  "id": "customer-loyalty-team",
+  "name": "Customer Loyalty & Success Team",
+  "description": "Premium support team focused on turning tickets into loyalty. Uses radical empathy and proactive retention strategies.",
+  "version": "1.0.0",
+  "category": "support",
+  "targetVertical": "SaaS / Agencies",
+  "tags": ["support", "success", "loyalty", "retention"],
+  "hierarchical": true,
+  "roles": [
+    {
+      "role": "success-manager",
+      "label": "Customer Success Lead",
+      "expertId": "empathetic-resolver",
+      "domainSOP": "customer-onboarding",
+      "defaultName": "Hope",
+      "count": 1,
+      "hierarchyLevel": 1,
+      "canDelegate": true,
+      "defaultSkills": [
+        "delegate-task",
+        "verify-output",
+        "sentiment-analysis",
+        "retention-strategy",
+        "report-status"
+      ]
+    },
+    {
+      "role": "support-agent",
+      "label": "Support Specialist",
+      "defaultName": "Sam",
+      "count": 2,
+      "hierarchyLevel": 2,
+      "reportsTo": "success-manager",
+      "defaultSkills": [
+        "ticket-resolution",
+        "brand-voice-alignment",
+        "complete-task",
+        "request-help"
+      ]
+    }
+  ],
+  "mission": "Provide world-class support that reduces churn and increases customer lifetime value."
+}

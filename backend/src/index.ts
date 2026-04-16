@@ -314,6 +314,22 @@ export class CrewlyServer {
 		responseRouter.setThreadStatusQueue(this.threadStatusQueueService);
 		this.queueProcessorService.setThreadStatusQueue(this.threadStatusQueueService);
 
+		// Wire Task Pool router so [TASK]-prefixed messages route through the pool
+		this.queueProcessorService.setTaskPoolRouter(async (messageContent: string, targetSession: string) => {
+			const { createWorkItem } = await import('./types/v2/work-item.types.js');
+			const taskPool = TaskPoolService.getInstance();
+			const workItem = createWorkItem({
+				type: 'delegate',
+				owner: 'orchestrator',
+				target: targetSession,
+				title: messageContent.slice(0, 100),
+				description: messageContent,
+			});
+			await taskPool.addToPool(workItem);
+			const claimed = await taskPool.claimFromPool(targetSession);
+			return claimed !== null;
+		});
+
 		// Wire thread status queue with scheduler and event bus for follow-up tracking
 		this.threadStatusQueueService.setSchedulerService(this.schedulerService);
 		this.threadStatusQueueService.setEventBusService(this.eventBusService);
