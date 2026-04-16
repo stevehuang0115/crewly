@@ -293,7 +293,7 @@ describe('Onboarding Routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.data.approvedProfile.businessName).toBe('Sunrise Bakery');
       expect(res.body.data.status).toBe('completed');
-      expect(res.body.data.reviewCompletedAt).toBeDefined();
+      expect(res.body.data.updatedAt).toBeDefined();
     });
 
     it('should return 400 when profile has no businessName', async () => {

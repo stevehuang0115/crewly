@@ -67,7 +67,13 @@ export class TeamNormsModule implements PromptModule {
     const sections: string[] = ['## Team Norms & SOPs\n'];
 
     try {
-      const entries = fs.readdirSync(normsPath)
+      const dirExists = await fs.promises.access(normsPath).then(() => true).catch(() => false);
+      if (!dirExists) {
+        return '';
+      }
+
+      const allEntries = await fs.promises.readdir(normsPath);
+      const entries = allEntries
         .filter((f) => f.endsWith('.md'))
         .sort()
         .slice(0, MAX_NORM_FILES);
@@ -79,7 +85,7 @@ export class TeamNormsModule implements PromptModule {
       for (const entry of entries) {
         const filePath = path.join(normsPath, entry);
         try {
-          const content = fs.readFileSync(filePath, 'utf-8').trim();
+          const content = (await fs.promises.readFile(filePath, 'utf-8')).trim();
           if (content) {
             sections.push(content);
             sections.push(''); // blank line separator

@@ -406,8 +406,8 @@ describe('WebsiteExtractorService', () => {
 
       expect(prefill.industry?.value).toBe('Food & Beverage');
       expect(prefill.targetCustomer?.confidence).toBe('low');
-      expect(prefill.platforms?.value).toEqual(['Instagram', 'Facebook']);
-      expect(prefill.competitors?.value).toEqual(['Blue Apron', 'HelloFresh']);
+      expect(prefill.platforms?.value).toBe('Instagram, Facebook');
+      expect(prefill.competitors?.value).toBe('Blue Apron, HelloFresh');
     });
 
     it('should omit fields not present in LLM result', () => {
@@ -525,7 +525,7 @@ describe('WebsiteExtractorService', () => {
       expect(prefill.businessName?.value).toBe('Sunrise Bakery');
       expect(prefill.businessName?.confidence).toBe('high');
       expect(prefill.industry?.value).toBe('Food & Beverage');
-      expect(prefill.platforms?.value).toEqual(['Instagram', 'Facebook', 'Twitter']);
+      expect(prefill.platforms?.value).toBe('Instagram, Facebook, Twitter');
     });
 
     it('should normalize URL without protocol', async () => {

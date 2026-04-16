@@ -134,8 +134,11 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 			} finally {
 				clearTimeout(timeout);
 			}
-		} catch {
-			return null;
+		} catch (error) {
+			this.logger.warn('Embedding request failed', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return [];
 		}
 	}
 }
@@ -176,8 +179,11 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 			} finally {
 				clearTimeout(timeout);
 			}
-		} catch {
-			return null;
+		} catch (error) {
+			this.logger.warn('Embedding request failed', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return [];
 		}
 	}
 }

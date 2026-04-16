@@ -90,12 +90,12 @@ describe('EmbeddingProvider (#155)', () => {
 			expect(result).toEqual(embedding);
 		});
 
-		it('should return null on failure', async () => {
+		it('should return empty array on failure', async () => {
 			mockFetch.mockRejectedValueOnce(new Error('error'));
 
 			const provider = new OpenAIEmbeddingProvider('test-key');
 			const result = await provider.embed('test text');
-			expect(result).toBeNull();
+			expect(result).toEqual([]);
 		});
 	});
 

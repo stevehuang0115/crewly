@@ -71,11 +71,17 @@ export function createWebsiteAnalysisRouter(): Router {
       timeoutMs?: number;
     };
 
-    if (!url || typeof url !== 'string' || url.trim().length === 0) {
+    const trimmedUrl = typeof url === 'string' ? url.trim() : '';
+    if (!trimmedUrl) {
       res.status(400).json({
         success: false,
         error: 'url is required and must be a non-empty string',
       });
+      return;
+    }
+
+    if (!/^https?:\/\//i.test(trimmedUrl)) {
+      res.status(400).json({ success: false, error: 'URL must use http:// or https:// scheme' });
       return;
     }
 
@@ -95,7 +101,7 @@ export function createWebsiteAnalysisRouter(): Router {
     const service = WebsiteAnalysisService.getInstance();
 
     const options: AnalysisOptions = {
-      url: url.trim(),
+      url: trimmedUrl,
       maxPages,
       timeoutMs,
       onProgress: (event: AnalysisProgressEvent) => {
@@ -140,7 +146,8 @@ export function createWebsiteAnalysisRouter(): Router {
       timeoutMs?: number;
     };
 
-    if (!url || typeof url !== 'string' || url.trim().length === 0) {
+    const trimmedSyncUrl = typeof url === 'string' ? url.trim() : '';
+    if (!trimmedSyncUrl) {
       res.status(400).json({
         success: false,
         error: 'url is required and must be a non-empty string',
@@ -148,10 +155,15 @@ export function createWebsiteAnalysisRouter(): Router {
       return;
     }
 
+    if (!/^https?:\/\//i.test(trimmedSyncUrl)) {
+      res.status(400).json({ success: false, error: 'URL must use http:// or https:// scheme' });
+      return;
+    }
+
     try {
       const service = WebsiteAnalysisService.getInstance();
       const result = await service.analyze({
-        url: url.trim(),
+        url: trimmedSyncUrl,
         maxPages,
         timeoutMs,
       });
