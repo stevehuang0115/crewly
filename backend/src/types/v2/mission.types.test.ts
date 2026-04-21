@@ -18,6 +18,8 @@ import {
   CONSERVATIVE_CADENCE,
   MODERATE_CADENCE,
   AUTONOMOUS_CADENCE,
+  MISSION_PRIORITIES,
+  MISSION_PRIORITY_RANK,
   isValidMissionStatus,
   isValidPolicyAction,
   isValidEscalationCondition,
@@ -32,8 +34,9 @@ import {
   createMission,
   getEffectiveCadence,
   mergeExecutionCadence,
+  validateParentLink,
 } from './mission.types.js';
-import type { MissionPolicy, EscalationRule, CreateMissionInput, ExecutionCadence } from './mission.types.js';
+import type { Mission, MissionPolicy, EscalationRule, CreateMissionInput, ExecutionCadence } from './mission.types.js';
 
 describe('Mission Types', () => {
   // -----------------------------------------------------------------------
@@ -561,6 +564,65 @@ describe('Mission Types', () => {
       const original: ExecutionCadence = { ...CONSERVATIVE_CADENCE };
       mergeExecutionCadence(original, { dailyItemLimit: 99 });
       expect(original.dailyItemLimit).toBe(CONSERVATIVE_CADENCE.dailyItemLimit);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Priority
+  // -----------------------------------------------------------------------
+  describe('MISSION_PRIORITIES', () => {
+    it('lists the four levels ordered from most to least important', () => {
+      expect(MISSION_PRIORITIES).toEqual(['critical', 'high', 'medium', 'low']);
+    });
+
+    it('rank order matches list order', () => {
+      expect(MISSION_PRIORITY_RANK.critical).toBeLessThan(MISSION_PRIORITY_RANK.high);
+      expect(MISSION_PRIORITY_RANK.high).toBeLessThan(MISSION_PRIORITY_RANK.medium);
+      expect(MISSION_PRIORITY_RANK.medium).toBeLessThan(MISSION_PRIORITY_RANK.low);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // validateParentLink
+  // -----------------------------------------------------------------------
+  describe('validateParentLink', () => {
+    type Pair = Pick<Mission, 'id' | 'parentMissionId'>;
+    const m = (id: string, parentMissionId?: string): Pair => ({ id, parentMissionId });
+
+    it('rejects self-reference', () => {
+      const reason = validateParentLink('a', 'a', new Map());
+      expect(reason).toMatch(/own parent/i);
+    });
+
+    it('rejects unknown parent', () => {
+      const reason = validateParentLink('a', 'does-not-exist', new Map());
+      expect(reason).toMatch(/does not exist/i);
+    });
+
+    it('accepts a valid link to an existing parent', () => {
+      const byId = new Map<string, Pair>([['p', m('p')]]);
+      expect(validateParentLink('c', 'p', byId)).toBeNull();
+    });
+
+    it('rejects a cycle through intermediate ancestors', () => {
+      //    child (a)           proposed parent: b
+      //    existing: b → c → a (cycle if we add a → b)
+      const byId = new Map<string, Pair>([
+        ['a', m('a')],
+        ['b', m('b', 'c')],
+        ['c', m('c', 'a')],
+      ]);
+      const reason = validateParentLink('a', 'b', byId);
+      expect(reason).toMatch(/cycle/i);
+    });
+
+    it('detects an already-cyclic parent chain defensively', () => {
+      const byId = new Map<string, Pair>([
+        ['x', m('x', 'y')],
+        ['y', m('y', 'x')],
+      ]);
+      const reason = validateParentLink('new', 'x', byId);
+      expect(reason).toMatch(/cycle/i);
     });
   });
 });

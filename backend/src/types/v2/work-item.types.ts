@@ -193,6 +193,14 @@ export interface WorkItem {
   cost: number;
   /** Extensible metadata (dependency tracking, skill requirements, etc.) */
   metadata?: Record<string, unknown>;
+  /**
+   * IDs of upstream WorkItems that must reach terminal success (`done` or
+   * `verified`) before this item is allowed to run. When any dep is still
+   * pending at creation time, the item starts in `blocked` status and is
+   * auto-promoted to `queued` by the TaskPool resolver once every dep
+   * completes.
+   */
+  dependsOn?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +224,8 @@ export interface CreateWorkItemInput {
   projectTaskId?: string;
   missionId?: string;
   metadata?: Record<string, unknown>;
+  /** Upstream WorkItem IDs that must reach terminal success before this runs. */
+  dependsOn?: string[];
 }
 
 /**
@@ -441,7 +451,16 @@ export const DEFAULT_MAX_RETRIES = 3;
  */
 export function createWorkItem(input: CreateWorkItemInput): WorkItem {
   const now = new Date().toISOString();
+  const hasDeps = Array.isArray(input.dependsOn) && input.dependsOn.length > 0;
   const hasSchedule = !!input.scheduledAt;
+  // Dep gating wins over schedule — a blocked item should not be queued or
+  // fired by a cron. The dependency resolver will promote it to 'queued' once
+  // all upstream items reach terminal success.
+  const initialStatus: WorkItemStatus = hasDeps
+    ? 'blocked'
+    : hasSchedule
+      ? 'scheduled'
+      : 'queued';
   return {
     id: uuidv4(),
     requestId: input.requestId,
@@ -451,7 +470,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     target: input.target,
     title: input.title,
     description: input.description,
-    status: hasSchedule ? 'scheduled' : 'queued',
+    status: initialStatus,
     scheduledAt: input.scheduledAt,
     createdAt: now,
     retryCount: 0,
@@ -463,6 +482,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     outputTokens: 0,
     cost: 0,
     metadata: input.metadata,
+    dependsOn: hasDeps ? [...input.dependsOn!] : undefined,
   };
 }
 

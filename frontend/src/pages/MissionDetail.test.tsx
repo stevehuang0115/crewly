@@ -6,7 +6,7 @@
 
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { MissionDetail } from './MissionDetail';
 
@@ -14,6 +14,7 @@ import { MissionDetail } from './MissionDetail';
 vi.mock('../services/api.service', () => ({
   apiService: {
     getMission: vi.fn(),
+    updateMission: vi.fn(),
   },
 }));
 
@@ -122,5 +123,118 @@ describe('MissionDetail', () => {
     });
 
     expect(screen.getByText('Parallel execution is faster')).toBeTruthy();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Edit mode
+  // ---------------------------------------------------------------------------
+
+  it('shows an Edit button in view mode', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    renderWithRouter();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mission-edit')).toBeTruthy();
+    });
+  });
+
+  it('switches to edit mode and pre-populates the objective input', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    renderWithRouter();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mission-edit')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mission-edit'));
+
+    const input = screen.getByTestId('edit-objective') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.value).toBe('Deliver V3 Architecture');
+    expect(screen.getByTestId('mission-save')).toBeTruthy();
+    expect(screen.getByTestId('mission-cancel')).toBeTruthy();
+  });
+
+  it('cancel exits edit mode and discards changes', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    renderWithRouter();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mission-edit')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mission-edit'));
+    const input = screen.getByTestId('edit-objective') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'NEW OBJECTIVE' } });
+    fireEvent.click(screen.getByTestId('mission-cancel'));
+
+    // Back to view mode with original text
+    expect(screen.queryByTestId('edit-objective')).toBeFalsy();
+    expect(screen.getByText('Deliver V3 Architecture')).toBeTruthy();
+  });
+
+  it('save submits the patch and re-renders with the server response', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    const updated = { ...mockMission, objective: 'New objective', priority: 'critical' as const };
+    vi.mocked(apiService.updateMission).mockResolvedValue(updated);
+
+    renderWithRouter();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mission-edit')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mission-edit'));
+    fireEvent.change(screen.getByTestId('edit-objective'), { target: { value: 'New objective' } });
+    fireEvent.change(screen.getByTestId('edit-priority'), { target: { value: 'critical' } });
+    fireEvent.click(screen.getByTestId('mission-save'));
+
+    await waitFor(() => {
+      expect(apiService.updateMission).toHaveBeenCalledTimes(1);
+    });
+
+    const [, patch] = vi.mocked(apiService.updateMission).mock.calls[0];
+    expect(patch.objective).toBe('New objective');
+    expect(patch.priority).toBe('critical');
+
+    // After save, view mode restored with updated content
+    await waitFor(() => {
+      expect(screen.queryByTestId('edit-objective')).toBeFalsy();
+    });
+    expect(screen.getByText('New objective')).toBeTruthy();
+  });
+
+  it('surfaces server error and stays in edit mode when save fails', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    vi.mocked(apiService.updateMission).mockRejectedValue(new Error('Parent chain contains a cycle'));
+
+    renderWithRouter();
+    await waitFor(() => {
+      expect(screen.getByTestId('mission-edit')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId('mission-edit'));
+    fireEvent.click(screen.getByTestId('mission-save'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mission-save-error')).toBeTruthy();
+    });
+    expect(screen.getByTestId('edit-objective')).toBeTruthy();
+  });
+
+  it('blocks save when objective is empty', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    renderWithRouter();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mission-edit')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId('mission-edit'));
+    fireEvent.change(screen.getByTestId('edit-objective'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByTestId('mission-save'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mission-save-error')).toBeTruthy();
+    });
+    expect(apiService.updateMission).not.toHaveBeenCalled();
   });
 });

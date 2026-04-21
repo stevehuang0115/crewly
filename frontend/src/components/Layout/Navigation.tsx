@@ -66,7 +66,7 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Dashboard', href: '/', icon: Home },
 			{ name: 'Projects', href: '/projects', icon: FolderOpen },
 			{ name: 'Teams', href: '/teams', icon: Users },
-			{ name: 'Objectives', href: '/missions', icon: Target },
+			{ name: 'Missions', href: '/missions', icon: Target },
 			{ name: 'Chat', href: '/chat', icon: MessageSquare },
 		],
 	},

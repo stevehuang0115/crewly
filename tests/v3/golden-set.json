@@ -1,0 +1,71 @@
+{
+  "scenarios": [
+    {
+      "id": "simple-query",
+      "input": "帮我查一下现在的团队有哪些？",
+      "expectedRequest": {
+        "title": "[Query] List active teams",
+        "intentCategory": "query",
+        "intentLevel": "L1"
+      },
+      "expectedWorkItems": [
+        {
+          "title": "List all teams",
+          "type": "delegate",
+          "target": "orchestrator"
+        }
+      ],
+      "gradingRubric": "Should summarize 'list teams' in title, not just copy '帮我查一下...'. Should have exactly 1 WorkItem."
+    },
+    {
+      "id": "complex-planning",
+      "input": "帮我给Sam团队创建一个新的创业智库团队（Think Tank），需要有三个member，分别由不同的runtime组成，其中一个member（codex runtime）作为这个团队的TL。给这个团队创建一个project path，同时制定team norm和sop。",
+      "expectedRequest": {
+        "title": "[Planning] Setup Think Tank team",
+        "intentCategory": "planning",
+        "intentLevel": "L2"
+      },
+      "expectedWorkItems": [
+        { "title": "Create Think Tank team", "type": "delegate" },
+        { "title": "Add 3 members with different runtimes", "type": "delegate" },
+        { "title": "Setup project path", "type": "delegate" },
+        { "title": "Define team norms and SOP", "type": "delegate" }
+      ],
+      "gradingRubric": "Should decompose into at least 4 logical WorkItems. Title should be a summary, not the full long message."
+    },
+    {
+      "id": "bug-report",
+      "input": "刚才发现那个avatar broken的问题，让团队去看看为什么。",
+      "expectedRequest": {
+        "title": "[Fix] Investigate broken avatar issue",
+        "intentCategory": "debugging",
+        "intentLevel": "L1"
+      },
+      "expectedWorkItems": [
+        { "title": "Investigate avatar rendering failure", "type": "delegate" }
+      ],
+      "gradingRubric": "Should identify 'avatar broken' as the core issue. Should summarize intent."
+    },
+    {
+      "id": "deployment-request",
+      "input": "把目前主干的代码部署到staging环境，并运行冒烟测试。",
+      "expectedRequest": {
+        "title": "[Deploy] Staging deployment and smoke tests",
+        "intentCategory": "deployment",
+        "intentLevel": "L2"
+      },
+      "expectedWorkItems": [
+        { "title": "Deploy main branch to staging", "type": "delegate" },
+        { "title": "Run smoke tests", "type": "check" }
+      ],
+      "gradingRubric": "Should separate deployment from testing. Category should be deployment."
+    },
+    {
+      "id": "chit-chat-neg",
+      "input": "好的，谢谢你！",
+      "expectedRequest": null,
+      "expectedWorkItems": [],
+      "gradingRubric": "Should NOT create any Request or WorkItem for pure acknowledgement."
+    }
+  ]
+}

@@ -63,17 +63,44 @@ export const CloudConnectionBanner: React.FC = () => {
     await disconnect();
   };
 
-  // Connected state: show tier badge with disconnect option
+  // Connected state: show tier badge with disconnect option.
+  //
+  // Free tier callout: Cloud Relay / device-sync is gated server-side on Pro,
+  // so free users need to know why their node never shows up on the Cloud
+  // Console and what to do about it. Surface an inline Upgrade → link.
   if (isConnected && tier) {
+    const isFree = tier === 'free';
+    const bannerClass = isFree
+      ? 'bg-amber-500/10 border-amber-500/30'
+      : 'bg-emerald-500/10 border-emerald-500/30';
+    const iconClass = isFree ? 'text-amber-400' : 'text-emerald-400';
+    const labelClass = isFree ? 'text-amber-200' : 'text-emerald-300';
+
     return (
-      <div className="flex items-center justify-between px-4 py-2 border-b bg-emerald-500/10 border-emerald-500/30">
+      <div className={`flex items-center justify-between px-4 py-2 border-b ${bannerClass}`}>
         <div className="flex items-center gap-3">
-          <Cloud className="shrink-0 text-emerald-400" size={18} />
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-emerald-300">Connected to CrewlyAI Cloud</span>
+          <Cloud className={`shrink-0 ${iconClass}`} size={18} />
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className={labelClass}>Connected to CrewlyAI Cloud</span>
             <Badge variant={TIER_BADGE_VARIANTS[tier]} size="sm">
               {TIER_LABELS[tier]}
             </Badge>
+            {isFree && (
+              <>
+                <span className="text-amber-200/70">·</span>
+                <span className="text-amber-200/80">
+                  Device sync & Relay require Pro.
+                </span>
+                <a
+                  href="https://crewlyai.com/pricing"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline text-amber-100 hover:text-white font-medium"
+                >
+                  Upgrade →
+                </a>
+              </>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">

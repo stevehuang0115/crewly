@@ -105,10 +105,32 @@ export class TaskPoolService {
   private readonly claimService: ClaimService;
   private readonly logger: ComponentLogger;
 
+  /**
+   * Serializes claim operations to prevent the race where two concurrent
+   * claimFromPool / claimSpecificItem calls both select the same queued
+   * WorkItem between their read and write phases. In-process only — does
+   * not protect against cross-process races, but the backend runs as a
+   * single process today.
+   */
+  private claimMutex: Promise<void> = Promise.resolve();
+
   constructor(storage?: PoolStorage) {
     this.storage = storage ?? new PoolStorage();
     this.claimService = new ClaimService(this.storage);
     this.logger = LoggerService.getInstance().createComponentLogger('TaskPoolService');
+  }
+
+  /**
+   * Chains the given critical section after any in-flight claim operation.
+   * Guarantees FIFO ordering even under concurrent invocation.
+   */
+  private withClaimLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.claimMutex;
+    let release!: () => void;
+    this.claimMutex = new Promise<void>((r) => {
+      release = r;
+    });
+    return prev.then(fn).finally(() => release());
   }
 
   /**
@@ -137,19 +159,21 @@ export class TaskPoolService {
   /**
    * Adds an execution-ready WorkItem to the pool.
    *
-   * The item must have status 'queued' to be added. Items with other
-   * statuses are rejected.
+   * Accepted statuses:
+   * - `queued`  — ready to run
+   * - `blocked` — waiting on unresolved dependsOn; the resolver will promote
+   *               it to `queued` when every upstream dep reaches terminal success.
    *
    * @param workItem - The work item to add
-   * @throws Error if workItem is not valid or not in 'queued' status
+   * @throws Error if workItem is invalid or in an ineligible status
    */
   async addToPool(workItem: WorkItem): Promise<void> {
     if (!isWorkItem(workItem)) {
       throw new Error('Invalid WorkItem: does not conform to WorkItem interface');
     }
-    if (workItem.status !== 'queued') {
+    if (workItem.status !== 'queued' && workItem.status !== 'blocked') {
       throw new Error(
-        `Cannot add WorkItem to pool: status must be 'queued', got '${workItem.status}'`,
+        `Cannot add WorkItem to pool: status must be 'queued' or 'blocked', got '${workItem.status}'`,
       );
     }
 
@@ -187,73 +211,75 @@ export class TaskPoolService {
       throw new Error('agentId is required and must be a non-empty string');
     }
 
-    // Check if agent already has an active claim
-    const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
-    if (existingClaim) {
-      this.logger.warn('Agent already has an active claim', {
-        agentId,
-        existingClaimId: existingClaim.id,
-        existingWorkItemId: existingClaim.workItemId,
+    return this.withClaimLock(async () => {
+      // Check if agent already has an active claim
+      const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
+      if (existingClaim) {
+        this.logger.warn('Agent already has an active claim', {
+          agentId,
+          existingClaimId: existingClaim.id,
+          existingWorkItemId: existingClaim.workItemId,
+        });
+        return null;
+      }
+
+      const workItems = await this.storage.getWorkItems();
+      const claims = await this.storage.getClaims();
+
+      // Set of work item IDs that have active claims
+      const claimedIds = new Set(
+        claims
+          .filter((c) => c.status === 'active')
+          .map((c) => c.workItemId),
+      );
+
+      // Find first matching unclaimed queued item (FIFO by createdAt)
+      const candidates = workItems
+        .filter((wi) => wi.status === 'queued' && !claimedIds.has(wi.id))
+        .filter((wi) => matchesFilters(wi, filters))
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      if (candidates.length === 0) {
+        return null;
+      }
+
+      const selected = candidates[0];
+
+      // Transition item to 'running'
+      const updated = await this.storage.updateWorkItem(selected.id, (wi) => {
+        wi.status = 'running';
+        wi.startedAt = new Date().toISOString();
+        wi.target = agentId;
       });
-      return null;
-    }
 
-    const workItems = await this.storage.getWorkItems();
-    const claims = await this.storage.getClaims();
+      if (!updated) {
+        this.logger.warn('Failed to update WorkItem during claim', { workItemId: selected.id });
+        return null;
+      }
 
-    // Set of work item IDs that have active claims
-    const claimedIds = new Set(
-      claims
-        .filter((c) => c.status === 'active')
-        .map((c) => c.workItemId),
-    );
+      // Create the claim
+      const claimInput: CreateClaimInput = {
+        workItemId: selected.id,
+        agentId,
+      };
+      const claim = createTaskClaim(claimInput);
+      await this.storage.addClaim(claim);
+      await this.storage.flush();
 
-    // Find first matching unclaimed queued item (FIFO by createdAt)
-    const candidates = workItems
-      .filter((wi) => wi.status === 'queued' && !claimedIds.has(wi.id))
-      .filter((wi) => matchesFilters(wi, filters))
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      this.logger.info('WorkItem claimed', {
+        workItemId: selected.id,
+        agentId,
+        claimId: claim.id,
+        title: selected.title,
+      });
 
-    if (candidates.length === 0) {
-      return null;
-    }
-
-    const selected = candidates[0];
-
-    // Transition item to 'running'
-    const updated = await this.storage.updateWorkItem(selected.id, (wi) => {
-      wi.status = 'running';
-      wi.startedAt = new Date().toISOString();
-      wi.target = agentId;
+      // Return the updated item
+      const claimedItem = await this.storage.findWorkItem(selected.id);
+      return {
+        workItem: claimedItem!,
+        claim,
+      };
     });
-
-    if (!updated) {
-      this.logger.warn('Failed to update WorkItem during claim', { workItemId: selected.id });
-      return null;
-    }
-
-    // Create the claim
-    const claimInput: CreateClaimInput = {
-      workItemId: selected.id,
-      agentId,
-    };
-    const claim = createTaskClaim(claimInput);
-    await this.storage.addClaim(claim);
-    await this.storage.flush();
-
-    this.logger.info('WorkItem claimed', {
-      workItemId: selected.id,
-      agentId,
-      claimId: claim.id,
-      title: selected.title,
-    });
-
-    // Return the updated item
-    const claimedItem = await this.storage.findWorkItem(selected.id);
-    return {
-      workItem: claimedItem!,
-      claim,
-    };
   }
 
   /**
@@ -270,31 +296,33 @@ export class TaskPoolService {
       throw new Error('agentId is required and must be a non-empty string');
     }
 
-    const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
-    if (existingClaim) return null;
+    return this.withClaimLock(async () => {
+      const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
+      if (existingClaim) return null;
 
-    const workItem = await this.storage.findWorkItem(workItemId);
-    if (!workItem || workItem.status !== 'queued') return null;
+      const workItem = await this.storage.findWorkItem(workItemId);
+      if (!workItem || workItem.status !== 'queued') return null;
 
-    const claims = await this.storage.getClaims();
-    if (claims.some((c) => c.workItemId === workItemId && c.status === 'active')) return null;
+      const claims = await this.storage.getClaims();
+      if (claims.some((c) => c.workItemId === workItemId && c.status === 'active')) return null;
 
-    const updated = await this.storage.updateWorkItem(workItemId, (wi) => {
-      wi.status = 'running';
-      wi.startedAt = new Date().toISOString();
-      wi.target = agentId;
+      const updated = await this.storage.updateWorkItem(workItemId, (wi) => {
+        wi.status = 'running';
+        wi.startedAt = new Date().toISOString();
+        wi.target = agentId;
+      });
+      if (!updated) return null;
+
+      const claimInput: CreateClaimInput = { workItemId, agentId };
+      const claim = createTaskClaim(claimInput);
+      await this.storage.addClaim(claim);
+      await this.storage.flush();
+
+      this.logger.info('WorkItem claimed (specific)', { workItemId, agentId, claimId: claim.id });
+
+      const claimedItem = await this.storage.findWorkItem(workItemId);
+      return claimedItem ? { workItem: claimedItem, claim } : null;
     });
-    if (!updated) return null;
-
-    const claimInput: CreateClaimInput = { workItemId, agentId };
-    const claim = createTaskClaim(claimInput);
-    await this.storage.addClaim(claim);
-    await this.storage.flush();
-
-    this.logger.info('WorkItem claimed (specific)', { workItemId, agentId, claimId: claim.id });
-
-    const claimedItem = await this.storage.findWorkItem(workItemId);
-    return claimedItem ? { workItem: claimedItem, claim } : null;
   }
 
   /**
@@ -385,8 +413,53 @@ export class TaskPoolService {
       if (result) wi.result = result;
     });
 
+    // Promote any blocked dependents whose deps are now all satisfied.
+    await this.resolveBlockedDependents(workItemId);
+
     await this.storage.flush();
     this.logger.info('WorkItem completed', { workItemId });
+  }
+
+  /**
+   * Scans blocked WorkItems that list `completedId` in their `dependsOn` and
+   * promotes each to `queued` if every one of their deps has reached terminal
+   * success (`done` or `verified`). Idempotent and safe to call on any terminal
+   * success transition.
+   *
+   * Serialized via the claim mutex — a concurrent claimFromPool call must not
+   * observe a half-promoted item.
+   */
+  async resolveBlockedDependents(completedId: string): Promise<void> {
+    await this.withClaimLock(async () => {
+      const items = await this.storage.getWorkItems();
+      const terminalSuccess = new Set<string>(
+        items
+          .filter((wi) => wi.status === 'done' || wi.status === 'verified')
+          .map((wi) => wi.id),
+      );
+
+      const candidates = items.filter(
+        (wi) =>
+          wi.status === 'blocked' &&
+          Array.isArray(wi.dependsOn) &&
+          wi.dependsOn.includes(completedId),
+      );
+
+      for (const candidate of candidates) {
+        const allSatisfied = (candidate.dependsOn ?? []).every((depId) =>
+          terminalSuccess.has(depId),
+        );
+        if (!allSatisfied) continue;
+
+        await this.storage.updateWorkItem(candidate.id, (wi) => {
+          wi.status = 'queued';
+        });
+        this.logger.info('WorkItem unblocked — all deps satisfied', {
+          workItemId: candidate.id,
+          via: completedId,
+        });
+      }
+    });
   }
 
   /**

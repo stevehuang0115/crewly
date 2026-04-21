@@ -82,47 +82,20 @@ do_screenshot() {
   local img_h
   img_h=$(sips -g pixelHeight "$output" | tail -1 | awk '{print $2}')
 
-  # Grid overlay (red lines every 100 screen points with labels)
-  if [ "$grid" = "true" ]; then
-    python3 - "$output" <<'PYEOF'
-import sys
-from PIL import Image, ImageDraw, ImageFont
-
-path = sys.argv[1]
-img = Image.open(path)
-draw = ImageDraw.Draw(img)
-w, h = img.size
-step = 100
-
-try:
-    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
-except Exception:
-    font = ImageFont.load_default()
-
-for x in range(0, w, step):
-    draw.line([(x, 0), (x, h)], fill="red", width=1)
-    draw.text((x + 2, 2), str(x), fill="red", font=font)
-
-for y in range(0, h, step):
-    draw.line([(0, y), (w, y)], fill="red", width=1)
-    draw.text((2, y + 2), str(y), fill="red", font=font)
-
-img.save(path)
-PYEOF
-  fi
-
-  # Crop support: {x, y, w, h} in screen coordinates
+  # Crop FIRST, then grid — so grid labels show absolute screen coordinates
+  local origin_x=0 origin_y=0
   if [ -n "$crop_json" ]; then
     local cx cy cw ch
     cx=$(echo "$INPUT" | jq -r '.crop.x')
     cy=$(echo "$INPUT" | jq -r '.crop.y')
     cw=$(echo "$INPUT" | jq -r '.crop.w')
     ch=$(echo "$INPUT" | jq -r '.crop.h')
+    origin_x="$cx"
+    origin_y="$cy"
     local cropped="${TMPDIR_CU}/crop_$(date +%s%N).png"
     python3 - "$output" "$cx" "$cy" "$cw" "$ch" "$cropped" <<'PYEOF'
 import sys
 from PIL import Image
-
 path, cx, cy, cw, ch, out = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]), sys.argv[6]
 img = Image.open(path)
 cropped = img.crop((cx, cy, cx + cw, cy + ch))
@@ -131,6 +104,45 @@ PYEOF
     output="$cropped"
     img_w="$cw"
     img_h="$ch"
+  fi
+
+  # Grid overlay — labels show ABSOLUTE screen coordinates
+  # Grid step adapts to image size: dense for small crops, sparse for full screen
+  if [ "$grid" = "true" ]; then
+    python3 - "$output" "$origin_x" "$origin_y" <<'PYEOF'
+import sys
+from PIL import Image, ImageDraw, ImageFont
+
+path = sys.argv[1]
+ox, oy = int(sys.argv[2]), int(sys.argv[3])
+img = Image.open(path)
+draw = ImageDraw.Draw(img)
+w, h = img.size
+
+# Adaptive grid step: aim for ~8-12 cells across the image
+step = max(25, min(100, w // 10))
+# Round to nearest 25
+step = (step // 25) * 25
+
+try:
+    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", max(10, min(14, w // 80)))
+except Exception:
+    font = ImageFont.load_default()
+
+# Vertical lines with absolute X labels
+for x in range(0, w, step):
+    draw.line([(x, 0), (x, h)], fill="red", width=1)
+    label = str(ox + x)  # absolute screen coordinate
+    draw.text((x + 2, 2), label, fill="red", font=font)
+
+# Horizontal lines with absolute Y labels
+for y in range(0, h, step):
+    draw.line([(0, y), (w, y)], fill="red", width=1)
+    label = str(oy + y)
+    draw.text((2, y + 2), label, fill="red", font=font)
+
+img.save(path)
+PYEOF
   fi
 
   # Return result as JSON
@@ -461,134 +473,375 @@ do_list_apps() {
 # Modes: button (bright rectangles), avatar (colored circles), color (target RGB).
 # ---------------------------------------------------------------------------
 do_find() {
-  local mode target
+  local mode target region
   mode=$(printf '%s' "$INPUT" | jq -r '.mode // "button"')
   target=$(printf '%s' "$INPUT" | jq -r '.target // empty')
+  region=$(printf '%s' "$INPUT" | jq -c '.region // null')
 
-  # Take a fresh screenshot at full resolution for analysis
+  # Take screenshot at FULL resolution for pixel-accurate scanning
   local scan_file="/tmp/cu-find-scan.png"
   screencapture -x "$scan_file" 2>/dev/null
 
-  # Get scale factor
   local scale_int
   scale_int=$(osascript -l JavaScript -e 'ObjC.import("AppKit"); Math.round($.NSScreen.mainScreen.backingScaleFactor);' 2>/dev/null || echo "2")
 
-  python3 -c "
-import json, sys
-from PIL import Image
+  CU_SCALE="$scale_int" CU_MODE="$mode" CU_TARGET="$target" CU_REGION="$region" python3 << 'PYEOF'
+import json, sys, os
+from PIL import Image, ImageDraw, ImageFont
 
-img = Image.open('${scan_file}')
-w, h = img.size
-scale = ${scale_int}
+img = Image.open('/tmp/cu-find-scan.png')
+W, H = img.size
+S = int(os.environ.get('CU_SCALE', '2'))
+mode = os.environ.get('CU_MODE', 'button')
+target = os.environ.get('CU_TARGET', '')
+region_json = os.environ.get('CU_REGION', 'null')
 
-mode = '${mode}'
-results = []
+# Optional region constraint: {"x":100,"y":200,"w":400,"h":300} in screen coords
+region = json.loads(region_json) if region_json != 'null' else None
+if region:
+    rx, ry, rw, rh = region['x']*S, region['y']*S, region['w']*S, region['h']*S
+else:
+    rx, ry, rw, rh = 0, 0, W, H
 
-if mode == 'button':
-    # Find white/light button-like regions on dark backgrounds
-    # or colored buttons. Scan for horizontal runs of bright pixels
-    # that differ from their surroundings (buttons have borders/contrast).
+def px(x, y):
+    """Get pixel RGB, clamped to image bounds."""
+    x, y = max(0, min(x, W-1)), max(0, min(y, H-1))
+    return img.getpixel((x, y))[:3]
 
-    for y in range(0, h, 4):
-        in_bright = False
-        run_start = 0
-        for x in range(0, w, 2):
-            r, g, b = img.getpixel((x, y))[:3]
-            bright = r > 200 and g > 200 and b > 200
-            if bright and not in_bright:
-                run_start = x
-                in_bright = True
-            elif not bright and in_bright:
-                run_len = x - run_start
-                if run_len > 100:  # Wide enough to be a button
-                    results.append({
-                        'x': (run_start + x) // 2 // scale,
-                        'y': y // scale,
-                        'width': run_len // scale,
-                        'type': 'bright_region'
-                    })
-                in_bright = False
+def to_screen(x, y):
+    """Convert pixel coords to screen coords."""
+    return x // S, y // S
 
-    # Cluster nearby results into distinct buttons
-    if results:
-        clusters = []
-        results.sort(key=lambda r: (r['y'], r['x']))
-        current = [results[0]]
-        for i in range(1, len(results)):
-            if abs(results[i]['y'] - results[i-1]['y']) < 10 and abs(results[i]['x'] - results[i-1]['x']) < 50:
-                current.append(results[i])
-            else:
-                if len(current) >= 3:
-                    avg_x = sum(r['x'] for r in current) // len(current)
-                    avg_y = sum(r['y'] for r in current) // len(current)
-                    avg_w = max(r['width'] for r in current)
-                    clusters.append({'x': avg_x, 'y': avg_y, 'width': avg_w, 'height': len(current) * 4})
-                current = [results[i]]
-        if len(current) >= 3:
-            avg_x = sum(r['x'] for r in current) // len(current)
-            avg_y = sum(r['y'] for r in current) // len(current)
-            avg_w = max(r['width'] for r in current)
-            clusters.append({'x': avg_x, 'y': avg_y, 'width': avg_w, 'height': len(current) * 4})
+def cluster_points(points, gap=20):
+    """Cluster nearby points by Y proximity."""
+    if not points:
+        return []
+    points.sort(key=lambda p: p[1])
+    clusters = [[points[0]]]
+    for i in range(1, len(points)):
+        if points[i][1] - points[i-1][1] < gap:
+            clusters[-1].append(points[i])
+        else:
+            clusters.append([points[i]])
+    return [c for c in clusters if len(c) >= 3]
 
-        print(json.dumps({'found': len(clusters), 'elements': clusters[:20]}))
+# ── MODE: text ──────────────────────────────────────────────────
+# Uses macOS Vision framework OCR for fast, accurate text detection.
+# Finds target text on screen and returns its screen coordinates.
+if mode == 'text' and target:
+    import subprocess
+    # Call Swift Vision OCR (fast, accurate, built into macOS)
+    swift_code = r'''
+    import Vision
+    import AppKit
+    import Foundation
+
+    let url = URL(fileURLWithPath: "/tmp/cu-find-scan.png")
+    guard let image = NSImage(contentsOf: url),
+          let tiffData = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiffData),
+          let cgImage = bitmap.cgImage else {
+        print("[]")
+        exit(0)
+    }
+    let imgW = Double(cgImage.width)
+    let imgH = Double(cgImage.height)
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+    try? handler.perform([request])
+    var results: [[String: Any]] = []
+    for obs in request.results ?? [] {
+        if let candidate = obs.topCandidates(1).first {
+            let box = obs.boundingBox
+            // Convert from Vision coords (bottom-left, 0-1) to pixel coords (top-left)
+            let px = box.origin.x * imgW + box.size.width * imgW / 2
+            let py = (1.0 - box.origin.y - box.size.height) * imgH + box.size.height * imgH / 2
+            results.append([
+                "text": candidate.string,
+                "px": Int(px),
+                "py": Int(py),
+                "confidence": candidate.confidence
+            ])
+        }
+    }
+    let jsonData = try! JSONSerialization.data(withJSONObject: results)
+    print(String(data: jsonData, encoding: .utf8) ?? "[]")
+    '''
+
+    proc = subprocess.run(['swift', '-e', swift_code], capture_output=True, text=True, timeout=15)
+    ocr_results = json.loads(proc.stdout.strip()) if proc.stdout.strip() else []
+
+    # Search for target text (case-insensitive substring match)
+    target_lower = target.lower()
+    matches = []
+    for r in ocr_results:
+        if target_lower in r['text'].lower():
+            sx, sy = r['px'] // S, r['py'] // S
+            matches.append({'x': sx, 'y': sy, 'text': r['text'], 'confidence': round(r['confidence'], 3)})
+
+    if matches:
+        best = matches[0]
+        print(json.dumps({'found': True, 'x': best['x'], 'y': best['y'], 'text': best['text'], 'confidence': best['confidence'], 'allMatches': matches[:5]}))
     else:
-        print(json.dumps({'found': 0, 'elements': []}))
+        # Return all detected text for debugging
+        all_texts = [r['text'] for r in ocr_results[:15]]
+        print(json.dumps({'found': False, 'target': target, 'textsOnScreen': all_texts}))
 
+# ── MODE: button ────────────────────────────────────────────────
+# Find button-like rectangles (white on dark OR bordered on light)
+elif mode == 'button':
+    buttons = []
+    # Scan for horizontal runs of uniform bright OR bordered pixels
+    for y in range(ry, ry+rh, 3):
+        in_run = False
+        run_start = 0
+        for x in range(rx, rx+rw, 2):
+            r, g, b = px(x, y)
+            bright = r > 200 and g > 200 and b > 200
+            # Check if this bright pixel has dark neighbors above/below (= button)
+            if bright:
+                above = px(x, max(0, y-40))
+                below = px(x, min(H-1, y+40))
+                is_button_pixel = (sum(above)/3 < 120) or (sum(below)/3 < 120)
+            else:
+                is_button_pixel = False
+
+            if is_button_pixel and not in_run:
+                run_start = x
+                in_run = True
+            elif not is_button_pixel and in_run:
+                run_len = x - run_start
+                if run_len > 80:
+                    cx, cy = to_screen((run_start + x) // 2, y)
+                    buttons.append({'x': cx, 'y': cy, 'width': run_len // S})
+                in_run = False
+
+    # Cluster
+    clusters = []
+    buttons.sort(key=lambda b: (b['y'], b['x']))
+    if buttons:
+        current = [buttons[0]]
+        for i in range(1, len(buttons)):
+            if abs(buttons[i]['y'] - current[-1]['y']) < 8:
+                current.append(buttons[i])
+            else:
+                if len(current) >= 2:
+                    cx = sum(b['x'] for b in current) // len(current)
+                    cy = sum(b['y'] for b in current) // len(current)
+                    w = max(b['width'] for b in current)
+                    clusters.append({'x': cx, 'y': cy, 'width': w, 'height': len(current) * 3})
+                current = [buttons[i]]
+        if len(current) >= 2:
+            cx = sum(b['x'] for b in current) // len(current)
+            cy = sum(b['y'] for b in current) // len(current)
+            w = max(b['width'] for b in current)
+            clusters.append({'x': cx, 'y': cy, 'width': w, 'height': len(current) * 3})
+
+    print(json.dumps({'found': len(clusters), 'elements': clusters[:20]}))
+
+# ── MODE: avatar ────────────────────────────────────────────────
 elif mode == 'avatar':
-    # Find colored circles (account avatars, icons)
-    for y in range(h // 4, 3 * h // 4, 2):
-        for x in range(w // 4, 3 * w // 4, 4):
-            r, g, b = img.getpixel((x, y))[:3]
+    colored = []
+    for y in range(ry + rh//4, ry + 3*rh//4, 2):
+        for x in range(rx + rw//4, rx + 3*rw//4, 3):
+            r, g, b = px(x, y)
             sat = max(r,g,b) - min(r,g,b)
             if sat > 40 and max(r,g,b) > 80 and min(r,g,b) < 200:
-                results.append((x, y))
+                colored.append((x, y))
 
-    if results:
-        # Cluster into distinct avatars
-        results.sort(key=lambda p: p[1])
-        clusters = [[results[0]]]
-        for i in range(1, len(results)):
-            if results[i][1] - results[i-1][1] < 10:
-                clusters[-1].append(results[i])
+    clusters = cluster_points(colored, gap=15)
+    avatars = []
+    for c in clusters:
+        if len(c) >= 5:
+            cx, cy = to_screen(
+                sum(p[0] for p in c) // len(c),
+                sum(p[1] for p in c) // len(c)
+            )
+            avatars.append({'x': cx + 50, 'y': cy})
+
+    print(json.dumps({'found': len(avatars), 'elements': avatars[:10]}))
+
+# ── MODE: color ─────────────────────────────────────────────────
+elif mode == 'color' and target:
+    parts = target.split(',')
+    tr, tg, tb = int(parts[0]), int(parts[1]), int(parts[2])
+    tol = 60
+    hits = []
+    for y in range(ry, ry+rh, 3):
+        for x in range(rx, rx+rw, 3):
+            r, g, b = px(x, y)
+            if abs(r-tr) < tol and abs(g-tg) < tol and abs(b-tb) < tol:
+                hits.append((x, y))
+    if hits:
+        cx, cy = to_screen(
+            sum(p[0] for p in hits) // len(hits),
+            sum(p[1] for p in hits) // len(hits)
+        )
+        print(json.dumps({'found': len(hits), 'center': {'x': cx, 'y': cy}}))
+    else:
+        print(json.dumps({'found': 0}))
+
+# ── MODE: contrast ──────────────────────────────────────────────
+# Find high-contrast edges (useful for finding UI element boundaries)
+elif mode == 'contrast':
+    edges = []
+    for y in range(ry+2, ry+rh-2, 3):
+        for x in range(rx+2, rx+rw-2, 3):
+            c = px(x, y)
+            r_pixel = px(x+4, y)
+            d_pixel = px(x, y+4)
+            h_diff = abs(sum(c)/3 - sum(r_pixel)/3)
+            v_diff = abs(sum(c)/3 - sum(d_pixel)/3)
+            if h_diff > 80 or v_diff > 80:
+                edges.append((x, y))
+    clusters = cluster_points(edges, gap=10)
+    elements = []
+    for c in clusters:
+        if len(c) >= 10:
+            cx, cy = to_screen(
+                sum(p[0] for p in c) // len(c),
+                sum(p[1] for p in c) // len(c)
+            )
+            elements.append({'x': cx, 'y': cy, 'density': len(c)})
+    print(json.dumps({'found': len(elements), 'elements': elements[:20]}))
+
+elif mode == 'near':
+    # Find an icon/element near a known text anchor.
+    # target = the text to anchor on (found via OCR)
+    # Uses pixel scanning around the anchor to find nearby non-text elements.
+    # Params via env: CU_NEAR_DIR (right|left|above|below), CU_NEAR_DIST (max distance)
+    near_dir = os.environ.get('CU_NEAR_DIR', 'right')
+    near_dist = int(os.environ.get('CU_NEAR_DIST', '150'))
+
+    if not target:
+        print(json.dumps({'error': 'near mode requires target text'}))
+    else:
+        # First find anchor text via OCR
+        import subprocess
+        proc = subprocess.run(['swift', '/tmp/cu-ocr.swift', '/tmp/cu-find-scan.png'],
+                            capture_output=True, text=True, timeout=15)
+        ocr = json.loads(proc.stdout.strip()) if proc.stdout.strip() else []
+        anchor = None
+        for r in ocr:
+            if target.lower() in r['text'].lower():
+                anchor = (r['px'], r['py'])
+                break
+
+        if not anchor:
+            # Try inverted image for dark themes
+            from PIL import ImageOps
+            ImageOps.invert(img.convert('RGB')).save('/tmp/cu-find-inverted.png')
+            proc2 = subprocess.run(['swift', '/tmp/cu-ocr.swift', '/tmp/cu-find-inverted.png'],
+                                capture_output=True, text=True, timeout=15)
+            ocr2 = json.loads(proc2.stdout.strip()) if proc2.stdout.strip() else []
+            for r in ocr2:
+                if target.lower() in r['text'].lower():
+                    anchor = (r['px'], r['py'])
+                    break
+
+        if not anchor:
+            print(json.dumps({'found': False, 'error': f'Anchor text "{target}" not found'}))
+        else:
+            ax, ay = anchor
+            dist_px = near_dist * S
+            # Define scan region based on direction
+            if near_dir == 'right':
+                scan_x1, scan_y1 = ax + 20, ay - 30
+                scan_x2, scan_y2 = ax + dist_px, ay + 30
+            elif near_dir == 'left':
+                scan_x1, scan_y1 = ax - dist_px, ay - 30
+                scan_x2, scan_y2 = ax - 20, ay + 30
+            elif near_dir == 'above':
+                scan_x1, scan_y1 = ax - 30, ay - dist_px
+                scan_x2, scan_y2 = ax + 30, ay - 20
+            else:  # below
+                scan_x1, scan_y1 = ax - 30, ay + 20
+                scan_x2, scan_y2 = ax + 30, ay + dist_px
+
+            # Clamp to image bounds
+            scan_x1, scan_y1 = max(0, scan_x1), max(0, scan_y1)
+            scan_x2, scan_y2 = min(W-1, scan_x2), min(H-1, scan_y2)
+
+            # Scan for non-background pixels (icons, buttons)
+            icon_pixels = []
+            for y in range(scan_y1, scan_y2, 2):
+                for x in range(scan_x1, scan_x2, 2):
+                    r, g, b = px(x, y)
+                    brightness = (r + g + b) / 3
+                    # Icon: medium brightness, not pure white/black
+                    if 60 < brightness < 180:
+                        icon_pixels.append((x, y))
+
+            if icon_pixels:
+                ix = sum(p[0] for p in icon_pixels) // len(icon_pixels)
+                iy = sum(p[1] for p in icon_pixels) // len(icon_pixels)
+                sx, sy = to_screen(ix, iy)
+                asx, asy = to_screen(ax, ay)
+                print(json.dumps({
+                    'found': True,
+                    'x': sx, 'y': sy,
+                    'anchor': {'x': asx, 'y': asy, 'text': target},
+                    'direction': near_dir
+                }))
             else:
-                clusters.append([results[i]])
-
-        avatars = []
-        for c in clusters:
-            if len(c) >= 5:
-                avg_x = sum(p[0] for p in c) // len(c) // scale
-                avg_y = sum(p[1] for p in c) // len(c) // scale
-                avatars.append({'x': avg_x + 50, 'y': avg_y})  # offset right to hit text area
-
-        print(json.dumps({'found': len(avatars), 'elements': avatars[:10]}))
-    else:
-        print(json.dumps({'found': 0, 'elements': []}))
-
-elif mode == 'color':
-    # Find regions matching a target color
-    # target format: 'r,g,b' with tolerance
-    tr, tg, tb = [int(c) for c in '${target}'.split(',')][:3] if '${target}' else (0, 0, 255)
-    tolerance = 60
-
-    for y in range(0, h, 4):
-        for x in range(0, w, 4):
-            r, g, b = img.getpixel((x, y))[:3]
-            if abs(r-tr) < tolerance and abs(g-tg) < tolerance and abs(b-tb) < tolerance:
-                results.append({'x': x // scale, 'y': y // scale})
-
-    if results:
-        # Cluster
-        center_x = sum(r['x'] for r in results) // len(results)
-        center_y = sum(r['y'] for r in results) // len(results)
-        print(json.dumps({'found': len(results), 'center': {'x': center_x, 'y': center_y}, 'elements': results[:5]}))
-    else:
-        print(json.dumps({'found': 0, 'elements': []}))
+                asx, asy = to_screen(ax, ay)
+                print(json.dumps({
+                    'found': False,
+                    'anchor': {'x': asx, 'y': asy},
+                    'error': f'No icon found {near_dir} of "{target}"'
+                }))
 
 else:
-    print(json.dumps({'error': f'Unknown find mode: {mode}'}))
-" 2>&1
+    print(json.dumps({'error': f'Unknown mode: {mode}. Use: text, button, avatar, color, contrast, near'}))
+PYEOF
 
   rm -f "$scan_file"
+}
+
+# =============================================================================
+# click-text — Find text via OCR and click on it (one-step convenience action)
+# =============================================================================
+do_click_text() {
+  local target
+  target=$(printf '%s' "$INPUT" | jq -r '.target // .text // empty')
+  require_param "target" "$target"
+
+  # Use find to locate the text
+  local find_result
+  find_result=$(CU_SCALE="$( osascript -l JavaScript -e 'ObjC.import("AppKit"); Math.round($.NSScreen.mainScreen.backingScaleFactor);' 2>/dev/null || echo 2)" \
+    CU_MODE="text" CU_TARGET="$target" CU_REGION="null" \
+    bash "${BASH_SOURCE[0]}" "{\"action\":\"find\",\"mode\":\"text\",\"target\":\"$target\"}" 2>&1)
+
+  local found x y
+  found=$(echo "$find_result" | jq -r '.found // false')
+  x=$(echo "$find_result" | jq -r '.x // empty')
+  y=$(echo "$find_result" | jq -r '.y // empty')
+
+  if [ "$found" = "true" ] && [ -n "$x" ] && [ -n "$y" ]; then
+    # Click at the found position
+    do_click_at "$x" "$y"
+    echo "{\"success\":true,\"action\":\"click-text\",\"target\":\"$target\",\"x\":$x,\"y\":$y,\"text\":$(echo "$find_result" | jq '.text')}"
+  else
+    echo "{\"success\":false,\"action\":\"click-text\",\"target\":\"$target\",\"error\":\"Text not found\",\"debug\":$find_result}"
+  fi
+}
+
+# Helper: click at coordinates (reuses click logic)
+do_click_at() {
+  local cx="$1" cy="$2"
+  osascript -l JavaScript -e "
+    ObjC.import('CoreGraphics');
+    var point = \$.CGPointMake($cx, $cy);
+    var move = \$.CGEventCreateMouseEvent(null, \$.kCGEventMouseMoved, point, 0);
+    \$.CGEventPost(\$.kCGSessionEventTap, move);
+    delay(0.1);
+    var down = \$.CGEventCreateMouseEvent(null, \$.kCGEventLeftMouseDown, point, 0);
+    \$.CGEventPost(\$.kCGSessionEventTap, down);
+    delay(0.05);
+    var up = \$.CGEventCreateMouseEvent(null, \$.kCGEventLeftMouseUp, point, 0);
+    \$.CGEventPost(\$.kCGSessionEventTap, up);
+  " >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -606,5 +859,6 @@ case "$ACTION" in
   open-url)    do_open_url ;;
   list-apps)   do_list_apps ;;
   find)        do_find ;;
-  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find" ;;
+  click-text)  do_click_text ;;
+  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find, click-text" ;;
 esac

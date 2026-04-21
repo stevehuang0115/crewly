@@ -73,7 +73,8 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('capability-overlay');
 			expect(names).toContain('domain-sop');
 			expect(names).toContain('risk-policy');
-			expect(names.length).toBe(15);
+			expect(names).toContain('team-norms');
+			expect(names.length).toBe(17);
 		});
 
 		it('should use default token budget of 28000', () => {

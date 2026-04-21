@@ -24,6 +24,8 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { PolicyEnforcementService, type EscalationResult } from '../policy/policy-enforcement.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { TriggerEngine } from './trigger-engine.service.js';
+import type { Trigger } from '../../types/v2/trigger.types.js';
+import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { ensureDir, safeReadJson } from '../../utils/file-io.utils.js';
 import type {
   Mission,
@@ -112,6 +114,15 @@ export class EscalationService {
   private actionHandler: EscalationActionHandler | null = null;
   private triggerId: string | null = null;
   private started = false;
+  /**
+   * The wrapper function this service installed on the TriggerEngine via
+   * `setActionHandler`. Kept so we can detect "was I already installed?"
+   * on re-entry and avoid building a growing delegation chain. Each
+   * restart that skipped `stop()` (crash, test teardown gaps) would
+   * otherwise wrap the previous wrapper as its "originalHandler",
+   * stacking closures forever.
+   */
+  private installedHandler: ((trigger: Trigger, action: unknown) => Promise<void>) | null = null;
 
   /**
    * Creates a new EscalationService.
@@ -167,24 +178,37 @@ export class EscalationService {
           runReconciler: true, // Re-used as a "run escalation" signal
         },
         createdBy: 'system',
+        // Stable name makes create() idempotent — repeated boots reuse the
+        // same trigger instead of stacking duplicates. See TriggerEngine.create.
+        name: 'system:escalation',
         maxIdleFires: 50, // Allow many idle fires since not all cycles trigger
       });
 
       this.triggerId = trigger.id;
 
       // Register a custom action handler on the TriggerEngine that intercepts
-      // our trigger and runs the evaluation loop.
-      const originalHandler = triggerEngine['actionHandler'];
-      triggerEngine.setActionHandler(async (t, action) => {
-        if (t.id === this.triggerId) {
-          await this.evaluate();
-          return;
-        }
-        // Delegate to original handler for other triggers
-        if (originalHandler) {
-          await originalHandler(t, action);
-        }
-      });
+      // our trigger and runs the evaluation loop. If a second `start()` runs
+      // without a matching `stop()` (crash recovery, test singleton reuse),
+      // `currentHandler` could already be OUR previous wrapper — wrapping it
+      // again would build a delegation chain that grows by one closure per
+      // restart. Detect that and reuse the prior install instead of stacking.
+      const currentHandler = triggerEngine['actionHandler'] as
+        | ((trigger: Trigger, action: unknown) => Promise<void>)
+        | undefined;
+      if (currentHandler !== this.installedHandler) {
+        const originalHandler = currentHandler;
+        this.installedHandler = async (trigger: Trigger, action: unknown) => {
+          if (trigger.id === this.triggerId) {
+            await this.evaluate();
+            return;
+          }
+          // Delegate to original handler for other triggers
+          if (originalHandler) {
+            await originalHandler(trigger, action);
+          }
+        };
+        triggerEngine.setActionHandler(this.installedHandler);
+      }
 
       this.started = true;
       this.logger.info('EscalationService started', {
@@ -239,9 +263,26 @@ export class EscalationService {
     try {
       const missions = await this.loadActiveMissions();
 
+      // Fetch the task pool once per cycle and bucket by missionId so each
+      // mission's context build is a simple Map lookup instead of a full
+      // scan of the (potentially thousands of items) pool. Previously N
+      // missions × O(pool) made the cycle quadratic on large workspaces.
+      const allItems = await this.loadMissionWorkItems();
+      const itemsByMission = new Map<string, WorkItem[]>();
+      for (const wi of allItems) {
+        if (!wi.missionId) continue;
+        const bucket = itemsByMission.get(wi.missionId);
+        if (bucket) {
+          bucket.push(wi);
+        } else {
+          itemsByMission.set(wi.missionId, [wi]);
+        }
+      }
+
       for (const mission of missions) {
         try {
-          const context = await this.buildEscalationContext(mission);
+          const missionItems = itemsByMission.get(mission.id) ?? [];
+          const context = this.buildEscalationContext(mission, missionItems);
           const escalation = this.policyService.evaluateEscalationRules(
             mission.policy.escalationRules,
             context,
@@ -302,6 +343,22 @@ export class EscalationService {
   // ---------------------------------------------------------------------------
 
   /**
+   * Loads the task pool once per evaluation cycle. Extracted so `evaluate`
+   * can bucket items by missionId before calling
+   * {@link buildEscalationContext} for each mission.
+   */
+  private async loadMissionWorkItems(): Promise<WorkItem[]> {
+    try {
+      return await TaskPoolService.getInstance().getAllItems();
+    } catch (err) {
+      this.logger.warn('Failed to load task pool for escalation (treating as empty)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
+  }
+
+  /**
    * Builds an EscalationContext for a Mission by aggregating runtime data.
    *
    * Sources:
@@ -310,30 +367,23 @@ export class EscalationService {
    * - Failures: count of failed WorkItems linked to this mission
    *
    * @param mission - The Mission to build context for
+   * @param missionItems - Pre-filtered WorkItems belonging to the mission.
+   *        Pass an empty array when the mission has no items or the pool
+   *        could not be loaded — the function does not re-fetch.
    * @returns Populated EscalationContext
    */
-  async buildEscalationContext(mission: Mission): Promise<EscalationContext> {
-    const taskPool = TaskPoolService.getInstance();
-    const allItems = await taskPool.getAllItems();
+  buildEscalationContext(mission: Mission, missionItems: WorkItem[]): EscalationContext {
+    // Single pass over the pre-filtered slice gives us both the cost sum
+    // and the failure count without double-iterating.
+    let currentCost = 0;
+    let failureCount = 0;
+    for (const wi of missionItems) {
+      currentCost += wi.cost ?? 0;
+      if (wi.status === 'failed') failureCount += 1;
+    }
 
-    // Filter WorkItems belonging to this mission
-    const missionItems = allItems.filter((wi) => wi.missionId === mission.id);
-
-    // Calculate cost
-    const currentCost = missionItems.reduce(
-      (sum, wi) => sum + (wi.cost ?? 0),
-      0,
-    );
-
-    // Calculate hours elapsed since mission creation
     const createdAt = new Date(mission.createdAt).getTime();
-    const now = Date.now();
-    const hoursElapsed = (now - createdAt) / (1000 * 60 * 60);
-
-    // Count failures
-    const failureCount = missionItems.filter(
-      (wi) => wi.status === 'failed',
-    ).length;
+    const hoursElapsed = (Date.now() - createdAt) / (1000 * 60 * 60);
 
     return {
       currentCost,
@@ -415,19 +465,33 @@ export class EscalationService {
           (wi.status === 'queued' || wi.status === 'running'),
       );
 
+      let succeeded = 0;
+      const failures: Array<{ itemId: string; error: string }> = [];
       for (const item of activeItems) {
         try {
           // queued → blocked requires queued→running→blocked or direct update
           await taskPool.updateItemStatus(item.id, 'blocked');
-        } catch {
-          // Some transitions may not be valid — skip
+          succeeded += 1;
+        } catch (err) {
+          // Some transitions may not be valid — track so we don't report
+          // a falsely optimistic `pausedCount`.
+          failures.push({
+            itemId: item.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
 
       this.logger.info('Paused mission WorkItems', {
         missionId,
-        pausedCount: activeItems.length,
+        attempted: activeItems.length,
+        succeeded,
+        failed: failures.length,
       });
+
+      if (failures.length > 0) {
+        this.logger.debug('Work-item pause failures', { missionId, failures });
+      }
     } catch (err) {
       this.logger.warn('Failed to pause mission WorkItems (non-fatal)', {
         missionId,

@@ -1163,7 +1163,20 @@ class ApiService {
     return Array.isArray(d) ? d : [];
   }
 
-  async createMission(input: { objective: string; ownerTeamId: string; cadence?: string; successCriteria?: string[] }): Promise<unknown> {
+  async createMission(input: {
+    objective: string;
+    ownerTeamId: string;
+    cadence?: string;
+    successCriteria?: string[];
+    priority?: 'critical' | 'high' | 'medium' | 'low';
+    period?: {
+      type: 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'custom';
+      startDate: string;
+      endDate: string;
+      label?: string;
+    };
+    parentMissionId?: string;
+  }): Promise<unknown> {
     const response = await axios.post<ApiResponse<unknown>>(`${API_BASE}/missions`, input);
     return response.data.data;
   }
@@ -1171,6 +1184,22 @@ class ApiService {
   async getMission(id: string): Promise<unknown> {
     const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/missions/${id}`);
     if (!response.data.success || !response.data.data) throw new Error('Mission not found');
+    return response.data.data;
+  }
+
+  /**
+   * Partially update a mission. `id` and `createdAt` are immutable server-side.
+   * Pass `parentMissionId: ''` to clear an existing parent.
+   *
+   * @param id - Mission ID to update
+   * @param patch - Subset of mutable fields to merge
+   * @returns The updated mission object
+   */
+  async updateMission(id: string, patch: Record<string, unknown>): Promise<unknown> {
+    const response = await axios.put<ApiResponse<unknown>>(`${API_BASE}/missions/${id}`, patch);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to update mission');
+    }
     return response.data.data;
   }
 

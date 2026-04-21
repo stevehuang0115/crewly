@@ -26,53 +26,209 @@ import {
 } from './kr.controller.js';
 import { MissionExecutorService, type DecompositionResult } from '../../services/v3/mission-executor.service.js';
 import { OKRReviewService } from '../../services/v3/okr-review.service.js';
-import type { ReviewDecision } from '../../types/v2/key-result.types.js';
+import type { ReviewDecision, KeyResult } from '../../types/v2/key-result.types.js';
+import {
+  validateParentLink,
+  type Mission,
+  type MissionPriority,
+} from '../../types/v2/mission.types.js';
+
+/** Default priority applied to missions missing the field at read time. */
+const DEFAULT_PRIORITY: MissionPriority = 'medium';
+
+/** Summary of a KeyResult included inline on mission list/detail responses. */
+interface KeyResultSummary {
+  id: string;
+  title: string;
+  metricType: KeyResult['metricType'];
+  baseline: number;
+  target: number;
+  current: number;
+  unit: string;
+  status: KeyResult['status'];
+}
 
 /** Resolve the missions directory from the project root. */
 function getMissionsDir(): string {
   return path.join(process.cwd(), '.crewly', 'missions');
 }
 
-/** List all missions. */
+/**
+ * Reads all KR JSON files stored under `<missionsDir>/<missionId>/key-results/`.
+ *
+ * @param missionId - Mission whose KRs should be loaded
+ * @returns Array of KR summaries (empty if the folder is missing or unreadable)
+ */
+async function readKeyResultSummaries(missionId: string): Promise<KeyResultSummary[]> {
+  const krDir = path.join(getMissionsDir(), missionId, 'key-results');
+  let files: string[] = [];
+  try {
+    files = (await fs.readdir(krDir)).filter(f => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const krs = await Promise.all(
+    files.map(async (f) => {
+      try {
+        const raw = await fs.readFile(path.join(krDir, f), 'utf-8');
+        const kr = JSON.parse(raw) as KeyResult;
+        const summary: KeyResultSummary = {
+          id: kr.id,
+          title: kr.title,
+          metricType: kr.metricType,
+          baseline: kr.baseline,
+          target: kr.target,
+          current: kr.current,
+          unit: kr.unit,
+          status: kr.status,
+        };
+        return summary;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return krs.filter((k): k is KeyResultSummary => k !== null);
+}
+
+/**
+ * Normalises a raw mission JSON blob into an API response shape:
+ * applies the default priority and attaches inline KR summaries.
+ *
+ * @param raw - Mission object parsed from JSON
+ * @returns Mission augmented with `keyResults` and a guaranteed `priority`
+ */
+async function normalizeMissionForResponse(raw: Mission): Promise<Mission & { keyResults: KeyResultSummary[] }> {
+  const keyResults = await readKeyResultSummaries(raw.id);
+  return {
+    ...raw,
+    priority: raw.priority ?? DEFAULT_PRIORITY,
+    keyResults,
+  };
+}
+
+/** Load every mission from disk, skipping unreadable files. */
+async function loadAllMissionsRaw(): Promise<Mission[]> {
+  const dir = getMissionsDir();
+  let files: string[] = [];
+  try {
+    files = (await fs.readdir(dir)).filter(f => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const missions = await Promise.all(
+    files.map(async (f) => {
+      try {
+        const raw = await fs.readFile(path.join(dir, f), 'utf-8');
+        return JSON.parse(raw) as Mission;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return missions.filter((m): m is Mission => m !== null);
+}
+
+/** List all missions with KR summaries and normalised priority. */
 async function listMissions(_req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const dir = getMissionsDir();
-    let files: string[] = [];
-    try {
-      files = (await fs.readdir(dir)).filter(f => f.endsWith('.json'));
-    } catch { /* dir doesn't exist */ }
-    const missions = await Promise.all(
-      files.map(async (f) => {
-        try {
-          const raw = await fs.readFile(path.join(dir, f), 'utf-8');
-          return JSON.parse(raw);
-        } catch { return null; }
-      })
-    );
-    res.json({ success: true, data: missions.filter(Boolean), count: missions.filter(Boolean).length });
+    const missions = await loadAllMissionsRaw();
+    const enriched = await Promise.all(missions.map(normalizeMissionForResponse));
+    res.json({ success: true, data: enriched, count: enriched.length });
   } catch (err) { next(err); }
 }
 
-/** Get a single mission by ID. */
+/** Get a single mission by ID with KR summaries and normalised priority. */
 async function getMission(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const filePath = path.join(getMissionsDir(), `${req.params.id}.json`);
     const raw = await fs.readFile(filePath, 'utf-8');
-    res.json({ success: true, data: JSON.parse(raw) });
+    const mission = await normalizeMissionForResponse(JSON.parse(raw) as Mission);
+    res.json({ success: true, data: mission });
   } catch {
     res.status(404).json({ success: false, error: 'Mission not found' });
   }
 }
 
-/** Create a new mission. */
+/**
+ * Create a new mission.
+ *
+ * Validates `parentMissionId` against existing missions to reject self-reference
+ * and cycles before writing to disk.
+ */
 async function createMission(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const dir = getMissionsDir();
     await fs.mkdir(dir, { recursive: true });
     const id = req.body.id || `mission-${Date.now()}`;
+
+    const parentMissionId: string | undefined = req.body.parentMissionId;
+    if (parentMissionId) {
+      const existing = await loadAllMissionsRaw();
+      const byId = new Map(existing.map(m => [m.id, m] as const));
+      const reason = validateParentLink(id, parentMissionId, byId);
+      if (reason) {
+        res.status(400).json({ success: false, error: reason });
+        return;
+      }
+    }
+
     const mission = { id, ...req.body, createdAt: new Date().toISOString(), status: req.body.status || 'active' };
     await fs.writeFile(path.join(dir, `${id}.json`), JSON.stringify(mission, null, 2));
     res.status(201).json({ success: true, data: mission });
+  } catch (err) { next(err); }
+}
+
+/** Fields that are server-controlled and must never be overwritten by a PUT. */
+const IMMUTABLE_MISSION_FIELDS = ['id', 'createdAt'] as const;
+
+/**
+ * Update an existing mission (partial).
+ *
+ * Accepts any subset of mutable mission fields. `parentMissionId` is re-validated
+ * against the current set of missions on every change. `updatedAt` is refreshed
+ * automatically; `id` and `createdAt` are immutable.
+ */
+async function updateMission(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { id } = req.params;
+    const filePath = path.join(getMissionsDir(), `${id}.json`);
+
+    let existing: Mission;
+    try {
+      existing = JSON.parse(await fs.readFile(filePath, 'utf-8')) as Mission;
+    } catch {
+      res.status(404).json({ success: false, error: 'Mission not found' });
+      return;
+    }
+
+    // Re-validate parent link if the caller is changing it.
+    if (Object.prototype.hasOwnProperty.call(req.body, 'parentMissionId')) {
+      const nextParent: string | undefined = req.body.parentMissionId || undefined;
+      if (nextParent) {
+        const all = await loadAllMissionsRaw();
+        const byId = new Map(all.map(m => [m.id, m] as const));
+        const reason = validateParentLink(id, nextParent, byId);
+        if (reason) {
+          res.status(400).json({ success: false, error: reason });
+          return;
+        }
+      }
+    }
+
+    // Merge while guarding immutable fields.
+    const patch: Record<string, unknown> = { ...req.body };
+    for (const f of IMMUTABLE_MISSION_FIELDS) delete patch[f];
+    const merged: Mission = {
+      ...existing,
+      ...(patch as Partial<Mission>),
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await fs.writeFile(filePath, JSON.stringify(merged, null, 2));
+    res.json({ success: true, data: merged });
   } catch (err) { next(err); }
 }
 
@@ -92,6 +248,9 @@ export function createMissionPolicyRouter(): Router {
 
   // Get a single mission
   router.get('/:id', getMission);
+
+  // Update a mission (partial)
+  router.put('/:id', updateMission);
 
   // Get mission policy
   router.get('/:id/policy', getPolicy);

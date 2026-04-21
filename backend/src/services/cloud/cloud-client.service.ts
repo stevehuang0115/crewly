@@ -208,6 +208,7 @@ export class CloudClientService {
     // crewly-auth /api/cloud/validate returns { success, data: { plan, relayToken, ... } }
     // Also accept legacy { tier } format for forward compatibility
     const data = (await response.json()) as { tier?: string; data?: { plan?: string; relayToken?: string } };
+    this.logger.debug('Cloud validate response', { hasData: !!data.data, hasPlan: !!data.data?.plan, hasRelayToken: !!data.data?.relayToken, dataKeys: data.data ? Object.keys(data.data) : [] });
     const resolvedTier = data.data?.plan || data.tier;
 
     this.cloudUrl = cloudUrl;

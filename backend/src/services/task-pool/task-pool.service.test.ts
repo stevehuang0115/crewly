@@ -100,6 +100,88 @@ describe('TaskPoolService', () => {
       const items = await service.getAllItems();
       expect(items).toHaveLength(1);
     });
+
+    it('accepts a blocked WorkItem (waiting on deps)', async () => {
+      const wi = makeWorkItem({ dependsOn: ['upstream-1'] });
+      // makeWorkItem builds via createWorkItem, so dependsOn → blocked
+      expect(wi.status).toBe('blocked');
+
+      await service.addToPool(wi);
+      const items = await service.getAllItems();
+      expect(items).toHaveLength(1);
+      expect(items[0].status).toBe('blocked');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Dependency resolution (auto-unblock)
+  // -----------------------------------------------------------------------
+
+  describe('dependency resolution', () => {
+    it('promotes a blocked dependent to queued when its single dep completes', async () => {
+      const upstream = makeWorkItem({ title: 'upstream' });
+      await service.addToPool(upstream);
+
+      const downstream = makeWorkItem({
+        title: 'downstream',
+        dependsOn: [upstream.id],
+      });
+      await service.addToPool(downstream);
+
+      // Claim + complete upstream — should auto-unblock downstream
+      const claim = await service.claimFromPool('agent-a');
+      expect(claim!.workItem.id).toBe(upstream.id);
+      await service.completeItem(upstream.id);
+
+      const items = await service.getAllItems();
+      const after = items.find((wi) => wi.id === downstream.id)!;
+      expect(after.status).toBe('queued');
+    });
+
+    it('keeps the dependent blocked until ALL deps complete', async () => {
+      const depA = makeWorkItem({ title: 'dep-a' });
+      const depB = makeWorkItem({ title: 'dep-b' });
+      await service.addToPool(depA);
+      await service.addToPool(depB);
+
+      const downstream = makeWorkItem({
+        title: 'downstream',
+        dependsOn: [depA.id, depB.id],
+      });
+      await service.addToPool(downstream);
+
+      // Complete only depA first
+      await service.claimFromPool('agent-a');
+      await service.completeItem(depA.id);
+
+      let items = await service.getAllItems();
+      expect(items.find((wi) => wi.id === downstream.id)!.status).toBe('blocked');
+
+      // Now complete depB — downstream should unblock
+      await service.claimFromPool('agent-b');
+      await service.completeItem(depB.id);
+
+      items = await service.getAllItems();
+      expect(items.find((wi) => wi.id === downstream.id)!.status).toBe('queued');
+    });
+
+    it('does not touch dependents that list a different upstream', async () => {
+      const otherUpstream = makeWorkItem({ title: 'other' });
+      const unrelatedDownstream = makeWorkItem({
+        title: 'unrelated',
+        dependsOn: ['some-other-id'],
+      });
+      await service.addToPool(otherUpstream);
+      await service.addToPool(unrelatedDownstream);
+
+      await service.claimFromPool('agent-a');
+      await service.completeItem(otherUpstream.id);
+
+      const items = await service.getAllItems();
+      expect(items.find((wi) => wi.id === unrelatedDownstream.id)!.status).toBe(
+        'blocked',
+      );
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -191,6 +273,26 @@ describe('TaskPoolService', () => {
 
     it('throws on empty agentId', async () => {
       await expect(service.claimFromPool('')).rejects.toThrow('agentId is required');
+    });
+
+    it('serializes concurrent claims so only one agent wins a given WorkItem', async () => {
+      // Single queued item — two agents race to claim it concurrently.
+      const wi = makeWorkItem({ title: 'Contested' });
+      await service.addToPool(wi);
+
+      const [a, b] = await Promise.all([
+        service.claimFromPool('agent-a'),
+        service.claimFromPool('agent-b'),
+      ]);
+
+      // Exactly one of the two must have won.
+      const winners = [a, b].filter((r) => r !== null);
+      expect(winners).toHaveLength(1);
+      expect(winners[0]!.workItem.id).toBe(wi.id);
+
+      // Storage must reflect a single active claim, not two.
+      const snapshot = await service.getPoolStatus();
+      expect(snapshot.claimed).toBe(1);
     });
   });
 

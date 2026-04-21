@@ -374,5 +374,26 @@ describe('WorkItem Types', () => {
       const wi = createWorkItem(input);
       expect(wi.target).toBe('crewly-product-leo-member-n');
     });
+
+    it('should start in blocked status when dependsOn is non-empty', () => {
+      const wi = createWorkItem({ ...input, dependsOn: ['wi-upstream-1'] });
+      expect(wi.status).toBe('blocked');
+      expect(wi.dependsOn).toEqual(['wi-upstream-1']);
+    });
+
+    it('should prefer blocked over scheduled when both are specified', () => {
+      const wi = createWorkItem({
+        ...input,
+        dependsOn: ['wi-upstream-1'],
+        scheduledAt: new Date(Date.now() + 60000).toISOString(),
+      });
+      expect(wi.status).toBe('blocked');
+    });
+
+    it('should ignore an empty dependsOn array', () => {
+      const wi = createWorkItem({ ...input, dependsOn: [] });
+      expect(wi.status).toBe('queued');
+      expect(wi.dependsOn).toBeUndefined();
+    });
   });
 });

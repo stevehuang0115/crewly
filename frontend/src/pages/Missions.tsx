@@ -18,20 +18,47 @@ import { Button } from '../components/UI/Button';
 import { Card } from '../components/UI/Card';
 import { Badge } from '../components/UI/Badge';
 import { StatusBadge } from '../components/UI/StatusBadge';
-import type { StatusType } from '../components/UI/StatusBadge';
-import type { BadgeVariant } from '../components/UI/Badge';
 import { PageToolbar } from '../components/UI/PageToolbar';
 import { Alert } from '../components/UI/Alert';
 import { Modal, ModalBody, ModalFooter } from '../components/UI/Modal';
 import { SkeletonRows } from '../components/UI/SkeletonRows';
+import { FormSelect } from '../components/UI/Form';
+import { FilterPillGroup } from '../components/UI/FilterPillGroup';
 import { apiService } from '../services/api.service';
+import {
+  PRIORITY_RANK,
+  PRIORITY_LABEL,
+  PRIORITY_VARIANT,
+  getMissionStatusType,
+  getMissionStatusLabel,
+  type MissionStatus,
+  type MissionPriority,
+  type MissionPeriod,
+} from '../types/mission.types';
 
 // =============================================================================
-// Types (mirrors backend/src/types/v2/mission.types.ts)
+// Types (KR summaries are only used on this page)
 // =============================================================================
 
-/** Mission lifecycle statuses. */
-type MissionStatus = 'active' | 'paused' | 'completed' | 'cancelled';
+/** KR metric type (mirrors backend). */
+type KRMetricType = 'number' | 'percentage' | 'boolean' | 'currency';
+
+/** KR progress status (mirrors backend). */
+type KRStatus = 'not_started' | 'on_track' | 'at_risk' | 'off_track' | 'achieved';
+
+/**
+ * Inline KR summary returned alongside each mission.
+ */
+interface KeyResultSummary {
+  id: string;
+  title: string;
+  metricType: KRMetricType;
+  baseline: number;
+  target: number;
+  current: number;
+  unit: string;
+  status: KRStatus;
+}
 
 /**
  * Frontend representation of a Mission.
@@ -61,53 +88,112 @@ interface Mission {
   /** Next scheduled planning review */
   nextReviewAt?: string;
   /** Accumulated learnings */
-  learnings: string[];
+  learnings?: string[];
+  /** Priority for sorting/filtering (optional — missing treated as lowest). */
+  priority?: MissionPriority;
+  /** OKR time window. */
+  period?: MissionPeriod;
+  /** Parent mission in the OKR hierarchy (company → team → individual). */
+  parentMissionId?: string;
+  /** Inline Key Result summaries (server-populated). */
+  keyResults?: KeyResultSummary[];
 }
 
-/** Filter options for the Missions list */
+/** Primary filter: mission status. */
 type StatusFilter = 'all' | MissionStatus;
+
+/** Priority filter including an "all" catch-all. */
+type PriorityFilter = 'all' | MissionPriority;
+
+/** Period state relative to "now". */
+type PeriodFilter = 'all' | 'current' | 'upcoming' | 'past' | 'none';
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const PRIORITY_OPTIONS: { key: PriorityFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'critical', label: 'Critical' },
+  { key: 'high', label: 'High' },
+  { key: 'medium', label: 'Medium' },
+  { key: 'low', label: 'Low' },
+];
+
+const PERIOD_OPTIONS: { key: PeriodFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'current', label: 'Current' },
+  { key: 'upcoming', label: 'Upcoming' },
+  { key: 'past', label: 'Past' },
+  { key: 'none', label: 'No period' },
+];
 
 // =============================================================================
 // Utility Functions
 // =============================================================================
 
 /**
- * Maps a mission status to a StatusBadge-compatible StatusType.
+ * Classifies a mission's period relative to `now`.
  *
- * @param status - The mission status
- * @returns StatusType for the UI StatusBadge component
+ * @param period - Mission period or undefined
+ * @param now - Reference timestamp (defaults to current time)
+ * @returns One of 'current' | 'upcoming' | 'past' | 'none'
  */
-function getMissionStatusType(status: MissionStatus): StatusType {
-  const mapping: Record<MissionStatus, StatusType> = {
-    active: 'active',
-    paused: 'paused',
-    completed: 'completed',
-    cancelled: 'inactive',
-  };
-  return mapping[status] ?? 'pending';
+function classifyPeriod(period: MissionPeriod | undefined, now: Date = new Date()): Exclude<PeriodFilter, 'all'> {
+  if (!period) return 'none';
+  const start = new Date(period.startDate).getTime();
+  const end = new Date(period.endDate).getTime();
+  const t = now.getTime();
+  if (t < start) return 'upcoming';
+  if (t >= end) return 'past';
+  return 'current';
 }
 
 /**
- * Returns a human-readable label for a mission status.
+ * Computes progress for a KR on a 0–1 scale.
  *
- * @param status - The mission status
- * @returns Display label string
+ * Handles the "lower is better" case where target < baseline
+ * (e.g. latency reduction). Returns 0 if baseline equals target
+ * (avoiding divide-by-zero) and clamps to [0, 1].
+ *
+ * @param kr - Key Result summary with baseline, target, current
+ * @returns Progress as a number between 0 and 1 inclusive
  */
-function getMissionStatusLabel(status: MissionStatus): string {
-  const labels: Record<MissionStatus, string> = {
-    active: 'Active',
-    paused: 'Paused',
-    completed: 'Completed',
-    cancelled: 'Cancelled',
-  };
-  return labels[status] ?? status;
+function computeKrProgress(kr: Pick<KeyResultSummary, 'baseline' | 'target' | 'current'>): number {
+  const span = kr.target - kr.baseline;
+  if (span === 0) return kr.current >= kr.target ? 1 : 0;
+  const raw = (kr.current - kr.baseline) / span;
+  return Math.max(0, Math.min(1, raw));
 }
+
+/**
+ * Formats a KR metric value for display based on its metricType.
+ */
+function formatKrValue(value: number, metricType: KRMetricType, unit: string): string {
+  switch (metricType) {
+    case 'currency':
+      return `${unit || '$'}${value.toLocaleString()}`;
+    case 'percentage':
+      return `${value}${unit || '%'}`;
+    case 'boolean':
+      return value >= 1 ? 'Yes' : 'No';
+    case 'number':
+    default:
+      return `${value.toLocaleString()}${unit ? ` ${unit}` : ''}`;
+  }
+}
+
+/** Tailwind colour class for a KR progress bar based on KR status. */
+const KR_STATUS_COLOR: Record<KRStatus, string> = {
+  not_started: 'bg-border-dark',
+  on_track: 'bg-emerald-500',
+  at_risk: 'bg-amber-500',
+  off_track: 'bg-rose-500',
+  achieved: 'bg-emerald-500',
+};
 
 /**
  * Formats a relative time string from an ISO date.
- *
- * @param isoDate - ISO date string
- * @returns Human-readable relative time
  */
 function formatRelativeTime(isoDate: string): string {
   const now = Date.now();
@@ -129,9 +215,6 @@ function formatRelativeTime(isoDate: string): string {
 
 /**
  * Renders success criteria badges for a mission with expand/collapse toggle.
- * Shows up to 3 criteria by default with a clickable "+N more" to reveal all.
- *
- * @param props.criteria - Array of success criteria strings
  */
 const SuccessCriteriaPreview: React.FC<{ criteria: string[] }> = ({ criteria }) => {
   const [expanded, setExpanded] = useState(false);
@@ -176,12 +259,61 @@ const SuccessCriteriaPreview: React.FC<{ criteria: string[] }> = ({ criteria }) 
   );
 };
 
+/**
+ * Renders a compact list of KR progress bars under a mission card.
+ *
+ * Each row shows: title, current → target, and a coloured progress bar.
+ * Returns null when no KRs are attached so the card stays tidy.
+ *
+ * @param props.missionId - Parent mission ID (used for stable testids)
+ * @param props.keyResults - KR summaries to render
+ */
+const KeyResultsList: React.FC<{ missionId: string; keyResults: KeyResultSummary[] }> = ({
+  missionId,
+  keyResults,
+}) => {
+  if (keyResults.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-1.5" data-testid={`mission-krs-${missionId}`}>
+      {keyResults.map((kr) => {
+        const progress = computeKrProgress(kr);
+        const pct = Math.round(progress * 100);
+        return (
+          <div
+            key={kr.id}
+            className="flex flex-col gap-1 rounded-md bg-surface-dark/60 border border-border-dark px-3 py-2"
+            data-testid={`mission-kr-${missionId}-${kr.id}`}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-medium text-text-primary-dark truncate">
+                {kr.title}
+              </span>
+              <span className="text-[11px] text-text-secondary-dark flex-shrink-0 font-mono">
+                {formatKrValue(kr.current, kr.metricType, kr.unit)} /{' '}
+                {formatKrValue(kr.target, kr.metricType, kr.unit)}
+                <span className="ml-2 opacity-70">({pct}%)</span>
+              </span>
+            </div>
+            <div className="h-1 w-full rounded-full bg-border-dark/40 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${KR_STATUS_COLOR[kr.status]}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 // =============================================================================
 // Component
 // =============================================================================
 
 /**
- * Missions list page -- displays all Missions with status filters and search.
+ * Missions list page -- displays all Missions with status/priority/period/team
+ * filters and search.
  *
  * @returns Missions page JSX element
  */
@@ -191,6 +323,9 @@ export const Missions: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
+  const [periodFilter, setPeriodFilter] = useState<PeriodFilter>('all');
+  const [teamFilter, setTeamFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
 
@@ -214,12 +349,46 @@ export const Missions: React.FC = () => {
     loadMissions();
   }, [loadMissions]);
 
-  /** Filtered missions based on status and search */
+  /** Map from mission ID → mission, used for rendering parent chips. */
+  const missionsById = useMemo(() => {
+    const map = new Map<string, Mission>();
+    for (const m of missions) map.set(m.id, m);
+    return map;
+  }, [missions]);
+
+  /** Unique team IDs found across all missions (for team filter). */
+  const teamOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const m of missions) {
+      if (m.ownerTeamId) seen.add(m.ownerTeamId);
+    }
+    return [
+      { key: 'all', label: 'All' },
+      ...Array.from(seen).sort().map((id) => ({
+        key: id,
+        label: id.length > 16 ? `${id.slice(0, 12)}…` : id,
+      })),
+    ];
+  }, [missions]);
+
+  /** Filtered + sorted missions. */
   const filteredMissions = useMemo(() => {
     let result = missions;
 
     if (statusFilter !== 'all') {
       result = result.filter((m) => m.status === statusFilter);
+    }
+
+    if (priorityFilter !== 'all') {
+      result = result.filter((m) => (m.priority ?? 'low') === priorityFilter);
+    }
+
+    if (periodFilter !== 'all') {
+      result = result.filter((m) => classifyPeriod(m.period) === periodFilter);
+    }
+
+    if (teamFilter !== 'all') {
+      result = result.filter((m) => m.ownerTeamId === teamFilter);
     }
 
     if (searchQuery.trim()) {
@@ -229,17 +398,23 @@ export const Missions: React.FC = () => {
           m.objective.toLowerCase().includes(q) ||
           m.id.toLowerCase().includes(q) ||
           m.ownerTeamId.toLowerCase().includes(q) ||
-          m.currentStrategy.toLowerCase().includes(q),
+          m.currentStrategy?.toLowerCase().includes(q) ||
+          m.period?.label?.toLowerCase().includes(q),
       );
     }
 
-    // Sort newest first
-    return result.sort(
-      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-    );
-  }, [missions, statusFilter, searchQuery]);
+    // Sort: active first → priority rank → updated desc
+    return [...result].sort((a, b) => {
+      if (a.status === 'active' && b.status !== 'active') return -1;
+      if (a.status !== 'active' && b.status === 'active') return 1;
+      const rankA = PRIORITY_RANK[a.priority ?? 'low'];
+      const rankB = PRIORITY_RANK[b.priority ?? 'low'];
+      if (rankA !== rankB) return rankA - rankB;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+  }, [missions, statusFilter, priorityFilter, periodFilter, teamFilter, searchQuery]);
 
-  /** Status counts for filter badges */
+  /** Status counts for filter badges. */
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = { all: missions.length };
     for (const m of missions) {
@@ -297,11 +472,38 @@ export const Missions: React.FC = () => {
         }))}
         activeTab={statusFilter}
         onTabChange={(v) => setStatusFilter(v as StatusFilter)}
-        searchPlaceholder="Search by mission, team, strategy..."
+        searchPlaceholder="Search by mission, team, strategy, period..."
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}
         searchDebounceMs={0}
       />
+
+      {/* Secondary filters: priority / period / team */}
+      <div className="flex flex-col gap-2 mb-4" data-testid="missions-secondary-filters">
+        <FilterPillGroup<PriorityFilter>
+          label="Priority"
+          options={PRIORITY_OPTIONS}
+          value={priorityFilter}
+          onChange={setPriorityFilter}
+          testIdPrefix="priority-filter"
+        />
+        <FilterPillGroup<PeriodFilter>
+          label="Period"
+          options={PERIOD_OPTIONS}
+          value={periodFilter}
+          onChange={setPeriodFilter}
+          testIdPrefix="period-filter"
+        />
+        {teamOptions.length > 1 && (
+          <FilterPillGroup<string>
+            label="Team"
+            options={teamOptions}
+            value={teamFilter}
+            onChange={setTeamFilter}
+            testIdPrefix="team-filter"
+          />
+        )}
+      </div>
 
       {/* Loading */}
       {loading && (
@@ -335,49 +537,99 @@ export const Missions: React.FC = () => {
       {/* Missions list */}
       {!loading && !error && filteredMissions.length > 0 && (
         <div className="flex flex-col gap-2" data-testid="missions-list">
-          {filteredMissions.map((mission) => (
-            <Card
-              key={mission.id}
-              variant="default"
-              padding="md"
-              className="border border-border-dark cursor-pointer hover:border-primary/30 transition-colors"
-              data-testid={`mission-row-${mission.id}`}
-              onClick={() => navigate(`/missions/${mission.id}`)}
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-base font-semibold leading-6 text-text-primary-dark">
-                      {mission.objective}
-                    </span>
+          {filteredMissions.map((mission) => {
+            const periodState = classifyPeriod(mission.period);
+            const parent = mission.parentMissionId
+              ? missionsById.get(mission.parentMissionId)
+              : undefined;
+            const krs = mission.keyResults ?? [];
+            return (
+              <Card
+                key={mission.id}
+                variant="default"
+                padding="md"
+                className="border border-border-dark cursor-pointer hover:border-primary/30 transition-colors"
+                data-testid={`mission-row-${mission.id}`}
+                onClick={() => navigate(`/missions/${mission.id}`)}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    {mission.parentMissionId && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (parent) navigate(`/missions/${parent.id}`);
+                        }}
+                        className="mb-1 flex items-center gap-1 text-[11px] text-text-secondary-dark hover:text-primary transition-colors"
+                        data-testid={`mission-parent-${mission.id}`}
+                      >
+                        <span>↳ Child of</span>
+                        <span className="font-medium">
+                          {parent?.objective ?? mission.parentMissionId.slice(0, 8)}
+                        </span>
+                      </button>
+                    )}
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-base font-semibold leading-6 text-text-primary-dark">
+                        {mission.objective}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap mb-2">
+                      <StatusBadge status={getMissionStatusType(mission.status)}>
+                        {getMissionStatusLabel(mission.status)}
+                      </StatusBadge>
+                      {mission.priority && (
+                        <Badge
+                          variant={PRIORITY_VARIANT[mission.priority]}
+                          size="sm"
+                          data-testid={`mission-priority-${mission.id}`}
+                        >
+                          {PRIORITY_LABEL[mission.priority]}
+                        </Badge>
+                      )}
+                      {mission.period && (
+                        <Badge
+                          variant={periodState === 'current' ? 'success' : periodState === 'past' ? 'default' : 'info'}
+                          size="sm"
+                          data-testid={`mission-period-${mission.id}`}
+                        >
+                          {mission.period.label ?? `${mission.period.type}`}
+                        </Badge>
+                      )}
+                      <Badge variant="default" size="sm">
+                        Team: {mission.ownerTeamId.slice(0, 12)}
+                      </Badge>
+                      <Badge variant="info" size="sm">
+                        {mission.activeProjectTaskIds.length} active tasks
+                      </Badge>
+                      {krs.length > 0 && (
+                        <Badge variant="info" size="sm">
+                          {krs.length} KR{krs.length === 1 ? '' : 's'}
+                        </Badge>
+                      )}
+                      <span className="text-xs text-text-secondary-dark">
+                        Updated {formatRelativeTime(mission.updatedAt)}
+                      </span>
+                    </div>
+                    {mission.currentStrategy && (
+                      <p className="text-xs text-text-secondary-dark line-clamp-2">
+                        {mission.currentStrategy}
+                      </p>
+                    )}
+                    {krs.length > 0 ? (
+                      <KeyResultsList missionId={mission.id} keyResults={krs} />
+                    ) : (
+                      <SuccessCriteriaPreview criteria={mission.successCriteria ?? []} />
+                    )}
                   </div>
-                  <div className="flex items-center gap-2 flex-wrap mb-2">
-                    <StatusBadge status={getMissionStatusType(mission.status)}>
-                      {getMissionStatusLabel(mission.status)}
-                    </StatusBadge>
-                    <Badge variant="default" size="sm">
-                      Team: {mission.ownerTeamId.slice(0, 12)}
-                    </Badge>
-                    <Badge variant="info" size="sm">
-                      {mission.activeProjectTaskIds.length} active tasks
-                    </Badge>
-                    <span className="text-xs text-text-secondary-dark">
-                      Updated {formatRelativeTime(mission.updatedAt)}
-                    </span>
-                  </div>
-                  {/* Strategy summary */}
-                  <p className="text-xs text-text-secondary-dark line-clamp-2">
-                    {mission.currentStrategy}
-                  </p>
-                  {/* Success criteria preview with expand toggle */}
-                  <SuccessCriteriaPreview criteria={mission.successCriteria} />
+                  <span className="text-xs text-text-secondary-dark font-mono flex-shrink-0">
+                    {mission.id.slice(0, 8)}
+                  </span>
                 </div>
-                <span className="text-xs text-text-secondary-dark font-mono flex-shrink-0">
-                  {mission.id.slice(0, 8)}
-                </span>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
       {/* Create Mission Modal */}
@@ -385,6 +637,7 @@ export const Missions: React.FC = () => {
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
         onCreated={() => { setShowCreateModal(false); loadMissions(); }}
+        parentOptions={missions.map((m) => ({ id: m.id, objective: m.objective }))}
       />
     </div>
   );
@@ -400,13 +653,17 @@ interface CreateMissionModalProps {
   isOpen: boolean;
   onClose: () => void;
   onCreated: () => void;
+  /** Missions available as a potential parent in the hierarchy. */
+  parentOptions: { id: string; objective: string }[];
 }
 
-const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose, onCreated }) => {
+const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose, onCreated, parentOptions }) => {
   const [objective, setObjective] = useState('');
   const [ownerTeamId, setOwnerTeamId] = useState('');
   const [cadence, setCadence] = useState('0 9 * * 1');
   const [successCriteria, setSuccessCriteria] = useState('');
+  const [priority, setPriority] = useState<MissionPriority>('medium');
+  const [parentMissionId, setParentMissionId] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
 
@@ -424,11 +681,15 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
         successCriteria: successCriteria.trim()
           ? successCriteria.split('\n').map(s => s.trim()).filter(Boolean)
           : [],
+        priority,
+        ...(parentMissionId ? { parentMissionId } : {}),
       });
       setObjective('');
       setOwnerTeamId('');
       setCadence('0 9 * * 1');
       setSuccessCriteria('');
+      setPriority('medium');
+      setParentMissionId('');
       onCreated();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to create mission');
@@ -461,6 +722,41 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
               onChange={(e) => setOwnerTeamId(e.target.value)}
               placeholder="e.g. crewly-product-leo"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Priority</label>
+            <FormSelect
+              value={priority}
+              onChange={(e) => setPriority(e.target.value as MissionPriority)}
+              data-testid="create-mission-priority"
+            >
+              <option value="critical">Critical</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </FormSelect>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">
+              Parent Mission <span className="text-text-secondary-dark font-normal">(optional)</span>
+            </label>
+            <FormSelect
+              value={parentMissionId}
+              onChange={(e) => setParentMissionId(e.target.value)}
+              data-testid="create-mission-parent"
+            >
+              <option value="">— No parent (top-level) —</option>
+              {parentOptions.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.objective.length > 80 ? opt.objective.slice(0, 80) + '…' : opt.objective}
+                </option>
+              ))}
+            </FormSelect>
+            <p className="mt-1 text-xs text-text-secondary-dark">
+              Cascade this mission under a company or team-level OKR.
+            </p>
           </div>
 
           <div>

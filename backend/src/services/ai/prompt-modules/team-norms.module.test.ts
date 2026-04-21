@@ -136,4 +136,118 @@ describe('TeamNormsModule', () => {
       expect(content).toBe('');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Frontmatter-driven filtering (solves "SOP overload" with 50+ files)
+  // -------------------------------------------------------------------------
+
+  describe('frontmatter filtering', () => {
+    it('skips norms marked deprecated: true', async () => {
+      const dir = path.join(tempDir, 'deprecated-norms');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'old.md'),
+        '---\ndeprecated: true\n---\n# Old SOP\nRetired content.',
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(dir, 'current.md'),
+        '# Current SOP\nStill in force.',
+        'utf-8',
+      );
+
+      const content = await mod.build(makeConfig({ teamNormsPath: dir }));
+      expect(content).toContain('Current SOP');
+      expect(content).not.toContain('Old SOP');
+      expect(content).not.toContain('Retired content');
+    });
+
+    it('includes universal norms (no appliesTo) for any role', async () => {
+      const dir = path.join(tempDir, 'universal-norms');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'all.md'),
+        '# Universal SOP\nApplies to everyone.',
+        'utf-8',
+      );
+
+      const content = await mod.build(
+        makeConfig({ teamNormsPath: dir, role: 'some-obscure-role' }),
+      );
+      expect(content).toContain('Universal SOP');
+    });
+
+    it('filters by appliesTo when present', async () => {
+      const dir = path.join(tempDir, 'role-scoped-norms');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'writer-only.md'),
+        '---\nappliesTo: [writer]\n---\n# Writer SOP\nFor writers.',
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(dir, 'strategist-only.md'),
+        '---\nappliesTo: [strategist]\n---\n# Strategist SOP\nFor strategists.',
+        'utf-8',
+      );
+
+      const writerContent = await mod.build(
+        makeConfig({ teamNormsPath: dir, role: 'writer' }),
+      );
+      expect(writerContent).toContain('Writer SOP');
+      expect(writerContent).not.toContain('Strategist SOP');
+
+      const strategistContent = await mod.build(
+        makeConfig({ teamNormsPath: dir, role: 'strategist' }),
+      );
+      expect(strategistContent).toContain('Strategist SOP');
+      expect(strategistContent).not.toContain('Writer SOP');
+    });
+
+    it('strips frontmatter from the emitted content', async () => {
+      const dir = path.join(tempDir, 'frontmatter-strip');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'norm.md'),
+        '---\ntitle: My Norm\npriority: 10\n---\n# Body\nThe real content.',
+        'utf-8',
+      );
+
+      const content = await mod.build(makeConfig({ teamNormsPath: dir }));
+      expect(content).toContain('The real content');
+      expect(content).not.toContain('priority:');
+      expect(content).not.toContain('title:');
+    });
+
+    it('ranks by priority desc so critical norms win limited slots', async () => {
+      const dir = path.join(tempDir, 'priority-norms');
+      fs.mkdirSync(dir, { recursive: true });
+      // Create 7 norms — 2 high-priority, 5 normal. MAX_NORM_FILES=5 caps output,
+      // so both high-priority must survive while 2 normal ones get dropped.
+      fs.writeFileSync(
+        path.join(dir, 'high-a.md'),
+        '---\npriority: 100\n---\n# High A\nCritical rule A.',
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(dir, 'high-b.md'),
+        '---\npriority: 100\n---\n# High B\nCritical rule B.',
+        'utf-8',
+      );
+      for (let i = 0; i < 5; i++) {
+        fs.writeFileSync(
+          path.join(dir, `normal-${i}.md`),
+          `# Normal ${i}\nRoutine guidance ${i}.`,
+          'utf-8',
+        );
+      }
+
+      const content = await mod.build(makeConfig({ teamNormsPath: dir }));
+      expect(content).toContain('Critical rule A');
+      expect(content).toContain('Critical rule B');
+      // Only 3 of the 5 normals fit in the remaining slots.
+      const normalMatches = (content.match(/Routine guidance/g) ?? []).length;
+      expect(normalMatches).toBe(3);
+    });
+  });
 });

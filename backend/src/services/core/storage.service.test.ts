@@ -22,6 +22,7 @@ jest.mock('fs/promises', () => ({
   open: jest.fn(),
   rename: jest.fn(),
   copyFile: jest.fn(),
+  rm: jest.fn(),
 }));
 
 const mockFs = fs as jest.Mocked<typeof fs>;
@@ -124,6 +125,89 @@ describe('StorageService', () => {
       const writeCall = mockFsPromises.writeFile.mock.calls[0];
       const parsedContent = JSON.parse(writeCall[1]);
       expect(parsedContent.name).toBe('Updated Team');
+    });
+
+    test('emits a team-saved event after saveTeam', async () => {
+      const team: Team = {
+        id: 'emit-save',
+        name: 'Emitter',
+        description: '',
+        members: [],
+        projectIds: [],
+        createdAt: '2023-01-01T00:00:00.000Z',
+        updatedAt: '2023-01-01T00:00:00.000Z',
+      };
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+      mockFsPromises.readdir.mockResolvedValue([]);
+
+      const events: Array<{ kind: string; id?: string }> = [];
+      storageService.onStorageEvent((ev) => {
+        if (ev.kind === 'team-saved') events.push({ kind: ev.kind, id: ev.team.id });
+      });
+
+      await storageService.saveTeam(team);
+
+      expect(events).toEqual([{ kind: 'team-saved', id: 'emit-save' }]);
+    });
+
+    test('emits a team-deleted event after deleteTeam', async () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockFsPromises.rm.mockResolvedValue(undefined);
+
+      const events: Array<{ kind: string; id?: string }> = [];
+      storageService.onStorageEvent((ev) => {
+        if (ev.kind === 'team-deleted') events.push({ kind: ev.kind, id: ev.teamId });
+      });
+
+      await storageService.deleteTeam('gone');
+
+      expect(events).toEqual([{ kind: 'team-deleted', id: 'gone' }]);
+    });
+
+    test('unsubscribe stops further events to the listener', async () => {
+      const team: Team = {
+        id: 'unsub',
+        name: 'U',
+        description: '',
+        members: [],
+        projectIds: [],
+        createdAt: '2023-01-01T00:00:00.000Z',
+        updatedAt: '2023-01-01T00:00:00.000Z',
+      };
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+      mockFsPromises.readdir.mockResolvedValue([]);
+
+      const calls: string[] = [];
+      const unsubscribe = storageService.onStorageEvent((ev) => {
+        if (ev.kind === 'team-saved') calls.push(ev.team.id);
+      });
+
+      await storageService.saveTeam(team);
+      unsubscribe();
+      await storageService.saveTeam({ ...team, id: 'after-unsub' });
+
+      expect(calls).toEqual(['unsub']);
+    });
+
+    test('a throwing listener does not break the save path', async () => {
+      const team: Team = {
+        id: 'err',
+        name: 'E',
+        description: '',
+        members: [],
+        projectIds: [],
+        createdAt: '2023-01-01T00:00:00.000Z',
+        updatedAt: '2023-01-01T00:00:00.000Z',
+      };
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+      mockFsPromises.readdir.mockResolvedValue([]);
+
+      storageService.onStorageEvent(() => {
+        throw new Error('listener blew up');
+      });
+
+      // Should not throw — listener errors are isolated.
+      await expect(storageService.saveTeam(team)).resolves.toBeUndefined();
     });
   });
 

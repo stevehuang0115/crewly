@@ -1641,6 +1641,9 @@ export class AgentRegistrationService {
 					teamMission: foundTeam?.mission,
 					teamBudget: foundTeam?.budget as ModuleConfig['teamBudget'],
 					teamQualityGate: foundTeam?.qualityGate as ModuleConfig['teamQualityGate'],
+					teamNormsPath: foundTeam?.id
+						? path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME, 'teams', foundTeam.id, 'norms')
+						: undefined,
 				};
 
 				const assembler = new PromptAssemblyService();

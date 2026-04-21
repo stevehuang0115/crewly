@@ -1288,6 +1288,46 @@ export class CrewlyServer {
 
 				await triggerEngine.start();
 				this.logger.info('TriggerEngine started with action handler wired');
+
+				// Wire team-scoped triggers: reconcile declarative Team.triggers spec
+				// against the running engine on every team save, and cancel all of a
+				// team's triggers when it's deleted. Listener is fire-and-forget.
+				try {
+					const { TeamTriggerReconciler } = await import(
+						'./services/v3/team-trigger-reconciler.service.js'
+					);
+					const reconciler = new TeamTriggerReconciler(triggerEngine);
+
+					// Initial converge: reconcile every team that already exists on disk.
+					const existingTeams = await this.storageService.getTeams();
+					for (const team of existingTeams) {
+						try {
+							await reconciler.reconcile(team);
+						} catch (recErr) {
+							this.logger.warn('Initial team-trigger reconcile failed', {
+								teamId: team.id,
+								error: recErr instanceof Error ? recErr.message : String(recErr),
+							});
+						}
+					}
+
+					// Ongoing: subscribe to storage events.
+					this.storageService.onStorageEvent(async (event) => {
+						if (event.kind === 'team-saved') {
+							await reconciler.reconcile(event.team);
+						} else if (event.kind === 'team-deleted') {
+							await reconciler.unregisterAll(event.teamId);
+						}
+					});
+
+					this.logger.info('TeamTriggerReconciler subscribed to storage events', {
+						initialTeams: existingTeams.length,
+					});
+				} catch (recErr) {
+					this.logger.warn('TeamTriggerReconciler wiring failed (non-critical)', {
+						error: recErr instanceof Error ? recErr.message : String(recErr),
+					});
+				}
 			} catch (triggerErr) {
 				this.logger.warn('TriggerEngine initialization failed (non-critical)', {
 					error: triggerErr instanceof Error ? triggerErr.message : String(triggerErr),

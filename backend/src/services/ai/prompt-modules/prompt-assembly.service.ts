@@ -23,6 +23,7 @@ import { RoleBoundaryModule } from './role-boundary.module.js';
 import { CapabilityOverlayModule } from './capability-overlay.module.js';
 import { DomainSOPModule } from './domain-sop.module.js';
 import { RiskPolicyModule } from './risk-policy.module.js';
+import { TeamNormsModule } from './team-norms.module.js';
 
 /**
  * Default total token budget for all prompt modules combined.
@@ -117,6 +118,7 @@ export class PromptAssemblyService {
 			new ProjectReferenceModule(),
 			new CommunicationModule(),
 			new DomainSOPModule(),
+			new TeamNormsModule(),
 			new UserProfileReferenceModule(),
 			new RiskPolicyModule(),
 			new LearningReferenceModule(),
