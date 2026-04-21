@@ -13,6 +13,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Search } from 'lucide-react';
+import { FilterPill } from './FilterPill';
 
 // =============================================================================
 // Types
@@ -237,27 +238,16 @@ export const PageToolbar: React.FC<PageToolbarProps> = ({
 
           {secondaryFilters && secondaryFilters.length > 0 && (
             <div className="flex items-center gap-1.5">
-              {secondaryFilters.map((sf) => {
-                const isActive = activeSecondaryFilters?.has(sf.value) ?? false;
-                return (
-                  <button
-                    key={sf.value}
-                    type="button"
-                    onClick={() => onSecondaryFilterToggle?.(sf.value)}
-                    className={[
-                      'px-3 py-1.5 text-xs font-medium rounded-full border transition-colors',
-                      isActive
-                        ? 'bg-primary/10 text-primary border-primary/30'
-                        : 'bg-surface-dark text-text-secondary-dark border-border-dark hover:text-text-primary-dark',
-                    ].join(' ')}
-                  >
-                    {sf.label}
-                    {sf.count !== undefined && (
-                      <span className="ml-1 opacity-60">({sf.count})</span>
-                    )}
-                  </button>
-                );
-              })}
+              {secondaryFilters.map((sf) => (
+                <FilterPill
+                  key={sf.value}
+                  isActive={activeSecondaryFilters?.has(sf.value) ?? false}
+                  onClick={() => onSecondaryFilterToggle?.(sf.value)}
+                  count={sf.count}
+                >
+                  {sf.label}
+                </FilterPill>
+              ))}
             </div>
           )}
         </div>

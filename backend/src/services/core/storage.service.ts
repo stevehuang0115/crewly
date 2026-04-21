@@ -14,6 +14,17 @@ import { TeamsBackupService } from './teams-backup.service.js';
 import { atomicWriteFile, withOperationLock } from '../../utils/file-io.utils.js';
 import { addGeminiTrustedFolders, getProjectTrustPaths } from '../../utils/gemini-trusted-folders.js';
 
+/**
+ * Storage-level events emitted after a team is persisted or removed.
+ * Subscribers (e.g. {@link TeamTriggerReconciler}) use these to converge
+ * side systems without pulling StorageService into a cross-cutting tangle.
+ */
+export type StorageEvent =
+  | { kind: 'team-saved'; team: Team }
+  | { kind: 'team-deleted'; teamId: string };
+
+export type StorageListener = (event: StorageEvent) => Promise<void> | void;
+
 export class StorageService {
   private static instance: StorageService | null = null;
   private static instanceHome: string | null = null;
@@ -37,6 +48,13 @@ export class StorageService {
   /** Debounce timer for teams backup to avoid I/O storms */
   private backupDebounceTimer: NodeJS.Timeout | null = null;
   private readonly BACKUP_DEBOUNCE_MS = 2000;
+
+  /**
+   * Listeners registered via {@link onStorageEvent}. Empty by default so
+   * existing call-sites pay zero cost; listeners are fired-and-forgotten
+   * to keep save/delete latency unchanged.
+   */
+  private listeners: StorageListener[] = [];
 
   constructor(crewlyHome?: string) {
     this.logger = LoggerService.getInstance().createComponentLogger('StorageService');
@@ -470,6 +488,10 @@ export class StorageService {
 
         // Update teams backup (fire-and-forget, non-blocking)
         this.updateTeamsBackup();
+
+        // Notify listeners (e.g. TeamTriggerReconciler). Fire-and-forget so
+        // slow subscribers never block the save path.
+        this.emit({ kind: 'team-saved', team });
       } catch (error) {
         this.logger.error('Error saving team', {
           teamId: team.id,
@@ -616,12 +638,59 @@ export class StorageService {
       } else {
         this.logger.warn('Team directory not found for deletion', { teamId: id, teamDir });
       }
+      // Always fire the event so listeners can clean up even if the directory
+      // had already been removed out-of-band.
+      this.emit({ kind: 'team-deleted', teamId: id });
     } catch (error) {
       this.logger.error('Error deleting team', {
         teamId: id,
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Storage event subscriptions
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Register a listener for storage lifecycle events. Returns an unsubscribe
+   * function. Listeners are invoked fire-and-forget; errors are logged and
+   * never propagated to the save/delete caller.
+   *
+   * @param listener - Callback invoked for every saved/deleted team
+   * @returns Unsubscribe function
+   */
+  onStorageEvent(listener: StorageListener): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
+  }
+
+  /**
+   * Fire all registered listeners without awaiting their completion. Any
+   * error inside a listener is isolated to that listener.
+   */
+  private emit(event: StorageEvent): void {
+    for (const listener of this.listeners) {
+      try {
+        const result = listener(event);
+        if (result && typeof (result as Promise<void>).catch === 'function') {
+          (result as Promise<void>).catch((err) => {
+            this.logger.warn('Storage listener failed (async)', {
+              event: event.kind,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }
+      } catch (err) {
+        this.logger.warn('Storage listener failed (sync)', {
+          event: event.kind,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 

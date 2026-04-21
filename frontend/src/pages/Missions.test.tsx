@@ -16,6 +16,7 @@ import { Missions } from './Missions';
 vi.mock('../services/api.service', () => ({
   apiService: {
     getMissions: vi.fn(),
+    createMission: vi.fn(),
   },
 }));
 
@@ -171,5 +172,230 @@ describe('Missions Page', () => {
     fireEvent.click(screen.getByTestId('missions-refresh'));
 
     expect(apiService.getMissions).toHaveBeenCalledTimes(2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Priority / Period / Team filters
+  // ---------------------------------------------------------------------------
+
+  const now = new Date();
+  const past = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const future = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+
+  const criticalActiveMission = {
+    ...mockMission,
+    id: 'crit-1',
+    objective: 'Critical Active Q2',
+    ownerTeamId: 'team-alpha',
+    priority: 'critical',
+    period: { type: 'quarterly', startDate: yesterday, endDate: tomorrow, label: '2026 Q2' },
+  };
+  const mediumPastMission = {
+    ...mockMission,
+    id: 'med-1',
+    objective: 'Medium Past Work',
+    ownerTeamId: 'team-beta',
+    priority: 'medium',
+    period: { type: 'monthly', startDate: past, endDate: past, label: '2026-03 March' },
+  };
+  const lowUpcomingMission = {
+    ...mockMission,
+    id: 'low-1',
+    objective: 'Low Upcoming Plan',
+    ownerTeamId: 'team-alpha',
+    priority: 'low',
+    period: { type: 'monthly', startDate: future, endDate: future, label: '2026-06 June' },
+  };
+
+  it('renders priority badge for missions that have priority', async () => {
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([criticalActiveMission]);
+    renderWithRouter(<Missions />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('missions-list')).toBeTruthy();
+    });
+
+    const badge = screen.getByTestId(`mission-priority-${criticalActiveMission.id}`);
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toBe('Critical');
+  });
+
+  it('renders period label when mission has a period', async () => {
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([criticalActiveMission]);
+    renderWithRouter(<Missions />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('missions-list')).toBeTruthy();
+    });
+
+    expect(screen.getByTestId(`mission-period-${criticalActiveMission.id}`)).toBeTruthy();
+    expect(screen.getByText('2026 Q2')).toBeTruthy();
+  });
+
+  it('filters by priority when a priority pill is selected', async () => {
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      criticalActiveMission,
+      mediumPastMission,
+    ]);
+    renderWithRouter(<Missions />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('missions-list')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('priority-filter-critical'));
+
+    expect(screen.getByText('Critical Active Q2')).toBeTruthy();
+    expect(screen.queryByText('Medium Past Work')).toBeFalsy();
+  });
+
+  it('filters by period state (current/past/upcoming)', async () => {
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      criticalActiveMission,
+      mediumPastMission,
+      lowUpcomingMission,
+    ]);
+    renderWithRouter(<Missions />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('missions-list')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('period-filter-current'));
+    expect(screen.getByText('Critical Active Q2')).toBeTruthy();
+    expect(screen.queryByText('Medium Past Work')).toBeFalsy();
+    expect(screen.queryByText('Low Upcoming Plan')).toBeFalsy();
+
+    fireEvent.click(screen.getByTestId('period-filter-past'));
+    expect(screen.getByText('Medium Past Work')).toBeTruthy();
+    expect(screen.queryByText('Critical Active Q2')).toBeFalsy();
+
+    fireEvent.click(screen.getByTestId('period-filter-upcoming'));
+    expect(screen.getByText('Low Upcoming Plan')).toBeTruthy();
+    expect(screen.queryByText('Critical Active Q2')).toBeFalsy();
+  });
+
+  it('filters by team', async () => {
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      criticalActiveMission,
+      mediumPastMission,
+    ]);
+    renderWithRouter(<Missions />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('missions-list')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('team-filter-team-beta'));
+
+    expect(screen.getByText('Medium Past Work')).toBeTruthy();
+    expect(screen.queryByText('Critical Active Q2')).toBeFalsy();
+  });
+
+  it('sorts missions by priority when status is equal', async () => {
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      lowUpcomingMission,        // low, active
+      criticalActiveMission,     // critical, active
+    ]);
+    renderWithRouter(<Missions />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('missions-list')).toBeTruthy();
+    });
+
+    const rows = screen.getAllByTestId(/^mission-row-/);
+    // Critical should come before low when both are active
+    expect(rows[0].getAttribute('data-testid')).toBe(`mission-row-${criticalActiveMission.id}`);
+    expect(rows[1].getAttribute('data-testid')).toBe(`mission-row-${lowUpcomingMission.id}`);
+  });
+
+  // ---------------------------------------------------------------------------
+  // KR cards and parent hierarchy
+  // ---------------------------------------------------------------------------
+
+  const parentMission = {
+    ...mockMission,
+    id: 'parent-1',
+    objective: 'Company-level OKR',
+    priority: 'critical',
+  };
+
+  const childMissionWithKrs = {
+    ...mockMission,
+    id: 'child-1',
+    objective: 'Team OKR — ship V3',
+    parentMissionId: 'parent-1',
+    priority: 'high',
+    successCriteria: [],
+    keyResults: [
+      {
+        id: 'kr-1',
+        title: 'Reach $5k MRR',
+        metricType: 'currency',
+        baseline: 0,
+        target: 5000,
+        current: 1500,
+        unit: '$',
+        status: 'on_track',
+      },
+      {
+        id: 'kr-2',
+        title: 'Reduce onboarding time',
+        metricType: 'number',
+        baseline: 30,
+        target: 5,
+        current: 5,
+        unit: 'min',
+        status: 'achieved',
+      },
+    ],
+  };
+
+  it('renders a KR card for every key result and hides successCriteria preview', async () => {
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([childMissionWithKrs]);
+    renderWithRouter(<Missions />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('missions-list')).toBeTruthy();
+    });
+
+    expect(screen.getByTestId(`mission-krs-${childMissionWithKrs.id}`)).toBeTruthy();
+    expect(screen.getByTestId(`mission-kr-${childMissionWithKrs.id}-kr-1`)).toBeTruthy();
+    expect(screen.getByTestId(`mission-kr-${childMissionWithKrs.id}-kr-2`)).toBeTruthy();
+    expect(screen.getByText('Reach $5k MRR')).toBeTruthy();
+    expect(screen.getByText(/2 KRs/)).toBeTruthy();
+  });
+
+  it('renders parent chip when parentMissionId resolves to an existing mission', async () => {
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      parentMission,
+      childMissionWithKrs,
+    ]);
+    renderWithRouter(<Missions />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('missions-list')).toBeTruthy();
+    });
+
+    const chip = screen.getByTestId(`mission-parent-${childMissionWithKrs.id}`);
+    expect(chip).toBeTruthy();
+    expect(chip.textContent).toMatch(/Company-level OKR/);
+  });
+
+  it('renders a parent chip fallback when parent mission is not in the list', async () => {
+    const orphan = { ...childMissionWithKrs, id: 'orphan-1', parentMissionId: 'ghost-xyz' };
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([orphan]);
+    renderWithRouter(<Missions />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('missions-list')).toBeTruthy();
+    });
+
+    const chip = screen.getByTestId('mission-parent-orphan-1');
+    expect(chip).toBeTruthy();
+    // Falls back to an 8-char ID prefix when parent isn't loaded
+    expect(chip.textContent).toMatch(/ghost-xy/);
   });
 });

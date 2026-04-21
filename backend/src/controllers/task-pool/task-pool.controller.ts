@@ -16,8 +16,10 @@ import {
   type PoolFilters,
 } from '../../services/task-pool/task-pool.service.js';
 import { TaskProjectionService } from '../../services/v3/task-projection.service.js';
+import { ServiceContractGate } from '../../services/v3/service-contract-gate.service.js';
+import { StorageService } from '../../services/core/storage.service.js';
 import type { TokenUsage } from '../../types/v3/task-record.types.js';
-import type { RequestStatus } from '../../types/v2/request.types.js';
+import { WORK_ITEM_TYPES, isValidWorkItemType } from '../../types/v2/work-item.types.js';
 import { formatError } from '../../utils/format-error.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
@@ -62,6 +64,102 @@ function getProjection(): TaskProjectionService | null {
   }
 }
 
+/**
+ * Lazily instantiated gate. Stateless — one instance is reused for all requests.
+ */
+const contractGate = new ServiceContractGate();
+
+/**
+ * Check a request body for cross-team routing hints and apply the
+ * {@link ServiceContractGate} when present. Opt-in: if the body doesn't
+ * carry both `fromTeamId` and `toTeamId` the gate is skipped, preserving
+ * backward compatibility with existing delegate flows.
+ *
+ * Accepted body shapes (either works):
+ *   { fromTeamId, toTeamId, requestType }
+ *   { metadata: { fromTeamId, toTeamId, requestType } }
+ *
+ * `requestType` defaults to the WorkItem's `title`/`description` when the
+ * caller hasn't supplied a more specific phrase. An explicit boolean
+ * `forceCrossTeam: true` bypasses the gate (used for declared emergencies —
+ * still logged).
+ *
+ * @param body - Raw request body (already validated as an object)
+ * @returns `null` when the request should proceed; otherwise a gate
+ *          rejection decision ready to surface as 403.
+ */
+export async function maybeEnforceContract(
+  body: Record<string, unknown>,
+): Promise<
+  | null
+  | { status: number; payload: Record<string, unknown> }
+> {
+  const metaSrc = (body.metadata && typeof body.metadata === 'object'
+    ? (body.metadata as Record<string, unknown>)
+    : body) as Record<string, unknown>;
+
+  const fromTeamId =
+    typeof body.fromTeamId === 'string' ? body.fromTeamId : (metaSrc.fromTeamId as string | undefined);
+  const toTeamId =
+    typeof body.toTeamId === 'string' ? body.toTeamId : (metaSrc.toTeamId as string | undefined);
+
+  // No cross-team hints → same-process, same-team work or legacy callers.
+  if (!fromTeamId || !toTeamId) return null;
+  if (fromTeamId === toTeamId) return null;
+
+  // Emergency override — still logged by the logger below so we can audit.
+  if (body.forceCrossTeam === true || metaSrc.forceCrossTeam === true) {
+    logger.warn('ServiceContract gate bypassed via forceCrossTeam', {
+      fromTeamId,
+      toTeamId,
+      title: body.title,
+    });
+    return null;
+  }
+
+  const requestType =
+    (typeof body.requestType === 'string' && body.requestType) ||
+    (typeof metaSrc.requestType === 'string' && metaSrc.requestType) ||
+    (typeof body.title === 'string' && body.title) ||
+    (typeof body.description === 'string' && body.description) ||
+    '';
+
+  const storage = StorageService.getInstance();
+  const teams = await storage.getTeams();
+  const toTeam = teams.find((t) => t.id === toTeamId);
+
+  const decision = contractGate.check({ fromTeamId, toTeam, requestType });
+
+  if (decision.outcome === 'accept') {
+    logger.info('ServiceContract gate accepted', {
+      fromTeamId,
+      toTeamId,
+      matchedRule: decision.matchedRule,
+    });
+    return null;
+  }
+
+  logger.warn('ServiceContract gate rejected cross-team request', {
+    fromTeamId,
+    toTeamId,
+    requestType,
+    reason: decision.reason,
+    matchedRule: decision.matchedRule,
+  });
+  return {
+    status: 403,
+    payload: {
+      success: false,
+      error: decision.message,
+      gate: {
+        outcome: 'reject',
+        reason: decision.reason,
+        matchedRule: decision.matchedRule,
+      },
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/task-pool/add — Add a WorkItem to the pool
 // ---------------------------------------------------------------------------
@@ -91,6 +189,14 @@ export async function addItem(req: Request, res: Response): Promise<void> {
     const validationErrors = await validateWorkItem(workItem);
     if (validationErrors.length > 0) {
       res.status(400).json({ success: false, errors: validationErrors });
+      return;
+    }
+
+    // ServiceContract gate — only runs when the body carries cross-team
+    // routing hints. Rejects before the item is enqueued.
+    const rejection = await maybeEnforceContract(workItem as Record<string, unknown>);
+    if (rejection) {
+      res.status(rejection.status).json(rejection.payload);
       return;
     }
 
@@ -575,9 +681,6 @@ export async function revokeAndRelease(req: Request, res: Response): Promise<voi
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Valid WorkItemTypes accepted at the pool entry point. */
-const VALID_POOL_TYPES = new Set(['delegate', 'check', 'notify', 'review', 'project_task', 'cron_run', 'confirm', 'reconcile']);
-
 /** Max WorkItems allowed per Request in a single planning pass. */
 const MAX_WORK_ITEMS_PER_REQUEST = 20;
 
@@ -605,8 +708,8 @@ async function validateWorkItem(workItem: Record<string, unknown>): Promise<stri
   }
   if (!workItem.type || typeof workItem.type !== 'string') {
     errors.push('WorkItem.type is required');
-  } else if (!VALID_POOL_TYPES.has(workItem.type)) {
-    errors.push(`WorkItem.type "${workItem.type}" is invalid; must be one of: ${[...VALID_POOL_TYPES].join(', ')}`);
+  } else if (!isValidWorkItemType(workItem.type)) {
+    errors.push(`WorkItem.type "${workItem.type}" is invalid; must be one of: ${WORK_ITEM_TYPES.join(', ')}`);
   }
   if (!workItem.owner || typeof workItem.owner !== 'string') {
     errors.push('WorkItem.owner is required');
@@ -618,23 +721,35 @@ async function validateWorkItem(workItem: Record<string, unknown>): Promise<stri
     const svc = getService();
     const allItems = await svc.getAllItems();
 
-    // 2. Duplicate detection
-    const duplicate = allItems.find((wi) => wi.id === workItem.id);
+    // Single pass: collect both the duplicate (if any) and the count of
+    // active items sharing the same requestId. A previous implementation
+    // ran two separate O(n) scans — redundant on a hot insert path during
+    // decomposition bursts.
+    const requestId = workItem.requestId as string | undefined;
+    let duplicate: typeof allItems[number] | undefined;
+    let sameRequestActiveCount = 0;
+    for (const wi of allItems) {
+      if (!duplicate && wi.id === workItem.id) {
+        duplicate = wi;
+      }
+      if (
+        requestId &&
+        wi.requestId === requestId &&
+        wi.status !== 'done' &&
+        wi.status !== 'cancelled'
+      ) {
+        sameRequestActiveCount += 1;
+      }
+    }
+
     if (duplicate) {
       errors.push(`WorkItem.id "${workItem.id}" already exists in pool (status: ${duplicate.status})`);
     }
 
-    // 3. Per-request quantity cap
-    const requestId = workItem.requestId as string | undefined;
-    if (requestId) {
-      const requestItems = allItems.filter(
-        (wi) => wi.requestId === requestId && wi.status !== 'done' && wi.status !== 'cancelled',
+    if (requestId && sameRequestActiveCount >= MAX_WORK_ITEMS_PER_REQUEST) {
+      errors.push(
+        `Request ${requestId} already has ${sameRequestActiveCount} active WorkItems (max ${MAX_WORK_ITEMS_PER_REQUEST}). Possible infinite decomposition loop.`,
       );
-      if (requestItems.length >= MAX_WORK_ITEMS_PER_REQUEST) {
-        errors.push(
-          `Request ${requestId} already has ${requestItems.length} active WorkItems (max ${MAX_WORK_ITEMS_PER_REQUEST}). Possible infinite decomposition loop.`,
-        );
-      }
     }
   } catch (err) {
     logger.debug('WorkItem validation check failed (non-fatal)', { error: formatError(err) });
@@ -649,7 +764,6 @@ async function validateWorkItem(workItem: Record<string, unknown>): Promise<stri
  *
  * @param requestId - The parent Request ID
  * @param tokenUsage - Token usage to roll up
- * @param projection - TaskProjectionService instance
  */
 function rollUpTokensToRequest(
   requestId: string,

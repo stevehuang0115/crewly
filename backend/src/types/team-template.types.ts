@@ -188,6 +188,8 @@ export interface TemplateRole {
   expertId?: string;
   /** Domain SOP ID — loads domain-specific standard operating procedures for this role */
   domainSOP?: string;
+  /** Risk policy ID — loads config/risk-policies/{riskPolicy}.policy.md into the role's prompt */
+  riskPolicy?: string;
 }
 
 // =============================================================================

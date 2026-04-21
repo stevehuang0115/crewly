@@ -416,6 +416,7 @@ interface BrowserInstance {
   instanceId: string;
   instanceName: string;
   sessionId?: string;
+  lastSeenAt?: string;
 }
 
 const BrowserExtensionsSection: React.FC = () => {
@@ -507,10 +508,17 @@ const BrowserExtensionsSection: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Online
-              </span>
+              <div className="flex flex-col items-end gap-0.5">
+                <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  Online
+                </span>
+                {inst.lastSeenAt && (
+                  <span className="text-[10px] text-text-secondary-dark">
+                    Last seen: {formatRelativeTimeCompact(inst.lastSeenAt)}
+                  </span>
+                )}
+              </div>
             </div>
           ))}
         </div>

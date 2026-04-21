@@ -29,7 +29,6 @@ import {
   createTrigger,
   validateCreateTriggerInput,
   isValidTriggerConfig,
-  DEFAULT_MAX_IDLE_FIRES,
 } from '../../types/v2/index.js';
 import { getNextRunTime } from '../workflow/cron-task.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
@@ -102,6 +101,13 @@ export class TriggerEngine {
 
   /** EventBus reference for signal triggers. */
   private eventBus: EventBusService | null = null;
+  /**
+   * Bound signal-listener reference kept so `stop()` can detach it and we
+   * don't accumulate a new copy on every `start()`. Without this, repeated
+   * start/stop cycles (dev reloads, tests, escalation restarts) would
+   * register additional listeners that each fire independently.
+   */
+  private signalListener: ((eventData: { eventId: string; eventType: string; sessionName: string }) => void) | null = null;
 
   /** Callback for executing trigger actions. */
   private actionHandler: TriggerActionHandler | null = null;
@@ -203,10 +209,12 @@ export class TriggerEngine {
       this.timeCheckInterval = null;
     }
 
-    for (const [id, timer] of this.oneShotTimers) {
+    for (const [, timer] of this.oneShotTimers) {
       clearTimeout(timer);
     }
     this.oneShotTimers.clear();
+
+    this.teardownSignalListeners();
 
     this.running = false;
     this.logger.info('TriggerEngine stopped');
@@ -236,6 +244,28 @@ export class TriggerEngine {
     const errors = validateCreateTriggerInput(input);
     if (errors.length > 0) {
       throw new Error(`Invalid trigger input: ${errors.join(', ')}`);
+    }
+
+    // Idempotency by (createdBy, name): if a named trigger with the same
+    // owner+name already exists and is active, return it instead of
+    // registering a duplicate. This prevents the accumulation bug where a
+    // system cron (e.g. escalation-every-5-min) re-registered on every boot
+    // would fire N times per interval after N restarts.
+    if (input.name) {
+      for (const existing of this.triggers.values()) {
+        if (
+          existing.status === 'active' &&
+          existing.createdBy === input.createdBy &&
+          existing.name === input.name
+        ) {
+          this.logger.debug('Trigger already registered, reusing existing', {
+            id: existing.id,
+            createdBy: existing.createdBy,
+            name: existing.name,
+          });
+          return existing;
+        }
+      }
     }
 
     const trigger = createTrigger(input);
@@ -599,13 +629,31 @@ export class TriggerEngine {
       return;
     }
 
-    this.eventBus.on('event_published', (eventData: { eventId: string; eventType: string; sessionName: string }) => {
+    if (this.signalListener) {
+      // Already registered — starting without stopping first would double up.
+      return;
+    }
+
+    this.signalListener = (eventData) => {
       this.handleSignalEvent(eventData).catch((err) => {
         this.logger.error('Signal event handling failed', {
           error: err instanceof Error ? err.message : String(err),
         });
       });
-    });
+    };
+
+    this.eventBus.on('event_published', this.signalListener);
+  }
+
+  /**
+   * Detaches the signal listener registered in {@link setupSignalListeners}.
+   * Safe to call when no listener is attached.
+   */
+  private teardownSignalListeners(): void {
+    if (this.eventBus && this.signalListener) {
+      this.eventBus.off('event_published', this.signalListener);
+    }
+    this.signalListener = null;
   }
 
   /**
@@ -696,7 +744,21 @@ export class TriggerEngine {
   // ---------------------------------------------------------------------------
 
   /**
-   * Loads triggers from disk.
+   * Loads triggers from disk and collapses accumulated duplicates.
+   *
+   * Historical accumulation: pre-fix, every boot called `create()` for
+   * fixed system crons (e.g. EscalationService's 5-minute reconciler) with
+   * no idempotency key, so the store grew by one duplicate each restart.
+   * A single workspace was observed with 39 copies of the every-5-min
+   * runReconciler, firing in parallel every interval.
+   *
+   * Policy:
+   * - Two triggers are "duplicates" iff they share `createdBy`, `config`,
+   *   and `action` (structural-JSON equality) AND both are `active`.
+   * - Of each duplicate group, keep the one with the earliest `createdAt`
+   *   (or lowest id as tiebreaker) and cancel the rest. We cancel rather
+   *   than delete so any in-flight fire completes cleanly and the audit
+   *   trail survives.
    */
   private async loadTriggers(): Promise<void> {
     await ensureDir(this.triggersDir);
@@ -705,7 +767,62 @@ export class TriggerEngine {
     for (const trigger of data) {
       this.triggers.set(trigger.id, trigger);
     }
-    this.logger.info('Loaded triggers from disk', { count: this.triggers.size });
+
+    const cancelledDuplicates = this.dedupeDuplicateTriggers();
+    if (cancelledDuplicates > 0) {
+      await this.persistTriggers();
+    }
+
+    this.logger.info('Loaded triggers from disk', {
+      count: this.triggers.size,
+      cancelledDuplicates,
+    });
+  }
+
+  /**
+   * Detects active triggers that are structurally identical (same owner,
+   * same config, same action) and cancels all but the oldest in each group.
+   *
+   * Returns the number of triggers newly marked `cancelled`.
+   */
+  private dedupeDuplicateTriggers(): number {
+    const groups = new Map<string, Trigger[]>();
+    for (const trigger of this.triggers.values()) {
+      if (trigger.status !== 'active') continue;
+      const key = JSON.stringify({
+        createdBy: trigger.createdBy,
+        config: trigger.config,
+        action: trigger.action,
+      });
+      const group = groups.get(key);
+      if (group) {
+        group.push(trigger);
+      } else {
+        groups.set(key, [trigger]);
+      }
+    }
+
+    let cancelled = 0;
+    for (const group of groups.values()) {
+      if (group.length <= 1) continue;
+      // Keep the earliest-created; tiebreak on id for stability.
+      group.sort((a, b) => {
+        const byDate = a.createdAt.localeCompare(b.createdAt);
+        return byDate !== 0 ? byDate : a.id.localeCompare(b.id);
+      });
+      const [keeper, ...duplicates] = group;
+      for (const dup of duplicates) {
+        dup.status = 'cancelled';
+        cancelled += 1;
+      }
+      this.logger.warn('Collapsed duplicate triggers at startup', {
+        kept: keeper.id,
+        createdBy: keeper.createdBy,
+        cancelledIds: duplicates.map((d) => d.id),
+        count: duplicates.length,
+      });
+    }
+    return cancelled;
   }
 
   /**

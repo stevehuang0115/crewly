@@ -51,6 +51,37 @@ export const MISSION_TRANSITIONS: Record<MissionStatus, ReadonlySet<MissionStatu
 };
 
 // ---------------------------------------------------------------------------
+// Mission Priority
+// ---------------------------------------------------------------------------
+
+/**
+ * Priority levels for a Mission.
+ *
+ * Ordered from most to least important: critical > high > medium > low.
+ * Used for sorting and filtering; does not affect policy enforcement.
+ */
+export type MissionPriority = 'critical' | 'high' | 'medium' | 'low';
+
+/** All valid MissionPriority values (ordered most → least important). */
+export const MISSION_PRIORITIES: readonly MissionPriority[] = [
+  'critical',
+  'high',
+  'medium',
+  'low',
+] as const;
+
+/**
+ * Numeric rank for sorting missions by priority (lower rank = higher priority).
+ * Missing priority is treated as `low`.
+ */
+export const MISSION_PRIORITY_RANK: Record<MissionPriority, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
+// ---------------------------------------------------------------------------
 // Escalation Rules
 // ---------------------------------------------------------------------------
 
@@ -288,6 +319,14 @@ export interface Mission {
   lastReviewSummary?: string;
   /** OKR time period for period-based lifecycle management */
   period?: MissionPeriod;
+  /** Priority for sorting/filtering. Does not affect policy enforcement. */
+  priority?: MissionPriority;
+  /**
+   * Optional parent Mission ID, forming a hierarchy
+   * (e.g. company-level OKR → team-level OKR → individual OKR).
+   * Must not be self, and the resulting chain must not form a cycle.
+   */
+  parentMissionId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -385,6 +424,10 @@ export interface CreateMissionInput {
   policy?: Partial<MissionPolicy>;
   /** OKR time period for period-based lifecycle management */
   period?: MissionPeriod;
+  /** Priority for sorting/filtering. Does not affect policy enforcement. */
+  priority?: MissionPriority;
+  /** Optional parent Mission ID (validated to avoid self-ref and cycles). */
+  parentMissionId?: string;
 }
 
 /**
@@ -750,10 +793,61 @@ export function isPeriodFuture(period: MissionPeriod, now: Date = new Date()): b
   return now < new Date(period.startDate);
 }
 
+// ---------------------------------------------------------------------------
+// Mission Hierarchy Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates a proposed parent link between a child mission and a parent.
+ *
+ * Rejects self-reference and any cycle that would be introduced by walking
+ * up the existing parent chain from `parentId`. The child mission itself
+ * does not need to exist in `byId` (useful for create-time validation).
+ *
+ * @param childId - The mission that would acquire the parent
+ * @param parentId - The proposed parent mission ID
+ * @param byId - All existing missions indexed by ID
+ * @returns `null` if the link is valid, otherwise a human-readable reason
+ *
+ * @example
+ * ```ts
+ * const reason = validateParentLink('m1', 'm2', new Map([['m2', m2]]));
+ * if (reason) throw new Error(reason);
+ * ```
+ */
+export function validateParentLink(
+  childId: string,
+  parentId: string,
+  byId: ReadonlyMap<string, Pick<Mission, 'id' | 'parentMissionId'>>,
+): string | null {
+  if (childId === parentId) return 'A mission cannot be its own parent';
+  if (!byId.has(parentId)) return `Parent mission ${parentId} does not exist`;
+
+  // Walk up from the proposed parent; if we reach `childId`, we have a cycle.
+  const seen = new Set<string>();
+  let cursor: string | undefined = parentId;
+  while (cursor) {
+    if (seen.has(cursor)) return `Parent chain contains a cycle at ${cursor}`;
+    if (cursor === childId) return 'Proposed parent link would create a cycle';
+    seen.add(cursor);
+    cursor = byId.get(cursor)?.parentMissionId;
+  }
+  return null;
+}
+
+/**
+ * Sort missions by status (active first), then by priority rank, then by recency.
+ *
+ * @param missions - Missions to sort (not mutated)
+ * @returns New array sorted by status → priority → createdAt desc
+ */
 export function sortMissionsByPriority(missions: Mission[]): Mission[] {
   return [...missions].sort((a, b) => {
     if (a.status === 'active' && b.status !== 'active') return -1;
     if (a.status !== 'active' && b.status === 'active') return 1;
+    const rankA = MISSION_PRIORITY_RANK[a.priority ?? 'low'];
+    const rankB = MISSION_PRIORITY_RANK[b.priority ?? 'low'];
+    if (rankA !== rankB) return rankA - rankB;
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
 }

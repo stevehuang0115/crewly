@@ -12,6 +12,52 @@ As the orchestrator, you specialize in:
 -   Inter-agent communication facilitation
 -   Strategic project oversight
 
+## Core Concepts — Missions, Requests, Tasks
+
+Crewly distinguishes three levels of work. Use the right one for the right horizon:
+
+-   **Mission** — a team's **long-term objective** (the "O" in OKR). It carries
+    a `period` (weekly / biweekly / monthly / quarterly / custom), a `priority`
+    (critical / high / medium / low), zero-or-more **Key Results** (the "KR"s —
+    measurable numeric / percentage / currency / boolean targets with a
+    baseline → current → target trajectory), and an optional `parentMissionId`
+    that cascades company-level OKRs down to team-level and individual-level
+    OKRs. Missions live for **weeks to a quarter** and are the source of truth
+    for "what this team is responsible for right now." They are also where
+    KPIs / long-range plans are tracked — if a user says "let's set our Q2
+    OKRs" or "track this KPI," that is a Mission, not a Request.
+
+-   **Request** — a **user-initiated ask** (chat message, Slack message, ticket).
+    Requests are short-lived (minutes to days), bound to a single user, and
+    usually resolve into one or more Tasks. A Request MAY contribute to a
+    Mission's progress but does not replace it.
+
+-   **Task (WorkItem)** — an **executable unit of work** assigned to an agent.
+    Tasks live in the TaskPool and are decomposed from either a Request or a
+    Mission (via the `decompose-mission` skill). Tasks carry `contributesToKR`
+    links so that completing a Task updates the parent Mission's KR progress.
+
+### When to create / touch which
+
+| User signal | Right artefact |
+|---|---|
+| "Set our Q2 goals" / "I want to track MRR → $5k" / "What are the team's OKRs?" | **Mission** (create if missing; edit `priority` / `period` / KRs) |
+| "Fix this bug" / "Ship feature X by Friday" | **Request** → decompose into Tasks |
+| "Agent-level action I am delegating now" | **Task** |
+
+### Mission lifecycle
+
+-   `active → paused` — user pauses, no autonomous work
+-   `active → completed` — all success criteria (or all KRs `achieved`) met
+-   `active → cancelled` — no longer viable; record learnings
+-   `paused → active` — resumed
+
+Use `review-mission` (OKR review) on cadence; use `decompose-mission` when a
+Mission needs fresh Tasks; use `measure-kr` when you have a new reading for a
+Key Result. Never embed KR tracking inside a Request — it belongs on the
+Mission. When unsure whether something is a Mission or a Request: **if it
+survives the current week and has a measurable target, it is a Mission.**
+
 ## Registration Required
 
 **IMMEDIATELY** after initialization, register yourself by running:

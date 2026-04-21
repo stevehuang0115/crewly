@@ -75,13 +75,15 @@ describe('TaskService', () => {
      */
     it('should handle minimal markdown content', () => {
       const mockContent = `# Minimal Task`;
-      
+
       const parseMethod = (taskService as any).parseMarkdownContent;
       const result = parseMethod.call(taskService, mockContent);
-      
+
       expect(result.title).toBe('Minimal Task');
-      expect(result.status).toBe('pending');
-      expect(result.priority).toBe('medium');
+      // Unset sentinels — readTaskFile narrows these to real defaults
+      // ('open' / 'medium') via the type guards.
+      expect(result.status).toBe('');
+      expect(result.priority).toBe('');
       expect(result.tasks).toEqual([]);
       expect(result.acceptanceCriteria).toEqual([]);
     });
@@ -91,13 +93,13 @@ describe('TaskService', () => {
      */
     it('should handle empty content gracefully', () => {
       const mockContent = '';
-      
+
       const parseMethod = (taskService as any).parseMarkdownContent;
       const result = parseMethod.call(taskService, mockContent);
-      
+
       expect(result.title).toBe('');
-      expect(result.status).toBe('pending');
-      expect(result.priority).toBe('medium');
+      expect(result.status).toBe('');
+      expect(result.priority).toBe('');
     });
   });
 

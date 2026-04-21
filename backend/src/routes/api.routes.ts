@@ -32,6 +32,7 @@ import { createApprovalsRouter } from '../controllers/approvals/approvals.routes
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
 import { createWebsiteAnalysisRouter } from '../controllers/onboarding/website-analysis.routes.js';
+import { createOnboardingRouter } from '../controllers/onboarding/onboarding.routes.js';
 import { createDataRouter } from '../controllers/data/data.routes.js';
 import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
 import { createTaskPoolRouter } from '../controllers/task-pool/task-pool.routes.js';
@@ -134,6 +135,9 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Website Analysis routes for KR3 magic onboarding — SSE + sync analysis
   router.use('/website-analysis', createWebsiteAnalysisRouter());
 
+  // Onboarding session routes for KR3 Cloud Portal onboarding flow
+  router.use('/onboarding', createOnboardingRouter());
+
   // Data Architecture V2 — Unified Data Model, Schemas, Sinks
   router.use('/v2/data', createDataRouter());
 
@@ -205,9 +209,14 @@ export function createApiRoutes(apiController: ApiController): Router {
     } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });
 
-  // Relay devices stub (prevents 404 noise from dashboard relay health card)
+  // Relay devices stubs (prevents 404 noise from dashboard relay health card)
   router.get('/relay/devices', (_req, res) => {
     res.json({ success: true, data: { devices: [], client: { state: 'offline', sessionId: null } } });
+  });
+
+  // Legacy cloud-devices endpoint (used by RelayHealthCard and CloudTab)
+  router.get('/relay/cloud-devices', (_req, res) => {
+    res.json({ success: true, data: [] });
   });
 
   return router;

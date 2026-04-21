@@ -140,6 +140,35 @@ export interface Team {
   ownershipScope?: import('./team-template.types.js').OwnershipScope;
   /** Service contract — what the team accepts, avoids, and delivers */
   serviceContract?: import('./team-template.types.js').ServiceContract;
+  /**
+   * Declarative trigger specs that materialise the team's operating cadence
+   * (monthly kickoff, weekly review, daily EOD, ...). Reconciled with
+   * TriggerEngine on team load/update so SOP timing fires autonomously.
+   */
+  triggers?: TeamTriggerSpec[];
+}
+
+/**
+ * Declarative spec for a team-owned trigger. Persisted on the Team config and
+ * reconciled with the runtime TriggerEngine. The pair (teamId, name) forms
+ * the identity key — editing this spec edits the running trigger in place
+ * rather than duplicating it.
+ */
+export interface TeamTriggerSpec {
+  /** Stable identifier within the team (e.g. "youtube-monthly-kickoff"). */
+  name: string;
+  /** Human-readable label used for logs and optional WorkItem titles. */
+  description?: string;
+  /** Whether the reconciler should register/keep this trigger active. */
+  enabled?: boolean;
+  /** Time or signal config, mirrors TriggerEngine.create input. */
+  config: import('./v2/trigger.types.js').TriggerConfig;
+  /** What to do when the trigger fires. */
+  action: import('./v2/trigger.types.js').TriggerAction;
+  /** Optional fire cap — undefined = unlimited. */
+  maxFires?: number;
+  /** Optional idle-fire tolerance before auto-cancel. */
+  maxIdleFires?: number;
 }
 
 /**

@@ -143,6 +143,18 @@ export interface Trigger {
   maxIdleFires: number;
   /** Current count of consecutive idle fires */
   consecutiveIdleFires: number;
+  /**
+   * Owning team, if this trigger was provisioned from a Team's `triggers` spec.
+   * Used by {@link TeamTriggerReconciler} to look up and cancel team-scoped
+   * triggers without touching user/mission/system triggers.
+   */
+  teamId?: string;
+  /**
+   * Stable name set by the provisioner (e.g. `"youtube-monthly-kickoff"`).
+   * The reconciler uses (teamId, name) as the identity key so editing
+   * `Team.triggers[].cronExpression` replaces instead of duplicating.
+   */
+  name?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +171,10 @@ export interface CreateTriggerInput {
   createdBy: 'user' | 'orchestrator' | 'system' | 'mission';
   maxFires?: number;
   maxIdleFires?: number;
+  /** Optional owning team (team-scoped triggers) */
+  teamId?: string;
+  /** Optional stable name for reconciliation-by-identity */
+  name?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -324,5 +340,7 @@ export function createTrigger(input: CreateTriggerInput): Trigger {
     maxFires: input.maxFires,
     maxIdleFires: input.maxIdleFires ?? DEFAULT_MAX_IDLE_FIRES,
     consecutiveIdleFires: 0,
+    teamId: input.teamId,
+    name: input.name,
   };
 }

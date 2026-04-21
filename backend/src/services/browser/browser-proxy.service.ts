@@ -25,6 +25,8 @@ export interface BrowserInstanceInfo {
   instanceName: string;
   /** Relay session ID */
   sessionId: string;
+  /** ISO timestamp of last activity (heartbeat, command, or event) */
+  lastSeenAt: string;
 }
 
 /** Pending command waiting for a relay response. */
@@ -425,7 +427,16 @@ export class BrowserProxyService {
         break;
 
       case 'relay': {
-        // Response from a browser instance
+        // Response from a browser instance — update lastSeenAt
+        const senderSessionId = msg.senderSessionId as string | undefined;
+        if (senderSessionId) {
+          for (const inst of this.instances.values()) {
+            if (inst.sessionId === senderSessionId) {
+              inst.lastSeenAt = new Date().toISOString();
+              break;
+            }
+          }
+        }
         const payload = msg.payload as string;
         this.handleRelayPayload(payload);
         break;
@@ -457,13 +468,34 @@ export class BrowserProxyService {
     this.logger.warn('Relay error', { code, message });
 
     if (code === 'AUTH_FAILED') {
-      // Token is expired/invalid — try to get a fresh one immediately
-      // before the relay closes the connection (code 4003).
+      // Token is expired/invalid OR the user's plan claim is stale (for
+      // example, admin just upgraded the account from free → pro but the
+      // in-memory JWT still carries plan:"free"). Try fast path first
+      // (cached resolver), then fall back to an active refresh which
+      // exchanges the refresh token against /api/cloud/refresh so the
+      // new access + relay tokens carry the latest plan from MongoDB.
       const freshToken = this.tokenResolver?.();
       if (freshToken && freshToken !== this.authToken) {
         this.authToken = freshToken;
         this.logger.info('Fetched fresh token after AUTH_FAILED, will use on next reconnect');
+        return;
       }
+
+      // No cached fresh token — actively refresh. The tokenRefreshCallbacks
+      // in CloudClientService will push the new relay/access token back to
+      // this proxy via updateToken() once the refresh completes, so the next
+      // reconnect attempt uses the post-plan-change token.
+      this.logger.info('No cached fresh token; triggering active refresh after AUTH_FAILED');
+      import('../cloud/cloud-client.service.js')
+        .then(({ CloudClientService }) => CloudClientService.getInstance().tryRefreshToken())
+        .then((ok) => {
+          this.logger.info('Active refresh after AUTH_FAILED complete', { refreshed: ok });
+        })
+        .catch((err) => {
+          this.logger.warn('Active refresh after AUTH_FAILED threw', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
     } else if (code === 'BROWSER_NOT_FOUND' || code === 'BROWSER_UNAVAILABLE') {
       this.logger.warn('Browser not reachable via relay', { code });
     }
@@ -475,9 +507,13 @@ export class BrowserProxyService {
    * @param instances - Array of browser instance info from relay
    */
   private handleBrowserList(instances: BrowserInstanceInfo[]): void {
+    const now = new Date().toISOString();
     this.instances.clear();
     for (const inst of instances) {
-      this.instances.set(inst.instanceId, inst);
+      this.instances.set(inst.instanceId, {
+        ...inst,
+        lastSeenAt: inst.lastSeenAt || now,
+      });
     }
     this.logger.info('Browser instances updated', {
       count: this.instances.size,
@@ -495,12 +531,15 @@ export class BrowserProxyService {
     const instanceId = msg.instanceId as string;
     const instanceName = msg.instanceName as string;
 
+    const now = new Date().toISOString();
+
     switch (event) {
       case 'connected':
         this.instances.set(instanceId, {
           instanceId,
           instanceName,
           sessionId: '', // Will be populated by next list_browsers
+          lastSeenAt: now,
         });
         this.logger.info('Browser instance connected', { instanceId, instanceName });
         // Refresh full list to get sessionId
@@ -513,10 +552,11 @@ export class BrowserProxyService {
         break;
 
       case 'updated': {
-        // Update name
+        // Update name and lastSeenAt
         const existing = this.instances.get(instanceId);
         if (existing) {
           existing.instanceName = instanceName;
+          existing.lastSeenAt = now;
         }
         break;
       }

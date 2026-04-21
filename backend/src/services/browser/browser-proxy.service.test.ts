@@ -247,6 +247,69 @@ describe('BrowserProxyService', () => {
       expect(result.id).toBe(cmdId);
     });
 
+    it('updates lastSeenAt on the matching instance when a relay carries senderSessionId', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // Seed two instances so we can assert only the sender's row is touched.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            { instanceId: 'id-1', instanceName: 'Chrome', sessionId: 'bs-1' },
+            { instanceId: 'id-2', instanceName: 'Other', sessionId: 'bs-2' },
+          ],
+        }),
+      );
+
+      const before = proxy.getInstances();
+      const beforeBs1 = before.find((i) => i.sessionId === 'bs-1')!.lastSeenAt;
+      const beforeBs2 = before.find((i) => i.sessionId === 'bs-2')!.lastSeenAt;
+
+      // Advance fake timers so Date.now() produces a distinguishable ISO stamp.
+      jest.advanceTimersByTime(100);
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'relay',
+          senderSessionId: 'bs-1',
+          payload: JSON.stringify({ id: 'ignored', success: true }),
+        }),
+      );
+
+      const after = proxy.getInstances();
+      expect(after.find((i) => i.sessionId === 'bs-1')!.lastSeenAt).not.toBe(beforeBs1);
+      expect(after.find((i) => i.sessionId === 'bs-2')!.lastSeenAt).toBe(beforeBs2);
+    });
+
+    it('ignores relay messages without senderSessionId (no lastSeenAt update)', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [{ instanceId: 'id-1', instanceName: 'Chrome', sessionId: 'bs-1' }],
+        }),
+      );
+
+      const before = proxy.getInstances()[0].lastSeenAt;
+      jest.advanceTimersByTime(100);
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'relay',
+          payload: JSON.stringify({ id: 'x', success: true }),
+        }),
+      );
+
+      expect(proxy.getInstances()[0].lastSeenAt).toBe(before);
+    });
+
     it('should handle error messages gracefully', () => {
       connectAndRegister();
       // Should not throw
