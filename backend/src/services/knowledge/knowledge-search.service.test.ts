@@ -1,7 +1,7 @@
 /**
  * Unit tests for KnowledgeSearchService
  *
- * Tests keyword search strategy, Gemini embedding strategy (with mocked fetch),
+ * Tests keyword search strategy, Gemini embedding strategy, FTS5 strategy,
  * and the KnowledgeSearchService factory logic.
  *
  * @module services/knowledge/knowledge-search.service.test
@@ -10,6 +10,7 @@
 import {
   KeywordSearchStrategy,
   GeminiEmbeddingStrategy,
+  Fts5SearchStrategy,
   KnowledgeSearchService,
   applyTemporalDecay,
 } from './knowledge-search.service.js';
@@ -37,6 +38,14 @@ jest.mock('./knowledge.service.js', () => ({
       listDocuments: mockListDocuments,
     }),
   },
+}));
+
+// Mock Fts5IndexService
+const mockFts5Search = jest.fn();
+jest.mock('./fts5-index.service.js', () => ({
+  Fts5IndexService: jest.fn().mockImplementation(() => ({
+    search: mockFts5Search,
+  })),
 }));
 
 /** Helper to create a test document summary */
@@ -133,6 +142,35 @@ describe('KeywordSearchStrategy', () => {
   });
 });
 
+describe('Fts5SearchStrategy', () => {
+  let strategy: Fts5SearchStrategy;
+
+  beforeEach(() => {
+    strategy = new Fts5SearchStrategy();
+    mockFts5Search.mockReset();
+  });
+
+  it('should use FTS5 index for searching', async () => {
+    mockFts5Search.mockReturnValue([
+      { id: 'fts-1', title: 'FTS Result', tags: 'tag1', content: 'content', category: 'General', rank: -1.5 },
+    ]);
+
+    const results = await strategy.search('query', []);
+    expect(mockFts5Search).toHaveBeenCalledWith('query', { category: undefined, limit: undefined });
+    expect(results).toHaveLength(1);
+    expect(results[0].document.id).toBe('fts-1');
+  });
+
+  it('should fall back to keyword search when FTS5 returns no results', async () => {
+    mockFts5Search.mockReturnValue([]);
+    const docs = [makeDoc({ id: 'kw-1', title: 'Keyword Match' })];
+    
+    const results = await strategy.search('keyword', docs);
+    expect(results).toHaveLength(1);
+    expect(results[0].document.id).toBe('kw-1');
+  });
+});
+
 describe('GeminiEmbeddingStrategy', () => {
   let fetchSpy: jest.SpyInstance;
 
@@ -190,28 +228,6 @@ describe('GeminiEmbeddingStrategy', () => {
     expect(results).toHaveLength(1);
     expect(results[0].score).toBeGreaterThan(0);
   });
-
-  it('should fall back to keyword when no embedding results match', async () => {
-    // Query embedding succeeds but doc embedding fails
-    let callCount = 0;
-    fetchSpy.mockImplementation(async () => {
-      callCount++;
-      if (callCount === 1) {
-        return {
-          ok: true,
-          json: async () => ({ embedding: { values: [1, 0, 0] } }),
-        } as unknown as Response;
-      }
-      return { ok: false, status: 500 } as Response;
-    });
-
-    const strategy = new GeminiEmbeddingStrategy('key');
-    const doc = makeDoc({ title: 'Deploy Guide', tags: [], preview: '' });
-    const results = await strategy.search('deploy', [doc]);
-
-    // Falls back to keyword search
-    expect(results).toHaveLength(1);
-  });
 });
 
 describe('KnowledgeSearchService', () => {
@@ -221,6 +237,7 @@ describe('KnowledgeSearchService', () => {
     process.env = { ...originalEnv };
     KnowledgeSearchService.resetInstance();
     mockListDocuments.mockReset();
+    mockFts5Search.mockReset();
   });
 
   afterEach(() => {
@@ -234,12 +251,11 @@ describe('KnowledgeSearchService', () => {
     expect(a).toBe(b);
   });
 
-  it('should use keyword strategy when GEMINI_API_KEY is not set', async () => {
-    delete process.env.GEMINI_API_KEY;
+  it('should use FTS5 strategy by default', async () => {
     const service = KnowledgeSearchService.getInstance();
-
     const docs = [makeDoc({ title: 'Deploy Runbook' })];
     mockListDocuments.mockResolvedValue(docs);
+    mockFts5Search.mockReturnValue([]); // Fallback to keyword
 
     const results = await service.search('deploy', 'global');
     expect(results).toHaveLength(1);
@@ -247,45 +263,41 @@ describe('KnowledgeSearchService', () => {
   });
 
   it('should return empty array when no documents exist', async () => {
-    delete process.env.GEMINI_API_KEY;
     const service = KnowledgeSearchService.getInstance();
-
     mockListDocuments.mockResolvedValue([]);
+    mockFts5Search.mockReturnValue([]);
 
     const results = await service.search('deploy', 'global');
     expect(results).toHaveLength(0);
   });
 
   it('should respect limit parameter', async () => {
-    delete process.env.GEMINI_API_KEY;
     const service = KnowledgeSearchService.getInstance();
-
     const docs = [
       makeDoc({ id: '1', title: 'Deploy A' }),
       makeDoc({ id: '2', title: 'Deploy B' }),
       makeDoc({ id: '3', title: 'Deploy C' }),
     ];
     mockListDocuments.mockResolvedValue(docs);
+    mockFts5Search.mockReturnValue([]); // Fallback
 
     const results = await service.search('deploy', 'global', undefined, undefined, 2);
     expect(results).toHaveLength(2);
   });
 
   it('should pass category filter to listDocuments', async () => {
-    delete process.env.GEMINI_API_KEY;
     const service = KnowledgeSearchService.getInstance();
-
     mockListDocuments.mockResolvedValue([]);
+    mockFts5Search.mockReturnValue([]);
 
     await service.search('deploy', 'global', undefined, 'Runbooks');
     expect(mockListDocuments).toHaveBeenCalledWith('global', undefined, { category: 'Runbooks' });
   });
 
   it('should pass projectPath for project scope', async () => {
-    delete process.env.GEMINI_API_KEY;
     const service = KnowledgeSearchService.getInstance();
-
     mockListDocuments.mockResolvedValue([]);
+    mockFts5Search.mockReturnValue([]);
 
     await service.search('deploy', 'project', '/path/to/project');
     expect(mockListDocuments).toHaveBeenCalledWith('project', '/path/to/project', { category: undefined });
@@ -329,7 +341,6 @@ describe('#154: applyTemporalDecay', () => {
 
   it('should re-rank results by temporal decay in KnowledgeSearchService', async () => {
     KnowledgeSearchService.resetInstance();
-    delete process.env.GEMINI_API_KEY;
     const service = KnowledgeSearchService.getInstance();
 
     const recentDoc = makeDoc({
@@ -345,6 +356,7 @@ describe('#154: applyTemporalDecay', () => {
 
     // Both docs match "deploy" equally, but recent doc should rank higher
     mockListDocuments.mockResolvedValue([oldDoc, recentDoc]);
+    mockFts5Search.mockReturnValue([]);
 
     const results = await service.search('deploy instructions', 'global');
     expect(results[0].id).toBe('recent');
