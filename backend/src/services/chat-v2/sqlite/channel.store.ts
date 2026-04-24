@@ -1,0 +1,193 @@
+/**
+ * ChannelStore — CRUD for `chat_channels`.
+ *
+ * All authorization is handled at a higher layer (`ChatV2Service`);
+ * this store only enforces DB-level invariants (FKs, unique indexes).
+ *
+ * @module services/chat-v2/sqlite/channel.store
+ */
+
+import { randomUUID } from 'crypto';
+import { CHAT_ERROR_CODES, ChatError, type ChatChannelRow } from '../types.js';
+import type { ChatDatabase } from './chat-db.js';
+
+// ---------------------------------------------------------------------------
+// Input shapes
+// ---------------------------------------------------------------------------
+
+/** Payload for `ChannelStore.create`. */
+export interface ChannelCreateInput {
+  agentSession: string;
+  ownerUserId: string;
+  name: string;
+  purpose?: string | null;
+  /** Override the clock (tests). */
+  nowMs?: number;
+  /** Override the generated id (tests / deterministic callers). */
+  id?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
+
+/** SQLite-backed store for chat channels. */
+export class ChannelStore {
+  constructor(private readonly db: ChatDatabase) {}
+
+  /**
+   * Create a new channel. Enforces the 1:1 agent-binding by catching
+   * the SQLite unique-constraint error and surfacing it as a
+   * `ChatError(agent_already_bound, 409)`.
+   *
+   * @param input - The channel creation payload
+   * @returns The inserted channel row
+   * @throws {ChatError} `agent_already_bound` (409) if the agent is already bound
+   *   to another active channel.
+   */
+  create(input: ChannelCreateInput): ChatChannelRow {
+    const id = input.id ?? randomUUID();
+    const createdAt = input.nowMs ?? Date.now();
+    const purpose = input.purpose ?? null;
+
+    const stmt = this.db.prepare(
+      `INSERT INTO chat_channels (id, agent_session, owner_user_id, name, purpose, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+
+    try {
+      stmt.run(id, input.agentSession, input.ownerUserId, input.name, purpose, createdAt);
+    } catch (err) {
+      // Unique constraint means either the partial index on agent_session fired
+      // (the common case — 1:1 binding violated) or we raced an id collision.
+      // In either case it's safer to check `findActiveByAgentSession` before
+      // surfacing a typed error.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('UNIQUE')) {
+        const existing = this.findActiveByAgentSession(input.agentSession);
+        if (existing) {
+          throw new ChatError(
+            CHAT_ERROR_CODES.AGENT_ALREADY_BOUND,
+            409,
+            `Agent "${input.agentSession}" is already bound to another active channel.`,
+            { existingChannelId: existing.id },
+          );
+        }
+      }
+      throw err;
+    }
+
+    const created = this.getById(id);
+    // Row must exist — insert just succeeded. This branch is for type-narrowing.
+    if (!created) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.INTERNAL,
+        500,
+        'Channel disappeared immediately after insert',
+      );
+    }
+    return created;
+  }
+
+  /**
+   * Look up a channel by its id (active or archived).
+   *
+   * @param id - The channel id
+   * @returns The row, or null if not found
+   */
+  getById(id: string): ChatChannelRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, agent_session, owner_user_id, name, purpose,
+                created_at, archived_at, last_message_at
+         FROM chat_channels
+         WHERE id = ?`,
+      )
+      .get(id) as ChatChannelRow | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Find the single active channel bound to an agent session, if any.
+   * Uses the partial unique index, so at most one row is returned.
+   *
+   * @param agentSession - The agent session id
+   * @returns The active channel row, or null
+   */
+  findActiveByAgentSession(agentSession: string): ChatChannelRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, agent_session, owner_user_id, name, purpose,
+                created_at, archived_at, last_message_at
+         FROM chat_channels
+         WHERE agent_session = ? AND archived_at IS NULL
+         LIMIT 1`,
+      )
+      .get(agentSession) as ChatChannelRow | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * List channels owned by a user.
+   *
+   * @param ownerUserId - The user_id whose channels to return
+   * @param options - Listing options
+   * @param options.includeArchived - When false (default), filter out archived rows
+   * @param options.limit - Max rows to return (capped at 100)
+   * @returns Channel rows sorted by `last_message_at DESC, created_at DESC`
+   */
+  listByOwner(
+    ownerUserId: string,
+    options?: { includeArchived?: boolean; limit?: number },
+  ): ChatChannelRow[] {
+    const includeArchived = options?.includeArchived ?? false;
+    const limit = Math.min(options?.limit ?? 50, 100);
+
+    const sql = `
+      SELECT id, agent_session, owner_user_id, name, purpose,
+             created_at, archived_at, last_message_at
+      FROM chat_channels
+      WHERE owner_user_id = ?
+        ${includeArchived ? '' : 'AND archived_at IS NULL'}
+      ORDER BY COALESCE(last_message_at, created_at) DESC
+      LIMIT ?
+    `;
+    return this.db.prepare(sql).all(ownerUserId, limit) as ChatChannelRow[];
+  }
+
+  /**
+   * Mark a channel as archived (soft-delete). No-op if already archived.
+   *
+   * @param id - The channel id
+   * @param nowMs - Optional override for the archive timestamp
+   * @returns True if a row was updated (was active), false otherwise
+   */
+  archive(id: string, nowMs?: number): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE chat_channels
+         SET archived_at = ?
+         WHERE id = ? AND archived_at IS NULL`,
+      )
+      .run(nowMs ?? Date.now(), id);
+    return result.changes > 0;
+  }
+
+  /**
+   * Bump `last_message_at` to a provided timestamp if it is greater than
+   * the current value. Safe to call many times.
+   *
+   * @param id - The channel id
+   * @param timestampMs - The timestamp to record
+   */
+  touchLastMessageAt(id: string, timestampMs: number): void {
+    this.db
+      .prepare(
+        `UPDATE chat_channels
+         SET last_message_at = ?
+         WHERE id = ?
+           AND (last_message_at IS NULL OR last_message_at < ?)`,
+      )
+      .run(timestampMs, id, timestampMs);
+  }
+}

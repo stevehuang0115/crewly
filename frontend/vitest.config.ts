@@ -8,6 +8,12 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Shared chat-ui package (Week 2). Test runner uses its own config, so
+      // the alias must be mirrored from vite.config.ts.
+      '@crewly/chat-ui': path.resolve(
+        __dirname,
+        '../packages/chat-ui/src/index.ts'
+      ),
     },
   },
   test: {

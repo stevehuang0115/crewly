@@ -11,6 +11,7 @@ import { Triggers } from './pages/Triggers';
 import { Factory } from './pages/Factory';
 import { Settings } from './pages/Settings';
 import { Chat } from './pages/Chat';
+import { Agents } from './pages/Agents';
 import Marketplace from './pages/Marketplace';
 import MarketplaceDetail from './pages/MarketplaceDetail';
 import { Knowledge } from './pages/Knowledge';
@@ -82,6 +83,14 @@ function App() {
                   </ChatProvider>
                 }
               />
+
+              {/*
+                Agents: Phase 1 user↔agent direct chat (Sam tech spec
+                2026-04-24). Mounts the shared `@crewly/chat-ui` package and
+                talks to `/api/chat/channels/*`. Distinct from the
+                orchestrator-pipe `/chat` above — see spec §1.
+              */}
+              <Route path="agents" element={<Agents />} />
             </Route>
           </Routes>
         </Router>

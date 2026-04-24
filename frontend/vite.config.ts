@@ -7,6 +7,12 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Shared chat-ui package (Week 2). Resolve to source so HMR works and
+      // we don't need a separate build step during dev.
+      '@crewly/chat-ui': path.resolve(
+        __dirname,
+        '../packages/chat-ui/src/index.ts'
+      ),
     },
   },
   server: {

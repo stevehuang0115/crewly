@@ -3,6 +3,9 @@ export default {
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
+    // Shared chat-ui package (Max, Week 2) — utility classes live in source
+    // files, not compiled CSS, so Tailwind must scan them to emit the classes.
+    "../packages/chat-ui/src/**/*.{ts,tsx}",
   ],
   darkMode: "class",
   theme: {
