@@ -344,15 +344,19 @@ export class CrewlyMcpServer {
   ): Promise<ToolResult> {
     const name = args.name as string;
     const description = args.description as string | undefined;
-    const memberSpecs = args.members as Array<{
+    const rawMembers = args.members;
+
+    if (!name) {
+      return this.errorResult('Team name is required');
+    }
+    if (!Array.isArray(rawMembers) || rawMembers.length === 0) {
+      return this.errorResult('At least one member is required (members must be a non-empty array)');
+    }
+    const memberSpecs = rawMembers as Array<{
       name: string;
       role: string;
       runtimeType?: string;
     }>;
-
-    if (!name || !memberSpecs || memberSpecs.length === 0) {
-      return this.errorResult('Team name and at least one member are required');
-    }
 
     const teamId = uuidv4();
     const now = new Date().toISOString();
@@ -431,8 +435,9 @@ export class CrewlyMcpServer {
       );
     }
 
-    // Add task to member's ticket list
-    const ticketId = `mcp-task-${Date.now()}`;
+    // Add task to member's ticket list. Include a uuid tail so two
+    // assignments in the same millisecond can't collide.
+    const ticketId = `mcp-task-${Date.now()}-${uuidv4().slice(0, 8)}`;
     if (!member.currentTickets) {
       member.currentTickets = [];
     }

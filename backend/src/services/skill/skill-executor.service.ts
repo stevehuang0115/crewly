@@ -550,18 +550,15 @@ export class SkillExecutorService {
       const slotEnv = this.credentialEnvPrefix(req.slot);
 
       if (payload.type === 'google-oauth') {
-        // Refresh if near expiry
+        // Refresh if near expiry. getAccessToken throws
+        // CredentialRevokedError (with remediation) when the grant is dead;
+        // we let it propagate so the caller surfaces the message verbatim.
         let finalPayload: GoogleOAuthPayload = payload;
         if (entry.helper === 'gemini-cli-workspace') {
-          try {
-            finalPayload = await this.getGeminiCliHelper().getAccessToken(
-              entry,
-              payload,
-            );
-          } catch (err) {
-            // Bubble up — includes CredentialRevokedError with remediation
-            throw err;
-          }
+          finalPayload = await this.getGeminiCliHelper().getAccessToken(
+            entry,
+            payload,
+          );
         }
 
         env[`${slotEnv}_ACCESS_TOKEN`] = finalPayload.accessToken;
