@@ -41,6 +41,10 @@ source "${SCRIPT_DIR}/../../_common/lib.sh"
 
 VALID_ACTIONS="list, read, search, send, add-label, remove-label, list-labels, mark-as-read, mark-as-unread"
 
+# Base URL for the Gmail v1 "users/me" endpoint. Overridable via env so tests
+# can point the skill at a local mock HTTP server (see execute.live.test.sh).
+GMAIL_API_BASE="${GMAIL_API_BASE:-https://gmail.googleapis.com/gmail/v1/users/me}"
+
 # --- Helpers ----------------------------------------------------------------
 
 # emit_success: print success JSON on stdout (consumed by skill executor / agent).
@@ -57,33 +61,43 @@ emit_error() {
   exit "$code"
 }
 
-# gmail_get PATH_AND_QUERY  -> echoes JSON body, sets _LAST_HTTP
-# Uses the bound CREWLY_CRED_GMAIL_ACCESS_TOKEN. Does NOT print the token.
-gmail_get() {
-  local path="$1"
-  local response http body
-  response=$(curl -s -w "\n%{http_code}" \
-    -H "Authorization: Bearer ${CREWLY_CRED_GMAIL_ACCESS_TOKEN}" \
-    "https://gmail.googleapis.com/gmail/v1/users/me${path}")
-  http="${response##*$'\n'}"
-  body="${response%$'\n'*}"
-  _LAST_HTTP="$http"
-  printf '%s' "$body"
-}
+# gmail_call OUT_BODY_VAR METHOD PATH [JSON_BODY]
+#
+# Make a Gmail API request against ${GMAIL_API_BASE}${PATH}, write the response
+# body into the variable named by OUT_BODY_VAR, and set the global _LAST_HTTP
+# to the response's HTTP status code.
+#
+# IMPORTANT: this function MUST be invoked directly (e.g. `gmail_call RESP GET "/labels"`)
+# and MUST NOT be wrapped in command substitution (e.g. `RESP=$(gmail_call ... )`).
+# The function relies on parent-shell scope to write _LAST_HTTP and the named
+# output variable; command substitution forks a subshell, which would silently
+# discard those writes the moment the substitution returns. The previous
+# implementation (helpers `gmail_get` / `gmail_post` invoked via `$()`) hit
+# exactly this pitfall and silently mis-classified every successful 200 as a
+# failure with HTTP "?" because _LAST_HTTP never propagated out of the subshell.
+#
+# Authorization header is built from CREWLY_CRED_GMAIL_ACCESS_TOKEN. The token
+# is never echoed to stdout/stderr.
+gmail_call() {
+  local _out_var="$1" method="$2" path="$3" body="${4:-}"
+  local raw
 
-# gmail_post PATH JSON_BODY  -> echoes JSON body, sets _LAST_HTTP
-gmail_post() {
-  local path="$1" body="$2"
-  local response http resp_body
-  response=$(curl -s -w "\n%{http_code}" -X POST \
-    -H "Authorization: Bearer ${CREWLY_CRED_GMAIL_ACCESS_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "$body" \
-    "https://gmail.googleapis.com/gmail/v1/users/me${path}")
-  http="${response##*$'\n'}"
-  resp_body="${response%$'\n'*}"
-  _LAST_HTTP="$http"
-  printf '%s' "$resp_body"
+  if [ "$method" = "GET" ]; then
+    raw=$(curl -s -w "\n%{http_code}" \
+      -H "Authorization: Bearer ${CREWLY_CRED_GMAIL_ACCESS_TOKEN}" \
+      "${GMAIL_API_BASE}${path}")
+  else
+    raw=$(curl -s -w "\n%{http_code}" -X "$method" \
+      -H "Authorization: Bearer ${CREWLY_CRED_GMAIL_ACCESS_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "$body" \
+      "${GMAIL_API_BASE}${path}")
+  fi
+
+  # Both writes happen in the caller's shell scope because this function is
+  # called directly, not via $().
+  _LAST_HTTP="${raw##*$'\n'}"
+  printf -v "$_out_var" '%s' "${raw%$'\n'*}"
 }
 
 # api_error_message BODY -> best-effort plain string of the Gmail error
@@ -139,7 +153,7 @@ modify_message() {
     '{addLabelIds:$add, removeLabelIds:$remove}')
 
   local resp
-  resp=$(gmail_post "/messages/${id}/modify" "$body")
+  gmail_call resp POST "/messages/${id}/modify" "$body"
   if [ "${_LAST_HTTP:-}" != "200" ]; then
     local msg
     msg=$(api_error_message "$resp")
@@ -196,7 +210,7 @@ case "$ACTION" in
 
     Q_ENC=$(printf '%s' "$Q" | python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read()))")
 
-    LIST_BODY=$(gmail_get "/messages?q=${Q_ENC}&maxResults=${MAX}")
+    gmail_call LIST_BODY GET "/messages?q=${Q_ENC}&maxResults=${MAX}"
     if [ "${_LAST_HTTP:-}" != "200" ]; then
       MSG=$(api_error_message "$LIST_BODY")
       emit_error 2 \
@@ -216,7 +230,7 @@ for m in d.get('messages', []):
       ENTRIES=()
       while IFS=$'\t' read -r id tid; do
         [ -z "$id" ] && continue
-        MSG=$(gmail_get "/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date")
+        gmail_call MSG GET "/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date"
         if [ "${_LAST_HTTP:-}" != "200" ]; then
           continue
         fi
@@ -265,7 +279,7 @@ print(json.dumps(out))
         "Missing required parameter: id"
     fi
 
-    BODY=$(gmail_get "/messages/${ID}?format=full")
+    gmail_call BODY GET "/messages/${ID}?format=full"
     if [ "${_LAST_HTTP:-}" != "200" ]; then
       MSG=$(api_error_message "$BODY")
       emit_error 2 \
@@ -394,7 +408,7 @@ print(raw)
     fi
 
     SEND_BODY=$(jq -nc --arg raw "$RAW" '{raw:$raw}')
-    SEND_RESP=$(gmail_post "/messages/send" "$SEND_BODY")
+    gmail_call SEND_RESP POST "/messages/send" "$SEND_BODY"
     if [ "${_LAST_HTTP:-}" != "200" ]; then
       MSG=$(api_error_message "$SEND_RESP")
       emit_error 2 \
@@ -407,7 +421,7 @@ print(raw)
     ;;
 
   list-labels)
-    RESP=$(gmail_get "/labels")
+    gmail_call RESP GET "/labels"
     if [ "${_LAST_HTTP:-}" != "200" ]; then
       MSG=$(api_error_message "$RESP")
       emit_error 2 \
