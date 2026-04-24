@@ -1,6 +1,6 @@
 ---
 name: Gmail
-description: "List, read, search, and send Gmail messages for a Google account. Requires a google-oauth credential bound to the 'gmail' slot."
+description: "List, read, search, and send Gmail messages for a Google account. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope."
 version: 1.0.0
 category: communication
 skillType: claude-skill
@@ -34,12 +34,11 @@ credentials:
     provider: google
     required: true
     requiredScopes:
-      - https://www.googleapis.com/auth/gmail.readonly
-      - https://www.googleapis.com/auth/gmail.send
-    description: "Google account for Gmail operations (list, read, search, send)."
+      - https://www.googleapis.com/auth/gmail.modify
+    description: "Google account for Gmail operations. gmail.modify is a functional superset that covers read, send, and modify — one scope unlocks every action."
 notices:
   - type: requirement
-    message: "Requires a Google account added in Settings → Credentials with both gmail.readonly and gmail.send scopes."
+    message: "Requires a Google account added in Settings → Credentials with the gmail.modify scope (the default Crewly OAuth flow grants it automatically)."
 ---
 
 # Gmail (multi-action)
@@ -134,9 +133,17 @@ Send a new email via the bound Google account.
 {"success": true, "id": "18fa...", "threadId": "..."}
 ```
 
+## Why a single `gmail.modify` scope?
+
+`gmail.modify` is a Google-side functional superset that covers `gmail.readonly`,
+`gmail.send`, and label/state mutations. The Crewly skill executor performs
+**string-exact** scope matching (no superset awareness), so declaring the
+single most-capable scope keeps the requirement check simple and lets all
+present and future actions share one OAuth grant.
+
 ## Required Env (injected by the skill executor)
 
-- `CREWLY_CRED_GMAIL_ACCESS_TOKEN` — valid OAuth access token with `gmail.readonly` and `gmail.send`
+- `CREWLY_CRED_GMAIL_ACCESS_TOKEN` — valid OAuth access token with `gmail.modify`
 - `CREWLY_CRED_GMAIL_EMAIL` — account email (used as `From:` in `send`)
 
 The Crewly skill executor refreshes the access token before spawning this
