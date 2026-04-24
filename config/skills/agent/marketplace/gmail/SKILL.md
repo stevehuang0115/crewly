@@ -1,7 +1,7 @@
 ---
 name: Gmail
-description: "List, read, search, and send Gmail messages for a Google account. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope."
-version: 1.0.0
+description: "Multi-action Gmail skill for agents — list/read/search/send messages, manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope."
+version: 1.1.0
 category: communication
 skillType: claude-skill
 assignableRoles:
@@ -15,6 +15,11 @@ triggers:
   - read email
   - check inbox
   - find email
+  - mark email as read
+  - mark email as unread
+  - add label to email
+  - remove label from email
+  - list gmail labels
 tags:
   - gmail
   - email
@@ -22,6 +27,8 @@ tags:
   - google
   - send
   - search
+  - labels
+  - modify
 execution:
   type: script
   script:
@@ -35,22 +42,30 @@ credentials:
     required: true
     requiredScopes:
       - https://www.googleapis.com/auth/gmail.modify
-    description: "Google account for Gmail operations. gmail.modify is a functional superset that covers read, send, and modify — one scope unlocks every action."
+    description: "Google account for Gmail operations. gmail.modify is a functional superset that covers read, send, label management, and read/unread toggling — one scope unlocks all 9 actions."
 notices:
   - type: requirement
     message: "Requires a Google account added in Settings → Credentials with the gmail.modify scope (the default Crewly OAuth flow grants it automatically)."
 ---
 
-# Gmail (multi-action)
+# Gmail (multi-action, v1.1.0)
 
-Multi-action Gmail skill that lets agents `list`, `read`, `search`, and `send`
-messages on behalf of a connected Google account. The account is selected at
-execution time via the `gmail` credential slot, so the same skill can be reused
-across multiple Google accounts.
+Multi-action Gmail skill that lets agents manage messages and labels on behalf
+of a connected Google account. The account is selected at execution time via
+the `gmail` credential slot, so the same skill can be reused across multiple
+Google accounts (e.g., work vs personal).
 
 > Note: a separate `gmail-reader` skill (read-only, plain-text output) is kept
 > for the orchestrator's `credential-manager read-gmail` action. This skill is
 > the structured-JSON, full-feature version intended for direct agent use.
+
+## Why a single `gmail.modify` scope?
+
+`gmail.modify` is a Google-side functional superset that covers `gmail.readonly`,
+`gmail.send`, and label/state mutations. The Crewly skill executor performs
+**string-exact** scope matching (no superset awareness), so declaring the
+single most-capable scope keeps the requirement check simple and lets all 9
+actions share one OAuth grant.
 
 ## Usage
 
@@ -64,13 +79,21 @@ bash execute.sh '{"action":"list","q":"is:unread in:inbox","maxResults":10}'
 bash execute.sh '{"action":"read","id":"18fa7b..."}'
 bash execute.sh '{"action":"search","q":"from:foo@bar.com","maxResults":5}'
 bash execute.sh '{"action":"send","to":"a@b.com","subject":"Hello","body":"Hi there."}'
+bash execute.sh '{"action":"list-labels"}'
+bash execute.sh '{"action":"add-label","id":"18fa...","labelId":"Label_5"}'
+bash execute.sh '{"action":"remove-label","id":"18fa...","labelId":"Label_5"}'
+bash execute.sh '{"action":"mark-as-read","id":"18fa..."}'
+bash execute.sh '{"action":"mark-as-unread","id":"18fa..."}'
 ```
 
 ## Actions
 
-### `list` / `search`
+### Email operations
 
-List messages matching a Gmail search query. `search` is an alias for `list`.
+#### `list` / `search`
+
+List messages matching a Gmail search query. `search` is an alias for
+`list` (shares code).
 
 **Input:**
 ```json
@@ -92,7 +115,7 @@ List messages matching a Gmail search query. `search` is an alias for `list`.
 }
 ```
 
-### `read`
+#### `read`
 
 Fetch a single message by ID and return decoded headers + body.
 
@@ -108,6 +131,7 @@ Fetch a single message by ID and return decoded headers + body.
   "success": true,
   "id": "18fa7b...",
   "threadId": "...",
+  "labelIds": ["INBOX","UNREAD"],
   "headers": {"from":"...", "to":"...", "cc":"...", "subject":"...", "date":"..."},
   "body": "decoded plain text body",
   "bodyHtml": "<...> (only if no text/plain part exists)",
@@ -115,7 +139,11 @@ Fetch a single message by ID and return decoded headers + body.
 }
 ```
 
-### `send`
+The body extraction walks `payload.parts[]` recursively and prefers
+`text/plain`. If only `text/html` is available, the HTML is returned as
+`bodyHtml` and a tag-stripped plaintext fallback is placed in `body`.
+
+#### `send`
 
 Send a new email via the bound Google account.
 
@@ -133,13 +161,64 @@ Send a new email via the bound Google account.
 {"success": true, "id": "18fa...", "threadId": "..."}
 ```
 
-## Why a single `gmail.modify` scope?
+### Label management
 
-`gmail.modify` is a Google-side functional superset that covers `gmail.readonly`,
-`gmail.send`, and label/state mutations. The Crewly skill executor performs
-**string-exact** scope matching (no superset awareness), so declaring the
-single most-capable scope keeps the requirement check simple and lets all
-present and future actions share one OAuth grant.
+#### `list-labels`
+
+List all labels on the account (system + user-defined). Call this before
+`add-label` to discover valid label IDs.
+
+**Input:**
+```json
+{"action":"list-labels"}
+```
+
+**Output:**
+```json
+{
+  "success": true,
+  "account": "info@steam-fun.com",
+  "count": 12,
+  "labels": [
+    {"id":"INBOX", "name":"INBOX", "type":"system"},
+    {"id":"UNREAD", "name":"UNREAD", "type":"system"},
+    {"id":"Label_5", "name":"Work", "type":"user"}
+  ]
+}
+```
+
+#### `add-label` / `remove-label`
+
+Add or remove one or more labels on a message.
+
+**Input:**
+```json
+{"action":"add-label", "id":"18fa7b...", "labelId":"Label_5"}
+{"action":"remove-label", "id":"18fa7b...", "labelIds":["Label_5","Label_7"]}
+```
+- `id` (required) — Gmail message id.
+- `labelId` (string) OR `labelIds` (array) (required, at least one) — Label IDs to add/remove. The script accepts either form.
+
+**Output:**
+```json
+{"success": true, "id":"18fa7b...", "threadId":"...", "labelIds":["INBOX","Label_5","UNREAD"]}
+```
+The `labelIds` array reflects the post-modification state of the message.
+
+### Status management
+
+#### `mark-as-read` / `mark-as-unread`
+
+Convenience wrappers that toggle the system `UNREAD` label.
+
+**Input:**
+```json
+{"action":"mark-as-read", "id":"18fa7b..."}
+{"action":"mark-as-unread", "id":"18fa7b..."}
+```
+- `id` (required) — Gmail message id.
+
+**Output:** identical to `add-label` / `remove-label` (includes `labelIds` so the agent can confirm the transition).
 
 ## Required Env (injected by the skill executor)
 
@@ -153,7 +232,21 @@ tokens or scope checks.
 
 ## Errors
 
-- **Exit 1** — input/usage error (missing token, missing required field, unknown action).
-- **Exit 2** — Gmail API error (4xx/5xx).
+- **Exit 1** — input/usage error (missing token, missing required field, unknown action). JSON `{"success":false,"error":"..."}` on stdout, human message on stderr.
+- **Exit 2** — Gmail API error (4xx/5xx). JSON `{"success":false,"error":"..."}` on stdout, status + Google's error message on stderr.
 
 Raw access tokens and refresh tokens are never printed to stdout/stderr.
+
+## How the credential is resolved
+
+Crewly's skill executor reads the `credentials:` frontmatter above, looks up
+the credential bound to the `gmail` slot (either from `credentialBindings`
+passed to `crewly_execute_skill`, or this skill's default), refreshes the
+access token if needed, and injects it as `CREWLY_CRED_GMAIL_ACCESS_TOKEN`
+before spawning this script. Output is auto-redacted of any injected secrets
+before being returned to the agent.
+
+## Changelog
+
+- **1.1.0** — added `add-label`, `remove-label`, `list-labels`, `mark-as-read`, `mark-as-unread`. Reduced `requiredScopes` to single `gmail.modify` (functional superset for all 9 actions).
+- **1.0.0** — initial release with `list`, `read`, `search`, `send`.

@@ -1,6 +1,10 @@
 #!/bin/bash
 #
-# gmail multi-action skill (v1.0.0) — list / read / search / send.
+# gmail multi-action skill (v1.1.0) — 9 actions.
+#
+# Email ops:           list, read, search, send
+# Label management:    add-label, remove-label, list-labels
+# Status management:   mark-as-read, mark-as-unread
 #
 # Credentials are injected by the Crewly skill executor based on the
 # credentialBindings.gmail resolution; this script does NOT handle OAuth or
@@ -11,10 +15,17 @@
 #   bash execute.sh '{"action":"read","id":"18fa..."}'
 #   bash execute.sh '{"action":"search","q":"from:a@b.com","maxResults":5}'
 #   bash execute.sh '{"action":"send","to":"a@b.com","subject":"Hi","body":"..."}'
+#   bash execute.sh '{"action":"list-labels"}'
+#   bash execute.sh '{"action":"add-label","id":"18fa...","labelId":"Label_5"}'
+#   bash execute.sh '{"action":"remove-label","id":"18fa...","labelId":"Label_5"}'
+#   bash execute.sh '{"action":"mark-as-read","id":"18fa..."}'
+#   bash execute.sh '{"action":"mark-as-unread","id":"18fa..."}'
 #
 # Env (injected by the executor):
 #   CREWLY_CRED_GMAIL_ACCESS_TOKEN  — OAuth access token (required)
 #   CREWLY_CRED_GMAIL_EMAIL         — account email (used as From: for send)
+#
+# Required scope: https://www.googleapis.com/auth/gmail.modify (covers all 9 actions)
 #
 # Exit codes:
 #   0 — success
@@ -28,7 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../_common/lib.sh
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-VALID_ACTIONS="list, read, search, send"
+VALID_ACTIONS="list, read, search, send, add-label, remove-label, list-labels, mark-as-read, mark-as-unread"
 
 # --- Helpers ----------------------------------------------------------------
 
@@ -47,6 +58,7 @@ emit_error() {
 }
 
 # gmail_get PATH_AND_QUERY  -> echoes JSON body, sets _LAST_HTTP
+# Uses the bound CREWLY_CRED_GMAIL_ACCESS_TOKEN. Does NOT print the token.
 gmail_get() {
   local path="$1"
   local response http body
@@ -88,6 +100,59 @@ except Exception:
 " 2>/dev/null || echo "(unparseable response)"
 }
 
+# extract_label_ids_array -> stdout: JSON array of label IDs from INPUT
+# Reads the parsed INPUT and returns a JSON array of label IDs from either
+# `labelId` (string) or `labelIds` (array). Returns "[]" if neither field is set.
+extract_label_ids_array() {
+  printf '%s' "$INPUT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+ids = []
+single = d.get('labelId')
+multi = d.get('labelIds')
+if isinstance(multi, list):
+    ids.extend([str(x) for x in multi if x])
+if isinstance(single, str) and single:
+    ids.append(single)
+# de-dup, preserve order
+seen = set(); out = []
+for x in ids:
+    if x not in seen:
+        seen.add(x); out.append(x)
+print(json.dumps(out))
+" 2>/dev/null || echo '[]'
+}
+
+# modify_message ID ADD_JSON_ARRAY REMOVE_JSON_ARRAY
+# Calls /messages/{id}/modify with the given add/remove label arrays.
+# Emits the success/failure JSON to stdout and exits accordingly.
+modify_message() {
+  local id="$1" add_arr="$2" remove_arr="$3"
+  if [ -z "$id" ]; then
+    emit_error 1 \
+      "Error: 'id' (Gmail message id) is required for modify operations." \
+      "Missing required parameter: id"
+  fi
+
+  local body
+  body=$(jq -nc --argjson add "$add_arr" --argjson remove "$remove_arr" \
+    '{addLabelIds:$add, removeLabelIds:$remove}')
+
+  local resp
+  resp=$(gmail_post "/messages/${id}/modify" "$body")
+  if [ "${_LAST_HTTP:-}" != "200" ]; then
+    local msg
+    msg=$(api_error_message "$resp")
+    emit_error 2 \
+      "Error: Gmail API returned status ${_LAST_HTTP:-?} when modifying message ${id}: ${msg}" \
+      "Gmail API error (HTTP ${_LAST_HTTP:-?}): ${msg}"
+  fi
+
+  local out
+  out=$(printf '%s' "$resp" | jq -c '{success:true, id:.id, threadId:.threadId, labelIds:(.labelIds // [])}')
+  emit_success "$out"
+}
+
 # --- Token + input validation ----------------------------------------------
 
 if [ -z "${CREWLY_CRED_GMAIL_ACCESS_TOKEN:-}" ]; then
@@ -103,6 +168,7 @@ if [ -z "$INPUT" ]; then
     "No input provided. Expected JSON with 'action' field. Valid actions: ${VALID_ACTIONS}"
 fi
 
+# Validate JSON parses
 if ! printf '%s' "$INPUT" | jq -e . >/dev/null 2>&1; then
   emit_error 1 \
     "Error: input is not valid JSON." \
@@ -246,6 +312,7 @@ result = {
   'success': True,
   'id': m.get('id',''),
   'threadId': m.get('threadId',''),
+  'labelIds': m.get('labelIds', []),
   'headers': {
     'from': headers.get('from',''),
     'to': headers.get('to',''),
@@ -294,6 +361,9 @@ print(json.dumps(result))
         "Missing required parameter(s): ${MISSING_STR}"
     fi
 
+    # Build RFC-2822 MIME + base64url-encode via python (safe handling of unicode/CRLF).
+    # Reading INPUT from stdin avoids any shell-arg escaping issues with embedded
+    # quotes / backticks / $ in the body.
     RAW=$(printf '%s' "$INPUT" | python3 -c "
 import json, sys, base64, os
 from email.mime.text import MIMEText
@@ -334,6 +404,57 @@ print(raw)
 
     OUT=$(printf '%s' "$SEND_RESP" | jq -c '{success:true, id:.id, threadId:.threadId}')
     emit_success "$OUT"
+    ;;
+
+  list-labels)
+    RESP=$(gmail_get "/labels")
+    if [ "${_LAST_HTTP:-}" != "200" ]; then
+      MSG=$(api_error_message "$RESP")
+      emit_error 2 \
+        "Error: Gmail API returned status ${_LAST_HTTP:-?} when listing labels: ${MSG}" \
+        "Gmail API error (HTTP ${_LAST_HTTP:-?}): ${MSG}"
+    fi
+
+    LABELS=$(printf '%s' "$RESP" | jq -c '[.labels[]? | {id, name, type}]')
+    COUNT=$(printf '%s' "$LABELS" | jq 'length')
+    OUT=$(jq -nc \
+      --arg account "$ACCOUNT" \
+      --argjson count "$COUNT" \
+      --argjson labels "$LABELS" \
+      '{success:true, account:$account, count:$count, labels:$labels}')
+    emit_success "$OUT"
+    ;;
+
+  add-label)
+    ID=$(printf '%s' "$INPUT" | jq -r '.id // empty')
+    LABEL_IDS=$(extract_label_ids_array)
+    if [ "$LABEL_IDS" = "[]" ]; then
+      emit_error 1 \
+        "Error: 'add-label' requires 'labelId' (string) or 'labelIds' (array)." \
+        "Missing required parameter: labelId or labelIds"
+    fi
+    modify_message "$ID" "$LABEL_IDS" '[]'
+    ;;
+
+  remove-label)
+    ID=$(printf '%s' "$INPUT" | jq -r '.id // empty')
+    LABEL_IDS=$(extract_label_ids_array)
+    if [ "$LABEL_IDS" = "[]" ]; then
+      emit_error 1 \
+        "Error: 'remove-label' requires 'labelId' (string) or 'labelIds' (array)." \
+        "Missing required parameter: labelId or labelIds"
+    fi
+    modify_message "$ID" '[]' "$LABEL_IDS"
+    ;;
+
+  mark-as-read)
+    ID=$(printf '%s' "$INPUT" | jq -r '.id // empty')
+    modify_message "$ID" '[]' '["UNREAD"]'
+    ;;
+
+  mark-as-unread)
+    ID=$(printf '%s' "$INPUT" | jq -r '.id // empty')
+    modify_message "$ID" '["UNREAD"]' '[]'
     ;;
 
   *)
