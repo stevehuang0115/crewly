@@ -97,30 +97,41 @@ export async function addApiKey(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const { name, provider, value } = (req.body ?? {}) as {
-      name?: string;
-      provider?: string;
-      value?: string;
+    const body = (req.body ?? {}) as {
+      name?: unknown;
+      provider?: unknown;
+      value?: unknown;
     };
-    if (!name || !provider || !value) {
+    if (
+      typeof body.name !== 'string' ||
+      body.name.length === 0 ||
+      typeof body.provider !== 'string' ||
+      body.provider.length === 0 ||
+      typeof body.value !== 'string' ||
+      body.value.length === 0
+    ) {
       res.status(400).json({
         success: false,
-        error: 'Missing required fields: name, provider, value',
+        error:
+          'Missing or invalid required fields: name (string), provider (string), value (string)',
       });
       return;
     }
     const cred = await getCredentialStoreService().addApiKey({
-      name,
-      provider,
-      value,
+      name: body.name,
+      provider: body.provider,
+      value: body.value,
     });
-    logger.info('Added api-key credential', { id: cred.id, provider });
+    logger.info('Added api-key credential', { id: cred.id, provider: body.provider });
     res.status(201).json({ success: true, data: cred });
   } catch (err) {
     logger.error('addApiKey failed', { err });
     next(err);
   }
 }
+
+/** Lifecycle statuses a client may assign via PATCH. */
+const ALLOWED_STATUSES: ReadonlySet<string> = new Set(['active', 'revoked']);
 
 /**
  * PATCH /api/credentials/:id — update metadata (name, status).
@@ -132,13 +143,34 @@ export async function updateCredentialHandler(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const { name, status } = (req.body ?? {}) as {
-      name?: string;
-      status?: 'active' | 'revoked';
-    };
+    const body = (req.body ?? {}) as { name?: unknown; status?: unknown };
     const patch: UpdateCredentialMetadata = {};
-    if (name !== undefined) patch.name = name;
-    if (status !== undefined) patch.status = status;
+
+    if (body.name !== undefined) {
+      if (typeof body.name !== 'string' || body.name.length === 0) {
+        res.status(400).json({
+          success: false,
+          error: 'name must be a non-empty string',
+        });
+        return;
+      }
+      patch.name = body.name;
+    }
+
+    if (body.status !== undefined) {
+      if (
+        typeof body.status !== 'string' ||
+        !ALLOWED_STATUSES.has(body.status)
+      ) {
+        res.status(400).json({
+          success: false,
+          error: `status must be one of: ${[...ALLOWED_STATUSES].join(', ')}`,
+        });
+        return;
+      }
+      patch.status = body.status as 'active' | 'revoked';
+    }
+
     if (Object.keys(patch).length === 0) {
       res.status(400).json({
         success: false,

@@ -45,9 +45,11 @@ if [ "$LIST_HTTP" != "200" ]; then
     exit 2
 fi
 
-IDS=$(python3 -c "
+# Pipe JSON via stdin so shell-interpolation of quotes / backticks / $ cannot
+# corrupt the payload. Same pattern used for the per-message parsing below.
+IDS=$(printf '%s' "$LIST_JSON" | python3 -c "
 import json, sys
-d = json.loads('''${LIST_JSON//\'/\\\'}''')
+d = json.load(sys.stdin)
 for m in d.get('messages', []):
     print(m['id'])
 " 2>/dev/null || echo "")
@@ -68,9 +70,9 @@ while IFS= read -r id; do
     MSG=$(curl -s \
       -H "$AUTH_HDR" \
       "${BASE}/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date")
-    python3 -c "
+    printf '%s' "$MSG" | python3 -c "
 import json, sys
-m = json.loads('''${MSG//\'/\\\'}''')
+m = json.load(sys.stdin)
 headers = {h['name']: h['value'] for h in m.get('payload', {}).get('headers', [])}
 snippet = (m.get('snippet') or '').strip()
 if len(snippet) > 120:

@@ -103,6 +103,22 @@ describe('credentials.controller', () => {
       const names = res.body.data.map((c: { name: string }) => c.name).sort();
       expect(names).toEqual(['k1', 'k2']);
     });
+
+    it('rejects non-string field types (R2 defensive check)', async () => {
+      const res = await request(app)
+        .post('/api/credentials/api-key')
+        .send({ name: 42, provider: ['gemini'], value: true });
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toMatch(/string/i);
+    });
+
+    it('rejects empty-string field values', async () => {
+      const res = await request(app)
+        .post('/api/credentials/api-key')
+        .send({ name: '', provider: 'gemini', value: 'v' });
+      expect(res.status).toBe(400);
+    });
   });
 
   // ------------------------------------------------------------------
@@ -161,6 +177,50 @@ describe('credentials.controller', () => {
       const id = add.body.data.id;
 
       const res = await request(app).patch(`/api/credentials/${id}`).send({});
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects an unknown status value (R2 runtime validation)', async () => {
+      const add = await request(app)
+        .post('/api/credentials/api-key')
+        .send({ name: 's1', provider: 'gemini', value: 'v' });
+      const id = add.body.data.id;
+
+      const res = await request(app)
+        .patch(`/api/credentials/${id}`)
+        .send({ status: 'pending' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/active|revoked/);
+    });
+
+    it('accepts the allowed status values', async () => {
+      const add = await request(app)
+        .post('/api/credentials/api-key')
+        .send({ name: 's2', provider: 'gemini', value: 'v' });
+      const id = add.body.data.id;
+
+      const r1 = await request(app)
+        .patch(`/api/credentials/${id}`)
+        .send({ status: 'revoked' });
+      expect(r1.status).toBe(200);
+      expect(r1.body.data.status).toBe('revoked');
+
+      const r2 = await request(app)
+        .patch(`/api/credentials/${id}`)
+        .send({ status: 'active' });
+      expect(r2.status).toBe(200);
+      expect(r2.body.data.status).toBe('active');
+    });
+
+    it('rejects non-string name', async () => {
+      const add = await request(app)
+        .post('/api/credentials/api-key')
+        .send({ name: 's3', provider: 'gemini', value: 'v' });
+      const id = add.body.data.id;
+
+      const res = await request(app)
+        .patch(`/api/credentials/${id}`)
+        .send({ name: 99 });
       expect(res.status).toBe(400);
     });
   });
