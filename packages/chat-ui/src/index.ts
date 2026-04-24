@@ -35,6 +35,8 @@ export { HttpChatApiClient } from './api/client';
 export type { ChatApiClient, ChannelSubscription, HttpClientOptions } from './api/client';
 export { MockChatApiClient } from './api/mock-client';
 export type { MockClientOptions } from './api/mock-client';
+export { ChatApiError, CHAT_API_ERROR_CODES } from './api/errors';
+export type { ChatApiErrorCode } from './api/errors';
 
 // Types — stable public contract with Sam's backend
 export type {

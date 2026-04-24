@@ -124,6 +124,13 @@ export interface Message {
 export interface SendMessageInput {
   content: string;
   attachments?: MessageAttachment[];
+  /**
+   * Optional idempotency token. The server dedupes repeat POSTs bearing the
+   * same `clientMessageId` and returns the previously-persisted row — so
+   * safe to retry on network failure without double-sending. Generated
+   * automatically by the HTTP client when the caller does not supply one.
+   */
+  clientMessageId?: string;
 }
 
 /** Shape returned by `GET /api/chat/channels/:id/messages`. */
