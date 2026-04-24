@@ -11,7 +11,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
-import { Dashboard } from './Dashboard';
+import { Dashboard, SAFETY_TIMEOUT_MS } from './Dashboard';
 import { apiService } from '../services/api.service';
 
 // Mock the navigate hook
@@ -477,7 +477,12 @@ describe('Dashboard Page', () => {
    * timer stay unaffected.
    */
   describe('Safety timeout', () => {
-    it('surfaces an error after 15s if loading never resolves', async () => {
+    it('exports SAFETY_TIMEOUT_MS as a positive millisecond duration', () => {
+      expect(typeof SAFETY_TIMEOUT_MS).toBe('number');
+      expect(SAFETY_TIMEOUT_MS).toBeGreaterThan(0);
+    });
+
+    it('surfaces an error after the deadline if loading never resolves', async () => {
       vi.useFakeTimers();
       try {
         vi.mocked(apiService.getProjects).mockImplementation(
@@ -495,8 +500,8 @@ describe('Dashboard Page', () => {
 
         expect(screen.getByText('Loading dashboard...')).toBeInTheDocument();
 
-        // Jump past the 15s safety deadline
-        await vi.advanceTimersByTimeAsync(15_001);
+        // Jump past the safety deadline (+1ms headroom)
+        await vi.advanceTimersByTimeAsync(SAFETY_TIMEOUT_MS + 1);
 
         expect(
           screen.getByText(/took too long to load/i),
