@@ -12,18 +12,19 @@
 
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Settings as SettingsIcon, User, Wrench, Link2, Key, Monitor, LucideIcon } from 'lucide-react';
+import { Settings as SettingsIcon, User, Wrench, Link2, Key, Monitor, Lock, LucideIcon } from 'lucide-react';
 import { GeneralTab } from '../components/Settings/GeneralTab';
 import { RolesTab } from '../components/Settings/RolesTab';
 import { SkillsTab } from '../components/Settings/SkillsTab';
 import { IntegrationsTab } from '../components/Settings/IntegrationsTab';
 import { ApiKeysTab } from '../components/Settings/ApiKeysTab';
+import { CredentialsTab } from '../components/Settings/CredentialsTab';
 import { SystemTab } from '../components/Settings/SystemTab';
 
 /**
  * Available settings tabs (Cloud removed -- consolidated to /cloud)
  */
-type SettingsTab = 'general' | 'roles' | 'skills' | 'integrations' | 'api-keys' | 'system';
+type SettingsTab = 'general' | 'roles' | 'skills' | 'integrations' | 'api-keys' | 'credentials' | 'system';
 
 /**
  * Tab configuration
@@ -35,7 +36,7 @@ interface TabConfig {
 }
 
 /** Valid tab IDs for URL parameter validation */
-const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'roles', 'skills', 'integrations', 'api-keys', 'system']);
+const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'roles', 'skills', 'integrations', 'api-keys', 'credentials', 'system']);
 
 /**
  * Settings page with tabbed navigation for managing Crewly configuration.
@@ -66,6 +67,7 @@ export const Settings: React.FC = () => {
     { id: 'skills', label: 'Skills', icon: Wrench },
     { id: 'integrations', label: 'Integrations', icon: Link2 },
     { id: 'api-keys', label: 'API Keys', icon: Key },
+    { id: 'credentials', label: 'Credentials', icon: Lock },
     { id: 'system', label: 'System', icon: Monitor },
   ];
 
@@ -84,6 +86,8 @@ export const Settings: React.FC = () => {
         return <IntegrationsTab />;
       case 'api-keys':
         return <ApiKeysTab />;
+      case 'credentials':
+        return <CredentialsTab />;
       case 'system':
         return <SystemTab />;
       default:
