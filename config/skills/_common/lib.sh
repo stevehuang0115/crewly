@@ -148,6 +148,34 @@ require_param() {
 }
 
 # -----------------------------------------------------------------------------
+# resolve_team_id [session_name]
+#
+# Resolve the team ID that owns the given session. Defaults to
+# $CREWLY_SESSION_NAME. Echoes the team id on stdout and returns 0 on success,
+# or returns 1 without output if the session cannot be mapped.
+#
+# Used by team-scoped skills (schedule-followup, cancel-followup,
+# list-my-followups, watch-for-event) to scope lookups and prevent cross-team
+# interference.
+# -----------------------------------------------------------------------------
+resolve_team_id() {
+  local session="${1:-${CREWLY_SESSION_NAME:-}}"
+  [ -z "$session" ] && return 1
+  local teams_dir="${HOME}/.crewly/teams"
+  [ ! -d "$teams_dir" ] && return 1
+  for config in "$teams_dir"/*/config.json; do
+    [ -f "$config" ] || continue
+    local found
+    found=$(jq -r --arg s "$session" '.members[]? | select(.sessionName == $s) | "found"' "$config" 2>/dev/null | head -1)
+    if [ "$found" = "found" ]; then
+      basename "$(dirname "$config")"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# -----------------------------------------------------------------------------
 # auto_remember agentId content [category] [scope] [projectPath]
 #
 # Fire-and-forget persistence of a learning to project memory.
