@@ -23,6 +23,17 @@ import { Alert } from '@/components/UI/Alert';
 import { Button } from '@/components/UI/Button';
 
 
+/**
+ * Hard upper bound on initial-load latency. If `loadData` hasn't settled
+ * by this deadline, we drop the skeleton and show an error so the user
+ * isn't staring at a frozen loader. Tuned to cover reasonably slow
+ * networks while still surfacing genuinely stuck requests.
+ *
+ * Exported for tests that want to pin the contract without hardcoding
+ * the value.
+ */
+export const SAFETY_TIMEOUT_MS = 15_000;
+
 interface ProjectProgress {
   projectId: string;
   progressPercent: number;
@@ -82,6 +93,22 @@ export const Dashboard: React.FC = () => {
   useEffect(() => {
     loadData();
   }, []);
+
+  /**
+   * Safety timeout: if loading exceeds SAFETY_TIMEOUT_MS, bail out of the
+   * skeleton and surface an error. Cleanup cancels the timer the moment
+   * loading flips false, so the happy path pays nothing.
+   */
+  useEffect(() => {
+    if (!loading) return;
+
+    const timer = setTimeout(() => {
+      setLoading(false);
+      setError('Dashboard took too long to load. Please try again.');
+    }, SAFETY_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   const calculateProjectProgress = async (projectId: string): Promise<ProjectProgress> => {
     try {
@@ -184,6 +211,10 @@ export const Dashboard: React.FC = () => {
         return acc;
       }, {} as Record<string, Team[]>);
       setTeamsMap(teamsMapping);
+      // Clear any error that was set by the safety timeout before this
+      // (slow) request eventually succeeded — otherwise the user would
+      // see fresh data sitting under a stale "took too long" banner.
+      setError(null);
     } catch (err) {
       logSilentError(err, { context: 'Loading dashboard data', level: 'error' });
       setError('Failed to load dashboard data. Please try again.');

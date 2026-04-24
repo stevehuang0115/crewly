@@ -165,6 +165,10 @@ export class TaskService {
         fs.readFile(filePath, 'utf-8'),
         fs.stat(filePath),
       ]);
+      // Defensive: bail on anything that isn't a regular file (symlinks
+      // to directories, FIFOs, etc.). Reader loops upstream assume `.md`
+      // names map to files — this guard keeps that assumption honest.
+      if (!stats.isFile()) return null;
       const parsed = this.parseMarkdownContent(content);
       const fileBase = path.basename(filePath, '.md');
 

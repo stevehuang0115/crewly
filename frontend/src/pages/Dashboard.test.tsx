@@ -11,7 +11,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
-import { Dashboard } from './Dashboard';
+import { Dashboard, SAFETY_TIMEOUT_MS } from './Dashboard';
 import { apiService } from '../services/api.service';
 
 // Mock the navigate hook
@@ -464,6 +464,94 @@ describe('Dashboard Page', () => {
       }
 
       expect(mockNavigate).toHaveBeenCalledWith('/projects?create=true');
+    });
+  });
+
+  /**
+   * Safety timeout: if the initial data load exceeds 15s (e.g. the API is
+   * frozen), the Dashboard bails out of the loading skeleton and shows an
+   * error instead of leaving the user staring at a hung loader.
+   *
+   * Placed in its own describe so `vi.useFakeTimers` / `vi.useRealTimers`
+   * are fully isolated — earlier siblings that rely on `waitFor`'s real
+   * timer stay unaffected.
+   */
+  describe('Safety timeout', () => {
+    it('exports SAFETY_TIMEOUT_MS as a positive millisecond duration', () => {
+      expect(typeof SAFETY_TIMEOUT_MS).toBe('number');
+      expect(SAFETY_TIMEOUT_MS).toBeGreaterThan(0);
+    });
+
+    it('surfaces an error after the deadline if loading never resolves', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(apiService.getProjects).mockImplementation(
+          () => new Promise(() => {}),
+        );
+        vi.mocked(apiService.getTeams).mockImplementation(
+          () => new Promise(() => {}),
+        );
+
+        render(
+          <TestWrapper>
+            <Dashboard />
+          </TestWrapper>,
+        );
+
+        expect(screen.getByText('Loading dashboard...')).toBeInTheDocument();
+
+        // Jump past the safety deadline (+1ms headroom)
+        await vi.advanceTimersByTimeAsync(SAFETY_TIMEOUT_MS + 1);
+
+        expect(
+          screen.getByText(/took too long to load/i),
+        ).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    /**
+     * Edge case introduced by the safety-timeout feature: if the
+     * real API eventually completes AFTER the deadline fired, the
+     * success path must clear the stale "took too long" error so
+     * the user doesn't see fresh data sitting under an error banner.
+     */
+    it('clears the stale safety-timeout error if the real load later succeeds', async () => {
+      vi.useFakeTimers();
+      try {
+        let resolveProjects!: (v: typeof mockProjects) => void;
+        vi.mocked(apiService.getProjects).mockImplementation(
+          () =>
+            new Promise((r) => {
+              resolveProjects = r;
+            }),
+        );
+        vi.mocked(apiService.getTeams).mockResolvedValue(mockTeams);
+
+        render(
+          <TestWrapper>
+            <Dashboard />
+          </TestWrapper>,
+        );
+
+        // Deadline fires first → error is shown
+        await vi.advanceTimersByTimeAsync(SAFETY_TIMEOUT_MS + 1);
+        expect(screen.getByText(/took too long to load/i)).toBeInTheDocument();
+
+        // Now the real request completes. Switch to real timers so
+        // waitFor can poll, then resolve the pending projects promise.
+        vi.useRealTimers();
+        resolveProjects(mockProjects);
+
+        await waitFor(() => {
+          expect(
+            screen.queryByText(/took too long to load/i),
+          ).not.toBeInTheDocument();
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

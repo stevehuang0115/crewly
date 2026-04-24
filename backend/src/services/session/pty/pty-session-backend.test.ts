@@ -122,6 +122,22 @@ describe('PtySessionBackend', () => {
 			await backend!.killSession('test-session');
 			expect(backend!.sessionExists('test-session')).toBe(false);
 		});
+
+		it('should call forceKill instead of kill when killing a session', async () => {
+			const session = await backend!.createSession('force-kill-test', createTestOptions());
+
+			// Spy on forceKill and kill methods on the session instance
+			const forceKillSpy = jest.spyOn(session, 'forceKill').mockResolvedValue(undefined);
+			const killSpy = jest.spyOn(session, 'kill');
+
+			await backend!.killSession('force-kill-test');
+
+			expect(forceKillSpy).toHaveBeenCalledTimes(1);
+			expect(killSpy).not.toHaveBeenCalled();
+
+			forceKillSpy.mockRestore();
+			killSpy.mockRestore();
+		});
 	});
 
 	describe('listSessions', () => {
