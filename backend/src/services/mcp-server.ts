@@ -23,6 +23,10 @@ import { StorageService } from './core/storage.service.js';
 import { MemoryService } from './memory/memory.service.js';
 import type { Team, TeamMember } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
+import { getCredentialStoreService } from './credential/credential-store.service.js';
+import { GeminiCliWorkspaceHelper } from './credential/helpers/gemini-cli-workspace.helper.js';
+import { getSkillExecutorService } from './skill/skill-executor.service.js';
+import type { SkillExecutionContext } from '../types/skill.types.js';
 
 // ========================= Constants =========================
 
@@ -213,6 +217,136 @@ const TOOL_DEFINITIONS = [
       required: ['message'],
     },
   },
+  // -------------------- Credential management --------------------
+  {
+    name: 'crewly_credential_list',
+    description:
+      'List stored credentials (OAuth accounts and API keys). Returns metadata only — actual ' +
+      'token / key values are NEVER included. Use this to discover which credentials are ' +
+      'available before binding one to a skill execution.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        type: {
+          type: 'string',
+          enum: ['api-key', 'google-oauth'],
+          description: 'Optional: filter by credential type',
+        },
+        provider: {
+          type: 'string',
+          description: 'Optional: filter by provider (e.g., "google", "gemini")',
+        },
+      },
+    },
+  },
+  {
+    name: 'crewly_credential_add_api_key',
+    description:
+      'Add an API key credential to the workspace credential store. Used for services like Gemini ' +
+      'API, OpenAI API, etc. that authenticate with a static key. The key is encrypted at rest.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        name: {
+          type: 'string',
+          description: 'User-facing name for this credential (e.g., "gemini-main")',
+        },
+        provider: {
+          type: 'string',
+          description: 'Provider identifier (e.g., "gemini", "openai", "anthropic")',
+        },
+        value: {
+          type: 'string',
+          description: 'The raw API key value',
+        },
+      },
+      required: ['name', 'provider', 'value'],
+    },
+  },
+  {
+    name: 'crewly_credential_oauth_import_gemini_cli',
+    description:
+      'Import a Google OAuth credential from the user\'s currently-active Gemini CLI Workspace ' +
+      'extension login. Call this AFTER the user has signed in via ' +
+      '`GEMINI_CLI_WORKSPACE_FORCE_FILE_STORAGE=true gemini` and completed the browser auth. ' +
+      'Crewly reads the extension\'s token file and saves an encrypted copy. The extension\'s ' +
+      'cached file remains so you can verify — call crewly_credential_clear_gemini_cli_file ' +
+      'afterwards if you want to prepare for another account.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        name: {
+          type: 'string',
+          description:
+            'Name for this credential (typically the account email or a nickname like "info-steam-fun")',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'crewly_credential_clear_gemini_cli_file',
+    description:
+      'Delete the Gemini CLI Workspace extension\'s cached token file. Call after a successful ' +
+      'import when preparing to add a different Google account — the extension uses a single-slot ' +
+      'cache, so clearing forces the next extension run to re-authenticate.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'crewly_credential_delete',
+    description:
+      'Permanently delete a credential from the store (removes registry entry and encrypted ' +
+      'file). Skills bound to this credential will fail until another credential is provided.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Credential UUID (e.g., "cred-abc123")',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'crewly_execute_skill',
+    description:
+      'Execute a skill and return its output. Pass `credentialBindings` (map of slot name → ' +
+      'credential UUID) to tell the skill which credential to use for each of its declared slots. ' +
+      'Use crewly_credential_list first to find eligible credential IDs. Output is redacted of ' +
+      'any injected secret values.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        skillId: {
+          type: 'string',
+          description: 'Skill identifier (e.g., "skill-gmail-reader")',
+        },
+        credentialBindings: {
+          type: 'object',
+          description:
+            'Map of skill slot name → credential UUID. Overrides any default bound to the skill.',
+          additionalProperties: { type: 'string' },
+        },
+        userInput: {
+          type: 'string',
+          description: 'User-provided input for the skill (optional)',
+        },
+        agentId: {
+          type: 'string',
+          description: 'Agent ID for context (default: "mcp-agent")',
+        },
+        roleId: {
+          type: 'string',
+          description: 'Role ID for context (default: "default")',
+        },
+      },
+      required: ['skillId'],
+    },
+  },
 ] as const;
 
 // ========================= Service =========================
@@ -248,6 +382,14 @@ export class CrewlyMcpServer {
   private memory: MemoryService;
   private transport: any | null = null;
   private stdioTransportCtor: (new () => any) | null = null;
+  private geminiCliHelper: GeminiCliWorkspaceHelper | null = null;
+
+  private getGeminiCliHelper(): GeminiCliWorkspaceHelper {
+    if (!this.geminiCliHelper) {
+      this.geminiCliHelper = new GeminiCliWorkspaceHelper(getCredentialStoreService());
+    }
+    return this.geminiCliHelper;
+  }
 
   /**
    * Creates a new CrewlyMcpServer instance.
@@ -388,6 +530,18 @@ export class CrewlyMcpServer {
           return await this.handleRecallMemory(args);
         case 'crewly_send_message':
           return await this.handleSendMessage(args);
+        case 'crewly_credential_list':
+          return await this.handleCredentialList(args);
+        case 'crewly_credential_add_api_key':
+          return await this.handleCredentialAddApiKey(args);
+        case 'crewly_credential_oauth_import_gemini_cli':
+          return await this.handleCredentialImportGeminiCli(args);
+        case 'crewly_credential_clear_gemini_cli_file':
+          return await this.handleCredentialClearGeminiCliFile();
+        case 'crewly_credential_delete':
+          return await this.handleCredentialDelete(args);
+        case 'crewly_execute_skill':
+          return await this.handleExecuteSkill(args);
         default:
           return this.errorResult(`Unknown tool: ${name}`);
       }
@@ -697,6 +851,156 @@ export class CrewlyMcpServer {
   }
 
   // ========================= Helpers =========================
+
+  // ========================= Credential handlers =========================
+
+  /**
+   * Handle crewly_credential_list: return credential metadata (no values).
+   */
+  private async handleCredentialList(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const type = args.type as 'api-key' | 'google-oauth' | undefined;
+    const provider = args.provider as string | undefined;
+
+    const store = getCredentialStoreService();
+    let credentials = await store.listCredentials();
+
+    if (type) credentials = credentials.filter((c) => c.type === type);
+    if (provider) credentials = credentials.filter((c) => c.provider === provider);
+
+    return this.successResult(
+      credentials.map((c) => ({
+        id: c.id,
+        name: c.name,
+        type: c.type,
+        provider: c.provider,
+        helper: c.helper,
+        scopes: c.scopes,
+        accountEmail: c.accountEmail,
+        status: c.status,
+        createdAt: c.createdAt,
+        lastUsedAt: c.lastUsedAt,
+        expiresAt: c.expiresAt,
+      })),
+    );
+  }
+
+  /**
+   * Handle crewly_credential_add_api_key: store an API key.
+   */
+  private async handleCredentialAddApiKey(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const name = args.name as string;
+    const provider = args.provider as string;
+    const value = args.value as string;
+
+    if (!name || !provider || !value) {
+      return this.errorResult('name, provider, and value are required');
+    }
+
+    const cred = await getCredentialStoreService().addApiKey({ name, provider, value });
+    return this.successResult({
+      id: cred.id,
+      name: cred.name,
+      provider: cred.provider,
+      type: cred.type,
+      createdAt: cred.createdAt,
+    });
+  }
+
+  /**
+   * Handle crewly_credential_oauth_import_gemini_cli: capture the current
+   * gemini-cli-workspace extension login into an encrypted Crewly credential.
+   */
+  private async handleCredentialImportGeminiCli(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const name = args.name as string;
+    if (!name) {
+      return this.errorResult('name is required');
+    }
+
+    try {
+      const payload = await this.getGeminiCliHelper().captureFromFile();
+      const cred = await getCredentialStoreService().addOAuth({
+        name,
+        provider: 'google',
+        helper: 'gemini-cli-workspace',
+        payload,
+      });
+      return this.successResult({
+        id: cred.id,
+        name: cred.name,
+        accountEmail: cred.accountEmail,
+        scopes: cred.scopes,
+        type: cred.type,
+        helper: cred.helper,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return this.errorResult(message);
+    }
+  }
+
+  /**
+   * Handle crewly_credential_clear_gemini_cli_file: delete the extension's
+   * cached token file so the next extension login captures a fresh account.
+   */
+  private async handleCredentialClearGeminiCliFile(): Promise<ToolResult> {
+    await this.getGeminiCliHelper().clearExtensionFile();
+    return this.successResult({ cleared: true });
+  }
+
+  /**
+   * Handle crewly_credential_delete: remove a credential.
+   */
+  private async handleCredentialDelete(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const id = args.id as string;
+    if (!id) return this.errorResult('id is required');
+    try {
+      await getCredentialStoreService().deleteCredential(id);
+      return this.successResult({ deleted: true, id });
+    } catch (err) {
+      return this.errorResult(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Handle crewly_execute_skill: run a skill with optional credential bindings.
+   */
+  private async handleExecuteSkill(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const skillId = args.skillId as string;
+    if (!skillId) return this.errorResult('skillId is required');
+
+    const credentialBindings = args.credentialBindings as
+      | Record<string, string>
+      | undefined;
+
+    const context: SkillExecutionContext = {
+      agentId: (args.agentId as string) || 'mcp-agent',
+      roleId: (args.roleId as string) || 'default',
+      userInput: args.userInput as string | undefined,
+      credentialBindings,
+    };
+
+    try {
+      const result = await getSkillExecutorService().executeSkill(skillId, context);
+      return this.successResult({
+        success: result.success,
+        output: result.output,
+        error: result.error,
+        durationMs: result.durationMs,
+      });
+    } catch (err) {
+      return this.errorResult(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   /**
    * Create a success result with JSON-serialized content.

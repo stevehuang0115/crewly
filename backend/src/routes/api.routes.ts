@@ -19,6 +19,7 @@ import { createTeamsBackupRouter } from '../controllers/teams-backup/teams-backu
 import { createEventBusRouter } from '../controllers/event-bus/event-bus.routes.js';
 import { createSlackThreadRouter } from '../controllers/slack/slack-thread.routes.js';
 import { createMemoryRouter } from '../controllers/memory/memory.routes.js';
+import { createCredentialsRouter } from '../controllers/credentials/credentials.routes.js';
 import { createQualityGateRouter } from './modules/quality-gate.routes.js';
 import { createMarketplaceRouter } from '../controllers/marketplace/index.js';
 import { createKnowledgeRouter } from '../controllers/knowledge/index.js';
@@ -94,6 +95,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Memory routes for agent/project knowledge storage and retrieval
   router.use('/memory', createMemoryRouter());
+
+  // Credentials routes for OAuth tokens and API keys used by skills
+  router.use('/credentials', createCredentialsRouter());
 
   // Quality gate routes for running quality checks before task completion
   router.use('/quality-gates', createQualityGateRouter());

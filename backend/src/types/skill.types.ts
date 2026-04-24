@@ -135,6 +135,9 @@ export interface SkillEnvironmentConfig {
   required?: string[];
 }
 
+// Re-export credential requirement type so skill consumers have one import
+export type { SkillCredentialRequirement, CredentialBindings } from './credential.types.js';
+
 /**
  * Runtime configuration for skills that modify agent startup
  */
@@ -196,6 +199,9 @@ export interface Skill {
 
   /** Environment configuration */
   environment?: SkillEnvironmentConfig;
+
+  /** Credential requirements (OAuth tokens, API keys) declared as named slots */
+  credentials?: import('./credential.types.js').SkillCredentialRequirement[];
 
   /** Runtime configuration for agent startup modifications */
   runtime?: SkillRuntimeConfig;
@@ -418,6 +424,13 @@ export interface SkillExecutionContext {
 
   /** Additional context data */
   metadata?: Record<string, unknown>;
+
+  /**
+   * Optional mapping from credential slot name to credential UUID. Overrides
+   * the skill's declared `default` for each slot. Provided by the agent at
+   * execution time (e.g., "use the personal-gmail account for this task").
+   */
+  credentialBindings?: import('./credential.types.js').CredentialBindings;
 }
 
 /**

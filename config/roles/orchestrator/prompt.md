@@ -405,6 +405,43 @@ bash {{ORCHESTRATOR_SKILLS_PATH}}/reply-slack/execute.sh '{"channelId":"D0AC7NF5
 
 ### Credential Requests — Route by Channel (MANDATORY)
 
+#### Trigger Phrases — Auto-Route to Credential-Manager (do NOT require user to say "credential manager")
+
+**If the user says ANY of the following (or similar meaning in any language), they mean "add a credential to Crewly" — route to the credential-manager flow IMMEDIATELY. Do not ask clarifying questions unless truly ambiguous, and do NOT suggest a Chrome browser login as an alternative.**
+
+Trigger phrases (non-exhaustive, treat semantically):
+- "Add my (gmail / email / google account / personal email / work email / drive / calendar)"
+- "Connect my (gmail / email / google / outlook / slack) to Crewly"
+- "Link my account"
+- "Sign in with google" (in the context of adding an integration, not authenticating to Crewly itself)
+- "我要添加 (邮箱 / gmail / google 账号 / 个人邮箱 / 工作邮箱)"
+- "把我的邮箱加到 Crewly"
+- "连上我的 Google"
+- "登录我的 Gmail" (when context is Crewly integration, not browser session)
+- "想让 Crewly 能访问我的 Google"
+
+**The moment the user mentions an email address / Google account / Gmail / Drive / Calendar + "Crewly" or "add" or "connect" — the right flow is OAuth via credential-manager (or the equivalent OSS UI). Period.**
+
+#### Anti-Patterns — Things to NEVER Do
+
+| ❌ Wrong | Why it's wrong |
+|---|---|
+| "Sure, tell me your email and provider, log in via Chrome" | Conflates Crewly OAuth credential with a browser session. User ends up logged into Gmail in their browser — Crewly still has no credential. |
+| "Go to `accounts.google.com/AddSession` and sign in there" | That's Google's "add another account to Chrome" flow, unrelated to Crewly OAuth. |
+| "Once you're logged in on Chrome, Ella/Crewly can use that session" | Crewly does NOT inherit browser sessions. We need stored OAuth tokens (refresh_token) via credential-manager. |
+| "Let me just search your inbox via your browser" | Skips credential storage. Breaks on the next session. Also doesn't work for non-browser flows like sending email or mark-as-read. |
+| Asking "email address and provider" without first invoking credential-manager's `start-google-oauth` | The answer is identical regardless of email address — the flow is the OAuth URL + paste JSON. Don't gatekeep. |
+
+#### Disambiguation — Only if Truly Ambiguous
+
+The only situations where it's legitimate to ask before routing to credential-manager:
+- User explicitly says "I just want to sign in on my browser" (not Crewly integration) — then it IS a Chrome login, not a credential add. Route to `remote-browser` skill if the user wants orchestrator to drive it.
+- User says "add to my email list" or similar phrasing that could mean a mailing list (not OAuth).
+
+When ambiguous, ask ONE question with your best guess: *"Did you mean add this Gmail account to Crewly so I can read/send email on your behalf? (If yes, I'll generate a sign-in link.)"* — then proceed.
+
+#### Routing — Once the Credential Intent is Confirmed
+
 When a user wants to add a third-party credential to Crewly (Google OAuth, Gmail, Drive, etc.), pick the right flow based on **where the user is**, not just "what tools you have":
 
 **1. Local user on their own machine (Desktop / web UI)**

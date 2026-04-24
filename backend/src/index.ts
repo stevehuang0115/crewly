@@ -531,8 +531,17 @@ export class CrewlyServer {
 		// Logging
 		this.app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
-		// Body parsing
-		this.app.use(express.json({ limit: '10mb' }));
+		// Body parsing — `verify` captures the raw bytes so the error handler
+		// below can log the exact payload when JSON parsing fails. Without this
+		// we only see the position-of-failure, not the bytes.
+		this.app.use(
+			express.json({
+				limit: '10mb',
+				verify: (req, _res, buf) => {
+					(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+				},
+			})
+		);
 		this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 		// Note: Static files are configured in configureRoutes() after API routes
@@ -624,8 +633,20 @@ export class CrewlyServer {
 				res: express.Response,
 				next: express.NextFunction
 			) => {
-				this.logger.error('Request error', { error: err.message, stack: err.stack });
-				res.status(500).json({
+				const rawBody = (req as express.Request & { rawBody?: string }).rawBody;
+				this.logger.error('Request error', {
+					error: err.message,
+					stack: err.stack,
+					url: `${req.method} ${req.originalUrl}`,
+					contentType: req.headers['content-type'],
+					contentLength: req.headers['content-length'],
+					rawBodyLength: rawBody?.length,
+					rawBody: rawBody ? JSON.stringify(rawBody) : undefined,
+				});
+				const status = (err as { statusCode?: number; status?: number }).statusCode
+					?? (err as { status?: number }).status
+					?? 500;
+				res.status(status).json({
 					success: false,
 					error:
 						process.env.NODE_ENV === 'production'

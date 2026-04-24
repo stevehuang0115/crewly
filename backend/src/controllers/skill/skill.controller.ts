@@ -468,6 +468,7 @@ router.post('/:id/execute', async (req: Request, res: Response, next: NextFuncti
       taskId: req.body.taskId,
       userInput: req.body.userInput,
       metadata: req.body.metadata,
+      credentialBindings: req.body.credentialBindings,
     };
 
     const executor = getSkillExecutorService();
