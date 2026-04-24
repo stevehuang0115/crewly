@@ -132,6 +132,21 @@ describe('openChatDatabase', () => {
     }
   });
 
+  // Regression guard: root package is `"type": "module"`, so a bare
+  // `require('better-sqlite3')` used to throw ReferenceError at runtime.
+  // The lazy loader must bridge via createRequire(import.meta.url).
+  it('loads better-sqlite3 without ReferenceError under ESM', () => {
+    // If createRequire is wired correctly, openInMemory succeeds and we can
+    // run a trivial query. If the fix regresses, this throws synchronously.
+    const db = openInMemory();
+    try {
+      const row = db.prepare('SELECT 1 AS ok').get() as { ok: number };
+      expect(row.ok).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it('clientMessageId idempotency index prevents duplicates per channel', () => {
     const db = openInMemory();
     try {

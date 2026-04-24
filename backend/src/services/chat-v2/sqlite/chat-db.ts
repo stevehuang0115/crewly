@@ -13,11 +13,30 @@
 
 import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { createRequire } from 'module';
 import { LoggerService, type ComponentLogger } from '../../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
 // Lazy better-sqlite3 loader — avoids a hard native-module dep at import time
 // ---------------------------------------------------------------------------
+
+/**
+ * CJS-style `require` scoped to this module. `better-sqlite3` is a native
+ * addon and must be loaded via CJS `require`, but this module compiles to
+ * ESM (root package has `"type": "module"`) where the bare `require` global
+ * is undefined.
+ *
+ * We cannot write `createRequire(import.meta.url)` as a literal because
+ * ts-jest transpiles tests to CommonJS, and TS1343 forbids `import.meta`
+ * under CJS. So we read the URL via `new Function()` — invisible to the
+ * TS compiler, correct under ESM at runtime. Under CJS (tests) the
+ * `typeof require === 'function'` branch wins and the Function body
+ * is never evaluated.
+ */
+const nodeRequire: NodeRequire =
+  typeof require === 'function'
+    ? require
+    : createRequire(new Function('return import.meta.url')() as string);
 
 /** Cached reference to the better-sqlite3 module after first successful load. */
 let _BetterSqlite3: typeof import('better-sqlite3') | null = null;
@@ -31,8 +50,7 @@ let _BetterSqlite3: typeof import('better-sqlite3') | null = null;
 function getBetterSqlite3(): typeof import('better-sqlite3') {
   if (!_BetterSqlite3) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      _BetterSqlite3 = require('better-sqlite3');
+      _BetterSqlite3 = nodeRequire('better-sqlite3');
     } catch (err) {
       throw new Error(
         'better-sqlite3 native module failed to load. Run `npm rebuild better-sqlite3` to fix. ' +
