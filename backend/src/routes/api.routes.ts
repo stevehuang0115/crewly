@@ -45,6 +45,8 @@ import { createV2WorkspaceRouter } from '../controllers/v2-workspace/workspace.r
 import { createTriggerRouter } from '../controllers/trigger/trigger.routes.js';
 import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
+import { createChatV2Router } from '../controllers/chat-v2/index.js';
+import { getChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -174,6 +176,11 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Task Projection routes — V3.1 TaskRecord + TaskEvent observability layer
   router.use('/task-projection', taskProjectionRouter);
+
+  // Chat V2 (Agent-First Chat MVP Phase 1) — mounts /api/chat/channels/*
+  // Coexists with the legacy /api/chat/{send,messages,conversations,...} routes
+  // registered by `createApiRouter` → no route overlap.
+  router.use('/chat', createChatV2Router(getChatV2Service()));
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here
