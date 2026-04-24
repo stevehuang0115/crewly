@@ -1,0 +1,26 @@
+{
+  "id": "agent-gmail",
+  "name": "Gmail Suite",
+  "description": "Multi-action Gmail skill for agents — list, read, search, and send emails. Requires a google-oauth credential bound to the 'gmail' slot.",
+  "category": "communication",
+  "skillType": "claude-skill",
+  "promptFile": "instructions.md",
+  "execution": {
+    "type": "script",
+    "script": {
+      "file": "execute.sh",
+      "interpreter": "bash",
+      "timeoutMs": 30000
+    }
+  },
+  "assignableRoles": ["generalist", "support", "sales", "product-manager", "developer", "orchestrator", "assistant"],
+  "triggers": [
+    "send an email",
+    "check my gmail",
+    "search emails",
+    "read email content",
+    "list recent messages"
+  ],
+  "tags": ["email", "gmail", "google", "communication"],
+  "version": "1.0.0"
+}
