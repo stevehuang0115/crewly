@@ -1109,11 +1109,20 @@ export const GOOGLE_OAUTH_CONSTANTS = {
 	AUTH_BASE_URL: 'https://accounts.google.com/o/oauth2/v2/auth',
 	TOKEN_ENDPOINT: 'https://oauth2.googleapis.com/token',
 	USERINFO_ENDPOINT: 'https://www.googleapis.com/oauth2/v2/userinfo',
+	/**
+	 * Default OAuth scopes requested by the standalone /api/oauth/google flow.
+	 *
+	 * `gmail.modify` is a Google-side functional superset that covers
+	 * `gmail.readonly`, `gmail.send`, and label/state mutations. Declaring
+	 * the single most-capable Gmail scope here means new credentials issued
+	 * via this flow can drive all 9 actions of the agent `gmail` skill on
+	 * one OAuth grant — no re-auth required when an agent moves from
+	 * read-only to send to label management.
+	 */
 	DEFAULT_SCOPES: [
 		'openid',
 		'email',
-		'https://www.googleapis.com/auth/gmail.readonly',
-		'https://www.googleapis.com/auth/gmail.send',
+		'https://www.googleapis.com/auth/gmail.modify',
 	],
 	/** Google Workspace scopes for agent-driven operations (Phase 1). */
 	WORKSPACE_SCOPES: [

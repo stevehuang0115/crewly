@@ -1,0 +1,31 @@
+{
+  "id": "agent-gmail",
+  "name": "Gmail Suite",
+  "description": "Multi-action Gmail skill for agents — list/read/search/send messages, manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope.",
+  "category": "communication",
+  "skillType": "claude-skill",
+  "promptFile": "instructions.md",
+  "execution": {
+    "type": "script",
+    "script": {
+      "file": "execute.sh",
+      "interpreter": "bash",
+      "timeoutMs": 30000
+    }
+  },
+  "assignableRoles": ["generalist", "support", "sales", "product-manager", "developer", "orchestrator", "assistant"],
+  "triggers": [
+    "send an email",
+    "check my gmail",
+    "search emails",
+    "read email content",
+    "list recent messages",
+    "mark email as read",
+    "mark email as unread",
+    "add label to email",
+    "remove label from email",
+    "list gmail labels"
+  ],
+  "tags": ["email", "gmail", "google", "communication", "labels", "modify"],
+  "version": "1.1.0"
+}
