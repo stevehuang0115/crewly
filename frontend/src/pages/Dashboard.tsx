@@ -211,6 +211,10 @@ export const Dashboard: React.FC = () => {
         return acc;
       }, {} as Record<string, Team[]>);
       setTeamsMap(teamsMapping);
+      // Clear any error that was set by the safety timeout before this
+      // (slow) request eventually succeeded — otherwise the user would
+      // see fresh data sitting under a stale "took too long" banner.
+      setError(null);
     } catch (err) {
       logSilentError(err, { context: 'Loading dashboard data', level: 'error' });
       setError('Failed to load dashboard data. Please try again.');

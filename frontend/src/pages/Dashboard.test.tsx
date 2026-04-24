@@ -510,5 +510,48 @@ describe('Dashboard Page', () => {
         vi.useRealTimers();
       }
     });
+
+    /**
+     * Edge case introduced by the safety-timeout feature: if the
+     * real API eventually completes AFTER the deadline fired, the
+     * success path must clear the stale "took too long" error so
+     * the user doesn't see fresh data sitting under an error banner.
+     */
+    it('clears the stale safety-timeout error if the real load later succeeds', async () => {
+      vi.useFakeTimers();
+      try {
+        let resolveProjects!: (v: typeof mockProjects) => void;
+        vi.mocked(apiService.getProjects).mockImplementation(
+          () =>
+            new Promise((r) => {
+              resolveProjects = r;
+            }),
+        );
+        vi.mocked(apiService.getTeams).mockResolvedValue(mockTeams);
+
+        render(
+          <TestWrapper>
+            <Dashboard />
+          </TestWrapper>,
+        );
+
+        // Deadline fires first → error is shown
+        await vi.advanceTimersByTimeAsync(SAFETY_TIMEOUT_MS + 1);
+        expect(screen.getByText(/took too long to load/i)).toBeInTheDocument();
+
+        // Now the real request completes. Switch to real timers so
+        // waitFor can poll, then resolve the pending projects promise.
+        vi.useRealTimers();
+        resolveProjects(mockProjects);
+
+        await waitFor(() => {
+          expect(
+            screen.queryByText(/took too long to load/i),
+          ).not.toBeInTheDocument();
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
