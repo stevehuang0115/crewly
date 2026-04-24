@@ -1109,10 +1109,11 @@ describe('SlackOrchestratorBridge', () => {
 
       const event = await handledPromise;
 
-      // Should NOT route to auditor queue
-      expect(mockQueueService.enqueue).not.toHaveBeenCalled();
-      // Response is the offline message
+      // #247: Should route to the orchestrator queue for replay when both are offline
+      expect(mockQueueService.enqueue).toHaveBeenCalled();
+      // Response is the offline/queued message
       expect(event.response).toContain('offline');
+      expect(event.response).toContain('queued');
     }, 15000);
 
     it('should include FALLBACK marker in auditor-routed messages', () => {
@@ -1395,16 +1396,22 @@ describe('SlackOrchestratorBridge', () => {
       expect((bridge as any).pendingReactions.has('C123:1707.001')).toBe(false);
     });
 
-    it('should not react when no pending reaction exists', async () => {
+    it('should not react when no pending reaction exists (no-op contract)', async () => {
       const bridge = new SlackOrchestratorBridge({ showTypingIndicator: true });
       await bridge.initialize();
 
       const slackService = (bridge as any).slackService;
       jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
 
-      await (bridge as any).addCompletionReaction('C123', '1707.001');
+      // Contract (R1 comment in chat.controller.ts): calling with a thread
+      // that has no pending reaction is a no-op — no addReaction call, no
+      // throw, and the Map stays unchanged.
+      await expect(
+        (bridge as any).addCompletionReaction('C123', '1707.001'),
+      ).resolves.toBeUndefined();
 
       expect(slackService.addReaction).not.toHaveBeenCalled();
+      expect((bridge as any).pendingReactions.size).toBe(0);
     });
 
     it('should handle addReaction errors gracefully', async () => {

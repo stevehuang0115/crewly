@@ -1222,6 +1222,37 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
+   * Add a completion reaction (✅) to a message that was previously
+   * stored as a pending reaction. Consumes the pending reaction.
+   *
+   * @param channelId - Slack channel ID
+   * @param threadTs - Thread timestamp (key for lookup)
+   */
+  public async addCompletionReaction(channelId: string, threadTs: string): Promise<void> {
+    const key = `${channelId}:${threadTs}`;
+    const messageTs = this.pendingReactions.get(key);
+
+    if (messageTs) {
+      // Consume the pending reaction
+      this.pendingReactions.delete(key);
+
+      try {
+        await this.slackService.addReaction(channelId, messageTs, 'white_check_mark');
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        // Suppress "already_reacted" errors as they are common and non-fatal
+        if (errMsg.includes('already_reacted')) {
+          return;
+        }
+        // Suppress "missing_scope" since we already log/warn about that elsewhere
+        if (!errMsg.includes('missing_scope')) {
+          this.logger.warn('Failed to add completion reaction', { channelId, messageTs, error: errMsg });
+        }
+      }
+    }
+  }
+
+  /**
    * Record response to thread store. Slack delivery is handled exclusively
    * by the reply-slack skill via the API — no terminal output fallback needed.
    *
