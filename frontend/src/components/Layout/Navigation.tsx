@@ -14,6 +14,7 @@ import {
 	FolderOpen,
 	Users,
 	MessageSquare,
+	MessagesSquare,
 	Settings,
 	ChevronLeft,
 	ChevronRight,
@@ -68,6 +69,7 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Teams', href: '/teams', icon: Users },
 			{ name: 'Missions', href: '/missions', icon: Target },
 			{ name: 'Chat', href: '/chat', icon: MessageSquare },
+			{ name: 'Agents', href: '/agents', icon: MessagesSquare },
 		],
 	},
 	{
