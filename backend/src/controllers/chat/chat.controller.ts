@@ -447,7 +447,10 @@ export async function agentResponse(
                 threadTs: threads[0].threadTs,
               });
 
-              // Add ✅ reaction to the original message that triggered this task
+              // If a pending reaction was stored when the message arrived
+              // (orchestrator-routed path sets a 👀 on the trigger message),
+              // flip it to ✅ now that the agent reply has been delivered.
+              // No-op when there's no pending entry for this thread.
               await bridge.addCompletionReaction(threads[0].channelId, threads[0].threadTs);
             }
           }
