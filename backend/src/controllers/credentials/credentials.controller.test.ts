@@ -119,6 +119,13 @@ describe('credentials.controller', () => {
         .send({ name: '', provider: 'gemini', value: 'v' });
       expect(res.status).toBe(400);
     });
+
+    it('rejects null field values (isNonEmptyString guard)', async () => {
+      const res = await request(app)
+        .post('/api/credentials/api-key')
+        .send({ name: null, provider: 'gemini', value: 'v' });
+      expect(res.status).toBe(400);
+    });
   });
 
   // ------------------------------------------------------------------

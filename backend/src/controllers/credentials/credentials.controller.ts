@@ -17,15 +17,28 @@ import {
   type UpdateCredentialMetadata,
 } from '../../services/credential/credential-store.service.js';
 import { GeminiCliWorkspaceHelper } from '../../services/credential/helpers/gemini-cli-workspace.helper.js';
-import {
-  CredentialNotFoundError,
-  CredentialRevokedError,
-} from '../../types/credential.types.js';
+import { CredentialNotFoundError } from '../../types/credential.types.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger(
   'CredentialsController',
 );
+
+// ============================================================================
+// Module constants
+// ============================================================================
+
+/** Lifecycle statuses a client may assign via PATCH. */
+const ALLOWED_STATUSES: ReadonlySet<string> = new Set(['active', 'revoked']);
+
+// ============================================================================
+// Validation helpers
+// ============================================================================
+
+/** Type guard for non-empty strings — cheap defensive check on request bodies. */
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
 
 // ============================================================================
 // Helper singleton (lazy)
@@ -103,12 +116,9 @@ export async function addApiKey(
       value?: unknown;
     };
     if (
-      typeof body.name !== 'string' ||
-      body.name.length === 0 ||
-      typeof body.provider !== 'string' ||
-      body.provider.length === 0 ||
-      typeof body.value !== 'string' ||
-      body.value.length === 0
+      !isNonEmptyString(body.name) ||
+      !isNonEmptyString(body.provider) ||
+      !isNonEmptyString(body.value)
     ) {
       res.status(400).json({
         success: false,
@@ -130,9 +140,6 @@ export async function addApiKey(
   }
 }
 
-/** Lifecycle statuses a client may assign via PATCH. */
-const ALLOWED_STATUSES: ReadonlySet<string> = new Set(['active', 'revoked']);
-
 /**
  * PATCH /api/credentials/:id — update metadata (name, status).
  * Body: { name?, status? }
@@ -147,7 +154,7 @@ export async function updateCredentialHandler(
     const patch: UpdateCredentialMetadata = {};
 
     if (body.name !== undefined) {
-      if (typeof body.name !== 'string' || body.name.length === 0) {
+      if (!isNonEmptyString(body.name)) {
         res.status(400).json({
           success: false,
           error: 'name must be a non-empty string',
@@ -278,5 +285,6 @@ export async function clearGeminiCliExtensionFile(
   }
 }
 
-// Headless OAuth endpoints (startGoogleOAuth, completeGoogleOAuth) live in
-// ./google-oauth.controller.ts — wired into the router below.
+// Headless Google OAuth endpoints (startGoogleOAuth, completeGoogleOAuth)
+// live in `./google-oauth.controller.ts` and are composed into the router in
+// `./credentials.routes.ts`.
