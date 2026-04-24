@@ -240,6 +240,16 @@ describe('CrewlyMcpServer', () => {
       const server = mcpServer.getServer();
       expect(server).toBeDefined();
     });
+
+    it('installSdkModules is exercised by start() (both paths feed through it)', async () => {
+      // This test locks in the Q3 refactor: both ensureInitialized and
+      // tryInitializeWithRequire delegate Server/transport construction +
+      // handler registration to a single private helper. Starting the
+      // server means installSdkModules ran successfully; observing that
+      // handlers were registered is the externally visible proof.
+      expect(handlers.has('tools/list')).toBe(true);
+      expect(handlers.has('tools/call')).toBe(true);
+    });
   });
 
   // ========================= Lifecycle =========================

@@ -94,8 +94,8 @@ interface ToolResult {
  */
 export class CrewlyMcpServer {
   private server: any | null = null;
-  private storage: StorageService;
-  private memory: MemoryService;
+  private readonly storage: StorageService;
+  private readonly memory: MemoryService;
   private transport: any | null = null;
   private stdioTransportCtor: (new () => any) | null = null;
   private geminiCliHelper: GeminiCliWorkspaceHelper | null = null;
@@ -145,22 +145,26 @@ export class CrewlyMcpServer {
     });
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (this.server && this.stdioTransportCtor) {
-      return;
-    }
-
-    const serverModule = await import('@modelcontextprotocol/sdk/server/index.js') as any;
-    const stdioModule = await import('@modelcontextprotocol/sdk/server/stdio.js') as any;
-    const typesModule = await import('@modelcontextprotocol/sdk/types.js') as any;
-
+  /**
+   * Build the Server + transport + handlers from already-loaded SDK modules.
+   * Returns false if any expected SDK symbol is missing (so the caller can
+   * decide whether to throw or silently fall back). Both `ensureInitialized`
+   * (dynamic import) and `tryInitializeWithRequire` (CommonJS require) feed
+   * their loaded modules through here.
+   */
+  private installSdkModules(
+    serverModule: any,
+    stdioModule: any,
+    typesModule: any,
+  ): boolean {
     const ServerCtor = serverModule.Server ?? serverModule.default?.Server;
-    const StdioTransportCtor = stdioModule.StdioServerTransport ?? stdioModule.default?.StdioServerTransport;
+    const StdioTransportCtor =
+      stdioModule.StdioServerTransport ?? stdioModule.default?.StdioServerTransport;
     const listTools = typesModule.ListToolsRequestSchema;
     const callTool = typesModule.CallToolRequestSchema;
 
     if (!ServerCtor || !StdioTransportCtor || !listTools || !callTool) {
-      throw new Error('Failed to load MCP server SDK modules');
+      return false;
     }
 
     this.server = new ServerCtor(
@@ -168,14 +172,25 @@ export class CrewlyMcpServer {
         name: MCP_SERVER_CONSTANTS.SERVER_INFO.NAME,
         version: MCP_SERVER_CONSTANTS.SERVER_INFO.VERSION,
       },
-      {
-        capabilities: {
-          tools: {},
-        },
-      },
+      { capabilities: { tools: {} } },
     );
     this.stdioTransportCtor = StdioTransportCtor;
     this.registerHandlers({ listTools, callTool });
+    return true;
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (this.server && this.stdioTransportCtor) {
+      return;
+    }
+
+    const serverModule = (await import('@modelcontextprotocol/sdk/server/index.js')) as any;
+    const stdioModule = (await import('@modelcontextprotocol/sdk/server/stdio.js')) as any;
+    const typesModule = (await import('@modelcontextprotocol/sdk/types.js')) as any;
+
+    if (!this.installSdkModules(serverModule, stdioModule, typesModule)) {
+      throw new Error('Failed to load MCP server SDK modules');
+    }
   }
 
   private tryInitializeWithRequire(): void {
@@ -193,28 +208,7 @@ export class CrewlyMcpServer {
       const stdioModule = req('@modelcontextprotocol/sdk/server/stdio.js');
       const typesModule = req('@modelcontextprotocol/sdk/types.js');
 
-      const ServerCtor = serverModule.Server ?? serverModule.default?.Server;
-      const StdioTransportCtor = stdioModule.StdioServerTransport ?? stdioModule.default?.StdioServerTransport;
-      const listTools = typesModule.ListToolsRequestSchema;
-      const callTool = typesModule.CallToolRequestSchema;
-
-      if (!ServerCtor || !StdioTransportCtor || !listTools || !callTool) {
-        return;
-      }
-
-      this.server = new ServerCtor(
-        {
-          name: MCP_SERVER_CONSTANTS.SERVER_INFO.NAME,
-          version: MCP_SERVER_CONSTANTS.SERVER_INFO.VERSION,
-        },
-        {
-          capabilities: {
-            tools: {},
-          },
-        },
-      );
-      this.stdioTransportCtor = StdioTransportCtor;
-      this.registerHandlers({ listTools, callTool });
+      this.installSdkModules(serverModule, stdioModule, typesModule);
     } catch {
       // Ignore in environments where `require` cannot load ESM SDK modules.
       // `ensureInitialized()` will use dynamic import on demand.
