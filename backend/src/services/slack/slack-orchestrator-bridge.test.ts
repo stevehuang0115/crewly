@@ -1109,10 +1109,11 @@ describe('SlackOrchestratorBridge', () => {
 
       const event = await handledPromise;
 
-      // Should NOT route to auditor queue
-      expect(mockQueueService.enqueue).not.toHaveBeenCalled();
-      // Response is the offline message
+      // #247: Should route to the orchestrator queue for replay when both are offline
+      expect(mockQueueService.enqueue).toHaveBeenCalled();
+      // Response is the offline/queued message
       expect(event.response).toContain('offline');
+      expect(event.response).toContain('queued');
     }, 15000);
 
     it('should include FALLBACK marker in auditor-routed messages', () => {

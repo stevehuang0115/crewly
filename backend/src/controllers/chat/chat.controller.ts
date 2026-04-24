@@ -446,6 +446,9 @@ export async function agentResponse(
                 channelId: threads[0].channelId,
                 threadTs: threads[0].threadTs,
               });
+
+              // Add ✅ reaction to the original message that triggered this task
+              await bridge.addCompletionReaction(threads[0].channelId, threads[0].threadTs);
             }
           }
         }
