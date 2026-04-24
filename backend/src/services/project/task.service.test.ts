@@ -162,6 +162,28 @@ describe('TaskService', () => {
     });
 
     /**
+     * Non-regular file shapes (FIFOs, device files, symlinks to
+     * directories) should also be skipped, not just plain directories.
+     */
+    it('readTaskFile returns null for non-regular, non-directory entries', async () => {
+      mockFs.readFile.mockResolvedValue('# Fake content' as unknown as Buffer);
+      mockFs.stat.mockResolvedValue({
+        isFile: () => false,
+        isDirectory: () => false,
+        birthtimeMs: Date.now(),
+        mtimeMs: Date.now(),
+      } as unknown as Awaited<ReturnType<typeof fs.stat>>);
+
+      const result = await (
+        taskService as unknown as {
+          readTaskFile: (p: string, m: string) => Promise<unknown>;
+        }
+      ).readTaskFile('/tasks/some.fifo.md', 'm1');
+
+      expect(result).toBeNull();
+    });
+
+    /**
      * Happy path: when the stat call says it IS a file, parsing proceeds.
      */
     it('readTaskFile returns a parsed Task when path is a regular file', async () => {
