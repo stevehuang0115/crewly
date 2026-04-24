@@ -466,4 +466,44 @@ describe('Dashboard Page', () => {
       expect(mockNavigate).toHaveBeenCalledWith('/projects?create=true');
     });
   });
+
+  /**
+   * Safety timeout: if the initial data load exceeds 15s (e.g. the API is
+   * frozen), the Dashboard bails out of the loading skeleton and shows an
+   * error instead of leaving the user staring at a hung loader.
+   *
+   * Placed in its own describe so `vi.useFakeTimers` / `vi.useRealTimers`
+   * are fully isolated — earlier siblings that rely on `waitFor`'s real
+   * timer stay unaffected.
+   */
+  describe('Safety timeout', () => {
+    it('surfaces an error after 15s if loading never resolves', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(apiService.getProjects).mockImplementation(
+          () => new Promise(() => {}),
+        );
+        vi.mocked(apiService.getTeams).mockImplementation(
+          () => new Promise(() => {}),
+        );
+
+        render(
+          <TestWrapper>
+            <Dashboard />
+          </TestWrapper>,
+        );
+
+        expect(screen.getByText('Loading dashboard...')).toBeInTheDocument();
+
+        // Jump past the 15s safety deadline
+        await vi.advanceTimersByTimeAsync(15_001);
+
+        expect(
+          screen.getByText(/took too long to load/i),
+        ).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

@@ -134,9 +134,54 @@ describe('TaskService', () => {
      */
     it('should handle file writing operations', async () => {
       mockFs.writeFile.mockResolvedValue(undefined);
-      
+
       await mockFs.writeFile('test.md', 'content');
       expect(mockFs.writeFile).toHaveBeenCalledWith('test.md', 'content');
+    });
+
+    /**
+     * readTaskFile must skip directory entries that happen to end in `.md`.
+     * Without the isFile() guard, readdir-based callers would try to read a
+     * directory path as a file and the error would bubble up.
+     */
+    it('readTaskFile returns null when path points to a directory', async () => {
+      mockFs.readFile.mockResolvedValue('# Fake content' as unknown as Buffer);
+      mockFs.stat.mockResolvedValue({
+        isFile: () => false,
+        birthtimeMs: Date.now(),
+        mtimeMs: Date.now(),
+      } as unknown as Awaited<ReturnType<typeof fs.stat>>);
+
+      const result = await (
+        taskService as unknown as {
+          readTaskFile: (p: string, m: string) => Promise<unknown>;
+        }
+      ).readTaskFile('/tasks/archive.md', 'm1');
+
+      expect(result).toBeNull();
+    });
+
+    /**
+     * Happy path: when the stat call says it IS a file, parsing proceeds.
+     */
+    it('readTaskFile returns a parsed Task when path is a regular file', async () => {
+      mockFs.readFile.mockResolvedValue(
+        '# Hello\n\n**Status:** open\n' as unknown as Buffer,
+      );
+      mockFs.stat.mockResolvedValue({
+        isFile: () => true,
+        birthtimeMs: Date.now(),
+        mtimeMs: Date.now(),
+      } as unknown as Awaited<ReturnType<typeof fs.stat>>);
+
+      const result = (await (
+        taskService as unknown as {
+          readTaskFile: (p: string, m: string) => Promise<Task | null>;
+        }
+      ).readTaskFile('/tasks/real-task.md', 'm1')) as Task | null;
+
+      expect(result).not.toBeNull();
+      expect(result?.id).toBe('real-task');
     });
   });
 

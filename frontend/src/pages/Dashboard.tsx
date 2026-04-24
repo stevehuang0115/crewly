@@ -83,6 +83,22 @@ export const Dashboard: React.FC = () => {
     loadData();
   }, []);
 
+  /**
+   * Safety timeout: if loading exceeds 15s, force-stop and show error.
+   * Prevents the skeleton from being stuck indefinitely on slow/failed requests.
+   */
+  useEffect(() => {
+    if (!loading) return;
+
+    const SAFETY_TIMEOUT_MS = 15_000;
+    const timer = setTimeout(() => {
+      setLoading(false);
+      setError('Dashboard took too long to load. Please try again.');
+    }, SAFETY_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [loading]);
+
   const calculateProjectProgress = async (projectId: string): Promise<ProjectProgress> => {
     try {
       const tasks = await apiService.getAllTasks(projectId);

@@ -165,6 +165,10 @@ export class TaskService {
         fs.readFile(filePath, 'utf-8'),
         fs.stat(filePath),
       ]);
+      // Skip directory entries that happen to end in `.md` — e.g. a stray
+      // `archive.md/` folder. readFile would have already errored on a
+      // directory, but belt-and-suspenders: bail cleanly if it didn't.
+      if (!stats.isFile()) return null;
       const parsed = this.parseMarkdownContent(content);
       const fileBase = path.basename(filePath, '.md');
 
