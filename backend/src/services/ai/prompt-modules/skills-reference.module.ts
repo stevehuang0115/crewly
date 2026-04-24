@@ -54,6 +54,23 @@ export class SkillsReferenceModule implements PromptModule {
 			'- `core/remember` — store knowledge for future reference',
 			'- `core/record-learning` — record learnings while working',
 			'- `core/report-status` — report status to team leader or orchestrator',
+			'',
+			'### Follow-up skills (ad-hoc timers and event watchers)',
+			'- `core/schedule-followup` — schedule a future check-in that creates a WorkItem at time T',
+			'    • one-shot: `--in-minutes N` or `--fire-at <ISO8601>`',
+			'    • bounded recurring: `--cron "<expr>" --max-fires N`',
+			'    • target yourself (default) or another agent via `--target`',
+			'- `core/watch-for-event` — fire a WorkItem whenever an event occurs (e.g. `agent:idle`, `task:completed`)',
+			'    • narrow with `--filter-session <session>` or `--filter-json \'{"...":"..."}\'`',
+			'    • cap with `--max-fires` / `--max-idle-fires` so a flapping source does not loop forever',
+			'- `core/cancel-followup` — cancel a trigger you created (`--id` or `--name`)',
+			'- `core/list-my-followups` — list follow-ups owned by your team (audit before adding a new one)',
+			'',
+			'**Follow-up discipline (required):**',
+			'1. Every follow-up must have a **finite end**. Use `maxFires` for recurring, or rely on the default `maxIdleFires=3` auto-cancel.',
+			'2. Call `cancel-followup` the moment you confirm the task is done — do not rely on idle-auto-cancel as your only safety net.',
+			'3. Before scheduling a new watcher on a target, run `list-my-followups --name-prefix watch:` to avoid duplicates.',
+			'4. Prefer `watch-for-event` when you need reactive coverage (agent went idle → check). Prefer `schedule-followup` when you need a wall-clock checkpoint (9am tomorrow → re-prompt).',
 		];
 
 		// Orchestrators and TLs get additional coordination skills

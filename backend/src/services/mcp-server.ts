@@ -23,6 +23,11 @@ import { StorageService } from './core/storage.service.js';
 import { MemoryService } from './memory/memory.service.js';
 import type { Team, TeamMember } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
+import { getCredentialStoreService } from './credential/credential-store.service.js';
+import { GeminiCliWorkspaceHelper } from './credential/helpers/gemini-cli-workspace.helper.js';
+import { getSkillExecutorService } from './skill/skill-executor.service.js';
+import type { SkillExecutionContext } from '../types/skill.types.js';
+import { TOOL_DEFINITIONS } from './mcp-tool-definitions.js';
 
 // ========================= Constants =========================
 
@@ -57,163 +62,8 @@ interface ToolResult {
   isError?: boolean;
 }
 
-// ========================= Tool Definitions =========================
-
-/**
- * MCP tool definitions for Crewly capabilities.
- * Each tool has a name, description, and JSON Schema for its input.
- */
-const TOOL_DEFINITIONS = [
-  {
-    name: 'crewly_get_teams',
-    description:
-      'List all Crewly teams and their members with current status. ' +
-      'Returns team names, member roles, agent status, and working status.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        teamId: {
-          type: 'string',
-          description: 'Optional: filter to a specific team by ID',
-        },
-      },
-    },
-  },
-  {
-    name: 'crewly_create_team',
-    description:
-      'Create a new Crewly team with the specified members. ' +
-      'Each member needs a name, role, and runtime type.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        name: {
-          type: 'string',
-          description: 'Team name (e.g. "Backend Squad")',
-        },
-        description: {
-          type: 'string',
-          description: 'Optional team description',
-        },
-        members: {
-          type: 'array',
-          description: 'Array of team members to create',
-          items: {
-            type: 'object',
-            properties: {
-              name: { type: 'string', description: 'Member name' },
-              role: {
-                type: 'string',
-                description: 'Member role (developer, qa, product-manager, designer, etc.)',
-              },
-              runtimeType: {
-                type: 'string',
-                enum: ['claude-code', 'gemini-cli', 'codex-cli', 'crewly-agent'],
-                description: 'AI runtime to use (default: claude-code)',
-              },
-            },
-            required: ['name', 'role'],
-          },
-        },
-      },
-      required: ['name', 'members'],
-    },
-  },
-  {
-    name: 'crewly_assign_task',
-    description:
-      'Assign a task to a specific agent by sending it a message via the ' +
-      'message queue. The agent will receive the task content as input.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        teamId: {
-          type: 'string',
-          description: 'ID of the team the agent belongs to',
-        },
-        memberId: {
-          type: 'string',
-          description: 'ID of the member to assign the task to',
-        },
-        task: {
-          type: 'string',
-          description: 'Task description/instructions for the agent',
-        },
-      },
-      required: ['teamId', 'memberId', 'task'],
-    },
-  },
-  {
-    name: 'crewly_get_status',
-    description:
-      'Get the current status of a specific team or agent. Returns agent ' +
-      'status (active/inactive), working status (idle/in_progress), and ' +
-      'runtime type.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        teamId: {
-          type: 'string',
-          description: 'Optional: filter to a specific team',
-        },
-        memberId: {
-          type: 'string',
-          description: 'Optional: filter to a specific member within a team',
-        },
-      },
-    },
-  },
-  {
-    name: 'crewly_recall_memory',
-    description:
-      'Search team memory and knowledge base for relevant information. ' +
-      'Uses keyword and semantic matching to find stored learnings, ' +
-      'patterns, decisions, and documents.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        query: {
-          type: 'string',
-          description: 'Search query for the memory/knowledge system',
-        },
-        agentId: {
-          type: 'string',
-          description: 'Optional: agent ID to scope the recall',
-        },
-        projectPath: {
-          type: 'string',
-          description: 'Optional: project path to scope the recall',
-        },
-        scope: {
-          type: 'string',
-          enum: ['agent', 'project', 'both'],
-          description: 'Memory scope to search (default: both)',
-        },
-      },
-      required: ['query'],
-    },
-  },
-  {
-    name: 'crewly_send_message',
-    description:
-      'Send a message to the orchestrator via the message queue. ' +
-      'The message will be queued and processed by the orchestrator.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        message: {
-          type: 'string',
-          description: 'Message content to send',
-        },
-        conversationId: {
-          type: 'string',
-          description: 'Optional: conversation ID for threading (auto-generated if omitted)',
-        },
-      },
-      required: ['message'],
-    },
-  },
-] as const;
+// Tool definitions live in `./mcp-tool-definitions.ts` so this file can stay
+// focused on routing, lifecycle, and handler implementations.
 
 // ========================= Service =========================
 
@@ -244,10 +94,18 @@ const TOOL_DEFINITIONS = [
  */
 export class CrewlyMcpServer {
   private server: any | null = null;
-  private storage: StorageService;
-  private memory: MemoryService;
+  private readonly storage: StorageService;
+  private readonly memory: MemoryService;
   private transport: any | null = null;
   private stdioTransportCtor: (new () => any) | null = null;
+  private geminiCliHelper: GeminiCliWorkspaceHelper | null = null;
+
+  private getGeminiCliHelper(): GeminiCliWorkspaceHelper {
+    if (!this.geminiCliHelper) {
+      this.geminiCliHelper = new GeminiCliWorkspaceHelper(getCredentialStoreService());
+    }
+    return this.geminiCliHelper;
+  }
 
   /**
    * Creates a new CrewlyMcpServer instance.
@@ -287,22 +145,26 @@ export class CrewlyMcpServer {
     });
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (this.server && this.stdioTransportCtor) {
-      return;
-    }
-
-    const serverModule = await import('@modelcontextprotocol/sdk/server/index.js') as any;
-    const stdioModule = await import('@modelcontextprotocol/sdk/server/stdio.js') as any;
-    const typesModule = await import('@modelcontextprotocol/sdk/types.js') as any;
-
+  /**
+   * Build the Server + transport + handlers from already-loaded SDK modules.
+   * Returns false if any expected SDK symbol is missing (so the caller can
+   * decide whether to throw or silently fall back). Both `ensureInitialized`
+   * (dynamic import) and `tryInitializeWithRequire` (CommonJS require) feed
+   * their loaded modules through here.
+   */
+  private installSdkModules(
+    serverModule: any,
+    stdioModule: any,
+    typesModule: any,
+  ): boolean {
     const ServerCtor = serverModule.Server ?? serverModule.default?.Server;
-    const StdioTransportCtor = stdioModule.StdioServerTransport ?? stdioModule.default?.StdioServerTransport;
+    const StdioTransportCtor =
+      stdioModule.StdioServerTransport ?? stdioModule.default?.StdioServerTransport;
     const listTools = typesModule.ListToolsRequestSchema;
     const callTool = typesModule.CallToolRequestSchema;
 
     if (!ServerCtor || !StdioTransportCtor || !listTools || !callTool) {
-      throw new Error('Failed to load MCP server SDK modules');
+      return false;
     }
 
     this.server = new ServerCtor(
@@ -310,14 +172,25 @@ export class CrewlyMcpServer {
         name: MCP_SERVER_CONSTANTS.SERVER_INFO.NAME,
         version: MCP_SERVER_CONSTANTS.SERVER_INFO.VERSION,
       },
-      {
-        capabilities: {
-          tools: {},
-        },
-      },
+      { capabilities: { tools: {} } },
     );
     this.stdioTransportCtor = StdioTransportCtor;
     this.registerHandlers({ listTools, callTool });
+    return true;
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (this.server && this.stdioTransportCtor) {
+      return;
+    }
+
+    const serverModule = (await import('@modelcontextprotocol/sdk/server/index.js')) as any;
+    const stdioModule = (await import('@modelcontextprotocol/sdk/server/stdio.js')) as any;
+    const typesModule = (await import('@modelcontextprotocol/sdk/types.js')) as any;
+
+    if (!this.installSdkModules(serverModule, stdioModule, typesModule)) {
+      throw new Error('Failed to load MCP server SDK modules');
+    }
   }
 
   private tryInitializeWithRequire(): void {
@@ -335,28 +208,7 @@ export class CrewlyMcpServer {
       const stdioModule = req('@modelcontextprotocol/sdk/server/stdio.js');
       const typesModule = req('@modelcontextprotocol/sdk/types.js');
 
-      const ServerCtor = serverModule.Server ?? serverModule.default?.Server;
-      const StdioTransportCtor = stdioModule.StdioServerTransport ?? stdioModule.default?.StdioServerTransport;
-      const listTools = typesModule.ListToolsRequestSchema;
-      const callTool = typesModule.CallToolRequestSchema;
-
-      if (!ServerCtor || !StdioTransportCtor || !listTools || !callTool) {
-        return;
-      }
-
-      this.server = new ServerCtor(
-        {
-          name: MCP_SERVER_CONSTANTS.SERVER_INFO.NAME,
-          version: MCP_SERVER_CONSTANTS.SERVER_INFO.VERSION,
-        },
-        {
-          capabilities: {
-            tools: {},
-          },
-        },
-      );
-      this.stdioTransportCtor = StdioTransportCtor;
-      this.registerHandlers({ listTools, callTool });
+      this.installSdkModules(serverModule, stdioModule, typesModule);
     } catch {
       // Ignore in environments where `require` cannot load ESM SDK modules.
       // `ensureInitialized()` will use dynamic import on demand.
@@ -388,6 +240,18 @@ export class CrewlyMcpServer {
           return await this.handleRecallMemory(args);
         case 'crewly_send_message':
           return await this.handleSendMessage(args);
+        case 'crewly_credential_list':
+          return await this.handleCredentialList(args);
+        case 'crewly_credential_add_api_key':
+          return await this.handleCredentialAddApiKey(args);
+        case 'crewly_credential_oauth_import_gemini_cli':
+          return await this.handleCredentialImportGeminiCli(args);
+        case 'crewly_credential_clear_gemini_cli_file':
+          return await this.handleCredentialClearGeminiCliFile();
+        case 'crewly_credential_delete':
+          return await this.handleCredentialDelete(args);
+        case 'crewly_execute_skill':
+          return await this.handleExecuteSkill(args);
         default:
           return this.errorResult(`Unknown tool: ${name}`);
       }
@@ -395,6 +259,36 @@ export class CrewlyMcpServer {
       const message = error instanceof Error ? error.message : String(error);
       return this.errorResult(`Tool "${name}" failed: ${message}`);
     }
+  }
+
+  // ========================= Member formatters =========================
+
+  /**
+   * Format a TeamMember for an MCP response. Three variants share the
+   * same base (id/name/role/agentStatus/workingStatus); `includeRuntime`
+   * adds `runtimeType` + `sessionName`, and `includeTickets` adds
+   * `currentTickets`. Keeping all three paths in one place so that a
+   * field added to the member shape only needs to be surfaced once.
+   */
+  private formatMember(
+    m: TeamMember,
+    opts: { includeRuntime?: boolean; includeTickets?: boolean } = {},
+  ): Record<string, unknown> {
+    const base: Record<string, unknown> = {
+      id: m.id,
+      name: m.name,
+      role: m.role,
+      agentStatus: m.agentStatus,
+      workingStatus: m.workingStatus,
+    };
+    if (opts.includeRuntime) {
+      base.runtimeType = m.runtimeType;
+      base.sessionName = m.sessionName;
+    }
+    if (opts.includeTickets) {
+      base.currentTickets = m.currentTickets;
+    }
+    return base;
   }
 
   // ========================= Tool Handlers =========================
@@ -426,15 +320,7 @@ export class CrewlyMcpServer {
       name: team.name,
       description: team.description,
       memberCount: team.members.length,
-      members: team.members.map((m) => ({
-        id: m.id,
-        name: m.name,
-        role: m.role,
-        agentStatus: m.agentStatus,
-        workingStatus: m.workingStatus,
-        runtimeType: m.runtimeType,
-        sessionName: m.sessionName,
-      })),
+      members: team.members.map((m) => this.formatMember(m, { includeRuntime: true })),
       projectIds: team.projectIds,
     }));
 
@@ -452,15 +338,19 @@ export class CrewlyMcpServer {
   ): Promise<ToolResult> {
     const name = args.name as string;
     const description = args.description as string | undefined;
-    const memberSpecs = args.members as Array<{
+    const rawMembers = args.members;
+
+    if (!name) {
+      return this.errorResult('Team name is required');
+    }
+    if (!Array.isArray(rawMembers) || rawMembers.length === 0) {
+      return this.errorResult('At least one member is required (members must be a non-empty array)');
+    }
+    const memberSpecs = rawMembers as Array<{
       name: string;
       role: string;
       runtimeType?: string;
     }>;
-
-    if (!name || !memberSpecs || memberSpecs.length === 0) {
-      return this.errorResult('Team name and at least one member are required');
-    }
 
     const teamId = uuidv4();
     const now = new Date().toISOString();
@@ -539,8 +429,9 @@ export class CrewlyMcpServer {
       );
     }
 
-    // Add task to member's ticket list
-    const ticketId = `mcp-task-${Date.now()}`;
+    // Add task to member's ticket list. Include a uuid tail so two
+    // assignments in the same millisecond can't collide.
+    const ticketId = `mcp-task-${Date.now()}-${uuidv4().slice(0, 8)}`;
     if (!member.currentTickets) {
       member.currentTickets = [];
     }
@@ -587,16 +478,10 @@ export class CrewlyMcpServer {
 
         return this.successResult({
           team: { id: team.id, name: team.name },
-          member: {
-            id: member.id,
-            name: member.name,
-            role: member.role,
-            agentStatus: member.agentStatus,
-            workingStatus: member.workingStatus,
-            runtimeType: member.runtimeType,
-            sessionName: member.sessionName,
-            currentTickets: member.currentTickets,
-          },
+          member: this.formatMember(member, {
+            includeRuntime: true,
+            includeTickets: true,
+          }),
         });
       }
 
@@ -606,13 +491,7 @@ export class CrewlyMcpServer {
           name: team.name,
           memberCount: team.members.length,
         },
-        members: team.members.map((m) => ({
-          id: m.id,
-          name: m.name,
-          role: m.role,
-          agentStatus: m.agentStatus,
-          workingStatus: m.workingStatus,
-        })),
+        members: team.members.map((m) => this.formatMember(m)),
       });
     }
 
@@ -697,6 +576,156 @@ export class CrewlyMcpServer {
   }
 
   // ========================= Helpers =========================
+
+  // ========================= Credential handlers =========================
+
+  /**
+   * Handle crewly_credential_list: return credential metadata (no values).
+   */
+  private async handleCredentialList(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const type = args.type as 'api-key' | 'google-oauth' | undefined;
+    const provider = args.provider as string | undefined;
+
+    const store = getCredentialStoreService();
+    let credentials = await store.listCredentials();
+
+    if (type) credentials = credentials.filter((c) => c.type === type);
+    if (provider) credentials = credentials.filter((c) => c.provider === provider);
+
+    return this.successResult(
+      credentials.map((c) => ({
+        id: c.id,
+        name: c.name,
+        type: c.type,
+        provider: c.provider,
+        helper: c.helper,
+        scopes: c.scopes,
+        accountEmail: c.accountEmail,
+        status: c.status,
+        createdAt: c.createdAt,
+        lastUsedAt: c.lastUsedAt,
+        expiresAt: c.expiresAt,
+      })),
+    );
+  }
+
+  /**
+   * Handle crewly_credential_add_api_key: store an API key.
+   */
+  private async handleCredentialAddApiKey(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const name = args.name as string;
+    const provider = args.provider as string;
+    const value = args.value as string;
+
+    if (!name || !provider || !value) {
+      return this.errorResult('name, provider, and value are required');
+    }
+
+    const cred = await getCredentialStoreService().addApiKey({ name, provider, value });
+    return this.successResult({
+      id: cred.id,
+      name: cred.name,
+      provider: cred.provider,
+      type: cred.type,
+      createdAt: cred.createdAt,
+    });
+  }
+
+  /**
+   * Handle crewly_credential_oauth_import_gemini_cli: capture the current
+   * gemini-cli-workspace extension login into an encrypted Crewly credential.
+   */
+  private async handleCredentialImportGeminiCli(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const name = args.name as string;
+    if (!name) {
+      return this.errorResult('name is required');
+    }
+
+    try {
+      const payload = await this.getGeminiCliHelper().captureFromFile();
+      const cred = await getCredentialStoreService().addOAuth({
+        name,
+        provider: 'google',
+        helper: 'gemini-cli-workspace',
+        payload,
+      });
+      return this.successResult({
+        id: cred.id,
+        name: cred.name,
+        accountEmail: cred.accountEmail,
+        scopes: cred.scopes,
+        type: cred.type,
+        helper: cred.helper,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return this.errorResult(message);
+    }
+  }
+
+  /**
+   * Handle crewly_credential_clear_gemini_cli_file: delete the extension's
+   * cached token file so the next extension login captures a fresh account.
+   */
+  private async handleCredentialClearGeminiCliFile(): Promise<ToolResult> {
+    await this.getGeminiCliHelper().clearExtensionFile();
+    return this.successResult({ cleared: true });
+  }
+
+  /**
+   * Handle crewly_credential_delete: remove a credential.
+   */
+  private async handleCredentialDelete(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const id = args.id as string;
+    if (!id) return this.errorResult('id is required');
+    try {
+      await getCredentialStoreService().deleteCredential(id);
+      return this.successResult({ deleted: true, id });
+    } catch (err) {
+      return this.errorResult(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Handle crewly_execute_skill: run a skill with optional credential bindings.
+   */
+  private async handleExecuteSkill(
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const skillId = args.skillId as string;
+    if (!skillId) return this.errorResult('skillId is required');
+
+    const credentialBindings = args.credentialBindings as
+      | Record<string, string>
+      | undefined;
+
+    const context: SkillExecutionContext = {
+      agentId: (args.agentId as string) || 'mcp-agent',
+      roleId: (args.roleId as string) || 'default',
+      userInput: args.userInput as string | undefined,
+      credentialBindings,
+    };
+
+    try {
+      const result = await getSkillExecutorService().executeSkill(skillId, context);
+      return this.successResult({
+        success: result.success,
+        output: result.output,
+        error: result.error,
+        durationMs: result.durationMs,
+      });
+    } catch (err) {
+      return this.errorResult(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   /**
    * Create a success result with JSON-serialized content.

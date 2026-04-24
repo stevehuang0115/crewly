@@ -23,6 +23,15 @@ import {
 import { getSkillService } from './skill.service.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { getCredentialStoreService } from '../credential/credential-store.service.js';
+import { GeminiCliWorkspaceHelper } from '../credential/helpers/gemini-cli-workspace.helper.js';
+import {
+  SkillCredentialRequirement,
+  GoogleOAuthPayload,
+  ApiKeyPayload,
+  MissingCredentialError,
+  InsufficientScopeError,
+} from '../../types/credential.types.js';
 
 /**
  * Result of process execution
@@ -31,6 +40,36 @@ interface ProcessResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+}
+
+/**
+ * A secret value captured for a given skill execution. stdout/stderr will
+ * have this value replaced with `<redacted:{label}>` before being returned
+ * to callers (so the agent/LLM never sees raw credential values in output).
+ *
+ * @internal Exported for unit tests.
+ */
+export interface LiveSecret {
+  value: string;
+  label: string;
+}
+
+/**
+ * Replace all occurrences of any live secret value in `text` with a
+ * `<redacted:{label}>` placeholder.
+ *
+ * @internal Exported for unit tests; not part of the public service API.
+ */
+export function redactSecrets(text: string, secrets: LiveSecret[]): string {
+  if (!text || secrets.length === 0) return text;
+  let out = text;
+  for (const { value, label } of secrets) {
+    if (value && out.includes(value)) {
+      // String.prototype.split+join is safe for all characters (no regex escaping).
+      out = out.split(value).join(`<redacted:${label}>`);
+    }
+  }
+  return out;
 }
 
 /**
@@ -45,6 +84,16 @@ interface ProcessResult {
 export class SkillExecutorService {
   private readonly defaultTimeoutMs: number = SKILL_CONSTANTS.DEFAULTS.SCRIPT_TIMEOUT_MS;
   private readonly logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('SkillExecutorService');
+
+  /** Lazy-instantiated helpers for credential refresh. */
+  private geminiCliHelper: GeminiCliWorkspaceHelper | null = null;
+
+  private getGeminiCliHelper(): GeminiCliWorkspaceHelper {
+    if (!this.geminiCliHelper) {
+      this.geminiCliHelper = new GeminiCliWorkspaceHelper(getCredentialStoreService());
+    }
+    return this.geminiCliHelper;
+  }
 
   /**
    * Execute a skill by ID
@@ -187,8 +236,8 @@ export class SkillExecutorService {
     }
 
     try {
-      // Load environment variables
-      const env = await this.buildEnvironment(skill, context);
+      // Load environment variables + any live secrets for output redaction
+      const { env, liveSecrets } = await this.buildEnvironmentWithSecrets(skill, context);
 
       // Determine script path
       const skillDir = path.dirname(skill.promptFile);
@@ -202,11 +251,12 @@ export class SkillExecutorService {
       // Build command based on interpreter
       const { command, args } = this.getInterpreterCommand(scriptConfig.interpreter, scriptPath);
 
-      // Execute script
+      // Execute script (spawnProcess applies redaction to stdout/stderr using liveSecrets)
       const result = await this.spawnProcess(command, args, {
         cwd: scriptConfig.workingDir || skillDir,
         env,
         timeout: scriptConfig.timeoutMs || this.defaultTimeoutMs,
+        liveSecrets,
       });
 
       return {
@@ -373,7 +423,22 @@ export class SkillExecutorService {
     skill: SkillWithPrompt,
     context: SkillExecutionContext
   ): Promise<NodeJS.ProcessEnv> {
+    // Preserved for callers (tests etc.) that don't need the liveSecrets list.
+    const { env } = await this.buildEnvironmentWithSecrets(skill, context);
+    return env;
+  }
+
+  /**
+   * Build environment variables and collect the list of live secret values
+   * that need to be redacted from the child process's output. Used by
+   * `executeScript` to wire up per-execution output redaction.
+   */
+  private async buildEnvironmentWithSecrets(
+    skill: SkillWithPrompt,
+    context: SkillExecutionContext,
+  ): Promise<{ env: NodeJS.ProcessEnv; liveSecrets: LiveSecret[] }> {
     const env: NodeJS.ProcessEnv = { ...process.env };
+    const liveSecrets: LiveSecret[] = [];
 
     // Add context variables
     env.CREWLY_AGENT_ID = context.agentId;
@@ -382,8 +447,20 @@ export class SkillExecutorService {
     if (context.taskId) env.CREWLY_TASK_ID = context.taskId;
     if (context.userInput) env.CREWLY_USER_INPUT = context.userInput;
 
+    // Resolve credential slots declared in the skill frontmatter.
+    // Runs BEFORE .env-file loading so that a credential-injected var can
+    // be overridden by an explicit .env entry if desired.
+    if (skill.credentials && skill.credentials.length > 0) {
+      await this.resolveAndInjectCredentials(
+        skill.credentials,
+        context,
+        env,
+        liveSecrets,
+      );
+    }
+
     const envConfig = skill.environment;
-    if (!envConfig) return env;
+    if (!envConfig) return { env, liveSecrets };
 
     // Load from .env file if specified
     if (envConfig.file) {
@@ -413,7 +490,114 @@ export class SkillExecutorService {
       }
     }
 
-    return env;
+    return { env, liveSecrets };
+  }
+
+  /**
+   * For each credential requirement declared on the skill:
+   * - Resolve it to a credential UUID (agent binding → skill default)
+   * - Look up the credential, decrypt the payload
+   * - Verify scopes (OAuth)
+   * - Refresh tokens if near expiry
+   * - Inject values into env vars named `CREWLY_CRED_<SLOT>_*`
+   * - Register secret values for output redaction
+   */
+  private async resolveAndInjectCredentials(
+    requirements: SkillCredentialRequirement[],
+    context: SkillExecutionContext,
+    env: NodeJS.ProcessEnv,
+    liveSecrets: LiveSecret[],
+  ): Promise<void> {
+    const store = getCredentialStoreService();
+
+    for (const req of requirements) {
+      const bindingId = context.credentialBindings?.[req.slot] ?? req.default;
+
+      if (!bindingId) {
+        if (req.required) {
+          throw new MissingCredentialError(req.slot, req.provider);
+        }
+        continue;
+      }
+
+      const entry = await store.getCredential(bindingId);
+      if (entry.status === 'revoked') {
+        throw new Error(
+          `Credential '${entry.name}' (slot '${req.slot}') is revoked. Re-authorize before using this skill.`,
+        );
+      }
+
+      const payload = await store.getPayload(bindingId);
+
+      // Verify scopes for OAuth
+      if (req.requiredScopes && req.requiredScopes.length > 0) {
+        if (payload.type !== 'google-oauth') {
+          throw new Error(
+            `Slot '${req.slot}' declared requiredScopes but credential is type '${payload.type}'.`,
+          );
+        }
+        const granted = new Set(payload.scopes);
+        const missing = req.requiredScopes.filter((s) => !granted.has(s));
+        if (missing.length > 0) {
+          throw new InsufficientScopeError(
+            req.slot,
+            req.requiredScopes,
+            payload.scopes,
+          );
+        }
+      }
+
+      const slotEnv = this.credentialEnvPrefix(req.slot);
+
+      if (payload.type === 'google-oauth') {
+        // Refresh if near expiry. getAccessToken throws
+        // CredentialRevokedError (with remediation) when the grant is dead;
+        // we let it propagate so the caller surfaces the message verbatim.
+        let finalPayload: GoogleOAuthPayload = payload;
+        if (entry.helper === 'gemini-cli-workspace') {
+          finalPayload = await this.getGeminiCliHelper().getAccessToken(
+            entry,
+            payload,
+          );
+        }
+
+        env[`${slotEnv}_ACCESS_TOKEN`] = finalPayload.accessToken;
+        env[`${slotEnv}_REFRESH_TOKEN`] = finalPayload.refreshToken;
+        env[`${slotEnv}_TOKEN_TYPE`] = finalPayload.tokenType;
+        env[`${slotEnv}_EXPIRES_AT`] = String(finalPayload.expiresAt);
+        env[`${slotEnv}_SCOPES`] = finalPayload.scopes.join(' ');
+        if (finalPayload.accountEmail) {
+          env[`${slotEnv}_EMAIL`] = finalPayload.accountEmail;
+        }
+
+        // Redact both tokens from output
+        liveSecrets.push({ value: finalPayload.accessToken, label: `${req.slot}:access_token` });
+        liveSecrets.push({ value: finalPayload.refreshToken, label: `${req.slot}:refresh_token` });
+      } else {
+        // api-key
+        const apiPayload = payload as ApiKeyPayload;
+        env[slotEnv] = apiPayload.value;
+        liveSecrets.push({ value: apiPayload.value, label: req.slot });
+      }
+
+      // Record usage (best-effort — don't block execution if this fails)
+      try {
+        await store.updateCredential(bindingId, {
+          lastUsedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        this.logger.warn('Failed to update lastUsedAt for credential', {
+          credentialId: bindingId,
+        });
+      }
+    }
+  }
+
+  /**
+   * Slot name to env var prefix. `gmail-drive` → `CREWLY_CRED_GMAIL_DRIVE`.
+   */
+  private credentialEnvPrefix(slot: string): string {
+    return `CREWLY_CRED_${slot.toUpperCase().replace(/-/g, '_')}`;
   }
 
   /**
@@ -488,6 +672,7 @@ export class SkillExecutorService {
       cwd?: string;
       env?: NodeJS.ProcessEnv;
       timeout?: number;
+      liveSecrets?: LiveSecret[];
     }
   ): Promise<ProcessResult> {
     return new Promise((resolve, reject) => {
@@ -516,9 +701,10 @@ export class SkillExecutorService {
 
       child.on('close', (exitCode) => {
         clearTimeout(timeoutId);
+        const secrets = options.liveSecrets ?? [];
         resolve({
-          stdout,
-          stderr,
+          stdout: redactSecrets(stdout, secrets),
+          stderr: redactSecrets(stderr, secrets),
           exitCode: exitCode ?? 1,
         });
       });

@@ -560,6 +560,7 @@ export class SkillService {
         promptFile: skillMdPath, // body content is in the SKILL.md itself
         execution: fm.execution as Skill['execution'],
         environment: fm.environment as Skill['environment'],
+        credentials: fm.credentials as Skill['credentials'],
         runtime: fm.runtime as Skill['runtime'],
         notices: fm.notices as Skill['notices'],
         assignableRoles: (fm.assignableRoles as string[]) || [],
