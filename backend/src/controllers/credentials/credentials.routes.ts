@@ -15,9 +15,11 @@ import {
   deleteCredentialHandler,
   importOAuthFromGeminiCli,
   clearGeminiCliExtensionFile,
+} from './credentials.controller.js';
+import {
   startGoogleOAuth,
   completeGoogleOAuth,
-} from './credentials.controller.js';
+} from './google-oauth.controller.js';
 
 /**
  * Create the credentials router.

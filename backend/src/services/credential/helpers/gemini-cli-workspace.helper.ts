@@ -31,9 +31,18 @@ import {
   CredentialRevokedError,
 } from '../../../types/credential.types.js';
 import { CredentialStoreService } from '../credential-store.service.js';
+import {
+  GEMINI_CLI_CLOUD_FUNCTION_URL,
+  GEMINI_CLI_REFRESH_PATH,
+  GOOGLE_OAUTH_CLIENT_ID,
+} from '../../../config/oauth.config.js';
+import {
+  fetchGoogleAccountEmail,
+  FetchLike as UserinfoFetchLike,
+} from '../../../utils/google-userinfo.utils.js';
 
 // ============================================================================
-// Constants — extracted from the extension source
+// Constants — extension-specific file layout and refresh tuning
 // (github.com/gemini-cli-extensions/workspace)
 // ============================================================================
 
@@ -48,18 +57,10 @@ const MASTER_KEY_FILENAME = '.gemini-cli-workspace-master-key';
 const MAIN_ACCOUNT_KEY = 'main-account';
 const SALT_SUFFIX = '-gemini-cli-workspace';
 
-const DEFAULT_CLOUD_FUNCTION_URL =
-  'https://google-workspace-extension.geminicli.com';
-const DEFAULT_REFRESH_PATH = '/refreshToken';
-const DEFAULT_CLIENT_ID =
-  '338689075775-o75k922vn5fdl18qergr96rp8g63e4d7.apps.googleusercontent.com';
-
 /** Refresh if the current access token expires within this window. */
 const DEFAULT_EXPIRY_BUFFER_MS = 60_000;
 /** Minimum gap between refresh attempts for the same credential. */
 const REFRESH_COOLDOWN_MS = 30_000;
-
-const USERINFO_ENDPOINT = 'https://www.googleapis.com/oauth2/v3/userinfo';
 
 // ============================================================================
 // Types
@@ -82,17 +83,10 @@ interface ExtensionOAuthCredentials {
 }
 
 /**
- * Minimal fetch-compatible function shape (for test injection).
+ * Minimal fetch-compatible function shape (for test injection). Re-exported
+ * from the google-userinfo utility so callers can import a single type.
  */
-export type FetchLike = (
-  url: string,
-  init?: { method?: string; headers?: Record<string, string>; body?: string },
-) => Promise<{
-  ok: boolean;
-  status: number;
-  text(): Promise<string>;
-  json(): Promise<unknown>;
-}>;
+export type FetchLike = UserinfoFetchLike;
 
 /**
  * Helper configuration — all fields optional; defaults match production.
@@ -146,9 +140,9 @@ export class GeminiCliWorkspaceHelper implements CredentialHelper {
     this.store = store;
     this.extensionPath = config?.extensionPath ?? DEFAULT_EXTENSION_PATH;
     this.cloudFunctionUrl =
-      config?.cloudFunctionUrl ?? DEFAULT_CLOUD_FUNCTION_URL;
-    this.refreshPath = config?.refreshPath ?? DEFAULT_REFRESH_PATH;
-    this.clientId = config?.clientId ?? DEFAULT_CLIENT_ID;
+      config?.cloudFunctionUrl ?? GEMINI_CLI_CLOUD_FUNCTION_URL;
+    this.refreshPath = config?.refreshPath ?? GEMINI_CLI_REFRESH_PATH;
+    this.clientId = config?.clientId ?? GOOGLE_OAUTH_CLIENT_ID;
     this.expiryBufferMs = config?.expiryBufferMs ?? DEFAULT_EXPIRY_BUFFER_MS;
     this.fetchFn =
       config?.fetch ??
@@ -220,7 +214,7 @@ export class GeminiCliWorkspaceHelper implements CredentialHelper {
 
     const scopes = typeof scope === 'string' ? scope.split(' ').filter(Boolean) : [];
 
-    const accountEmail = await this.fetchUserEmail(accessToken);
+    const accountEmail = await fetchGoogleAccountEmail(accessToken, this.fetchFn);
 
     return {
       type: 'google-oauth',
@@ -389,25 +383,6 @@ export class GeminiCliWorkspaceHelper implements CredentialHelper {
     return decrypted;
   }
 
-  /**
-   * Fetch the user's email via Google's userinfo endpoint. Best-effort;
-   * returns undefined on failure.
-   */
-  private async fetchUserEmail(
-    accessToken: string,
-  ): Promise<string | undefined> {
-    try {
-      const response = await this.fetchFn(USERINFO_ENDPOINT, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!response.ok) return undefined;
-      const data = (await response.json()) as { email?: string };
-      return data.email;
-    } catch {
-      return undefined;
-    }
-  }
 }
 
 // ============================================================================

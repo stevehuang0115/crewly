@@ -10,8 +10,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
-CREWLY_HOME="${HOME}/.crewly"
-
 print_usage() {
   cat <<'EOF_USAGE'
 Usage:
@@ -31,23 +29,6 @@ Options:
   --json  -j   Raw JSON payload (legacy)
   --help  -h   Show this help
 EOF_USAGE
-}
-
-resolve_team_id() {
-  local session="${1:-${CREWLY_SESSION_NAME:-}}"
-  [ -z "$session" ] && return 1
-  local teams_dir="${CREWLY_HOME}/teams"
-  [ ! -d "$teams_dir" ] && return 1
-  for config in "$teams_dir"/*/config.json; do
-    [ -f "$config" ] || continue
-    local found
-    found=$(jq -r --arg s "$session" '.members[]? | select(.sessionName == $s) | "found"' "$config" 2>/dev/null | head -1)
-    if [ "$found" = "found" ]; then
-      basename "$(dirname "$config")"
-      return 0
-    fi
-  done
-  return 1
 }
 
 INPUT_JSON=""

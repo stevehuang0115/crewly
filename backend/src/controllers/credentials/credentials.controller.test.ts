@@ -20,7 +20,6 @@ import { _resetGeminiHelperForTesting } from './credentials.controller.js';
 describe('credentials.controller', () => {
   let app: express.Express;
   let testDir: string;
-  let missingExtensionDir: string;
 
   beforeEach(async () => {
     _resetDerivedKeyCache();
@@ -29,7 +28,6 @@ describe('credentials.controller', () => {
       os.tmpdir(),
       `crewly-cred-ctrl-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
-    missingExtensionDir = path.join(testDir, 'fake-home', 'no-extension');
 
     // Replace the store singleton with one pointing at a scratch dir
     _setCredentialStoreForTesting(new CredentialStoreService({ dir: testDir }));
@@ -224,204 +222,6 @@ describe('credentials.controller', () => {
   });
 
   // ------------------------------------------------------------------
-  //  Headless Google OAuth: /oauth/google/start
-  // ------------------------------------------------------------------
-
-  describe('POST /api/credentials/oauth/google/start', () => {
-    it('returns an authUrl with default scopes when body is empty', async () => {
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/start')
-        .send({});
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-
-      const url = new URL(res.body.data.authUrl);
-      expect(url.origin + url.pathname).toBe(
-        'https://accounts.google.com/o/oauth2/v2/auth',
-      );
-      expect(url.searchParams.get('response_type')).toBe('code');
-      expect(url.searchParams.get('access_type')).toBe('offline');
-      expect(url.searchParams.get('prompt')).toBe('consent');
-      expect(url.searchParams.get('client_id')).toBeTruthy();
-      expect(url.searchParams.get('redirect_uri')).toBeTruthy();
-
-      const scope = url.searchParams.get('scope') ?? '';
-      // Default scope set should include gmail and calendar readonly
-      expect(scope).toContain('https://www.googleapis.com/auth/gmail.readonly');
-      expect(scope).toContain('https://www.googleapis.com/auth/calendar.readonly');
-
-      // state must be base64 of {manual:true} so the cloud function renders the
-      // manual/copy-paste success page
-      const state = url.searchParams.get('state') ?? '';
-      const decoded = JSON.parse(
-        Buffer.from(state, 'base64').toString('utf8'),
-      ) as { manual?: boolean };
-      expect(decoded.manual).toBe(true);
-    });
-
-    it('honours a custom scopes override', async () => {
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/start')
-        .send({
-          scopes: [
-            'openid',
-            'https://www.googleapis.com/auth/drive.file',
-          ],
-        });
-      expect(res.status).toBe(200);
-      const url = new URL(res.body.data.authUrl);
-      const scope = url.searchParams.get('scope') ?? '';
-      expect(scope.split(' ').sort()).toEqual(
-        ['openid', 'https://www.googleapis.com/auth/drive.file'].sort(),
-      );
-      // Should NOT include default-only scopes that weren't requested
-      expect(scope).not.toContain('gmail.readonly');
-    });
-
-    it('falls back to defaults when scopes is an empty array', async () => {
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/start')
-        .send({ scopes: [] });
-      expect(res.status).toBe(200);
-      const scope = new URL(res.body.data.authUrl).searchParams.get('scope') ?? '';
-      expect(scope).toContain('gmail.readonly');
-    });
-  });
-
-  // ------------------------------------------------------------------
-  //  Headless Google OAuth: /oauth/google/complete
-  // ------------------------------------------------------------------
-
-  describe('POST /api/credentials/oauth/google/complete', () => {
-    let originalFetch: typeof globalThis.fetch;
-
-    beforeEach(() => {
-      originalFetch = globalThis.fetch;
-    });
-
-    afterEach(() => {
-      globalThis.fetch = originalFetch;
-    });
-
-    /** Install a fetch mock that returns the given userinfo email. */
-    function mockUserinfoFetch(email: string | null, ok = true): void {
-      globalThis.fetch = (async () => ({
-        ok,
-        status: ok ? 200 : 401,
-        json: async () => (email ? { email } : {}),
-        text: async () => '',
-      })) as unknown as typeof globalThis.fetch;
-    }
-
-    it('returns 400 when name is missing', async () => {
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/complete')
-        .send({ credentialsJson: { access_token: 'a', refresh_token: 'r' } });
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/name/i);
-    });
-
-    it('returns 400 when credentialsJson is missing', async () => {
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/complete')
-        .send({ name: 'x' });
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/credentialsJson/);
-    });
-
-    it('returns 400 for a non-JSON credentialsJson string', async () => {
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/complete')
-        .send({ name: 'x', credentialsJson: 'not-json-at-all' });
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/not valid JSON/i);
-    });
-
-    it('returns 400 when access_token / refresh_token are missing', async () => {
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/complete')
-        .send({
-          name: 'x',
-          credentialsJson: { scope: 'openid', token_type: 'Bearer' },
-        });
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/access_token or refresh_token/);
-    });
-
-    it('saves a credential from a parsed object and returns metadata only', async () => {
-      mockUserinfoFetch('user@example.com');
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/complete')
-        .send({
-          name: 'work',
-          credentialsJson: {
-            access_token: 'ya29.real-at',
-            refresh_token: '1//real-rt',
-            scope:
-              'openid https://www.googleapis.com/auth/gmail.readonly',
-            token_type: 'Bearer',
-            expiry_date: Date.now() + 3600_000,
-          },
-        });
-      expect(res.status).toBe(201);
-      expect(res.body.success).toBe(true);
-      expect(res.body.data.type).toBe('google-oauth');
-      expect(res.body.data.provider).toBe('google');
-      expect(res.body.data.helper).toBe('gemini-cli-workspace');
-      expect(res.body.data.accountEmail).toBe('user@example.com');
-      // Secret values must never appear in the response
-      expect(JSON.stringify(res.body)).not.toContain('ya29.real-at');
-      expect(JSON.stringify(res.body)).not.toContain('1//real-rt');
-
-      // Credential is visible via list
-      const list = await request(app).get('/api/credentials');
-      expect(list.body.data.find((c: { id: string }) => c.id === res.body.data.id)).toBeTruthy();
-    });
-
-    it('accepts credentialsJson as a JSON string', async () => {
-      mockUserinfoFetch('string@example.com');
-      const body = {
-        access_token: 'at-str',
-        refresh_token: 'rt-str',
-        scope: 'openid',
-        token_type: 'Bearer',
-        expiry_date: Date.now() + 3600_000,
-      };
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/complete')
-        .send({ name: 'str', credentialsJson: JSON.stringify(body) });
-      expect(res.status).toBe(201);
-      expect(res.body.data.accountEmail).toBe('string@example.com');
-    });
-
-    it('still succeeds when userinfo fetch fails (email optional)', async () => {
-      mockUserinfoFetch(null, false);
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/complete')
-        .send({
-          name: 'no-email',
-          credentialsJson: {
-            access_token: 'at',
-            refresh_token: 'rt',
-            scope: 'openid',
-            token_type: 'Bearer',
-          },
-        });
-      expect(res.status).toBe(201);
-      expect(res.body.success).toBe(true);
-      expect(res.body.data.accountEmail).toBeUndefined();
-    });
-
-    it('rejects a non-object, non-string credentialsJson', async () => {
-      const res = await request(app)
-        .post('/api/credentials/oauth/google/complete')
-        .send({ name: 'bad', credentialsJson: 42 });
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/JSON string or object/i);
-    });
-  });
-
-  // ------------------------------------------------------------------
   //  Clear extension file
   // ------------------------------------------------------------------
 
@@ -431,8 +231,6 @@ describe('credentials.controller', () => {
       // clearExtensionFile is a no-op when the file is absent.
       const res = await request(app)
         .post('/api/credentials/oauth/gemini-cli/clear-extension-file');
-      // Either succeeds (200 + success:true) or surfaces an unexpected error.
-      // We accept 200 here — the no-op-on-missing path is explicit in the helper.
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
     });
