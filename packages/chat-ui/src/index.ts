@@ -12,13 +12,26 @@ export type { ChatAPIProviderProps } from './context/ChatAPIProvider';
 
 // Components
 export { AgentStatusBadge } from './components/AgentStatusBadge';
-export type { AgentStatusBadgeProps } from './components/AgentStatusBadge';
+export type { AgentStatusBadgeProps, ChatPresenceStatus } from './components/AgentStatusBadge';
 export { ChannelList } from './components/ChannelList';
 export type { ChannelListProps } from './components/ChannelList';
 export { MessageThread } from './components/MessageThread';
 export type { MessageThreadProps } from './components/MessageThread';
 export { MessageInput } from './components/MessageInput';
 export type { MessageInputProps } from './components/MessageInput';
+
+// Slack-like multi-team chat surfaces (Phase B, design sealed 2026-04-25).
+// Additive: legacy callers do not import these; the existing exports
+// above stay byte-identical in semantics.
+export { WorkspaceRail } from './components/WorkspaceRail';
+export type { WorkspaceRailProps } from './components/WorkspaceRail';
+export { ConversationListPanel } from './components/ConversationListPanel';
+export type { ConversationListPanelProps } from './components/ConversationListPanel';
+export { MentionComposer } from './components/MentionComposer';
+export type {
+  MentionComposerProps,
+  MentionComposerSendPayload,
+} from './components/MentionComposer';
 
 // Hooks
 export { useChannels } from './hooks/useChannels';
@@ -51,3 +64,15 @@ export type {
   SendMessageInput,
   ChatWebsocketEvent,
 } from './types/chat.types';
+
+// Slack-like team-chat shape contracts (Phase B). These are UX-shell
+// types — Phase A backend (Sam) will populate them from the team
+// directory + chat conversation API.
+export type {
+  Workspace,
+  ConversationKind,
+  ConversationRow,
+  ConversationGroup,
+  MentionKind,
+  MentionTarget,
+} from './types/team-chat.types';
