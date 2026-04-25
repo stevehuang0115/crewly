@@ -100,7 +100,14 @@ describe('LiveTeamHealthDataProvider', () => {
     expect(enriched?.workingStatus).toBe('in_progress');
   });
 
-  it('surfaces team members with NO base health entry as inactive', async () => {
+  it('surfaces team members with NO base health entry as inactive (synthetic — see docstring)', async () => {
+    // Regression contract for Arch's §A.1 invariant audit on PR #326:
+    // when a team member is in the team config but missing from the
+    // reconciler's authoritative agent-health map, this provider
+    // FABRICATES a synthetic entry with status='inactive' so the
+    // team_idle gate is computable. The fabrication is THW-LOCAL —
+    // see enrichAgentHealth() docstring in the source file. Callers
+    // must NOT feed this map back into ReconcilerService.
     const team = fakeTeam('t1', ['a1']);
     team.members[0].agentStatus = 'inactive';
     const provider = new LiveTeamHealthDataProvider({
@@ -112,6 +119,10 @@ describe('LiveTeamHealthDataProvider', () => {
     const a1 = snapshot.agentHealth.get('a1');
     expect(a1).toBeDefined();
     expect(a1?.workingStatus).toBe('inactive');
+    // Sanity-check the synthetic entry has status='inactive' (the
+    // synthetic field). If a future change accidentally treats
+    // missing-from-base as authoritative, this assertion fires.
+    expect(a1?.status).toBe('inactive');
   });
 
   it('passes triggers through when getTriggers is provided', async () => {

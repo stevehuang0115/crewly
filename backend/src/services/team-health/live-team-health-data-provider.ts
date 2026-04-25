@@ -137,6 +137,20 @@ function toTeamSummary(team: Team): TeamSummary {
  * Augment the reconciler's AgentHealth with `workingStatus` looked up
  * per-session from the Team config. Reconciler doesn't carry working-
  * status; THW needs it for the team_idle axis.
+ *
+ * **THW-LOCAL VIEW — DO NOT FEED BACK INTO RECONCILER STATE.** This
+ * function returns a derived snapshot for THW's pure detector. For
+ * sessions that exist in the team config but are absent from the
+ * reconciler's authoritative agent-health map, we fabricate synthetic
+ * entries with `status: 'inactive'` (best-guess inference for "team
+ * member never registered with the runtime"). Those synthetic entries
+ * are NOT authoritative reconciler state — they exist only to make
+ * the team_idle gate computable when a member is missing from the
+ * runtime map. Downstream callers MUST NOT pass this map back into
+ * `ReconcilerService` or any other state-mutating consumer; doing so
+ * would corrupt agent-health with fabricated data. (Layer 4 invariant
+ * §A.1: THW reads only — this guarantee depends on consumers also
+ * treating THW outputs as read-only.)
  */
 function enrichAgentHealth(
   base: Map<string, AgentHealth>,
@@ -157,7 +171,8 @@ function enrichAgentHealth(
     });
   }
   // Surface members that exist in team config but aren't in the base
-  // map (e.g. never registered) — treat as 'inactive'.
+  // map (e.g. never registered) — treat as 'inactive'. SYNTHETIC; not
+  // authoritative reconciler state. See function docstring.
   for (const [session, ws] of sessionToWorkingStatus) {
     if (out.has(session)) continue;
     out.set(session, {
