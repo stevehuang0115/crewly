@@ -40,7 +40,7 @@ function fakeTeam(id: string, members: string[]): Team {
     id, name: id, description: '',
     members: members.map((session, i) => ({
       id: `${id}-m${i}`, name: session, sessionName: session,
-      role: i === 0 ? 'team-lead' : 'member' as never,
+      role: (i === 0 ? 'team-leader' : 'member') as never,
       systemPrompt: '',
       agentStatus: 'active' as const,
       workingStatus: 'in_progress' as const,
