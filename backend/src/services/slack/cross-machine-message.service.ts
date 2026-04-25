@@ -13,6 +13,17 @@
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import { readFile, writeFile, mkdir } from 'fs/promises';
+import { createRequire } from 'module';
+
+/**
+ * CJS-style `require` for the lazy CloudSync lookup below. Keeps the
+ * load deferred (CloudSync may not be available in all builds) without
+ * tripping `ReferenceError: require is not defined` under ESM.
+ */
+const nodeRequire: NodeRequire =
+  typeof require === 'function'
+    ? require
+    : createRequire(new Function('return import.meta.url')() as string);
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -138,7 +149,7 @@ export class CrossMachineMessageService extends EventEmitter {
 
     // Cloud transport path: CloudSync is running
     try {
-      const { CloudSyncService } = require('../cloud/cloud-sync.service.js');
+      const { CloudSyncService } = nodeRequire('../cloud/cloud-sync.service.js');
       return CloudSyncService.getInstance().isStarted();
     } catch {
       return false;

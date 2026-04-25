@@ -9,6 +9,7 @@
  */
 
 import { execSync } from 'child_process';
+import * as crypto from 'crypto';
 
 // ========================= Constants =========================
 
@@ -118,7 +119,6 @@ export function verifyWebhookSignature(
     return false;
   }
 
-  const crypto = require('crypto') as typeof import('crypto');
   const hmac = crypto.createHmac(HMAC_ALGORITHM, secret);
   hmac.update(payload);
   const expected = `sha256=${hmac.digest('hex')}`;
