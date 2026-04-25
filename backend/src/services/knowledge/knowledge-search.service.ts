@@ -2,8 +2,11 @@
  * Knowledge Search Service
  *
  * Provides pluggable search strategies for knowledge documents.
- * Uses keyword matching by default (zero dependencies), with optional
- * Gemini embedding-based semantic search when GEMINI_API_KEY is set.
+ * Defaults to `Fts5SearchStrategy` (SQLite FTS5 with native BM25
+ * ranking) and falls back to `KeywordSearchStrategy` for docs not
+ * yet indexed. The Gemini embedding and local-vector strategies
+ * remain available for callers that need semantic similarity but
+ * are no longer wired as the default.
  *
  * @module services/knowledge/knowledge-search.service
  */
@@ -11,11 +14,14 @@
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { KnowledgeService } from './knowledge.service.js';
 import { VectorStoreService } from './vector-store.service.js';
+import { Fts5IndexService, type FtsSearchResult } from './fts5-index.service.js';
+import * as path from 'path';
+import * as os from 'os';
 import type {
   KnowledgeDocumentSummary,
   KnowledgeScope,
 } from '../../types/knowledge.types.js';
-import { EMBEDDING_CONSTANTS, ENV_CONSTANTS } from '../../constants.js';
+import { EMBEDDING_CONSTANTS, ENV_CONSTANTS, CREWLY_CONSTANTS } from '../../constants.js';
 
 /** Default number of results returned by search */
 const DEFAULT_SEARCH_LIMIT = 5;
@@ -62,6 +68,16 @@ export interface ScoredDocument {
 }
 
 /**
+ * Search options passed to strategies.
+ */
+export interface SearchOptions {
+  scope?: KnowledgeScope;
+  projectPath?: string;
+  category?: string;
+  limit?: number;
+}
+
+/**
  * Strategy interface for scoring documents against a query.
  */
 export interface KnowledgeSearchStrategy {
@@ -69,14 +85,19 @@ export interface KnowledgeSearchStrategy {
    * Score documents against a query. Returns documents sorted by relevance.
    *
    * @param query - The search query
-   * @param documents - Candidate documents to score
+   * @param documents - Candidate documents to score (may be ignored by some strategies)
+   * @param options - Optional scope and filtering parameters
    * @returns Documents sorted by descending score
    */
-  search(query: string, documents: KnowledgeDocumentSummary[]): Promise<ScoredDocument[]>;
+  search(
+    query: string,
+    documents: KnowledgeDocumentSummary[],
+    options?: SearchOptions
+  ): Promise<ScoredDocument[]>;
 }
 
 /**
- * Keyword-based search strategy (default, zero dependencies).
+ * Keyword-based search strategy (default fallback, zero dependencies).
  *
  * Splits the query into words and scores documents by matching against
  * title (3x weight), tags (2x weight), and preview (1x weight).
@@ -87,9 +108,14 @@ export class KeywordSearchStrategy implements KnowledgeSearchStrategy {
    *
    * @param query - Search query text
    * @param documents - Documents to score
+   * @param options - Optional search parameters (ignored)
    * @returns Scored documents sorted by relevance
    */
-  async search(query: string, documents: KnowledgeDocumentSummary[]): Promise<ScoredDocument[]> {
+  async search(
+    query: string,
+    documents: KnowledgeDocumentSummary[],
+    options?: SearchOptions
+  ): Promise<ScoredDocument[]> {
     const queryWords = query
       .toLowerCase()
       .split(/\s+/)
@@ -130,6 +156,102 @@ export class KeywordSearchStrategy implements KnowledgeSearchStrategy {
 }
 
 /**
+ * SQLite FTS5-based search strategy (V2 Default).
+ *
+ * Utilizes the FTS5 virtual table for lightning-fast full-text search
+ * with native BM25 ranking. Bypasses the memory-intensive candidate
+ * listing for large knowledge bases.
+ */
+export class Fts5SearchStrategy implements KnowledgeSearchStrategy {
+  private readonly logger: ComponentLogger;
+  private readonly fallback: KeywordSearchStrategy;
+  private readonly globalFts5: Fts5IndexService;
+  private readonly projectFts5Cache = new Map<string, Fts5IndexService>();
+
+  constructor() {
+    this.logger = LoggerService.getInstance().createComponentLogger('Fts5SearchStrategy');
+    this.fallback = new KeywordSearchStrategy();
+
+    const globalPath = path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME, 'knowledge');
+    this.globalFts5 = new Fts5IndexService(globalPath);
+  }
+
+  private getProjectFts5(projectPath: string): Fts5IndexService {
+    if (!this.projectFts5Cache.has(projectPath)) {
+      const p = path.join(projectPath, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, 'knowledge');
+      this.projectFts5Cache.set(projectPath, new Fts5IndexService(p));
+    }
+    return this.projectFts5Cache.get(projectPath)!;
+  }
+
+  async search(
+    query: string,
+    documents: KnowledgeDocumentSummary[],
+    options?: SearchOptions
+  ): Promise<ScoredDocument[]> {
+    const scope = options?.scope || 'global';
+    const fts5 = scope === 'project' && options?.projectPath
+      ? this.getProjectFts5(options.projectPath)
+      : this.globalFts5;
+
+    try {
+      const results = fts5.search(query, {
+        category: options?.category,
+        limit: options?.limit,
+      });
+
+      if (results.length === 0) {
+        // Fallback to keyword search on the provided documents if FTS5 returns nothing
+        // This ensures we catch documents that might not be indexed yet.
+        return this.fallback.search(query, documents);
+      }
+
+      // Join FTS5 hits against the candidate list (from listDocuments) so
+      // we carry real createdAt/updatedAt/createdBy through. Without this,
+      // every FTS5 result looks brand-new and bypasses temporal decay
+      // (#154) entirely — the decay runs on createdAt, so defaulting to
+      // Date.now() means every doc is treated as freshly-authored.
+      const now = new Date().toISOString();
+      const candidatesById = new Map(documents.map((d) => [d.id, d]));
+
+      return results.map((r: FtsSearchResult) => {
+        const candidate = candidatesById.get(r.id);
+        return {
+          document: {
+            id: r.id,
+            title: r.title,
+            category: r.category,
+            tags: r.tags.split(',').map((t) => t.trim()).filter(Boolean),
+            preview: r.content.slice(0, 200),
+            scope,
+            // Prefer the authoritative metadata from listDocuments; fall
+            // back to "now" only if the candidate list didn't include it
+            // (e.g., an indexed doc that was removed from listDocuments
+            // mid-flight). Docs missing from candidates simply bypass
+            // temporal decay, same as evergreen entries.
+            createdAt: candidate?.createdAt ?? now,
+            updatedAt: candidate?.updatedAt ?? now,
+            createdBy: candidate?.createdBy ?? 'system',
+            updatedBy: candidate?.updatedBy ?? 'system',
+          },
+          // SQLite FTS5's bm25() returns a negative double where
+          // more-negative = more-relevant (e.g. -5 beats -1). Invert so
+          // higher = better to match the ScoredDocument convention used
+          // by every other strategy. Clamped at 0 in case the driver ever
+          // returns an unexpected positive rank.
+          score: Math.max(0, 100 - r.rank),
+        };
+      });
+    } catch (error) {
+      this.logger.warn('FTS5 search failed, falling back to keyword search', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return this.fallback.search(query, documents);
+    }
+  }
+}
+
+/**
  * Cosine similarity between two vectors.
  *
  * @param a - First vector
@@ -154,6 +276,9 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 /**
  * Gemini embedding-based semantic search strategy.
+ *
+ * @deprecated Use Fts5SearchStrategy for technical knowledge. 
+ * Semantic search is now primarily for Agent Memory via MemoryService.
  *
  * Calls the Gemini Embedding API to embed query text, then computes
  * cosine similarity against document embeddings. Falls back to
@@ -234,9 +359,14 @@ export class GeminiEmbeddingStrategy implements KnowledgeSearchStrategy {
    *
    * @param query - Search query text
    * @param documents - Documents to score
+   * @param options - Optional search parameters
    * @returns Scored documents sorted by relevance
    */
-  async search(query: string, documents: KnowledgeDocumentSummary[]): Promise<ScoredDocument[]> {
+  async search(
+    query: string,
+    documents: KnowledgeDocumentSummary[],
+    options?: SearchOptions
+  ): Promise<ScoredDocument[]> {
     const queryEmbedding = await this.embed(query);
 
     if (!queryEmbedding) {
@@ -271,6 +401,8 @@ export class GeminiEmbeddingStrategy implements KnowledgeSearchStrategy {
 
 /**
  * Local vector search strategy using SQLite-backed VectorStoreService.
+ *
+ * @deprecated Use Fts5SearchStrategy for primary knowledge retrieval.
  *
  * Stores embeddings locally on-device so that recall works offline.
  * Uses the Gemini API to generate embeddings (when available) and
@@ -386,17 +518,15 @@ export class LocalVectorSearchStrategy implements KnowledgeSearchStrategy {
    *
    * @param query - Search query text
    * @param documents - Documents to score
-   * @param scope - Storage scope for vector lookup
-   * @param projectPath - Project path for project scope
+   * @param options - Optional search parameters
    * @returns Scored documents sorted by relevance
    */
   async search(
     query: string,
     documents: KnowledgeDocumentSummary[],
-    scope?: 'global' | 'project',
-    projectPath?: string,
+    options?: SearchOptions
   ): Promise<ScoredDocument[]> {
-    const effectiveScope = scope || 'global';
+    const effectiveScope = options?.scope || 'global';
 
     // Try to get query embedding
     const queryEmbedding = await this.embed(query);
@@ -413,7 +543,7 @@ export class LocalVectorSearchStrategy implements KnowledgeSearchStrategy {
         doc.id,
         docText,
         effectiveScope,
-        projectPath,
+        options?.projectPath,
       );
 
       if (!docEmbedding) {
@@ -488,11 +618,15 @@ export class HybridSearchStrategy implements KnowledgeSearchStrategy {
     this.logger = LoggerService.getInstance().createComponentLogger('HybridSearchStrategy');
   }
 
-  async search(query: string, documents: KnowledgeDocumentSummary[]): Promise<ScoredDocument[]> {
-    const vectorResults = await this.vectorStrategy.search(query, documents);
+  async search(
+    query: string,
+    documents: KnowledgeDocumentSummary[],
+    options?: SearchOptions
+  ): Promise<ScoredDocument[]> {
+    const vectorResults = await this.vectorStrategy.search(query, documents, options);
     const vectorMap = new Map(vectorResults.map(r => [r.document.id, r.score]));
 
-    const keywordResults = await this.keywordStrategy.search(query, documents);
+    const keywordResults = await this.keywordStrategy.search(query, documents, options);
     const keywordMap = new Map(keywordResults.map(r => [r.document.id, r.score]));
 
     const maxVector = vectorResults.length > 0 ? Math.max(...vectorResults.map(r => r.score)) : 1;
@@ -529,8 +663,9 @@ export class HybridSearchStrategy implements KnowledgeSearchStrategy {
  * Knowledge Search Service singleton.
  *
  * Strategy selection priority:
- * 1. HybridSearchStrategy (when embedding API key is set — vector 70% + BM25 30%) (#152)
- * 2. KeywordSearchStrategy (default, zero dependencies)
+ * 1. Fts5SearchStrategy (V2 Default — SQLite FTS5)
+ * 2. HybridSearchStrategy (when embedding API key is set — vector 70% + BM25 30%) (#152)
+ * 3. KeywordSearchStrategy (default, zero dependencies)
  */
 export class KnowledgeSearchService {
   private static instance: KnowledgeSearchService | null = null;
@@ -540,14 +675,9 @@ export class KnowledgeSearchService {
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('KnowledgeSearchService');
 
-    const geminiKey = process.env[ENV_CONSTANTS.GEMINI_API_KEY];
-    if (geminiKey) {
-      this.logger.info('Using hybrid search strategy (vector 70% + BM25 30%)');
-      this.strategy = new HybridSearchStrategy(geminiKey);
-    } else {
-      this.logger.info('Using keyword search strategy (no embedding API key set)');
-      this.strategy = new KeywordSearchStrategy();
-    }
+    // Default to FTS5 for Knowledge V2
+    this.logger.info('Using FTS5 search strategy as default for Knowledge V2');
+    this.strategy = new Fts5SearchStrategy();
   }
 
   /**
@@ -591,11 +721,13 @@ export class KnowledgeSearchService {
     const knowledgeService = KnowledgeService.getInstance();
     const candidates = await knowledgeService.listDocuments(scope, projectPath, { category });
 
-    if (candidates.length === 0) {
-      return [];
-    }
-
-    const scored = await this.strategy.search(query, candidates);
+    // FTS5 strategy uses its own DB but falls back to candidates if nothing found in DB
+    const scored = await this.strategy.search(query, candidates, {
+      scope,
+      projectPath,
+      category,
+      limit,
+    });
 
     // #154: Apply temporal decay to re-rank results
     const decayed = scored.map((s) => ({
