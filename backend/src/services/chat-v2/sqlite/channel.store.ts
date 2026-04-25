@@ -8,8 +8,28 @@
  */
 
 import { randomUUID } from 'crypto';
-import { CHAT_ERROR_CODES, ChatError, type ChatChannelRow } from '../types.js';
+import {
+  CHAT_ERROR_CODES,
+  ChatError,
+  type ChatChannelRow,
+  type ChatChannelType,
+} from '../types.js';
 import type { ChatDatabase } from './chat-db.js';
+
+// ---------------------------------------------------------------------------
+// Constants — shared SELECT column list, single source of truth
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical column list for `chat_channels` SELECTs. Including all Phase A
+ * columns (type / team_id / project_id / target_member_id) here keeps every
+ * read path in this store mapping to a fully-populated `ChatChannelRow`.
+ */
+const CHANNEL_SELECT_COLUMNS = `
+  id, agent_session, owner_user_id, name, purpose,
+  created_at, archived_at, last_message_at,
+  type, team_id, project_id, target_member_id
+`;
 
 // ---------------------------------------------------------------------------
 // Input shapes
@@ -17,10 +37,27 @@ import type { ChatDatabase } from './chat-db.js';
 
 /** Payload for `ChannelStore.create`. */
 export interface ChannelCreateInput {
+  /**
+   * Wire-level session binding. For `type='dm'` (default), this is the
+   * agent's session ID and the partial unique index enforces 1:1 binding.
+   * For `type='channel'`, callers should pass the empty string `''` —
+   * channel rows are excluded from the dm-binding unique index by design.
+   */
   agentSession: string;
   ownerUserId: string;
   name: string;
   purpose?: string | null;
+  /**
+   * Phase A (SEALED §3.1) — channel type. Defaults to `'dm'` to preserve
+   * the Phase 1 / Week 2 contract for callers that omit this field.
+   */
+  type?: ChatChannelType;
+  /** Phase A — required when `type='channel'`; null/empty for DMs. */
+  teamId?: string | null;
+  /** Phase A — optional project link for project-scoped channels. */
+  projectId?: string | null;
+  /** Phase A — for `type='dm'`, the resolved member-ID being DM'd. */
+  targetMemberId?: string | null;
   /** Override the clock (tests). */
   nowMs?: number;
   /** Override the generated id (tests / deterministic callers). */
@@ -49,14 +86,31 @@ export class ChannelStore {
     const id = input.id ?? randomUUID();
     const createdAt = input.nowMs ?? Date.now();
     const purpose = input.purpose ?? null;
+    const channelType: ChatChannelType = input.type ?? 'dm';
+    const teamId = input.teamId ?? null;
+    const projectId = input.projectId ?? null;
+    const targetMemberId = input.targetMemberId ?? null;
 
     const stmt = this.db.prepare(
-      `INSERT INTO chat_channels (id, agent_session, owner_user_id, name, purpose, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO chat_channels
+         (id, agent_session, owner_user_id, name, purpose, created_at,
+          type, team_id, project_id, target_member_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     try {
-      stmt.run(id, input.agentSession, input.ownerUserId, input.name, purpose, createdAt);
+      stmt.run(
+        id,
+        input.agentSession,
+        input.ownerUserId,
+        input.name,
+        purpose,
+        createdAt,
+        channelType,
+        teamId,
+        projectId,
+        targetMemberId,
+      );
     } catch (err) {
       // Unique constraint means either the partial index on agent_session fired
       // (the common case — 1:1 binding violated) or we raced an id collision.
@@ -98,8 +152,7 @@ export class ChannelStore {
   getById(id: string): ChatChannelRow | null {
     const row = this.db
       .prepare(
-        `SELECT id, agent_session, owner_user_id, name, purpose,
-                created_at, archived_at, last_message_at
+        `SELECT ${CHANNEL_SELECT_COLUMNS}
          FROM chat_channels
          WHERE id = ?`,
       )
@@ -115,12 +168,15 @@ export class ChannelStore {
    * @returns The active channel row, or null
    */
   findActiveByAgentSession(agentSession: string): ChatChannelRow | null {
+    // Phase A: scope to type='dm' so this method's contract matches the
+    // post-migration `uq_channel_agent_dm_active` partial unique index.
+    // type='channel' rows can share the empty agent_session sentinel; we
+    // never want this lookup to surface those.
     const row = this.db
       .prepare(
-        `SELECT id, agent_session, owner_user_id, name, purpose,
-                created_at, archived_at, last_message_at
+        `SELECT ${CHANNEL_SELECT_COLUMNS}
          FROM chat_channels
-         WHERE agent_session = ? AND archived_at IS NULL
+         WHERE agent_session = ? AND archived_at IS NULL AND type = 'dm'
          LIMIT 1`,
       )
       .get(agentSession) as ChatChannelRow | undefined;
@@ -144,8 +200,7 @@ export class ChannelStore {
     const limit = Math.min(options?.limit ?? 50, 100);
 
     const sql = `
-      SELECT id, agent_session, owner_user_id, name, purpose,
-             created_at, archived_at, last_message_at
+      SELECT ${CHANNEL_SELECT_COLUMNS}
       FROM chat_channels
       WHERE owner_user_id = ?
         ${includeArchived ? '' : 'AND archived_at IS NULL'}

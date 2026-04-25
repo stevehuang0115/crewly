@@ -38,6 +38,61 @@ describe('ChannelStore', () => {
       expect(row.created_at).toBe(100);
       expect(row.archived_at).toBeNull();
       expect(row.last_message_at).toBeNull();
+      // Phase A defaults: omitted type defaults to 'dm'; team/project/target null.
+      expect(row.type).toBe('dm');
+      expect(row.team_id).toBeNull();
+      expect(row.project_id).toBeNull();
+      expect(row.target_member_id).toBeNull();
+    });
+
+    it('persists Phase A fields: type=channel, team_id, project_id', () => {
+      const row = store.create({
+        agentSession: '',
+        ownerUserId: 'user-a',
+        name: '#general',
+        type: 'channel',
+        teamId: 'team-1',
+        projectId: 'proj-x',
+      });
+      expect(row.type).toBe('channel');
+      expect(row.team_id).toBe('team-1');
+      expect(row.project_id).toBe('proj-x');
+      expect(row.target_member_id).toBeNull();
+      // Channel-typed rows carry an empty agent_session sentinel.
+      expect(row.agent_session).toBe('');
+    });
+
+    it('persists target_member_id for type=dm rows', () => {
+      const row = store.create({
+        agentSession: 'sess-sam',
+        ownerUserId: 'user-a',
+        name: 'DM with Sam',
+        targetMemberId: 'member-sam-uuid',
+      });
+      expect(row.type).toBe('dm');
+      expect(row.target_member_id).toBe('member-sam-uuid');
+    });
+
+    it('allows multiple type=channel rows to share the empty agent_session', () => {
+      // The dm-scoped partial unique index excludes type='channel' rows.
+      expect(() =>
+        store.create({
+          agentSession: '',
+          ownerUserId: 'user-a',
+          name: '#general',
+          type: 'channel',
+          teamId: 'team-1',
+        }),
+      ).not.toThrow();
+      expect(() =>
+        store.create({
+          agentSession: '',
+          ownerUserId: 'user-a',
+          name: '#general',
+          type: 'channel',
+          teamId: 'team-2',
+        }),
+      ).not.toThrow();
     });
 
     it('allows purpose to be null', () => {
@@ -103,6 +158,29 @@ describe('ChannelStore', () => {
       const row = store.create({ agentSession: 'sess-a', ownerUserId: 'user-a', name: 'Ch' });
       store.archive(row.id);
       expect(store.findActiveByAgentSession('sess-a')).toBeNull();
+    });
+
+    it('Phase A: ignores type=channel rows even when agent_session matches', () => {
+      // Create a type='channel' row with a non-empty agent_session (edge
+      // case — service layer would normally pass ''). The dm-scoped lookup
+      // must NOT return it since channel rows aren't 1:1-bound to agents.
+      store.create({
+        agentSession: 'sess-shared',
+        ownerUserId: 'user-a',
+        name: '#shared',
+        type: 'channel',
+        teamId: 'team-1',
+      });
+      expect(store.findActiveByAgentSession('sess-shared')).toBeNull();
+
+      // After the channel row, a real DM with the same session is still
+      // findable — the lookup correctly distinguishes by type.
+      const dm = store.create({
+        agentSession: 'sess-shared',
+        ownerUserId: 'user-a',
+        name: 'DM',
+      });
+      expect(store.findActiveByAgentSession('sess-shared')?.id).toBe(dm.id);
     });
   });
 

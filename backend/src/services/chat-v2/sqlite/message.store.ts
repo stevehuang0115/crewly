@@ -26,6 +26,20 @@ import {
 import type { ChatDatabase } from './chat-db.js';
 
 // ---------------------------------------------------------------------------
+// Constants — shared SELECT column list, single source of truth
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical column list for `chat_messages` SELECTs. Including all Phase A
+ * columns (mentions / thread_id) here keeps every read path in this store
+ * mapping to a fully-populated `ChatMessageRow`.
+ */
+const MESSAGE_SELECT_COLUMNS = `
+  id, channel_id, seq, sender_type, sender_id, content, content_type,
+  created_at, metadata, mentions, thread_id
+`;
+
+// ---------------------------------------------------------------------------
 // Cursor helpers
 // ---------------------------------------------------------------------------
 
@@ -86,6 +100,18 @@ export interface MessageInsertInput {
   metadata?: Record<string, unknown>;
   /** Stable client id for idempotent retries; folded into metadata. */
   clientMessageId?: string;
+  /**
+   * Phase A (SEALED §3.2) — array of mention IDs (member or team)
+   * referenced inline in `content`. Stored as a JSON-encoded string in
+   * the `mentions` column. Empty array or omitted → null in storage.
+   */
+  mentions?: string[];
+  /**
+   * Phase A (SEALED §3.2) — Slack-style thread root. When set, this
+   * message is a reply within the thread rooted at `threadId`. Omitted
+   * for top-level channel messages.
+   */
+  threadId?: string;
   /** Override the insert clock (tests). */
   nowMs?: number;
   /** Override the generated id (tests / deterministic callers). */
@@ -146,13 +172,19 @@ export class MessageStore {
     const metadataHasKeys = Object.keys(metadataObj).length > 0;
     const metadataJson = metadataHasKeys ? JSON.stringify(metadataObj) : null;
 
+    // Phase A: serialize mentions to JSON. Treat null/empty as DB-null so
+    // legacy rows and "no mentions" share a representation; the read-side
+    // mapper translates DB-null back to [].
+    const mentionsJson =
+      input.mentions && input.mentions.length > 0 ? JSON.stringify(input.mentions) : null;
+    const threadId = input.threadId ?? null;
+
     const txn = this.db.transaction((): MessageInsertResult => {
       // Dedupe check — same clientMessageId + channel → return existing row.
       if (input.clientMessageId) {
         const existing = this.db
           .prepare(
-            `SELECT id, channel_id, seq, sender_type, sender_id, content, content_type,
-                    created_at, metadata
+            `SELECT ${MESSAGE_SELECT_COLUMNS}
              FROM chat_messages
              WHERE channel_id = ?
                AND json_extract(metadata, '$.clientMessageId') = ?
@@ -196,8 +228,9 @@ export class MessageStore {
       this.db
         .prepare(
           `INSERT INTO chat_messages
-             (id, channel_id, seq, sender_type, sender_id, content, content_type, created_at, metadata)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, channel_id, seq, sender_type, sender_id, content, content_type,
+              created_at, metadata, mentions, thread_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -209,6 +242,8 @@ export class MessageStore {
           contentType,
           createdAt,
           metadataJson,
+          mentionsJson,
+          threadId,
         );
 
       // Touch last_message_at on the parent channel.
@@ -223,8 +258,7 @@ export class MessageStore {
 
       const row = this.db
         .prepare(
-          `SELECT id, channel_id, seq, sender_type, sender_id, content, content_type,
-                  created_at, metadata
+          `SELECT ${MESSAGE_SELECT_COLUMNS}
            FROM chat_messages
            WHERE id = ?`,
         )
@@ -244,8 +278,7 @@ export class MessageStore {
   getById(id: string): ChatMessageRow | null {
     const row = this.db
       .prepare(
-        `SELECT id, channel_id, seq, sender_type, sender_id, content, content_type,
-                created_at, metadata
+        `SELECT ${MESSAGE_SELECT_COLUMNS}
          FROM chat_messages
          WHERE id = ?`,
       )
@@ -294,8 +327,7 @@ export class MessageStore {
     direction: 'backward' | 'forward',
     limit: number,
   ): ChatMessageRow[] {
-    const cols = `id, channel_id, seq, sender_type, sender_id, content, content_type,
-                  created_at, metadata`;
+    const cols = MESSAGE_SELECT_COLUMNS;
 
     if (direction === 'backward') {
       // Loading older: newest-first, seq < cursor.
