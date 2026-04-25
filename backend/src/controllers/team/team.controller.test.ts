@@ -2810,6 +2810,154 @@ describe('Teams Handlers', () => {
     });
   });
 
+  // ────────────────────────────────────────────────────────────────────
+  // Bug #1: start-agent role=undefined silent failure
+  // Reproducer: stevesprompt-ryan-986b2d51 — member has no `role` field,
+  // session spawns but env CREWLY_ROLE="undefined" and prompt never delivers.
+  // Fix: refuse to start the member, mark inactive with dropoutReason='invalid_role'.
+  // ────────────────────────────────────────────────────────────────────
+  describe('startTeamMember role validation (Bug #1)', () => {
+    beforeEach(() => {
+      mockRequest = {
+        params: { teamId: 'team-1', memberId: 'member-1' },
+        body: {}
+      };
+      mockResponse = responseMock as any;
+      mockStorageService.getProjects.mockResolvedValue([]);
+    });
+
+    const buildTeamWithRole = (role: unknown): Team => ({
+      id: 'team-1',
+      name: 'Test Team',
+      description: 'Test Description',
+      members: [{
+        id: 'member-1',
+        name: 'Broken Member',
+        sessionName: '',
+        role: role as any,
+        systemPrompt: 'Test prompt',
+        agentStatus: 'inactive',
+        workingStatus: 'idle',
+        runtimeType: 'claude-code',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+      projectIds: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    it('refuses to start a member whose role is undefined (the original bug)', async () => {
+      mockStorageService.getTeams.mockResolvedValue([buildTeamWithRole(undefined)]);
+
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>(),
+      } as any;
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // Critical: the registration service must NEVER be called with a bad role
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
+
+      // Operator should see a clear failure response
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: expect.stringContaining('Invalid agent role'),
+        })
+      );
+    });
+
+    it('refuses to start a member whose role is the literal string "undefined"', async () => {
+      mockStorageService.getTeams.mockResolvedValue([buildTeamWithRole('undefined')]);
+
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>(),
+      } as any;
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false }),
+      );
+    });
+
+    it('refuses to start a member whose role is an empty string', async () => {
+      mockStorageService.getTeams.mockResolvedValue([buildTeamWithRole('')]);
+
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>(),
+      } as any;
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
+    });
+
+    it('resets agentStatus to inactive with dropoutReason=invalid_role on failure', async () => {
+      const team = buildTeamWithRole(undefined);
+      mockStorageService.getTeams.mockResolvedValue([team]);
+
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>(),
+      } as any;
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // The controller flips status to STARTING for instant UI feedback BEFORE the
+      // role check. The guard must reset it back to INACTIVE with a clear reason
+      // so the orchestrator/operator can act on it.
+      const saveCall = (mockStorageService.saveTeam as jest.Mock).mock.calls.find(call => {
+        const t = call[0] as any;
+        return t?.members?.[0]?.dropoutReason === 'invalid_role';
+      });
+      expect(saveCall).toBeDefined();
+      const saved = saveCall![0] as any;
+      expect(saved.members[0].agentStatus).toBe(CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE);
+      expect(saved.members[0].dropoutReason).toBe('invalid_role');
+    });
+
+    it('still allows valid roles through (regression guard)', async () => {
+      mockStorageService.getTeams.mockResolvedValue([buildTeamWithRole('developer')]);
+
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>().mockResolvedValue({
+          success: true,
+          sessionName: 'good-session',
+          message: 'ok',
+        }),
+      } as any;
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).toHaveBeenCalledTimes(1);
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'developer' })
+      );
+    });
+  });
+
   describe('startTeamMember with orchestrator virtual team', () => {
     it('should start Assistant (crewly-agent runtime) via agentRegistrationService', async () => {
       mockRequest.params = { teamId: 'orchestrator', memberId: 'crewly-orc-assistant-member-001' };

@@ -65,6 +65,53 @@ export interface OrchestratorConfig {
 }
 
 /**
+ * Error thrown when an agent role cannot be resolved to a valid value.
+ *
+ * Indicates a member with no `role` field in storage, or a caller passing
+ * `undefined`/empty/literal-"undefined". Surfaces the failure loudly so it
+ * cannot manifest as the silent "empty Claude prompt" symptom (Bug #1).
+ */
+export class InvalidAgentRoleError extends Error {
+	constructor(public readonly received: unknown, context?: string) {
+		const ctx = context ? ` (${context})` : '';
+		const display =
+			received === undefined ? 'undefined'
+			: received === null ? 'null'
+			: typeof received === 'string' ? `"${received}"`
+			: String(received);
+		super(
+			`Invalid agent role${ctx}: received ${display}. Role must be a non-empty string ` +
+			`matching a directory under config/roles/. ` +
+			`Common cause: team member.role field missing or unset in storage.`
+		);
+		this.name = 'InvalidAgentRoleError';
+	}
+}
+
+/**
+ * Validate that an agent role is a usable string before it flows into session
+ * creation, env-var injection, or prompt-template path resolution.
+ *
+ * Rejects: undefined, null, non-strings, empty/whitespace strings, and the
+ * literal string "undefined" (which results from JS coercion when an undefined
+ * is interpolated into a template literal — the exact failure mode behind
+ * `CREWLY_ROLE="undefined"` in tmux env).
+ *
+ * @param role - The candidate role value
+ * @param context - Optional caller context for the error message (e.g. "startTeamMember")
+ * @throws {InvalidAgentRoleError} when role is unusable
+ */
+export function validateAgentRole(role: unknown, context?: string): asserts role is string {
+	if (typeof role !== 'string') {
+		throw new InvalidAgentRoleError(role, context);
+	}
+	const trimmed = role.trim();
+	if (trimmed.length === 0 || trimmed.toLowerCase() === 'undefined' || trimmed.toLowerCase() === 'null') {
+		throw new InvalidAgentRoleError(role, context);
+	}
+}
+
+/**
  * Service responsible for the complex, multi-step process of agent initialization and registration.
  * Isolates the complex state management of agent startup with progressive escalation.
  *
@@ -506,6 +553,10 @@ export class AgentRegistrationService {
 	 * Uses the unified config/roles/{role}/prompt.md structure
 	 */
 	private async getPromptFileForRole(role: string): Promise<string> {
+		// Defensive: reject empty/undefined/literal-"undefined" before path concat,
+		// which would otherwise resolve to a non-existent `config/roles/undefined/prompt.md`
+		// and trigger the silent fallback path that left agents with empty prompts (Bug #1).
+		validateAgentRole(role, 'getPromptFileForRole');
 		// Normalize role name to directory name format
 		const roleName = role.toLowerCase().replace(/\s+/g, '-');
 		return path.join(process.cwd(), 'config', 'roles', roleName, 'prompt.md');
@@ -2068,6 +2119,28 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 		message?: string;
 		error?: string;
 	}> {
+		// Fail fast if role is unusable. Without this guard, an undefined role
+		// flows through the entire pipeline, gets stringified to "undefined" in
+		// the CREWLY_ROLE env var, and silently breaks prompt resolution. We
+		// surface the misconfiguration here instead of spawning a dead session.
+		try {
+			validateAgentRole(config.role, 'createAgentSession');
+		} catch (err) {
+			const error = err instanceof Error ? err.message : String(err);
+			this.logger.error('Refusing to create agent session with invalid role', {
+				sessionName: config.sessionName,
+				memberId: config.memberId,
+				teamId: config.teamId,
+				receivedRole: config.role,
+				error,
+			});
+			return {
+				success: false,
+				sessionName: config.sessionName,
+				error,
+			};
+		}
+
 		// If another creation is in progress for this session, wait for it
 		const existingLock = this.sessionCreationLocks.get(config.sessionName);
 		if (existingLock) {

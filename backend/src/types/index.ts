@@ -63,7 +63,7 @@ export interface TeamMember {
   maxConcurrentTasks?: number;
 
   /** #235: Reason the agent last went inactive */
-  dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected' | 'startup_timeout';
+  dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected' | 'startup_timeout' | 'invalid_role';
 
   // === Architecture Upgrade fields ===
 

@@ -31,6 +31,10 @@ import { getSettingsService } from '../../services/settings/settings.service.js'
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import { ActivityMonitorService } from '../../services/monitoring/activity-monitor.service.js';
 import { MemoryService } from '../../services/memory/memory.service.js';
+import {
+  validateAgentRole,
+  InvalidAgentRoleError,
+} from '../../services/agent/agent-registration.service.js';
 import { SubAgentMessageQueue } from '../../services/messaging/sub-agent-message-queue.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
 import type { EventBusService } from '../../services/event-bus/event-bus.service.js';
@@ -332,6 +336,50 @@ async function _startTeamMemberCore(
   projectPath?: string
 ): Promise<TeamMemberOperationResult> {
   try {
+    // Guard against members with no role — without this, undefined flows into
+    // session creation, gets stringified to "undefined" in CREWLY_ROLE, and
+    // produces the silent "empty Claude prompt" failure. Surface the misconfig
+    // immediately so the operator can fix the team config (Bug #1).
+    try {
+      validateAgentRole(member.role, `_startTeamMemberCore[team=${team.id} member=${member.id}]`);
+    } catch (err) {
+      const errMessage = err instanceof InvalidAgentRoleError ? err.message
+        : err instanceof Error ? err.message
+        : String(err);
+      logger.error('Refusing to start team member with invalid role', {
+        teamId: team.id,
+        memberId: member.id,
+        memberName: member.name,
+        receivedRole: member.role,
+        error: errMessage,
+      });
+      // Reset agentStatus so we don't leave the member stuck in 'starting'
+      try {
+        const resetTeams = await context.storageService.getTeams();
+        const resetTeam = resetTeams.find(t => t.id === team.id);
+        const resetMember = resetTeam?.members.find(m => m.id === member.id) as MutableTeamMember | undefined;
+        if (resetTeam && resetMember && resetMember.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.STARTING) {
+          resetMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE;
+          resetMember.dropoutReason = 'invalid_role';
+          resetMember.updatedAt = new Date().toISOString();
+          await context.storageService.saveTeam(resetTeam);
+        }
+      } catch (resetErr) {
+        logger.warn('Failed to reset member status after role validation failure', {
+          memberId: member.id,
+          error: resetErr instanceof Error ? resetErr.message : String(resetErr),
+        });
+      }
+      return {
+        success: false,
+        memberName: member.name,
+        memberId: member.id,
+        sessionName: null,
+        status: 'failed',
+        error: errMessage,
+      };
+    }
+
     // Check if member already has an active session
     if (member.sessionName) {
       const sessions = await context.tmuxService.listSessions();
