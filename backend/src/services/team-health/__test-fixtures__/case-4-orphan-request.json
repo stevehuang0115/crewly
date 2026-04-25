@@ -1,0 +1,25 @@
+{
+  "_description": "Case 4 — Orphan Request (§E.6). Request open for 30 min, zero matching WorkItems. Expected: orphan_request = true; verdict 'stalling' for the team; system-wide ≥3 orphans escalates to 'cascade'.",
+  "now": "2026-04-25T15:30:00.000Z",
+  "bootedAt": "2026-04-25T08:00:00.000Z",
+  "teams": [
+    { "id": "marketing", "name": "Crewly Marketing", "slackThreadId": "T_marketing", "memberSessions": ["luna-content", "grace-ops"], "tlSession": "luna-content" }
+  ],
+  "agentHealth": [
+    { "sessionName": "luna-content", "status": "active", "workingStatus": "in_progress", "lastSeenAt": "2026-04-25T15:29:30.000Z", "teamId": "marketing" },
+    { "sessionName": "grace-ops",    "status": "active", "workingStatus": "in_progress", "lastSeenAt": "2026-04-25T15:29:30.000Z", "teamId": "marketing" }
+  ],
+  "workItems": [],
+  "requests": [
+    {
+      "id": "req-orphan-1", "sourceConversationItemId": "conv-1",
+      "title": "Investigate Marketing thread engagement", "description": "Investigate why threads are quiet.",
+      "status": "open", "priority": "normal", "requiresConfirmation": false, "workItemIds": [],
+      "intentLevel": "L1", "intentCategory": "research", "tags": [],
+      "createdAt": "2026-04-25T15:00:00.000Z", "updatedAt": "2026-04-25T15:00:00.000Z",
+      "totalInputTokens": 0, "totalOutputTokens": 0, "totalCost": 0,
+      "ownerAgent": "marketing"
+    }
+  ],
+  "triggers": []
+}

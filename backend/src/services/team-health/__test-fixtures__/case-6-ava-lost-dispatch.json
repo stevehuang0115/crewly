@@ -1,0 +1,24 @@
+{
+  "_description": "Case 6 — Ava (UX) lost-dispatch-after-restart (post-SEALED amendment). UX dispatch sent at 18:45, Ava restarted at 19:00, status stuck at accepted. Expected: lost_dispatch = true; verdict 'stalling'; no mutation.",
+  "now": "2026-04-25T19:30:00.000Z",
+  "bootedAt": "2026-04-25T08:00:00.000Z",
+  "teams": [
+    { "id": "crewly-product-ux", "name": "Crewly Product UX", "slackThreadId": "T_ux", "memberSessions": ["ava-ux"], "tlSession": "ava-ux" }
+  ],
+  "agentHealth": [
+    { "sessionName": "ava-ux", "status": "active", "workingStatus": "idle", "lastSeenAt": "2026-04-25T19:20:00.000Z", "teamId": "crewly-product-ux" }
+  ],
+  "workItems": [
+    {
+      "id": "wi-ava-ux-dispatch",
+      "type": "delegate", "owner": "orchestrator", "target": "ava-ux",
+      "title": "UX dispatch: H5 onboarding pass",
+      "description": "Review the H5 onboarding flow for accessibility issues and produce a punch list.",
+      "status": "accepted",
+      "createdAt": "2026-04-25T18:45:00.000Z",
+      "retryCount": 0, "maxRetries": 3, "inputTokens": 0, "outputTokens": 0, "cost": 0
+    }
+  ],
+  "requests": [],
+  "triggers": []
+}

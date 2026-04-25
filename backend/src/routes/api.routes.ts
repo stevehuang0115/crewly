@@ -39,6 +39,7 @@ import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.r
 import { createTaskPoolRouter } from '../controllers/task-pool/task-pool.routes.js';
 import { createRequestRouter } from '../controllers/request/request.routes.js';
 import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
+import { createTeamHealthRouter } from '../controllers/team-health/team-health.routes.js';
 import { createFissionRouter } from '../controllers/fission/fission.routes.js';
 import { createMissionPolicyRouter } from '../controllers/mission/mission-policy.routes.js';
 import { createV2WorkspaceRouter } from '../controllers/v2-workspace/workspace.routes.js';
@@ -158,6 +159,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Reconciler routes for status monitoring, manual trigger, and history
   router.use('/reconciler', createReconcilerRouter());
+
+  // Team-Health-Watchdog (THW) — Layer 4 liveness aggregator routes
+  router.use('/team-health', createTeamHealthRouter());
 
   // Fission guardrail routes for config, stats, violations, and pre-checks
   router.use('/fission', createFissionRouter());

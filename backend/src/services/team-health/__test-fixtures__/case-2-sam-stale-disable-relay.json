@@ -1,0 +1,35 @@
+{
+  "_description": "Case 2 — Sam's stale 'disable embedded WS relay server' refire (§E.4). 4 prior done with overlapping AC + source already in target state. Expected: stale_fire = true; verdict 'stale'; no mutation.",
+  "now": "2026-04-25T14:45:00.000Z",
+  "bootedAt": "2026-04-25T08:00:00.000Z",
+  "teams": [
+    { "id": "crewly-product", "name": "Crewly Product", "slackThreadId": "T_product", "memberSessions": ["sam-tl"], "tlSession": "sam-tl" }
+  ],
+  "agentHealth": [
+    { "sessionName": "sam-tl", "status": "active", "workingStatus": "in_progress", "lastSeenAt": "2026-04-25T14:44:30.000Z", "teamId": "crewly-product" }
+  ],
+  "workItems": [
+    {
+      "id": "wi-stale-relay",
+      "type": "delegate",
+      "owner": "team_lead",
+      "target": "sam-tl",
+      "title": "Completely disable embedded WS relay server",
+      "description": "Completely disable the embedded websocket relay server in backend/src/index.ts. Free up port 8787.",
+      "status": "blocked",
+      "createdAt": "2026-04-25T14:30:00.000Z",
+      "retryCount": 0, "maxRetries": 3, "inputTokens": 0, "outputTokens": 0, "cost": 0
+    }
+  ],
+  "requests": [],
+  "triggers": [],
+  "priorDoneCounts": [{ "workItemId": "wi-stale-relay", "count": 4 }],
+  "artifactProbes": [
+    {
+      "workItemId": "wi-stale-relay",
+      "probes": [
+        { "kind": "file_state", "isStale": true, "evidence": "backend/src/index.ts: relay server already removed in commit 070cd3e5" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "_description": "Case 3 — Arch's crewly-web:1.3.33 with no source basis (§E.5). Description references package.json version 1.3.33 but no branch contains it (all at 1.0.26). Expected: stale_fire = true; verdict 'stale'; no mutation.",
+  "now": "2026-04-25T14:30:00.000Z",
+  "bootedAt": "2026-04-25T08:00:00.000Z",
+  "teams": [
+    { "id": "crewly-product-arch", "name": "Crewly Product Architecture", "slackThreadId": "T_arch", "memberSessions": ["arch-arch"], "tlSession": "arch-arch" }
+  ],
+  "agentHealth": [
+    { "sessionName": "arch-arch", "status": "active", "workingStatus": "in_progress", "lastSeenAt": "2026-04-25T14:29:30.000Z", "teamId": "crewly-product-arch" }
+  ],
+  "workItems": [
+    {
+      "id": "wi-rebuild-1.3.33",
+      "type": "delegate",
+      "owner": "team_lead",
+      "target": "arch-arch",
+      "title": "Rebuild crewly-web:1.3.33",
+      "description": "Rebuild crewly-web 1.3.33 image using ~/Desktop/projects/crewly-projects/web/Dockerfile (version 1.3.33).",
+      "status": "running",
+      "createdAt": "2026-04-25T14:00:00.000Z",
+      "startedAt": "2026-04-25T14:05:00.000Z",
+      "retryCount": 0, "maxRetries": 3, "inputTokens": 0, "outputTokens": 0, "cost": 0
+    }
+  ],
+  "requests": [],
+  "triggers": [],
+  "priorDoneCounts": [],
+  "artifactProbes": [
+    {
+      "workItemId": "wi-rebuild-1.3.33",
+      "probes": [
+        { "kind": "package_version", "isStale": true, "evidence": "Branches main / feat/chat-ui-integration-week2 / feat/cloud-chat / origin/feat/oauth-redirect-ui-improvements all at 1.0.26 — no branch contains 1.3.33" }
+      ]
+    }
+  ]
+}

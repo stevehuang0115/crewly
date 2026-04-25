@@ -100,6 +100,16 @@ import { setReconcilerService } from './controllers/reconciler/reconciler.contro
 import { FissionGuardService, type FissionDataProvider } from './services/fission/fission-guard.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
+import {
+	TeamHealthWatchdogService,
+	LiveTeamHealthDataProvider,
+	loadTeamHealthConfig,
+	setTeamHealthWatchdogSingleton,
+	getTeamHealthWatchdogSingleton,
+	type AlertSink,
+	type AlertDecision,
+} from './services/team-health/index.js';
+import { createTeamHealthRouter } from './controllers/team-health/team-health.routes.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -169,6 +179,7 @@ export class CrewlyServer {
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
 	private reconcilerService: ReconcilerService | null = null;
+	private teamHealthWatchdog: TeamHealthWatchdogService | null = null;
 
 	// Chat MVP Phase 1 — initialized lazily in `start()` after the HTTP
 	// server is created. Kept as fields so the shutdown path can close
@@ -454,6 +465,69 @@ export class CrewlyServer {
 			reconcilerLogger.info('ReconcilerService initialized and wired to EventBus');
 		}
 
+		// Initialize Team-Health-Watchdog (THW) — Layer 4 liveness aggregator
+		// Lazy singleton wiring per Sam's etiquette nudge: no module-load
+		// side effects; controller and /api/health resolve via accessor.
+		{
+			const thwLogger = LoggerService.getInstance().createComponentLogger('TeamHealthInit');
+			try {
+				const config = loadTeamHealthConfig({
+					warn: (msg, meta) => thwLogger.warn(msg, meta ?? {}),
+					info: (msg, meta) => thwLogger.info(msg, meta ?? {}),
+				});
+
+				if (!config.enabled) {
+					thwLogger.info('TeamHealthWatchdog disabled by config; skipping init.');
+				} else if (!this.reconcilerService) {
+					thwLogger.warn('Reconciler not available; skipping TeamHealthWatchdog init.');
+				} else {
+					const reconcilerProvider = new LiveReconcilerDataProvider();
+					const dataProvider = new LiveTeamHealthDataProvider({
+						reconcilerProvider,
+						getTeams: async () => StorageService.getInstance().getTeams(),
+						bootedAt: new Date(),
+					});
+
+					// Phase 0 alert sink: log-only. Slack delivery wires up
+					// in Phase 1 (per §G phasing). Shadow-mode is the
+					// default config.json setting, so this sink is mostly
+					// invoked for the recovery announcement path.
+					const alertSink: AlertSink = {
+						deliver: async (decision: AlertDecision) => {
+							thwLogger.info('THW alert (Phase 0 log-only sink)', {
+								teamId: decision.detection.teamId,
+								verdict: decision.effectiveVerdict,
+								channel: decision.channel,
+								message: decision.message,
+							});
+						},
+					};
+
+					this.teamHealthWatchdog = new TeamHealthWatchdogService({
+						config,
+						dataProvider,
+						alertSink,
+						bootedAt: new Date(),
+						logger: {
+							info: (msg, meta) => thwLogger.info(msg, meta ?? {}),
+							warn: (msg, meta) => thwLogger.warn(msg, meta ?? {}),
+							error: (msg, meta) => thwLogger.error(msg, meta ?? {}),
+						},
+					});
+					setTeamHealthWatchdogSingleton(this.teamHealthWatchdog);
+					this.teamHealthWatchdog.start();
+					thwLogger.info('TeamHealthWatchdog initialized', {
+						shadowMode: config.shadowMode,
+						sweepIntervalMs: config.sweepIntervalMs,
+					});
+				}
+			} catch (err) {
+				thwLogger.error('Failed to initialize TeamHealthWatchdog (continuing without it)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
 		// Initialize Fission Guard Service
 		{
 			const fissionLogger = LoggerService.getInstance().createComponentLogger('FissionInit');
@@ -590,6 +664,19 @@ export class CrewlyServer {
 				}
 			}
 
+			// THW self-instrumentation (§F.3): surface last-sweep age + degraded
+			// flag so the watchdog-watchdog (§E.8) bubbles up here. Fail-soft
+			// per Sam's etiquette nudge — when the singleton isn't ready, return
+			// status:"warming" rather than 5xx.
+			const watchdog = getTeamHealthWatchdogSingleton();
+			const teamHealthBlock = watchdog
+				? {
+						status: watchdog.isDegraded() ? 'degraded' : (watchdog.isActive() ? 'ok' : 'inactive'),
+						last_sweep_age_ms: watchdog.getLastSweepAgeMs(),
+						shadowMode: watchdog.getLastSweep()?.shadowMode ?? null,
+				  }
+				: { status: 'warming', last_sweep_age_ms: -1, shadowMode: null };
+
 			res.json({
 				status: 'healthy',
 				timestamp: new Date().toISOString(),
@@ -602,6 +689,7 @@ export class CrewlyServer {
 					active: agentCount,
 					total: agentCount,
 				},
+				team_health: teamHealthBlock,
 			});
 		});
 
@@ -2528,6 +2616,12 @@ export class CrewlyServer {
 			if (this.reconcilerService) {
 				this.reconcilerService.stop();
 				this.logger.info('Reconciler stopped');
+			}
+
+			// Stop Team-Health-Watchdog sweep loop (Layer 4)
+			if (this.teamHealthWatchdog) {
+				this.teamHealthWatchdog.stop();
+				this.logger.info('TeamHealthWatchdog stopped');
 			}
 
 			// Stop NOTIFY reconciliation service

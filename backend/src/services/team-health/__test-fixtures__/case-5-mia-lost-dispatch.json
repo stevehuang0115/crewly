@@ -1,0 +1,24 @@
+{
+  "_description": "Case 5 — Mia (PM) lost-dispatch-after-restart (post-SEALED amendment). PM dispatch sent at 18:55, Mia restarted at 19:05, never moved WorkItem to running. Expected: lost_dispatch = true; verdict 'stalling'; no mutation.",
+  "now": "2026-04-25T19:30:00.000Z",
+  "bootedAt": "2026-04-25T08:00:00.000Z",
+  "teams": [
+    { "id": "crewly-product-pm", "name": "Crewly Product PM", "slackThreadId": "T_pm", "memberSessions": ["mia-pm"], "tlSession": "mia-pm" }
+  ],
+  "agentHealth": [
+    { "sessionName": "mia-pm", "status": "active", "workingStatus": "idle", "lastSeenAt": "2026-04-25T19:25:00.000Z", "teamId": "crewly-product-pm" }
+  ],
+  "workItems": [
+    {
+      "id": "wi-mia-pm-dispatch",
+      "type": "delegate", "owner": "orchestrator", "target": "mia-pm",
+      "title": "PM coordination: April OKR review prep",
+      "description": "Coordinate the April OKR mid-cycle review with the team and prepare the agenda.",
+      "status": "proposed",
+      "createdAt": "2026-04-25T18:55:00.000Z",
+      "retryCount": 0, "maxRetries": 3, "inputTokens": 0, "outputTokens": 0, "cost": 0
+    }
+  ],
+  "requests": [],
+  "triggers": []
+}
