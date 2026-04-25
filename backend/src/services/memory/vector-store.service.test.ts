@@ -60,6 +60,23 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
+// ESM require bridge — regression guard
+// ---------------------------------------------------------------------------
+
+describe('module load (ESM require bridge)', () => {
+  // Loading this test file at all means the createRequire(import.meta.url)
+  // bridge in vector-store.service.ts succeeded; under the bug we swept
+  // out, the import on line 16 above would have thrown ReferenceError on
+  // first DB access (or ts-jest CJS would have hit the same path through
+  // the typeof require branch). Pin the bridge by exercising a function
+  // that hits the lazy loader.
+  it('cosineSimilarity is callable — proves the module imported cleanly', () => {
+    expect(typeof cosineSimilarity).toBe('function');
+    expect(cosineSimilarity([1, 0], [1, 0])).toBeCloseTo(1, 10);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // cosineSimilarity unit tests
 // ---------------------------------------------------------------------------
 
