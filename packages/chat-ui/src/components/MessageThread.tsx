@@ -17,6 +17,14 @@
  *    message while we wait for the agent's reply, driven by the
  *    `agentThinking` flag from `useMessages`.
  *
+ * Phase B Slack-like additions (additive only — existing callers do not
+ * break):
+ *  - `unreadAfterSeq` optional prop renders an "Unread" divider in the
+ *    timeline after the message whose `seq` matches the value (design
+ *    §6.2 thread rule). Designed for the team-chat surfaces where the
+ *    BE supplies the last-read marker per channel; legacy single-channel
+ *    consumers omit the prop and see no divider.
+ *
  * @module components/MessageThread
  */
 
@@ -33,6 +41,19 @@ export interface MessageThreadProps {
   className?: string;
   /** Optional empty state override. */
   emptyState?: React.ReactNode;
+  /**
+   * Phase B Slack-like extension (design §6.2 thread rule).
+   *
+   * When set, renders an "Unread" divider in the timeline AFTER the
+   * message whose `seq` equals `unreadAfterSeq`. The divider appears
+   * once per render even when the matching message is not currently
+   * loaded — in that case it appears at the top of the visible window
+   * so the user still sees the boundary. Omit (or set to `null`) on
+   * legacy single-channel consumers — additive guarantee.
+   */
+  unreadAfterSeq?: number | null;
+  /** Override label for the unread divider. Defaults to `New`. */
+  unreadDividerLabel?: string;
 }
 
 export function MessageThread({
@@ -40,6 +61,8 @@ export function MessageThread({
   agentName,
   className = '',
   emptyState,
+  unreadAfterSeq = null,
+  unreadDividerLabel = 'New',
 }: MessageThreadProps): JSX.Element {
   const { messages, loading, error, hasMore, agentThinking, loadMore } = useMessages(channelId);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -79,9 +102,7 @@ export function MessageThread({
       )}
 
       <ul role="list" className="flex flex-1 flex-col gap-3 px-4 py-4">
-        {messages.map((m) => (
-          <MessageRow key={m.id} message={m} />
-        ))}
+        {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel })}
         {agentThinking && <AgentThinkingRow agentName={agentName} />}
         {loading && (
           <li className="text-xs text-slate-400" role="status">
@@ -96,6 +117,62 @@ export function MessageThread({
       </ul>
       <div ref={bottomRef} />
     </div>
+  );
+}
+
+/**
+ * Render the message list with an optional unread divider inserted
+ * after the matching seq. Pure helper so it stays out of the component
+ * body and is straightforward to unit-test.
+ */
+function renderTimeline(args: {
+  messages: Message[];
+  unreadAfterSeq: number | null;
+  unreadDividerLabel: string;
+}): React.ReactNode[] {
+  const { messages, unreadAfterSeq, unreadDividerLabel } = args;
+  if (unreadAfterSeq === null || unreadAfterSeq === undefined) {
+    return messages.map((m) => <MessageRow key={m.id} message={m} />);
+  }
+  const out: React.ReactNode[] = [];
+  let dividerInserted = false;
+  // Find whether the matching seq is in the loaded window.
+  const hasMatchingSeq = messages.some((m) => m.seq === unreadAfterSeq);
+  for (const m of messages) {
+    out.push(<MessageRow key={m.id} message={m} />);
+    if (!dividerInserted && hasMatchingSeq && m.seq === unreadAfterSeq) {
+      out.push(
+        <UnreadDividerRow key="unread-divider" label={unreadDividerLabel} />,
+      );
+      dividerInserted = true;
+    }
+  }
+  // Edge case: the matching seq is not in the loaded window. Surface
+  // the divider at the top so the boundary stays legible — this is the
+  // case when older messages have been paged off-screen.
+  if (!dividerInserted && messages.length > 0) {
+    out.unshift(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} />);
+  }
+  return out;
+}
+
+/**
+ * Slack-style unread separator. Pure visual element; no interactivity.
+ */
+function UnreadDividerRow({ label }: { label: string }): JSX.Element {
+  return (
+    <li
+      className="flex items-center gap-2 py-1"
+      data-testid="unread-divider"
+      role="separator"
+      aria-label={`${label} messages below`}
+    >
+      <span className="h-px flex-1 bg-rose-400/70" aria-hidden="true" />
+      <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+        {label}
+      </span>
+      <span className="h-px flex-1 bg-rose-400/70" aria-hidden="true" />
+    </li>
   );
 }
 
