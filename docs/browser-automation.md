@@ -156,3 +156,107 @@ Browser automation uses approximately 114K tokens per task (Ethan's benchmark). 
 - Using browser automation only when necessary
 - Closing the browser promptly after extracting data
 - Using `browser_evaluate` for bulk data extraction instead of multiple click/read cycles
+
+---
+
+## Crewly in Chrome — `remote-browser` skill
+
+A separate path from Playwright MCP, the `remote-browser` skill drives the
+**user's actual Chrome browser** via the Crewly Chrome Extension over a
+WebSocket bridge. Use this when an automation needs the user's real
+logged-in sessions (cookies, OAuth, social platforms) — Playwright runs a
+clean sandboxed browser with no logins.
+
+```
+remote-browser skill ─HTTP→ /api/browser/* ─WS→ Chrome Extension
+   bash execute.sh                         ↑     ↑
+                                  backend           user's Chrome
+```
+
+### Per-tab dispatch (1 agent : 1 tab)
+
+As of 2026-04-25 (spec
+`.crewly/specs/crewly-in-chrome-per-tab-fix-2026-04-25.md`, OSS commits
+`96710c98` / `e4a39ddb`, Chrome Extension v0.4.0 commit `0c13dd0`),
+**each agent owns its own Chrome tab**. Multi-agent concurrent web
+automation no longer collides on whichever tab the user has focused.
+
+#### How it works
+
+1. Backend reads the `X-Agent-Session` header (auto-set by `_common/lib.sh`
+   from `$CREWLY_SESSION_NAME`) on every `/api/browser/*` call.
+2. On the agent's first command, backend tells the Extension to create a
+   fresh background tab and remembers `agentSession → tabId`.
+3. All subsequent commands from that agent are dispatched to its bound
+   tab — `navigate`, `read-text`, `click`, etc.
+4. Tabs land in a "Crewly" tab group (purple) so the user sees them
+   collapsed. They never steal focus.
+
+#### Skill usage
+
+```bash
+# Standard call — auto-binds on first command, uses bound tab thereafter.
+CREWLY_SESSION_NAME=my-agent bash config/skills/agent/remote-browser/execute.sh \
+  '{"action":"navigate","url":"https://example.com"}'
+
+# Explicit pre-bind (lets the skill cache the tabId locally for resilience
+# across backend restarts):
+CREWLY_SESSION_NAME=my-agent bash …/execute.sh --action bind-tab
+
+# Foreground a fresh bind (debug only):
+CREWLY_SESSION_NAME=my-agent bash …/execute.sh --action bind-tab --active
+
+# Override an explicit tab id (testing/debug):
+CREWLY_SESSION_NAME=my-agent bash …/execute.sh --action read-text --tab-id 42
+
+# Force the legacy active-tab path (drop the X-Agent-Session header for
+# this one call — useful for one-off scripts that pre-date per-tab):
+bash …/execute.sh --action read-text --no-bind
+
+# Release at the end of a long-running session:
+CREWLY_SESSION_NAME=my-agent bash …/execute.sh --action unbind-tab
+```
+
+#### Backward compatibility
+
+When `CREWLY_SESSION_NAME` is unset OR `--no-bind` is used, the call
+falls back to the user's currently-active tab — preserves every script
+that pre-dates per-tab dispatch.
+
+#### Operational guardrails
+
+- **Hard cap**: 50 concurrent agent→tab bindings (override via
+  `CREWLY_TAB_BIND_MAX`). At cap, `POST /api/browser/bind` returns 503
+  with `error: "tab_pool_full"` and a `retryAfterMs` hint.
+- **Soft warning**: bindings ≥ 25 logs a warning (and pings Slack via
+  the alert pipeline).
+- **TTL**: idle bindings expire after 30 min (override via
+  `CREWLY_TAB_BIND_TTL_MINUTES`). Sweep runs every 5 min and closes
+  the orphaned tab.
+- **User-closes-tab**: the Extension's `chrome.tabs.onRemoved` listener
+  forwards a `tabRemoved` signal so the backend clears the binding
+  immediately — the agent's next call auto-rebinds.
+- **Reconcile on reconnect**: every WS connection establishment, the
+  Extension sends a tab inventory; backend drops stale bindings and
+  asks the Extension to close orphan Crewly-group tabs.
+
+#### Diagnostics
+
+- `GET /api/browser/bindings` — JSON snapshot of all current
+  agent→tab bindings, plus `hardCap` / `softWarn` thresholds.
+- Extension console (chrome://extensions → Crewly in Chrome → service
+  worker) — look for `[crewly] Sent tab inventory`, `[crewly] Agent
+  tab bound`, `[crewly] Binding cleared` log lines.
+- Backend logs — `BrowserBridge` component lines tagged with
+  `bindAgentTab` / `unbindAgentTab` / `reconcile_extension_missing`.
+
+#### When to use Playwright vs Crewly in Chrome
+
+| Need | Use |
+|---|---|
+| Logged-in social platforms (LinkedIn, XHS, Twitter) | Crewly in Chrome |
+| Public sites / scraping / repeatable tests | Playwright MCP |
+| Multi-agent concurrent automation | Crewly in Chrome (per-tab) |
+| Headless / CI environments | Playwright MCP |
+| Cookies / OAuth tokens from user's real browser | Crewly in Chrome |
+| Sandboxed / no-side-effect sessions | Playwright MCP |
