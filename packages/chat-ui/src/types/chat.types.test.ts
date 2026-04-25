@@ -41,13 +41,67 @@ describe('chat.types', () => {
     expect(JSON.parse(JSON.stringify(msg))).toEqual(msg);
   });
 
-  it('ChatWebsocketEvent discriminates on type', () => {
+  it('Message accepts optimistic-send fields', () => {
+    const pending: Message = {
+      id: 'cmid-1',
+      channelId: 'c1',
+      seq: -1,
+      author: { role: 'user', id: 'me' },
+      content: 'hi',
+      createdAt: new Date().toISOString(),
+      clientMessageId: 'cmid-1',
+      deliveryStatus: 'pending',
+    };
+    expect(pending.deliveryStatus).toBe('pending');
+    expect(pending.clientMessageId).toBe('cmid-1');
+  });
+
+  it('ChatWebsocketEvent discriminates message events with channelId + message', () => {
+    const e: ChatWebsocketEvent = {
+      type: 'message',
+      channelId: 'c1',
+      message: {
+        id: 'm1',
+        channelId: 'c1',
+        seq: 5,
+        author: { role: 'agent', id: 'crewly-foo' },
+        content: 'hi back',
+        createdAt: new Date().toISOString(),
+      },
+    };
+    if (e.type === 'message') {
+      expect(e.channelId).toBe('c1');
+      expect(e.message.author.role).toBe('agent');
+    }
+  });
+
+  it('ChatWebsocketEvent discriminates presence events with agentSession + status', () => {
     const e: ChatWebsocketEvent = {
       type: 'presence',
-      payload: { agentId: 'a1', status: 'online' },
+      agentSession: 'crewly-foo',
+      status: 'online',
     };
     if (e.type === 'presence') {
-      expect(e.payload.agentId).toBe('a1');
+      expect(e.agentSession).toBe('crewly-foo');
+      expect(e.status).toBe('online');
+    }
+  });
+
+  it('ChatWebsocketEvent discriminates pong events', () => {
+    const e: ChatWebsocketEvent = { type: 'pong', ts: 1234 };
+    if (e.type === 'pong') {
+      expect(e.ts).toBe(1234);
+    }
+  });
+
+  it('ChatWebsocketEvent discriminates error events', () => {
+    const e: ChatWebsocketEvent = {
+      type: 'error',
+      code: 'unauthorized',
+      message: 'token expired',
+    };
+    if (e.type === 'error') {
+      expect(e.code).toBe('unauthorized');
     }
   });
 });

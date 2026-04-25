@@ -48,7 +48,10 @@ export function DemoApp(): JSX.Element {
           </header>
 
           <div className="flex-1">
-            <MessageThread channelId={active?.id ?? null} />
+            <MessageThread
+              channelId={active?.id ?? null}
+              agentName={active?.name?.split('·')[0]?.trim() ?? active?.name}
+            />
           </div>
 
           <MessageInput channelId={active?.id ?? null} />

@@ -6,10 +6,21 @@
  *  - Subscribe to the channel's WS feed and append incoming messages
  *  - Pagination via `loadMore()` walking the cursor backwards
  *  - Expose a `sendMessage()` helper that performs the optimistic write
- *    and returns the server-assigned row
+ *    via the injected client and returns the server-assigned row
+ *  - Surface an `agentThinking` derived state used to render the typing
+ *    indicator while the user waits for the agent's reply
+ *
+ * Optimistic-send reconciliation rule (Sam's tech spec §6, locked
+ * 2026-04-24):
+ *   1. The client emits a `pending` message into the same event stream
+ *      via `subscribeToChannel`. We add it to the timeline.
+ *   2. The HTTP 201 response carries the server record back through the
+ *      same stream. We MATCH BY `clientMessageId` and replace.
+ *   3. The eventual WS broadcast for the same row arrives — also with
+ *      `clientMessageId` in metadata. We dedupe (no duplicate appended).
  *
  * Phase 1 does not implement virtual scrolling — paginated load is
- * sufficient per Decisions doc #5.
+ * sufficient.
  *
  * @module hooks/useMessages
  */
@@ -23,8 +34,66 @@ export interface UseMessagesResult {
   loading: boolean;
   error: Error | null;
   hasMore: boolean;
+  /**
+   * `true` when the user has just sent a message and the agent has not
+   * yet replied. Drives the "agent is thinking…" indicator.
+   */
+  agentThinking: boolean;
   loadMore(): Promise<void>;
   sendMessage(input: SendMessageInput): Promise<Message>;
+}
+
+/**
+ * Append-or-reconcile rule: an incoming message either replaces an existing
+ * record (matched by `clientMessageId` first, then by `id`) or is appended
+ * to the end. Pure helper so the reducer can be unit-tested without React.
+ *
+ * @param prev - Current ordered timeline
+ * @param incoming - New / updated message from the local emitter or WS
+ * @returns Next timeline reference; same array instance if no change
+ */
+export function reconcileMessage(prev: Message[], incoming: Message): Message[] {
+  // First: match by clientMessageId (covers optimistic → confirmed/failed +
+  // server WS broadcast of the same row).
+  if (incoming.clientMessageId) {
+    const idxByCmid = prev.findIndex(
+      (m) => m.clientMessageId && m.clientMessageId === incoming.clientMessageId,
+    );
+    if (idxByCmid >= 0) {
+      const next = prev.slice();
+      next[idxByCmid] = incoming;
+      return next;
+    }
+  }
+  // Then: dedupe by server id (replay or duplicate broadcast).
+  const idxById = prev.findIndex((m) => m.id === incoming.id);
+  if (idxById >= 0) {
+    // Prefer the newer record (e.g. seq promoted from -1 to a real seq).
+    const next = prev.slice();
+    next[idxById] = incoming;
+    return next;
+  }
+  return [...prev, incoming];
+}
+
+/**
+ * Derive whether the agent is "thinking".
+ *
+ * True when the most recent message on the timeline is a freshly-sent
+ * user message — i.e. it carries a `clientMessageId` (set either by the
+ * optimistic emitter or the server echo). Old user messages loaded from
+ * history without an idempotency token never trigger the indicator, so
+ * scrolling back into a paused conversation does not show a stuck
+ * "thinking…" bubble.
+ *
+ * @param messages - Current ordered timeline
+ * @returns Whether to show the "agent is thinking" indicator
+ */
+export function deriveAgentThinking(messages: Message[]): boolean {
+  if (messages.length === 0) return false;
+  const last = messages[messages.length - 1];
+  if (last.author.role !== 'user') return false;
+  return Boolean(last.clientMessageId);
 }
 
 export function useMessages(channelId: string | null): UseMessagesResult {
@@ -34,12 +103,14 @@ export function useMessages(channelId: string | null): UseMessagesResult {
   const [error, setError] = useState<Error | null>(null);
   const cursorRef = useRef<string | null>(null);
   const [hasMore, setHasMore] = useState<boolean>(false);
+  const [agentThinking, setAgentThinking] = useState<boolean>(false);
 
   // Load the initial page whenever the channel changes.
   useEffect(() => {
     if (!channelId) {
       setMessages([]);
       setHasMore(false);
+      setAgentThinking(false);
       return;
     }
 
@@ -47,6 +118,7 @@ export function useMessages(channelId: string | null): UseMessagesResult {
     setLoading(true);
     setError(null);
     cursorRef.current = null;
+    setAgentThinking(false);
 
     client
       .listMessages(channelId)
@@ -69,21 +141,20 @@ export function useMessages(channelId: string | null): UseMessagesResult {
     };
   }, [channelId, client]);
 
-  // Subscribe to WS for the active channel.
+  // Subscribe to the channel's WS + local-optimistic feed.
   useEffect(() => {
     if (!channelId) return;
     const sub = client.subscribeToChannel(channelId, (event) => {
       if (event.type === 'message') {
-        setMessages((prev) =>
-          prev.some((m) => m.id === event.payload.id) ? prev : [...prev, event.payload],
-        );
-      } else if (event.type === 'ack') {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === event.payload.clientMessageId ? event.payload.serverMessage : m,
-          ),
-        );
+        setMessages((prev) => {
+          const next = reconcileMessage(prev, event.message);
+          // Update agentThinking based on the post-reconciliation tail.
+          setAgentThinking(deriveAgentThinking(next));
+          return next;
+        });
       }
+      // presence + pong + error are not handled here; useAgentPresence
+      // and observability hooks consume those.
     });
     return () => sub.unsubscribe();
   }, [channelId, client]);
@@ -104,12 +175,13 @@ export function useMessages(channelId: string | null): UseMessagesResult {
   const sendMessage = useCallback(
     async (input: SendMessageInput) => {
       if (!channelId) throw new Error('sendMessage called without an active channel.');
-      const result = await client.sendMessage(channelId, input);
-      setMessages((prev) => (prev.some((m) => m.id === result.id) ? prev : [...prev, result]));
-      return result;
+      // The client emits the optimistic + confirmed events through the
+      // subscription stream — our timeline picks them up there. We just
+      // await the canonical row to surface errors back to the caller.
+      return await client.sendMessage(channelId, input);
     },
     [channelId, client],
   );
 
-  return { messages, loading, error, hasMore, loadMore, sendMessage };
+  return { messages, loading, error, hasMore, agentThinking, loadMore, sendMessage };
 }

@@ -1,12 +1,12 @@
 /**
  * HttpChatApiClient tests — exercises the wire envelope + DTO translation
- * layer that was added in Week 2 when we flipped from mock to Sam's live
- * backend.
+ * layer plus the Week 2 additions: heartbeat, optimistic emission, and
+ * reconnect-with-replay.
  *
  * @module api/client.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HttpChatApiClient } from './client';
 import { ChatApiError } from './errors';
 import type {
@@ -15,9 +15,66 @@ import type {
   ChannelListEnvelope,
   MessageListEnvelope,
 } from './dto';
+import type { ChatWebsocketEvent } from '../types/chat.types';
 
 // Keep timestamps human-readable in assertions; epoch zero → fixed ISO.
 const MS_T0 = 1729790000000;
+
+/**
+ * Test double for the browser `WebSocket`. Records sends, exposes hooks
+ * to fire `open`/`message`/`close` synchronously, and tracks how many
+ * times the constructor was invoked so reconnect tests can assert on it.
+ */
+class FakeSocket {
+  static instances: FakeSocket[] = [];
+
+  readonly OPEN = 1;
+  readonly CONNECTING = 0;
+  readonly CLOSED = 3;
+  readyState = 1;
+  url: string;
+  sent: string[] = [];
+  closed = false;
+  private listeners: Record<string, Array<(e: unknown) => void>> = {};
+
+  constructor(url: string) {
+    this.url = url;
+    FakeSocket.instances.push(this);
+  }
+
+  addEventListener(type: string, cb: (e: unknown) => void): void {
+    (this.listeners[type] ||= []).push(cb);
+  }
+
+  removeEventListener(type: string, cb: (e: unknown) => void): void {
+    const list = this.listeners[type];
+    if (!list) return;
+    this.listeners[type] = list.filter((x) => x !== cb);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.readyState = this.CLOSED;
+    this.fire('close', {});
+  }
+
+  // Helpers used by tests to trigger lifecycle events.
+  fire(type: string, ev: unknown): void {
+    for (const cb of this.listeners[type] ?? []) cb(ev);
+  }
+  open(): void {
+    this.readyState = this.OPEN;
+    this.fire('open', {});
+  }
+  receive(frame: unknown): void {
+    this.fire('message', { data: JSON.stringify(frame) });
+  }
+}
 
 describe('HttpChatApiClient', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -34,6 +91,7 @@ describe('HttpChatApiClient', () => {
 
   beforeEach(() => {
     fetchMock = vi.fn();
+    FakeSocket.instances = [];
   });
 
   it('GET /api/chat/channels unwraps the envelope and translates DTOs', async () => {
@@ -132,6 +190,7 @@ describe('HttpChatApiClient', () => {
       contentType: 'markdown',
       createdAt: MS_T0,
       attachments: [],
+      metadata: { clientMessageId: 'stamped-uuid' },
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(successEnvelope(msg), 201));
 
@@ -159,6 +218,7 @@ describe('HttpChatApiClient', () => {
       contentType: 'markdown',
       createdAt: MS_T0,
       attachments: [],
+      metadata: { clientMessageId: 'caller-id' },
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(successEnvelope(msg), 201));
 
@@ -222,7 +282,6 @@ describe('HttpChatApiClient', () => {
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
 
-    // Await once; inspect the caught error so we don't need a second mock.
     let thrown: unknown;
     try {
       await client.listChannels();
@@ -236,44 +295,208 @@ describe('HttpChatApiClient', () => {
       message: 'socket hangup',
     });
   });
+});
 
-  it('subscribeToChannel opens WS with channelId + token query params', () => {
-    const listeners: Record<string, Array<(e: MessageEvent) => void>> = {};
-    class MockSocket {
-      readyState = 1;
-      OPEN = 1;
-      CONNECTING = 0;
-      url: string;
-      constructor(url: string) {
-        this.url = url;
-      }
-      addEventListener(type: string, cb: (e: MessageEvent) => void) {
-        (listeners[type] ||= []).push(cb);
-      }
-      removeEventListener() {
-        /* no-op */
-      }
-      close() {
-        /* no-op */
-      }
-    }
+describe('HttpChatApiClient — WebSocket subscription', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const successEnvelope = <T>(data: T) => ({ success: true as const, data });
+  const jsonResponse = (body: unknown, status = 200): Response =>
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    }) as unknown as Response;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fetchMock = vi.fn();
+    FakeSocket.instances = [];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('subscribeToChannel opens WS with channelId + token query params and translates frames', () => {
     const client = new HttpChatApiClient({
       backendURL: 'http://localhost:8787',
       authToken: 't',
-      websocketImpl: MockSocket as unknown as typeof WebSocket,
+      websocketImpl: FakeSocket as unknown as typeof WebSocket,
     });
 
-    const received: unknown[] = [];
+    const received: ChatWebsocketEvent[] = [];
     const sub = client.subscribeToChannel('c1', (e) => received.push(e));
 
-    const frame = { type: 'presence', payload: { agentId: 'a1', status: 'online' } };
-    listeners['message'][0]({ data: JSON.stringify(frame) } as MessageEvent);
-    expect(received).toEqual([frame]);
+    expect(FakeSocket.instances.length).toBe(1);
+    expect(FakeSocket.instances[0].url).toBe(
+      'ws://localhost:8787/ws/chat?channelId=c1&token=t',
+    );
+
+    // Fire a presence wire frame; consumer should receive the domain shape.
+    FakeSocket.instances[0].receive({
+      type: 'presence',
+      payload: { agentSession: 'crewly-foo', status: 'online' },
+    });
+    expect(received).toEqual([
+      { type: 'presence', agentSession: 'crewly-foo', status: 'online', lastSeen: undefined },
+    ]);
 
     sub.unsubscribe();
   });
 
-  it('subscribeToChannel returns a no-op when the WS constructor throws', () => {
+  it('emits a JSON ping every 25s and clears the pong timeout on reply', () => {
+    const client = new HttpChatApiClient({
+      backendURL: 'http://localhost:8787',
+      websocketImpl: FakeSocket as unknown as typeof WebSocket,
+      heartbeatIntervalMs: 25_000,
+      pongTimeoutMs: 10_000,
+      now: () => 1234,
+    });
+    const sub = client.subscribeToChannel('c1', () => {
+      /* noop */
+    });
+    const sock = FakeSocket.instances[0];
+    sock.open();
+
+    vi.advanceTimersByTime(25_000);
+    expect(sock.sent).toEqual([JSON.stringify({ type: 'ping', ts: 1234 })]);
+
+    // Pong reply within the 10s window — pong timer should be cleared.
+    sock.receive({ type: 'pong', ts: 1234 });
+    // Advance another 9.9s; without clearing, the pong timeout would have
+    // fired by now and closed the socket.
+    vi.advanceTimersByTime(9_900);
+    expect(sock.closed).toBe(false);
+
+    sub.unsubscribe();
+  });
+
+  it('forces reconnect with ?lastSeenSeq=N when a pong is missed', () => {
+    const client = new HttpChatApiClient({
+      backendURL: 'http://localhost:8787',
+      websocketImpl: FakeSocket as unknown as typeof WebSocket,
+      heartbeatIntervalMs: 25_000,
+      pongTimeoutMs: 10_000,
+      reconnectDelayMs: 1_000,
+    });
+    const sub = client.subscribeToChannel('c1', () => {
+      /* noop */
+    });
+    const first = FakeSocket.instances[0];
+    first.open();
+
+    // Receive a message so we have a non-zero lastSeenSeq.
+    first.receive({
+      type: 'message',
+      payload: {
+        channelId: 'c1',
+        message: {
+          id: 'srv-1',
+          channelId: 'c1',
+          seq: 5,
+          senderType: 'agent',
+          senderId: 'crewly-foo',
+          content: 'hi',
+          contentType: 'markdown',
+          createdAt: MS_T0,
+          attachments: [],
+        },
+      },
+    });
+
+    // Tick past the ping interval and the pong timeout.
+    vi.advanceTimersByTime(25_000); // ping sent
+    vi.advanceTimersByTime(10_000); // pong timeout fires → close
+    expect(first.closed).toBe(true);
+
+    // Reconnect backoff fires.
+    vi.advanceTimersByTime(1_000);
+
+    expect(FakeSocket.instances.length).toBe(2);
+    expect(FakeSocket.instances[1].url).toBe(
+      'ws://localhost:8787/ws/chat?channelId=c1&lastSeenSeq=5',
+    );
+
+    sub.unsubscribe();
+  });
+
+  it('emits optimistic pending event before HTTP, then confirmed event with server clientMessageId', async () => {
+    vi.useRealTimers(); // async test — fake timers interfere with the awaited fetch
+    const dto: MessageDTO = {
+      id: 'srv-1',
+      channelId: 'c1',
+      seq: 9,
+      senderType: 'user',
+      senderId: 'demo-user',
+      content: 'hello',
+      contentType: 'markdown',
+      createdAt: MS_T0,
+      attachments: [],
+      metadata: { clientMessageId: 'stamped-cmid' },
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(successEnvelope(dto), 201));
+
+    const client = new HttpChatApiClient({
+      backendURL: 'http://localhost:8787',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      websocketImpl: FakeSocket as unknown as typeof WebSocket,
+      idGenerator: () => 'stamped-cmid',
+      currentUser: { id: 'demo-user', name: 'Steve' },
+      now: () => MS_T0,
+    });
+
+    const events: ChatWebsocketEvent[] = [];
+    client.subscribeToChannel('c1', (e) => events.push(e));
+
+    await client.sendMessage('c1', { content: 'hello' });
+
+    // Two `message` events: pending then confirmed.
+    const messageEvents = events.filter((e) => e.type === 'message');
+    expect(messageEvents).toHaveLength(2);
+    if (messageEvents[0].type === 'message' && messageEvents[1].type === 'message') {
+      expect(messageEvents[0].message.deliveryStatus).toBe('pending');
+      expect(messageEvents[0].message.id).toBe('stamped-cmid');
+      expect(messageEvents[0].message.clientMessageId).toBe('stamped-cmid');
+      expect(messageEvents[0].message.author).toEqual({
+        role: 'user',
+        id: 'demo-user',
+        name: 'Steve',
+      });
+
+      expect(messageEvents[1].message.deliveryStatus).toBe('sent');
+      expect(messageEvents[1].message.id).toBe('srv-1');
+      expect(messageEvents[1].message.clientMessageId).toBe('stamped-cmid');
+      expect(messageEvents[1].message.seq).toBe(9);
+    }
+  });
+
+  it('emits a failed event if the HTTP send rejects', async () => {
+    vi.useRealTimers();
+    fetchMock.mockRejectedValueOnce(new Error('boom'));
+    const client = new HttpChatApiClient({
+      backendURL: 'http://localhost:8787',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      websocketImpl: FakeSocket as unknown as typeof WebSocket,
+      idGenerator: () => 'cmid-1',
+      now: () => MS_T0,
+    });
+
+    const events: ChatWebsocketEvent[] = [];
+    client.subscribeToChannel('c1', (e) => events.push(e));
+
+    await expect(client.sendMessage('c1', { content: 'x' })).rejects.toBeInstanceOf(ChatApiError);
+
+    const messageEvents = events.filter((e) => e.type === 'message');
+    expect(messageEvents).toHaveLength(2);
+    if (messageEvents[0].type === 'message' && messageEvents[1].type === 'message') {
+      expect(messageEvents[0].message.deliveryStatus).toBe('pending');
+      expect(messageEvents[1].message.deliveryStatus).toBe('failed');
+      expect(messageEvents[1].message.clientMessageId).toBe('cmid-1');
+    }
+  });
+
+  it('subscribeToChannel survives WS constructor throwing — schedules backoff', () => {
     class BrokenSocket {
       constructor() {
         throw new Error('WS unavailable');
@@ -282,11 +505,12 @@ describe('HttpChatApiClient', () => {
     const client = new HttpChatApiClient({
       backendURL: 'http://localhost:8787',
       websocketImpl: BrokenSocket as unknown as typeof WebSocket,
+      reconnectDelayMs: 50,
     });
     const sub = client.subscribeToChannel('c1', () => {
       /* never called */
     });
-    // Should not have thrown; unsubscribe is safe to call.
+    // Should not have thrown synchronously; unsubscribe is safe.
     expect(() => sub.unsubscribe()).not.toThrow();
   });
 });

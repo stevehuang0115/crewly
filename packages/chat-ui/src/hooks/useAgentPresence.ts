@@ -64,9 +64,9 @@ export function useAgentPresence(
   useEffect(() => {
     if (!agentId || !channelId) return;
     const sub = client.subscribeToChannel(channelId, (event) => {
-      if (event.type === 'presence' && event.payload.agentId === agentId) {
-        setStatus(event.payload.status);
-        setLastSeen(event.payload.lastSeen);
+      if (event.type === 'presence' && event.agentSession === agentId) {
+        setStatus(event.status);
+        setLastSeen(event.lastSeen);
       }
     });
     return () => sub.unsubscribe();

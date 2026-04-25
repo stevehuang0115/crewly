@@ -1,9 +1,16 @@
 /**
  * In-memory mock client used when `ChatAPIProvider mode="mock"` is set.
  *
- * Purpose: lets Max iterate on UI / Storybook / demo before Sam's backend
+ * Purpose: lets us iterate on UI / Storybook / demo before Sam's backend
  * is live. Emits WS frames on a small timer so presence + agent-reply
  * flows feel real enough to catch UX bugs.
+ *
+ * Mock honors the same Week-2 contract the HTTP client implements:
+ *  - sendMessage emits an optimistic `pending` event before the
+ *    "persistence" delay, then a `sent` event with the same
+ *    clientMessageId so reconciliation paths exercise.
+ *  - Agent replies arrive on the same channel subscription with
+ *    `senderType=agent`.
  *
  * @module api/mock-client
  */
@@ -73,7 +80,10 @@ export class MockChatApiClient implements ChatApiClient {
     return ch;
   }
 
-  async listMessages(channelId: string, opts: { cursor?: string; limit?: number } = {}): Promise<MessagePage> {
+  async listMessages(
+    channelId: string,
+    opts: { cursor?: string; limit?: number } = {},
+  ): Promise<MessagePage> {
     const all = this.messages[channelId] ?? [];
     const limit = opts.limit ?? 50;
     // Simplified pagination — returns the most recent `limit` messages.
@@ -85,20 +95,39 @@ export class MockChatApiClient implements ChatApiClient {
     const channel = this.channels.find((c) => c.id === channelId);
     if (!channel) throw new Error(`Unknown channel: ${channelId}`);
 
-    const msg: Message = {
+    const clientMessageId = input.clientMessageId ?? this.nextId('cmid');
+
+    // 1. Optimistic pending — fire before "persistence" so subscribers see
+    //    the same lifecycle the HTTP client produces.
+    const pending: Message = {
+      id: clientMessageId,
+      channelId,
+      seq: -1,
+      author: { role: 'user', id: MOCK_USER_ID, name: MOCK_USER_NAME },
+      content: input.content,
+      attachments: input.attachments,
+      createdAt: new Date().toISOString(),
+      clientMessageId,
+      deliveryStatus: 'pending',
+    };
+    this.emit(channelId, { type: 'message', channelId, message: pending });
+
+    // 2. Persistence + confirmation event.
+    const confirmed: Message = {
       id: this.nextId('m'),
       channelId,
       seq: (this.messages[channelId]?.length ?? 0) + 1,
       author: { role: 'user', id: MOCK_USER_ID, name: MOCK_USER_NAME },
       content: input.content,
       attachments: input.attachments,
-      createdAt: new Date().toISOString(),
+      createdAt: pending.createdAt,
+      clientMessageId,
       deliveryStatus: 'sent',
     };
-    (this.messages[channelId] ||= []).push(msg);
-    this.emit(channelId, { type: 'message', payload: msg });
+    (this.messages[channelId] ||= []).push(confirmed);
+    this.emit(channelId, { type: 'message', channelId, message: confirmed });
 
-    // Fake agent reply — tightens the feedback loop while no backend is up.
+    // 3. Fake agent reply — tightens the feedback loop while no backend is up.
     window.setTimeout(() => {
       const reply: Message = {
         id: this.nextId('m'),
@@ -107,12 +136,13 @@ export class MockChatApiClient implements ChatApiClient {
         author: { role: 'agent', id: channel.agentSession, name: channel.name },
         content: `(mock reply) you said: "${input.content}"`,
         createdAt: new Date().toISOString(),
+        deliveryStatus: 'sent',
       };
       (this.messages[channelId] ||= []).push(reply);
-      this.emit(channelId, { type: 'message', payload: reply });
+      this.emit(channelId, { type: 'message', channelId, message: reply });
     }, this.replyDelay);
 
-    return msg;
+    return confirmed;
   }
 
   async getAgentPresence(agentId: string): Promise<AgentPresence> {

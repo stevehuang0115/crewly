@@ -14,6 +14,7 @@ import {
   messageFromDTO,
   attachmentFromDTO,
   agentPresenceFromDTO,
+  wsEventFromWire,
   type ChannelDTO,
   type MessageDTO,
   type AttachmentDTO,
@@ -117,6 +118,117 @@ describe('messageFromDTO', () => {
       size: 1234,
       mimeType: 'image/png',
     });
+  });
+});
+
+describe('messageFromDTO clientMessageId extraction', () => {
+  it('extracts metadata.clientMessageId into the domain field', () => {
+    const dto: MessageDTO = {
+      id: 'srv-1',
+      channelId: 'ch-1',
+      seq: 7,
+      senderType: 'user',
+      senderId: 'demo-user',
+      content: 'hi',
+      contentType: 'markdown',
+      createdAt: 0,
+      attachments: [],
+      metadata: { clientMessageId: 'cmid-abc' },
+    };
+    const m = messageFromDTO(dto);
+    expect(m.clientMessageId).toBe('cmid-abc');
+    expect(m.deliveryStatus).toBe('sent');
+  });
+
+  it('returns undefined when metadata is missing or non-string', () => {
+    const noMeta: MessageDTO = {
+      id: 'srv-1',
+      channelId: 'ch-1',
+      seq: 7,
+      senderType: 'user',
+      senderId: 'demo-user',
+      content: 'hi',
+      contentType: 'markdown',
+      createdAt: 0,
+      attachments: [],
+    };
+    expect(messageFromDTO(noMeta).clientMessageId).toBeUndefined();
+
+    const wrongType: MessageDTO = {
+      ...noMeta,
+      metadata: { clientMessageId: 123 as unknown as string },
+    };
+    expect(messageFromDTO(wrongType).clientMessageId).toBeUndefined();
+  });
+});
+
+describe('wsEventFromWire', () => {
+  it('translates a wire message frame to the domain shape', () => {
+    const wire = {
+      type: 'message',
+      payload: {
+        channelId: 'ch-1',
+        message: {
+          id: 'srv-1',
+          channelId: 'ch-1',
+          seq: 5,
+          senderType: 'agent',
+          senderId: 'crewly-product-sam',
+          content: 'hi back',
+          contentType: 'markdown',
+          createdAt: 1729790000000,
+          attachments: [],
+          metadata: { clientMessageId: 'cmid-xyz' },
+        },
+      },
+    };
+    const ev = wsEventFromWire(wire);
+    expect(ev?.type).toBe('message');
+    if (ev?.type === 'message') {
+      expect(ev.channelId).toBe('ch-1');
+      expect(ev.message.author.role).toBe('agent');
+      expect(ev.message.clientMessageId).toBe('cmid-xyz');
+      expect(ev.message.deliveryStatus).toBe('sent');
+    }
+  });
+
+  it('translates a presence frame, mapping `starting` to `online`', () => {
+    const ev = wsEventFromWire({
+      type: 'presence',
+      payload: {
+        agentSession: 'crewly-product-sam',
+        status: 'starting',
+        lastSeenAt: 1729790000000,
+      },
+    });
+    expect(ev?.type).toBe('presence');
+    if (ev?.type === 'presence') {
+      expect(ev.agentSession).toBe('crewly-product-sam');
+      expect(ev.status).toBe('online');
+      expect(ev.lastSeen).toBe(new Date(1729790000000).toISOString());
+    }
+  });
+
+  it('translates a pong frame, defaulting ts to 0 if absent', () => {
+    expect(wsEventFromWire({ type: 'pong', ts: 999 })).toEqual({ type: 'pong', ts: 999 });
+    expect(wsEventFromWire({ type: 'pong' })).toEqual({ type: 'pong', ts: 0 });
+  });
+
+  it('translates an error frame', () => {
+    const ev = wsEventFromWire({
+      type: 'error',
+      code: 'unauthorized',
+      message: 'token expired',
+    });
+    expect(ev).toEqual({ type: 'error', code: 'unauthorized', message: 'token expired' });
+  });
+
+  it('returns null for unknown or malformed frames', () => {
+    expect(wsEventFromWire(null)).toBeNull();
+    expect(wsEventFromWire({})).toBeNull();
+    expect(wsEventFromWire({ type: 'gibberish' })).toBeNull();
+    expect(wsEventFromWire({ type: 'message', payload: {} })).toBeNull();
+    expect(wsEventFromWire({ type: 'presence', payload: { status: 'online' } })).toBeNull();
   });
 });
 

@@ -129,7 +129,10 @@ export const Agents: React.FC = () => {
             </div>
 
             <div className="flex-1 overflow-hidden">
-              <MessageThread channelId={active?.id ?? null} />
+              <MessageThread
+                channelId={active?.id ?? null}
+                agentName={active?.name?.split('·')[0]?.trim() ?? active?.name}
+              />
             </div>
 
             <MessageInput channelId={active?.id ?? null} />

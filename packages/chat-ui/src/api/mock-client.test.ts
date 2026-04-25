@@ -23,7 +23,7 @@ describe('MockChatApiClient', () => {
     expect(all).toContainEqual(ch);
   });
 
-  it('sendMessage emits a user message and a delayed agent reply', async () => {
+  it('sendMessage emits optimistic + confirmed user events, then a delayed agent reply', async () => {
     const client = new MockChatApiClient({ agentReplyDelayMs: 500 });
     const [channel] = await client.listChannels();
 
@@ -31,13 +31,22 @@ describe('MockChatApiClient', () => {
     client.subscribeToChannel(channel.id, (e) => events.push(e));
 
     await client.sendMessage(channel.id, { content: 'hi' });
-    expect(events.filter((e) => e.type === 'message')).toHaveLength(1);
+    const userMessageEvents = events.filter((e) => e.type === 'message');
+    expect(userMessageEvents).toHaveLength(2);
+    if (userMessageEvents[0].type === 'message' && userMessageEvents[1].type === 'message') {
+      expect(userMessageEvents[0].message.deliveryStatus).toBe('pending');
+      expect(userMessageEvents[1].message.deliveryStatus).toBe('sent');
+      expect(userMessageEvents[0].message.clientMessageId).toBe(
+        userMessageEvents[1].message.clientMessageId,
+      );
+    }
 
     vi.advanceTimersByTime(500);
-    expect(events.filter((e) => e.type === 'message')).toHaveLength(2);
-    const reply = events[1];
+    const allMessageEvents = events.filter((e) => e.type === 'message');
+    expect(allMessageEvents).toHaveLength(3);
+    const reply = allMessageEvents[2];
     if (reply.type !== 'message') throw new Error('expected message');
-    expect(reply.payload.author.role).toBe('agent');
+    expect(reply.message.author.role).toBe('agent');
   });
 
   it('listMessages returns the seeded welcome message', async () => {
