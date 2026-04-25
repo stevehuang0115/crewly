@@ -2,8 +2,11 @@
  * Knowledge Search Service
  *
  * Provides pluggable search strategies for knowledge documents.
- * Uses keyword matching by default (zero dependencies), with optional
- * Gemini embedding-based semantic search when GEMINI_API_KEY is set.
+ * Defaults to `Fts5SearchStrategy` (SQLite FTS5 with native BM25
+ * ranking) and falls back to `KeywordSearchStrategy` for docs not
+ * yet indexed. The Gemini embedding and local-vector strategies
+ * remain available for callers that need semantic similarity but
+ * are no longer wired as the default.
  *
  * @module services/knowledge/knowledge-search.service
  */

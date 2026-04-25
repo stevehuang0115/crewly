@@ -308,6 +308,17 @@ describe('KnowledgeSearchService', () => {
     expect(results[0].title).toBe('Deploy Runbook');
   });
 
+  it('hits FTS5 before the keyword fallback (pins the docstring contract from Q3.1)', async () => {
+    const service = KnowledgeSearchService.getInstance();
+    mockListDocuments.mockResolvedValue([]);
+    mockFts5Search.mockReturnValue([]);
+
+    await service.search('anything', 'global');
+    // Docstring says FTS5 is default; proving it means mockFts5Search
+    // must be consulted on every search.
+    expect(mockFts5Search).toHaveBeenCalledTimes(1);
+  });
+
   it('should return empty array when no documents exist', async () => {
     const service = KnowledgeSearchService.getInstance();
     mockListDocuments.mockResolvedValue([]);
