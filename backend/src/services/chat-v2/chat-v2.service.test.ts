@@ -219,6 +219,124 @@ describe('ChatV2Service', () => {
       expect(service.listChannels({ principal: owner })).toHaveLength(1);
       expect(service.listChannels({ principal: otherUser })).toHaveLength(1);
     });
+
+    // Phase C — channel-rail listing refinements: type + teamId filters.
+    describe('Phase C filters', () => {
+      function seedMixedFixture() {
+        // Owner has: 1 DM + 2 team channels across 2 teams.
+        service.createChannel({
+          agentSession: 'sess-dm',
+          name: 'DM with Sam',
+          principal: owner,
+          type: 'dm',
+          targetMemberId: 'sam-id',
+        });
+        service.createChannel({
+          agentSession: '',
+          name: '#general-product',
+          principal: owner,
+          type: 'channel',
+          teamId: 'team-product',
+        });
+        service.createChannel({
+          agentSession: '',
+          name: '#general-marketing',
+          principal: owner,
+          type: 'channel',
+          teamId: 'team-marketing',
+        });
+      }
+
+      it('filters to DMs when type=dm', () => {
+        seedMixedFixture();
+        const list = service.listChannels({ principal: owner, type: 'dm' });
+        expect(list).toHaveLength(1);
+        expect(list[0].type).toBe('dm');
+        expect(list[0].name).toBe('DM with Sam');
+      });
+
+      it('filters to team channels when type=channel', () => {
+        seedMixedFixture();
+        const list = service.listChannels({ principal: owner, type: 'channel' });
+        expect(list).toHaveLength(2);
+        expect(list.every((c) => c.type === 'channel')).toBe(true);
+      });
+
+      it('rejects unknown type with validation_error', () => {
+        seedMixedFixture();
+        try {
+          service.listChannels({
+            principal: owner,
+            type: 'group' as unknown as 'dm', // intentionally invalid
+          });
+          fail('expected ChatError');
+        } catch (err) {
+          expect(err).toBeInstanceOf(ChatError);
+          expect((err as ChatError).code).toBe('validation_error');
+          expect((err as ChatError).httpStatus).toBe(400);
+          expect((err as ChatError).message).toContain('unknown channel type');
+        }
+      });
+
+      it('treats blank teamId as omitted (no filter)', () => {
+        seedMixedFixture();
+        // Empty string teamId should NOT filter to "rows with empty team_id"
+        // — that would silently nuke the rail. Instead it's normalized to
+        // "no team filter".
+        const list = service.listChannels({ principal: owner, teamId: '' });
+        expect(list).toHaveLength(3);
+      });
+
+      it('treats whitespace-only teamId as omitted (no filter)', () => {
+        seedMixedFixture();
+        const list = service.listChannels({ principal: owner, teamId: '   ' });
+        expect(list).toHaveLength(3);
+      });
+
+      it('filters to a single team when teamId is set', () => {
+        seedMixedFixture();
+        const list = service.listChannels({ principal: owner, teamId: 'team-product' });
+        expect(list).toHaveLength(1);
+        expect(list[0].name).toBe('#general-product');
+        expect(list[0].teamId).toBe('team-product');
+      });
+
+      it('teamId filter excludes DMs (which have null team_id at the row level)', () => {
+        seedMixedFixture();
+        const list = service.listChannels({ principal: owner, teamId: 'team-product' });
+        expect(list.every((c) => c.type === 'channel')).toBe(true);
+      });
+
+      it('composes type + teamId filters', () => {
+        seedMixedFixture();
+        const list = service.listChannels({
+          principal: owner,
+          type: 'channel',
+          teamId: 'team-marketing',
+        });
+        expect(list).toHaveLength(1);
+        expect(list[0].name).toBe('#general-marketing');
+      });
+
+      it('still scopes to caller-owned rows when filtered (cross-owner isolation)', () => {
+        seedMixedFixture();
+        // Other user creates an isolated marketing channel. The filtered
+        // list for owner must not see it.
+        service.createChannel({
+          agentSession: '',
+          name: '#general-marketing',
+          principal: otherUser,
+          type: 'channel',
+          teamId: 'team-marketing',
+        });
+        const list = service.listChannels({
+          principal: owner,
+          type: 'channel',
+          teamId: 'team-marketing',
+        });
+        expect(list).toHaveLength(1); // only owner's row
+      });
+    });
   });
 
   describe('getChannel', () => {

@@ -228,6 +228,91 @@ describe('ChannelStore', () => {
       const list = store.listByOwner('user-a', { limit: 1000 });
       expect(list).toEqual([]); // empty — but we're testing the SQL accepted the cap
     });
+
+    // Phase C — channel-rail listing refinements: type + teamId filters.
+    describe('Phase C filters', () => {
+      beforeEach(() => {
+        // Mixed fixture: two DMs + two team channels across two teams.
+        store.create({
+          agentSession: 'sess-dm-1',
+          ownerUserId: 'user-a',
+          name: 'DM with Sam',
+          type: 'dm',
+          targetMemberId: 'sam-id',
+          nowMs: 100,
+        });
+        store.create({
+          agentSession: 'sess-dm-2',
+          ownerUserId: 'user-a',
+          name: 'DM with Leo',
+          type: 'dm',
+          targetMemberId: 'leo-id',
+          nowMs: 200,
+        });
+        store.create({
+          agentSession: '',
+          ownerUserId: 'user-a',
+          name: '#general-product',
+          type: 'channel',
+          teamId: 'team-product',
+          nowMs: 300,
+        });
+        store.create({
+          agentSession: '',
+          ownerUserId: 'user-a',
+          name: '#general-marketing',
+          type: 'channel',
+          teamId: 'team-marketing',
+          nowMs: 400,
+        });
+      });
+
+      it('filters to DMs when type=dm', () => {
+        const list = store.listByOwner('user-a', { type: 'dm' });
+        expect(list.map((c) => c.name).sort()).toEqual(['DM with Leo', 'DM with Sam']);
+      });
+
+      it('filters to team channels when type=channel', () => {
+        const list = store.listByOwner('user-a', { type: 'channel' });
+        expect(list.map((c) => c.name).sort()).toEqual([
+          '#general-marketing',
+          '#general-product',
+        ]);
+      });
+
+      it('filters to a single team when teamId is set', () => {
+        const list = store.listByOwner('user-a', { teamId: 'team-product' });
+        expect(list).toHaveLength(1);
+        expect(list[0].name).toBe('#general-product');
+        expect(list[0].team_id).toBe('team-product');
+      });
+
+      it('teamId filter excludes DMs (which have null team_id)', () => {
+        // Even though both DMs are owned by user-a, none has team_id='team-product'
+        // so the SQL `team_id = ?` predicate (NULL-rejecting) filters them out.
+        const list = store.listByOwner('user-a', { teamId: 'team-product' });
+        expect(list.every((c) => c.type === 'channel')).toBe(true);
+      });
+
+      it('composes type + teamId filters (AND semantics)', () => {
+        const list = store.listByOwner('user-a', {
+          type: 'channel',
+          teamId: 'team-marketing',
+        });
+        expect(list).toHaveLength(1);
+        expect(list[0].name).toBe('#general-marketing');
+      });
+
+      it('returns no rows when teamId has no match', () => {
+        const list = store.listByOwner('user-a', { teamId: 'team-does-not-exist' });
+        expect(list).toEqual([]);
+      });
+
+      it('falls back to all rows when no filters set (back-compat)', () => {
+        const list = store.listByOwner('user-a');
+        expect(list).toHaveLength(4);
+      });
+    });
   });
 
   describe('archive', () => {

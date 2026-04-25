@@ -27,6 +27,7 @@ import { getChatV2RealtimeDeps } from '../../services/chat-v2/chat-v2.realtime-h
 import {
   CHAT_ERROR_CODES,
   ChatError,
+  type ChatChannelType,
   type ChatMessageDTO,
   type ChatPrincipal,
 } from '../../services/chat-v2/types.js';
@@ -162,10 +163,24 @@ export function createChatV2Controller(
         const includeArchived = req.query.includeArchived === 'true';
         const limitRaw = req.query.limit;
         const limit = typeof limitRaw === 'string' ? Number.parseInt(limitRaw, 10) : undefined;
+        // Phase C — channel-rail listing refinements.
+        // `type` and `teamId` query params let the rail fetch a focused
+        // slice (e.g. only DMs, or only channels in the active workspace)
+        // without shipping the full owner-scoped list. Both are optional
+        // and compose with AND. Service-layer rejects unknown `type`
+        // values with `validation_error`; we forward as-is so the caller
+        // gets a precise error message.
+        const typeRaw = req.query.type;
+        const type = typeof typeRaw === 'string' && typeRaw.length > 0 ? typeRaw : undefined;
+        const teamIdRaw = req.query.teamId;
+        const teamId =
+          typeof teamIdRaw === 'string' && teamIdRaw.length > 0 ? teamIdRaw : undefined;
         const channels = service.listChannels({
           principal,
           includeArchived,
           limit: Number.isFinite(limit) ? limit : undefined,
+          type: type as ChatChannelType | undefined,
+          teamId,
         });
         res.json({ success: true, data: { channels, nextCursor: null } });
       }),
