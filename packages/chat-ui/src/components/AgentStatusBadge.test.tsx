@@ -34,4 +34,48 @@ describe('AgentStatusBadge', () => {
     );
     expect(screen.getByTestId('agent-status-badge')).toHaveAttribute('data-status', 'offline');
   });
+
+  // ---------------------------------------------------------------------------
+  // Slack-like vocabulary additions (design §8.1, sealed 2026-04-25).
+  // Additive: existing wire-status callers keep working; new callers may pass
+  // `idle` / `inactive` directly.
+  // ---------------------------------------------------------------------------
+
+  it('accepts `idle` from the team-chat vocabulary and labels it Idle', () => {
+    render(
+      <ChatAPIProvider mode="mock">
+        <AgentStatusBadge status="idle" />
+      </ChatAPIProvider>,
+    );
+    expect(screen.getByTestId('agent-status-badge')).toHaveAttribute('data-status', 'idle');
+    // Label appears twice: visible + sr-only — both should read "Idle".
+    const labels = screen.getAllByText('Idle');
+    expect(labels.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('accepts `inactive` from the team-chat vocabulary and labels it Inactive', () => {
+    render(
+      <ChatAPIProvider mode="mock">
+        <AgentStatusBadge status="inactive" />
+      </ChatAPIProvider>,
+    );
+    expect(screen.getByTestId('agent-status-badge')).toHaveAttribute('data-status', 'inactive');
+    const labels = screen.getAllByText('Inactive');
+    expect(labels.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('keeps `busy` distinct from `idle` so wire-vocabulary callers are not lost', () => {
+    const { rerender } = render(
+      <ChatAPIProvider mode="mock">
+        <AgentStatusBadge status="busy" />
+      </ChatAPIProvider>,
+    );
+    expect(screen.getByTestId('agent-status-badge')).toHaveAttribute('data-status', 'busy');
+    rerender(
+      <ChatAPIProvider mode="mock">
+        <AgentStatusBadge status="idle" />
+      </ChatAPIProvider>,
+    );
+    expect(screen.getByTestId('agent-status-badge')).toHaveAttribute('data-status', 'idle');
+  });
 });

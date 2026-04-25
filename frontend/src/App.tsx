@@ -11,6 +11,7 @@ import { Triggers } from './pages/Triggers';
 import { Factory } from './pages/Factory';
 import { Settings } from './pages/Settings';
 import { Chat } from './pages/Chat';
+import TeamChatPage from './components/Chat-team';
 import { Agents } from './pages/Agents';
 import Marketplace from './pages/Marketplace';
 import MarketplaceDetail from './pages/MarketplaceDetail';
@@ -83,6 +84,16 @@ function App() {
                   </ChatProvider>
                 }
               />
+
+              {/*
+                Team Chat: Phase B FE shell — Slack-like multi-team chat
+                (Mia + Ava sealed design 2026-04-25). Mounts the additive
+                @crewly/chat-ui surfaces (WorkspaceRail / ConversationListPanel
+                / MentionComposer) in a 3-panel layout. Phase B is mock-only;
+                Phase A backend wire lands once Sam ships the BE migration
+                (target 2026-04-27 EOD).
+              */}
+              <Route path="team-chat" element={<TeamChatPage />} />
 
               {/*
                 Agents: Phase 1 user↔agent direct chat (Sam tech spec

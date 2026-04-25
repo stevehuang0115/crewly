@@ -38,4 +38,66 @@ describe('MessageThread', () => {
       expect(screen.getByText(/Welcome/i)).toBeInTheDocument();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Phase B Slack-like additions: optional unread divider (design §6.2).
+  // Additive — legacy callers omit `unreadAfterSeq` and see no divider.
+  // ---------------------------------------------------------------------------
+
+  it('does NOT render an unread divider when unreadAfterSeq is omitted', async () => {
+    const client = new MockChatApiClient();
+    const channels = await client.listChannels();
+    render(
+      <ChatAPIProvider client={client} mode="mock">
+        <MessageThread channelId={channels[0].id} />
+      </ChatAPIProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/Welcome/i)).toBeInTheDocument());
+    expect(screen.queryByTestId('unread-divider')).not.toBeInTheDocument();
+  });
+
+  it('renders the unread divider after the matching seq when supplied', async () => {
+    const client = new MockChatApiClient();
+    const channels = await client.listChannels();
+    // Seed messages so we have multiple seqs to pick from.
+    await client.sendMessage(channels[0].id, { content: 'second' });
+    await client.sendMessage(channels[0].id, { content: 'third' });
+    render(
+      <ChatAPIProvider client={client} mode="mock">
+        <MessageThread channelId={channels[0].id} unreadAfterSeq={1} />
+      </ChatAPIProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/second/i)).toBeInTheDocument());
+    expect(screen.getByTestId('unread-divider')).toBeInTheDocument();
+  });
+
+  it('renders the divider at the top when the matching seq is below the loaded window', async () => {
+    const client = new MockChatApiClient();
+    const channels = await client.listChannels();
+    render(
+      <ChatAPIProvider client={client} mode="mock">
+        <MessageThread channelId={channels[0].id} unreadAfterSeq={9999} />
+      </ChatAPIProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/Welcome/i)).toBeInTheDocument());
+    // Divider still surfaces because there are messages but no matching seq.
+    expect(screen.getByTestId('unread-divider')).toBeInTheDocument();
+  });
+
+  it('honours a custom unreadDividerLabel', async () => {
+    const client = new MockChatApiClient();
+    const channels = await client.listChannels();
+    render(
+      <ChatAPIProvider client={client} mode="mock">
+        <MessageThread
+          channelId={channels[0].id}
+          unreadAfterSeq={9999}
+          unreadDividerLabel="Unread"
+        />
+      </ChatAPIProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/Welcome/i)).toBeInTheDocument());
+    const divider = screen.getByTestId('unread-divider');
+    expect(divider).toHaveTextContent('Unread');
+  });
 });
