@@ -10,23 +10,25 @@
 
 import type { Request, Response } from 'express';
 import { createRequire } from 'module';
+import { pathToFileURL } from 'url';
 import { AgentStreamService, type AgentStreamEvent } from '../../services/agent/crewly-agent/agent-stream.service.js';
 
 /**
  * CJS-style `require` for the inline circular-dependency workaround in
- * `getStreamableSessions`. This file compiles to ESM (root package has
- * `"type": "module"`) where the bare `require` global is undefined.
- * Top-level ESM `import` would re-introduce the circular dependency,
- * so we keep the lazy load via createRequire.
+ * `getStreamableSessions`. This file compiles to ESM where the bare
+ * `require` global is undefined. Top-level ESM `import` would re-introduce
+ * the circular dependency, so we keep the lazy load via createRequire.
  *
- * The `typeof require === 'function'` guard / `new Function` indirection
- * is the same pattern used in chat-db.ts / fts5-index.service.ts so this
- * file works under both ESM (production) and CJS (ts-jest tests).
+ * Anchor `createRequire` to `process.argv[1]` (entry script) instead of
+ * `import.meta.url`. The previous `new Function('return import.meta.url')()`
+ * trick parsed clean under ts-jest's CJS but failed at runtime because
+ * `new Function(...)` runs in non-module scope where `import.meta` is a
+ * SyntaxError.
  */
 const nodeRequire: NodeRequire =
   typeof require === 'function'
     ? require
-    : createRequire(new Function('return import.meta.url')() as string);
+    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
 
 /** SSE heartbeat interval in milliseconds to keep the connection alive */
 const HEARTBEAT_INTERVAL_MS = 15_000;

@@ -14,6 +14,7 @@
 import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createRequire } from 'module';
+import { pathToFileURL } from 'url';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
@@ -23,19 +24,19 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 /**
  * CJS-style `require` scoped to this module. `better-sqlite3` is a native
  * addon and must be loaded via CJS `require`, but this file compiles to
- * ESM (root package has `"type": "module"`) where the bare `require`
- * global is undefined. `createRequire(import.meta.url)` bridges the two.
+ * ESM where the bare `require` global is undefined.
  *
- * The `typeof require === 'function'` guard means tests transpiled to
- * CommonJS (ts-jest) reuse the CJS `require` directly. The
- * `new Function('return import.meta.url')()` indirection is needed
- * because ts-jest would otherwise trip TS1343 on a literal
- * `import.meta` reference under CJS output.
+ * Anchor `createRequire` to `process.argv[1]` (entry script) instead of
+ * `import.meta.url`. The previous `new Function('return import.meta.url')()`
+ * trick parsed clean under ts-jest's CJS but failed at runtime because
+ * `new Function(...)` runs in non-module scope where `import.meta` is a
+ * SyntaxError. `process.argv[1]` is always inside the project tree and
+ * lets Node's resolver walk up to find `node_modules`.
  */
 const nodeRequire: NodeRequire =
   typeof require === 'function'
     ? require
-    : createRequire(new Function('return import.meta.url')() as string);
+    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
 
 /** Lazy-loaded better-sqlite3 module reference. */
 let _BetterSqlite3: typeof import('better-sqlite3') | null = null;

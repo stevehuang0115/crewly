@@ -77,6 +77,64 @@ describe('module load (ESM require bridge)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ESM require bridge — static-analysis regression guard for ALL bridged files
+// ---------------------------------------------------------------------------
+//
+// PR #323 (cb135ead) introduced `createRequire(new Function('return import.meta.url')() as string)`
+// across multiple ESM modules. The trick parsed clean under both ts-jest CJS
+// and tsc ESM but FAILED at runtime: `new Function(...)` evaluates its body
+// in non-module scope, where `import.meta` is a SyntaxError. Production
+// servers crashed at startup. The fix anchors createRequire to
+// `pathToFileURL(process.argv[1] || process.cwd()).href` instead.
+//
+// This test scans every file known to use the bridge and asserts:
+//   1. NONE contain the broken `new Function('return import.meta.url')` pattern
+//   2. ALL contain the fixed `pathToFileURL(process.argv[1]` pattern
+// If a future contributor reverts to the broken trick OR adds a new module
+// without using the fixed pattern, this test fails and points at the file.
+describe('ESM require pattern (cross-file regression guard)', () => {
+  const ESM_BRIDGED_FILES = [
+    'backend/src/services/memory/vector-store.service.ts',
+    'backend/src/services/knowledge/vector-store.service.ts',
+    'backend/src/services/knowledge/fts5-index.service.ts',
+    'backend/src/services/chat-v2/sqlite/chat-db.ts',
+    'backend/src/services/browser/browser-bridge.service.ts',
+    'backend/src/services/slack/cross-machine-message.service.ts',
+    'backend/src/controllers/agent-stream/agent-stream.controller.ts',
+  ];
+
+  // The broken pattern's distinguishing feature: `createRequire(new Function(`
+  // (the `new Function('return import.meta.url')` arg). Comments may legally
+  // mention the historical pattern, so we anchor on the actual call form.
+  const BROKEN_CALL = /createRequire\s*\(\s*new\s+Function\s*\(/;
+  const FIXED_CALL = /createRequire\s*\(\s*pathToFileURL\s*\(\s*process\.argv\[1\]/;
+
+  it.each(ESM_BRIDGED_FILES)(
+    '%s does NOT use new Function trick and DOES use process.argv[1] anchor',
+    (relPath) => {
+      // Project root: this test file lives at backend/src/services/memory/,
+      // walk up four levels to repo root, then resolve the file under test.
+      const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
+      const absPath = path.join(repoRoot, relPath);
+      const src = fs.readFileSync(absPath, 'utf8');
+
+      // Strip line/block comments so historical references in JSDoc don't
+      // false-positive against the broken pattern.
+      const stripComments = (s: string): string =>
+        s
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .split('\n')
+          .map((line) => line.replace(/\/\/.*$/, ''))
+          .join('\n');
+      const code = stripComments(src);
+
+      expect(code).not.toMatch(BROKEN_CALL);
+      expect(code).toMatch(FIXED_CALL);
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
 // cosineSimilarity unit tests
 // ---------------------------------------------------------------------------
 

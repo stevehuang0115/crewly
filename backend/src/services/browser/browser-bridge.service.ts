@@ -16,6 +16,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server as HttpServer } from 'http';
 import { createRequire } from 'module';
+import { pathToFileURL } from 'url';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
 
@@ -26,15 +27,16 @@ import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
  * at module init time even when the relay isn't available; keeping
  * the lazy access avoids that.
  *
- * The `typeof require === 'function'` guard keeps ts-jest's CJS output
- * working without paying the createRequire cost there. The
- * `new Function` indirection avoids TS1343 on a literal `import.meta`
- * under CJS test transpilation.
+ * Anchor `createRequire` to `process.argv[1]` (entry script) instead of
+ * `import.meta.url`. The previous `new Function('return import.meta.url')()`
+ * trick parsed clean under ts-jest's CJS but failed at runtime because
+ * `new Function(...)` runs in non-module scope where `import.meta` is a
+ * SyntaxError.
  */
 const nodeRequire: NodeRequire =
   typeof require === 'function'
     ? require
-    : createRequire(new Function('return import.meta.url')() as string);
+    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
 
 /** Represents a connected Chrome Extension client */
 export interface BrowserClient {

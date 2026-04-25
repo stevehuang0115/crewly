@@ -14,6 +14,7 @@
 import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createRequire } from 'module';
+import { pathToFileURL } from 'url';
 import { LoggerService, type ComponentLogger } from '../../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
@@ -23,20 +24,20 @@ import { LoggerService, type ComponentLogger } from '../../core/logger.service.j
 /**
  * CJS-style `require` scoped to this module. `better-sqlite3` is a native
  * addon and must be loaded via CJS `require`, but this module compiles to
- * ESM (root package has `"type": "module"`) where the bare `require` global
- * is undefined.
+ * ESM where the bare `require` global is undefined.
  *
- * We cannot write `createRequire(import.meta.url)` as a literal because
- * ts-jest transpiles tests to CommonJS, and TS1343 forbids `import.meta`
- * under CJS. So we read the URL via `new Function()` — invisible to the
- * TS compiler, correct under ESM at runtime. Under CJS (tests) the
- * `typeof require === 'function'` branch wins and the Function body
- * is never evaluated.
+ * Anchor `createRequire` to `process.argv[1]` (entry script) instead of
+ * `import.meta.url`. We previously used `new Function('return import.meta.url')()`
+ * to dodge ts-jest's TS1343 (CJS test compile rejects literal `import.meta`),
+ * but that trick fails at RUNTIME under ESM because `new Function(...)`
+ * evaluates in non-module scope where `import.meta` is a SyntaxError.
+ * `process.argv[1]` is always inside the project tree and lets Node's
+ * resolver walk up to find `node_modules`.
  */
 const nodeRequire: NodeRequire =
   typeof require === 'function'
     ? require
-    : createRequire(new Function('return import.meta.url')() as string);
+    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
 
 /** Cached reference to the better-sqlite3 module after first successful load. */
 let _BetterSqlite3: typeof import('better-sqlite3') | null = null;
