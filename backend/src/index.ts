@@ -1056,12 +1056,14 @@ export class CrewlyServer {
 				const [
 					{ ChatV2Gateway, devAnonymousTokenVerifier },
 					{ ChatV2DispatcherService },
+					{ ChatV2MentionResolver },
 					{ getChatV2Service },
 					{ setChatV2RealtimeDeps },
 					{ verifyHs256Token },
 				] = await Promise.all([
 					import('./websocket/chat-v2.gateway.js'),
 					import('./services/chat-v2/chat-v2.dispatcher.service.js'),
+					import('./services/chat-v2/chat-v2.mention-resolver.js'),
 					import('./services/chat-v2/chat-v2.singleton.js'),
 					import('./services/chat-v2/chat-v2.realtime-holder.js'),
 					import('./middleware/require-auth.middleware.js'),
@@ -1078,8 +1080,17 @@ export class CrewlyServer {
 					: devAnonymousTokenVerifier;
 				const chatGateway = new ChatV2Gateway({ service: chatService, verifyToken });
 				chatGateway.attach(this.httpServer);
+				// Phase C BE.3 — inject the mention resolver so type='channel'
+				// messages fan out to @-mentioned recipients instead of
+				// short-circuiting with strategy='skip' at the dispatcher.
+				// Pattern matches LiveTeamHealthDataProvider wiring (~line 487):
+				// `getTeams: async () => StorageService.getInstance().getTeams()`.
+				const chatMentionResolver = new ChatV2MentionResolver({
+					loadTeams: async () => StorageService.getInstance().getTeams(),
+				});
 				const chatDispatcher = new ChatV2DispatcherService({
 					agentSink: this.apiController.agentRegistrationService,
+					mentionResolver: chatMentionResolver,
 				});
 				this.chatV2Gateway = chatGateway;
 				this.chatV2Dispatcher = chatDispatcher;

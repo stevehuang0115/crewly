@@ -415,6 +415,61 @@ describe('ChatV2DispatcherService', () => {
         expect(result.mentionOutcomes![0].error).toBe('PTY crashed');
       });
 
+      // Regression guard for Arch review M1 (PR #331): the production
+      // composition root in `backend/src/index.ts` MUST inject
+      // `mentionResolver` into ChatV2DispatcherService. When omitted,
+      // `type='channel'` messages silently short-circuit to
+      // strategy='skip' and the Phase E acceptance test would fail
+      // with debug-only logging.
+      describe("M1 regression: production composition shape", () => {
+        it("WITH mentionResolver wired (production shape) — fans out, does NOT skip", async () => {
+          const { sink, calls } = makeSink({ success: true });
+          // Mirrors backend/src/index.ts:1088-1094 exactly:
+          //   const chatMentionResolver = new ChatV2MentionResolver({
+          //     loadTeams: async () => StorageService.getInstance().getTeams(),
+          //   });
+          //   const chatDispatcher = new ChatV2DispatcherService({
+          //     agentSink: ...,
+          //     mentionResolver: chatMentionResolver,
+          //   });
+          const teams = fixtureTeams();
+          const chatMentionResolver = new ChatV2MentionResolver({
+            loadTeams: async () => teams,
+          });
+          const dispatcher = new ChatV2DispatcherService({
+            agentSink: sink,
+            mentionResolver: chatMentionResolver,
+          });
+          const result = await dispatcher.dispatchMessage(
+            makeTeamChannel(),
+            makeMessage({ mentions: ['leo-id'] }),
+          );
+          expect(result.strategy).toBe('channel-mentions');
+          expect(result.strategy).not.toBe('skip'); // explicit
+          expect(result.dispatched).toBe(true);
+          expect(calls).toHaveLength(1);
+          expect(calls[0].sessionName).toBe('crewly-product-leo');
+        });
+
+        it("WITHOUT mentionResolver (regression repro of pre-M1 wiring) — silently skips", async () => {
+          // This is the exact failure mode Arch flagged: if the
+          // composition root ever drops `mentionResolver` from the
+          // options, EVERY type='channel' message hits the
+          // `strategy='skip'` short-circuit at chat-v2.dispatcher
+          // .service.ts. Logged at debug only. Phase E acceptance test
+          // would silently fail.
+          const { sink, calls } = makeSink({ success: true });
+          const dispatcher = new ChatV2DispatcherService({ agentSink: sink });
+          const result = await dispatcher.dispatchMessage(
+            makeTeamChannel(),
+            makeMessage({ mentions: ['leo-id'] }),
+          );
+          expect(result.strategy).toBe('skip');
+          expect(result.reason).toMatch(/no mention resolver/);
+          expect(calls).toHaveLength(0);
+        });
+      });
+
       it("forwards channel.teamId as resolver context (passed through, not enforced yet)", async () => {
         // Resolver context is forwarded; BE.2 leaves enforcement for a
         // future tightening. This test pins that the dispatcher does
