@@ -6,19 +6,43 @@
  * hitting the API) or an agentId (+ optional channelId) and resolves
  * presence itself via `useAgentPresence`.
  *
+ * Vocabulary (per Slack-like Team Chat design §8.1, sealed 2026-04-25):
+ *  - **Crewly-native** (canonical, used by /api/chat presence stream):
+ *    `online | busy | offline`
+ *  - **Team-chat normalized** (used by Slack-like surfaces): `online |
+ *    idle | inactive`
+ *
+ * Both vocabularies are accepted on the `status` prop. Internally they
+ * collapse to a single resolved status used for dot/text rendering. This
+ * keeps the existing ChannelList + thread-header usage intact while the
+ * new WorkspaceRail / ConversationListPanel surfaces can pass the
+ * Slack-style values directly without translation at the call site.
+ *
  * @module components/AgentStatusBadge
  */
 
 import type { AgentPresenceStatus } from '../types/chat.types';
 import { useAgentPresence } from '../hooks/useAgentPresence';
 
+/**
+ * Public-facing presence vocabulary for the Slack-like surfaces. Wider
+ * than `AgentPresenceStatus` (which is the wire-protocol type backed by
+ * the chat API) — exists so design tokens can use the team-chat words
+ * (`idle`, `inactive`) without forcing the wire types to grow.
+ */
+export type ChatPresenceStatus =
+  | AgentPresenceStatus
+  | 'idle'
+  | 'inactive';
+
 export interface AgentStatusBadgeProps {
   /**
-   * Explicit status. When supplied, the component renders it directly
-   * without subscribing. Useful for the sidebar where `useChannels`
-   * already supplies denormalized presence.
+   * Explicit status. Accepts both the wire vocabulary (`online | busy |
+   * offline`) and the Slack-like team-chat vocabulary (`online | idle |
+   * inactive`). When supplied, the component renders it directly without
+   * subscribing.
    */
-  status?: AgentPresenceStatus;
+  status?: ChatPresenceStatus;
   /** Resolve presence via API when `status` is not provided. */
   agentId?: string;
   /** Subscribe to a specific channel's WS for live updates. */
@@ -28,22 +52,47 @@ export interface AgentStatusBadgeProps {
   className?: string;
 }
 
-const STATUS_TEXT: Record<AgentPresenceStatus, string> = {
+/**
+ * Canonical resolved status used for rendering. The visual treatment is
+ * keyed off this short list so we never branch UI off two parallel
+ * vocabularies. The mapping below is the single source of truth.
+ */
+type ResolvedStatus = 'online' | 'busy' | 'idle' | 'offline' | 'inactive';
+
+/**
+ * Map any accepted input to the canonical resolved status. New aliases
+ * collapse to existing visual treatments where the meaning matches.
+ */
+const RESOLVE: Record<ChatPresenceStatus, ResolvedStatus> = {
+  online: 'online',
+  busy: 'busy',
+  idle: 'idle',
+  offline: 'offline',
+  inactive: 'inactive',
+};
+
+const STATUS_TEXT: Record<ResolvedStatus, string> = {
   online: 'Online',
   busy: 'Busy',
+  idle: 'Idle',
   offline: 'Offline',
+  inactive: 'Inactive',
 };
 
-const STATUS_DOT: Record<AgentPresenceStatus, string> = {
+const STATUS_DOT: Record<ResolvedStatus, string> = {
   online: 'bg-emerald-500',
   busy: 'bg-amber-400',
+  idle: 'bg-amber-300',
   offline: 'bg-slate-400',
+  inactive: 'bg-slate-300',
 };
 
-const STATUS_TEXT_COLOR: Record<AgentPresenceStatus, string> = {
+const STATUS_TEXT_COLOR: Record<ResolvedStatus, string> = {
   online: 'text-emerald-600',
   busy: 'text-amber-600',
+  idle: 'text-amber-600',
   offline: 'text-slate-500',
+  inactive: 'text-slate-500',
 };
 
 export function AgentStatusBadge({
@@ -78,13 +127,16 @@ export function AgentStatusBadge({
 /**
  * Resolve the status prop once. Calling `useAgentPresence` with a null
  * id is a no-op path inside the hook, so it's safe to always call it
- * (satisfies the Rules of Hooks).
+ * (satisfies the Rules of Hooks). The output is collapsed via `RESOLVE`
+ * so explicit Slack-style aliases produce the same canonical key as the
+ * wire-vocabulary live status.
  */
 function useResolvedStatus(args: {
-  status?: AgentPresenceStatus;
+  status?: ChatPresenceStatus;
   agentId?: string;
   channelId?: string;
-}): AgentPresenceStatus {
+}): ResolvedStatus {
   const live = useAgentPresence(args.status ? null : args.agentId ?? null, args.channelId ?? null);
-  return args.status ?? live.status;
+  const raw: ChatPresenceStatus = args.status ?? live.status;
+  return RESOLVE[raw];
 }
