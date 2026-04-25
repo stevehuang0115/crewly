@@ -193,6 +193,170 @@ describe('chat-v2 controller (REST)', () => {
     }
   });
 
+  // ---------------------------------------------------------------------
+  // Phase A — Slack-like team-chat surfaces (SEALED §3.1 + §3.2)
+  // ---------------------------------------------------------------------
+
+  it("POST /api/chat/channels — creates a type='channel' row with teamId", async () => {
+    const { app, service } = buildApp();
+    try {
+      const res = await request(app)
+        .post('/api/chat/channels')
+        .send({ name: '#general', type: 'channel', teamId: 'team-1' });
+      expect(res.status).toBe(201);
+      expect(res.body.data.type).toBe('channel');
+      expect(res.body.data.teamId).toBe('team-1');
+      // Channel rows server-erase agentSession to ''.
+      expect(res.body.data.agentSession).toBe('');
+    } finally {
+      service.close();
+    }
+  });
+
+  it("POST /api/chat/channels — 400 when type='channel' but teamId omitted", async () => {
+    const { app, service } = buildApp();
+    try {
+      const res = await request(app)
+        .post('/api/chat/channels')
+        .send({ name: '#orphan', type: 'channel' });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('validation_error');
+      expect(res.body.error.message).toMatch(/teamId is required/);
+    } finally {
+      service.close();
+    }
+  });
+
+  it("POST /api/chat/channels — 400 when type='dm' but teamId is provided", async () => {
+    const { app, service } = buildApp();
+    try {
+      const res = await request(app)
+        .post('/api/chat/channels')
+        .send({ agentSession: 'sess-a', name: 'Cross-typed', type: 'dm', teamId: 'team-1' });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('validation_error');
+    } finally {
+      service.close();
+    }
+  });
+
+  it("POST /api/chat/channels — type='dm' with targetMemberId persists it", async () => {
+    const { app, service } = buildApp();
+    try {
+      const res = await request(app)
+        .post('/api/chat/channels')
+        .send({
+          agentSession: 'sess-sam',
+          name: 'DM with Sam',
+          type: 'dm',
+          targetMemberId: 'member-sam',
+        });
+      expect(res.status).toBe(201);
+      expect(res.body.data.targetMemberId).toBe('member-sam');
+      expect(res.body.data.type).toBe('dm');
+    } finally {
+      service.close();
+    }
+  });
+
+  it('POST /api/chat/channels/:id/messages — persists mentions on the wire', async () => {
+    const { app, service } = buildApp();
+    try {
+      const created = await request(app)
+        .post('/api/chat/channels')
+        .send({ agentSession: 'sess-a', name: 'Ch' });
+      const chId = created.body.data.id;
+
+      const sent = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .send({
+          content: 'hi @Sam',
+          mentions: ['member-sam-uuid'],
+        });
+      expect(sent.status).toBe(201);
+      expect(sent.body.data.mentions).toEqual(['member-sam-uuid']);
+    } finally {
+      service.close();
+    }
+  });
+
+  it('POST /api/chat/channels/:id/messages — empty mentions emits []', async () => {
+    const { app, service } = buildApp();
+    try {
+      const created = await request(app)
+        .post('/api/chat/channels')
+        .send({ agentSession: 'sess-a', name: 'Ch' });
+      const chId = created.body.data.id;
+
+      const sent = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .send({ content: 'no mentions' });
+      expect(sent.status).toBe(201);
+      expect(sent.body.data.mentions).toEqual([]);
+    } finally {
+      service.close();
+    }
+  });
+
+  it('POST /api/chat/channels/:id/messages — 400 on non-array mentions', async () => {
+    const { app, service } = buildApp();
+    try {
+      const created = await request(app)
+        .post('/api/chat/channels')
+        .send({ agentSession: 'sess-a', name: 'Ch' });
+      const chId = created.body.data.id;
+
+      const sent = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .send({ content: 'x', mentions: 'not-an-array' });
+      expect(sent.status).toBe(400);
+      expect(sent.body.error.code).toBe('validation_error');
+    } finally {
+      service.close();
+    }
+  });
+
+  it('POST /api/chat/channels/:id/messages — threadId persists for replies', async () => {
+    const { app, service } = buildApp();
+    try {
+      const created = await request(app)
+        .post('/api/chat/channels')
+        .send({ agentSession: 'sess-a', name: 'Ch' });
+      const chId = created.body.data.id;
+
+      const root = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .send({ content: 'thread root' });
+      expect(root.status).toBe(201);
+
+      const reply = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .send({ content: 'reply within thread', threadId: root.body.data.id });
+      expect(reply.status).toBe(201);
+      expect(reply.body.data.threadId).toBe(root.body.data.id);
+    } finally {
+      service.close();
+    }
+  });
+
+  it('POST /api/chat/channels/:id/messages — 400 on non-existent threadId', async () => {
+    const { app, service } = buildApp();
+    try {
+      const created = await request(app)
+        .post('/api/chat/channels')
+        .send({ agentSession: 'sess-a', name: 'Ch' });
+      const chId = created.body.data.id;
+
+      const sent = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .send({ content: 'orphan reply', threadId: 'no-such-id' });
+      expect(sent.status).toBe(400);
+      expect(sent.body.error.code).toBe('validation_error');
+    } finally {
+      service.close();
+    }
+  });
+
   it('GET /api/chat/channels/:id — 404 for unknown id', async () => {
     const { app, service } = buildApp();
     try {

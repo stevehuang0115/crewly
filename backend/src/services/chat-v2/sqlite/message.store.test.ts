@@ -191,6 +191,94 @@ describe('MessageStore', () => {
       expect(messages.count(channelId)).toBe(N);
       expect(messages.getLastSeq(channelId)).toBe(N);
     });
+
+    it('Phase A: persists mentions as JSON and round-trips them on read', () => {
+      const result = messages.insert({
+        channelId,
+        senderType: 'user',
+        senderId: 'user-a',
+        content: 'pinging @Sam and @team',
+        mentions: ['member-sam-uuid', 'team-1'],
+      });
+      // Stored as JSON-encoded array string in the mentions column.
+      expect(result.row.mentions).toBe(JSON.stringify(['member-sam-uuid', 'team-1']));
+
+      const fetched = messages.getById(result.row.id);
+      expect(fetched?.mentions).toBe(JSON.stringify(['member-sam-uuid', 'team-1']));
+    });
+
+    it('Phase A: empty or omitted mentions arrays store as DB-null', () => {
+      const noMentions = messages.insert({
+        channelId,
+        senderType: 'user',
+        senderId: 'user-a',
+        content: 'no mentions here',
+      });
+      expect(noMentions.row.mentions).toBeNull();
+
+      const emptyMentions = messages.insert({
+        channelId,
+        senderType: 'user',
+        senderId: 'user-a',
+        content: 'empty mentions array',
+        mentions: [],
+      });
+      expect(emptyMentions.row.mentions).toBeNull();
+    });
+
+    it('Phase A: persists thread_id for threaded replies', () => {
+      const root = messages.insert({
+        channelId,
+        senderType: 'user',
+        senderId: 'user-a',
+        content: 'thread root',
+      });
+      const reply = messages.insert({
+        channelId,
+        senderType: 'agent',
+        senderId: 'sess-a',
+        content: 'reply within thread',
+        threadId: root.row.id,
+      });
+      expect(reply.row.thread_id).toBe(root.row.id);
+
+      // Top-level (no threadId) stores null.
+      expect(root.row.thread_id).toBeNull();
+    });
+
+    it('Phase A: ix_messages_thread index exists and would serve thread reads', () => {
+      // Insert root + two replies; verify the rows are persisted under
+      // the thread_id and that an indexed query returns them ordered by seq.
+      const root = messages.insert({
+        channelId,
+        senderType: 'user',
+        senderId: 'user-a',
+        content: 'root',
+      });
+      const r1 = messages.insert({
+        channelId,
+        senderType: 'agent',
+        senderId: 'sess-a',
+        content: 'r1',
+        threadId: root.row.id,
+      });
+      const r2 = messages.insert({
+        channelId,
+        senderType: 'user',
+        senderId: 'user-a',
+        content: 'r2',
+        threadId: root.row.id,
+      });
+      // Direct read using the index predicate.
+      const replies = db
+        .prepare(
+          `SELECT id FROM chat_messages
+           WHERE thread_id = ?
+           ORDER BY seq ASC`,
+        )
+        .all(root.row.id) as Array<{ id: string }>;
+      expect(replies.map((r) => r.id)).toEqual([r1.row.id, r2.row.id]);
+    });
   });
 
   // -------------------------------------------------------------------------

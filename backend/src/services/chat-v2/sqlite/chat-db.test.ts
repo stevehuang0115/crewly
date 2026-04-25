@@ -4,7 +4,7 @@
  * @module services/chat-v2/sqlite/chat-db.test
  */
 
-import { openChatDatabase } from './chat-db.js';
+import { applyPhaseAColumnUpgrades, openChatDatabase } from './chat-db.js';
 
 describe('openChatDatabase', () => {
   function openInMemory() {
@@ -40,15 +40,56 @@ describe('openChatDatabase', () => {
       const names = rows.map((r) => r.name);
       expect(names).toEqual(
         expect.arrayContaining([
-          'uq_channel_agent_active',
+          // Phase A renamed `uq_channel_agent_active` -> `uq_channel_agent_dm_active`
+          'uq_channel_agent_dm_active',
           'ix_channels_owner',
+          'ix_channels_team',
           'uq_messages_channel_seq',
           'ix_messages_channel_created',
           'uq_messages_client_id',
+          'ix_messages_thread',
           'ix_attachments_message',
           'ix_queue_pending',
         ]),
       );
+      // Legacy index name must not exist on fresh installs.
+      expect(names).not.toEqual(expect.arrayContaining(['uq_channel_agent_active']));
+    } finally {
+      db.close();
+    }
+  });
+
+  it('creates Phase A columns on chat_channels (type, team_id, project_id, target_member_id)', () => {
+    const db = openInMemory();
+    try {
+      const cols = db.pragma('table_info(chat_channels)') as Array<{
+        name: string;
+        notnull: number;
+        dflt_value: string | null;
+      }>;
+      const byName = new Map(cols.map((c) => [c.name, c]));
+      expect(byName.has('type')).toBe(true);
+      expect(byName.has('team_id')).toBe(true);
+      expect(byName.has('project_id')).toBe(true);
+      expect(byName.has('target_member_id')).toBe(true);
+
+      // `type` must be NOT NULL with default 'dm' so existing INSERTs that
+      // omit it (and pre-Phase-A backfilled rows) end up on the dm path.
+      const typeCol = byName.get('type')!;
+      expect(typeCol.notnull).toBe(1);
+      // SQLite stores defaults with surrounding quotes for string literals.
+      expect(typeCol.dflt_value).toMatch(/^'?dm'?$/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('creates Phase A columns on chat_messages (mentions, thread_id)', () => {
+    const db = openInMemory();
+    try {
+      const cols = db.pragma('table_info(chat_messages)') as Array<{ name: string }>;
+      const names = cols.map((c) => c.name);
+      expect(names).toEqual(expect.arrayContaining(['mentions', 'thread_id']));
     } finally {
       db.close();
     }
@@ -98,7 +139,7 @@ describe('openChatDatabase', () => {
     }
   });
 
-  it('enforces the uq_channel_agent_active partial index', () => {
+  it('enforces the uq_channel_agent_dm_active partial index for type=dm rows', () => {
     const db = openInMemory();
     try {
       const now = Date.now();
@@ -108,12 +149,61 @@ describe('openChatDatabase', () => {
       );
       insert.run('ch1', 'shared-agent', 'user-a', 'First', now);
 
-      // Second active channel for the same agent must fail the unique index.
+      // Second active dm channel for the same agent must fail the unique index.
+      // Both rows default `type` to 'dm' so the partial-index WHERE clause
+      // (archived_at IS NULL AND type='dm') matches both.
       expect(() => insert.run('ch2', 'shared-agent', 'user-a', 'Second', now)).toThrow(/UNIQUE/i);
 
       // But once the first is archived, a second active binding is allowed.
       db.prepare('UPDATE chat_channels SET archived_at = ? WHERE id = ?').run(now, 'ch1');
       expect(() => insert.run('ch2', 'shared-agent', 'user-a', 'Second', now)).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does NOT apply the dm-binding unique index to type=channel rows', () => {
+    // Phase A SEALED §3.1 — multiple type='channel' rows can legitimately
+    // share an empty agent_session ('' wire-binding sentinel). The renamed
+    // partial index `uq_channel_agent_dm_active` excludes type='channel'
+    // rows via `WHERE archived_at IS NULL AND type = 'dm'`.
+    const db = openInMemory();
+    try {
+      const now = Date.now();
+      const insert = db.prepare(
+        `INSERT INTO chat_channels
+           (id, agent_session, owner_user_id, name, created_at, type, team_id)
+         VALUES (?, ?, ?, ?, ?, 'channel', ?)`,
+      );
+      // Two `#general` channels in different teams, both with the empty
+      // agent_session sentinel — no unique-constraint violation.
+      expect(() => {
+        insert.run('cha-team-1', '', 'user-a', '#general', now, 'team-1');
+        insert.run('cha-team-2', '', 'user-a', '#general', now, 'team-2');
+      }).not.toThrow();
+
+      const rows = db
+        .prepare("SELECT id FROM chat_channels WHERE type = 'channel' ORDER BY id")
+        .all() as Array<{ id: string }>;
+      expect(rows.map((r) => r.id)).toEqual(['cha-team-1', 'cha-team-2']);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects type values outside the {dm, channel} CHECK', () => {
+    const db = openInMemory();
+    try {
+      const now = Date.now();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO chat_channels
+               (id, agent_session, owner_user_id, name, created_at, type)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run('cha-bad', '', 'user-a', 'Bogus', now, 'group' /* invalid */),
+      ).toThrow(/CHECK/i);
     } finally {
       db.close();
     }
@@ -145,6 +235,126 @@ describe('openChatDatabase', () => {
     } finally {
       db.close();
     }
+  });
+
+  describe('applyPhaseAColumnUpgrades — pre-Phase-A migration path', () => {
+    /**
+     * Recreate the literal Phase 1 schema (pre-Phase-A) so we can verify
+     * the additive upgrade. The DDL below intentionally omits Phase A
+     * columns and creates the OLD `uq_channel_agent_active` index name,
+     * mirroring what a database created before this migration looks like.
+     */
+    const PRE_PHASE_A_DDL = `
+      CREATE TABLE chat_channels (
+        id              TEXT PRIMARY KEY,
+        agent_session   TEXT NOT NULL,
+        owner_user_id   TEXT NOT NULL,
+        name            TEXT NOT NULL,
+        purpose         TEXT,
+        created_at      INTEGER NOT NULL,
+        archived_at     INTEGER,
+        last_message_at INTEGER
+      );
+      CREATE UNIQUE INDEX uq_channel_agent_active
+        ON chat_channels(agent_session)
+        WHERE archived_at IS NULL;
+      CREATE TABLE chat_messages (
+        id           TEXT PRIMARY KEY,
+        channel_id   TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+        seq          INTEGER NOT NULL,
+        sender_type  TEXT NOT NULL CHECK(sender_type IN ('user','agent','system')),
+        sender_id    TEXT NOT NULL,
+        content      TEXT NOT NULL,
+        content_type TEXT NOT NULL DEFAULT 'markdown',
+        created_at   INTEGER NOT NULL,
+        metadata     TEXT
+      );
+    `;
+
+    function openLegacyDb() {
+      // Bypass openChatDatabase so the Phase A upgrade hasn't run yet.
+      // better-sqlite3 is exported as the constructor itself (CJS), not as
+      // `default` — `require('better-sqlite3')` is what we want.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const Database = require('better-sqlite3');
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(PRE_PHASE_A_DDL);
+      return db;
+    }
+
+    it('adds the Phase A columns to a pre-Phase-A database without dropping data', () => {
+      const db = openLegacyDb();
+      try {
+        const now = Date.now();
+        // Insert a row using the OLD schema (no `type` column on the wire).
+        db.prepare(
+          `INSERT INTO chat_channels
+             (id, agent_session, owner_user_id, name, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run('legacy-1', 'sess-a', 'user-a', 'Legacy DM', now);
+
+        const report = applyPhaseAColumnUpgrades(db);
+        expect(report.channelsAdded.sort()).toEqual(
+          ['type', 'team_id', 'project_id', 'target_member_id'].sort(),
+        );
+        expect(report.messagesAdded.sort()).toEqual(['mentions', 'thread_id'].sort());
+        expect(report.legacyIndexDropped).toBe(true);
+
+        // Existing row preserved AND backfilled to type='dm' via the
+        // NOT NULL DEFAULT clause on ADD COLUMN.
+        const row = db
+          .prepare('SELECT id, agent_session, type, team_id FROM chat_channels WHERE id = ?')
+          .get('legacy-1') as { id: string; agent_session: string; type: string; team_id: string | null };
+        expect(row.id).toBe('legacy-1');
+        expect(row.agent_session).toBe('sess-a');
+        expect(row.type).toBe('dm');
+        expect(row.team_id).toBeNull();
+      } finally {
+        db.close();
+      }
+    });
+
+    it('is no-op idempotent: running the upgrade twice produces no changes the second time', () => {
+      const db = openLegacyDb();
+      try {
+        const first = applyPhaseAColumnUpgrades(db);
+        expect(first.channelsAdded.length + first.messagesAdded.length).toBeGreaterThan(0);
+
+        const second = applyPhaseAColumnUpgrades(db);
+        expect(second.channelsAdded).toEqual([]);
+        expect(second.messagesAdded).toEqual([]);
+        expect(second.legacyIndexDropped).toBe(false);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('drops the legacy uq_channel_agent_active index in favor of the new dm-scoped index', () => {
+      const db = openLegacyDb();
+      try {
+        // Sanity: legacy index is present in the pre-upgrade state.
+        const legacyBefore = db
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'index' AND name = 'uq_channel_agent_active'`,
+          )
+          .get();
+        expect(legacyBefore).toBeTruthy();
+
+        applyPhaseAColumnUpgrades(db);
+
+        const legacyAfter = db
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'index' AND name = 'uq_channel_agent_active'`,
+          )
+          .get();
+        expect(legacyAfter).toBeUndefined();
+      } finally {
+        db.close();
+      }
+    });
   });
 
   it('clientMessageId idempotency index prevents duplicates per channel', () => {

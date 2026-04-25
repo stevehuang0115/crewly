@@ -93,6 +93,115 @@ describe('ChatV2Service', () => {
         expect((err as ChatError).httpStatus).toBe(409);
       }
     });
+
+    // -----------------------------------------------------------------------
+    // Phase A — type='channel' / Slack-like surfaces (SEALED §3.1)
+    // -----------------------------------------------------------------------
+
+    it("Phase A: creates a type='channel' row with teamId; agentSession is server-erased", () => {
+      const dto = service.createChannel({
+        // Caller may or may not pass agentSession on channel rows; server
+        // discards it either way and stores '' as the wire-binding sentinel.
+        agentSession: 'whatever-this-is-ignored',
+        name: '#general',
+        type: 'channel',
+        teamId: 'team-1',
+        principal: owner,
+      });
+      expect(dto.type).toBe('channel');
+      expect(dto.teamId).toBe('team-1');
+      expect(dto.agentSession).toBe('');
+    });
+
+    it("Phase A: type='channel' without teamId fails validation", () => {
+      try {
+        service.createChannel({
+          name: '#orphan',
+          type: 'channel',
+          principal: owner,
+        });
+        fail('expected ChatError');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ChatError);
+        expect((err as ChatError).code).toBe('validation_error');
+        expect((err as ChatError).httpStatus).toBe(400);
+        expect((err as ChatError).message).toMatch(/teamId is required/);
+      }
+    });
+
+    it("Phase A: type='dm' with teamId fails validation (DMs are not team-scoped)", () => {
+      expect(() =>
+        service.createChannel({
+          agentSession: 'sess-a',
+          name: 'Cross-typed DM',
+          type: 'dm',
+          teamId: 'team-1',
+          principal: owner,
+        }),
+      ).toThrow(/teamId must be omitted/);
+    });
+
+    it("Phase A: type='channel' with targetMemberId fails validation", () => {
+      expect(() =>
+        service.createChannel({
+          name: '#x',
+          type: 'channel',
+          teamId: 'team-1',
+          targetMemberId: 'member-x',
+          principal: owner,
+        }),
+      ).toThrow(/targetMemberId must be omitted/);
+    });
+
+    it("Phase A: type='dm' with targetMemberId persists it", () => {
+      const dto = service.createChannel({
+        agentSession: 'sess-sam',
+        name: 'DM with Sam',
+        type: 'dm',
+        targetMemberId: 'member-sam-uuid',
+        principal: owner,
+      });
+      expect(dto.targetMemberId).toBe('member-sam-uuid');
+      expect(dto.type).toBe('dm');
+    });
+
+    it('Phase A: rejects unknown channel type values', () => {
+      expect(() =>
+        service.createChannel({
+          name: 'x',
+          // Cast through unknown to escape the typed contract for the test.
+          type: 'group' as unknown as 'dm',
+          principal: owner,
+        }),
+      ).toThrow(/unknown channel type/);
+    });
+
+    it("Phase A: type='channel' rows allow multiple per team (no 1:1 binding)", () => {
+      service.createChannel({
+        name: '#general',
+        type: 'channel',
+        teamId: 'team-1',
+        principal: owner,
+      });
+      // Same owner + same teamId, different name — must NOT trip the
+      // dm-scoped unique index. Different team is also fine.
+      expect(() =>
+        service.createChannel({
+          name: '#random',
+          type: 'channel',
+          teamId: 'team-1',
+          principal: owner,
+        }),
+      ).not.toThrow();
+      expect(() =>
+        service.createChannel({
+          name: '#general',
+          type: 'channel',
+          teamId: 'team-2',
+          principal: owner,
+        }),
+      ).not.toThrow();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -265,6 +374,131 @@ describe('ChatV2Service', () => {
       });
       expect(a.id).toBe(b.id);
       expect(a.seq).toBe(b.seq);
+    });
+
+    // -----------------------------------------------------------------------
+    // Phase A — mentions + threadId (SEALED §3.2)
+    // -----------------------------------------------------------------------
+
+    it('Phase A: persists mentions and emits them on the wire DTO', () => {
+      const ch = createSam();
+      const dto = service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'pinging @Sam and @team',
+        mentions: ['member-sam-uuid', 'team-1'],
+      });
+      expect(dto.mentions).toEqual(['member-sam-uuid', 'team-1']);
+    });
+
+    it('Phase A: empty/omitted mentions yield empty array on the wire (never null)', () => {
+      const ch = createSam();
+      const omitted = service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'no mentions',
+      });
+      expect(omitted.mentions).toEqual([]);
+
+      const empty = service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'still no mentions',
+        mentions: [],
+      });
+      expect(empty.mentions).toEqual([]);
+    });
+
+    it('Phase A: mentions exceeding the count cap fail validation', () => {
+      const ch = createSam();
+      const tooMany = Array.from({ length: 51 }, (_, i) => `m-${i}`);
+      expect(() =>
+        service.sendMessage({
+          channelId: ch.id,
+          principal: owner,
+          content: 'x',
+          mentions: tooMany,
+        }),
+      ).toThrow(/mentions exceeds max count/);
+    });
+
+    it('Phase A: rejects non-string mention entries', () => {
+      const ch = createSam();
+      expect(() =>
+        service.sendMessage({
+          channelId: ch.id,
+          principal: owner,
+          content: 'x',
+          // Cast through unknown to bypass the typed contract.
+          mentions: ['ok', 42 as unknown as string],
+        }),
+      ).toThrow(/mentions entries must be strings/);
+    });
+
+    it('Phase A: rejects mentions that aren’t an array', () => {
+      const ch = createSam();
+      expect(() =>
+        service.sendMessage({
+          channelId: ch.id,
+          principal: owner,
+          content: 'x',
+          mentions: 'not-an-array' as unknown as string[],
+        }),
+      ).toThrow(/mentions must be an array/);
+    });
+
+    it('Phase A: persists threadId for replies and emits it on the wire DTO', () => {
+      const ch = createSam();
+      const root = service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'thread root',
+      });
+      const reply = service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'reply',
+        threadId: root.id,
+      });
+      expect(reply.threadId).toBe(root.id);
+      // Top-level messages omit threadId on the wire.
+      expect(root.threadId).toBeUndefined();
+    });
+
+    it('Phase A: rejects threadId that does not reference an existing message', () => {
+      const ch = createSam();
+      expect(() =>
+        service.sendMessage({
+          channelId: ch.id,
+          principal: owner,
+          content: 'orphan reply',
+          threadId: 'non-existent-id',
+        }),
+      ).toThrow(/non-existent message/);
+    });
+
+    it('Phase A: rejects threadId that references a message in a different channel', () => {
+      // Set up two channels owned by the same user. A reply in channel B
+      // pointing at a thread root in channel A must be rejected.
+      const chA = createSam();
+      const chB = service.createChannel({
+        agentSession: 'sess-b',
+        name: 'Other DM',
+        principal: owner,
+      });
+      const rootInA = service.sendMessage({
+        channelId: chA.id,
+        principal: owner,
+        content: 'root in A',
+      });
+      expect(() =>
+        service.sendMessage({
+          channelId: chB.id,
+          principal: owner,
+          content: 'cross-channel reply',
+          threadId: rootInA.id,
+        }),
+      ).toThrow(/different channel/);
     });
   });
 
