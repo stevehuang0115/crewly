@@ -170,6 +170,14 @@ export class CrewlyServer {
 	private systemResourceAlertService!: SystemResourceAlertService;
 	private reconcilerService: ReconcilerService | null = null;
 
+	// Chat MVP Phase 1 — initialized lazily in `start()` after the HTTP
+	// server is created. Kept as fields so the shutdown path can close
+	// them cleanly and tests can reach in with a reference.
+	private chatV2Gateway: import('./websocket/chat-v2.gateway.js').ChatV2Gateway | null = null;
+	private chatV2Dispatcher:
+		| import('./services/chat-v2/chat-v2.dispatcher.service.js').ChatV2DispatcherService
+		| null = null;
+
 	// Shutdown state
 	private isShuttingDown = false;
 	private healthMonitoringInterval: NodeJS.Timeout | null = null;
@@ -947,6 +955,56 @@ export class CrewlyServer {
 				this.logger.info('Crewly in Chrome WebSocket bridge started');
 			} catch (error) {
 				this.logger.warn('Failed to start Crewly in Chrome bridge (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Start chat-v2 WebSocket gateway + dispatcher (Phase 1 Chat MVP).
+			// The gateway fans `message`/`presence` frames to subscribers of
+			// `/ws/chat?channelId=...`. The dispatcher pushes user-origin
+			// messages into the bound agent session so it can reply via the
+			// `reply-channel` skill. See chat-v2.gateway.ts for the contract.
+			try {
+				const [
+					{ ChatV2Gateway, devAnonymousTokenVerifier },
+					{ ChatV2DispatcherService },
+					{ getChatV2Service },
+					{ setChatV2RealtimeDeps },
+					{ verifyHs256Token },
+				] = await Promise.all([
+					import('./websocket/chat-v2.gateway.js'),
+					import('./services/chat-v2/chat-v2.dispatcher.service.js'),
+					import('./services/chat-v2/chat-v2.singleton.js'),
+					import('./services/chat-v2/chat-v2.realtime-holder.js'),
+					import('./middleware/require-auth.middleware.js'),
+				]);
+				const chatService = getChatV2Service();
+				const jwtSecret = process.env['CREWLY_JWT_SECRET'];
+				const verifyToken = jwtSecret
+					? async (token: string | null) => {
+						if (!token) return null;
+						const payload = verifyHs256Token(token, jwtSecret);
+						if (!payload?.sub) return null;
+						return { userId: payload.sub };
+					}
+					: devAnonymousTokenVerifier;
+				const chatGateway = new ChatV2Gateway({ service: chatService, verifyToken });
+				chatGateway.attach(this.httpServer);
+				const chatDispatcher = new ChatV2DispatcherService({
+					agentSink: this.apiController.agentRegistrationService,
+				});
+				this.chatV2Gateway = chatGateway;
+				this.chatV2Dispatcher = chatDispatcher;
+				// The chat-v2 router mounted earlier reads realtime deps from
+				// this holder at request time, so it picks up broadcast +
+				// dispatch without a re-mount.
+				setChatV2RealtimeDeps({ gateway: chatGateway, dispatcher: chatDispatcher });
+				this.logger.info('chat-v2 WebSocket gateway + dispatcher started', {
+					path: '/ws/chat',
+					authMode: jwtSecret ? 'jwt' : 'dev-anonymous',
+				});
+			} catch (error) {
+				this.logger.warn('Failed to start chat-v2 WS gateway (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}

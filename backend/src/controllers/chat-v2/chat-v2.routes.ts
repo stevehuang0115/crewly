@@ -11,7 +11,10 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/require-auth.middleware.js';
 import type { ChatV2Service } from '../../services/chat-v2/chat-v2.service.js';
-import { createChatV2Controller } from './chat-v2.controller.js';
+import {
+  createChatV2Controller,
+  type ChatV2ControllerDeps,
+} from './chat-v2.controller.js';
 
 /**
  * Build the router for chat-v2 endpoints.
@@ -25,11 +28,15 @@ import { createChatV2Controller } from './chat-v2.controller.js';
  * - `POST   /channels/:id/messages`
  *
  * @param service - Configured ChatV2Service
+ * @param deps    - Optional gateway + dispatcher for realtime wiring
  * @returns Express router
  */
-export function createChatV2Router(service: ChatV2Service): Router {
+export function createChatV2Router(
+  service: ChatV2Service,
+  deps: ChatV2ControllerDeps = {},
+): Router {
   const router = Router();
-  const handlers = createChatV2Controller(service);
+  const handlers = createChatV2Controller(service, deps);
 
   router.get('/channels', requireAuth, handlers.listChannels);
   router.post('/channels', requireAuth, handlers.createChannel);
