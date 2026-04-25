@@ -366,7 +366,13 @@ export class ChatV2Service {
 
   /** Map a channel row + live presence into the wire DTO. */
   private toChannelDTO(row: ChatChannelRow): ChatChannelDTO {
-    const presence = (this.presence ?? DEFAULT_PRESENCE)(row.agent_session);
+    // Phase B backwards-compat: legacy rows (pre-migration) lack `type` /
+    // team scope fields. The migration backfills `type='dm'` for existing
+    // rows; here we defend the in-memory path against rows that may not
+    // yet have the column populated (e.g. mid-migration test runs).
+    const channelType = row.type ?? 'dm';
+    const presenceSource = channelType === 'dm' ? row.agent_session : '';
+    const presence = (this.presence ?? DEFAULT_PRESENCE)(presenceSource);
     return {
       id: row.id,
       agentSession: row.agent_session,
@@ -379,6 +385,10 @@ export class ChatV2Service {
         status: presence.status,
         lastSeenAt: presence.lastSeenAt,
       },
+      type: channelType,
+      teamId: row.team_id ?? undefined,
+      projectId: row.project_id ?? undefined,
+      targetMemberId: row.target_member_id ?? undefined,
     };
   }
 
@@ -392,6 +402,22 @@ export class ChatV2Service {
         metadata = undefined;
       }
     }
+    // Phase B backwards-compat: parse mentions from JSON-encoded array
+    // column. Legacy rows (pre-migration) have null; we surface as
+    // empty array so the wire contract `mentions: string[]` is never
+    // violated. A malformed JSON column also falls back to `[]` rather
+    // than throwing — the wire contract is the priority.
+    let mentions: string[] = [];
+    if (row.mentions) {
+      try {
+        const parsed = JSON.parse(row.mentions) as unknown;
+        if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+          mentions = parsed as string[];
+        }
+      } catch {
+        mentions = [];
+      }
+    }
     return {
       id: row.id,
       channelId: row.channel_id,
@@ -403,6 +429,8 @@ export class ChatV2Service {
       createdAt: row.created_at,
       attachments,
       metadata,
+      mentions,
+      threadId: row.thread_id ?? undefined,
     };
   }
 }
