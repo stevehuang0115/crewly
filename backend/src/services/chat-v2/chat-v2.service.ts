@@ -15,12 +15,14 @@ import { ChannelStore } from './sqlite/channel.store.js';
 import { MessageStore } from './sqlite/message.store.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
 import {
+  CHAT_CHANNEL_TYPES,
   CHAT_CONTENT_TYPES,
   CHAT_ERROR_CODES,
   ChatError,
   type ChatAttachmentDTO,
   type ChatChannelDTO,
   type ChatChannelRow,
+  type ChatChannelType,
   type ChatContentType,
   type ChatMessageDTO,
   type ChatMessageListResult,
@@ -61,10 +63,25 @@ export interface ChatPresenceProvider {
 
 /** Arguments for `createChannel`. */
 export interface CreateChannelArgs {
-  agentSession: string;
+  /**
+   * Wire-level session binding. Required when `type='dm'` (default);
+   * for `type='channel'`, callers may omit it (server stores '').
+   */
+  agentSession?: string;
   name: string;
   purpose?: string;
   principal: ChatPrincipal;
+  /**
+   * Phase A (SEALED §3.1) — channel kind. Defaults to `'dm'` to preserve
+   * the Phase 1 contract for callers that omit this field.
+   */
+  type?: ChatChannelType;
+  /** Phase A — required when `type='channel'`. */
+  teamId?: string;
+  /** Phase A — optional even when `type='channel'`. */
+  projectId?: string;
+  /** Phase A — optional when `type='dm'`. */
+  targetMemberId?: string;
 }
 
 /** Arguments for `listChannels`. */
@@ -83,6 +100,19 @@ export interface SendMessageArgs {
   clientMessageId?: string;
   /** Attachment hooks — the store is added in a later step, so pre-resolved DTOs are accepted. */
   attachments?: ChatAttachmentDTO[];
+  /**
+   * Phase A (SEALED §3.2) — array of mention IDs (member or team)
+   * referenced inline in `content`. Persisted as JSON; emitted on the
+   * outbound message DTO. Empty / omitted → no mentions.
+   */
+  mentions?: string[];
+  /**
+   * Phase A (SEALED §3.2) — Slack-style thread reply root. When set,
+   * the new message is a reply within the thread rooted at this id;
+   * the service validates that the thread root lives in the same
+   * channel before persisting.
+   */
+  threadId?: string;
 }
 
 /** Arguments for `listMessages`. */
@@ -114,6 +144,11 @@ const DEFAULT_PRESENCE = () => ({
  * - Fans out to WebSocket / adapters in later phases.
  */
 export class ChatV2Service {
+  /** Phase A spec §3.2: max mention count per message. */
+  static readonly MAX_MENTIONS_PER_MESSAGE = 50;
+  /** Phase A spec §3.2: max JSON-encoded byte size of the mentions array. */
+  static readonly MAX_MENTIONS_JSON_BYTES = 1024;
+
   readonly config: ChatV2Config;
   private readonly db: ChatDatabase;
   private readonly channels: ChannelStore;
@@ -163,9 +198,65 @@ export class ChatV2Service {
         `name exceeds ${this.config.maxChannelNameChars} characters`,
       );
     }
-    const agentSession = (args.agentSession ?? '').trim();
-    if (agentSession.length === 0) {
-      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agentSession is required');
+
+    // Phase A: validate channel type (defaults to 'dm' for backwards compat).
+    const channelType: ChatChannelType = args.type ?? 'dm';
+    if (!CHAT_CHANNEL_TYPES.includes(channelType)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `unknown channel type: ${channelType}`,
+      );
+    }
+
+    // agentSession requirement is type-dependent:
+    //   - 'dm'      → required (existing Phase 1 contract).
+    //   - 'channel' → not 1:1-bound; server stores '' even if caller passed
+    //                 something. Keep this strict so the wire shape matches
+    //                 the design and we don't accidentally bind a team
+    //                 channel to a single agent.
+    const rawAgentSession = (args.agentSession ?? '').trim();
+    let agentSession: string;
+    if (channelType === 'dm') {
+      if (rawAgentSession.length === 0) {
+        throw new ChatError(
+          CHAT_ERROR_CODES.VALIDATION,
+          400,
+          "agentSession is required when type='dm'",
+        );
+      }
+      agentSession = rawAgentSession;
+    } else {
+      // channel: discard any caller-supplied agentSession.
+      agentSession = '';
+    }
+
+    // Phase A: type='channel' must specify a teamId; type='dm' may
+    // optionally carry a targetMemberId. Reject the contradicting cases.
+    const teamId = args.teamId?.trim() || undefined;
+    const projectId = args.projectId?.trim() || undefined;
+    const targetMemberId = args.targetMemberId?.trim() || undefined;
+
+    if (channelType === 'channel' && !teamId) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        "teamId is required when type='channel'",
+      );
+    }
+    if (channelType === 'dm' && teamId) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        "teamId must be omitted when type='dm'",
+      );
+    }
+    if (channelType === 'channel' && targetMemberId) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        "targetMemberId must be omitted when type='channel'",
+      );
     }
 
     const purpose = args.purpose?.trim();
@@ -182,6 +273,10 @@ export class ChatV2Service {
       ownerUserId: args.principal.userId,
       name,
       purpose: purpose || null,
+      type: channelType,
+      teamId: teamId ?? null,
+      projectId: projectId ?? null,
+      targetMemberId: targetMemberId ?? null,
       nowMs: this.now(),
     });
     return this.toChannelDTO(row);
@@ -271,6 +366,15 @@ export class ChatV2Service {
 
     const { type: senderType, id: senderId } = this.resolveSender(row, args.principal);
 
+    // Phase A: validate mentions array. Bounded count + JSON-byte cap so
+    // a misbehaving client cannot blow past the spec §3.2 1KB ceiling.
+    const mentions = this.validateMentions(args.mentions);
+
+    // Phase A: validate threadId — must reference an existing message in
+    // this channel; refusing dangling thread refs prevents orphan replies
+    // and contains UX confusion if the FE composes against a stale id.
+    const threadId = this.validateThreadId(args.threadId, args.channelId);
+
     const { row: persisted } = this.messages.insert({
       channelId: args.channelId,
       senderType,
@@ -278,10 +382,107 @@ export class ChatV2Service {
       content,
       contentType,
       clientMessageId: args.clientMessageId,
+      mentions,
+      threadId,
       nowMs: this.now(),
     });
 
     return this.toMessageDTO(persisted, args.attachments ?? []);
+  }
+
+  /**
+   * Phase A — validate the mentions array passed to sendMessage.
+   * Returns the cleaned array (or undefined when input is empty/missing).
+   *
+   * @param raw - The raw `mentions` field from the request body
+   * @returns Validated mention IDs (caller passes to messageStore)
+   * @throws {ChatError} `validation_error` (400) on type / size / count violation
+   */
+  private validateMentions(raw: unknown): string[] | undefined {
+    if (raw === undefined || raw === null) return undefined;
+    if (!Array.isArray(raw)) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'mentions must be an array');
+    }
+    if (raw.length === 0) return undefined;
+    if (raw.length > ChatV2Service.MAX_MENTIONS_PER_MESSAGE) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `mentions exceeds max count (${ChatV2Service.MAX_MENTIONS_PER_MESSAGE})`,
+      );
+    }
+    const cleaned: string[] = [];
+    for (const item of raw) {
+      if (typeof item !== 'string') {
+        throw new ChatError(
+          CHAT_ERROR_CODES.VALIDATION,
+          400,
+          'mentions entries must be strings',
+        );
+      }
+      const trimmed = item.trim();
+      if (trimmed.length === 0) {
+        throw new ChatError(
+          CHAT_ERROR_CODES.VALIDATION,
+          400,
+          'mentions entries must be non-empty',
+        );
+      }
+      cleaned.push(trimmed);
+    }
+    // Bound the JSON size — spec §3.2 caps mentions JSON at 1KB.
+    const jsonByteLen = Buffer.byteLength(JSON.stringify(cleaned), 'utf-8');
+    if (jsonByteLen > ChatV2Service.MAX_MENTIONS_JSON_BYTES) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.PAYLOAD_TOO_LARGE,
+        413,
+        `mentions JSON exceeds max bytes (${ChatV2Service.MAX_MENTIONS_JSON_BYTES})`,
+      );
+    }
+    return cleaned;
+  }
+
+  /**
+   * Phase A — validate the threadId passed to sendMessage.
+   *
+   * Returns the original threadId if it's a valid reference to a message
+   * in the same channel, or undefined when input is empty/missing.
+   * Refuses dangling references and cross-channel thread roots.
+   *
+   * @param raw - The raw `threadId` field from the request body
+   * @param channelId - The channel this message will be inserted into
+   * @returns Validated thread root id (caller passes to messageStore)
+   * @throws {ChatError} `validation_error` (400) when invalid
+   */
+  private validateThreadId(raw: unknown, channelId: string): string | undefined {
+    if (raw === undefined || raw === null) return undefined;
+    if (typeof raw !== 'string') {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'threadId must be a string');
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return undefined;
+
+    const root = this.messages.getById(trimmed);
+    if (!root) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `threadId references a non-existent message`,
+        { threadId: trimmed },
+      );
+    }
+    if (root.channel_id !== channelId) {
+      // Returning validation_error (not channel_not_found) because the
+      // caller's intent IS valid — they're just pointing at the wrong
+      // channel's thread root. Distinct error helps debugging.
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `threadId belongs to a different channel`,
+        { threadId: trimmed, expectedChannelId: channelId },
+      );
+    }
+    return trimmed;
   }
 
   /**
