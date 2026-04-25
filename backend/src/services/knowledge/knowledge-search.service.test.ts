@@ -48,6 +48,14 @@ jest.mock('./fts5-index.service.js', () => ({
   })),
 }));
 
+/** Access the mocked Fts5IndexService constructor for call-arg assertions. */
+function getFts5IndexServiceMock(): jest.Mock {
+  const mod = jest.requireMock('./fts5-index.service.js') as {
+    Fts5IndexService: jest.Mock;
+  };
+  return mod.Fts5IndexService;
+}
+
 /** Helper to create a test document summary */
 function makeDoc(
   overrides: Partial<KnowledgeDocumentSummary> = {},
@@ -148,6 +156,27 @@ describe('Fts5SearchStrategy', () => {
   beforeEach(() => {
     strategy = new Fts5SearchStrategy();
     mockFts5Search.mockReset();
+  });
+
+  it('constructs its global index under the user home directory, not /tmp (R1.1)', () => {
+    // Ensure HOME/USERPROFILE are unset to prove the ctor now uses
+    // os.homedir() — the old fallback would have landed on /tmp.
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    delete process.env.HOME;
+    delete process.env.USERPROFILE;
+    try {
+      const ctorMock = getFts5IndexServiceMock();
+      ctorMock.mockClear();
+      new Fts5SearchStrategy();
+      const globalPathArg = ctorMock.mock.calls[0][0] as string;
+      expect(globalPathArg).not.toMatch(/^\/tmp\b/);
+      expect(globalPathArg).toContain('.crewly');
+      expect(globalPathArg).toContain('knowledge');
+    } finally {
+      if (savedHome !== undefined) process.env.HOME = savedHome;
+      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
+    }
   });
 
   it('should use FTS5 index for searching', async () => {

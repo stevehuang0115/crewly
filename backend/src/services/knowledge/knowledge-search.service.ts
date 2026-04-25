@@ -13,6 +13,7 @@ import { KnowledgeService } from './knowledge.service.js';
 import { VectorStoreService } from './vector-store.service.js';
 import { Fts5IndexService, type FtsSearchResult } from './fts5-index.service.js';
 import * as path from 'path';
+import * as os from 'os';
 import type {
   KnowledgeDocumentSummary,
   KnowledgeScope,
@@ -168,8 +169,7 @@ export class Fts5SearchStrategy implements KnowledgeSearchStrategy {
     this.logger = LoggerService.getInstance().createComponentLogger('Fts5SearchStrategy');
     this.fallback = new KeywordSearchStrategy();
 
-    const home = process.env.HOME || process.env.USERPROFILE || '/tmp';
-    const globalPath = path.join(home, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, 'knowledge');
+    const globalPath = path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME, 'knowledge');
     this.globalFts5 = new Fts5IndexService(globalPath);
   }
 
@@ -216,9 +216,11 @@ export class Fts5SearchStrategy implements KnowledgeSearchStrategy {
           createdBy: 'system',
           updatedBy: 'system',
         },
-        // BM25 rank in SQLite is such that lower is better. 
-        // We convert to a positive score where higher is better for compatibility.
-        // Rank 0 is a perfect match, larger values are worse.
+        // SQLite FTS5's bm25() returns a negative double where
+        // more-negative = more-relevant (e.g. -5 beats -1). Invert so
+        // higher = better to match the ScoredDocument convention used
+        // by every other strategy. Clamped at 0 in case the driver ever
+        // returns an unexpected positive rank.
         score: Math.max(0, 100 - r.rank),
       }));
     } catch (error) {
