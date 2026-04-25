@@ -43,6 +43,20 @@ export type { UseSendMessageResult } from './hooks/useSendMessage';
 export { useAgentPresence } from './hooks/useAgentPresence';
 export type { UseAgentPresenceResult } from './hooks/useAgentPresence';
 
+// Phase C derivation hooks — turn the BE channel list into the Slack-like
+// workspace rail + grouped conversation list. Pure helpers exported
+// alongside their hook wrappers for tests / SSR callers.
+export {
+  useGroupedChannels,
+  buildConversationGroups,
+} from './hooks/useGroupedChannels';
+export type { UseGroupedChannelsOptions } from './hooks/useGroupedChannels';
+export {
+  useObservedWorkspaces,
+  buildObservedWorkspaces,
+} from './hooks/useObservedWorkspaces';
+export type { UseObservedWorkspacesOptions } from './hooks/useObservedWorkspaces';
+
 // API primitives (advanced: e.g. tests that want to inject a custom client)
 export { HttpChatApiClient } from './api/client';
 export type { ChatApiClient, ChannelSubscription, HttpClientOptions } from './api/client';
