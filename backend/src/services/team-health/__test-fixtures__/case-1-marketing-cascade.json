@@ -1,0 +1,23 @@
+{
+  "_description": "Case 1 — Marketing all-inactive cascade (§E.3). Marketing parent + Marketing-Content + Marketing-Ops all idle 3h20m with pending WorkItems and no triggers. Expected: 🚨 cascade for the two leaf teams sharing parent 'marketing'.",
+  "now": "2026-04-25T19:30:00.000Z",
+  "bootedAt": "2026-04-25T08:00:00.000Z",
+  "teams": [
+    { "id": "marketing",         "name": "Crewly Marketing", "slackThreadId": "T_marketing", "memberSessions": ["ella-tl"], "tlSession": "ella-tl" },
+    { "id": "marketing-content", "name": "Marketing Content","slackThreadId": "T_mc",        "memberSessions": ["ella-tl", "luna-content", "mila-content"], "tlSession": "ella-tl", "parentTeamId": "marketing" },
+    { "id": "marketing-ops",     "name": "Marketing Ops",    "slackThreadId": "T_mo",        "memberSessions": ["ella-tl", "grace-ops"], "tlSession": "ella-tl", "parentTeamId": "marketing" }
+  ],
+  "agentHealth": [
+    { "sessionName": "ella-tl",       "status": "inactive", "workingStatus": "inactive", "lastSeenAt": "2026-04-25T16:10:00.000Z", "teamId": "marketing" },
+    { "sessionName": "luna-content",  "status": "inactive", "workingStatus": "inactive", "lastSeenAt": "2026-04-25T16:10:00.000Z", "teamId": "marketing-content" },
+    { "sessionName": "mila-content",  "status": "inactive", "workingStatus": "inactive", "lastSeenAt": "2026-04-25T16:10:00.000Z", "teamId": "marketing-content" },
+    { "sessionName": "grace-ops",     "status": "inactive", "workingStatus": "inactive", "lastSeenAt": "2026-04-25T16:10:00.000Z", "teamId": "marketing-ops" }
+  ],
+  "workItems": [
+    { "id": "wi-1", "type": "delegate", "owner": "team_lead", "target": "luna-content", "title": "Verify campaign copy",  "status": "accepted", "createdAt": "2026-04-25T16:00:00.000Z", "retryCount": 0, "maxRetries": 3, "inputTokens": 0, "outputTokens": 0, "cost": 0 },
+    { "id": "wi-2", "type": "delegate", "owner": "team_lead", "target": "luna-content", "title": "Draft April recap",      "status": "queued",   "createdAt": "2026-04-25T17:00:00.000Z", "retryCount": 0, "maxRetries": 3, "inputTokens": 0, "outputTokens": 0, "cost": 0 },
+    { "id": "wi-3", "type": "delegate", "owner": "team_lead", "target": "grace-ops",    "title": "Schedule social posts",  "status": "blocked",  "createdAt": "2026-04-25T16:30:00.000Z", "retryCount": 0, "maxRetries": 3, "inputTokens": 0, "outputTokens": 0, "cost": 0 }
+  ],
+  "requests": [],
+  "triggers": []
+}

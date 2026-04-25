@@ -1,0 +1,24 @@
+{
+  "_description": "Case 7 — Sam (TL) restart drops Slack-like-chat dispatch (post-SEALED amendment). TL dispatch at 19:00, Sam restarted at 19:15, status stuck at proposed. Steve had to re-issue. Expected: lost_dispatch = true; verdict 'stalling'; no mutation.",
+  "now": "2026-04-25T19:30:00.000Z",
+  "bootedAt": "2026-04-25T08:00:00.000Z",
+  "teams": [
+    { "id": "crewly-product-tl", "name": "Crewly Product TL", "slackThreadId": "T_product_tl", "memberSessions": ["sam-tl"], "tlSession": "sam-tl" }
+  ],
+  "agentHealth": [
+    { "sessionName": "sam-tl", "status": "active", "workingStatus": "idle", "lastSeenAt": "2026-04-25T19:28:00.000Z", "teamId": "crewly-product-tl" }
+  ],
+  "workItems": [
+    {
+      "id": "wi-sam-slack-chat",
+      "type": "delegate", "owner": "orchestrator", "target": "sam-tl",
+      "title": "TL dispatch: Slack-like-chat MVP planning",
+      "description": "Lead Slack-like-chat MVP planning for crewly Cloud — tech spec section §6.",
+      "status": "proposed",
+      "createdAt": "2026-04-25T19:00:00.000Z",
+      "retryCount": 0, "maxRetries": 3, "inputTokens": 0, "outputTokens": 0, "cost": 0
+    }
+  ],
+  "requests": [],
+  "triggers": []
+}
