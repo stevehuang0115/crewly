@@ -18,6 +18,9 @@ function makeChannel(overrides: Partial<ChatChannelDTO> = {}): ChatChannelDTO {
     name: 'Chat with Sam',
     createdAt: 0,
     agentPresence: { status: 'online', lastSeenAt: null },
+    // Phase A — `type` is required on the wire from A1 onward; default
+    // legacy DM channels in fixtures.
+    type: 'dm',
     ...overrides,
   };
 }
@@ -34,6 +37,9 @@ function makeMessage(overrides: Partial<ChatMessageDTO> = {}): ChatMessageDTO {
     createdAt: 0,
     attachments: [],
     metadata: { clientMessageId: 'cmid-xyz' },
+    // Phase A — `mentions` is required on the wire (never null); default to
+    // an empty array for non-mention test fixtures.
+    mentions: [],
     ...overrides,
   };
 }
