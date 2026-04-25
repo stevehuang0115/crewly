@@ -179,6 +179,12 @@ export function createChatV2Controller(
           name: body.name,
           purpose: body.purpose,
           principal,
+          // Phase A (SEALED §3.1) — Slack-like channel surfaces. Service
+          // layer validates the type↔teamId↔targetMemberId combinations.
+          type: body.type,
+          teamId: body.teamId,
+          projectId: body.projectId,
+          targetMemberId: body.targetMemberId,
         });
         res.status(201).json({ success: true, data: channel });
       }),
@@ -259,6 +265,10 @@ export function createChatV2Controller(
           contentType: body.contentType,
           clientMessageId: body.clientMessageId,
           attachments: [],
+          // Phase A (SEALED §3.2) — mentions + threadId are forwarded to
+          // the service which validates and persists them.
+          mentions: body.mentions,
+          threadId: body.threadId,
         });
         res.status(201).json({ success: true, data: message });
         persisted = message;
