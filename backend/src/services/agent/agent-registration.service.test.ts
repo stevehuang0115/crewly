@@ -4,7 +4,11 @@
  * Tests the multi-step agent initialization and registration process
  */
 
-import { AgentRegistrationService } from './agent-registration.service.js';
+import {
+	AgentRegistrationService,
+	validateAgentRole,
+	InvalidAgentRoleError,
+} from './agent-registration.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import * as sessionModule from '../session/index.js';
@@ -3204,6 +3208,163 @@ describe('AgentRegistrationService', () => {
 			);
 
 			expect(result).toBe(false);
+		});
+	});
+
+	// ──────────────────────────────────────────────────────────────────────
+	// Bug #1: start-agent role=undefined silent failure
+	// Guards added at three layers: validateAgentRole (utility),
+	// getPromptFileForRole (path resolver), createAgentSession (service entry).
+	// ──────────────────────────────────────────────────────────────────────
+	describe('validateAgentRole (Bug #1 guard)', () => {
+		it('accepts a valid string role', () => {
+			expect(() => validateAgentRole('developer')).not.toThrow();
+			expect(() => validateAgentRole('orchestrator')).not.toThrow();
+			expect(() => validateAgentRole('team-leader')).not.toThrow();
+		});
+
+		it('rejects undefined', () => {
+			expect(() => validateAgentRole(undefined)).toThrow(InvalidAgentRoleError);
+		});
+
+		it('rejects null', () => {
+			expect(() => validateAgentRole(null)).toThrow(InvalidAgentRoleError);
+		});
+
+		it('rejects empty string', () => {
+			expect(() => validateAgentRole('')).toThrow(InvalidAgentRoleError);
+		});
+
+		it('rejects whitespace-only string', () => {
+			expect(() => validateAgentRole('   ')).toThrow(InvalidAgentRoleError);
+		});
+
+		it('rejects literal string "undefined" (the actual reproducer)', () => {
+			// This is the bug: when JS undefined gets stringified into a template
+			// literal, it becomes the literal string "undefined" — which would
+			// pass a naive `typeof === "string"` check but is still unusable.
+			expect(() => validateAgentRole('undefined')).toThrow(InvalidAgentRoleError);
+			expect(() => validateAgentRole('UNDEFINED')).toThrow(InvalidAgentRoleError);
+			expect(() => validateAgentRole('Undefined')).toThrow(InvalidAgentRoleError);
+		});
+
+		it('rejects literal string "null"', () => {
+			expect(() => validateAgentRole('null')).toThrow(InvalidAgentRoleError);
+		});
+
+		it('rejects non-string types (number, object, array)', () => {
+			expect(() => validateAgentRole(42)).toThrow(InvalidAgentRoleError);
+			expect(() => validateAgentRole({})).toThrow(InvalidAgentRoleError);
+			expect(() => validateAgentRole([])).toThrow(InvalidAgentRoleError);
+			expect(() => validateAgentRole(true)).toThrow(InvalidAgentRoleError);
+		});
+
+		it('error message includes the received value and caller context', () => {
+			try {
+				validateAgentRole(undefined, 'startTeamMember');
+				fail('should have thrown');
+			} catch (err) {
+				expect(err).toBeInstanceOf(InvalidAgentRoleError);
+				expect((err as Error).message).toContain('undefined');
+				expect((err as Error).message).toContain('startTeamMember');
+				expect((err as Error).message).toContain('config/roles/');
+			}
+		});
+
+		it('error message preserves the literal "undefined" string for diagnostic clarity', () => {
+			try {
+				validateAgentRole('undefined');
+				fail('should have thrown');
+			} catch (err) {
+				expect((err as Error).message).toContain('"undefined"');
+			}
+		});
+
+		it('InvalidAgentRoleError exposes the received value for downstream handling', () => {
+			const err = new InvalidAgentRoleError(42, 'unit-test');
+			expect(err.received).toBe(42);
+			expect(err.name).toBe('InvalidAgentRoleError');
+			expect(err instanceof Error).toBe(true);
+		});
+	});
+
+	describe('getPromptFileForRole (Bug #1 guard at path resolver)', () => {
+		it('resolves a valid role to config/roles/{role}/prompt.md', async () => {
+			const result = await (service as any).getPromptFileForRole('developer');
+			expect(result).toContain('config/roles/developer/prompt.md');
+		});
+
+		it('normalizes case and whitespace in role names', async () => {
+			const result = await (service as any).getPromptFileForRole('Team Leader');
+			expect(result).toContain('config/roles/team-leader/prompt.md');
+		});
+
+		it('throws InvalidAgentRoleError when role is undefined (was: silent fallback)', async () => {
+			await expect(
+				(service as any).getPromptFileForRole(undefined)
+			).rejects.toThrow(InvalidAgentRoleError);
+		});
+
+		it('throws InvalidAgentRoleError when role is the literal "undefined"', async () => {
+			await expect(
+				(service as any).getPromptFileForRole('undefined')
+			).rejects.toThrow(InvalidAgentRoleError);
+		});
+
+		it('throws InvalidAgentRoleError when role is empty', async () => {
+			await expect(
+				(service as any).getPromptFileForRole('')
+			).rejects.toThrow(InvalidAgentRoleError);
+		});
+	});
+
+	describe('createAgentSession role validation (Bug #1 fail-fast)', () => {
+		it('refuses to create a session when role is undefined', async () => {
+			const result = await service.createAgentSession({
+				sessionName: 'broken-session',
+				role: undefined as any,
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('Invalid agent role');
+			// Critically: tmux session should NEVER be created
+			expect(mockSessionHelper.createSession).not.toHaveBeenCalled();
+			// And CREWLY_ROLE env should NEVER be set with the bad value
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith(
+				expect.anything(),
+				expect.stringContaining('CREWLY_ROLE'),
+				expect.anything(),
+			);
+		});
+
+		it('refuses to create a session when role is the literal string "undefined"', async () => {
+			const result = await service.createAgentSession({
+				sessionName: 'broken-session',
+				role: 'undefined',
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('Invalid agent role');
+			expect(mockSessionHelper.createSession).not.toHaveBeenCalled();
+		});
+
+		it('refuses to create a session when role is empty', async () => {
+			const result = await service.createAgentSession({
+				sessionName: 'broken-session',
+				role: '',
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('Invalid agent role');
+		});
+
+		it('returns the failing sessionName so caller can correlate logs', async () => {
+			const result = await service.createAgentSession({
+				sessionName: 'broken-session-xyz',
+				role: undefined as any,
+			});
+
+			expect(result.sessionName).toBe('broken-session-xyz');
 		});
 	});
 });
