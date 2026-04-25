@@ -190,6 +190,23 @@ describe('Fts5SearchStrategy', () => {
     expect(results[0].document.id).toBe('fts-1');
   });
 
+  it('should preserve real createdAt/updatedAt from the candidate list (R2.2)', async () => {
+    // Pin an FTS5 hit that has a matching candidate with real dates.
+    mockFts5Search.mockReturnValue([
+      { id: 'doc-real', title: 'Old Doc', tags: '', content: 'hello', category: 'General', rank: -2 },
+    ]);
+
+    const realCreatedAt = '2020-01-01T00:00:00.000Z';
+    const candidate = makeDoc({ id: 'doc-real', createdAt: realCreatedAt, updatedAt: realCreatedAt });
+
+    const results = await strategy.search('q', [candidate]);
+    expect(results).toHaveLength(1);
+    // Must carry through real metadata, not "now" — otherwise temporal
+    // decay becomes a no-op for every FTS5 hit.
+    expect(results[0].document.createdAt).toBe(realCreatedAt);
+    expect(results[0].document.updatedAt).toBe(realCreatedAt);
+  });
+
   it('should fall back to keyword search when FTS5 returns no results', async () => {
     mockFts5Search.mockReturnValue([]);
     const docs = [makeDoc({ id: 'kw-1', title: 'Keyword Match' })];

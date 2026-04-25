@@ -203,26 +203,42 @@ export class Fts5SearchStrategy implements KnowledgeSearchStrategy {
         return this.fallback.search(query, documents);
       }
 
-      return results.map((r: FtsSearchResult) => ({
-        document: {
-          id: r.id,
-          title: r.title,
-          category: r.category,
-          tags: r.tags.split(',').map(t => t.trim()).filter(Boolean),
-          preview: r.content.slice(0, 200),
-          scope,
-          createdAt: new Date().toISOString(), // FTS5 doesn't store dates yet, default to now
-          updatedAt: new Date().toISOString(),
-          createdBy: 'system',
-          updatedBy: 'system',
-        },
-        // SQLite FTS5's bm25() returns a negative double where
-        // more-negative = more-relevant (e.g. -5 beats -1). Invert so
-        // higher = better to match the ScoredDocument convention used
-        // by every other strategy. Clamped at 0 in case the driver ever
-        // returns an unexpected positive rank.
-        score: Math.max(0, 100 - r.rank),
-      }));
+      // Join FTS5 hits against the candidate list (from listDocuments) so
+      // we carry real createdAt/updatedAt/createdBy through. Without this,
+      // every FTS5 result looks brand-new and bypasses temporal decay
+      // (#154) entirely — the decay runs on createdAt, so defaulting to
+      // Date.now() means every doc is treated as freshly-authored.
+      const now = new Date().toISOString();
+      const candidatesById = new Map(documents.map((d) => [d.id, d]));
+
+      return results.map((r: FtsSearchResult) => {
+        const candidate = candidatesById.get(r.id);
+        return {
+          document: {
+            id: r.id,
+            title: r.title,
+            category: r.category,
+            tags: r.tags.split(',').map((t) => t.trim()).filter(Boolean),
+            preview: r.content.slice(0, 200),
+            scope,
+            // Prefer the authoritative metadata from listDocuments; fall
+            // back to "now" only if the candidate list didn't include it
+            // (e.g., an indexed doc that was removed from listDocuments
+            // mid-flight). Docs missing from candidates simply bypass
+            // temporal decay, same as evergreen entries.
+            createdAt: candidate?.createdAt ?? now,
+            updatedAt: candidate?.updatedAt ?? now,
+            createdBy: candidate?.createdBy ?? 'system',
+            updatedBy: candidate?.updatedBy ?? 'system',
+          },
+          // SQLite FTS5's bm25() returns a negative double where
+          // more-negative = more-relevant (e.g. -5 beats -1). Invert so
+          // higher = better to match the ScoredDocument convention used
+          // by every other strategy. Clamped at 0 in case the driver ever
+          // returns an unexpected positive rank.
+          score: Math.max(0, 100 - r.rank),
+        };
+      });
     } catch (error) {
       this.logger.warn('FTS5 search failed, falling back to keyword search', {
         error: error instanceof Error ? error.message : String(error),
