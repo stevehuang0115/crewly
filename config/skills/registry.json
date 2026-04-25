@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-04-25T00:15:10.000Z",
+  "lastUpdated": "2026-02-22T23:57:06.027Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -491,67 +491,6 @@
           "git commit",
           "conventional commit",
           "commit changes"
-        ]
-      }
-    },
-    {
-      "id": "gmail",
-      "type": "skill",
-      "name": "Gmail Suite",
-      "description": "Multi-action Gmail skill for agents — list/read/search/send messages, manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope.",
-      "author": "Crewly Team",
-      "version": "1.1.0",
-      "category": "communication",
-      "tags": [
-        "email",
-        "gmail",
-        "google",
-        "communication",
-        "labels",
-        "modify"
-      ],
-      "license": "MIT",
-      "downloads": 0,
-      "rating": 0,
-      "createdAt": "2026-04-25T00:15:10.000Z",
-      "updatedAt": "2026-04-25T00:15:10.000Z",
-      "source": "config/skills/agent/marketplace/gmail",
-      "assets": {
-        "archive": "config/skills/agent/marketplace/gmail",
-        "checksum": "",
-        "sizeBytes": 59860
-      },
-      "metadata": {
-        "skillType": "claude-skill",
-        "assignableRoles": [
-          "generalist",
-          "support",
-          "sales",
-          "product-manager",
-          "developer",
-          "orchestrator",
-          "assistant"
-        ],
-        "triggers": [
-          "send an email",
-          "check my gmail",
-          "search emails",
-          "read email content",
-          "list recent messages",
-          "mark email as read",
-          "mark email as unread",
-          "add label to email",
-          "remove label from email",
-          "list gmail labels"
-        ],
-        "files": [
-          "skill.json",
-          "instructions.md",
-          "execute.sh",
-          "SKILL.md",
-          "execute.test.sh",
-          "execute.live.test.sh",
-          "mock-gmail-server.py"
         ]
       }
     },

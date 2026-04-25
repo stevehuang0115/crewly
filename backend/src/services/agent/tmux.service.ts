@@ -1,7 +1,6 @@
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
 import * as path from 'path';
-import { accessSync } from 'fs';
 import { SessionInfo, TeamMemberSessionConfig, TerminalOutput } from '../../types/index.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { TmuxCommandService } from './tmux-command.service.js';
@@ -79,7 +78,7 @@ export class TmuxService extends EventEmitter {
 		while (dir !== path.dirname(dir)) {
 			try {
 				const packagePath = path.join(dir, 'package.json');
-				accessSync(packagePath);
+				require('fs').accessSync(packagePath);
 				return dir;
 			} catch {
 				dir = path.dirname(dir);

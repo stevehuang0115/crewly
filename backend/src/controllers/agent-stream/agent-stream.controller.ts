@@ -9,24 +9,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { createRequire } from 'module';
 import { AgentStreamService, type AgentStreamEvent } from '../../services/agent/crewly-agent/agent-stream.service.js';
-
-/**
- * CJS-style `require` for the inline circular-dependency workaround in
- * `getStreamableSessions`. This file compiles to ESM (root package has
- * `"type": "module"`) where the bare `require` global is undefined.
- * Top-level ESM `import` would re-introduce the circular dependency,
- * so we keep the lazy load via createRequire.
- *
- * The `typeof require === 'function'` guard / `new Function` indirection
- * is the same pattern used in chat-db.ts / fts5-index.service.ts so this
- * file works under both ESM (production) and CJS (ts-jest tests).
- */
-const nodeRequire: NodeRequire =
-  typeof require === 'function'
-    ? require
-    : createRequire(new Function('return import.meta.url')() as string);
 
 /** SSE heartbeat interval in milliseconds to keep the connection alive */
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -111,7 +94,7 @@ export function streamAgentEvents(req: Request, res: Response): void {
  */
 export function getStreamableSessions(_req: Request, res: Response): void {
   // Import inline to avoid circular dependency
-  const { InProcessLogBuffer } = nodeRequire('../../services/agent/crewly-agent/in-process-log-buffer.js');
+  const { InProcessLogBuffer } = require('../../services/agent/crewly-agent/in-process-log-buffer.js');
   const buffer = InProcessLogBuffer.getInstance();
   const sessions = buffer.getSessionNames();
 

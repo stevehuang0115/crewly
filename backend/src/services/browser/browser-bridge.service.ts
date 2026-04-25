@@ -15,26 +15,8 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server as HttpServer } from 'http';
-import { createRequire } from 'module';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
-
-/**
- * CJS-style `require` for synchronous lookups of the
- * `BrowserRelayAdapter` (see `getStatus` / `isConnected` below). A
- * top-level ESM import would force the relay adapter to load eagerly
- * at module init time even when the relay isn't available; keeping
- * the lazy access avoids that.
- *
- * The `typeof require === 'function'` guard keeps ts-jest's CJS output
- * working without paying the createRequire cost there. The
- * `new Function` indirection avoids TS1343 on a literal `import.meta`
- * under CJS test transpilation.
- */
-const nodeRequire: NodeRequire =
-  typeof require === 'function'
-    ? require
-    : createRequire(new Function('return import.meta.url')() as string);
 
 /** Represents a connected Chrome Extension client */
 export interface BrowserClient {
@@ -337,7 +319,7 @@ export class BrowserBridgeService {
 
 		try {
 			// Dynamic import avoided — use synchronous check
-			const { BrowserRelayAdapter } = nodeRequire('./browser-relay-adapter.service.js');
+			const { BrowserRelayAdapter } = require('./browser-relay-adapter.service.js');
 			const adapter = BrowserRelayAdapter.getInstance() as {
 				isAvailable: () => boolean;
 				getExtensionDeviceId: () => string | null;
@@ -369,7 +351,7 @@ export class BrowserBridgeService {
 
 		// Check relay fallback
 		try {
-			const { BrowserRelayAdapter } = nodeRequire('./browser-relay-adapter.service.js');
+			const { BrowserRelayAdapter } = require('./browser-relay-adapter.service.js');
 			const adapter = BrowserRelayAdapter.getInstance() as {
 				isAvailable: () => boolean;
 			};
