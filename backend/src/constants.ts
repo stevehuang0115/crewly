@@ -87,6 +87,20 @@ export const BROWSER_BRIDGE_CONSTANTS = {
 	WS_PATH: '/ws/browser',
 	/** Default timeout for commands sent to Chrome Extension (ms) */
 	COMMAND_TIMEOUT_MS: 30000,
+	/**
+	 * Per-tab dispatch (1 agent : 1 tab) — see
+	 * `.crewly/specs/crewly-in-chrome-per-tab-fix-2026-04-25.md`.
+	 */
+	/** Hard cap on concurrent agent→tab bindings. POST /api/browser/bind returns 503 above this. */
+	TAB_BIND_HARD_CAP: 50,
+	/** Soft warning threshold — log + alert when crossed, but bind still succeeds. */
+	TAB_BIND_SOFT_WARN: 25,
+	/** Default TTL for an idle binding in minutes (configurable via CREWLY_TAB_BIND_TTL_MINUTES). */
+	TAB_BIND_TTL_MINUTES: 30,
+	/** Cadence of the orphan/TTL sweep timer in milliseconds. */
+	TAB_BIND_SWEEP_MS: 5 * 60 * 1000,
+	/** Default tabId on a 503 retry hint (milliseconds the skill should back off). */
+	TAB_BIND_RETRY_AFTER_MS: 30000,
 } as const;
 
 // Agent runtime types

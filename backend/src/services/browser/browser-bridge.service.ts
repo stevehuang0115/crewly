@@ -96,7 +96,53 @@ export interface BrowserBridgeStatus {
 	relayAvailable?: boolean;
 	/** Cloud device ID of the relay-connected Extension (null if not discovered) */
 	relayDeviceId?: string | null;
+	/** Number of currently active agent→tab bindings (per-tab dispatch). */
+	bindingCount?: number;
 }
+
+/**
+ * Per-tab dispatch (1 agent : 1 tab) — see
+ * `.crewly/specs/crewly-in-chrome-per-tab-fix-2026-04-25.md`.
+ *
+ * Each binding records which agentSession owns which Extension tab, plus
+ * a recency stamp used by the TTL sweep to evict idle bindings.
+ */
+export interface AgentTabBinding {
+	/** Owning agent session (`X-Agent-Session` header value). */
+	agentSession: string;
+	/** Chrome tab id this agent has been bound to. */
+	tabId: number;
+	/** Window id the tab lives in (tracked for cross-window heuristics). */
+	windowId?: number;
+	/** Wall-clock time when the binding was first established. */
+	boundAt: Date;
+	/** Wall-clock time of the last command that touched this binding. Reset on activity. */
+	lastActivityAt: Date;
+}
+
+/**
+ * Tab descriptor reported by the Extension during the post-reconnect
+ * inventory handshake (§4.4 Reconnect Reconciliation).
+ */
+export interface ExtensionTabDescriptor {
+	tabId: number;
+	url?: string;
+	title?: string;
+	windowId?: number;
+	/** True when the tab is in Crewly's tab group — only these are eligible for auto-close. */
+	crewlyOwned?: boolean;
+}
+
+/**
+ * Reasons a tab binding can disappear. Surfaced in logs/metrics so we
+ * can distinguish user-driven closes from sweep-driven evictions.
+ */
+export type AgentTabBindingRemovalReason =
+	| 'unbind'
+	| 'tab_removed'
+	| 'ttl_expired'
+	| 'reconcile_extension_missing'
+	| 'shutdown';
 
 /**
  * BrowserBridgeService manages WebSocket connections from the Crewly Chrome
@@ -111,6 +157,19 @@ export class BrowserBridgeService {
 	private clients: Map<string, BrowserClient> = new Map();
 	private pendingCommands: Map<string, PendingCommand> = new Map();
 	private commandCounter = 0;
+
+	/**
+	 * Per-agent tab bindings (per-tab dispatch §3.2). Keyed by `agentSession`
+	 * so each agent has at most one bound tab. Cleared on `unbindAgentTab`,
+	 * tab-removed events from the Extension, TTL expiry, or shutdown.
+	 */
+	private agentTabBindings: Map<string, AgentTabBinding> = new Map();
+
+	/** Periodic timer that evicts idle bindings (§4.2). Only running while attached. */
+	private sweepTimer: ReturnType<typeof setInterval> | null = null;
+
+	/** Last time we logged the soft-cap warning, used to throttle to once per sweep cycle. */
+	private softWarnLoggedAt: number = 0;
 
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('BrowserBridge');
@@ -230,6 +289,9 @@ export class BrowserBridgeService {
 			this.logger.error('WebSocket server error', { error: err.message });
 		});
 
+		// Begin per-tab binding TTL sweep — only useful once attached.
+		this.startSweepTimer();
+
 		this.logger.info('Crewly in Chrome WebSocket server attached', {
 			path: BROWSER_BRIDGE_CONSTANTS.WS_PATH,
 		});
@@ -251,6 +313,41 @@ export class BrowserBridgeService {
 				const client = this.clients.get(clientId);
 				if (client && client.ws.readyState === WebSocket.OPEN) {
 					client.ws.send(JSON.stringify({ type: 'pong' }));
+				}
+				return;
+			}
+
+			// Handle tab-removed event from the Extension (per-tab dispatch §4.3).
+			// User manually closed a Crewly tab, or Chrome reaped it — clear the binding.
+			if (msg.type === 'tabRemoved' && typeof msg.tabId === 'number') {
+				this.handleTabRemoved(msg.tabId);
+				return;
+			}
+
+			// Handle tab inventory from the Extension (§4.4 reconciliation handshake).
+			// Sent by the Extension after each WS connection is established.
+			if (msg.type === 'tabInventory' && Array.isArray(msg.tabs)) {
+				const tabs = (msg.tabs as ExtensionTabDescriptor[]).filter(
+					(t) => typeof t?.tabId === 'number'
+				);
+				const { orphans } = this.handleTabInventory(tabs);
+				// Ask the Extension to close orphan Crewly tabs. Best-effort —
+				// failures here only mean the tabs linger; users can close them.
+				const client = this.clients.get(clientId);
+				if (client && client.ws.readyState === WebSocket.OPEN) {
+					for (const tabId of orphans) {
+						try {
+							const id = `cmd-orphan-${++this.commandCounter}-${Date.now()}`;
+							client.ws.send(
+								JSON.stringify({ id, tool: 'unbindTab', params: { tabId } })
+							);
+						} catch (err) {
+							this.logger.warn('Failed to send orphan unbindTab', {
+								tabId,
+								error: (err as Error).message,
+							});
+						}
+					}
 				}
 				return;
 			}
@@ -327,6 +424,372 @@ export class BrowserBridgeService {
 		});
 	}
 
+	// -------------------------------------------------------------------------
+	// Per-tab dispatch (§3.2 — 1 agent : 1 tab binding)
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Look up the current binding for an agent session, if any. Read-only —
+	 * does NOT update `lastActivityAt`. Use `sendCommandForAgent` for the
+	 * activity-tracking lookup path.
+	 *
+	 * @param agentSession `X-Agent-Session` header value.
+	 * @returns The binding, or `undefined` if this agent has no bound tab.
+	 */
+	getBinding(agentSession: string): AgentTabBinding | undefined {
+		return this.agentTabBindings.get(agentSession);
+	}
+
+	/**
+	 * Snapshot the current bindings as a plain array — used by `GET
+	 * /api/browser/bindings` and by tests.
+	 */
+	listBindings(): AgentTabBinding[] {
+		return Array.from(this.agentTabBindings.values()).map((b) => ({ ...b }));
+	}
+
+	/**
+	 * Bind an agent to a fresh Chrome tab via the Extension. Idempotent: if
+	 * the agent already has a binding, return it instead of creating a new
+	 * tab (avoids tab leak when skill cache and backend disagree under
+	 * concurrent calls).
+	 *
+	 * @param agentSession Owning agent session.
+	 * @param opts.foreground Pass `active: true` to the Extension on create.
+	 *   Defaults to `false` so the user's foreground tab is never disturbed.
+	 * @param opts.timeoutMs Optional override for the create-tab WS round-trip.
+	 * @returns The (possibly pre-existing) binding.
+	 * @throws `Error` with a `tab_pool_full` cause when at hard cap.
+	 */
+	async bindAgentTab(
+		agentSession: string,
+		opts: { foreground?: boolean; timeoutMs?: number; agentName?: string } = {}
+	): Promise<AgentTabBinding> {
+		if (!agentSession) {
+			throw new Error('bindAgentTab requires a non-empty agentSession');
+		}
+
+		// Idempotent: existing binding short-circuits creation.
+		const existing = this.agentTabBindings.get(agentSession);
+		if (existing) {
+			existing.lastActivityAt = new Date();
+			return existing;
+		}
+
+		const cap = this.getTabPoolCap();
+		if (this.agentTabBindings.size >= cap) {
+			const err = new Error(
+				`tab_pool_full: ${this.agentTabBindings.size} bindings at hard cap ${cap}`
+			);
+			(err as Error & { code?: string }).code = 'tab_pool_full';
+			throw err;
+		}
+
+		const response = await this.sendCommand(
+			'bindTab',
+			{ active: opts.foreground === true },
+			opts.timeoutMs,
+			opts.agentName
+		);
+
+		if (!response.success) {
+			throw new Error(`Extension refused bindTab: ${response.error ?? 'unknown error'}`);
+		}
+
+		const result = (response.result ?? {}) as { tabId?: number; windowId?: number };
+		if (typeof result.tabId !== 'number') {
+			throw new Error('Extension bindTab response missing numeric tabId');
+		}
+
+		const binding: AgentTabBinding = {
+			agentSession,
+			tabId: result.tabId,
+			windowId: result.windowId,
+			boundAt: new Date(),
+			lastActivityAt: new Date(),
+		};
+		this.agentTabBindings.set(agentSession, binding);
+
+		this.maybeWarnSoftCap();
+
+		this.logger.info('Agent tab bound', {
+			agentSession,
+			tabId: binding.tabId,
+			windowId: binding.windowId,
+			bindingCount: this.agentTabBindings.size,
+		});
+
+		return { ...binding };
+	}
+
+	/**
+	 * Release an agent's bound tab. Optionally instruct the Extension to
+	 * close the tab as well (default: true). Safe to call when no binding
+	 * exists — returns `{ released: false, tabClosed: false }` instead of
+	 * throwing.
+	 */
+	async unbindAgentTab(
+		agentSession: string,
+		opts: { closeTab?: boolean; reason?: AgentTabBindingRemovalReason; timeoutMs?: number } = {}
+	): Promise<{ released: boolean; tabClosed: boolean }> {
+		const closeTab = opts.closeTab !== false;
+		const binding = this.agentTabBindings.get(agentSession);
+		if (!binding) {
+			return { released: false, tabClosed: false };
+		}
+
+		this.agentTabBindings.delete(agentSession);
+
+		let tabClosed = false;
+		if (closeTab) {
+			try {
+				const resp = await this.sendCommand(
+					'unbindTab',
+					{ tabId: binding.tabId },
+					opts.timeoutMs
+				);
+				tabClosed = resp.success === true;
+			} catch (err) {
+				// Non-fatal — Extension may be offline or tab already gone. Log and move on.
+				this.logger.warn('unbindTab Extension call failed (binding still cleared)', {
+					agentSession,
+					tabId: binding.tabId,
+					error: (err as Error).message,
+				});
+			}
+		}
+
+		this.logger.info('Agent tab unbound', {
+			agentSession,
+			tabId: binding.tabId,
+			reason: opts.reason ?? 'unbind',
+			tabClosed,
+			bindingCount: this.agentTabBindings.size,
+		});
+
+		return { released: true, tabClosed };
+	}
+
+	/**
+	 * Send a command on behalf of an agent. Resolution priority (matches §4.2):
+	 *
+	 *   1. Explicit `tabId` in `params` — used as-is, NO ownership check
+	 *      (legacy testing/debug only; controller layer is responsible for
+	 *      enforcing cross-agent ownership rules before reaching here).
+	 *   2. `agentSession` provided AND has a binding — inject bound tabId,
+	 *      bump `lastActivityAt`.
+	 *   3. `agentSession` provided AND no binding — auto-bind first, then
+	 *      forward the original command with the new tabId.
+	 *   4. No `agentSession` — pass through to plain `sendCommand` (active-tab
+	 *      fallback in Extension, preserving backward compat).
+	 *
+	 * @param agentSession Owning agent session, or `undefined` for legacy fallback.
+	 * @param tool Tool name (e.g. `navigate`, `read-text`).
+	 * @param params Tool params; if it contains `tabId` we treat as explicit override.
+	 * @param timeoutMs Optional command timeout.
+	 * @param agentName Optional agent name for the Extension banner.
+	 */
+	async sendCommandForAgent(
+		agentSession: string | undefined,
+		tool: string,
+		params?: Record<string, unknown>,
+		timeoutMs?: number,
+		agentName?: string
+	): Promise<BrowserCommandResponse> {
+		// Path 1: explicit tabId override — pass through, log so it's auditable.
+		if (params && typeof (params as { tabId?: unknown }).tabId === 'number') {
+			this.logger.debug('sendCommandForAgent: explicit tabId override', {
+				agentSession,
+				tabId: (params as { tabId?: number }).tabId,
+				tool,
+			});
+			return this.sendCommand(tool, params, timeoutMs, agentName);
+		}
+
+		// Path 4: no agent session — legacy active-tab path.
+		if (!agentSession) {
+			return this.sendCommand(tool, params, timeoutMs, agentName);
+		}
+
+		// Path 2 / 3: resolve binding, auto-bind on miss.
+		let binding = this.agentTabBindings.get(agentSession);
+		if (!binding) {
+			binding = await this.bindAgentTab(agentSession, { agentName, timeoutMs });
+		}
+
+		binding.lastActivityAt = new Date();
+
+		const merged: Record<string, unknown> = { ...(params ?? {}), tabId: binding.tabId };
+		return this.sendCommand(tool, merged, timeoutMs, agentName);
+	}
+
+	/**
+	 * Handle a `tabRemoved` event from the Extension (§4.3 — fires when
+	 * the user manually closes a Crewly tab or when Chrome reaps it).
+	 * Idempotent: tabs not in any binding are ignored.
+	 */
+	handleTabRemoved(tabId: number): void {
+		for (const [agentSession, binding] of this.agentTabBindings) {
+			if (binding.tabId === tabId) {
+				this.agentTabBindings.delete(agentSession);
+				this.logger.info('Binding cleared (tab closed in Extension)', {
+					agentSession,
+					tabId,
+					reason: 'tab_removed',
+					bindingCount: this.agentTabBindings.size,
+				});
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Reconcile bindings against the Extension's current tab inventory
+	 * (§4.4). Called whenever a fresh WS connection completes the post-
+	 * reconnect handshake.
+	 *
+	 * - For each backend binding whose tabId no longer exists in the
+	 *   Extension → drop the binding (`reconcile_extension_missing`).
+	 * - For each Extension tab that is Crewly-owned but unknown to any
+	 *   binding → ask the Extension to close it (orphan cleanup).
+	 *
+	 * Caller is responsible for actually sending the close commands; this
+	 * method returns the orphan list rather than firing `unbindTab` itself
+	 * to keep the function pure-ish and easier to test.
+	 *
+	 * @returns Orphan tabs the caller should close.
+	 */
+	handleTabInventory(extensionTabs: ExtensionTabDescriptor[]): { orphans: number[] } {
+		const extensionTabIds = new Set(
+			extensionTabs.filter((t) => typeof t.tabId === 'number').map((t) => t.tabId)
+		);
+		const boundTabIds = new Set(
+			Array.from(this.agentTabBindings.values()).map((b) => b.tabId)
+		);
+
+		// Drop stale bindings.
+		for (const [agentSession, binding] of this.agentTabBindings) {
+			if (!extensionTabIds.has(binding.tabId)) {
+				this.agentTabBindings.delete(agentSession);
+				this.logger.info('Binding cleared (tab missing from Extension inventory)', {
+					agentSession,
+					tabId: binding.tabId,
+					reason: 'reconcile_extension_missing',
+				});
+			}
+		}
+
+		// Identify Crewly-owned orphans (tabs in Crewly group with no binding).
+		const orphans: number[] = [];
+		for (const tab of extensionTabs) {
+			if (typeof tab.tabId !== 'number') continue;
+			if (!tab.crewlyOwned) continue; // never auto-close user's regular tabs
+			if (!boundTabIds.has(tab.tabId)) {
+				orphans.push(tab.tabId);
+			}
+		}
+
+		if (orphans.length > 0) {
+			this.logger.info('Reconcile found Crewly-owned orphan tabs', {
+				orphanCount: orphans.length,
+				orphanTabIds: orphans,
+			});
+		}
+
+		return { orphans };
+	}
+
+	/** Effective hard cap, allowing env override `CREWLY_TAB_BIND_MAX`. */
+	private getTabPoolCap(): number {
+		const raw = process.env['CREWLY_TAB_BIND_MAX'];
+		if (raw) {
+			const n = Number.parseInt(raw, 10);
+			if (Number.isFinite(n) && n > 0) return n;
+		}
+		return BROWSER_BRIDGE_CONSTANTS.TAB_BIND_HARD_CAP;
+	}
+
+	/** Effective TTL in ms, allowing env override `CREWLY_TAB_BIND_TTL_MINUTES`. */
+	private getTabBindingTtlMs(): number {
+		const raw = process.env['CREWLY_TAB_BIND_TTL_MINUTES'];
+		const minutes =
+			raw && Number.isFinite(Number.parseFloat(raw)) && Number.parseFloat(raw) > 0
+				? Number.parseFloat(raw)
+				: BROWSER_BRIDGE_CONSTANTS.TAB_BIND_TTL_MINUTES;
+		return minutes * 60 * 1000;
+	}
+
+	/**
+	 * Soft warning ping when bindings cross the warn threshold. Throttled
+	 * to once per sweep cycle so we don't flood the logs during a burst.
+	 */
+	private maybeWarnSoftCap(): void {
+		if (this.agentTabBindings.size < BROWSER_BRIDGE_CONSTANTS.TAB_BIND_SOFT_WARN) return;
+		const now = Date.now();
+		if (now - this.softWarnLoggedAt < BROWSER_BRIDGE_CONSTANTS.TAB_BIND_SWEEP_MS) return;
+		this.softWarnLoggedAt = now;
+		this.logger.warn('Browser bindings crossed soft warn threshold', {
+			bindingCount: this.agentTabBindings.size,
+			softWarnAt: BROWSER_BRIDGE_CONSTANTS.TAB_BIND_SOFT_WARN,
+			hardCap: this.getTabPoolCap(),
+		});
+	}
+
+	/**
+	 * Run the TTL sweep once. Idle bindings (`lastActivityAt + TTL < now`)
+	 * are removed. Sends `unbindTab` to the Extension when a client is
+	 * connected, but never fails the sweep on Extension errors.
+	 *
+	 * Exported via `runSweepOnce` for tests so we don't have to advance
+	 * fake timers across the full 5-minute interval.
+	 *
+	 * @returns Number of bindings evicted in this pass.
+	 */
+	async runSweepOnce(): Promise<number> {
+		const ttlMs = this.getTabBindingTtlMs();
+		const now = Date.now();
+		const expired: Array<{ agentSession: string; tabId: number }> = [];
+		for (const [agentSession, binding] of this.agentTabBindings) {
+			if (now - binding.lastActivityAt.getTime() > ttlMs) {
+				expired.push({ agentSession, tabId: binding.tabId });
+			}
+		}
+
+		for (const { agentSession } of expired) {
+			await this.unbindAgentTab(agentSession, {
+				closeTab: true,
+				reason: 'ttl_expired',
+			}).catch((err: unknown) => {
+				this.logger.warn('Sweep unbind failed (binding still removed)', {
+					agentSession,
+					error: (err as Error).message,
+				});
+			});
+		}
+
+		return expired.length;
+	}
+
+	private startSweepTimer(): void {
+		if (this.sweepTimer) return;
+		this.sweepTimer = setInterval(() => {
+			this.runSweepOnce().catch((err: unknown) => {
+				this.logger.error('TTL sweep crashed', { error: (err as Error).message });
+			});
+		}, BROWSER_BRIDGE_CONSTANTS.TAB_BIND_SWEEP_MS);
+		// Don't keep the event loop alive solely for the sweep timer.
+		if (typeof this.sweepTimer.unref === 'function') {
+			this.sweepTimer.unref();
+		}
+	}
+
+	private stopSweepTimer(): void {
+		if (this.sweepTimer) {
+			clearInterval(this.sweepTimer);
+			this.sweepTimer = null;
+		}
+	}
+
 	/**
 	 * Get the current bridge status, including relay availability.
 	 *
@@ -356,6 +819,7 @@ export class BrowserBridgeService {
 			wsPath: BROWSER_BRIDGE_CONSTANTS.WS_PATH,
 			relayAvailable,
 			relayDeviceId,
+			bindingCount: this.agentTabBindings.size,
 		};
 	}
 
@@ -401,6 +865,19 @@ export class BrowserBridgeService {
 	 * Shut down the WebSocket server and disconnect all clients.
 	 */
 	stop(): void {
+		// Stop the per-tab binding TTL sweep before tearing down state.
+		this.stopSweepTimer();
+
+		// Clear pending agent→tab bindings without sending unbindTab to the
+		// Extension — process is exiting; orphan cleanup happens on next
+		// reconnect handshake (§4.4) instead.
+		if (this.agentTabBindings.size > 0) {
+			this.logger.info('Bridge shutting down with active bindings', {
+				bindingCount: this.agentTabBindings.size,
+			});
+			this.agentTabBindings.clear();
+		}
+
 		// Clear all pending commands
 		for (const [id, pending] of this.pendingCommands) {
 			clearTimeout(pending.timer);
