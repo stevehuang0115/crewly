@@ -62,6 +62,52 @@ describe('channelFromDTO', () => {
     };
     expect(channelFromDTO(dto).lastMessageAt).toBeUndefined();
   });
+
+  // Phase B (SEALED §3.1) — Slack-like channel fields.
+  it('preserves Phase B `type` + `teamId` on team channels', () => {
+    const dto: ChannelDTO = {
+      id: 'ch-product-general',
+      agentSession: '',
+      name: 'general',
+      createdAt: 0,
+      agentPresence: { status: 'offline', lastSeenAt: null },
+      type: 'channel',
+      teamId: 'team-product',
+      projectId: 'proj-onboarding',
+    };
+    const ch = channelFromDTO(dto);
+    expect(ch.type).toBe('channel');
+    expect(ch.teamId).toBe('team-product');
+    expect(ch.projectId).toBe('proj-onboarding');
+    expect(ch.targetMemberId).toBeUndefined();
+  });
+
+  it('defaults legacy DTOs without `type` to `dm` for backwards-compat', () => {
+    const dto: ChannelDTO = {
+      id: 'ch-legacy',
+      agentSession: 'crewly-product-sam',
+      name: 'Sam',
+      createdAt: 0,
+      agentPresence: { status: 'online', lastSeenAt: null },
+    };
+    expect(channelFromDTO(dto).type).toBe('dm');
+  });
+
+  it('round-trips DM channel fields including targetMemberId', () => {
+    const dto: ChannelDTO = {
+      id: 'ch-sam',
+      agentSession: 'crewly-product-sam',
+      name: 'Sam',
+      createdAt: 0,
+      agentPresence: { status: 'online', lastSeenAt: null },
+      type: 'dm',
+      targetMemberId: 'member-sam',
+    };
+    const ch = channelFromDTO(dto);
+    expect(ch.type).toBe('dm');
+    expect(ch.targetMemberId).toBe('member-sam');
+    expect(ch.teamId).toBeUndefined();
+  });
 });
 
 describe('messageFromDTO', () => {
@@ -100,6 +146,62 @@ describe('messageFromDTO', () => {
       attachments: [],
     };
     expect(messageFromDTO(dto).author.name).toBe('System');
+  });
+
+  // Phase B (SEALED §3.2) — mention array invariants.
+  it('preserves a mentions array verbatim through translation', () => {
+    const dto: MessageDTO = {
+      id: 'msg-mentioned',
+      channelId: 'ch-1',
+      seq: 5,
+      senderType: 'user',
+      senderId: 'demo-user',
+      content: '@team-product help',
+      contentType: 'markdown',
+      createdAt: 0,
+      attachments: [],
+      mentions: ['team-product', 'agent-sam'],
+    };
+    expect(messageFromDTO(dto).mentions).toEqual(['team-product', 'agent-sam']);
+  });
+
+  it('defaults mentions to [] when the wire field is absent or non-array', () => {
+    const noMentions: MessageDTO = {
+      id: 'msg-1',
+      channelId: 'ch-1',
+      seq: 1,
+      senderType: 'user',
+      senderId: 'demo-user',
+      content: 'hi',
+      contentType: 'markdown',
+      createdAt: 0,
+      attachments: [],
+    };
+    expect(messageFromDTO(noMentions).mentions).toEqual([]);
+
+    // Defensive: a malformed payload (mentions is null) still surfaces []
+    // so domain consumers can rely on `m.mentions.length` without checks.
+    const wrongShape: MessageDTO = {
+      ...noMentions,
+      mentions: null as unknown as string[],
+    };
+    expect(messageFromDTO(wrongShape).mentions).toEqual([]);
+  });
+
+  it('preserves threadId for threaded reply messages', () => {
+    const dto: MessageDTO = {
+      id: 'msg-reply',
+      channelId: 'ch-1',
+      seq: 6,
+      senderType: 'user',
+      senderId: 'demo-user',
+      content: 'in-thread',
+      contentType: 'markdown',
+      createdAt: 0,
+      attachments: [],
+      threadId: 'msg-root',
+    };
+    expect(messageFromDTO(dto).threadId).toBe('msg-root');
   });
 
   it('maps attachments into their UI shape', () => {

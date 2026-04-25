@@ -67,13 +67,18 @@ export class MockChatApiClient implements ChatApiClient {
   }
 
   async createChannel(input: CreateChannelInput): Promise<Channel> {
+    const type = input.type ?? 'dm';
     const ch: Channel = {
       id: this.nextId('ch'),
-      agentSession: input.agentSession,
+      agentSession: type === 'dm' ? input.agentSession ?? '' : '',
       name: input.name,
       purpose: input.purpose,
       createdAt: new Date().toISOString(),
       presence: 'online',
+      type,
+      teamId: input.teamId,
+      projectId: input.projectId,
+      targetMemberId: input.targetMemberId,
     };
     this.channels = [...this.channels, ch];
     this.messages[ch.id] = [];
@@ -97,6 +102,12 @@ export class MockChatApiClient implements ChatApiClient {
 
     const clientMessageId = input.clientMessageId ?? this.nextId('cmid');
 
+    // Phase B — preserve mentions + threadId on the round-trip so mock
+    // and HTTP clients have identical lifecycle semantics. `mentions` is
+    // always `string[]` on domain Messages (never null) per SEALED §3.2.
+    const mentions = input.mentions ?? [];
+    const threadId = input.threadId;
+
     // 1. Optimistic pending — fire before "persistence" so subscribers see
     //    the same lifecycle the HTTP client produces.
     const pending: Message = {
@@ -109,6 +120,8 @@ export class MockChatApiClient implements ChatApiClient {
       createdAt: new Date().toISOString(),
       clientMessageId,
       deliveryStatus: 'pending',
+      mentions,
+      threadId,
     };
     this.emit(channelId, { type: 'message', channelId, message: pending });
 
@@ -123,6 +136,8 @@ export class MockChatApiClient implements ChatApiClient {
       createdAt: pending.createdAt,
       clientMessageId,
       deliveryStatus: 'sent',
+      mentions,
+      threadId,
     };
     (this.messages[channelId] ||= []).push(confirmed);
     this.emit(channelId, { type: 'message', channelId, message: confirmed });
@@ -137,6 +152,9 @@ export class MockChatApiClient implements ChatApiClient {
         content: `(mock reply) you said: "${input.content}"`,
         createdAt: new Date().toISOString(),
         deliveryStatus: 'sent',
+        mentions: [],
+        // Echo the same thread root so the mock thread pane stays consistent.
+        threadId,
       };
       (this.messages[channelId] ||= []).push(reply);
       this.emit(channelId, { type: 'message', channelId, message: reply });
@@ -194,6 +212,7 @@ function seedChannels(): Channel[] {
       createdAt: now,
       lastMessageAt: now,
       presence: 'online',
+      type: 'dm',
     },
     {
       id: 'ch-sam',
@@ -203,6 +222,7 @@ function seedChannels(): Channel[] {
       createdAt: now,
       lastMessageAt: now,
       presence: 'busy',
+      type: 'dm',
     },
     {
       id: 'ch-offline',
@@ -211,6 +231,7 @@ function seedChannels(): Channel[] {
       purpose: 'Shows the offline state',
       createdAt: now,
       presence: 'offline',
+      type: 'dm',
     },
   ];
 }
@@ -226,6 +247,9 @@ function seedMessages(channels: Channel[]): Record<string, Message[]> {
         author: { role: 'agent', id: ch.agentSession, name: ch.name },
         content: `Welcome — I'm **${ch.name.split('·')[0]?.trim() ?? ch.name}**. Ask me anything.`,
         createdAt: ch.createdAt,
+        // Phase B — `mentions: string[]` is required on domain Message;
+        // seeded with empty array since the welcome message has none.
+        mentions: [],
       },
     ];
   }

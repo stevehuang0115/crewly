@@ -326,7 +326,17 @@ export class HttpChatApiClient implements ChatApiClient {
     const optimistic = this.buildOptimisticMessage(channelId, input, clientMessageId);
     this.emitLocal(channelId, { type: 'message', channelId, message: optimistic });
 
-    const wire = {
+    // Phase B (SEALED §3.2) — forward `mentions` + `threadId`. The BE
+    // service validates: cross-channel threadId → 400, mention-count > 50
+    // → 400, mentions JSON > 1KB → 413. We surface those errors via the
+    // standard `ChatApiError` envelope below.
+    const wire: {
+      content: string;
+      contentType: 'markdown';
+      clientMessageId: string;
+      mentions?: string[];
+      threadId?: string;
+    } = {
       content: input.content,
       contentType: 'markdown' as const,
       clientMessageId,
@@ -334,6 +344,12 @@ export class HttpChatApiClient implements ChatApiClient {
       // (orchestrator decision 2026-04-24). Forwarding nothing avoids
       // round-tripping a known-bad payload until that endpoint lands.
     };
+    if (input.mentions && input.mentions.length > 0) {
+      wire.mentions = input.mentions;
+    }
+    if (input.threadId) {
+      wire.threadId = input.threadId;
+    }
 
     let dto: MessageDTO;
     try {
@@ -425,6 +441,11 @@ export class HttpChatApiClient implements ChatApiClient {
       createdAt: new Date(this.now()).toISOString(),
       clientMessageId,
       deliveryStatus: 'pending',
+      // Phase B — preserve the composer's mention/thread payload on the
+      // optimistic record so the timeline renders the same chips/thread
+      // affordance immediately, before the server echo reconciles.
+      mentions: input.mentions ?? [],
+      threadId: input.threadId,
     };
   }
 

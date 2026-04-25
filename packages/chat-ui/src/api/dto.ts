@@ -50,6 +50,18 @@ export interface ChannelDTO {
   lastMessageAt?: number | null;
   agentPresence: ChannelPresenceDTO;
   queuedCount?: number;
+  /**
+   * Phase B (SEALED §3.1) — `'dm'` (legacy default) or `'channel'`
+   * (team-scoped surfaces). Required field on the wire from Phase B
+   * onward; legacy callers that omit it are treated as `'dm'`.
+   */
+  type?: 'dm' | 'channel';
+  /** Phase B — team workspace ID; required when `type='channel'`. */
+  teamId?: string;
+  /** Phase B — project link; optional even when `type='channel'`. */
+  projectId?: string;
+  /** Phase B — for `type='dm'`, the target member's id. */
+  targetMemberId?: string;
 }
 
 /** Wire shape for messages. */
@@ -64,6 +76,19 @@ export interface MessageDTO {
   createdAt: number;
   attachments: AttachmentDTO[];
   metadata?: Record<string, unknown>;
+  /**
+   * Phase B (SEALED §3.2) — array of mention IDs (member or team) in
+   * `content`. The BE service guarantees `mentions: string[]` (never
+   * null) on the wire; the translator below preserves that invariant
+   * by defaulting to `[]` when the field is missing on legacy / mock
+   * payloads.
+   */
+  mentions?: string[];
+  /**
+   * Phase B (SEALED §3.2) — Slack-style thread root. Present when this
+   * message is a reply within a thread; consumers group by `threadId`.
+   */
+  threadId?: string;
 }
 
 /** Wire shape for attachments (Phase 1 image only). */
@@ -168,6 +193,12 @@ export function channelFromDTO(dto: ChannelDTO): Channel {
     createdAt: new Date(dto.createdAt).toISOString(),
     lastMessageAt: msToIso(dto.lastMessageAt),
     presence: translatePresence(dto.agentPresence.status),
+    // Phase B — Slack-like fields. Default `type` to `'dm'` so legacy
+    // (pre-Phase B) BE payloads continue to render as DMs.
+    type: dto.type ?? 'dm',
+    teamId: dto.teamId,
+    projectId: dto.projectId,
+    targetMemberId: dto.targetMemberId,
   };
 }
 
@@ -199,6 +230,11 @@ export function messageFromDTO(dto: MessageDTO): Message {
     clientMessageId: extractClientMessageId(dto.metadata),
     // Freshly-persisted messages from the server are implicitly `sent`.
     deliveryStatus: 'sent',
+    // Phase B (SEALED §3.2) — `mentions` is `string[]` on the wire and
+    // never null; default to `[]` defensively if a legacy / mock payload
+    // omits the field, so domain consumers can rely on `m.mentions`.
+    mentions: Array.isArray(dto.mentions) ? dto.mentions : [],
+    threadId: dto.threadId,
   };
 }
 
