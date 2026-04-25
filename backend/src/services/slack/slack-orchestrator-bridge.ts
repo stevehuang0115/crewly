@@ -803,6 +803,17 @@ Just type naturally to chat with the orchestrator!`;
    * delivers it to the Auditor PTY instead of the orchestrator. Includes Slack
    * context (channel, thread) so the Auditor can respond.
    *
+   * **Thread file enrichment (parity with `sendToOrchestrator` ~line 712):**
+   * When a `threadStore` and Slack `context` are available, the enriched
+   * message also carries a `[Thread context file: <path>]` line. Without
+   * this, the Auditor receives only the bare `[SLACK_CONTEXT:...]` prefix
+   * and cannot read prior thread history, causing context-blind replies.
+   * This is the bug Steve hit on 2026-04-25 (StevesPrompt deploy thread):
+   * orchestrator dropped, Slack fell through here, Auditor responded with
+   * "I cannot see the rest of the conversation" because the thread file
+   * pointer was missing. Bringing the enrichment in line with the
+   * orchestrator path closes the gap.
+   *
    * @param message - Original user message
    * @param context - Slack conversation context
    * @returns Acknowledgement message to the user
@@ -817,7 +828,14 @@ Just type naturally to chat with the orchestrator!`;
     const slackPrefix = context
       ? `[SLACK_CONTEXT:channelId=${context.channelId},threadTs=${context.threadTs || ''}]`
       : '';
-    const enrichedMessage = `${slackPrefix} [FALLBACK] Orchestrator is offline. User message:\n${message}`;
+    let enrichedMessage = `${slackPrefix} [FALLBACK] Orchestrator is offline. User message:\n${message}`;
+    if (this.threadStore && context) {
+      const threadFilePath = this.threadStore.getThreadFilePath(
+        context.channelId,
+        context.threadTs,
+      );
+      enrichedMessage += `\n\n[Thread context file: ${threadFilePath}]`;
+    }
 
     // Try to enqueue via the message queue (same path as orchestrator delivery)
     if (this.messageQueueService) {
