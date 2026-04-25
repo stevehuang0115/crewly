@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { LoggerService, ComponentLogger } from './logger.service.js';
 
 export interface AppConfig {
@@ -220,7 +220,7 @@ export class ConfigService {
 				return defaultConfig;
 			}
 
-			const fileContent = require('fs').readFileSync(this.configPath, 'utf-8');
+			const fileContent = readFileSync(this.configPath, 'utf-8');
 			const fileConfig = JSON.parse(fileContent);
 
 			// Deep merge with defaults
@@ -352,7 +352,7 @@ export class ConfigService {
 			memoryUsage: process.memoryUsage(),
 			configPath: this.configPath,
 			configLastModified: existsSync(this.configPath)
-				? require('fs').statSync(this.configPath).mtime
+				? statSync(this.configPath).mtime
 				: null,
 		};
 	}

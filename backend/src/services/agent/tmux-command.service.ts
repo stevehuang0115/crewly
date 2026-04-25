@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
+import { accessSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SessionInfo } from '../../types/index.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
@@ -58,7 +59,7 @@ export class TmuxCommandService {
 		while (dir !== path.dirname(dir)) {
 			try {
 				const packagePath = path.join(dir, 'package.json');
-				require('fs').accessSync(packagePath);
+				accessSync(packagePath);
 				return dir;
 			} catch {
 				dir = path.dirname(dir);
