@@ -36,6 +36,9 @@ import {
 	searchText,
 	listOptions,
 	setFileInput,
+	bindTab,
+	unbindTab,
+	getBindings,
 } from './browser.controller.js';
 
 /**
@@ -123,6 +126,14 @@ export function createBrowserRouter(): Router {
 
 	// POST /api/browser/set-file-input — set files on file input via CDP
 	router.post('/set-file-input', setFileInput);
+
+	// ----- Per-tab dispatch (§4.2) -----
+	// POST /api/browser/bind — bind a fresh tab for the calling agent
+	router.post('/bind', bindTab);
+	// POST /api/browser/unbind — release the calling agent's bound tab
+	router.post('/unbind', unbindTab);
+	// GET /api/browser/bindings — diagnostic snapshot of all agent→tab bindings
+	router.get('/bindings', getBindings);
 
 	return router;
 }

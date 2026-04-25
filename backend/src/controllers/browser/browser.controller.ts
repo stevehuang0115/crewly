@@ -12,6 +12,7 @@ import type { Request, Response } from 'express';
 import { BrowserBridgeService } from '../../services/browser/browser-bridge.service.js';
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
+import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
 
 /**
  * GET /api/browser/status
@@ -153,12 +154,76 @@ function extractAgentName(req: Request): string | undefined {
 }
 
 /**
+ * Extract the agent session id from headers/body (`X-Agent-Session` or
+ * `agentSession` body field). Used to look up per-tab bindings.
+ *
+ * @param req Express request
+ * @returns The session string when present, else `undefined`
+ */
+function extractAgentSession(req: Request): string | undefined {
+	const fromHeader = req.headers['x-agent-session'];
+	if (typeof fromHeader === 'string' && fromHeader.length > 0) return fromHeader;
+	const fromBody = (req.body as { agentSession?: unknown } | undefined)?.agentSession;
+	if (typeof fromBody === 'string' && fromBody.length > 0) return fromBody;
+	return undefined;
+}
+
+/**
+ * Cross-agent ownership guard for the explicit `tabId` override path.
+ *
+ * Per spec §13.5: if a request supplies an explicit `tabId` that is bound
+ * to a DIFFERENT agentSession, reject with 403. Without this check an agent
+ * could forge a tabId in body and steal another agent's tab. We check the
+ * raw `req.body.tabId` (not the per-handler `params`) because individual
+ * handlers may strip or rename fields when projecting body → params.
+ *
+ * Returns the validated tabId so callers can fold it into params after
+ * the check passes.
+ *
+ * @returns `{ ok: true, tabId? }` when the request should proceed (tabId
+ *   present and owned, or absent). `{ ok: false }` when the response has
+ *   been written with a 403 — caller should return.
+ */
+function resolveAndAuthorizeTabId(
+	bridge: BrowserBridgeService,
+	agentSession: string | undefined,
+	req: Request,
+	res: Response
+): { ok: true; tabId?: number } | { ok: false } {
+	const raw = (req.body as { tabId?: unknown } | undefined)?.tabId;
+	if (raw === undefined || raw === null) return { ok: true };
+	if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+		// Non-numeric tabId in body — silently ignore (best-effort, matches
+		// pre-M2 behaviour of forwarding the body verbatim).
+		return { ok: true };
+	}
+
+	for (const binding of bridge.listBindings()) {
+		if (binding.tabId === raw && binding.agentSession !== agentSession) {
+			res.status(403).json({
+				success: false,
+				error: 'tab_owned_by_other_agent',
+				details: `tabId ${raw} is bound to a different agent session`,
+			});
+			return { ok: false };
+		}
+	}
+	return { ok: true, tabId: raw };
+}
+
+/**
  * Helper: send a tool command to the Chrome Extension and return the result.
  *
  * Tries three paths in order:
- * 1. Direct WebSocket (BrowserBridgeService) — fastest
- * 2. Browser Proxy (BrowserProxyService via Cloud Relay relay_to) — supports multi-instance
- * 3. Legacy relay adapter (BrowserRelayAdapter via CloudSync HTTP queue) — fallback
+ * 1. Direct WebSocket (BrowserBridgeService) — fastest. When the request
+ *    carries an `X-Agent-Session` header (or body.agentSession), routing
+ *    flows through `BrowserBridgeService.sendCommandForAgent`, which auto-
+ *    binds a fresh tab on first use and injects the bound `tabId` on every
+ *    subsequent command. See §3.2 / §4.2 of the per-tab fix spec.
+ * 2. Browser Proxy (BrowserProxyService via Cloud Relay relay_to) — supports
+ *    multi-instance. NOT yet per-tab aware (deferred to v2).
+ * 3. Legacy relay adapter (BrowserRelayAdapter via CloudSync HTTP queue) —
+ *    fallback. Same deferral as Path 2.
  *
  * Supports `?instance=` query param for targeting a specific browser instance.
  *
@@ -179,6 +244,17 @@ async function sendToolCommand(
 	const proxy = BrowserProxyService.getInstance();
 	const instance = resolveInstanceParam(req);
 	const agentName = extractAgentName(req);
+	const agentSession = extractAgentSession(req);
+
+	// Per-tab ownership: explicit `tabId` in body must belong to this agent.
+	// When the check passes and a tabId was present, fold it into params so
+	// the bridge sees the override (handlers commonly strip body fields when
+	// projecting body → params).
+	const tabIdAuth = resolveAndAuthorizeTabId(bridge, agentSession, req, res);
+	if (!tabIdAuth.ok) return;
+	if (tabIdAuth.tabId !== undefined) {
+		params = { ...(params ?? {}), tabId: tabIdAuth.tabId };
+	}
 
 	// Collect errors from each path for diagnostics if all fail
 	const errors: string[] = [];
@@ -195,10 +271,13 @@ async function sendToolCommand(
 		}
 	}
 
-	// Path 2: Direct WebSocket connection (fastest, no instance routing)
+	// Path 2: Direct WebSocket connection (fastest, no instance routing).
+	// Per-tab dispatch flows through here when an agentSession is present.
 	if (bridge.isConnected()) {
 		try {
-			const result = await bridge.sendCommand(tool, params, timeoutMs, agentName);
+			const result = agentSession
+				? await bridge.sendCommandForAgent(agentSession, tool, params, timeoutMs, agentName)
+				: await bridge.sendCommand(tool, params, timeoutMs, agentName);
 			res.json(result);
 			return;
 		} catch (err) {
@@ -494,4 +573,140 @@ export async function listOptions(req: Request, res: Response): Promise<void> {
  */
 export async function setFileInput(req: Request, res: Response): Promise<void> {
 	await sendToolCommand(req, res, 'setFileInput', req.body || {});
+}
+
+// ---------------------------------------------------------------------------
+// Per-tab dispatch (§4.2) — bind / unbind / list bindings
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/browser/bind
+ *
+ * Explicitly bind a fresh Chrome tab for the calling agent. The agent is
+ * identified via the `X-Agent-Session` header (or `body.agentSession`).
+ * Idempotent: if the agent already has a bound tab, returns the existing
+ * binding without creating a new one.
+ *
+ * Body (all optional):
+ *   - `active` (boolean, default false) — when true, the new tab is created
+ *     in the foreground. Off by default to avoid disturbing the user.
+ *
+ * Responses:
+ *   - 200 `{ success: true, data: { tabId, windowId?, bindingCount } }`
+ *   - 400 `{ success: false, error: 'agent_session_required' }` when no
+ *     `X-Agent-Session` header is supplied.
+ *   - 503 `{ success: false, error: 'tab_pool_full', retryAfterMs }` when
+ *     the hard cap (`CREWLY_TAB_BIND_MAX`, default 50) has been reached.
+ *   - 503 `NO_BROWSER_CLIENT` when no Extension is connected.
+ */
+export async function bindTab(req: Request, res: Response): Promise<void> {
+	const bridge = BrowserBridgeService.getInstance();
+	const agentSession = extractAgentSession(req);
+	if (!agentSession) {
+		res.status(400).json({
+			success: false,
+			error: 'agent_session_required',
+			details: 'X-Agent-Session header (or body.agentSession) is required for bind/unbind',
+		});
+		return;
+	}
+
+	if (!bridge.isConnected()) {
+		res.status(503).json({
+			success: false,
+			error: 'No Chrome browser connected. Please connect the Crewly Chrome Extension first.',
+			code: 'NO_BROWSER_CLIENT',
+		});
+		return;
+	}
+
+	const foreground = (req.body as { active?: unknown } | undefined)?.active === true;
+	const agentName = extractAgentName(req);
+
+	try {
+		const binding = await bridge.bindAgentTab(agentSession, { foreground, agentName });
+		res.json({
+			success: true,
+			data: {
+				tabId: binding.tabId,
+				windowId: binding.windowId,
+				bindingCount: bridge.listBindings().length,
+			},
+		});
+	} catch (err) {
+		const code = (err as Error & { code?: string }).code;
+		if (code === 'tab_pool_full') {
+			res.status(503).json({
+				success: false,
+				error: 'tab_pool_full',
+				details: (err as Error).message,
+				retryAfterMs: BROWSER_BRIDGE_CONSTANTS.TAB_BIND_RETRY_AFTER_MS,
+			});
+			return;
+		}
+		res.status(502).json({
+			success: false,
+			error: 'bind_failed',
+			details: (err as Error).message,
+		});
+	}
+}
+
+/**
+ * POST /api/browser/unbind
+ *
+ * Release the calling agent's bound Chrome tab. Optionally tells the
+ * Extension to close the tab (default true).
+ *
+ * Body (all optional):
+ *   - `closeTab` (boolean, default true) — set to false to release the
+ *     binding while leaving the tab alive (useful for handoff scenarios).
+ *
+ * Always returns 200 — `data.released:false` indicates "no binding existed",
+ * which is not an error.
+ */
+export async function unbindTab(req: Request, res: Response): Promise<void> {
+	const bridge = BrowserBridgeService.getInstance();
+	const agentSession = extractAgentSession(req);
+	if (!agentSession) {
+		res.status(400).json({
+			success: false,
+			error: 'agent_session_required',
+			details: 'X-Agent-Session header (or body.agentSession) is required for bind/unbind',
+		});
+		return;
+	}
+
+	const closeTab = (req.body as { closeTab?: unknown } | undefined)?.closeTab !== false;
+
+	const result = await bridge.unbindAgentTab(agentSession, { closeTab });
+	res.json({
+		success: true,
+		data: {
+			released: result.released,
+			tabClosed: result.tabClosed,
+			bindingCount: bridge.listBindings().length,
+		},
+	});
+}
+
+/**
+ * GET /api/browser/bindings
+ *
+ * Snapshot of all current agent→tab bindings. Used for diagnostics and
+ * eventually for a UI panel showing which tab each running agent owns.
+ *
+ * Response: `{ success: true, data: { bindings: AgentTabBinding[], hardCap, softWarn } }`
+ */
+export function getBindings(_req: Request, res: Response): void {
+	const bridge = BrowserBridgeService.getInstance();
+	const bindings = bridge.listBindings();
+	res.json({
+		success: true,
+		data: {
+			bindings,
+			hardCap: BROWSER_BRIDGE_CONSTANTS.TAB_BIND_HARD_CAP,
+			softWarn: BROWSER_BRIDGE_CONSTANTS.TAB_BIND_SOFT_WARN,
+		},
+	});
 }
