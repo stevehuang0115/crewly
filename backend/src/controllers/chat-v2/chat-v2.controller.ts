@@ -320,7 +320,12 @@ export function createChatV2Controller(
 
       try {
         if (dispatcher && channelForDispatch && persisted.senderType === 'user') {
-          void dispatcher.dispatchToAgent(channelForDispatch, persisted);
+          // Phase C BE.3 — single high-level entry point that branches
+          // on `channel.type` internally:
+          //   `type='dm'`     → 1:1 dispatch via dispatchToAgent (legacy)
+          //   `type='channel'`→ resolve `mentions[]` → fan-out per target
+          // Fire-and-forget — already past the HTTP ack at this point.
+          void dispatcher.dispatchMessage(channelForDispatch, persisted);
         }
       } catch {
         // dispatcher must never break the ack
