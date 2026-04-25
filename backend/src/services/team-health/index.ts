@@ -71,3 +71,7 @@ export {
   resolveSidecarDir,
   type ConfigLogger,
 } from './team-health-config.js';
+export {
+  LiveTeamHealthDataProvider,
+  type LiveDataAccessors,
+} from './live-team-health-data-provider.js';
