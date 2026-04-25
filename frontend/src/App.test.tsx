@@ -39,6 +39,11 @@ vi.mock('./pages/WorkItems', () => ({ WorkItems: () => <div>WorkItems Page</div>
 vi.mock('./pages/WorkItemDetail', () => ({ WorkItemDetail: () => <div>WorkItem Detail Page</div> }));
 vi.mock('./pages/Missions', () => ({ Missions: () => <div>Missions Page</div> }));
 
+// Phase B Slack-like multi-team chat — mounted at /team-chat.
+vi.mock('./components/Chat-team', () => ({
+  default: () => <div data-testid="team-chat-route">Team Chat Page</div>,
+}));
+
 describe('App routes', () => {
   it('redirects /schedules to the scheduled check-ins page', async () => {
     window.history.pushState({}, '', '/schedules');
@@ -47,5 +52,13 @@ describe('App routes', () => {
 
     expect(await screen.findByText('Schedules & Cron Page')).toBeInTheDocument();
     expect(window.location.pathname).toBe('/scheduled-checkins');
+  });
+
+  it('mounts TeamChatPage at /team-chat', async () => {
+    window.history.pushState({}, '', '/team-chat');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('team-chat-route')).toBeInTheDocument();
   });
 });
