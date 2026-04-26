@@ -43,6 +43,7 @@
 
 import type { Team, TeamMember } from '../../types/index.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { pickTeamLead } from '../../utils/team.utils.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -296,36 +297,6 @@ export class ChatV2MentionResolver {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers — `pickTeamLead` lives in `utils/team.utils.ts` so chat-v2 and
+// mission-reminder share the canonical 4-rule cascade. Imported above.
 // ---------------------------------------------------------------------------
-
-/**
- * Choose the TL (Team Lead) responder for a `@team` mention.
- *
- * Resolution rules (ordered, first match wins):
- *   1. Hierarchy TL: `hierarchyLevel === 1 && canDelegate === true`.
- *   2. Any delegator: `canDelegate === true` regardless of level. Covers
- *      teams that were imported before hierarchy fields were added but
- *      already have a flagged TL.
- *   3. Role-tagged TL: `role === 'team-leader'` so role-based teams that
- *      didn't fill in `canDelegate` still resolve correctly.
- *   4. First member: deterministic last resort — better to dispatch to
- *      _someone_ than silently drop a `@team` ping. Tests cover this
- *      case.
- *
- * Returns `null` only when the team has no members at all.
- *
- * @param team - The matched team.
- * @returns The TL to dispatch to, or null when the team has no members.
- */
-function pickTeamLead(team: Team): TeamMember | null {
-  const members = team.members ?? [];
-  if (members.length === 0) return null;
-
-  return (
-    members.find((m) => m.hierarchyLevel === 1 && m.canDelegate === true) ??
-    members.find((m) => m.canDelegate === true) ??
-    members.find((m) => m.role === 'team-leader') ??
-    members[0]
-  );
-}
