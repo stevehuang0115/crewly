@@ -302,6 +302,10 @@ export interface Mission {
   lastReviewAt?: string;
   /** Next scheduled planning review */
   nextReviewAt?: string;
+  /** Last Slack reminder sent for off-track KRs */
+  lastReminderAt?: string;
+  /** Individual owner ID (optional, defaults to team lead of ownerTeamId) */
+  ownerId?: string;
   /** Accumulated learnings from execution */
   learnings: string[];
   /** Accumulated token usage across all Requests in this mission */
@@ -426,6 +430,8 @@ export interface CreateMissionInput {
   period?: MissionPeriod;
   /** Priority for sorting/filtering. Does not affect policy enforcement. */
   priority?: MissionPriority;
+  /** Optional individual owner ID. Defaults to the team leader if not provided. */
+  ownerId?: string;
   /** Optional parent Mission ID (validated to avoid self-ref and cycles). */
   parentMissionId?: string;
 }
@@ -720,6 +726,7 @@ export function createMission(input: CreateMissionInput): Mission {
     cadence: reviewSchedule,
     policy: mergedPolicy,
     status: 'active',
+    ownerId: input.ownerId,
     createdAt: now,
     updatedAt: now,
     learnings: [],

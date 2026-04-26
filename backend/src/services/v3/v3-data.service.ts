@@ -20,6 +20,7 @@
 
 import { EventEmitter } from 'events';
 import { LoggerService } from '../core/logger.service.js';
+import { StorageService } from '../core/storage.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { RequestService } from './request.service.js';
 import { RequestTracker } from './request-tracker.service.js';
@@ -132,6 +133,7 @@ export interface UserWorkMessageEvent {
  */
 export class V3DataService {
   private readonly logger = LoggerService.getInstance().createComponentLogger('V3DataService');
+  private readonly storageService = StorageService.getInstance();
   private readonly projectPath: string;
   private readonly missionsDir: string;
   private taskWatcher: ProjectTaskWatcherService | null = null;
@@ -464,9 +466,21 @@ export class V3DataService {
         return;
       }
 
+      // Resolve ownerId from event.setBy (which is usually a session name or member name)
+      let ownerId: string | undefined;
+      try {
+        const memberInfo = await this.storageService.findMemberBySessionName(event.setBy);
+        if (memberInfo) {
+          ownerId = memberInfo.member.id;
+        }
+      } catch (e) {
+        this.logger.debug('Could not resolve ownerId for Mission', { setBy: event.setBy });
+      }
+
       const mission = createMission({
         objective: event.goal,
         ownerTeamId: 'default',
+        ownerId,
         successCriteria: [],
         currentStrategy: '',
         cadence: '0 9 * * 1', // Default: weekly Monday review

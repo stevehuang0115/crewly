@@ -358,4 +358,37 @@ describe('Slack Types', () => {
       expect(command.target?.type).toBe('project');
     });
   });
+
+  describe('SlackNotificationType — okr_reminder', () => {
+    it('accepts okr_reminder as a valid notification type', () => {
+      const notif: SlackNotification = {
+        type: 'okr_reminder',
+        title: 'OKR Alert',
+        message: 'KRs are off-track',
+        urgency: 'high',
+        timestamp: new Date().toISOString(),
+      };
+
+      expect(notif.type).toBe('okr_reminder');
+    });
+
+    it('accepts mission-specific metadata fields (missionId, offTrack, atRisk)', () => {
+      const notif: SlackNotification = {
+        type: 'okr_reminder',
+        title: 'OKR Alert',
+        message: 'KRs are off-track',
+        urgency: 'high',
+        timestamp: new Date().toISOString(),
+        metadata: {
+          missionId: 'm1',
+          offTrack: 2,
+          atRisk: 1,
+        },
+      };
+
+      expect(notif.metadata?.missionId).toBe('m1');
+      expect(notif.metadata?.offTrack).toBe(2);
+      expect(notif.metadata?.atRisk).toBe(1);
+    });
+  });
 });

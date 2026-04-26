@@ -2284,10 +2284,29 @@ export class CrewlyServer {
 		// and never trigger the EventBus agent:idle event
 		setInterval(() => this.autoCloseOpenRequests(), 2 * 60 * 1000);
 
+		// V3: Mission OKR Reminders (every hour)
+		// Scans active missions and sends Slack alerts for off-track KRs
+		setInterval(async () => {
+			try {
+				const { MissionReminderService } = await import('./services/v3/mission-reminder.service.js');
+				await MissionReminderService.getInstance().runSweep();
+			} catch (err) {
+				this.logger.warn('Mission OKR reminder sweep failed', { error: String(err) });
+			}
+		}, 60 * 60 * 1000);
+
 		// Purge done Requests and WorkItems older than 24h (every hour)
 		setInterval(() => this.purgeCompletedData(), 60 * 60 * 1000);
 		// Run once at startup after a short delay
 		setTimeout(() => this.purgeCompletedData(), 30 * 1000);
+		setTimeout(async () => {
+			try {
+				const { MissionReminderService } = await import('./services/v3/mission-reminder.service.js');
+				await MissionReminderService.getInstance().runSweep();
+			} catch (err) {
+				// Non-critical
+			}
+		}, 60 * 1000);
 	}
 
 	/**

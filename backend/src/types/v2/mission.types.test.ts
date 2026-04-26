@@ -625,4 +625,44 @@ describe('Mission Types', () => {
       expect(reason).toMatch(/cycle/i);
     });
   });
+
+  // -----------------------------------------------------------------------
+  // OKR-reminder additions: Mission.ownerId / lastReminderAt
+  // -----------------------------------------------------------------------
+  describe('Mission OKR-reminder fields', () => {
+    it('createMission persists optional ownerId from input', () => {
+      const mission = createMission({
+        objective: 'Test',
+        ownerTeamId: 't1',
+        ownerId: 'u1',
+        successCriteria: [],
+        currentStrategy: '',
+      });
+
+      expect(mission.ownerId).toBe('u1');
+    });
+
+    it('createMission leaves ownerId undefined when not provided', () => {
+      const mission = createMission({
+        objective: 'Test',
+        ownerTeamId: 't1',
+        successCriteria: [],
+        currentStrategy: '',
+      });
+
+      expect(mission.ownerId).toBeUndefined();
+    });
+
+    it('Mission accepts lastReminderAt as an optional ISO timestamp', () => {
+      const m: Mission = createMission({
+        objective: 'Test',
+        ownerTeamId: 't1',
+        successCriteria: [],
+        currentStrategy: '',
+      });
+      m.lastReminderAt = new Date().toISOString();
+
+      expect(typeof m.lastReminderAt).toBe('string');
+    });
+  });
 });

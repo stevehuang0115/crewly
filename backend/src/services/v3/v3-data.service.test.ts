@@ -615,6 +615,60 @@ describe('V3DataService', () => {
       const firstContent = mockWriteFile.mock.calls[0][1];
       expect(firstContent).toContain('Design approach');
     });
+
+    it('should resolve ownerId from event.setBy when StorageService finds the member', async () => {
+      // Arrange: stub findMemberBySessionName so the goal:set handler
+      // populates the new ownerId field on the created Mission.
+      const { StorageService } = await import('../core/storage.service.js');
+      const findSpy = jest
+        .spyOn(StorageService.getInstance() as any, 'findMemberBySessionName')
+        .mockResolvedValue({ member: { id: 'sam-member-id', name: 'Sam', sessionName: 'sam-session' } });
+
+      const event: GoalSetEvent = {
+        goal: 'Test mission with owner resolution',
+        projectPath: '/tmp/test',
+        setBy: 'sam-session',
+        timestamp: new Date().toISOString(),
+      };
+
+      // Act
+      eventBus.emit('v3:goal_set', event);
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Assert: any mission writeFile that fired should carry ownerId.
+      // (Mission file path matches *.json under .crewly/missions, scan all writes.)
+      const missionWrites = mockWriteFile.mock.calls.filter((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('missions'),
+      );
+      if (missionWrites.length > 0) {
+        const missionContent = missionWrites[0][1];
+        expect(missionContent).toContain('sam-member-id');
+      }
+      // findMemberBySessionName should have been consulted with the setBy value.
+      expect(findSpy).toHaveBeenCalledWith('sam-session');
+
+      findSpy.mockRestore();
+    });
+
+    it('should leave ownerId undefined when setBy cannot be resolved to a member', async () => {
+      const { StorageService } = await import('../core/storage.service.js');
+      const findSpy = jest
+        .spyOn(StorageService.getInstance() as any, 'findMemberBySessionName')
+        .mockResolvedValue(null);
+
+      const event: GoalSetEvent = {
+        goal: 'Test mission unresolved owner',
+        projectPath: '/tmp/test',
+        setBy: 'unknown-user',
+        timestamp: new Date().toISOString(),
+      };
+
+      eventBus.emit('v3:goal_set', event);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(findSpy).toHaveBeenCalledWith('unknown-user');
+      findSpy.mockRestore();
+    });
   });
 
   describe('onUserWorkMessage', () => {

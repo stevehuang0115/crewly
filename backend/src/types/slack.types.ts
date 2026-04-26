@@ -327,6 +327,7 @@ export type SlackNotificationType =
   | 'agent_question' // Agent needs clarification
   | 'project_update'
   | 'daily_summary'
+  | 'okr_reminder' // OKR follow-up reminder
   | 'alert';
 
 /**
@@ -342,6 +343,9 @@ export interface SlackNotification {
     teamId?: string;
     agentId?: string;
     taskId?: string;
+    missionId?: string;
+    offTrack?: number;
+    atRisk?: number;
     errorDetails?: string;
   };
   timestamp: string;
