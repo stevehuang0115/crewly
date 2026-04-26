@@ -48,6 +48,7 @@ import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
 import { createChatV2Router } from '../controllers/chat-v2/index.js';
 import { getChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
+import { createOssTeamMembershipValidator } from '../services/chat-v2/chat-v2.team-membership.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -184,7 +185,19 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Chat V2 (Agent-First Chat MVP Phase 1) — mounts /api/chat/channels/*
   // Coexists with the legacy /api/chat/{send,messages,conversations,...} routes
   // registered by `createApiRouter` → no route overlap.
-  router.use('/chat', createChatV2Router(getChatV2Service()));
+  //
+  // F2b (#333): inject the OSS team-membership validator on the singleton's
+  // first construction so type='channel' creates are gated by team
+  // existence (single-user OSS treats existence === membership; Cloud
+  // Portal Phase E swaps in a tenant-aware validator).
+  router.use(
+    '/chat',
+    createChatV2Router(
+      getChatV2Service({
+        validateTeamMembership: createOssTeamMembershipValidator(),
+      }),
+    ),
+  );
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here

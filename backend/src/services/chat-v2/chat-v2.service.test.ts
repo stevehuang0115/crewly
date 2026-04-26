@@ -202,6 +202,158 @@ describe('ChatV2Service', () => {
         }),
       ).not.toThrow();
     });
+
+    // ---------------------------------------------------------------------
+    // F2b (#333) — outer-ring tenant defense via validateTeamMembership
+    // ---------------------------------------------------------------------
+    describe('F2b validateTeamMembership', () => {
+      function makeServiceWithValidator(
+        validator: ((p: ChatPrincipal, teamId: string) => boolean) | undefined,
+      ) {
+        // Each test gets its own isolated DB so it can construct the
+        // service with the validator wired without leaking state to the
+        // outer beforeEach service.
+        const localDb = openChatDatabase({
+          dbPath: ':memory:',
+          inMemory: true,
+          skipIntegrityCheck: true,
+        });
+        const localService = new ChatV2Service({
+          config: loadChatV2Config({}),
+          db: localDb,
+          getPresence: () => ({ status: 'online', lastSeenAt: 1234 }),
+          now: () => 1000,
+          validateTeamMembership: validator,
+        });
+        return { localDb, localService };
+      }
+
+      it("permits channel creation when the validator returns true (caller is a member)", () => {
+        const validator = jest.fn(
+          (_p: ChatPrincipal, teamId: string) => teamId === 'team-allowed',
+        );
+        const { localDb, localService } = makeServiceWithValidator(validator);
+        try {
+          const dto = localService.createChannel({
+            name: '#general',
+            type: 'channel',
+            teamId: 'team-allowed',
+            principal: owner,
+          });
+          expect(dto.teamId).toBe('team-allowed');
+          // Validator was called exactly once with the principal + teamId.
+          expect(validator).toHaveBeenCalledTimes(1);
+          expect(validator).toHaveBeenCalledWith(owner, 'team-allowed');
+        } finally {
+          localService.close();
+          localDb.close();
+        }
+      });
+
+      it('throws forbidden_team (403) when the validator returns false (foreign team)', () => {
+        // The Arch-described leak vector at the outer ring: caller binds
+        // a channel to a teamId the membership check rejects. Must throw
+        // forbidden_team before the row is persisted.
+        const validator = jest.fn(() => false);
+        const { localDb, localService } = makeServiceWithValidator(validator);
+        try {
+          let caught: ChatError | null = null;
+          try {
+            localService.createChannel({
+              name: '#leak-attempt',
+              type: 'channel',
+              teamId: 'team-other-tenant',
+              principal: owner,
+            });
+          } catch (err) {
+            caught = err as ChatError;
+          }
+          expect(caught).toBeInstanceOf(ChatError);
+          expect(caught?.code).toBe('forbidden_team');
+          expect(caught?.httpStatus).toBe(403);
+          expect(caught?.details).toMatchObject({
+            teamId: 'team-other-tenant',
+            userId: 'user-a',
+          });
+          // No rows persisted — listChannels for the owner returns 0.
+          expect(
+            localService.listChannels({ principal: owner }).length,
+          ).toBe(0);
+          expect(validator).toHaveBeenCalledTimes(1);
+        } finally {
+          localService.close();
+          localDb.close();
+        }
+      });
+
+      it('does NOT call the validator for type=dm (membership only gates type=channel)', () => {
+        const validator = jest.fn(() => false);
+        const { localDb, localService } = makeServiceWithValidator(validator);
+        try {
+          // type='dm' (the default) must remain unaffected by the
+          // membership check — DMs have no teamId.
+          const dto = localService.createChannel({
+            agentSession: 'sess-x',
+            name: 'Sam DM',
+            principal: owner,
+          });
+          expect(dto.id).toBeTruthy();
+          expect(validator).not.toHaveBeenCalled();
+        } finally {
+          localService.close();
+          localDb.close();
+        }
+      });
+
+      it('preserves pre-F2b behavior when no validator is wired (back-compat)', () => {
+        // The outer beforeEach service does NOT inject a validator, so
+        // any previously-passing channel creation must still succeed.
+        // Pinning this so a future change doesn't accidentally make the
+        // validator mandatory.
+        expect(() =>
+          service.createChannel({
+            name: '#general',
+            type: 'channel',
+            teamId: 'team-without-validator',
+            principal: owner,
+          }),
+        ).not.toThrow();
+      });
+
+      it('regression: blocks the cross-tenant leak vector at channel creation (Arch attack)', () => {
+        // Tenant separation: owner is only authorized for their own
+        // tenant; any attempt to bind a channel to another tenant's
+        // team must reject with forbidden_team.
+        const ownTenant = 'tenant-a';
+        const validator = jest.fn(
+          (_p: ChatPrincipal, teamId: string) => teamId === ownTenant,
+        );
+        const { localDb, localService } = makeServiceWithValidator(validator);
+        try {
+          // Allowed.
+          expect(() =>
+            localService.createChannel({
+              name: '#own',
+              type: 'channel',
+              teamId: ownTenant,
+              principal: owner,
+            }),
+          ).not.toThrow();
+          // Blocked at the outer ring (F2a is the inner ring on dispatch).
+          expect(() =>
+            localService.createChannel({
+              name: '#leak',
+              type: 'channel',
+              teamId: 'tenant-b-stolen',
+              principal: owner,
+            }),
+          ).toThrow(ChatError);
+        } finally {
+          localService.close();
+          localDb.close();
+        }
+      });
+    });
   });
 
   // -------------------------------------------------------------------------

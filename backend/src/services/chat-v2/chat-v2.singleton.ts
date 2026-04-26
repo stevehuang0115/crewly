@@ -26,6 +26,11 @@ export function getChatV2Service(overrides?: Partial<ChatV2ServiceOptions>): Cha
       config,
       db: overrides?.db,
       getPresence: overrides?.getPresence,
+      // F2b (#333) — forward the validator so the production composition
+      // root in backend/src/index.ts can wire a teamId-existence /
+      // tenant-membership check on the singleton on first construction.
+      // Subsequent calls ignore overrides (existing contract).
+      validateTeamMembership: overrides?.validateTeamMembership,
       now: overrides?.now,
     });
   }

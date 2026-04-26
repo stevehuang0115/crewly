@@ -45,6 +45,28 @@ export interface ChatV2ServiceOptions {
     status: ChatChannelDTO['agentPresence']['status'];
     lastSeenAt: number | null;
   };
+  /**
+   * F2b (#333) — outer-ring tenant defense. Called when creating a
+   * `type='channel'` channel; if the principal cannot bind a channel
+   * to `teamId`, return false → `createChannel` throws
+   * `forbidden_team` (HTTP 403). Sync only, since `createChannel` runs
+   * inside the synchronous `runHandler` wrapper (an async refactor is
+   * a Phase E concern, not a F2b requirement).
+   *
+   * In OSS production, wire to a check that confirms `teamId` exists
+   * in `StorageService.getTeams()` — single-user OSS treats existence
+   * as membership. Cloud Portal Phase E swaps in a real user-tenant
+   * binding check.
+   *
+   * When omitted (legacy tests, REST-only fixtures) `createChannel`
+   * preserves pre-F2b behavior: only validates teamId is non-empty.
+   * The composition root in `backend/src/index.ts` MUST inject this
+   * to close the leak in production.
+   */
+  validateTeamMembership?: (
+    principal: ChatPrincipal,
+    teamId: string,
+  ) => boolean;
   /** Clock override for tests. */
   now?: () => number;
 }
@@ -168,6 +190,7 @@ export class ChatV2Service {
   private readonly channels: ChannelStore;
   private readonly messages: MessageStore;
   private readonly presence: ChatV2ServiceOptions['getPresence'];
+  private readonly validateTeamMembership: ChatV2ServiceOptions['validateTeamMembership'];
   private readonly now: () => number;
 
   constructor(options: ChatV2ServiceOptions) {
@@ -176,6 +199,7 @@ export class ChatV2Service {
     this.channels = new ChannelStore(this.db);
     this.messages = new MessageStore(this.db);
     this.presence = options.getPresence ?? DEFAULT_PRESENCE;
+    this.validateTeamMembership = options.validateTeamMembership;
     this.now = options.now ?? Date.now;
   }
 
@@ -196,9 +220,16 @@ export class ChatV2Service {
    * Create a channel bound 1:1 to an agent session. Server always assigns
    * `owner_user_id = principal.userId` — the body's owner fields are ignored.
    *
+   * F2b (#333): when `type='channel'` and a `validateTeamMembership` provider
+   * is wired into the service, the principal must be authorized for the
+   * requested `teamId`. Failures throw `forbidden_team` (403) — distinct
+   * from generic `forbidden` so the FE can surface a tenant-specific
+   * message.
+   *
    * @param args - Channel creation args
    * @returns The created channel as a DTO
-   * @throws {ChatError} `validation_error` / `agent_already_bound`
+   * @throws {ChatError} `validation_error` (400) / `forbidden_team` (403) /
+   *   `agent_already_bound` (409)
    */
   createChannel(args: CreateChannelArgs): ChatChannelDTO {
     const name = (args.name ?? '').trim();
@@ -271,6 +302,21 @@ export class ChatV2Service {
         400,
         "targetMemberId must be omitted when type='channel'",
       );
+    }
+
+    // F2b (#333) — outer-ring tenant defense. type='channel' bindings
+    // must pass the membership check when one is wired. Pre-checks
+    // already confirmed `teamId` is present and non-empty by here.
+    if (channelType === 'channel' && teamId && this.validateTeamMembership) {
+      const isMember = this.validateTeamMembership(args.principal, teamId);
+      if (!isMember) {
+        throw new ChatError(
+          CHAT_ERROR_CODES.FORBIDDEN_TEAM,
+          403,
+          'caller is not a member of the requested team',
+          { teamId, userId: args.principal.userId },
+        );
+      }
     }
 
     const purpose = args.purpose?.trim();
