@@ -367,4 +367,127 @@ describe('chat-v2 controller (REST)', () => {
       service.close();
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Phase C — channel-rail listing refinements: ?type= + ?teamId= filters.
+  // -------------------------------------------------------------------------
+
+  describe('GET /api/chat/channels — Phase C filters', () => {
+    /**
+     * Seeds the in-memory store with: 1 DM + 2 team channels across 2 teams.
+     * Returns the test rig so each test can keep an explicit close() handle.
+     */
+    function buildAppWithMixedFixture() {
+      const rig = buildApp();
+      rig.service.createChannel({
+        agentSession: 'sess-dm',
+        name: 'DM with Sam',
+        principal: { userId: 'dev-user-001', source: 'oss' },
+        type: 'dm',
+        targetMemberId: 'sam-id',
+      });
+      rig.service.createChannel({
+        agentSession: '',
+        name: '#general-product',
+        principal: { userId: 'dev-user-001', source: 'oss' },
+        type: 'channel',
+        teamId: 'team-product',
+      });
+      rig.service.createChannel({
+        agentSession: '',
+        name: '#general-marketing',
+        principal: { userId: 'dev-user-001', source: 'oss' },
+        type: 'channel',
+        teamId: 'team-marketing',
+      });
+      return rig;
+    }
+
+    it('?type=dm filters to DM channels', async () => {
+      const { app, service } = buildAppWithMixedFixture();
+      try {
+        const res = await request(app).get('/api/chat/channels?type=dm');
+        expect(res.status).toBe(200);
+        expect(res.body.data.channels).toHaveLength(1);
+        expect(res.body.data.channels[0].type).toBe('dm');
+      } finally {
+        service.close();
+      }
+    });
+
+    it('?type=channel filters to team channels', async () => {
+      const { app, service } = buildAppWithMixedFixture();
+      try {
+        const res = await request(app).get('/api/chat/channels?type=channel');
+        expect(res.status).toBe(200);
+        expect(res.body.data.channels).toHaveLength(2);
+        expect(res.body.data.channels.every((c: { type: string }) => c.type === 'channel')).toBe(
+          true,
+        );
+      } finally {
+        service.close();
+      }
+    });
+
+    it('?type=invalid → 400 validation_error', async () => {
+      const { app, service } = buildAppWithMixedFixture();
+      try {
+        const res = await request(app).get('/api/chat/channels?type=group');
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+        expect(res.body.error.message).toContain('unknown channel type');
+      } finally {
+        service.close();
+      }
+    });
+
+    it('?teamId= filters to a single team', async () => {
+      const { app, service } = buildAppWithMixedFixture();
+      try {
+        const res = await request(app).get('/api/chat/channels?teamId=team-product');
+        expect(res.status).toBe(200);
+        expect(res.body.data.channels).toHaveLength(1);
+        expect(res.body.data.channels[0].name).toBe('#general-product');
+        expect(res.body.data.channels[0].teamId).toBe('team-product');
+      } finally {
+        service.close();
+      }
+    });
+
+    it('?type=channel&teamId=… composes filters', async () => {
+      const { app, service } = buildAppWithMixedFixture();
+      try {
+        const res = await request(app).get(
+          '/api/chat/channels?type=channel&teamId=team-marketing',
+        );
+        expect(res.status).toBe(200);
+        expect(res.body.data.channels).toHaveLength(1);
+        expect(res.body.data.channels[0].name).toBe('#general-marketing');
+      } finally {
+        service.close();
+      }
+    });
+
+    it('empty ?type= and ?teamId= are treated as omitted (back-compat)', async () => {
+      const { app, service } = buildAppWithMixedFixture();
+      try {
+        const res = await request(app).get('/api/chat/channels?type=&teamId=');
+        expect(res.status).toBe(200);
+        expect(res.body.data.channels).toHaveLength(3);
+      } finally {
+        service.close();
+      }
+    });
+
+    it('no query params returns the full owner-scoped list (back-compat)', async () => {
+      const { app, service } = buildAppWithMixedFixture();
+      try {
+        const res = await request(app).get('/api/chat/channels');
+        expect(res.status).toBe(200);
+        expect(res.body.data.channels).toHaveLength(3);
+      } finally {
+        service.close();
+      }
+    });
+  });
 });

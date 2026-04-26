@@ -21,6 +21,11 @@
  */
 
 import type { ChatChannelDTO, ChatMessageDTO } from './types.js';
+import type {
+  ChatV2MentionResolver,
+  MentionResolverContext,
+  MentionTarget,
+} from './chat-v2.mention-resolver.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
@@ -47,6 +52,43 @@ export interface DispatchResult {
   error?: string;
 }
 
+/** One per-recipient outcome produced by `dispatchMessage`. */
+export interface MentionDispatchOutcome {
+  /** The mention target the dispatcher attempted to deliver to. */
+  target: MentionTarget;
+  /** Underlying delivery result from `AgentMessageSink.sendMessageToAgent`. */
+  dispatched: boolean;
+  /** Error message, if delivery failed. */
+  error?: string;
+}
+
+/**
+ * Aggregate result of `dispatchMessage`. Reports the chosen routing
+ * strategy and per-recipient outcomes so callers (and tests) can assert
+ * exactly what fan-out happened without re-running the resolver.
+ */
+export interface DispatchMessageResult {
+  /**
+   * - `'dm'`: legacy 1:1 path — used by `type='dm'` channels.
+   * - `'channel-mentions'`: Phase C BE.3 fan-out — used by `type='channel'`
+   *   channels with at least one resolved mention.
+   * - `'skip'`: nothing was dispatched (non-user message, no recipients,
+   *   archived/unbound channel, etc.). `reason` is filled.
+   */
+  strategy: 'dm' | 'channel-mentions' | 'skip';
+  /** True when at least one underlying delivery succeeded. */
+  dispatched: boolean;
+  /** Filled when `strategy === 'skip'`. */
+  reason?: string;
+  /** Populated for `strategy === 'dm'`. */
+  dmResult?: DispatchResult;
+  /**
+   * Populated for `strategy === 'channel-mentions'`. One entry per
+   * resolved target. Empty when no mentions resolved.
+   */
+  mentionOutcomes?: MentionDispatchOutcome[];
+}
+
 /** Constructor options for {@link ChatV2DispatcherService}. */
 export interface ChatV2DispatcherOptions {
   agentSink: AgentMessageSink;
@@ -55,6 +97,15 @@ export interface ChatV2DispatcherOptions {
    * default matches the `reply-channel` skill's parser exactly.
    */
   formatPrompt?: (args: FormatPromptArgs) => string;
+  /**
+   * Phase C BE.3 — resolver used when dispatching a `type='channel'`
+   * message to its mentioned recipients. When omitted, channel-typed
+   * messages skip dispatch entirely (preserves the BE.1+BE.2 contract
+   * for callers that haven't wired the resolver yet, e.g. legacy unit
+   * tests). The production composition root injects a resolver backed
+   * by `StorageService.getTeams()`.
+   */
+  mentionResolver?: ChatV2MentionResolver;
 }
 
 /** Inputs to the prompt formatter. */
@@ -106,12 +157,154 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
 export class ChatV2DispatcherService {
   private readonly agentSink: AgentMessageSink;
   private readonly formatPrompt: (args: FormatPromptArgs) => string;
+  private readonly mentionResolver?: ChatV2MentionResolver;
   private readonly logger: ComponentLogger;
 
   constructor(options: ChatV2DispatcherOptions) {
     this.agentSink = options.agentSink;
     this.formatPrompt = options.formatPrompt ?? defaultFormatPrompt;
+    this.mentionResolver = options.mentionResolver;
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
+  }
+
+  /**
+   * Phase C BE.3 entry point — choose the routing strategy from
+   * `channel.type` and the message's mentions, then fan out.
+   *
+   * Routing rules (SEALED §2.1):
+   *   - `type='dm'` → existing 1:1 path via `dispatchToAgent`. Mentions
+   *     in DMs are advisory only (the channel already binds to one
+   *     agent); the dispatcher does not currently re-route them.
+   *   - `type='channel'` → resolve `message.mentions` via the injected
+   *     `mentionResolver`, then dispatch the formatted prompt to each
+   *     resolved sessionName. No mentions → no dispatch (the message
+   *     still persists; nobody is paged).
+   *   - Agent-origin messages always skip dispatch (no self-loopback).
+   *
+   * Always resolves; per-recipient errors are captured in
+   * {@link DispatchMessageResult.mentionOutcomes} and never thrown.
+   *
+   * @param channel - The channel DTO (provides `type`, name, agentSession).
+   * @param message - The persisted message DTO (provides senderType, mentions).
+   * @returns Aggregate result describing the strategy + outcomes.
+   */
+  async dispatchMessage(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+  ): Promise<DispatchMessageResult> {
+    if (message.senderType !== 'user') {
+      return {
+        strategy: 'skip',
+        dispatched: false,
+        reason: 'not a user-origin message',
+      };
+    }
+
+    if (channel.type === 'channel') {
+      return this.dispatchChannelMentions(channel, message);
+    }
+
+    // Default to the DM path for any other type (including legacy /
+    // missing — `type` is non-null after Phase A migration but defensive
+    // here keeps the dispatcher robust).
+    const dmResult = await this.dispatchToAgent(channel, message);
+    return {
+      strategy: 'dm',
+      dispatched: dmResult.dispatched,
+      dmResult,
+    };
+  }
+
+  /**
+   * Dispatch a `type='channel'` message to its resolved mentions.
+   *
+   * Skips entirely when:
+   *   - No mention resolver is wired (return strategy=skip).
+   *   - `mentions` is empty (return strategy=skip).
+   *   - The resolver returns no targets (return strategy=channel-mentions
+   *     with empty `mentionOutcomes`; `dispatched=false`).
+   *
+   * @param channel - The team channel.
+   * @param message - The persisted user message.
+   * @returns Aggregate result with one outcome per resolved recipient.
+   */
+  private async dispatchChannelMentions(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+  ): Promise<DispatchMessageResult> {
+    if (!this.mentionResolver) {
+      this.logger.debug('chat-v2 dispatch skipped — no mention resolver wired', {
+        channelId: channel.id,
+        messageId: message.id,
+      });
+      return {
+        strategy: 'skip',
+        dispatched: false,
+        reason: 'no mention resolver wired for type=channel',
+      };
+    }
+
+    const mentions = Array.isArray(message.mentions) ? message.mentions : [];
+    if (mentions.length === 0) {
+      return {
+        strategy: 'skip',
+        dispatched: false,
+        reason: 'no mentions on type=channel message',
+      };
+    }
+
+    const ctx: MentionResolverContext = { teamId: channel.teamId };
+    const targets = await this.mentionResolver.resolve(mentions, ctx);
+
+    const outcomes: MentionDispatchOutcome[] = [];
+    let anyDispatched = false;
+
+    for (const target of targets) {
+      const prompt = this.formatPrompt({
+        channelId: channel.id,
+        channelName: channel.name,
+        agentSession: target.sessionName,
+        senderId: message.senderId,
+        content: message.content,
+        clientMessageId:
+          typeof message.metadata?.clientMessageId === 'string'
+            ? (message.metadata.clientMessageId as string)
+            : undefined,
+      });
+
+      try {
+        const result = await this.agentSink.sendMessageToAgent(target.sessionName, prompt);
+        if (result.success) {
+          outcomes.push({ target, dispatched: true });
+          anyDispatched = true;
+        } else {
+          this.logger.warn('chat-v2 mention dispatch reported failure', {
+            channelId: channel.id,
+            sessionName: target.sessionName,
+            err: result.error,
+          });
+          outcomes.push({
+            target,
+            dispatched: false,
+            error: result.error ?? 'unknown sink failure',
+          });
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.logger.error('chat-v2 mention dispatch threw', {
+          channelId: channel.id,
+          sessionName: target.sessionName,
+          err: errMsg,
+        });
+        outcomes.push({ target, dispatched: false, error: errMsg });
+      }
+    }
+
+    return {
+      strategy: 'channel-mentions',
+      dispatched: anyDispatched,
+      mentionOutcomes: outcomes,
+    };
   }
 
   /**

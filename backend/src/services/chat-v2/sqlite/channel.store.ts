@@ -186,28 +186,63 @@ export class ChannelStore {
   /**
    * List channels owned by a user.
    *
+   * Phase C — extended with `type` + `teamId` filter options so the
+   * `GET /api/chat/channels` endpoint can serve the channel-rail's
+   * grouped/workspace-scoped views without shipping every row to the
+   * client. Filters compose with AND; passing `undefined` for either is
+   * a no-op (the existing all-channels behavior).
+   *
    * @param ownerUserId - The user_id whose channels to return
    * @param options - Listing options
    * @param options.includeArchived - When false (default), filter out archived rows
    * @param options.limit - Max rows to return (capped at 100)
+   * @param options.type - Phase C: when set, filter rows to this channel type
+   *   (`'dm'` or `'channel'`). Useful for the channel-rail's "DMs only" /
+   *   "Channels only" views.
+   * @param options.teamId - Phase C: when set, filter rows whose `team_id`
+   *   matches. Used by the workspace-scoped Channels group; empty / null
+   *   `team_id` rows are excluded by this filter on purpose (DMs and
+   *   workspace-less rows belong to no team).
    * @returns Channel rows sorted by `last_message_at DESC, created_at DESC`
    */
   listByOwner(
     ownerUserId: string,
-    options?: { includeArchived?: boolean; limit?: number },
+    options?: {
+      includeArchived?: boolean;
+      limit?: number;
+      type?: ChatChannelType;
+      teamId?: string;
+    },
   ): ChatChannelRow[] {
     const includeArchived = options?.includeArchived ?? false;
     const limit = Math.min(options?.limit ?? 50, 100);
 
+    // Build WHERE clauses + bound params positionally so the filter set
+    // composes cleanly. Each branch is independent — no implicit coupling.
+    const where: string[] = ['owner_user_id = ?'];
+    const params: unknown[] = [ownerUserId];
+
+    if (!includeArchived) {
+      where.push('archived_at IS NULL');
+    }
+    if (options?.type !== undefined) {
+      where.push('type = ?');
+      params.push(options.type);
+    }
+    if (options?.teamId !== undefined) {
+      where.push('team_id = ?');
+      params.push(options.teamId);
+    }
+
     const sql = `
       SELECT ${CHANNEL_SELECT_COLUMNS}
       FROM chat_channels
-      WHERE owner_user_id = ?
-        ${includeArchived ? '' : 'AND archived_at IS NULL'}
+      WHERE ${where.join(' AND ')}
       ORDER BY COALESCE(last_message_at, created_at) DESC
       LIMIT ?
     `;
-    return this.db.prepare(sql).all(ownerUserId, limit) as ChatChannelRow[];
+    params.push(limit);
+    return this.db.prepare(sql).all(...params) as ChatChannelRow[];
   }
 
   /**

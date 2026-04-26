@@ -21,3 +21,11 @@ export {
   type ChatAgentPresenceStatus,
   type ChatErrorCode,
 } from './types.js';
+// Phase C BE.2 — mention dispatch routing scaffolding.
+export {
+  ChatV2MentionResolver,
+  type MentionTarget,
+  type MentionTargetKind,
+  type MentionResolverContext,
+  type MentionResolverDeps,
+} from './chat-v2.mention-resolver.js';

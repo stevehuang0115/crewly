@@ -89,6 +89,20 @@ export interface ListChannelsArgs {
   principal: ChatPrincipal;
   includeArchived?: boolean;
   limit?: number;
+  /**
+   * Phase C — filter to a single channel type. The controller validates
+   * the wire value against {@link CHAT_CHANNEL_TYPES} before reaching
+   * this layer; an unknown value is rejected as `validation_error`.
+   */
+  type?: ChatChannelType;
+  /**
+   * Phase C — filter to channels with this `team_id`. Empty string is
+   * treated the same as `undefined` (no filter) so callers don't have
+   * to pre-normalize blank query strings. The store-level filter still
+   * uses an exact-match against the column, so DMs (which have null
+   * team_id) drop out of the result.
+   */
+  teamId?: string;
 }
 
 /** Arguments for `sendMessage`. */
@@ -285,13 +299,38 @@ export class ChatV2Service {
   /**
    * List channels owned by the caller.
    *
-   * @param args - List args
+   * Phase C: extended with optional `type` + `teamId` filters so the
+   * channel-rail can request a focused slice (e.g. "channels in this
+   * workspace only") without paging the full owner-scoped list. An
+   * unknown `type` value is rejected as `validation_error`. Blank
+   * `teamId` is normalized to "no filter" so callers don't need to
+   * sanitize empty query strings.
+   *
+   * @param args - List args (principal + optional filters)
    * @returns DTO-mapped channels
+   * @throws {ChatError} `validation_error` (400) when `type` is set
+   *   to a value outside {@link CHAT_CHANNEL_TYPES}.
    */
   listChannels(args: ListChannelsArgs): ChatChannelDTO[] {
+    if (args.type !== undefined && !CHAT_CHANNEL_TYPES.includes(args.type)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `unknown channel type: ${args.type}`,
+      );
+    }
+    // Treat blank teamId the same as omitted — saves the channel-rail FE
+    // from having to strip empty query strings before issuing the GET.
+    const teamIdFilter =
+      args.teamId !== undefined && args.teamId.trim().length > 0
+        ? args.teamId
+        : undefined;
+
     const rows = this.channels.listByOwner(args.principal.userId, {
       includeArchived: args.includeArchived,
       limit: args.limit,
+      type: args.type,
+      teamId: teamIdFilter,
     });
     return rows.map((r) => this.toChannelDTO(r));
   }
