@@ -13,7 +13,6 @@
 
 import type { Request as ExpressRequest, Response } from 'express';
 import { RequestService } from '../../services/v3/request.service.js';
-import { RequestTracker } from '../../services/v3/request-tracker.service.js';
 import type { CreateRequestInput, UpdateRequestInput } from '../../types/v2/index.js';
 
 /**
@@ -97,11 +96,10 @@ export async function createRequestHandler(req: ExpressRequest, res: Response): 
 
     const request = await getService().create(body);
 
-    // @deprecated — Time-window correlation via RequestTracker is a legacy
-    // fallback. All delegation paths should pass requestId explicitly via
-    // the --request-id flag on delegate-task skills. The RequestTracker
-    // will be removed once all callers are confirmed to pass requestId.
-    RequestTracker.getInstance().setActiveRequest(request.id);
+    // P2-2: RequestTracker.setActiveRequest write removed. The companion
+    // read in v3-data.service.ts no longer falls back to time-window
+    // correlation, so writing here would be dead code. All delegations
+    // must now pass requestId explicitly via --request-id.
 
     res.status(201).json({ success: true, data: request });
   } catch (error) {

@@ -234,10 +234,11 @@ describe('V3DataService', () => {
     });
 
     it('should NOT resolve requestId from RequestTracker — explicit only (P2-2 fix)', async () => {
-      // Simulate: RequestTracker has an active request, but event has no requestId.
-      // After P2-2 fix, onTaskDelegated should NOT fall back to RequestTracker.
-      // RequestTracker resolution now happens at the emission site (controller),
-      // not at the consumption site (V3DataService).
+      // P2-2 fix verified by this commit: onTaskDelegated must not consult
+      // RequestTracker even when getActiveRequestId() would return a value.
+      // The time-window correlation was a global-singleton race vector that
+      // produced cross-conversation mislinks; all delegation paths now must
+      // pass requestId explicitly via TaskDelegatedEvent.requestId.
       RequestTracker.getInstance().setActiveRequest('req-from-tracker');
 
       const event: TaskDelegatedEvent = {
@@ -257,6 +258,33 @@ describe('V3DataService', () => {
       // requestId should be undefined — no fallback to RequestTracker
       expect(addedItem.requestId).toBeUndefined();
       expect(mockRequestLinkWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('P2-2: explicit event.requestId still resolves (no fallback regression)', async () => {
+      // Regression guard: removing the RequestTracker fallback must not
+      // also break the explicit-requestId path. event.requestId must still
+      // flow through to the resulting WorkItem.
+      const event: TaskDelegatedEvent = {
+        taskId: 'task-explicit-req',
+        title: 'Task with explicit requestId',
+        assignedTo: 'agent-leo',
+        projectPath: '/tmp/test',
+        requestId: 'req-explicit-123',
+        timestamp: new Date().toISOString(),
+      };
+
+      mockRequestGetById.mockResolvedValueOnce({
+        id: 'req-explicit-123',
+        status: 'open',
+        workItemIds: [],
+      });
+
+      eventBus.emit('v3:task_delegated', event);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockAddToPool).toHaveBeenCalledTimes(1);
+      const addedItem = mockAddToPool.mock.calls[0][0];
+      expect(addedItem.requestId).toBe('req-explicit-123');
     });
 
     it('should NOT use greedy fallback — no cross-conversation mislinks (Bug 2 fix)', async () => {

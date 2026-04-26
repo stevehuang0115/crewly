@@ -258,12 +258,14 @@ export class V3DataService {
         return;
       }
 
-      // Resolve requestId: prefer explicit value from the event payload,
-      // fall back to RequestTracker time-window correlation for orchestrator
-      // skill-based delegations that don't pass requestId explicitly.
-      const resolvedRequestId = event.requestId
-        || RequestTracker.getInstance().getActiveRequestId()
-        || undefined;
+      // Resolve requestId: explicit value from the event payload only.
+      // Removed (P2-2): RequestTracker time-window correlation. Orchestrator
+      // skills that need to associate a delegation with a Request must pass
+      // requestId explicitly via --request-id; the time-window fallback was
+      // a global-singleton race vector that produced cross-conversation
+      // mislinks (see v3-data.service.test.ts "should NOT use greedy
+      // fallback" + "should NOT resolve requestId from RequestTracker").
+      const resolvedRequestId = event.requestId || undefined;
 
       const workItem = createWorkItem({
         type: 'delegate',

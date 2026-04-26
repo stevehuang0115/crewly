@@ -381,10 +381,10 @@ export class SlackOrchestratorBridge extends EventEmitter {
                   priority: 'normal',
                   tags: ['slack'],
                 });
-                // Set active request for RequestTracker time-window correlation
-                // so downstream delegate-task calls can link WorkItems to this Request
-                const { RequestTracker } = await import('../v3/request-tracker.service.js');
-                RequestTracker.getInstance().setActiveRequest(request.id);
+                // P2-2: RequestTracker.setActiveRequest write removed. The
+                // companion read in v3-data.service.ts no longer falls back
+                // to time-window correlation; downstream delegate-task
+                // skills must now pass requestId explicitly.
                 this.logger.debug('V3 Request created from Slack message', { msgId, requestId: request.id });
               }
             } catch (err) {

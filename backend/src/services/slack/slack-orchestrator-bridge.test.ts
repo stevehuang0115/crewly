@@ -1778,4 +1778,23 @@ describe('SlackOrchestratorBridge', () => {
       expect(persistedContent).not.toMatch(/Thread context file/);
     });
   });
+
+  // ---------------------------------------------------------------------
+  // P2-2 regression: slack-orchestrator-bridge no longer writes to
+  // RequestTracker on the V3-Request-from-Slack path. Static source guard
+  // mirrors the chat.controller test to fire the moment someone
+  // re-introduces setActiveRequest here.
+  // ---------------------------------------------------------------------
+  describe('P2-2: RequestTracker write removal', () => {
+    it('slack-orchestrator-bridge source must not call RequestTracker.setActiveRequest', () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const fs = require('fs');
+      const path = require('path');
+      const src = fs.readFileSync(
+        path.join(__dirname, 'slack-orchestrator-bridge.ts'),
+        'utf-8',
+      );
+      expect(src).not.toMatch(/RequestTracker\.getInstance\(\)\.setActiveRequest/);
+    });
+  });
 });

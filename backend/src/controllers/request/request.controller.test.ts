@@ -1,6 +1,16 @@
 /**
  * Tests for Request Controller — HTTP handlers for V3 Request API.
  *
+ * NOTE (P2-2 PR): this file is currently authored against `vitest` while
+ * the project's test runner is `jest`. The whole suite currently fails
+ * to load because of the missing `vitest` dependency. The migration to
+ * jest-globals is tracked as a separate cleanup follow-up — this PR
+ * leaves the file untouched apart from this header note so that the
+ * RequestTracker write removal does not get conflated with the runner
+ * migration. The behavioral guard for the P2-2 write removal lives in
+ * v3-data.service.test.ts (P2-2 explicit test) and the static-source
+ * guards in chat.controller.test.ts and slack-orchestrator-bridge.test.ts.
+ *
  * @module controllers/request/request.controller.test
  */
 
