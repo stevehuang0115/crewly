@@ -38,16 +38,32 @@ export interface AgentPresence {
 // =============================================================================
 
 /**
- * A chat channel is a 1:1 binding between a user and a Crewly agent session.
+ * Channel kind — Phase B/C addition (SEALED design 2026-04-25 §3.1).
  *
- * Phase 1 rule: exactly one agent per channel, and an agent is bound to at
- * most one channel at a time.
+ * - `dm`      — 1:1 user↔agent direct-message channel. Default for legacy
+ *               and Phase 1 callers; `agentSession` is the binding key.
+ * - `channel` — public team-scoped channel (`#general`, `#proj-<name>`).
+ *               Multiple agents may participate; `agentSession` is empty
+ *               on the wire and `teamId` is required.
+ */
+export type ChannelType = 'dm' | 'channel';
+
+/**
+ * A chat channel — either a 1:1 user↔agent DM or a team-scoped channel.
+ *
+ * Phase 1 contract (single agent per DM) is preserved for `type='dm'`.
+ * Phase B (SEALED §3.1) adds `type='channel'` for Slack-like team
+ * surfaces; those rows have an empty `agentSession` and a populated
+ * `teamId`.
  */
 export interface Channel {
   id: string;
-  /** Session name of the bound Crewly agent (e.g. `crewly-product-max-xxxx`). */
+  /**
+   * Session name of the bound Crewly agent for `type='dm'` rows. Empty
+   * string for `type='channel'` rows (no 1:1 binding).
+   */
   agentSession: string;
-  /** Human-readable channel name — typically the agent's display name. */
+  /** Human-readable channel name — agent display name for DMs, `#name` for channels. */
   name: string;
   /** Optional purpose/description shown under the channel name. */
   purpose?: string;
@@ -57,13 +73,38 @@ export interface Channel {
   lastMessageAt?: string;
   /** Denormalized presence for fast sidebar rendering. */
   presence?: AgentPresenceStatus;
+  /**
+   * Phase B (SEALED §3.1) — channel kind. Required field on the wire from
+   * Phase B onward; legacy callers / mock seeds default to `'dm'` so
+   * existing callsites keep compiling without explicit migration.
+   */
+  type?: ChannelType;
+  /** Phase B — team workspace ID. Required when `type='channel'`. */
+  teamId?: string;
+  /** Phase B — project link. Optional even when `type='channel'`. */
+  projectId?: string;
+  /**
+   * Phase B — for `type='dm'`, the target member's id (distinct from
+   * `agentSession` which is the wire-level binding). For `type='channel'`
+   * rows, always undefined.
+   */
+  targetMemberId?: string;
 }
 
 /** Body for `POST /api/chat/channels`. */
 export interface CreateChannelInput {
-  agentSession: string;
+  /** Required when `type='dm'`; ignored when `type='channel'`. */
+  agentSession?: string;
   name: string;
   purpose?: string;
+  /** Phase B (SEALED §3.1). Defaults to `'dm'` when omitted. */
+  type?: ChannelType;
+  /** Phase B — required when `type='channel'`. */
+  teamId?: string;
+  /** Phase B — optional even when `type='channel'`. */
+  projectId?: string;
+  /** Phase B — optional for `type='dm'`. */
+  targetMemberId?: string;
 }
 
 // =============================================================================
@@ -136,6 +177,19 @@ export interface Message {
   clientMessageId?: string;
   /** Optimistic client-side status for messages not yet ack'd by server. */
   deliveryStatus?: MessageDeliveryStatus;
+  /**
+   * Phase B (SEALED §3.2) — array of mention IDs (member or team ids)
+   * referenced inline in `content`. Empty array on the wire when no
+   * mentions; never null. The composer parses chips into this list
+   * before send.
+   */
+  mentions: string[];
+  /**
+   * Phase B (SEALED §3.2) — Slack-style thread root id. When set, this
+   * message is a reply within the thread rooted at `threadId`; consumers
+   * group by `threadId` to render the thread sub-pane.
+   */
+  threadId?: string;
 }
 
 /** Body for `POST /api/chat/channels/:id/messages`. */
@@ -149,6 +203,18 @@ export interface SendMessageInput {
    * automatically by the HTTP client when the caller does not supply one.
    */
   clientMessageId?: string;
+  /**
+   * Phase B (SEALED §3.2) — mention IDs (member or team) referenced
+   * inline in `content`. The composer parses chips into this shape
+   * before send. Empty array or omitted = no mentions.
+   */
+  mentions?: string[];
+  /**
+   * Phase B (SEALED §3.2) — Slack-style thread reply root. When set,
+   * the new message is a reply within the thread. Omit for top-level
+   * channel messages.
+   */
+  threadId?: string;
 }
 
 /** Shape returned by `GET /api/chat/channels/:id/messages`. */

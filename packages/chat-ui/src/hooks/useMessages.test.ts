@@ -111,6 +111,7 @@ describe('reconcileMessage', () => {
       createdAt: baseAt,
       clientMessageId: 'cmid-1',
       deliveryStatus: 'pending',
+      mentions: [],
     };
     const confirmed: Message = {
       ...pending,
@@ -118,6 +119,7 @@ describe('reconcileMessage', () => {
       seq: 99,
       clientMessageId: 'cmid-1',
       deliveryStatus: 'sent',
+      mentions: [],
     };
 
     const next = reconcileMessage([pending], confirmed);
@@ -137,6 +139,7 @@ describe('reconcileMessage', () => {
       createdAt: baseAt,
       clientMessageId: 'cmid-1',
       deliveryStatus: 'sent',
+      mentions: [],
     };
     const broadcast: Message = { ...persisted };
 
@@ -153,6 +156,7 @@ describe('reconcileMessage', () => {
       author: { role: 'agent', id: 'crewly-foo' },
       content: 'welcome',
       createdAt: baseAt,
+      mentions: [],
     };
     const incoming: Message = {
       id: 'srv-2',
@@ -162,6 +166,7 @@ describe('reconcileMessage', () => {
       content: 'hello',
       createdAt: baseAt,
       clientMessageId: 'cmid-new',
+      mentions: [],
     };
 
     const next = reconcileMessage([existing], incoming);
@@ -181,6 +186,7 @@ describe('deriveAgentThinking', () => {
     createdAt: baseAt,
     clientMessageId: 'cmid-1',
     deliveryStatus: 'pending',
+    mentions: [],
   };
   const agentReply: Message = {
     id: 'srv-1',
@@ -189,6 +195,7 @@ describe('deriveAgentThinking', () => {
     author: { role: 'agent', id: 'crewly-foo' },
     content: 'hi back',
     createdAt: baseAt,
+    mentions: [],
   };
   const userHistory: Message = {
     id: 'srv-old',
@@ -198,6 +205,7 @@ describe('deriveAgentThinking', () => {
     content: 'past',
     createdAt: baseAt,
     // no clientMessageId — it predates this session
+    mentions: [],
   };
 
   it('returns false on empty timelines', () => {

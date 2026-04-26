@@ -46,4 +46,11 @@ describe('@crewly/chat-ui public API', () => {
     expect(typeof PublicApi.ConversationListPanel).toBe('function');
     expect(typeof PublicApi.MentionComposer).toBe('function');
   });
+
+  it('exports the Phase C derivation hooks + their pure helpers', () => {
+    expect(typeof PublicApi.useGroupedChannels).toBe('function');
+    expect(typeof PublicApi.buildConversationGroups).toBe('function');
+    expect(typeof PublicApi.useObservedWorkspaces).toBe('function');
+    expect(typeof PublicApi.buildObservedWorkspaces).toBe('function');
+  });
 });

@@ -37,6 +37,7 @@ describe('chat.types', () => {
       author: { role: 'user', id: 'u1', name: 'Steve' },
       content: 'hello',
       createdAt: new Date().toISOString(),
+      mentions: [],
     };
     expect(JSON.parse(JSON.stringify(msg))).toEqual(msg);
   });
@@ -51,9 +52,42 @@ describe('chat.types', () => {
       createdAt: new Date().toISOString(),
       clientMessageId: 'cmid-1',
       deliveryStatus: 'pending',
+      mentions: [],
     };
     expect(pending.deliveryStatus).toBe('pending');
     expect(pending.clientMessageId).toBe('cmid-1');
+  });
+
+  // Phase B (SEALED §3.2) — mentions array + threadId.
+  it('Message carries mentions: string[] (never null on the wire)', () => {
+    const tagged: Message = {
+      id: 'm-tagged',
+      channelId: 'c1',
+      seq: 5,
+      author: { role: 'user', id: 'u1' },
+      content: '@team-product help',
+      createdAt: new Date().toISOString(),
+      mentions: ['team-product', 'agent-sam'],
+    };
+    expect(tagged.mentions).toEqual(['team-product', 'agent-sam']);
+    // Round-trips losslessly so consumers can rely on `.mentions` always
+    // being an array, never null.
+    const round = JSON.parse(JSON.stringify(tagged)) as Message;
+    expect(round.mentions).toEqual(tagged.mentions);
+  });
+
+  it('Message accepts threadId for Slack-style threaded replies', () => {
+    const reply: Message = {
+      id: 'm-reply',
+      channelId: 'c1',
+      seq: 6,
+      author: { role: 'user', id: 'u1' },
+      content: 'in-thread reply',
+      createdAt: new Date().toISOString(),
+      mentions: [],
+      threadId: 'm-root',
+    };
+    expect(reply.threadId).toBe('m-root');
   });
 
   it('ChatWebsocketEvent discriminates message events with channelId + message', () => {
@@ -67,6 +101,7 @@ describe('chat.types', () => {
         author: { role: 'agent', id: 'crewly-foo' },
         content: 'hi back',
         createdAt: new Date().toISOString(),
+        mentions: [],
       },
     };
     if (e.type === 'message') {
