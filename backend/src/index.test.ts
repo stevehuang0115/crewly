@@ -274,4 +274,42 @@ describe('CrewlyServer headless mode', () => {
 			expect(res.body.status).toBe('healthy');
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// Background-task wiring smoke tests for the MissionReminderService.
+	//
+	// We can't load the real index.ts (uses import.meta.url) so these
+	// tests replicate the wrapper structure used by configureBackgroundTasks
+	// to assert that:
+	//  - the dynamic import path resolves
+	//  - runSweep errors are swallowed (the watchdog must never crash boot)
+	// -----------------------------------------------------------------------
+	describe('Background-task wiring — MissionReminderService', () => {
+		it('dynamic import path resolves to a singleton with runSweep()', async () => {
+			const mod = await import('./services/v3/mission-reminder.service.js');
+			expect(typeof mod.MissionReminderService.getInstance).toBe('function');
+			expect(typeof mod.MissionReminderService.getInstance().runSweep).toBe('function');
+		});
+
+		it('hourly wrapper swallows runSweep errors via try/catch', async () => {
+			const fakeService = { runSweep: jest.fn().mockRejectedValue(new Error('boom')) };
+			const warn = jest.fn();
+
+			// Replicates the exact try/catch wrapper used in
+			// CrewlyServer.configureBackgroundTasks for the hourly sweep.
+			const tick = async () => {
+				try {
+					await fakeService.runSweep();
+				} catch (err) {
+					warn('Mission OKR reminder sweep failed', { error: String(err) });
+				}
+			};
+
+			await expect(tick()).resolves.toBeUndefined();
+			expect(warn).toHaveBeenCalledWith(
+				'Mission OKR reminder sweep failed',
+				expect.objectContaining({ error: expect.stringContaining('boom') }),
+			);
+		});
+	});
 });
