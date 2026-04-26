@@ -550,6 +550,21 @@ export class StorageService {
   }
 
   /**
+   * Find a team member by their ID across all teams.
+   *
+   * @param memberId - Member UUID
+   * @returns Member object or null if not found
+   */
+  async getMemberById(memberId: string): Promise<TeamMember | null> {
+    const teams = await this.getTeams();
+    for (const team of teams) {
+      const member = team.members.find((m) => m.id === memberId);
+      if (member) return member;
+    }
+    return null;
+  }
+
+  /**
    * Find a team member by their session name.
    *
    * @param sessionName - The session name to search for

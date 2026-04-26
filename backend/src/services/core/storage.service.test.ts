@@ -492,4 +492,68 @@ describe('StorageService', () => {
       expect(storageService.getCrewlyHome()).toBe(testHome);
     });
   });
+
+  describe('getMemberById', () => {
+    const teamWithMembers: Team = {
+      id: 't-1',
+      name: 'Team One',
+      description: 'desc',
+      projectIds: [],
+      members: [
+        {
+          id: 'm-1',
+          name: 'Alice',
+          sessionName: 'alice-session',
+          role: 'developer',
+          systemPrompt: '',
+          agentStatus: 'inactive',
+          workingStatus: 'idle',
+          runtimeType: 'claude-code',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'm-2',
+          name: 'Bob',
+          sessionName: 'bob-session',
+          role: 'developer',
+          systemPrompt: '',
+          agentStatus: 'inactive',
+          workingStatus: 'idle',
+          runtimeType: 'claude-code',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ],
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    test('finds a member by id across teams', async () => {
+      const spy = jest.spyOn(storageService, 'getTeams').mockResolvedValue([teamWithMembers]);
+
+      const member = await storageService.getMemberById('m-2');
+
+      expect(member?.name).toBe('Bob');
+      spy.mockRestore();
+    });
+
+    test('returns null when no member matches', async () => {
+      const spy = jest.spyOn(storageService, 'getTeams').mockResolvedValue([teamWithMembers]);
+
+      const member = await storageService.getMemberById('no-such-id');
+
+      expect(member).toBeNull();
+      spy.mockRestore();
+    });
+
+    test('returns null when there are no teams', async () => {
+      const spy = jest.spyOn(storageService, 'getTeams').mockResolvedValue([]);
+
+      const member = await storageService.getMemberById('any-id');
+
+      expect(member).toBeNull();
+      spy.mockRestore();
+    });
+  });
 });
