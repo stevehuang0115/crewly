@@ -44,4 +44,34 @@ describe('chat-v2 singleton', () => {
     const next = getChatV2Service();
     expect(next).not.toBe(inst);
   });
+
+  it('forwards validateTeamMembership override on first construction (F2b #333)', () => {
+    // The composition root in api.routes.ts wires the OSS validator via
+    // getChatV2Service({ validateTeamMembership: ... }) on the first
+    // call. Verify the override actually reaches the constructed
+    // service, otherwise the leak guard silently drops to back-compat.
+    const db = openChatDatabase({
+      dbPath: ':memory:',
+      inMemory: true,
+      skipIntegrityCheck: true,
+    });
+    const validator = jest.fn(() => false);
+    const inst = getChatV2Service({
+      config: loadChatV2Config({}),
+      db,
+      validateTeamMembership: validator,
+    });
+    // Probe through createChannel — wired validator returning false
+    // must throw forbidden_team for type='channel'. If the override
+    // wasn't forwarded, the back-compat path would persist the row.
+    expect(() =>
+      inst.createChannel({
+        name: '#x',
+        type: 'channel',
+        teamId: 'team-foreign',
+        principal: { userId: 'u', source: 'oss' },
+      }),
+    ).toThrow(/forbidden|tenant|member/i);
+    expect(validator).toHaveBeenCalledTimes(1);
+  });
 });

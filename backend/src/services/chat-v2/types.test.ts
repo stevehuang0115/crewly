@@ -149,6 +149,16 @@ describe('chat-v2/types', () => {
       expect(CHAT_ERROR_CODES.AGENT_ALREADY_BOUND).toBe('agent_already_bound');
       expect(CHAT_ERROR_CODES.INVALID_CURSOR).toBe('invalid_cursor');
     });
+
+    it('exposes FORBIDDEN_TEAM as a distinct code (F2b #333)', () => {
+      // Distinct from generic FORBIDDEN so the chat-ui package can
+      // surface a tenant-specific message ("you are not a member of
+      // this team") instead of the generic 403 copy.
+      expect(CHAT_ERROR_CODES.FORBIDDEN_TEAM).toBe('forbidden_team');
+      expect(CHAT_ERROR_CODES.FORBIDDEN_TEAM).not.toBe(
+        CHAT_ERROR_CODES.FORBIDDEN,
+      );
+    });
   });
 
   describe('ChatError', () => {

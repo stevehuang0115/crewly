@@ -96,6 +96,10 @@ function makeMsgDTO(channelId: string, overrides: Partial<ChatMessageDTO> = {}):
     contentType: 'markdown',
     createdAt: 1_700_000_000_000,
     attachments: [],
+    // Phase A (SEALED §3.2) tightened ChatMessageDTO.mentions from
+    // optional to required (always emitted; empty array when no mentions).
+    // Default the fixture to match so tests don't have to repeat it.
+    mentions: [],
     metadata: { clientMessageId: 'cmid-1' },
     ...overrides,
   };

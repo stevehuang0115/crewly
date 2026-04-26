@@ -22,6 +22,13 @@
  *     the FE includes a stale/typo mention; the chat HTTP ack has
  *     already been sent by the time we resolve.
  *
+ * Phase C F2a (issue #333) — cross-tenant scope enforcement: when the
+ * caller passes `context.teamId`, the resolver enforces the channel's
+ * tenant boundary. `@agent` mentions to members of any other team are
+ * dropped (cross-tenant leak vector pinned by Arch on PR #331); `@team`
+ * mentions to any team still resolve (cross-team pings are a useful
+ * coordination affordance), but a mismatch emits a warn for audit.
+ *
  * The resolver is the boundary between the chat-v2 wire (id strings)
  * and the agent runtime (session names). It deliberately does NOT
  * touch the agent registry — it only produces the addresses that the
@@ -64,10 +71,21 @@ export interface MentionTarget {
 /** Optional context the resolver may use to disambiguate. */
 export interface MentionResolverContext {
   /**
-   * The channel's `teamId` (when the channel is `type='channel'`). Reserved
-   * for future scoping rules — for example, restricting `@agent` mentions
-   * to members of the channel's team. Phase C BE.2 does NOT enforce that
-   * yet; it is forwarded for tests and future BE.3 wiring.
+   * The channel's `teamId` (when the channel is `type='channel'`). When set,
+   * the resolver enforces cross-tenant scope (Phase C F2a, issue #333):
+   *
+   *   - `@agent` mentions are restricted to members whose owning team's
+   *     id equals `teamId`. Mentions to agents of any other team are
+   *     dropped with a debug log so a foreign-team agent never receives
+   *     a dispatch frame from a channel they are not a member of.
+   *
+   *   - `@team` mentions to any team id still resolve to that team's TL
+   *     (they remain useful for cross-team coordination), but a mismatch
+   *     between the channel's `teamId` and the mentioned team's id emits
+   *     a warn so the cross-team ping is observable in audit/log.
+   *
+   * Leave undefined (or empty string) to disable scoping — used by the
+   * legacy DM dispatch path and by tests that need the global resolver.
    */
   teamId?: string;
 }
@@ -119,6 +137,14 @@ export class ChatV2MentionResolver {
    *   - Targets with empty `sessionName` are skipped — there is no agent
    *     to dispatch to.
    *
+   * Phase C F2a (#333) — when `context.teamId` is set:
+   *   - `@agent` mentions whose owning team !== `context.teamId` are
+   *     dropped at debug level (cross-tenant leak guard).
+   *   - `@team` mentions to a different team still resolve to that
+   *     team's TL but emit a warn so cross-team pings are auditable.
+   *   - A blank/whitespace `context.teamId` is treated as "no scope"
+   *     so DM dispatch and back-compat tests keep current behavior.
+   *
    * @param mentions - The raw mention id list from `ChatMessageDTO.mentions`.
    * @param context - Optional resolver context (teamId etc.).
    * @returns Deduplicated dispatch targets, in input order with team-first ties.
@@ -165,6 +191,13 @@ export class ChatV2MentionResolver {
 
     const results: MentionTarget[] = [];
     const seenSessions = new Set<string>();
+    // Treat blank/whitespace teamId as "no scope" so callers don't have to
+    // pre-normalize. This matches the channel-rail listing endpoint's
+    // teamId filter normalization (see ChatV2Service.listChannels).
+    const scopeTeamId =
+      typeof context?.teamId === 'string' && context.teamId.trim().length > 0
+        ? context.teamId
+        : undefined;
 
     for (const rawId of mentions) {
       if (typeof rawId !== 'string') continue;
@@ -174,6 +207,18 @@ export class ChatV2MentionResolver {
       // 1) Team-mention takes precedence (higher routing impact).
       const team = teamById.get(id);
       if (team) {
+        // F2a (#333): when the channel scopes to a team, a `@team` mention
+        // to ANY OTHER team still resolves (deliberate — cross-team pings
+        // are a useful coordination affordance), but we emit a warn so
+        // operators can audit cross-tenant traffic. No warn on same-team
+        // mentions; that's the common case.
+        if (scopeTeamId !== undefined && team.id !== scopeTeamId) {
+          this.logger.warn('chat-v2 mention-resolver cross-team @team mention', {
+            mentionId: id,
+            mentionedTeamId: team.id,
+            contextTeamId: scopeTeamId,
+          });
+        }
         const tl = pickTeamLead(team);
         if (!tl) {
           this.logger.debug('chat-v2 mention-resolver team has no dispatchable TL', {
@@ -205,6 +250,22 @@ export class ChatV2MentionResolver {
       // 2) Agent (member) mention.
       const hit = memberById.get(id);
       if (hit) {
+        // F2a (#333): when the channel scopes to a team, drop @agent
+        // mentions whose owning team differs — without this, a
+        // type='channel' message in team-A could fan-out to an agent in
+        // team-B, the cross-tenant leak vector pinned by Arch on PR #331.
+        // The mention silently no-ops at debug level (the chat HTTP ack
+        // already returned 200; we don't fail the post for a dropped
+        // mention).
+        if (scopeTeamId !== undefined && hit.team.id !== scopeTeamId) {
+          this.logger.debug('chat-v2 mention-resolver dropping foreign-team @agent', {
+            mentionId: id,
+            mentionedMemberId: hit.member.id,
+            mentionedTeamId: hit.team.id,
+            contextTeamId: scopeTeamId,
+          });
+          continue;
+        }
         if (!hit.member.sessionName) {
           this.logger.debug('chat-v2 mention-resolver member has empty sessionName', {
             mentionId: id,
@@ -226,7 +287,7 @@ export class ChatV2MentionResolver {
 
       this.logger.debug('chat-v2 mention-resolver unknown mention id', {
         mentionId: id,
-        contextTeamId: context?.teamId,
+        contextTeamId: scopeTeamId,
       });
     }
 
