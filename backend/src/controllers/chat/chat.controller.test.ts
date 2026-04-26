@@ -755,4 +755,25 @@ describe('Chat Controller', () => {
       setMessageQueueService(null as any);
     });
   });
+
+  // ---------------------------------------------------------------------
+  // P2-2 regression: chat.controller no longer writes to RequestTracker.
+  // The companion read in v3-data.service was removed in this PR; the
+  // write path here is now dead code and was deleted to prevent dead-code
+  // rot. This test pins that no-write contract by inspecting the source
+  // text — a static guard that fires the moment someone re-introduces
+  // setActiveRequest in this controller.
+  // ---------------------------------------------------------------------
+  describe('P2-2: RequestTracker write removal', () => {
+    it('chat.controller source must not call RequestTracker.setActiveRequest', () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const fs = require('fs');
+      const path = require('path');
+      const src = fs.readFileSync(
+        path.join(__dirname, 'chat.controller.ts'),
+        'utf-8',
+      );
+      expect(src).not.toMatch(/RequestTracker\.getInstance\(\)\.setActiveRequest/);
+    });
+  });
 });

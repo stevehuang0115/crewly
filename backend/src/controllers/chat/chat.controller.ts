@@ -114,9 +114,9 @@ export async function sendMessage(
             priority: 'normal',
             tags: ['chat-ui'],
           });
-          // Set active request for RequestTracker time-window correlation
-          const { RequestTracker } = await import('../../services/v3/request-tracker.service.js');
-          RequestTracker.getInstance().setActiveRequest(request.id);
+          // P2-2: RequestTracker.setActiveRequest write removed. The
+          // companion read in v3-data.service.ts no longer falls back to
+          // time-window correlation, so writing here would be dead code.
           logger.debug('V3 Request created from chat message', { messageId: result.message.id, requestId: request.id });
         }
       } catch (err) {
