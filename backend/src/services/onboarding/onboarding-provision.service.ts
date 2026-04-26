@@ -9,6 +9,7 @@
  */
 
 import { TemplateService } from '../template/template.service.js';
+import { StorageService } from '../core/storage.service.js';
 import {
   type OnboardingProvisionRequest,
   type OnboardingProvisionResponse,
@@ -90,7 +91,7 @@ export function collectIntegrations(
  *
  * @example
  * ```typescript
- * const response = provisionFromOnboarding({
+ * const response = await provisionFromOnboarding({
  *   customer: {
  *     identity: { name: 'Acme Corp', vertical: 'Content/Marketing', size: 'small' },
  *     strategy: { goal: 'Scale', budget: 'pro', urgency: 'immediate' },
@@ -100,9 +101,9 @@ export function collectIntegrations(
  * // response.data.teamName === 'Acme Corp Growth Team'
  * ```
  */
-export function provisionFromOnboarding(
+export async function provisionFromOnboarding(
   request: unknown,
-): OnboardingProvisionResponse {
+): Promise<OnboardingProvisionResponse> {
   // Step a: Validate request
   const validation = validateProvisionRequest(request);
   if (!validation.valid) {
@@ -146,6 +147,11 @@ export function provisionFromOnboarding(
       error: `Template "${templateId}" not found. Falling back is not possible — please check template registry.`,
     };
   }
+
+  // Step e.1: Persist the created team to storage
+  // This ensures the team is visible in the dashboard and to other agents.
+  const storage = StorageService.getInstance();
+  await storage.saveTeam(result.team);
 
   // Step f: Extract lead agent focus from nightmareTask
   const leadAgentFocus = stackMapping?.nightmareTask ?? undefined;

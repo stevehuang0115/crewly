@@ -100,6 +100,21 @@ describe('detectStuckWorkItems', () => {
     expect(stuckIds).toContain(wi.id);
   });
 
+  it('SW-1: mark as failed immediately when maxRetries is 0', () => {
+    const wi = makeWorkItem({
+      status: 'running',
+      target: 'agent-dead',
+      startedAt: new Date().toISOString(),
+      retryCount: 0,
+      maxRetries: 0,
+    });
+    const agentMap = makeAgentMap([['agent-dead', { status: 'inactive' }]]);
+
+    const { corrections } = detectStuckWorkItems([wi], agentMap);
+    expect(corrections[0].newState).toBe('failed');
+    expect(corrections[0].reason).toContain('inactive');
+  });
+
   it('should skip non-running WorkItems', () => {
     const wi = makeWorkItem({ status: 'queued', target: 'agent-1' });
     const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
