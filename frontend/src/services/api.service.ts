@@ -1204,6 +1204,57 @@ class ApiService {
   }
 
   // ---------------------------------------------------------------------------
+  // Key Result API
+  // ---------------------------------------------------------------------------
+
+  async getMissionKeyResults(missionId: string): Promise<unknown[]> {
+    const response = await axios.get<ApiResponse<unknown[]>>(`${API_BASE}/missions/${missionId}/key-results`);
+    return response.data.data || [];
+  }
+
+  async createKeyResult(missionId: string, input: {
+    title: string;
+    metricType: 'number' | 'percentage' | 'boolean' | 'currency';
+    baseline: number;
+    target: number;
+    unit: string;
+    ownerId?: string;
+    measurementSource?: 'manual' | 'task_completion' | 'skill_output';
+  }): Promise<unknown> {
+    const response = await axios.post<ApiResponse<unknown>>(`${API_BASE}/missions/${missionId}/key-results`, input);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to create Key Result');
+    }
+    return response.data.data;
+  }
+
+  async updateKeyResult(missionId: string, krId: string, updates: Record<string, unknown>): Promise<unknown> {
+    const response = await axios.put<ApiResponse<unknown>>(`${API_BASE}/missions/${missionId}/key-results/${krId}`, updates);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to update Key Result');
+    }
+    return response.data.data;
+  }
+
+  async deleteKeyResult(missionId: string, krId: string): Promise<void> {
+    const response = await axios.delete<ApiResponse<void>>(`${API_BASE}/missions/${missionId}/key-results/${krId}`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete Key Result');
+    }
+  }
+
+  async measureKeyResult(missionId: string, krId: string, value: number, note?: string): Promise<unknown> {
+    const response = await axios.post<ApiResponse<unknown>>(`${API_BASE}/missions/${missionId}/key-results/${krId}/measure`, {
+      value,
+      note,
+    });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to record measurement');
+    }
+    return response.data.data;
+  }
+
+  // ---------------------------------------------------------------------------
   // Trigger API
   // ---------------------------------------------------------------------------
 

@@ -42,28 +42,15 @@ import {
   type MissionPriority,
   type MissionPeriodType,
   type MissionPeriod,
+  type KRStatus,
+  type KRMetricType,
+  type KeyResultSummary,
 } from '../types/mission.types';
-
-// =============================================================================
-// Types (KR summaries are only used on this page)
-// =============================================================================
-
-/** KR metric type (mirrors backend). */
-type KRMetricType = 'number' | 'percentage' | 'boolean' | 'currency';
-
-/** KR progress status (mirrors backend). */
-type KRStatus = 'not_started' | 'on_track' | 'at_risk' | 'off_track' | 'achieved';
-
-interface KeyResultSummary {
-  id: string;
-  title: string;
-  metricType: KRMetricType;
-  baseline: number;
-  target: number;
-  current: number;
-  unit: string;
-  status: KRStatus;
-}
+import {
+  computeKrProgress,
+  formatKrValue,
+  KR_STATUS_COLOR,
+} from '../utils/mission.utils';
 
 /** Full Mission object returned by the API. */
 interface Mission {
@@ -442,6 +429,63 @@ export const MissionDetail: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main content */}
         <div className="lg:col-span-2 flex flex-col gap-4">
+          {/* Key Results */}
+          {!isEditing && mission.keyResults && mission.keyResults.length > 0 && (
+            <Card variant="default" padding="md" className="border border-border-dark">
+              <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                <Target className="h-4 w-4" />
+                Key Results ({mission.keyResults.length})
+              </h2>
+              <div className="space-y-3">
+                {mission.keyResults.map((kr) => {
+                  const progress = computeKrProgress(kr);
+                  const pct = Math.round(progress * 100);
+                  return (
+                    <div
+                      key={kr.id}
+                      className="flex flex-col gap-2 rounded-lg bg-surface-dark/40 border border-border-dark p-4 transition-colors hover:border-primary/20"
+                      data-testid={`mission-kr-${kr.id}`}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-sm font-semibold text-text-primary-dark truncate">
+                              {kr.title}
+                            </span>
+                            {kr.ownerId && (
+                              <Badge variant="default" size="sm" className="font-mono text-[10px]">
+                                @{kr.ownerId.slice(0, 8)}
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <StatusBadge status={kr.status === 'achieved' ? 'completed' : kr.status === 'off_track' ? 'blocked' : kr.status === 'at_risk' ? 'paused' : 'active'}>
+                              {kr.status.replace(/_/g, ' ')}
+                            </StatusBadge>
+                            <span className="text-xs text-text-secondary-dark">
+                              {formatKrValue(kr.current, kr.metricType, kr.unit)} / {formatKrValue(kr.target, kr.metricType, kr.unit)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-right flex flex-col items-end">
+                          <span className="text-lg font-bold text-text-primary-dark">
+                            {pct}%
+                          </span>
+                        </div>
+                      </div>
+                      <div className="h-1.5 w-full rounded-full bg-background-dark overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${KR_STATUS_COLOR[kr.status]}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
           {/* Strategy */}
           <Card variant="default" padding="md" className="border border-border-dark">
             <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide mb-2 flex items-center gap-1.5">

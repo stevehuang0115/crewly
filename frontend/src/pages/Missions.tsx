@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Target,
   Plus,
+  Calendar,
 } from 'lucide-react';
 import { Button } from '../components/UI/Button';
 import { Card } from '../components/UI/Card';
@@ -34,31 +35,19 @@ import {
   type MissionStatus,
   type MissionPriority,
   type MissionPeriod,
+  type KRStatus,
+  type KRMetricType,
+  type KeyResultSummary,
 } from '../types/mission.types';
+import {
+  computeKrProgress,
+  formatKrValue,
+  KR_STATUS_COLOR,
+} from '../utils/mission.utils';
 
 // =============================================================================
 // Types (KR summaries are only used on this page)
 // =============================================================================
-
-/** KR metric type (mirrors backend). */
-type KRMetricType = 'number' | 'percentage' | 'boolean' | 'currency';
-
-/** KR progress status (mirrors backend). */
-type KRStatus = 'not_started' | 'on_track' | 'at_risk' | 'off_track' | 'achieved';
-
-/**
- * Inline KR summary returned alongside each mission.
- */
-interface KeyResultSummary {
-  id: string;
-  title: string;
-  metricType: KRMetricType;
-  baseline: number;
-  target: number;
-  current: number;
-  unit: string;
-  status: KRStatus;
-}
 
 /**
  * Frontend representation of a Mission.
@@ -148,49 +137,6 @@ function classifyPeriod(period: MissionPeriod | undefined, now: Date = new Date(
   if (t >= end) return 'past';
   return 'current';
 }
-
-/**
- * Computes progress for a KR on a 0–1 scale.
- *
- * Handles the "lower is better" case where target < baseline
- * (e.g. latency reduction). Returns 0 if baseline equals target
- * (avoiding divide-by-zero) and clamps to [0, 1].
- *
- * @param kr - Key Result summary with baseline, target, current
- * @returns Progress as a number between 0 and 1 inclusive
- */
-function computeKrProgress(kr: Pick<KeyResultSummary, 'baseline' | 'target' | 'current'>): number {
-  const span = kr.target - kr.baseline;
-  if (span === 0) return kr.current >= kr.target ? 1 : 0;
-  const raw = (kr.current - kr.baseline) / span;
-  return Math.max(0, Math.min(1, raw));
-}
-
-/**
- * Formats a KR metric value for display based on its metricType.
- */
-function formatKrValue(value: number, metricType: KRMetricType, unit: string): string {
-  switch (metricType) {
-    case 'currency':
-      return `${unit || '$'}${value.toLocaleString()}`;
-    case 'percentage':
-      return `${value}${unit || '%'}`;
-    case 'boolean':
-      return value >= 1 ? 'Yes' : 'No';
-    case 'number':
-    default:
-      return `${value.toLocaleString()}${unit ? ` ${unit}` : ''}`;
-  }
-}
-
-/** Tailwind colour class for a KR progress bar based on KR status. */
-const KR_STATUS_COLOR: Record<KRStatus, string> = {
-  not_started: 'bg-border-dark',
-  on_track: 'bg-emerald-500',
-  at_risk: 'bg-amber-500',
-  off_track: 'bg-rose-500',
-  achieved: 'bg-emerald-500',
-};
 
 /**
  * Formats a relative time string from an ISO date.
@@ -287,6 +233,11 @@ const KeyResultsList: React.FC<{ missionId: string; keyResults: KeyResultSummary
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs font-medium text-text-primary-dark truncate">
                 {kr.title}
+                {kr.ownerId && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded-sm bg-surface-dark text-[10px] text-text-secondary-dark font-mono">
+                    @{kr.ownerId.slice(0, 8)}
+                  </span>
+                )}
               </span>
               <span className="text-[11px] text-text-secondary-dark flex-shrink-0 font-mono">
                 {formatKrValue(kr.current, kr.metricType, kr.unit)} /{' '}
@@ -664,6 +615,10 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
   const [successCriteria, setSuccessCriteria] = useState('');
   const [priority, setPriority] = useState<MissionPriority>('medium');
   const [parentMissionId, setParentMissionId] = useState<string>('');
+  const [periodType, setPeriodType] = useState<MissionPeriodType | ''>('');
+  const [periodStart, setPeriodStart] = useState('');
+  const [periodEnd, setPeriodEnd] = useState('');
+  const [periodLabel, setPeriodLabel] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
 
@@ -674,6 +629,14 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
 
     try {
       setSubmitting(true);
+      
+      const period = (periodType && periodStart && periodEnd) ? {
+        type: periodType,
+        startDate: new Date(periodStart).toISOString(),
+        endDate: new Date(periodEnd).toISOString(),
+        ...(periodLabel ? { label: periodLabel } : {}),
+      } : undefined;
+
       await apiService.createMission({
         objective: objective.trim(),
         ownerTeamId: ownerTeamId.trim(),
@@ -683,6 +646,7 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
           : [],
         priority,
         ...(parentMissionId ? { parentMissionId } : {}),
+        ...(period ? { period } : {}),
       });
       setObjective('');
       setOwnerTeamId('');
@@ -690,6 +654,10 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
       setSuccessCriteria('');
       setPriority('medium');
       setParentMissionId('');
+      setPeriodType('');
+      setPeriodStart('');
+      setPeriodEnd('');
+      setPeriodLabel('');
       onCreated();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to create mission');
@@ -757,6 +725,58 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({ isOpen, onClose
             <p className="mt-1 text-xs text-text-secondary-dark">
               Cascade this mission under a company or team-level OKR.
             </p>
+          </div>
+
+          <div className="border-t border-border-dark pt-4">
+            <label className="block text-sm font-semibold text-text-primary-dark mb-2 flex items-center gap-1.5">
+              <Calendar className="h-4 w-4 text-text-secondary-dark" />
+              OKR Period
+            </label>
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-text-secondary-dark mb-1">Type</label>
+                <FormSelect
+                  value={periodType}
+                  onChange={(e) => setPeriodType(e.target.value as MissionPeriodType | '')}
+                >
+                  <option value="">— No period —</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Biweekly</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="quarterly">Quarterly</option>
+                  <option value="custom">Custom</option>
+                </FormSelect>
+              </div>
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-text-secondary-dark mb-1">Label</label>
+                <input
+                  className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-accent-blue/50"
+                  value={periodLabel}
+                  onChange={(e) => setPeriodLabel(e.target.value)}
+                  placeholder="e.g. Q2 2026"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-text-secondary-dark mb-1">Start Date</label>
+                <input
+                  type="date"
+                  className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-accent-blue/50"
+                  value={periodStart}
+                  onChange={(e) => setPeriodStart(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-text-secondary-dark mb-1">End Date</label>
+                <input
+                  type="date"
+                  className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-accent-blue/50"
+                  value={periodEnd}
+                  onChange={(e) => setPeriodEnd(e.target.value)}
+                />
+              </div>
+            </div>
           </div>
 
           <div>

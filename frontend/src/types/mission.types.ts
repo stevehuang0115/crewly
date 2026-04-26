@@ -31,6 +31,28 @@ export interface MissionPeriod {
   label?: string;
 }
 
+/** KR metric type (mirrors backend). */
+export type KRMetricType = 'number' | 'percentage' | 'boolean' | 'currency';
+
+/** KR progress status (mirrors backend). */
+export type KRStatus = 'not_started' | 'on_track' | 'at_risk' | 'off_track' | 'achieved';
+
+/**
+ * Inline KR summary returned alongside each mission.
+ */
+export interface KeyResultSummary {
+  id: string;
+  missionId: string;
+  ownerId?: string;
+  title: string;
+  metricType: KRMetricType;
+  baseline: number;
+  target: number;
+  current: number;
+  unit: string;
+  status: KRStatus;
+}
+
 /** Numeric rank for priority sorting (lower = higher priority). */
 export const PRIORITY_RANK: Record<MissionPriority, number> = {
   critical: 0,

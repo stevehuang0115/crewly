@@ -80,6 +80,8 @@ export interface KeyResult {
   id: string;
   /** Parent Mission ID */
   missionId: string;
+  /** Member ID who owns this KR (optional) */
+  ownerId?: string;
   /** Human-readable description (e.g. "Reduce P95 latency to <200ms") */
   title: string;
   /** How the value is interpreted */
@@ -121,6 +123,7 @@ export interface CreateKeyResultInput {
   baseline: number;
   target: number;
   unit: string;
+  ownerId?: string;
   measurementSource?: KRMeasurementSource;
   measurementConfig?: Record<string, unknown>;
 }
@@ -132,6 +135,7 @@ export interface UpdateKeyResultInput {
   current?: number;
   status?: KRStatus;
   target?: number;
+  ownerId?: string;
   measurementSource?: KRMeasurementSource;
   measurementConfig?: Record<string, unknown>;
 }
@@ -225,6 +229,10 @@ export function validateCreateKeyResultInput(input: unknown): string[] {
   if (!obj.unit || typeof obj.unit !== 'string') errors.push('unit is required');
   if (obj.baseline === obj.target) errors.push('baseline and target must be different');
 
+  if (obj.ownerId !== undefined && typeof obj.ownerId !== 'string') {
+    errors.push('ownerId must be a string');
+  }
+
   if (obj.measurementSource !== undefined && !isValidKRMeasurementSource(obj.measurementSource)) {
     errors.push(`measurementSource must be one of: ${KR_MEASUREMENT_SOURCES.join(', ')}`);
   }
@@ -241,6 +249,7 @@ export function isKeyResult(value: unknown): value is KeyResult {
   return (
     typeof obj.id === 'string' &&
     typeof obj.missionId === 'string' &&
+    (obj.ownerId === undefined || typeof obj.ownerId === 'string') &&
     typeof obj.title === 'string' &&
     isValidKRMetricType(obj.metricType) &&
     typeof obj.baseline === 'number' &&
@@ -300,6 +309,7 @@ export function createKeyResult(input: CreateKeyResultInput): KeyResult {
   return {
     id: randomUUID(),
     missionId: input.missionId,
+    ownerId: input.ownerId,
     title: input.title,
     metricType: input.metricType,
     baseline: input.baseline,

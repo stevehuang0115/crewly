@@ -366,9 +366,9 @@ export function createOnboardingRouter(): Router {
    * Returns 200 with OnboardingProvisionResponse on success.
    * Returns 400 with error details on validation failure or budget gate.
    */
-  router.post('/provision', (req: Request, res: Response) => {
+  router.post('/provision', async (req: Request, res: Response) => {
     try {
-      const result = provisionFromOnboarding(req.body);
+      const result = await provisionFromOnboarding(req.body);
 
       if (!result.success) {
         res.status(400).json(result);

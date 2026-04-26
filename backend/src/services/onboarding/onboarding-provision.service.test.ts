@@ -27,6 +27,20 @@ jest.mock('../template/template.service.js', () => ({
 }));
 
 // ---------------------------------------------------------------------------
+// Mock StorageService — avoid filesystem / persistence
+// ---------------------------------------------------------------------------
+
+const mockSaveTeam = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('../core/storage.service.js', () => ({
+  StorageService: {
+    getInstance: () => ({
+      saveTeam: mockSaveTeam,
+    }),
+  },
+}));
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -123,41 +137,41 @@ describe('onboarding-provision.service', () => {
   // =========================================================================
 
   describe('provisionFromOnboarding — validation errors', () => {
-    it('should reject null body', () => {
-      const res = provisionFromOnboarding(null);
+    it('should reject null body', async () => {
+      const res = await provisionFromOnboarding(null);
       expect(res.success).toBe(false);
       expect(res.error).toContain('Validation failed');
     });
 
-    it('should reject missing customer', () => {
-      const res = provisionFromOnboarding({});
+    it('should reject missing customer', async () => {
+      const res = await provisionFromOnboarding({});
       expect(res.success).toBe(false);
       expect(res.error).toContain('customer is required');
     });
 
-    it('should reject missing customer.identity.name', () => {
+    it('should reject missing customer.identity.name', async () => {
       const req = makeRequest();
       (req['customer'] as Record<string, unknown>)['identity'] = {
         vertical: 'Content/Marketing',
         size: 'small',
       };
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
       expect(res.success).toBe(false);
       expect(res.error).toContain('customer.identity.name');
     });
 
-    it('should reject invalid vertical', () => {
+    it('should reject invalid vertical', async () => {
       const req = makeRequest();
       ((req['customer'] as Record<string, unknown>)['identity'] as Record<string, unknown>)['vertical'] = 'Invalid';
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
       expect(res.success).toBe(false);
       expect(res.error).toContain('vertical');
     });
 
-    it('should reject invalid goal', () => {
+    it('should reject invalid goal', async () => {
       const req = makeRequest();
       ((req['customer'] as Record<string, unknown>)['strategy'] as Record<string, unknown>)['goal'] = 'Profit';
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
       expect(res.success).toBe(false);
       expect(res.error).toContain('goal');
     });
@@ -168,10 +182,10 @@ describe('onboarding-provision.service', () => {
   // =========================================================================
 
   describe('provisionFromOnboarding — starter budget rejection', () => {
-    it('should reject starter budget with OSS suggestion', () => {
+    it('should reject starter budget with OSS suggestion', async () => {
       const req = makeRequest();
       ((req['customer'] as Record<string, unknown>)['strategy'] as Record<string, unknown>)['budget'] = 'starter';
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
       expect(res.success).toBe(false);
       expect(res.error).toContain('Starter budget');
       expect(res.error).toContain('OSS self-serve');
@@ -183,9 +197,9 @@ describe('onboarding-provision.service', () => {
   // =========================================================================
 
   describe('provisionFromOnboarding — successful provision', () => {
-    it('should provision Content/Marketing + Scale → growth-marketing-team', () => {
+    it('should provision Content/Marketing + Scale → growth-marketing-team', async () => {
       stubTemplateSuccess('growth-marketing-team');
-      const res = provisionFromOnboarding(makeRequest());
+      const res = await provisionFromOnboarding(makeRequest());
 
       expect(res.success).toBe(true);
       expect(res.data).toBeDefined();
@@ -197,13 +211,14 @@ describe('onboarding-provision.service', () => {
         'growth-marketing-team',
         'Acme Corp Growth Team',
       );
+      expect(mockSaveTeam).toHaveBeenCalledWith(expect.objectContaining({ id: 'team-abc' }));
     });
 
-    it('should provision Content/Marketing + Time → ai-video-social-team', () => {
+    it('should provision Content/Marketing + Time → ai-video-social-team', async () => {
       stubTemplateSuccess('ai-video-social-team');
       const req = makeRequest();
       ((req['customer'] as Record<string, unknown>)['strategy'] as Record<string, unknown>)['goal'] = 'Time';
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.success).toBe(true);
       expect(res.data!.templateId).toBe('ai-video-social-team');
@@ -213,53 +228,53 @@ describe('onboarding-provision.service', () => {
       );
     });
 
-    it('should provision E-commerce/Sales + Scale → growth-marketing-team', () => {
+    it('should provision E-commerce/Sales + Scale → growth-marketing-team', async () => {
       stubTemplateSuccess('growth-marketing-team');
       const req = makeRequest();
       ((req['customer'] as Record<string, unknown>)['identity'] as Record<string, unknown>)['vertical'] = 'E-commerce/Sales';
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.success).toBe(true);
       expect(res.data!.templateId).toBe('growth-marketing-team');
     });
 
-    it('should provision E-commerce/Sales + Time → customer-ops-team', () => {
+    it('should provision E-commerce/Sales + Time → customer-ops-team', async () => {
       stubTemplateSuccess('customer-ops-team');
       const req = makeRequest();
       ((req['customer'] as Record<string, unknown>)['identity'] as Record<string, unknown>)['vertical'] = 'E-commerce/Sales';
       ((req['customer'] as Record<string, unknown>)['strategy'] as Record<string, unknown>)['goal'] = 'Time';
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.success).toBe(true);
       expect(res.data!.templateId).toBe('customer-ops-team');
     });
 
-    it('should provision Software/Tech + Scale → web-dev-team', () => {
+    it('should provision Software/Tech + Scale → web-dev-team', async () => {
       stubTemplateSuccess('web-dev-team');
       const req = makeRequest();
       ((req['customer'] as Record<string, unknown>)['identity'] as Record<string, unknown>)['vertical'] = 'Software/Tech';
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.success).toBe(true);
       expect(res.data!.templateId).toBe('web-dev-team');
     });
 
-    it('should provision Software/Tech + Time → web-dev-team', () => {
+    it('should provision Software/Tech + Time → web-dev-team', async () => {
       stubTemplateSuccess('web-dev-team');
       const req = makeRequest();
       ((req['customer'] as Record<string, unknown>)['identity'] as Record<string, unknown>)['vertical'] = 'Software/Tech';
       ((req['customer'] as Record<string, unknown>)['strategy'] as Record<string, unknown>)['goal'] = 'Time';
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.success).toBe(true);
       expect(res.data!.templateId).toBe('web-dev-team');
     });
 
-    it('should provision with managed budget tier', () => {
+    it('should provision with managed budget tier', async () => {
       stubTemplateSuccess('growth-marketing-team');
       const req = makeRequest();
       ((req['customer'] as Record<string, unknown>)['strategy'] as Record<string, unknown>)['budget'] = 'managed';
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.success).toBe(true);
       expect(res.data!.matchedTier).toBe('managed');
@@ -271,26 +286,26 @@ describe('onboarding-provision.service', () => {
   // =========================================================================
 
   describe('provisionFromOnboarding — nightmareTask flows to leadAgentFocus', () => {
-    it('should set leadAgentFocus from nightmareTask', () => {
+    it('should set leadAgentFocus from nightmareTask', async () => {
       stubTemplateSuccess();
-      const res = provisionFromOnboarding(makeRequest());
+      const res = await provisionFromOnboarding(makeRequest());
 
       expect(res.data!.leadAgentFocus).toBe('Creating weekly social media posts');
     });
 
-    it('should omit leadAgentFocus when nightmareTask is absent', () => {
+    it('should omit leadAgentFocus when nightmareTask is absent', async () => {
       stubTemplateSuccess();
       const req = makeRequest({ stackMapping: { crmTool: 'HubSpot' } });
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.data!.leadAgentFocus).toBeUndefined();
     });
 
-    it('should omit leadAgentFocus when stackMapping is absent', () => {
+    it('should omit leadAgentFocus when stackMapping is absent', async () => {
       stubTemplateSuccess();
       const req = makeRequest();
       delete req['stackMapping'];
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.data!.leadAgentFocus).toBeUndefined();
     });
@@ -301,18 +316,18 @@ describe('onboarding-provision.service', () => {
   // =========================================================================
 
   describe('provisionFromOnboarding — integrations collection', () => {
-    it('should collect crmTool and chatTool into pendingIntegrations', () => {
+    it('should collect crmTool and chatTool into pendingIntegrations', async () => {
       stubTemplateSuccess();
-      const res = provisionFromOnboarding(makeRequest());
+      const res = await provisionFromOnboarding(makeRequest());
 
       expect(res.data!.pendingIntegrations).toEqual(['HubSpot', 'Slack']);
     });
 
-    it('should return empty array when no stack mapping', () => {
+    it('should return empty array when no stack mapping', async () => {
       stubTemplateSuccess();
       const req = makeRequest();
       delete req['stackMapping'];
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.data!.pendingIntegrations).toEqual([]);
     });
@@ -323,26 +338,26 @@ describe('onboarding-provision.service', () => {
   // =========================================================================
 
   describe('provisionFromOnboarding — template fallback', () => {
-    it('should return error when resolved template is not found', () => {
+    it('should return error when resolved template is not found', async () => {
       mockCreateTeamFromTemplate.mockReturnValue(null);
-      const res = provisionFromOnboarding(makeRequest());
+      const res = await provisionFromOnboarding(makeRequest());
 
       expect(res.success).toBe(false);
       expect(res.error).toContain('not found');
     });
 
-    it('should pass onboardingSessionId through to response', () => {
+    it('should pass onboardingSessionId through to response', async () => {
       stubTemplateSuccess();
-      const res = provisionFromOnboarding(makeRequest());
+      const res = await provisionFromOnboarding(makeRequest());
 
       expect(res.data!.onboardingSessionId).toBe('sess-123');
     });
 
-    it('should omit onboardingSessionId when not provided', () => {
+    it('should omit onboardingSessionId when not provided', async () => {
       stubTemplateSuccess();
       const req = makeRequest();
       delete req['onboardingSessionId'];
-      const res = provisionFromOnboarding(req);
+      const res = await provisionFromOnboarding(req);
 
       expect(res.data!.onboardingSessionId).toBeUndefined();
     });

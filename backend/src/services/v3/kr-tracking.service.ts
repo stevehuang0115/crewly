@@ -160,6 +160,7 @@ export class KRTrackingService {
     if (update.current !== undefined) kr.current = update.current;
     if (update.target !== undefined) kr.target = update.target;
     if (update.status !== undefined) kr.status = update.status;
+    if (update.ownerId !== undefined) kr.ownerId = update.ownerId;
     if (update.measurementSource !== undefined) kr.measurementSource = update.measurementSource;
     if (update.measurementConfig !== undefined) kr.measurementConfig = update.measurementConfig;
 

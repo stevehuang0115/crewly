@@ -9,6 +9,7 @@
  */
 
 import { TemplateService } from '../template/template.service.js';
+import { StorageService } from '../core/storage.service.js';
 import {
   type OnboardingProvisionRequest,
   type OnboardingProvisionResponse,
@@ -87,22 +88,10 @@ export function collectIntegrations(
  *
  * @param request - The onboarding handoff payload from the Onboarding Agent
  * @returns Structured response indicating success or failure with details
- *
- * @example
- * ```typescript
- * const response = provisionFromOnboarding({
- *   customer: {
- *     identity: { name: 'Acme Corp', vertical: 'Content/Marketing', size: 'small' },
- *     strategy: { goal: 'Scale', budget: 'pro', urgency: 'immediate' },
- *   },
- * });
- * // response.success === true
- * // response.data.teamName === 'Acme Corp Growth Team'
- * ```
  */
-export function provisionFromOnboarding(
+export async function provisionFromOnboarding(
   request: unknown,
-): OnboardingProvisionResponse {
+): Promise<OnboardingProvisionResponse> {
   // Step a: Validate request
   const validation = validateProvisionRequest(request);
   if (!validation.valid) {
@@ -147,13 +136,24 @@ export function provisionFromOnboarding(
     };
   }
 
-  // Step f: Extract lead agent focus from nightmareTask
+  // Step f: Save team to storage (NEW - CRITICAL FIX)
+  try {
+    const storageService = StorageService.getInstance();
+    await storageService.saveTeam(result.team);
+  } catch (saveErr) {
+    return {
+      success: false,
+      error: `Failed to persist provisioned team: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`,
+    };
+  }
+
+  // Step g: Extract lead agent focus from nightmareTask
   const leadAgentFocus = stackMapping?.nightmareTask ?? undefined;
 
-  // Step g: Collect integrations
+  // Step h: Collect integrations
   const pendingIntegrations = collectIntegrations(stackMapping);
 
-  // Step h: Build and return response
+  // Step i: Build and return response
   return {
     success: true,
     data: {

@@ -39,6 +39,8 @@ const DEFAULT_PRIORITY: MissionPriority = 'medium';
 /** Summary of a KeyResult included inline on mission list/detail responses. */
 interface KeyResultSummary {
   id: string;
+  missionId: string;
+  ownerId?: string;
   title: string;
   metricType: KeyResult['metricType'];
   baseline: number;
@@ -74,6 +76,8 @@ async function readKeyResultSummaries(missionId: string): Promise<KeyResultSumma
         const kr = JSON.parse(raw) as KeyResult;
         const summary: KeyResultSummary = {
           id: kr.id,
+          missionId: kr.missionId,
+          ownerId: kr.ownerId,
           title: kr.title,
           metricType: kr.metricType,
           baseline: kr.baseline,
