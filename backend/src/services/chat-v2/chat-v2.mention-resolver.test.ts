@@ -11,6 +11,7 @@
 
 import { ChatV2MentionResolver } from './chat-v2.mention-resolver.js';
 import type { Team, TeamMember } from '../../types/index.js';
+import { LoggerService } from '../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -274,16 +275,167 @@ describe('ChatV2MentionResolver', () => {
     });
   });
 
-  describe('context.teamId', () => {
-    it('forwards context without changing resolution (Phase C BE.2 leaves scoping for BE.3+)', async () => {
-      // Calling with a teamId scope should not currently restrict the
-      // result set (the scoping rule is reserved for a future tightening).
-      // This test pins the current contract so a future change is
-      // explicit.
-      const r = build();
-      const out = await r.resolve(['leo-id'], { teamId: 'team-marketing' });
-      expect(out).toHaveLength(1);
-      expect(out[0].memberId).toBe('leo-id');
+  // ---------------------------------------------------------------------
+  // Phase C F2a (#333) — cross-tenant scope enforcement when
+  // context.teamId is set. Replaces the BE.2 placeholder test.
+  // ---------------------------------------------------------------------
+  describe('context.teamId — F2a cross-tenant scope', () => {
+    /**
+     * Capture warn/debug log calls without depending on the real logger.
+     * `createComponentLogger` returns a fresh ComponentLogger per call,
+     * so patching one instance doesn't affect another. Stub the factory
+     * itself to return a stable spy logger that every resolver built
+     * during the spec sees.
+     */
+    type LogCall = { level: 'warn' | 'debug' | 'info' | 'error'; message: string; meta: unknown };
+    let logSpy: LogCall[];
+    let createComponentLoggerSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      logSpy = [];
+      const stubLogger = {
+        warn: (message: string, meta?: unknown) =>
+          logSpy.push({ level: 'warn', message, meta }),
+        debug: (message: string, meta?: unknown) =>
+          logSpy.push({ level: 'debug', message, meta }),
+        info: (message: string, meta?: unknown) =>
+          logSpy.push({ level: 'info', message, meta }),
+        error: (message: string, meta?: unknown) =>
+          logSpy.push({ level: 'error', message, meta }),
+      };
+      createComponentLoggerSpy = jest
+        .spyOn(LoggerService.getInstance(), 'createComponentLogger')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValue(stubLogger as any);
+    });
+
+    afterEach(() => {
+      createComponentLoggerSpy.mockRestore();
+    });
+
+    describe('@agent scoping', () => {
+      it('resolves an @agent in the scoped team', async () => {
+        const r = build();
+        const out = await r.resolve(['leo-id'], { teamId: 'team-product' });
+        expect(out).toEqual([
+          {
+            kind: 'agent',
+            mentionId: 'leo-id',
+            memberId: 'leo-id',
+            sessionName: 'crewly-product-leo',
+          },
+        ]);
+      });
+
+      it('drops an @agent that lives in a foreign team (cross-tenant leak guard)', async () => {
+        // The Arch-described attack: scope is team-product, attacker
+        // mentions an agent id that belongs to team-marketing. Resolver
+        // must NOT produce a dispatch target for the foreign agent.
+        const r = build();
+        const out = await r.resolve(['luna-id'], { teamId: 'team-product' });
+        expect(out).toEqual([]);
+        expect(
+          logSpy.some(
+            (c) =>
+              c.level === 'debug' &&
+              c.message ===
+                'chat-v2 mention-resolver dropping foreign-team @agent',
+          ),
+        ).toBe(true);
+      });
+
+      it('drops only foreign-team @agents in a mixed list (same-team kept)', async () => {
+        const r = build();
+        const out = await r.resolve(
+          ['leo-id', 'luna-id', 'max-id'],
+          { teamId: 'team-product' },
+        );
+        // leo + max are same-team, kept; luna is foreign, dropped.
+        expect(out.map((t) => t.memberId)).toEqual(['leo-id', 'max-id']);
+      });
+
+      it('treats blank context.teamId as "no scope" (back-compat)', async () => {
+        const r = build();
+        // Empty string and whitespace must not trigger scope filtering;
+        // matches listChannels' teamIdFilter normalization. A foreign
+        // @agent should still resolve under "no scope".
+        for (const teamIdRaw of ['', '   ']) {
+          const out = await r.resolve(['luna-id'], { teamId: teamIdRaw });
+          expect(out).toHaveLength(1);
+          expect(out[0].memberId).toBe('luna-id');
+        }
+      });
+
+      it('preserves global resolution when context is omitted entirely', async () => {
+        const r = build();
+        const out = await r.resolve(['luna-id']);
+        expect(out).toHaveLength(1);
+        expect(out[0].memberId).toBe('luna-id');
+      });
+    });
+
+    describe('@team scoping', () => {
+      it('resolves a same-team @team mention without warn', async () => {
+        const r = build();
+        const out = await r.resolve(['team-product'], {
+          teamId: 'team-product',
+        });
+        expect(out[0]).toMatchObject({
+          kind: 'team',
+          memberId: 'sam-id',
+          teamId: 'team-product',
+        });
+        expect(
+          logSpy.some(
+            (c) =>
+              c.level === 'warn' &&
+              c.message === 'chat-v2 mention-resolver cross-team @team mention',
+          ),
+        ).toBe(false);
+      });
+
+      it('still resolves a cross-team @team mention but emits a warn', async () => {
+        // Cross-team @team is not blocked — it's a useful coordination
+        // affordance — but the warn surfaces it for audit.
+        const r = build();
+        const out = await r.resolve(['team-marketing'], {
+          teamId: 'team-product',
+        });
+        expect(out[0]).toMatchObject({
+          kind: 'team',
+          teamId: 'team-marketing',
+          memberId: 'ella-id',
+        });
+        const warn = logSpy.find(
+          (c) =>
+            c.level === 'warn' &&
+            c.message === 'chat-v2 mention-resolver cross-team @team mention',
+        );
+        expect(warn).toBeDefined();
+        expect(warn?.meta).toMatchObject({
+          mentionId: 'team-marketing',
+          mentionedTeamId: 'team-marketing',
+          contextTeamId: 'team-product',
+        });
+      });
+    });
+
+    describe('regression: cross-tenant leak vector', () => {
+      it('reproduces and blocks the Arch-described leak (team-A channel cannot dispatch to team-B agent)', async () => {
+        // Arch's attack writeup on PR #331:
+        //   1. Create type=channel channel with teamId=team-other-tenant.
+        //   2. POST message with mentions=[agent-id-from-foreign-team].
+        //   3. Resolver walks ALL teams, finds foreign agent, dispatcher
+        //      fans out, foreign session receives the message.
+        // After F2a, step 3 must produce no targets.
+        const r = build();
+        const attackerScopedTeamId = 'team-product';
+        const foreignAgentMemberId = 'luna-id'; // belongs to team-marketing
+        const out = await r.resolve([foreignAgentMemberId], {
+          teamId: attackerScopedTeamId,
+        });
+        expect(out).toEqual([]);
+      });
     });
   });
 });
