@@ -1,30 +1,29 @@
 /**
- * Onboarding Routes — Unit Tests
+ * Onboarding Routes — Integration tests against the new Cloud Portal flow.
  *
- * Tests the REST API endpoints for onboarding session management.
- * Uses mocked BrandOnboardingService to isolate route logic.
+ * Exercises every endpoint registered by {@link createOnboardingRouter} with
+ * a real {@link OnboardingService} singleton, asserting status codes and
+ * response payload shapes. The `/provision` endpoint is asserted at the
+ * boundary only — the underlying `provisionFromOnboarding` handoff is covered
+ * by its own service-level tests.
  *
  * @module controllers/onboarding/onboarding.routes.test
  */
 
 import express from 'express';
 import request from 'supertest';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import { createOnboardingRouter } from './onboarding.routes.js';
-import { BrandOnboardingService } from '../../services/onboarding/brand-onboarding.service.js';
+import { OnboardingService } from '../../services/onboarding/onboarding.service.js';
 import type {
-  OnboardingSession,
-  OnboardingPrefill,
-  BrandProfile,
-} from '../../services/onboarding/brand-onboarding.types.js';
+  DiscoveryAnswers,
+  OnboardingPrefillData,
+} from '../../services/onboarding/onboarding.types.js';
 
 // =============================================================================
 // Test app setup
 // =============================================================================
 
-function createTestApp() {
+function createTestApp(): express.Express {
   const app = express();
   app.use(express.json());
   app.use('/api/onboarding', createOnboardingRouter());
@@ -35,53 +34,19 @@ function createTestApp() {
 // Mock data
 // =============================================================================
 
-const mockSession: OnboardingSession = {
-  id: 'session-001',
-  teamId: 'team-abc',
-  templateId: 'marketing-v1',
-  status: 'in_progress',
-  answers: [],
-  currentQuestionIndex: 0,
-  totalQuestions: 10,
-  createdAt: '2026-04-15T00:00:00Z',
-  updatedAt: '2026-04-15T00:00:00Z',
-};
-
-const mockPrefill: OnboardingPrefill = {
-  businessName: {
-    value: 'Sunrise Bakery',
-    sourceUrls: ['https://sunrisebakery.com'],
-    confidence: 'high',
-    extractionMethod: 'llm_text',
-    needsReview: false,
-  },
-  industry: {
-    value: 'Food & Beverage',
-    sourceUrls: ['https://sunrisebakery.com/about'],
-    confidence: 'high',
-    extractionMethod: 'llm_text',
-    needsReview: false,
-  },
-  targetCustomer: {
-    value: 'Health-conscious millennials',
-    sourceUrls: ['https://sunrisebakery.com'],
-    confidence: 'medium',
-    extractionMethod: 'llm_text',
-    needsReview: true,
-  },
-};
-
-const mockProfile: BrandProfile = {
+const samplePrefill: OnboardingPrefillData = {
   businessName: 'Sunrise Bakery',
   industry: 'Food & Beverage',
   description: 'Artisan sourdough for health-conscious families.',
   targetCustomer: 'Health-conscious millennials, 25-40',
-  competitors: ['Blue Apron', 'HelloFresh'],
-  personality: ['Friendly', 'Wholesome', 'Authentic'],
-  tone: 'casual',
-  goals: ['Brand awareness', 'Community building'],
-  platforms: ['Instagram', 'Facebook'],
-  contentExamples: [],
+  confidence: 'high',
+  extractedAt: '2026-04-27T00:00:00Z',
+  missingFields: ['competitors'],
+};
+
+const sampleAnswers: DiscoveryAnswers = {
+  identity: { name: 'Sunrise Bakery', vertical: 'Content/Marketing', size: 'small' },
+  strategy: { goal: 'Scale', budget: 'pro', urgency: 'this_week' },
 };
 
 // =============================================================================
@@ -90,243 +55,162 @@ const mockProfile: BrandProfile = {
 
 describe('Onboarding Routes', () => {
   let app: express.Express;
-  let service: BrandOnboardingService;
-  let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewly-onboard-test-'));
-    BrandOnboardingService.resetInstance();
-    service = BrandOnboardingService.getInstance(tmpDir);
+    OnboardingService.resetInstance();
     app = createTestApp();
   });
 
   afterEach(() => {
-    BrandOnboardingService.resetInstance();
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    OnboardingService.resetInstance();
   });
 
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   // POST /sessions
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
 
   describe('POST /api/onboarding/sessions', () => {
-    it('should create a new session', async () => {
-      const res = await request(app)
-        .post('/api/onboarding/sessions')
-        .send({ teamId: 'team-abc', templateId: 'marketing-v1' });
-
+    it('creates a session without a websiteUrl', async () => {
+      const res = await request(app).post('/api/onboarding/sessions').send({});
       expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
-      expect(res.body.data.teamId).toBe('team-abc');
-      expect(res.body.data.templateId).toBe('marketing-v1');
-      expect(res.body.data.status).toBe('in_progress');
       expect(res.body.data.id).toBeDefined();
+      expect(res.body.data.status).toBe('created');
+      expect(res.body.data.websiteUrl).toBeUndefined();
     });
 
-    it('should create session with websiteUrl', async () => {
+    it('creates a session with the provided websiteUrl', async () => {
       const res = await request(app)
         .post('/api/onboarding/sessions')
-        .send({ teamId: 'team-abc', templateId: 'marketing-v1', websiteUrl: 'https://example.com' });
-
-      expect(res.status).toBe(201);
-      expect(res.body.data.websiteUrl).toBe('https://example.com');
-    });
-
-    it('should return 400 when teamId missing', async () => {
-      const res = await request(app)
-        .post('/api/onboarding/sessions')
-        .send({ templateId: 'marketing-v1' });
-
-      expect(res.status).toBe(400);
-      expect(res.body.success).toBe(false);
-    });
-
-    it('should return 400 when templateId missing', async () => {
-      const res = await request(app)
-        .post('/api/onboarding/sessions')
-        .send({ teamId: 'team-abc' });
-
-      expect(res.status).toBe(400);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // GET /sessions
-  // -------------------------------------------------------------------------
-
-  describe('GET /api/onboarding/sessions', () => {
-    it('should list all sessions', async () => {
-      service.startSession('team-1', 'tpl-1');
-      service.startSession('team-2', 'tpl-2');
-
-      const res = await request(app).get('/api/onboarding/sessions');
-
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.count).toBeGreaterThanOrEqual(2);
-    });
-
-    it('should return empty array when no sessions', async () => {
-      const res = await request(app).get('/api/onboarding/sessions');
-
-      expect(res.status).toBe(200);
-      expect(res.body.data).toEqual([]);
-      expect(res.body.count).toBe(0);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // GET /sessions/:id
-  // -------------------------------------------------------------------------
-
-  describe('GET /api/onboarding/sessions/:id', () => {
-    it('should return a session by ID', async () => {
-      const session = service.startSession('team-abc', 'marketing-v1');
-
-      const res = await request(app).get(`/api/onboarding/sessions/${session.id}`);
-
-      expect(res.status).toBe(200);
-      expect(res.body.data.id).toBe(session.id);
-      expect(res.body.data.teamId).toBe('team-abc');
-    });
-
-    it('should return 404 for non-existent session', async () => {
-      const res = await request(app).get('/api/onboarding/sessions/nonexistent');
-
-      expect(res.status).toBe(404);
-      expect(res.body.success).toBe(false);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // PUT /sessions/:id
-  // -------------------------------------------------------------------------
-
-  describe('PUT /api/onboarding/sessions/:id', () => {
-    it('should update website URL', async () => {
-      const session = service.startSession('team-abc', 'marketing-v1');
-
-      const res = await request(app)
-        .put(`/api/onboarding/sessions/${session.id}`)
         .send({ websiteUrl: 'https://sunrisebakery.com' });
-
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       expect(res.body.data.websiteUrl).toBe('https://sunrisebakery.com');
     });
+  });
 
-    it('should submit a single answer', async () => {
-      const session = service.startSession('team-abc', 'marketing-v1');
+  // ---------------------------------------------------------------------------
+  // GET /sessions
+  // ---------------------------------------------------------------------------
 
-      const res = await request(app)
-        .put(`/api/onboarding/sessions/${session.id}`)
-        .send({ answer: 'Sunrise Bakery' });
-
+  describe('GET /api/onboarding/sessions', () => {
+    it('returns an empty array when no sessions exist', async () => {
+      const res = await request(app).get('/api/onboarding/sessions');
       expect(res.status).toBe(200);
-      expect(res.body.data.answers).toHaveLength(1);
-      expect(res.body.data.currentQuestionIndex).toBe(1);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toEqual([]);
     });
 
-    it('should return 404 for non-existent session', async () => {
-      const res = await request(app)
-        .put('/api/onboarding/sessions/nonexistent')
-        .send({ websiteUrl: 'https://example.com' });
+    it('returns all sessions previously created', async () => {
+      await request(app).post('/api/onboarding/sessions').send({ websiteUrl: 'https://a.com' });
+      await request(app).post('/api/onboarding/sessions').send({ websiteUrl: 'https://b.com' });
+      const res = await request(app).get('/api/onboarding/sessions');
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(2);
+    });
+  });
 
+  // ---------------------------------------------------------------------------
+  // GET /sessions/:id
+  // ---------------------------------------------------------------------------
+
+  describe('GET /api/onboarding/sessions/:id', () => {
+    it('returns the session when it exists', async () => {
+      const create = await request(app).post('/api/onboarding/sessions').send({});
+      const id = create.body.data.id as string;
+      const res = await request(app).get(`/api/onboarding/sessions/${id}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data.id).toBe(id);
+    });
+
+    it('returns 404 for a missing id', async () => {
+      const res = await request(app).get('/api/onboarding/sessions/missing-id');
+      expect(res.status).toBe(404);
+      expect(res.body.success).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // PUT /sessions/:id
+  // ---------------------------------------------------------------------------
+
+  describe('PUT /api/onboarding/sessions/:id', () => {
+    it('updates the websiteUrl on an existing session', async () => {
+      const create = await request(app).post('/api/onboarding/sessions').send({});
+      const id = create.body.data.id as string;
+      const res = await request(app)
+        .put(`/api/onboarding/sessions/${id}`)
+        .send({ websiteUrl: 'https://updated.com' });
+      expect(res.status).toBe(200);
+      expect(res.body.data.websiteUrl).toBe('https://updated.com');
+    });
+
+    it('returns 404 for a missing id', async () => {
+      const res = await request(app)
+        .put('/api/onboarding/sessions/missing')
+        .send({ websiteUrl: 'https://x.com' });
       expect(res.status).toBe(404);
     });
   });
 
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   // POST /sessions/:id/prefill
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
 
   describe('POST /api/onboarding/sessions/:id/prefill', () => {
-    it('should store prefill data with confidence metadata', async () => {
-      const session = service.startSession('team-abc', 'marketing-v1');
-
+    it('stores prefill data and advances status to "prefilled"', async () => {
+      const create = await request(app).post('/api/onboarding/sessions').send({});
+      const id = create.body.data.id as string;
       const res = await request(app)
-        .post(`/api/onboarding/sessions/${session.id}/prefill`)
-        .send(mockPrefill);
-
+        .post(`/api/onboarding/sessions/${id}/prefill`)
+        .send(samplePrefill);
       expect(res.status).toBe(200);
-      expect(res.body.data.prefill.businessName.value).toBe('Sunrise Bakery');
-      expect(res.body.data.prefill.businessName.confidence).toBe('high');
-      expect(res.body.data.prefill.targetCustomer.needsReview).toBe(true);
+      expect(res.body.data.status).toBe('prefilled');
+      expect(res.body.data.prefillData).toEqual(samplePrefill);
     });
 
-    it('should identify missing fields', async () => {
-      const session = service.startSession('team-abc', 'marketing-v1');
-
-      // Only provide 3 of 10 fields
+    it('returns 404 for a missing id', async () => {
       const res = await request(app)
-        .post(`/api/onboarding/sessions/${session.id}/prefill`)
-        .send(mockPrefill);
-
-      expect(res.status).toBe(200);
-      expect(res.body.data.missingFields).toBeDefined();
-      expect(res.body.data.missingFields.length).toBeGreaterThan(0);
-      // description, competitors, personality, tone, platforms, goals, contentExamples should be missing
-      expect(res.body.data.missingFields).toContain('description');
-      expect(res.body.data.missingFields).toContain('tone');
-    });
-
-    it('should return 404 for non-existent session', async () => {
-      const res = await request(app)
-        .post('/api/onboarding/sessions/nonexistent/prefill')
-        .send(mockPrefill);
-
+        .post('/api/onboarding/sessions/missing/prefill')
+        .send(samplePrefill);
       expect(res.status).toBe(404);
     });
   });
 
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   // POST /sessions/:id/approve
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
 
   describe('POST /api/onboarding/sessions/:id/approve', () => {
-    it('should approve the reviewed profile', async () => {
-      const session = service.startSession('team-abc', 'marketing-v1');
-
+    it('records discovery answers and advances status to "approved"', async () => {
+      const create = await request(app).post('/api/onboarding/sessions').send({});
+      const id = create.body.data.id as string;
       const res = await request(app)
-        .post(`/api/onboarding/sessions/${session.id}/approve`)
-        .send(mockProfile);
-
+        .post(`/api/onboarding/sessions/${id}/approve`)
+        .send({ answers: sampleAnswers });
       expect(res.status).toBe(200);
-      expect(res.body.data.approvedProfile.businessName).toBe('Sunrise Bakery');
-      expect(res.body.data.status).toBe('completed');
-      expect(res.body.data.updatedAt).toBeDefined();
+      expect(res.body.data.status).toBe('approved');
+      expect(res.body.data.discoveryAnswers).toEqual(sampleAnswers);
     });
 
-    it('should return 400 when profile has no businessName', async () => {
-      const session = service.startSession('team-abc', 'marketing-v1');
-
+    it('returns 404 for a missing id', async () => {
       const res = await request(app)
-        .post(`/api/onboarding/sessions/${session.id}/approve`)
-        .send({ industry: 'Tech' });
-
-      expect(res.status).toBe(400);
-    });
-
-    it('should return 404 for non-existent session', async () => {
-      const res = await request(app)
-        .post('/api/onboarding/sessions/nonexistent/approve')
-        .send(mockProfile);
-
+        .post('/api/onboarding/sessions/missing/approve')
+        .send({ answers: sampleAnswers });
       expect(res.status).toBe(404);
     });
   });
 
-  // -------------------------------------------------------------------------
-  // GET /questions
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // POST /provision
+  // ---------------------------------------------------------------------------
 
-  describe('GET /api/onboarding/questions', () => {
-    it('should return all 10 onboarding questions', async () => {
-      const res = await request(app).get('/api/onboarding/questions');
-
-      expect(res.status).toBe(200);
-      expect(res.body.count).toBe(10);
-      expect(res.body.data[0].id).toBe('business_name');
-      expect(res.body.data[9].id).toBe('content_examples');
+  describe('POST /api/onboarding/provision', () => {
+    it('returns 400 with the validation error for an empty body', async () => {
+      const res = await request(app).post('/api/onboarding/provision').send({});
+      // provisionFromOnboarding fails validation; route must surface as 400 (not 500).
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toBeDefined();
     });
   });
 });
