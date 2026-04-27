@@ -19,6 +19,7 @@ import { MissionReminderService } from './mission-reminder.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { getSlackOrchestratorBridge } from '../slack/slack-orchestrator-bridge.js';
+import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { atomicWriteJson } from '../../utils/file-io.utils.js';
 import * as fs from 'fs/promises';
 
@@ -26,6 +27,7 @@ import * as fs from 'fs/promises';
 jest.mock('./kr-tracking.service.js');
 jest.mock('../core/storage.service.js');
 jest.mock('../slack/slack-orchestrator-bridge.js');
+jest.mock('../task-pool/task-pool.service.js');
 jest.mock('../../utils/file-io.utils.js');
 jest.mock('fs/promises');
 
@@ -34,6 +36,7 @@ describe('MissionReminderService', () => {
   let mockKRTrackingService: any;
   let mockStorageService: any;
   let mockSlackBridge: any;
+  let mockTaskPool: any;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -45,7 +48,9 @@ describe('MissionReminderService', () => {
 
     mockStorageService = {
       getMemberById: jest.fn(),
-      getTeams: jest.fn(),
+      // Default to empty list so resolveTeamLeadSession can fall through
+      // to the orchestrator without throwing on `teams.find`.
+      getTeams: jest.fn(() => Promise.resolve([])),
     };
     (StorageService.getInstance as any).mockReturnValue(mockStorageService);
 
@@ -54,7 +59,16 @@ describe('MissionReminderService', () => {
     };
     (getSlackOrchestratorBridge as any).mockReturnValue(mockSlackBridge);
 
+    mockTaskPool = {
+      addToPool: jest.fn(() => Promise.resolve(undefined)),
+      findWorkItem: jest.fn(() => Promise.resolve(null)),
+    };
+    (TaskPoolService.getInstance as any).mockReturnValue(mockTaskPool);
+
     (atomicWriteJson as any).mockResolvedValue(undefined);
+
+    // Default-on for the review WI loop; specific tests can flip this.
+    delete process.env['CREWLY_REVIEW_WI_ENABLED'];
 
     MissionReminderService.resetInstance();
     service = MissionReminderService.getInstance();
@@ -292,5 +306,320 @@ describe('MissionReminderService', () => {
 
     expect(result.skipped).toBe(0);
     expect(result.sent).toBe(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // REVIEW-1: cadence-driven review WorkItem creation
+  // ---------------------------------------------------------------------------
+
+  describe('review WorkItem creation (REVIEW-1)', () => {
+    /** Build a mission shaped like the live JSON files, with cadence + member. */
+    function makeMissionWithCadence(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'm-cadence',
+        objective: 'Ship cadence-driven reviews',
+        ownerTeamId: 't-1',
+        successCriteria: [],
+        currentStrategy: '',
+        activeProjectTaskIds: ['pt-1'],
+        cadence: '',
+        status: 'active',
+        createdAt: '2026-04-20T00:00:00.000Z',
+        updatedAt: '2026-04-20T00:00:00.000Z',
+        learnings: [],
+        policy: {
+          missionId: 'm-cadence',
+          executionCadence: {
+            // AUTONOMOUS — daily 09:00 UTC.
+            reviewSchedule: '0 9 * * *',
+            dailyItemLimit: 0,
+            workHours: null,
+            phaseGateApproval: 'none',
+            requireVerificationGate: false,
+          },
+        },
+        ...overrides,
+      };
+    }
+
+    function defaultSummary(overrides: Record<string, number> = {}) {
+      return {
+        missionId: 'm-cadence',
+        total: 1,
+        achieved: 0,
+        onTrack: 1,
+        atRisk: 0,
+        offTrack: 0,
+        progress: 0,
+        status: 'on_track',
+        totalKRs: 1,
+        overallProgress: 0,
+        ...overrides,
+      };
+    }
+
+    /**
+     * Pin `Date.now()` so cron-parser deterministically produces the
+     * same boundary across replays in a single test.
+     */
+    function pinNow(iso: string) {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date(iso));
+    }
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('creates a review WorkItem at the cadence boundary with deterministic id', async () => {
+      pinNow('2026-04-27T10:00:00Z'); // after today's 09:00 boundary
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(1);
+      expect(mockTaskPool.addToPool).toHaveBeenCalledTimes(1);
+      const wi = mockTaskPool.addToPool.mock.calls[0][0];
+      // Deterministic id collapses to <missionId>:review:<YYYY-MM-DD>
+      expect(wi.id).toBe('m-cadence:review:2026-04-27');
+      expect(wi.type).toBe('review');
+      expect(wi.owner).toBe('team_lead');
+      expect(wi.missionId).toBe('m-cadence');
+      // F-H: review WIs MUST opt out of TL self-verification.
+      expect(wi.metadata.requiresVerification).toBe(false);
+      // V1: idempotencyKey == id (same dedup surface).
+      expect(wi.metadata.idempotencyKey).toBe(wi.id);
+    });
+
+    it('persists pendingReviewWorkItemId + lastReviewAt on the Mission after creation', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      await service.runSweep();
+
+      const lastSaveCall = (atomicWriteJson as any).mock.calls.at(-1);
+      const persistedMission = lastSaveCall[1];
+      expect(persistedMission.pendingReviewWorkItemId).toBe('m-cadence:review:2026-04-27');
+      expect(persistedMission.lastReviewAt).toBe('2026-04-27T10:00:00.000Z');
+    });
+
+    it('idempotent replay — second sweep tick within the same cycle creates no duplicate', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence({
+        // First sweep already recorded today's review.
+        lastReviewAt: '2026-04-27T09:30:00.000Z',
+        pendingReviewWorkItemId: undefined, // pretend the prior WI already cleared
+      });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(0);
+      expect(result.reviewsSkipped).toBe(1);
+      expect(mockTaskPool.addToPool).not.toHaveBeenCalled();
+    });
+
+    it('reentrancy lock — pendingReviewWorkItemId in non-terminal state blocks creation', async () => {
+      pinNow('2026-04-28T10:00:00Z'); // next cycle, but the previous WI is still active
+      const mission = makeMissionWithCadence({
+        lastReviewAt: '2026-04-27T09:30:00.000Z',
+        pendingReviewWorkItemId: 'm-cadence:review:2026-04-27',
+      });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+      mockTaskPool.findWorkItem.mockResolvedValue({
+        id: 'm-cadence:review:2026-04-27',
+        status: 'running', // still active — TL hasn't acted on it yet
+      });
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(0);
+      expect(result.reviewsSkipped).toBe(1);
+      expect(mockTaskPool.addToPool).not.toHaveBeenCalled();
+    });
+
+    it('clears pendingReviewWorkItemId when the prior WI has reached terminal status', async () => {
+      pinNow('2026-04-28T10:00:00Z');
+      const mission = makeMissionWithCadence({
+        lastReviewAt: '2026-04-27T09:30:00.000Z',
+        pendingReviewWorkItemId: 'm-cadence:review:2026-04-27',
+      });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+      // Prior WI is verified — lock should clear and a new review fire.
+      mockTaskPool.findWorkItem.mockResolvedValue({
+        id: 'm-cadence:review:2026-04-27',
+        status: 'verified',
+      });
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(1);
+      const lastSaveCall = (atomicWriteJson as any).mock.calls.at(-1);
+      const persistedMission = lastSaveCall[1];
+      expect(persistedMission.pendingReviewWorkItemId).toBe('m-cadence:review:2026-04-28');
+    });
+
+    it.each([
+      ['CONSERVATIVE', '0 9 * * 1', '2026-04-27T10:00:00Z', '2026-04-27'], // Mon 09:00 UTC
+      ['MODERATE',     '0 9 * * 1,4', '2026-04-23T10:00:00Z', '2026-04-23'], // Thu 09:00 UTC
+      ['AUTONOMOUS',   '0 9 * * *', '2026-04-25T10:00:00Z', '2026-04-25'], // any day 09:00 UTC
+    ])('cadence routing: %s → cycleId %s', async (_label, cron, nowIso, expectedCycle) => {
+      pinNow(nowIso);
+      const mission = makeMissionWithCadence({
+        policy: {
+          missionId: 'm-cadence',
+          executionCadence: {
+            reviewSchedule: cron,
+            dailyItemLimit: 0,
+            workHours: null,
+            phaseGateApproval: 'none',
+            requireVerificationGate: false,
+          },
+        },
+      });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      await service.runSweep();
+
+      expect(mockTaskPool.addToPool).toHaveBeenCalledTimes(1);
+      const wi = mockTaskPool.addToPool.mock.calls[0][0];
+      expect(wi.id).toBe(`m-cadence:review:${expectedCycle}`);
+      expect(wi.metadata.reviewCycleId).toBe(expectedCycle);
+      expect(wi.metadata.cadenceSchedule).toBe(cron);
+    });
+
+    it.each([
+      ['off_track_kr',     defaultSummary({ offTrack: 2 }), { activeProjectTaskIds: ['pt-1'] }],
+      ['no_active_work',   defaultSummary(),                { activeProjectTaskIds: [] }],
+      ['scheduled_review', defaultSummary(),                { activeProjectTaskIds: ['pt-1'] }],
+    ])('reviewReason routing → %s', async (expectedReason, summary, missionOverrides) => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence(missionOverrides);
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(summary);
+
+      await service.runSweep();
+
+      const wi = mockTaskPool.addToPool.mock.calls[0][0];
+      expect(wi.metadata.reviewReason).toBe(expectedReason);
+    });
+
+    it('does NOT create a review WorkItem when CREWLY_REVIEW_WI_ENABLED=false (config gate)', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      process.env['CREWLY_REVIEW_WI_ENABLED'] = 'false';
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(0);
+      expect(mockTaskPool.addToPool).not.toHaveBeenCalled();
+      // Slack DM path is independent — must NOT be affected.
+      // (off_track=0 in default summary, so it doesn't fire either way; the
+      // assertion is the absence of pool calls.)
+    });
+
+    it('skips review WI creation when the mission has no executionCadence (legacy mission)', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = {
+        id: 'm-legacy',
+        objective: 'Legacy mission without policy.executionCadence',
+        ownerTeamId: 't-1',
+        successCriteria: [],
+        currentStrategy: '',
+        activeProjectTaskIds: [],
+        cadence: '',
+        status: 'active',
+        createdAt: '2026-04-20T00:00:00.000Z',
+        updatedAt: '2026-04-20T00:00:00.000Z',
+        learnings: [],
+        policy: {
+          missionId: 'm-legacy',
+          // executionCadence intentionally omitted
+        },
+      };
+      (fs.readdir as any).mockResolvedValue(['m-legacy.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(0);
+      expect(result.reviewsSkipped).toBe(0);
+      expect(mockTaskPool.addToPool).not.toHaveBeenCalled();
+    });
+
+    it('targets the team-lead session resolved via pickTeamLead', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence({ ownerId: undefined });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+      mockStorageService.getTeams.mockResolvedValue([
+        {
+          id: 't-1',
+          name: 'Squad',
+          members: [
+            {
+              id: 'm-tl',
+              name: 'Lead Person',
+              sessionName: 'crewly-tl-session',
+              role: 'developer',
+              canDelegate: true,
+              hierarchyLevel: 1,
+            },
+            {
+              id: 'm-w',
+              name: 'Worker',
+              sessionName: 'crewly-worker-session',
+              role: 'developer',
+              canDelegate: false,
+              hierarchyLevel: 2,
+            },
+          ],
+        },
+      ]);
+
+      await service.runSweep();
+
+      const wi = mockTaskPool.addToPool.mock.calls[0][0];
+      expect(wi.target).toBe('crewly-tl-session');
+    });
+
+    it('preserves the Slack DM path even when off_track > 0 (additive, not replacement)', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(
+        defaultSummary({ offTrack: 1 }),
+      );
+      mockStorageService.getMemberById.mockResolvedValue({ id: 'u1', name: 'Owner' });
+
+      const result = await service.runSweep();
+
+      // Both fire on the same sweep tick.
+      expect(result.sent).toBe(1);
+      expect(result.reviewsCreated).toBe(1);
+      expect(mockSlackBridge.sendNotification).toHaveBeenCalled();
+      expect(mockTaskPool.addToPool).toHaveBeenCalled();
+    });
   });
 });

@@ -304,6 +304,18 @@ export interface Mission {
   nextReviewAt?: string;
   /** Last Slack reminder sent for off-track KRs */
   lastReminderAt?: string;
+  /**
+   * WorkItem id of the currently-pending review WorkItem for this Mission
+   * (REVIEW-1 reentrancy lock — Arch Veto V8). Populated by
+   * `MissionReminderService.runSweep()` when a review WorkItem is
+   * created and cleared when that WorkItem reaches a terminal status
+   * (`verified` / `rejected` / `failed` / `cancelled`). When this field
+   * is set on a sweep tick, the sweep short-circuits and skips creation —
+   * preventing double-creation of review WorkItems within the same
+   * cadence boundary even if the sweep is replayed by an external
+   * scheduler glitch or manual TL action.
+   */
+  pendingReviewWorkItemId?: string;
   /** Individual owner ID (optional, defaults to team lead of ownerTeamId) */
   ownerId?: string;
   /** Accumulated learnings from execution */
