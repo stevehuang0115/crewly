@@ -237,15 +237,28 @@ export function createApiRoutes(apiController: ApiController): Router {
     } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });
 
-  // Relay devices stubs (prevents 404 noise from dashboard relay health card)
-  router.get('/relay/devices', (_req, res) => {
+  // Relay devices stubs (prevents 404 noise from dashboard relay health card).
+  //
+  // Two URL shapes are supported because callers use either the local-stub
+  // form (`/api/relay/devices`) or the cloud-relay form (`/api/v1/relay/devices`).
+  // The cloud constants (CLOUD_CONSTANTS.RELAY_ENDPOINTS in `backend/src/constants.ts`)
+  // standardize on the `/api/v1/relay/*` form when targeting cloud, and dev
+  // proxies (frontend Vite proxy → localhost:8787) can route those requests at
+  // the local backend instead, producing 404 noise. The aliases below re-use
+  // the same stub handlers so both shapes return identical payloads.
+  const relayDevicesHandler = (_req: import('express').Request, res: import('express').Response): void => {
     res.json({ success: true, data: { devices: [], client: { state: 'offline', sessionId: null } } });
-  });
+  };
+  router.get('/relay/devices', relayDevicesHandler);
+  router.get('/v1/relay/devices', relayDevicesHandler);
 
-  // Legacy cloud-devices endpoint (used by RelayHealthCard and CloudTab)
-  router.get('/relay/cloud-devices', (_req, res) => {
+  // Legacy cloud-devices endpoint (used by RelayHealthCard and CloudTab).
+  // Same dual-shape rationale as `/relay/devices` above.
+  const relayCloudDevicesHandler = (_req: import('express').Request, res: import('express').Response): void => {
     res.json({ success: true, data: [] });
-  });
+  };
+  router.get('/relay/cloud-devices', relayCloudDevicesHandler);
+  router.get('/v1/relay/cloud-devices', relayCloudDevicesHandler);
 
   return router;
 }
