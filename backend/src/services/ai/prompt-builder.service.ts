@@ -382,7 +382,7 @@ Start all teams on Phase 1 simultaneously.`.trim();
 	}
 
 	/**
-	 * Build system prompt with memory and SOP context included
+	 * Build system prompt with memory and SOP context included.
 	 *
 	 * This method builds a complete system prompt that includes:
 	 * - Base role instructions
@@ -391,7 +391,19 @@ Start all teams on Phase 1 simultaneously.`.trim();
 	 * - SOP context (relevant Standard Operating Procedures)
 	 * - Agent identity information
 	 *
-	 * @param config - Session configuration
+	 * **WIRE-2 migration note:** When a `TeamMember` + `Team` pair is
+	 * available, prefer {@link buildSystemPromptWithTeamContext} — it
+	 * routes through {@link buildModuleConfigFromTeamMember} and wires
+	 * every autonomy / domain-SOP / risk-policy / capability / job-title /
+	 * ownership-scope / expert-id / team-mission / team-budget /
+	 * team-quality-gate / service-contract / team-ownership-scope field
+	 * declared on the TeamMember and Team records. The SessionConfig-only
+	 * surface here keeps the WIRE-1 stopgap for legacy callers (single-
+	 * agent flows, tests, and any path that doesn't have team context in
+	 * scope) so RoleBoundaryModule still resolves correctly for orc + TL
+	 * agents.
+	 *
+	 * @param config - Session configuration (SessionConfig-only)
 	 * @param options - Prompt building options
 	 * @returns Complete system prompt with memory and SOPs
 	 *
@@ -471,6 +483,73 @@ Start all teams on Phase 1 simultaneously.`.trim();
 	}
 
 	/**
+	 * Build system prompt with full TeamMember + Team context (WIRE-2).
+	 *
+	 * The preferred entrypoint when a `TeamMember` and its enclosing `Team`
+	 * are both available — wires every autonomy / org / team-level field
+	 * declared on those records into the prompt assembler via
+	 * {@link buildModuleConfigFromTeamMember}.
+	 *
+	 * This method does NOT mutate the SessionConfig-only stopgap that
+	 * remains in {@link buildModularPrompt} — that stopgap is still the
+	 * fallback for legacy callers (single-agent flows, tests, and any path
+	 * that lacks team context in scope). Once all hot callers migrate to
+	 * this method, the stopgap becomes truly defensive (only fires for
+	 * test/legacy paths).
+	 *
+	 * @param member - Full TeamMember record
+	 * @param team - Full Team record
+	 * @param runtime - Runtime-host context (session name, project paths,
+	 *   pre-resolved subordinates, etc.)
+	 * @param overlay - Optional overlay applied AFTER the helper builds the
+	 *   ModuleConfig — used for fields that are NOT on TeamMember/Team
+	 *   (e.g. `teamNormsPath`, registration-side `memberId` overrides).
+	 * @returns The fully-assembled prompt string
+	 *
+	 * @example
+	 * ```typescript
+	 * const prompt = await promptBuilder.buildSystemPromptWithTeamContext(
+	 *   foundMember,
+	 *   foundTeam,
+	 *   {
+	 *     sessionName,
+	 *     projectPath,
+	 *     runtimeType: 'claude-code',
+	 *     agentSkillsPath: path.join(projectRoot, 'config/skills/agent'),
+	 *     tlSkillsPath: path.join(projectRoot, 'config/skills/team-leader'),
+	 *     projectRoot,
+	 *   },
+	 *   { teamNormsPath: path.join(homedir, '.crewly/teams', team.id, 'norms') },
+	 * );
+	 * ```
+	 */
+	async buildSystemPromptWithTeamContext(
+		member: TeamMember,
+		team: Team,
+		runtime: SessionRuntimeContext,
+		overlay?: Partial<ModuleConfig>,
+	): Promise<string> {
+		const baseConfig = buildModuleConfigFromTeamMember(member, team, runtime);
+		const moduleConfig: ModuleConfig = overlay ? { ...baseConfig, ...overlay } : baseConfig;
+
+		const assembler = new PromptAssemblyService();
+		const { prompt, report } = await assembler.assemble(moduleConfig);
+
+		this.logger.info('Modular prompt assembled (team-context path)', {
+			sessionName: runtime.sessionName,
+			memberId: member.id,
+			role: member.role,
+			teamId: team.id,
+			totalTokens: report.totalTokens,
+			moduleCount: report.moduleBreakdown.length,
+			truncatedCount: report.truncated.length,
+			modules: report.moduleBreakdown.map(m => m.name),
+		});
+
+		return prompt;
+	}
+
+	/**
 	 * Build system prompt using the modular PromptAssemblyService.
 	 *
 	 * Called by default (disable with CREWLY_USE_MODULAR_PROMPTS=false). The modular system handles
@@ -489,15 +568,15 @@ Start all teams on Phase 1 simultaneously.`.trim();
 		const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
 		const tlSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'team-leader');
 
-		// WIRE-1 stopgap (Arch M1 — merge-time safety): RoleBoundaryModule now
-		// throws when canDelegate=true && orgRole undefined. Without setting
-		// orgRole here, every existing TL agent (Sam/Mia/Ella/Remi) would throw
-		// on next prompt assembly. The proper fix is wiring this path to call
-		// `buildModuleConfigFromTeamMember(member, team, runtime)` — tracked
-		// as the WIRE-2 follow-up. Until then, a SessionConfig-only cascade
-		// (role + canDelegate) actively resolves orgRole for the two cases
-		// that matter: orchestrator and TL. Non-TL members keep `undefined`
-		// so the executor fallback renders correctly.
+		// WIRE-2 fallback (post-WIRE-1, post-WIRE-2): callers that provide a
+		// SessionConfig WITHOUT a TeamMember + Team pair land here. The new
+		// preferred path is {@link buildModuleConfigFromTeamMember} (used by
+		// agent-registration.service.ts at the registration callsite); the
+		// legacy SessionConfig-only callers retain this stopgap as a
+		// defensive default. The cascade resolves orgRole for the two cases
+		// that matter when team context is unavailable: orchestrator and TL
+		// (via canDelegate=true). Non-TL members keep `undefined` so the
+		// executor fallback renders correctly.
 		const orgRole: ModuleConfig['orgRole'] =
 			config.role === 'orchestrator'
 				? 'orchestrator'

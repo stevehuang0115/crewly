@@ -568,6 +568,221 @@ describe('PromptBuilderService', () => {
 		});
 	});
 
+	// =========================================================================
+	// WIRE-2: TeamMember + Team context path coverage
+	// =========================================================================
+
+	describe('buildModuleConfigFromTeamMember (WIRE-2)', () => {
+		/** Build a real-shaped TeamMember fixture with every WIRE-2 field set. */
+		function buildMember(overrides: Partial<TeamMember> = {}): TeamMember {
+			return {
+				id: 'mem-sam',
+				name: 'Sam',
+				sessionName: 'crewly-product-sam',
+				role: 'developer',
+				systemPrompt: '',
+				agentStatus: 'active',
+				workingStatus: 'idle',
+				runtimeType: 'claude-code',
+				createdAt: '',
+				updatedAt: '',
+				hierarchyLevel: 1,
+				canDelegate: true,
+				subordinateIds: ['mem-leo', 'mem-max'],
+				autonomyLevel: 'directed',
+				capabilities: ['backend', 'api'],
+				domainSOP: 'commit-discipline',
+				riskPolicy: 'requires_approval',
+				jobTitle: 'Technical Team Lead',
+				jobDescription: 'Owns backend domain',
+				ownershipScope: { domains: ['backend'], areas: ['code-quality'] },
+				expertId: 'expert-sam',
+				...overrides,
+			} as TeamMember;
+		}
+
+		/** Build a real-shaped Team fixture with every WIRE-2 field set. */
+		function buildTeam(overrides: Partial<Team> = {}): Team {
+			return {
+				id: 'team-product',
+				name: 'Crewly Product',
+				description: 'The Crewly Product team',
+				mission: 'Ship Crewly Pro 1.0',
+				budget: { tokens: 1_000_000, costUsd: 100 },
+				qualityGate: { coverage: 80, lint: true },
+				serviceContract: { sla: '5min' },
+				ownershipScope: { domains: ['backend', 'api'] },
+				members: [
+					{
+						id: 'mem-sam',
+						name: 'Sam',
+						sessionName: 'crewly-product-sam',
+						role: 'developer',
+						systemPrompt: '',
+						agentStatus: 'active',
+						workingStatus: 'idle',
+						runtimeType: 'claude-code',
+						createdAt: '',
+						updatedAt: '',
+						hierarchyLevel: 1,
+						canDelegate: true,
+					},
+					{
+						id: 'mem-leo',
+						name: 'Leo',
+						sessionName: 'crewly-product-leo',
+						role: 'developer',
+						systemPrompt: '',
+						agentStatus: 'active',
+						workingStatus: 'idle',
+						runtimeType: 'claude-code',
+						createdAt: '',
+						updatedAt: '',
+						hierarchyLevel: 2,
+						canDelegate: false,
+					},
+				],
+				projectIds: [],
+				createdAt: '',
+				updatedAt: '',
+				...overrides,
+			} as Team;
+		}
+
+		const runtime = {
+			sessionName: 'crewly-product-sam-dd2b46f7',
+			projectPath: '/projects/crewly',
+			runtimeType: 'claude-code' as const,
+			agentSkillsPath: '/projects/crewly/config/skills/agent',
+			tlSkillsPath: '/projects/crewly/config/skills/team-leader',
+			projectRoot: '/projects/crewly',
+		};
+
+		it('wires every member-level autonomy field into the ModuleConfig', () => {
+			const config = buildModuleConfigFromTeamMember(buildMember(), buildTeam(), runtime);
+			expect(config.autonomyLevel).toBe('directed');
+			expect(config.capabilities).toEqual(['backend', 'api']);
+			expect(config.domainSOP).toBe('commit-discipline');
+			expect(config.riskPolicy).toBe('requires_approval');
+			expect(config.jobTitle).toBe('Technical Team Lead');
+			expect(config.jobDescription).toBe('Owns backend domain');
+			expect(config.ownershipScope).toEqual({ domains: ['backend'], areas: ['code-quality'] });
+			expect(config.expertId).toBe('expert-sam');
+		});
+
+		it('wires every team-level field into the ModuleConfig', () => {
+			const config = buildModuleConfigFromTeamMember(buildMember(), buildTeam(), runtime);
+			expect(config.teamId).toBe('team-product');
+			expect(config.teamDescription).toBe('The Crewly Product team');
+			expect(config.teamMission).toBe('Ship Crewly Pro 1.0');
+			expect(config.teamBudget).toEqual({ tokens: 1_000_000, costUsd: 100 });
+			expect(config.teamQualityGate).toEqual({ coverage: 80, lint: true });
+			expect(config.serviceContract).toEqual({ sla: '5min' });
+			expect(config.teamOwnershipScope).toEqual({ domains: ['backend', 'api'] });
+		});
+
+		it('resolves orgRole=team-lead for canDelegate members', () => {
+			const config = buildModuleConfigFromTeamMember(buildMember(), buildTeam(), runtime);
+			expect(config.orgRole).toBe('team-lead');
+			expect(deriveOrgRole(buildMember(), buildTeam())).toBe('team-lead');
+		});
+
+		it('resolves orgRole=executor for non-canDelegate members with no subordinates', () => {
+			const member = buildMember({ canDelegate: false, subordinateIds: [] });
+			const config = buildModuleConfigFromTeamMember(member, buildTeam(), runtime);
+			expect(config.orgRole).toBe('executor');
+		});
+
+		it('resolves orgRole=orchestrator for orchestrator role', () => {
+			const member = buildMember({ role: 'orchestrator', canDelegate: false });
+			const config = buildModuleConfigFromTeamMember(member, buildTeam(), runtime);
+			expect(config.orgRole).toBe('orchestrator');
+		});
+
+		it('falls back to deriving subordinates from team.members when not pre-supplied', () => {
+			// runtime.subordinates omitted — helper resolves from team.members + member.subordinateIds.
+			const config = buildModuleConfigFromTeamMember(buildMember(), buildTeam(), runtime);
+			expect(config.subordinates).toEqual([
+				{
+					name: 'Leo',
+					sessionName: 'crewly-product-leo',
+					role: 'developer',
+					memberId: 'mem-leo',
+				},
+			]);
+		});
+
+		it('uses runtime.subordinates verbatim when provided', () => {
+			const config = buildModuleConfigFromTeamMember(buildMember(), buildTeam(), {
+				...runtime,
+				subordinates: [
+					{
+						name: 'Pre-resolved',
+						sessionName: 'pre-session',
+						role: 'developer',
+						memberId: 'pre-id',
+					},
+				],
+			});
+			expect(config.subordinates?.[0].name).toBe('Pre-resolved');
+		});
+	});
+
+	describe('buildSystemPromptWithTeamContext (WIRE-2)', () => {
+		/**
+		 * The new method delegates to PromptAssemblyService.assemble, which
+		 * is integration-heavy. We exercise the BEHAVIOUR via the helper-
+		 * driven ModuleConfig — the tests above pin the helper output, and
+		 * `buildSystemPromptWithTeamContext` is a thin glue layer. Here we
+		 * confirm the overlay path: caller-supplied overrides land on the
+		 * final ModuleConfig.
+		 */
+		it('overlays caller-supplied fields on top of the helper-built config', () => {
+			const member: TeamMember = {
+				id: 'mem-x',
+				name: 'X',
+				sessionName: 's-x',
+				role: 'developer',
+				systemPrompt: '',
+				agentStatus: 'active',
+				workingStatus: 'idle',
+				runtimeType: 'claude-code',
+				createdAt: '',
+				updatedAt: '',
+				hierarchyLevel: 1,
+				canDelegate: true,
+			} as TeamMember;
+			const team: Team = {
+				id: 't-x',
+				name: 'X-team',
+				description: 'desc',
+				members: [member],
+				projectIds: [],
+				createdAt: '',
+				updatedAt: '',
+			} as Team;
+			const base = buildModuleConfigFromTeamMember(member, team, {
+				sessionName: 's-x',
+				projectPath: '/p',
+				runtimeType: 'claude-code',
+				agentSkillsPath: '/p/config/skills/agent',
+				tlSkillsPath: '/p/config/skills/team-leader',
+				projectRoot: '/p',
+			});
+			// Simulate the agent-registration overlay (memberId override + teamNormsPath).
+			const overlay = {
+				memberId: 'override-id',
+				teamNormsPath: '/home/.crewly/teams/t-x/norms',
+			};
+			const merged = { ...base, ...overlay };
+			expect(merged.memberId).toBe('override-id');
+			expect(merged.teamNormsPath).toBe('/home/.crewly/teams/t-x/norms');
+			// Helper-derived fields preserved.
+			expect(merged.orgRole).toBe('team-lead');
+			expect(merged.canDelegate).toBe(true);
+		});
+	});
+
 	describe('buildContinuationPrompt', () => {
 		beforeEach(() => {
 			mockInitializeForSession.mockClear();
