@@ -489,6 +489,22 @@ Start all teams on Phase 1 simultaneously.`.trim();
 		const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
 		const tlSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'team-leader');
 
+		// WIRE-1 stopgap (Arch M1 — merge-time safety): RoleBoundaryModule now
+		// throws when canDelegate=true && orgRole undefined. Without setting
+		// orgRole here, every existing TL agent (Sam/Mia/Ella/Remi) would throw
+		// on next prompt assembly. The proper fix is wiring this path to call
+		// `buildModuleConfigFromTeamMember(member, team, runtime)` — tracked
+		// as the WIRE-2 follow-up. Until then, a SessionConfig-only cascade
+		// (role + canDelegate) actively resolves orgRole for the two cases
+		// that matter: orchestrator and TL. Non-TL members keep `undefined`
+		// so the executor fallback renders correctly.
+		const orgRole: ModuleConfig['orgRole'] =
+			config.role === 'orchestrator'
+				? 'orchestrator'
+				: config.canDelegate === true
+					? 'team-lead'
+					: undefined;
+
 		const moduleConfig: ModuleConfig = {
 			sessionName: config.name,
 			memberId: config.memberId ?? '',
@@ -497,6 +513,7 @@ Start all teams on Phase 1 simultaneously.`.trim();
 			projectPath: config.projectPath,
 			runtimeType: config.runtimeType as ModuleConfig['runtimeType'],
 			canDelegate: config.canDelegate,
+			orgRole,
 			subordinates: config.subordinates?.map(s => ({
 				name: s.name,
 				sessionName: s.sessionName,

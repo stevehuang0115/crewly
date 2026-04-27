@@ -1404,6 +1404,74 @@ Decompose and delegate.`;
 			expect(typeof result).toBe('string');
 			expect(result.length).toBeGreaterThan(0);
 		});
+
+		// ---------------------------------------------------------------------
+		// WIRE-1 Arch M1 — merge-time safety regression for the legacy path
+		// ---------------------------------------------------------------------
+
+		/**
+		 * Arch M1 (P0 production regression) protection: the V4 throw added in
+		 * RoleBoundaryModule.build() must NOT fire on the legacy
+		 * `buildSystemPromptWithMemory` path. Pre-WIRE-1 the legacy
+		 * `buildModularPrompt` set `canDelegate` from session config but never
+		 * `orgRole`, which combined with the new throw would break every
+		 * existing TL agent on next prompt assembly the moment WIRE-1 merged.
+		 *
+		 * The stopgap is a SessionConfig-only orgRole cascade inside
+		 * `buildModularPrompt` that mirrors `deriveOrgRole`'s rules with the
+		 * fields available at that layer (role + canDelegate). This test
+		 * pins it.
+		 */
+		it('does not throw on the legacy path for a TL session config (canDelegate=true)', async () => {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS; // default: modular path
+			const tlConfig: TeamMemberSessionConfig = {
+				name: 'crewly-product-sam-dd2b46f7',
+				role: 'developer',
+				projectPath: '/test/project',
+				memberId: 'tl-member-id',
+				systemPrompt: '',
+				canDelegate: true,
+				teamId: 'tl-team-id',
+			};
+			await expect(service.buildSystemPromptWithMemory(tlConfig)).resolves.not.toThrow();
+		});
+
+		/**
+		 * Companion to the M1 regression test — orchestrator role on the legacy
+		 * path also resolves cleanly (orgRole='orchestrator' set inline).
+		 */
+		it('does not throw on the legacy path for an orchestrator session config', async () => {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+			const orcConfig: TeamMemberSessionConfig = {
+				name: 'crewly-orc',
+				role: 'orchestrator',
+				projectPath: '/test/project',
+				memberId: 'orc-member-id',
+				systemPrompt: '',
+				teamId: 'orc-team-id',
+			};
+			await expect(service.buildSystemPromptWithMemory(orcConfig)).resolves.not.toThrow();
+		});
+
+		/**
+		 * Companion to the M1 regression test — plain executor on the legacy
+		 * path also resolves cleanly (orgRole left undefined; module falls
+		 * back to executor without firing the V4 throw because canDelegate
+		 * is not true).
+		 */
+		it('does not throw on the legacy path for a plain executor session config', async () => {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+			const execConfig: TeamMemberSessionConfig = {
+				name: 'crewly-product-leo-62440736',
+				role: 'developer',
+				projectPath: '/test/project',
+				memberId: 'leo-member-id',
+				systemPrompt: '',
+				teamId: 'leo-team-id',
+				// canDelegate omitted (undefined) — V4 throw must NOT fire
+			};
+			await expect(service.buildSystemPromptWithMemory(execConfig)).resolves.not.toThrow();
+		});
 	});
 });
 
