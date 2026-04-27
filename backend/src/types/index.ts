@@ -374,6 +374,14 @@ export interface ApiResponse<T = any> {
   data?: T;
   error?: string;
   message?: string;
+  /**
+   * Optional non-fatal advisory string. Used by graceful-degradation paths
+   * (e.g. project-task endpoints) to signal "the service is healthy but the
+   * underlying source failed; treat as empty rather than down". Consumers
+   * should display this without breaking the page when present alongside
+   * `success: true`.
+   */
+  warning?: string;
 }
 
 export interface StartupConfig {

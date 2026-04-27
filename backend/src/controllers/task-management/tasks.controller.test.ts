@@ -115,10 +115,27 @@ describe('Tasks Handlers', () => {
       });
     });
 
-    it('should handle service errors', async () => {
+    it('should gracefully degrade to 200 + warning when TaskService.getAllTasks throws', async () => {
       const mockProject = { id: 'project-1', path: '/test/path' };
       mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getAllTasks.mockRejectedValue(new Error('Service error'));
+      mockTaskService.getAllTasks.mockRejectedValue(new Error('Filesystem permission denied'));
+
+      await tasksHandlers.getAllTasks.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: [],
+        warning: expect.stringContaining('Filesystem permission denied')
+      });
+    });
+
+    it('should still return 500 when storage layer (projects.json) fails', async () => {
+      mockStorageService.getProjects.mockRejectedValue(new Error('projects.json corrupt'));
 
       await tasksHandlers.getAllTasks.call(
         mockApiContext as ApiContext,
@@ -189,6 +206,25 @@ describe('Tasks Handlers', () => {
         error: 'Project not found'
       });
     });
+
+    it('should gracefully degrade to 200 + warning when TaskService.getMilestones throws', async () => {
+      const mockProject = { id: 'project-1', path: '/test/path' };
+      mockStorageService.getProjects.mockResolvedValue([mockProject]);
+      mockTaskService.getMilestones.mockRejectedValue(new Error('milestone read failed'));
+
+      await tasksHandlers.getMilestones.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: [],
+        warning: expect.stringContaining('milestone read failed')
+      });
+    });
   });
 
   describe('getTasksByStatus', () => {
@@ -247,7 +283,7 @@ describe('Tasks Handlers', () => {
       });
     });
 
-    it('should handle service errors', async () => {
+    it('should gracefully degrade to 200 + warning when TaskService.getTasksByStatus throws', async () => {
       const mockProject = { id: 'project-1', path: '/test/path' };
       mockStorageService.getProjects.mockResolvedValue([mockProject]);
       mockTaskService.getTasksByStatus.mockRejectedValue(new Error('Service error'));
@@ -258,10 +294,11 @@ describe('Tasks Handlers', () => {
         mockResponse as Response
       );
 
-      expect(mockResponse.status).toHaveBeenCalledWith(500);
+      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
       expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Failed to fetch tasks by status'
+        success: true,
+        data: [],
+        warning: expect.stringContaining('Service error')
       });
     });
   });
@@ -322,7 +359,7 @@ describe('Tasks Handlers', () => {
       });
     });
 
-    it('should handle service errors', async () => {
+    it('should gracefully degrade to 200 + warning when TaskService.getTasksByMilestone throws', async () => {
       const mockProject = { id: 'project-1', path: '/test/path' };
       mockStorageService.getProjects.mockResolvedValue([mockProject]);
       mockTaskService.getTasksByMilestone.mockRejectedValue(new Error('Service error'));
@@ -333,10 +370,11 @@ describe('Tasks Handlers', () => {
         mockResponse as Response
       );
 
-      expect(mockResponse.status).toHaveBeenCalledWith(500);
+      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
       expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Failed to fetch tasks by milestone'
+        success: true,
+        data: [],
+        warning: expect.stringContaining('Service error')
       });
     });
   });
@@ -434,7 +472,7 @@ describe('Tasks Handlers', () => {
       });
     });
 
-    it('should handle service errors', async () => {
+    it('should gracefully degrade to 200 + warning when TaskService throws (status-summary shape)', async () => {
       const mockProject = { id: 'project-1', path: '/test/path' };
       mockStorageService.getProjects.mockResolvedValue([mockProject]);
       mockTaskService.getAllTasks.mockRejectedValue(new Error('Service error'));
@@ -445,16 +483,17 @@ describe('Tasks Handlers', () => {
         mockResponse as Response
       );
 
-      expect(mockResponse.status).toHaveBeenCalledWith(500);
+      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
       expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Failed to get project task status'
+        success: true,
+        data: { totals: { all: 0 }, milestones: [] },
+        warning: expect.stringContaining('Service error')
       });
     });
   });
 
   describe('Error handling', () => {
-    it('should handle unexpected errors gracefully', async () => {
+    it('should still 500 when storage layer throws synchronously (catastrophic projects.json failure)', async () => {
       mockStorageService.getProjects.mockImplementation(() => {
         throw new Error('Unexpected error');
       });
@@ -472,7 +511,7 @@ describe('Tasks Handlers', () => {
       });
     });
 
-    it('should handle service initialization errors', async () => {
+    it('should gracefully degrade when TaskService constructor throws', async () => {
       const mockProject = { id: 'project-1', path: '/test/path' };
       mockStorageService.getProjects.mockResolvedValue([mockProject]);
 
@@ -487,10 +526,13 @@ describe('Tasks Handlers', () => {
         mockResponse as Response
       );
 
-      expect(mockResponse.status).toHaveBeenCalledWith(500);
+      // Constructor failures are part of the TaskService boundary — they
+      // should also be treated as graceful degradation, not 500.
+      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
       expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Failed to fetch tasks'
+        success: true,
+        data: [],
+        warning: expect.stringContaining('Service initialization error')
       });
     });
   });
@@ -579,6 +621,75 @@ describe('Tasks Handlers', () => {
         success: false,
         error: 'Project not found'
       });
+    });
+  });
+
+  describe('Failure-mode coverage (P0 fix)', () => {
+    it('warning message includes the project ID for log correlation', async () => {
+      const mockProject = { id: 'project-1', path: '/test/path' };
+      mockStorageService.getProjects.mockResolvedValue([mockProject]);
+      mockTaskService.getAllTasks.mockRejectedValue(new Error('ENOENT: no such file'));
+
+      await tasksHandlers.getAllTasks.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const callArg = mockResponse.json.mock.calls[0][0];
+      expect(callArg.warning).toContain('project-1');
+      expect(callArg.warning).toContain('ENOENT');
+    });
+
+    it('graceful degradation handles a non-Error thrown value (string) without crashing', async () => {
+      const mockProject = { id: 'project-1', path: '/test/path' };
+      mockStorageService.getProjects.mockResolvedValue([mockProject]);
+      // simulate a non-Error rejection
+      mockTaskService.getAllTasks.mockRejectedValue('not-an-error-instance');
+
+      await tasksHandlers.getAllTasks.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: [],
+        warning: expect.stringContaining('not-an-error-instance')
+      });
+    });
+
+    it('all five handlers route to graceful degradation on TaskService failure', async () => {
+      const mockProject = { id: 'project-1', path: '/test/path' };
+
+      const failingHandlers: Array<[string, (req: Request, res: Response) => Promise<void>]> = [
+        ['getAllTasks', tasksHandlers.getAllTasks as any],
+        ['getMilestones', tasksHandlers.getMilestones as any],
+        ['getTasksByStatus', tasksHandlers.getTasksByStatus as any],
+        ['getTasksByMilestone', tasksHandlers.getTasksByMilestone as any],
+        ['getProjectTasksStatus', tasksHandlers.getProjectTasksStatus as any],
+      ];
+
+      for (const [name, handler] of failingHandlers) {
+        jest.clearAllMocks();
+        mockStorageService.getProjects.mockResolvedValue([mockProject]);
+        mockTaskService.getAllTasks.mockRejectedValue(new Error(`${name} boom`));
+        mockTaskService.getMilestones.mockRejectedValue(new Error(`${name} boom`));
+        mockTaskService.getTasksByStatus.mockRejectedValue(new Error(`${name} boom`));
+        mockTaskService.getTasksByMilestone.mockRejectedValue(new Error(`${name} boom`));
+
+        await handler.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        // All five must NOT 500
+        expect(mockResponse.status).not.toHaveBeenCalledWith(500);
+        // All five must respond success: true with a warning string
+        const lastCall = mockResponse.json.mock.calls[mockResponse.json.mock.calls.length - 1][0];
+        expect(lastCall.success).toBe(true);
+        expect(typeof lastCall.warning).toBe('string');
+        expect(lastCall.warning).toContain(`${name} boom`);
+      }
     });
   });
 });
