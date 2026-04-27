@@ -183,6 +183,22 @@ describe('extractSlackThreadTs / extractSlackChannelId', () => {
   });
 });
 
+describe('respondToUserWorkItemId', () => {
+  // Negative spec (INBOUND-1.f1.f3): pin the helper output format. If the
+  // template ever drifts, every caller (including the workitem:queued
+  // self-recursion guard) silently misroutes — this assertion fails loudly
+  // first, before any behavioural test gets a chance to mask the change.
+  it('returns the canonical respond_to_user WorkItem id format', () => {
+    expect(respondToUserWorkItemId('foo')).toBe('request:foo:respond_to_user');
+    expect(respondToUserWorkItemId('req-99')).toBe('request:req-99:respond_to_user');
+  });
+
+  it('preserves the requestId verbatim (no escaping or trimming)', () => {
+    expect(respondToUserWorkItemId('with spaces')).toBe('request:with spaces:respond_to_user');
+    expect(respondToUserWorkItemId('a:b:c')).toBe('request:a:b:c:respond_to_user');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Subscriber behaviour
 // ---------------------------------------------------------------------------
@@ -267,7 +283,7 @@ describe('RequestSlaSubscriber', () => {
       bus.publish(buildEvent(r.id));
       await sub.flushPending();
       expect(pool.addCalls).toHaveLength(1);
-      expect(pool.addCalls[0].id).toBe(`request:${r.id}:respond_to_user`);
+      expect(pool.addCalls[0].id).toBe(respondToUserWorkItemId(r.id));
     });
 
     it('also triggers for chat-v2-tagged Requests (default inbound list)', async () => {
@@ -316,7 +332,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
 
       const wi = pool.addCalls[0];
-      expect(wi.id).toBe(`request:${r.id}:respond_to_user`);
+      expect(wi.id).toBe(respondToUserWorkItemId(r.id));
       expect(wi.metadata?.idempotencyKey).toBe(wi.id);
       expect(wi.type).toBe('review');
       expect(wi.owner).toBe('orchestrator');
@@ -371,7 +387,7 @@ describe('RequestSlaSubscriber', () => {
       expect(breachEvent.type).toBe('request:sla_breached');
       expect(breachEvent.requestId).toBe(r.id);
       expect(breachEvent.newValue).toBe('breached_5m');
-      expect(breachEvent.workItemId).toBe(`request:${r.id}:respond_to_user`);
+      expect(breachEvent.workItemId).toBe(respondToUserWorkItemId(r.id));
     });
 
     it('emits a second breach (level=10) and invokes the Slack DM callback at 10min', async () => {
@@ -417,7 +433,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
 
       // Mark the WI done before the timer fires.
-      pool.setStatus(`request:${r.id}:respond_to_user`, 'done');
+      pool.setStatus(respondToUserWorkItemId(r.id), 'done');
 
       jest.advanceTimersByTime(5_000);
       for (let i = 0; i < 3; i += 1) await Promise.resolve();
@@ -462,7 +478,7 @@ describe('RequestSlaSubscriber', () => {
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
       // The respond_to_user WI must be transitioned to 'failed' after the DM.
-      const wiId = `request:${r.id}:respond_to_user`;
+      const wiId = respondToUserWorkItemId(r.id);
       const failTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
       expect(failTransitions).toHaveLength(1);
       expect(failTransitions[0].status).toBe('failed');
@@ -495,7 +511,7 @@ describe('RequestSlaSubscriber', () => {
       jest.advanceTimersByTime(10_000);
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
-      const wiId = `request:${r.id}:respond_to_user`;
+      const wiId = respondToUserWorkItemId(r.id);
       const failTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
       expect(failTransitions).toHaveLength(1);
       expect(failTransitions[0].status).toBe('failed');
@@ -524,7 +540,7 @@ describe('RequestSlaSubscriber', () => {
       jest.advanceTimersByTime(10_000);
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
-      const wiId = `request:${r.id}:respond_to_user`;
+      const wiId = respondToUserWorkItemId(r.id);
       const failTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
       expect(failTransitions).toHaveLength(1);
       expect(failTransitions[0].status).toBe('failed');
@@ -537,7 +553,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
 
       // Out-of-band cleanup: WI manually closed before the 10min mark.
-      const wiId = `request:${r.id}:respond_to_user`;
+      const wiId = respondToUserWorkItemId(r.id);
       pool.setStatus(wiId, 'cancelled');
 
       jest.advanceTimersByTime(10_000);
@@ -567,7 +583,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.markResolvedByThread('1772899923.865659');
 
       expect(pool.transitionCalls).toEqual([
-        { id: `request:${r.id}:respond_to_user`, status: 'done', actor: 'system' },
+        { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
       ]);
       expect(sub.trackedCount).toBe(0);
 
@@ -596,7 +612,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
 
       // Externally transition first.
-      pool.setStatus(`request:${r.id}:respond_to_user`, 'verified');
+      pool.setStatus(respondToUserWorkItemId(r.id), 'verified');
 
       await sub.markResolvedByThread('1772899923.865659');
       // No transition recorded — already terminal.
