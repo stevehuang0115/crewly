@@ -1282,6 +1282,25 @@ Just type naturally to chat with the orchestrator!`;
     response: string
   ): Promise<void> {
     await this.recordThreadReply(originalMessage, response);
+
+    // INBOUND-1.4: notify the RequestSlaSubscriber that the orc replied to
+    // this Slack thread so any tracked respond_to_user WorkItem can
+    // auto-transition to `done` and the SLA timers no-op. Lazy import
+    // breaks the static cycle (subscriber boot wires this bridge).
+    try {
+      const { getRequestSlaSubscriber } = await import('../v3/request-sla.subscriber.js');
+      const sub = getRequestSlaSubscriber();
+      if (sub) {
+        // sourceConversationItemId for slack messages is `slack-${channelId}-${ts}`
+        // (see line ~372 above); the threadTs we index on is the original
+        // user message ts. originalMessage.ts is exactly that.
+        await sub.markResolvedByThread(originalMessage.ts);
+      }
+    } catch (err) {
+      this.logger.debug('SLA auto-resolve hook failed (non-critical)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**

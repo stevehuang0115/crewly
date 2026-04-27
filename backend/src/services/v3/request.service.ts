@@ -22,9 +22,31 @@ import {
   createRequest,
 } from '../../types/v2/index.js';
 import { planTasksFromObjective, type PlannedTask } from './v3-data.service.js';
+import type { EventBusService } from '../event-bus/event-bus.service.js';
 
 /** Directory name under .crewly for request storage. */
 const REQUESTS_DIR = 'requests';
+
+/**
+ * Module-level event bus reference, wired from `backend/src/index.ts` via
+ * {@link setRequestServiceEventBus}. RequestService uses this to publish
+ * `request:created` events for INBOUND-1 without forming a static cycle
+ * with EventBusService at module load.
+ *
+ * Tests can swap or clear via the same setter.
+ */
+let injectedEventBus: EventBusService | null = null;
+
+/**
+ * Wire the EventBusService that {@link RequestService} should publish
+ * lifecycle events to. Called once from the backend boot path before any
+ * Request creation can fire.
+ *
+ * @param bus - The live EventBusService, or null to clear (tests)
+ */
+export function setRequestServiceEventBus(bus: EventBusService | null): void {
+  injectedEventBus = bus;
+}
 
 /**
  * Service for managing Request entities on disk.
@@ -117,6 +139,11 @@ export class RequestService {
   /**
    * Creates a new Request.
    *
+   * Publishes a `request:created` event after successful save so the
+   * INBOUND-1 SLA subscriber (and any other in-process listener) can react
+   * to inbound user goals. Event publication is best-effort — a failure to
+   * publish does NOT roll back the persisted Request, but is logged.
+   *
    * @param input - Creation input
    * @returns The created Request
    * @throws Error if validation fails
@@ -130,7 +157,52 @@ export class RequestService {
     const request = createRequest(input);
     await this.save(request);
     this.logger.debug('Request created', { id: request.id, title: request.title });
+
+    // INBOUND-1: emit `request:created` for the SLA subscriber. The bus is
+    // wired via {@link setRequestServiceEventBus} from the backend boot
+    // path; if it was never wired (some test setups) the event is silently
+    // skipped — Request persistence is already complete and must not be
+    // rolled back.
+    this.publishCreatedEvent(request);
+
     return request;
+  }
+
+  /**
+   * Publish the `request:created` event. Synchronous best-effort — failures
+   * are logged but do not propagate to the caller (Request persistence is
+   * already complete and must not be rolled back).
+   *
+   * @param request - The Request that was just persisted
+   */
+  private publishCreatedEvent(request: Request): void {
+    if (!injectedEventBus) return;
+    try {
+      injectedEventBus.publish({
+        id: `request:created:${request.id}`,
+        type: 'request:created',
+        timestamp: request.createdAt,
+        // Request is not team-scoped at this layer; tags carry the source.
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: '',
+        previousValue: '',
+        newValue: request.status,
+        // 'taskStatus' is the closest existing ChangedField for a Request
+        // lifecycle signal. Adding 'requestStatus' would touch 23 unrelated
+        // call sites; the request:created event itself is the canonical hook.
+        changedField: 'taskStatus',
+        requestId: request.id,
+        missionId: request.missionId,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to publish request:created event', {
+        requestId: request.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
