@@ -141,6 +141,12 @@ describe('AutoLearningSubscriber', () => {
 
   describe('subscription contract', () => {
     it('subscribes to exactly the five LEARN_SUBSCRIBED_EVENTS', () => {
+      // Pinned by the closed-set rationale on LEARN_SUBSCRIBED_EVENTS (Arch
+      // N1, 2026-04-27): this list is the canonical, closed set. Length and
+      // ordering are part of the contract — adding a member without updating
+      // this assertion fails CI, which forces the future contributor to also
+      // update the EVENT_CATEGORY_MAP and add per-event dispatch coverage.
+      expect(LEARN_SUBSCRIBED_EVENTS).toHaveLength(5);
       expect(LEARN_SUBSCRIBED_EVENTS).toEqual([
         'task:verified',
         'task:done',

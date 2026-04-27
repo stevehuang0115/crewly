@@ -75,6 +75,18 @@ export type AutoLearningTag = 'pattern' | 'gotcha' | 'sop_update';
  * Event types this subscriber listens to. Order mirrors the dispatch table
  * inside {@link AutoLearningSubscriber.start} for easy audit.
  *
+ * **Closed-set rationale (Arch N1, 2026-04-27):** This list is deliberately
+ * *closed* — only events that mark a terminal/quasi-terminal transition with
+ * a learning-worthy outcome are members. Adding a new entry requires:
+ *   1. The event type already exists in `EVENT_TYPES` (no V7 violation).
+ *   2. A corresponding entry in {@link EVENT_CATEGORY_MAP} (otherwise the
+ *      handler defensively skips with a warn — see {@link handle}).
+ *   3. A new spec in `auto-learning.subscriber.test.ts` covering the
+ *      category mapping and dedup key shape for the new event.
+ * The closed-set property is enforced at runtime by the export-allowlist
+ * check in the V7 self-check spec — adding a member without updating the
+ * allowlist fails CI.
+ *
  * NOTE: All five exist in `EVENT_TYPES` already (added by BRIDGE-1.1). LEARN-1
  * adds zero new event types — Arch Veto V7 holds.
  */
@@ -353,6 +365,16 @@ export class AutoLearningSubscriber {
       });
       return;
     }
+    // Pre-add the dedup key BEFORE awaiting recordLearning. Tradeoff (Arch N2,
+    // 2026-04-27): a recordLearning failure leaves the key claimed, so a
+    // subsequent retry of the same event is suppressed — we lose one
+    // learning entry. The alternative — add-on-success — opens a TOCTOU race
+    // where two near-simultaneous deliveries of the same event each pass the
+    // .has() check and produce a duplicate. We pick "lose-one-on-failure"
+    // because (a) recordLearning is best-effort and append-only by design,
+    // (b) the BRIDGE-1.4 V1 contract similarly favours dedup-correctness over
+    // delivery-completeness, and (c) the loss is logged at error level so an
+    // operator can manually re-record if needed.
     if (!this.dedup.add(key)) {
       this.logger.debug('AutoLearning dedup hit — skipping replay', { key, eventId: event.id });
       return;
