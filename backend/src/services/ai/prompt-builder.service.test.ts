@@ -1404,5 +1404,315 @@ Decompose and delegate.`;
 			expect(typeof result).toBe('string');
 			expect(result.length).toBeGreaterThan(0);
 		});
+
+		// ---------------------------------------------------------------------
+		// WIRE-1 Arch M1 — merge-time safety regression for the legacy path
+		// ---------------------------------------------------------------------
+
+		/**
+		 * Arch M1 (P0 production regression) protection: the V4 throw added in
+		 * RoleBoundaryModule.build() must NOT fire on the legacy
+		 * `buildSystemPromptWithMemory` path. Pre-WIRE-1 the legacy
+		 * `buildModularPrompt` set `canDelegate` from session config but never
+		 * `orgRole`, which combined with the new throw would break every
+		 * existing TL agent on next prompt assembly the moment WIRE-1 merged.
+		 *
+		 * The stopgap is a SessionConfig-only orgRole cascade inside
+		 * `buildModularPrompt` that mirrors `deriveOrgRole`'s rules with the
+		 * fields available at that layer (role + canDelegate). This test
+		 * pins it.
+		 */
+		it('does not throw on the legacy path for a TL session config (canDelegate=true)', async () => {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS; // default: modular path
+			const tlConfig: TeamMemberSessionConfig = {
+				name: 'crewly-product-sam-dd2b46f7',
+				role: 'developer',
+				projectPath: '/test/project',
+				memberId: 'tl-member-id',
+				systemPrompt: '',
+				canDelegate: true,
+				teamId: 'tl-team-id',
+			};
+			await expect(service.buildSystemPromptWithMemory(tlConfig)).resolves.not.toThrow();
+		});
+
+		/**
+		 * Companion to the M1 regression test — orchestrator role on the legacy
+		 * path also resolves cleanly (orgRole='orchestrator' set inline).
+		 */
+		it('does not throw on the legacy path for an orchestrator session config', async () => {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+			const orcConfig: TeamMemberSessionConfig = {
+				name: 'crewly-orc',
+				role: 'orchestrator',
+				projectPath: '/test/project',
+				memberId: 'orc-member-id',
+				systemPrompt: '',
+				teamId: 'orc-team-id',
+			};
+			await expect(service.buildSystemPromptWithMemory(orcConfig)).resolves.not.toThrow();
+		});
+
+		/**
+		 * Companion to the M1 regression test — plain executor on the legacy
+		 * path also resolves cleanly (orgRole left undefined; module falls
+		 * back to executor without firing the V4 throw because canDelegate
+		 * is not true).
+		 */
+		it('does not throw on the legacy path for a plain executor session config', async () => {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+			const execConfig: TeamMemberSessionConfig = {
+				name: 'crewly-product-leo-62440736',
+				role: 'developer',
+				projectPath: '/test/project',
+				memberId: 'leo-member-id',
+				systemPrompt: '',
+				teamId: 'leo-team-id',
+				// canDelegate omitted (undefined) — V4 throw must NOT fire
+			};
+			await expect(service.buildSystemPromptWithMemory(execConfig)).resolves.not.toThrow();
+		});
+	});
+});
+
+// =============================================================================
+// WIRE-1: deriveOrgRole + buildModuleConfigFromTeamMember
+// =============================================================================
+
+import {
+	deriveOrgRole,
+	buildModuleConfigFromTeamMember,
+	type SessionRuntimeContext,
+} from './prompt-builder.service.js';
+import type { Team, TeamMember } from '../../types/index.js';
+
+/**
+ * Build a minimal-valid TeamMember for unit tests. Override fields per case.
+ */
+function makeMember(overrides: Partial<TeamMember> = {}): TeamMember {
+	const base: TeamMember = {
+		id: 'member-1',
+		name: 'Sam',
+		sessionName: 'crewly-product-sam-dd2b46f7',
+		role: 'developer',
+		systemPrompt: '',
+		agentStatus: 'active',
+		workingStatus: 'idle',
+		runtimeType: 'claude-code',
+		createdAt: '2026-04-27T00:00:00Z',
+		updatedAt: '2026-04-27T00:00:00Z',
+	};
+	return { ...base, ...overrides };
+}
+
+/**
+ * Build a minimal-valid Team for unit tests. Override fields per case.
+ */
+function makeTeam(overrides: Partial<Team> = {}): Team {
+	const base: Team = {
+		id: 'team-1',
+		name: 'Crewly Product',
+		members: [],
+		projectIds: [],
+		createdAt: '2026-04-27T00:00:00Z',
+		updatedAt: '2026-04-27T00:00:00Z',
+	};
+	return { ...base, ...overrides };
+}
+
+/**
+ * Standard SessionRuntimeContext for tests — same shape buildModularPrompt
+ * derives at runtime, with predictable string paths.
+ */
+function makeRuntime(overrides: Partial<SessionRuntimeContext> = {}): SessionRuntimeContext {
+	const base: SessionRuntimeContext = {
+		sessionName: 'crewly-product-sam-dd2b46f7',
+		projectPath: '/path/to/project',
+		runtimeType: 'claude-code',
+		agentSkillsPath: '/path/to/project/config/skills/agent',
+		tlSkillsPath: '/path/to/project/config/skills/team-leader',
+		projectRoot: '/path/to/project',
+	};
+	return { ...base, ...overrides };
+}
+
+describe('deriveOrgRole — WIRE-1 cascade', () => {
+	const team = makeTeam();
+
+	it('rule 1: role=orchestrator → orchestrator (highest priority)', () => {
+		const member = makeMember({ role: 'orchestrator', canDelegate: true });
+		expect(deriveOrgRole(member, team)).toBe('orchestrator');
+	});
+
+	it('rule 2: canDelegate=true → team-lead', () => {
+		const member = makeMember({ role: 'developer', canDelegate: true });
+		expect(deriveOrgRole(member, team)).toBe('team-lead');
+	});
+
+	it('rule 3: subordinateIds non-empty → team-lead (legacy team shape)', () => {
+		const member = makeMember({ role: 'developer', canDelegate: false, subordinateIds: ['sub-1'] });
+		expect(deriveOrgRole(member, team)).toBe('team-lead');
+	});
+
+	it('rule 3b: team-side parentMemberId reference → team-lead', () => {
+		const tl = makeMember({ id: 'tl-1', role: 'developer' });
+		const sub = makeMember({ id: 'sub-1', name: 'Leo', parentMemberId: 'tl-1' });
+		const teamWithChild = makeTeam({ members: [tl, sub] });
+		expect(deriveOrgRole(tl, teamWithChild)).toBe('team-lead');
+	});
+
+	it('rule 4: default → executor', () => {
+		const member = makeMember({ role: 'developer', canDelegate: false });
+		expect(deriveOrgRole(member, team)).toBe('executor');
+	});
+
+	it('rule 4: no canDelegate flag and no subordinates → executor', () => {
+		const member = makeMember({ role: 'developer' });
+		expect(deriveOrgRole(member, team)).toBe('executor');
+	});
+
+	it('is total — never throws on any well-formed input', () => {
+		// Verify the function is exhaustive: minimal member + minimal team
+		// must classify (the throws live in RoleBoundaryModule, not here).
+		const minimal = makeMember();
+		expect(() => deriveOrgRole(minimal, team)).not.toThrow();
+	});
+});
+
+describe('buildModuleConfigFromTeamMember — WIRE-1 wiring', () => {
+	it('wires every member-level autonomy and organisation field', () => {
+		const member = makeMember({
+			id: 'member-tl',
+			canDelegate: true,
+			autonomyLevel: 'bounded',
+			capabilities: ['can-decide', 'can-verify'],
+			domainSOP: 'tl-domain.sop',
+			riskPolicy: 'tl-risk.policy',
+			jobTitle: 'Technical Team Lead',
+			jobDescription: 'Owns backend architecture',
+			ownershipScope: { domains: ['backend'], deliverables: ['api'], areas: ['infra'] },
+			expertId: 'tl-expert',
+		});
+		const team = makeTeam();
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime());
+
+		expect(config.canDelegate).toBe(true);
+		expect(config.autonomyLevel).toBe('bounded');
+		expect(config.capabilities).toEqual(['can-decide', 'can-verify']);
+		expect(config.domainSOP).toBe('tl-domain.sop');
+		expect(config.riskPolicy).toBe('tl-risk.policy');
+		expect(config.jobTitle).toBe('Technical Team Lead');
+		expect(config.jobDescription).toBe('Owns backend architecture');
+		expect(config.ownershipScope).toEqual({ domains: ['backend'], deliverables: ['api'], areas: ['infra'] });
+		expect(config.expertId).toBe('tl-expert');
+	});
+
+	it('wires every team-level field (mission, budget, qualityGate, serviceContract, ownershipScope, description)', () => {
+		const member = makeMember();
+		const team = makeTeam({
+			description: 'The Crewly product team',
+			mission: 'Ship the OKR',
+			budget: { maxTokensPerDay: 100000, maxUsdPerMonth: 500, alertThreshold: 80 },
+			qualityGate: { reviewerId: 'arch-1', autoApprove: false, minQualityScore: 70 },
+			serviceContract: { accepts: ['feature requests'], avoids: ['ad-hoc work'], expectedOutput: ['merged PRs'] },
+			ownershipScope: { domains: ['product'], deliverables: ['cli', 'api'], areas: ['platform'] },
+		});
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime());
+
+		expect(config.teamDescription).toBe('The Crewly product team');
+		expect(config.teamMission).toBe('Ship the OKR');
+		expect(config.teamBudget).toEqual({ maxTokensPerDay: 100000, maxUsdPerMonth: 500, alertThreshold: 80 });
+		expect(config.teamQualityGate).toEqual({ reviewerId: 'arch-1', autoApprove: false, minQualityScore: 70 });
+		expect(config.serviceContract).toEqual({ accepts: ['feature requests'], avoids: ['ad-hoc work'], expectedOutput: ['merged PRs'] });
+		expect(config.teamOwnershipScope).toEqual({ domains: ['product'], deliverables: ['cli', 'api'], areas: ['platform'] });
+	});
+
+	it('resolves orgRole=team-lead for canDelegate=true members', () => {
+		const member = makeMember({ canDelegate: true });
+		const team = makeTeam();
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime());
+		expect(config.orgRole).toBe('team-lead');
+	});
+
+	it('resolves orgRole=executor for plain members', () => {
+		const member = makeMember();
+		const team = makeTeam();
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime());
+		expect(config.orgRole).toBe('executor');
+	});
+
+	it('resolves orgRole=orchestrator for role=orchestrator', () => {
+		const member = makeMember({ role: 'orchestrator' });
+		const team = makeTeam();
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime());
+		expect(config.orgRole).toBe('orchestrator');
+	});
+
+	it('resolves subordinates from team.members when not provided in runtime', () => {
+		const tl = makeMember({ id: 'tl-1', canDelegate: true, subordinateIds: ['sub-1', 'sub-2'] });
+		const sub1 = makeMember({ id: 'sub-1', name: 'Leo', sessionName: 'leo-session', role: 'developer' });
+		const sub2 = makeMember({ id: 'sub-2', name: 'Max', sessionName: 'max-session', role: 'developer' });
+		const team = makeTeam({ members: [tl, sub1, sub2] });
+		const config = buildModuleConfigFromTeamMember(tl, team, makeRuntime());
+
+		expect(config.subordinates).toHaveLength(2);
+		expect(config.subordinates?.[0]).toEqual({
+			name: 'Leo',
+			sessionName: 'leo-session',
+			role: 'developer',
+			memberId: 'sub-1',
+		});
+		expect(config.subordinates?.[1]?.name).toBe('Max');
+	});
+
+	it('drops unresolved subordinate ids without throwing', () => {
+		const tl = makeMember({ id: 'tl-1', canDelegate: true, subordinateIds: ['sub-1', 'sub-MISSING'] });
+		const sub1 = makeMember({ id: 'sub-1', name: 'Leo', sessionName: 'leo-session' });
+		const team = makeTeam({ members: [tl, sub1] });
+		const config = buildModuleConfigFromTeamMember(tl, team, makeRuntime());
+
+		expect(config.subordinates).toHaveLength(1);
+		expect(config.subordinates?.[0]?.name).toBe('Leo');
+	});
+
+	it('honours runtime-provided subordinates when present (skipping team-side resolution)', () => {
+		const tl = makeMember({ canDelegate: true, subordinateIds: ['sub-1'] });
+		const team = makeTeam({ members: [tl] }); // no subordinates in team
+		const runtime = makeRuntime({
+			subordinates: [
+				{ name: 'Override', sessionName: 'override-session', role: 'developer', memberId: 'sub-override' },
+			],
+		});
+		const config = buildModuleConfigFromTeamMember(tl, team, runtime);
+
+		expect(config.subordinates).toHaveLength(1);
+		expect(config.subordinates?.[0]?.memberId).toBe('sub-override');
+	});
+
+	it('omits subordinates field entirely when there are none', () => {
+		const member = makeMember();
+		const team = makeTeam();
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime());
+		expect(config.subordinates).toBeUndefined();
+	});
+
+	it('passes through runtime-host fields (sessionName, projectPath, paths)', () => {
+		const member = makeMember();
+		const team = makeTeam();
+		const runtime = makeRuntime({
+			sessionName: 'distinct-session-name',
+			projectPath: '/another/project',
+			runtimeType: 'gemini-cli',
+			agentSkillsPath: '/another/agent',
+			tlSkillsPath: '/another/tl',
+			projectRoot: '/another/root',
+		});
+		const config = buildModuleConfigFromTeamMember(member, team, runtime);
+		expect(config.sessionName).toBe('distinct-session-name');
+		expect(config.projectPath).toBe('/another/project');
+		expect(config.runtimeType).toBe('gemini-cli');
+		expect(config.agentSkillsPath).toBe('/another/agent');
+		expect(config.tlSkillsPath).toBe('/another/tl');
+		expect(config.projectRoot).toBe('/another/root');
 	});
 });

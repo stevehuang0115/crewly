@@ -247,4 +247,92 @@ describe('RoleBoundaryModule', () => {
 		expect(result).toContain('identified_risks');
 		expect(result).toContain('pre_classified');
 	});
+
+	// =========================================================================
+	// WIRE-1 fail-fast misconfiguration guards (V4 + F-G)
+	// =========================================================================
+
+	/**
+	 * V4 (Arch Veto #7): canDelegate=true && orgRole undefined → throw.
+	 *
+	 * The bug WIRE-1 fixes: pre-WIRE-1, the module silently fell back to the
+	 * executor boundary when `orgRole` was undefined, so every TL agent in
+	 * production rendered with the wrong boundary text. The throw forces
+	 * callers to resolve `orgRole` via `deriveOrgRole(member, team)` before
+	 * assembly.
+	 */
+	it('throws when canDelegate=true and orgRole is undefined (V4 — silent fallback bug)', async () => {
+		const misconfig: ModuleConfig = {
+			...baseConfig,
+			canDelegate: true,
+			// orgRole intentionally undefined
+		};
+		await expect(module.build(misconfig)).rejects.toThrow(
+			/canDelegate=true but orgRole is undefined/,
+		);
+	});
+
+	/**
+	 * V4 detail: error message must mention the session for log correlation.
+	 */
+	it('error message includes the session name for log correlation', async () => {
+		const misconfig: ModuleConfig = {
+			...baseConfig,
+			sessionName: 'crewly-product-sam-dd2b46f7',
+			canDelegate: true,
+		};
+		await expect(module.build(misconfig)).rejects.toThrow(
+			/session=crewly-product-sam-dd2b46f7/,
+		);
+	});
+
+	/**
+	 * F-G symmetric misconfig: canDelegate=false && orgRole='team-lead' → throw.
+	 *
+	 * Refuse to render TL authority for a member that explicitly cannot
+	 * delegate. Either the caller mis-resolved orgRole or the member record
+	 * itself contradicts the team-side hierarchy — fail loudly either way.
+	 */
+	it('throws when canDelegate=false and orgRole=team-lead (F-G symmetric misconfig)', async () => {
+		const misconfig: ModuleConfig = {
+			...baseConfig,
+			canDelegate: false,
+			orgRole: 'team-lead',
+		};
+		await expect(module.build(misconfig)).rejects.toThrow(
+			/canDelegate=false but orgRole='team-lead'/,
+		);
+	});
+
+	/**
+	 * Negative — the V4 throw must NOT fire when canDelegate is undefined
+	 * (the legacy path for non-TL agents whose record predates canDelegate
+	 * being set). These render as executor and that is correct behaviour.
+	 */
+	it('does not throw when canDelegate is undefined and orgRole is undefined', async () => {
+		const config: ModuleConfig = {
+			...baseConfig,
+			// canDelegate intentionally omitted; orgRole intentionally undefined
+		};
+		const result = await module.build(config);
+		expect(result).toContain('## Role Boundaries');
+		// Should render executor boundary (the correct fallback for non-TL members)
+		expect(result).toContain('Scoped implementer');
+	});
+
+	/**
+	 * Negative — the V4 throw must NOT fire on a properly configured TL
+	 * (canDelegate=true AND orgRole resolved). This is the happy path.
+	 */
+	it('renders TL boundary when canDelegate=true and orgRole=team-lead', async () => {
+		const config: ModuleConfig = {
+			...baseConfig,
+			canDelegate: true,
+			orgRole: 'team-lead',
+		};
+		const result = await module.build(config);
+		expect(result).toContain('Objective owner');
+		expect(result).toContain('Delegator');
+		expect(result).toContain('Quality verifier');
+	});
 });
