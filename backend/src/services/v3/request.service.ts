@@ -193,6 +193,9 @@ export class RequestService {
         // 'taskStatus' is the closest existing ChangedField for a Request
         // lifecycle signal. Adding 'requestStatus' would touch 23 unrelated
         // call sites; the request:created event itself is the canonical hook.
+        // TODO(autonomy_v2): add 'requestStatus' to ChangedField when chat-v2
+        // ingress (INBOUND-2) lands and we revisit the enum-narrowing decision.
+        // Filed as Arch N4 on PR #357.
         changedField: 'taskStatus',
         requestId: request.id,
         missionId: request.missionId,

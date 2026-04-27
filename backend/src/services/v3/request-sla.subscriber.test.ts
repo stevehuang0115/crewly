@@ -444,6 +444,107 @@ describe('RequestSlaSubscriber', () => {
       // No callback wired → no crash, escalateCalls empty.
       expect(escalateCalls).toHaveLength(0);
     });
+
+    // ---------------------------------------------------------------------
+    // Arch N3 on PR #357 — orphan respond_to_user WI close on escalation
+    // ---------------------------------------------------------------------
+    it('transitions the orphan respond_to_user WI to "failed" with slaResolvedReason="escalation_timeout" after a 10min escalation (DM success path)', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      jest.advanceTimersByTime(10_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+      // The respond_to_user WI must be transitioned to 'failed' after the DM.
+      const wiId = `request:${r.id}:respond_to_user`;
+      const failTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
+      expect(failTransitions).toHaveLength(1);
+      expect(failTransitions[0].status).toBe('failed');
+      expect(failTransitions[0].actor).toBe('system');
+
+      // Mutator must stamp slaResolvedReason for ops visibility.
+      const wi = await pool.taskPool.findWorkItem(wiId);
+      expect(wi?.status).toBe('failed');
+      expect(wi?.metadata?.slaResolvedReason).toBe('escalation_timeout');
+      expect(typeof wi?.metadata?.slaResolvedAt).toBe('string');
+    });
+
+    it('still transitions the orphan WI to "failed" when no Slack DM hook is wired', async () => {
+      sub.stop();
+      sub = new RequestSlaSubscriber({
+        eventBus: bus,
+        taskPool: pool.taskPool,
+        requestService: svc.service,
+        // sendEscalationDm intentionally omitted — exercises the no-hook return path.
+        slaMs: 5_000,
+        escalationMs: 10_000,
+      });
+      sub.start();
+
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      jest.advanceTimersByTime(10_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+      const wiId = `request:${r.id}:respond_to_user`;
+      const failTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
+      expect(failTransitions).toHaveLength(1);
+      expect(failTransitions[0].status).toBe('failed');
+    });
+
+    it('still transitions the orphan WI to "failed" when the Slack DM callback throws', async () => {
+      sub.stop();
+      const throwingEscalate: EscalationSlackCallback = jest.fn(async () => {
+        throw new Error('slack 503');
+      });
+      sub = new RequestSlaSubscriber({
+        eventBus: bus,
+        taskPool: pool.taskPool,
+        requestService: svc.service,
+        sendEscalationDm: throwingEscalate,
+        slaMs: 5_000,
+        escalationMs: 10_000,
+      });
+      sub.start();
+
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      jest.advanceTimersByTime(10_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+      const wiId = `request:${r.id}:respond_to_user`;
+      const failTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
+      expect(failTransitions).toHaveLength(1);
+      expect(failTransitions[0].status).toBe('failed');
+    });
+
+    it('does NOT transition the WI when it is already terminal at escalation time', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      // Out-of-band cleanup: WI manually closed before the 10min mark.
+      const wiId = `request:${r.id}:respond_to_user`;
+      pool.setStatus(wiId, 'cancelled');
+
+      jest.advanceTimersByTime(10_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+      // No transition to 'failed' because the WI is already terminal.
+      const failTransitions = pool.transitionCalls.filter(
+        (c) => c.id === wiId && c.status === 'failed',
+      );
+      expect(failTransitions).toHaveLength(0);
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -47,6 +47,7 @@ import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { formatError } from '../../utils/format-error.js';
 import {
   type WorkItem,
+  type WorkItemStatus,
   DEFAULT_MAX_RETRIES,
 } from '../../types/v2/work-item.types.js';
 import type { Request } from '../../types/v2/request.types.js';
@@ -118,12 +119,12 @@ export const REQUEST_SLA_SUBSCRIBED_EVENTS: readonly EventType[] = [
 
 /**
  * Terminal WorkItem statuses — the SLA timers no-op when the WI has reached
- * any of these by the time the timer fires. Imports the
- * {@link WorkItemStatus} enum members directly so a future addition (e.g.
- * `'verified_with_warnings'`) forces an explicit decision here rather than
- * silently leaking through.
+ * any of these by the time the timer fires. Typed as
+ * `ReadonlySet<WorkItemStatus>` so a future addition (e.g.
+ * `'verified_with_warnings'`) or a typo'd member fails compilation here
+ * rather than silently leaking through. Aligns the JSDoc claim with reality.
  */
-const TERMINAL_WI_STATUSES = new Set([
+const TERMINAL_WI_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>([
   'done',
   'cancelled',
   'failed',
@@ -556,7 +557,10 @@ export class RequestSlaSubscriber {
   /**
    * 10-minute escalation handler. Emits the level-10 breach event and —
    * if a Slack DM callback is wired — sends the user a "still working on
-   * it" nudge so they're never blind to the miss.
+   * it" nudge so they're never blind to the miss. After the DM (or DM-skip),
+   * transitions the orphaned respond_to_user WI to `'failed'` with
+   * `slaResolvedReason: 'escalation_timeout'` so the orc queue does not keep
+   * a stale `queued` WI forever (Arch N3 on PR #357).
    */
   private async handleEscalation(requestId: string): Promise<void> {
     const tracked = this.trackedByRequest.get(requestId);
@@ -570,11 +574,16 @@ export class RequestSlaSubscriber {
     const stillTracked = this.trackedByRequest.get(requestId);
     if (!stillTracked) return;
 
+    // Capture the WI id BEFORE cleanupTracked() drops the record so we can
+    // still transition the orphan WI to 'failed' afterwards.
+    const wiId = stillTracked.workItemId;
+
     if (!this.sendEscalationDm) {
       this.logger.warn('SLA escalation reached 10min — no Slack DM hook wired', {
         requestId,
       });
       this.cleanupTracked(requestId);
+      await this.failOrphanRespondWi(wiId, requestId);
       return;
     }
 
@@ -583,6 +592,7 @@ export class RequestSlaSubscriber {
         requestId,
       });
       this.cleanupTracked(requestId);
+      await this.failOrphanRespondWi(wiId, requestId);
       return;
     }
 
@@ -608,8 +618,55 @@ export class RequestSlaSubscriber {
         error: formatError(err),
       });
     } finally {
-      // Escalation is the terminal hook in v1 — drop tracking either way.
+      // Escalation is the terminal hook in v1 — drop tracking + close the
+      // orphan WI either way (DM success or failure).
       this.cleanupTracked(requestId);
+      await this.failOrphanRespondWi(wiId, requestId);
+    }
+  }
+
+  /**
+   * Transition an escalated respond_to_user WI to `'failed'` with
+   * `slaResolvedReason: 'escalation_timeout'` so the orc queue does not
+   * keep a stale `queued` WI forever after a 10-min escalation. No-op if
+   * the WI is already terminal (e.g. user gave up + an out-of-band cleanup
+   * already closed it).
+   *
+   * Mirrors {@link markResolved}'s terminal-status guard. Errors are
+   * logged but never propagated — the SLA chain is already terminal at
+   * this point and we do not want to mask the original DM-path outcome.
+   *
+   * @param workItemId - The respond_to_user WI id to close.
+   * @param requestId  - The originating Request id (logging context only).
+   */
+  private async failOrphanRespondWi(
+    workItemId: string,
+    requestId: string,
+  ): Promise<void> {
+    try {
+      const wi = await this.taskPool.findWorkItem(workItemId);
+      if (!wi) return;
+      if (TERMINAL_WI_STATUSES.has(wi.status)) {
+        // Already terminal — nothing to do.
+        return;
+      }
+      await this.taskPool.transitionStatus(workItemId, 'failed', 'system', (item) => {
+        item.metadata = {
+          ...(item.metadata ?? {}),
+          slaResolvedReason: 'escalation_timeout',
+          slaResolvedAt: new Date().toISOString(),
+        };
+      });
+      this.logger.info('SLA escalation orphan WI auto-failed', {
+        workItemId,
+        requestId,
+      });
+    } catch (err) {
+      this.logger.warn('SLA escalation orphan-fail threw', {
+        workItemId,
+        requestId,
+        error: formatError(err),
+      });
     }
   }
 
