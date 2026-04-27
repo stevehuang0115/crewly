@@ -119,10 +119,11 @@ describe('TaskPoolService', () => {
 
   describe('dependency resolution', () => {
     it('promotes a blocked dependent to queued when its single dep completes', async () => {
-      const upstream = makeWorkItem({ title: 'upstream' });
+      const upstream = makeWorkItem({ type: 'cron_run', title: 'upstream' });
       await service.addToPool(upstream);
 
       const downstream = makeWorkItem({
+        type: 'cron_run',
         title: 'downstream',
         dependsOn: [upstream.id],
       });
@@ -139,12 +140,13 @@ describe('TaskPoolService', () => {
     });
 
     it('keeps the dependent blocked until ALL deps complete', async () => {
-      const depA = makeWorkItem({ title: 'dep-a' });
-      const depB = makeWorkItem({ title: 'dep-b' });
+      const depA = makeWorkItem({ type: 'cron_run', title: 'dep-a' });
+      const depB = makeWorkItem({ type: 'cron_run', title: 'dep-b' });
       await service.addToPool(depA);
       await service.addToPool(depB);
 
       const downstream = makeWorkItem({
+        type: 'cron_run',
         title: 'downstream',
         dependsOn: [depA.id, depB.id],
       });
@@ -166,8 +168,9 @@ describe('TaskPoolService', () => {
     });
 
     it('does not touch dependents that list a different upstream', async () => {
-      const otherUpstream = makeWorkItem({ title: 'other' });
+      const otherUpstream = makeWorkItem({ type: 'cron_run', title: 'other' });
       const unrelatedDownstream = makeWorkItem({
+        type: 'cron_run',
         title: 'unrelated',
         dependsOn: ['some-other-id'],
       });
@@ -345,9 +348,9 @@ describe('TaskPoolService', () => {
   // completeItem
   // -----------------------------------------------------------------------
 
-  describe('completeItem', () => {
-    it('marks item as done and releases claim', async () => {
-      const wi = makeWorkItem();
+  describe('completeItem (facade — VERIF-1 routing)', () => {
+    it('routes a non-delegate item through completeSimpleItem (status → done)', async () => {
+      const wi = makeWorkItem({ type: 'cron_run' });
       await service.addToPool(wi);
       await service.claimFromPool('agent-leo');
 
@@ -359,19 +362,246 @@ describe('TaskPoolService', () => {
       expect(items[0].result).toEqual({ output: 'success' });
     });
 
+    it('routes a delegate item through submitForVerification (status → done_by_worker)', async () => {
+      // delegate items default to "requires verification" so the worker's
+      // implicit completeItem call should park the item in done_by_worker
+      // and wake the TL — never auto-advance to done.
+      const wi = makeWorkItem({ type: 'delegate' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      await service.completeItem(wi.id, { output: 'draft' });
+
+      const items = await service.getAllItems();
+      expect(items[0].status).toBe('done_by_worker');
+      expect(items[0].result).toEqual({ output: 'draft' });
+    });
+
+    it('respects metadata.requiresVerification=false on a delegate item (F-H — review WIs do not self-verify)', async () => {
+      // F-H: REVIEW-1's review WorkItems are themselves the verification
+      // step, so they MUST opt out of the delegate-default to avoid a
+      // TL-self-verification loop. This is the explicit override path.
+      const wi = makeWorkItem({
+        type: 'delegate',
+        metadata: { requiresVerification: false },
+      });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      await service.completeItem(wi.id);
+
+      const items = await service.getAllItems();
+      expect(items[0].status).toBe('done');
+    });
+
+    it('respects metadata.requiresVerification=true on a non-delegate item (explicit opt-in)', async () => {
+      const wi = makeWorkItem({
+        type: 'cron_run',
+        metadata: { requiresVerification: true },
+      });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      await service.completeItem(wi.id);
+
+      const items = await service.getAllItems();
+      expect(items[0].status).toBe('done_by_worker');
+    });
+
     it('throws when item not found', async () => {
       await expect(service.completeItem('ghost')).rejects.toThrow(
         'WorkItem not found',
       );
     });
 
-    it('throws when item is not running', async () => {
-      const wi = makeWorkItem();
+    it('throws when item is not running (delegate path surfaces TRANS-1 invalid-transition error)', async () => {
+      const wi = makeWorkItem({ type: 'delegate' });
+      await service.addToPool(wi);
+
+      // queued → done_by_worker is rejected by the state machine
+      await expect(service.completeItem(wi.id)).rejects.toThrow(
+        /Invalid status transition/,
+      );
+    });
+
+    it('throws when item is not running (simple path surfaces TRANS-1 invalid-transition error)', async () => {
+      const wi = makeWorkItem({ type: 'cron_run' });
       await service.addToPool(wi);
 
       await expect(service.completeItem(wi.id)).rejects.toThrow(
-        "status must be 'running'",
+        /Invalid status transition/,
       );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // submitForVerification (VERIF-1)
+  // -----------------------------------------------------------------------
+
+  describe('submitForVerification', () => {
+    it('transitions running → done_by_worker for an agent actor', async () => {
+      const wi = makeWorkItem({ type: 'delegate' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      const updated = await service.submitForVerification(wi.id, 'agent', { output: 'draft' });
+
+      expect(updated).not.toBeNull();
+      expect(updated!.status).toBe('done_by_worker');
+      expect(updated!.completedAt).toBeDefined();
+      expect(updated!.result).toEqual({ output: 'draft' });
+    });
+
+    it('releases the active claim with endReason="submitted_for_verification"', async () => {
+      const wi = makeWorkItem({ type: 'delegate' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      await service.submitForVerification(wi.id, 'agent');
+
+      const active = await service.getActiveClaims();
+      // The submitted item's claim is released — no longer active
+      expect(active).toHaveLength(0);
+    });
+
+    it('rejects a non-agent actor (e.g. team_lead self-submission) via TRANS-1 actor gate', async () => {
+      // TRANSITION_PERMISSIONS limits running→done_by_worker to 'agent'.
+      // A TL trying to submit on a worker's behalf must throw.
+      const wi = makeWorkItem({ type: 'delegate' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      await expect(service.submitForVerification(wi.id, 'team_lead'))
+        .rejects.toThrow(/Forbidden transition.*actor='team_lead'/);
+    });
+
+    it('rejects when the item is not in running status (state-machine gate)', async () => {
+      const wi = makeWorkItem({ type: 'delegate' });
+      await service.addToPool(wi);
+
+      await expect(service.submitForVerification(wi.id, 'agent'))
+        .rejects.toThrow(/Invalid status transition/);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // completeSimpleItem (VERIF-1)
+  // -----------------------------------------------------------------------
+
+  describe('completeSimpleItem', () => {
+    it('transitions running → done for an agent actor', async () => {
+      const wi = makeWorkItem({ type: 'cron_run' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      const updated = await service.completeSimpleItem(wi.id, 'agent', { output: 'tick' });
+
+      expect(updated).not.toBeNull();
+      expect(updated!.status).toBe('done');
+      expect(updated!.completedAt).toBeDefined();
+      expect(updated!.result).toEqual({ output: 'tick' });
+    });
+
+    it('promotes blocked dependents whose deps are now satisfied', async () => {
+      const upstream = makeWorkItem({ type: 'cron_run' });
+      const downstream = makeWorkItem({ type: 'cron_run', dependsOn: [upstream.id] });
+      await service.addToPool(upstream);
+      await service.addToPool(downstream);
+      // downstream starts blocked because upstream is not yet terminal
+      const downstreamBefore = (await service.getAllItems()).find((wi) => wi.id === downstream.id);
+      expect(downstreamBefore?.status).toBe('blocked');
+
+      await service.claimFromPool('agent-leo');
+      await service.completeSimpleItem(upstream.id, 'agent');
+
+      const downstreamAfter = (await service.getAllItems()).find((wi) => wi.id === downstream.id);
+      expect(downstreamAfter?.status).toBe('queued');
+    });
+
+    it('accepts the "system" actor (Reconciler path bypasses actor check)', async () => {
+      const wi = makeWorkItem({ type: 'reconcile' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      const updated = await service.completeSimpleItem(wi.id, 'system');
+
+      expect(updated!.status).toBe('done');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // verifyItem (VERIF-1)
+  // -----------------------------------------------------------------------
+
+  describe('verifyItem', () => {
+    /**
+     * Drives a WorkItem through `running → done_by_worker` so the verify
+     * tests can exercise the verdict transitions in isolation.
+     */
+    async function makeAwaitingVerification(opts?: { type?: 'delegate' | 'cron_run' }) {
+      const wi = makeWorkItem({ type: opts?.type ?? 'delegate' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      await service.submitForVerification(wi.id, 'agent', { output: 'draft' });
+      return wi;
+    }
+
+    it('transitions done_by_worker → verified for a team_lead actor', async () => {
+      const wi = await makeAwaitingVerification();
+
+      const updated = await service.verifyItem(wi.id, 'team_lead', 'verified');
+
+      expect(updated).not.toBeNull();
+      expect(updated!.status).toBe('verified');
+    });
+
+    it('transitions done_by_worker → rejected for a team_lead actor with a reviewer comment', async () => {
+      const wi = await makeAwaitingVerification();
+
+      const updated = await service.verifyItem(wi.id, 'team_lead', 'rejected', 'Output incomplete');
+
+      expect(updated).not.toBeNull();
+      expect(updated!.status).toBe('rejected');
+      // Reviewer comment surfaced via the existing `error` field — see JSDoc
+      expect(updated!.error).toBe('Output incomplete');
+    });
+
+    it('rejects an agent actor calling verifyItem (workers cannot self-verify)', async () => {
+      const wi = await makeAwaitingVerification();
+
+      await expect(service.verifyItem(wi.id, 'agent', 'verified'))
+        .rejects.toThrow(/Forbidden transition.*actor='agent'/);
+    });
+
+    it('rejects an invalid verdict before touching the state machine', async () => {
+      const wi = await makeAwaitingVerification();
+
+      await expect(
+        service.verifyItem(wi.id, 'team_lead', 'cancelled' as 'verified'),
+      ).rejects.toThrow(/Invalid verdict/);
+    });
+
+    it('promotes blocked dependents on verified (terminal-success unblocks waiters)', async () => {
+      const upstream = makeWorkItem({ type: 'delegate' });
+      const downstream = makeWorkItem({ type: 'cron_run', dependsOn: [upstream.id] });
+      await service.addToPool(upstream);
+      await service.addToPool(downstream);
+      await service.claimFromPool('agent-leo');
+      await service.submitForVerification(upstream.id, 'agent');
+
+      await service.verifyItem(upstream.id, 'team_lead', 'verified');
+
+      const downstreamAfter = (await service.getAllItems()).find((wi) => wi.id === downstream.id);
+      expect(downstreamAfter?.status).toBe('queued');
+    });
+
+    it('rejects a verdict on an item that is not in done_by_worker (state-machine gate)', async () => {
+      const wi = makeWorkItem({ type: 'delegate' });
+      await service.addToPool(wi);
+      // never claimed / submitted — still queued
+
+      await expect(service.verifyItem(wi.id, 'team_lead', 'verified'))
+        .rejects.toThrow(/Invalid status transition/);
     });
   });
 

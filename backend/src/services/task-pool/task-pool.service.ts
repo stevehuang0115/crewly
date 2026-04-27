@@ -376,11 +376,207 @@ export class TaskPoolService {
   }
 
   /**
-   * Marks a work item as completed ('done').
+   * Decide whether a WorkItem requires TL verification before reaching a
+   * terminal-success status.
    *
-   * @param workItemId - ID of the work item
-   * @param result - Optional result data
-   * @throws Error if work item not found or not in 'running' status
+   * Default policy (VERIF-1):
+   *   - `delegate` items default to *requires verification* — a worker
+   *     marking their own delegated work as "done" should produce
+   *     `done_by_worker` and wake the TL for sign-off.
+   *   - All other types (`cron_run`, `notify`, `reconcile`, `check`,
+   *     `confirm`, `review`, ...) default to simple completion (`done`).
+   *
+   * The default is overridable via `wi.metadata.requiresVerification`:
+   *   - `true`  — force verification path even for non-delegate types
+   *   - `false` — skip verification even for delegate types (this is the
+   *     F-H affordance REVIEW-1 needs: review WIs are themselves the
+   *     verification step, so they must NOT loop back to TL self-verify)
+   *
+   * @param wi - The WorkItem under inspection
+   * @returns true when the verification path should fire
+   */
+  private requiresVerification(wi: WorkItem): boolean {
+    const metaFlag = (wi.metadata as { requiresVerification?: boolean } | undefined)?.requiresVerification;
+    if (metaFlag === true) return true;
+    if (metaFlag === false) return false;
+    return wi.type === 'delegate';
+  }
+
+  /**
+   * Internal: release the active claim on a WorkItem (if any). Shared by
+   * `completeSimpleItem` and `submitForVerification` because both
+   * represent the worker handing the item back to the system.
+   *
+   * @param workItemId - WorkItem whose claim should be released
+   * @param endReason - Reason recorded on the claim (`completed` /
+   *   `submitted_for_verification`) for auditability
+   */
+  private async releaseClaim(workItemId: string, endReason: string): Promise<void> {
+    const claim = await this.storage.findActiveClaimByWorkItem(workItemId);
+    if (!claim) return;
+    await this.storage.updateClaim(claim.id, (c) => {
+      c.status = 'released';
+      c.endedAt = new Date().toISOString();
+      c.endReason = endReason;
+    });
+  }
+
+  /**
+   * Worker reports a delegated WorkItem as done and submits it for TL
+   * verification.
+   *
+   * Transitions `running → done_by_worker` via {@link transitionStatus},
+   * which enforces the V3 actor-role gate (`'agent'` is allowed; any
+   * other role throws). The active claim is released as
+   * `submitted_for_verification` so the TL queue is the only thing
+   * blocking forward progress.
+   *
+   * Used by the `completeItem` facade for `delegate`-type items and any
+   * item whose `metadata.requiresVerification === true`.
+   *
+   * @param workItemId - WorkItem id
+   * @param actorRole - Role of the caller (`'agent'` for normal worker
+   *   submissions; passed through to `isTransitionPermitted`)
+   * @param result - Optional result payload to attach to the WorkItem
+   * @returns The updated WorkItem, or `null` if the WI was deleted
+   *   between the find and the update (race window)
+   * @throws When the WorkItem is missing, the transition is invalid, or
+   *   the actor is not permitted to perform `running → done_by_worker`.
+   */
+  async submitForVerification(
+    workItemId: string,
+    actorRole: WorkItemOwner,
+    result?: Record<string, unknown>,
+  ): Promise<WorkItem | null> {
+    await this.releaseClaim(workItemId, 'submitted_for_verification');
+    const updated = await this.transitionStatus(
+      workItemId,
+      'done_by_worker',
+      actorRole,
+      (wi) => {
+        if (result) wi.result = result;
+      },
+    );
+    await this.storage.flush();
+    this.logger.info('WorkItem submitted for verification', {
+      workItemId,
+      actorRole,
+      // BRIDGE-1 will turn this into a real `task:done_by_worker` event
+      // that wakes the TL session. For now the log line is the wake
+      // signal — a TL-watching subscriber can grep on it.
+      tlWakeRequested: true,
+    });
+    return updated;
+  }
+
+  /**
+   * Worker (or system) marks a non-delegated WorkItem as fully done.
+   *
+   * Transitions `running → done` via {@link transitionStatus}. Used by
+   * the `completeItem` facade for `cron_run`, `notify`, `reconcile`,
+   * `check`, `confirm`, `review` types — anything whose lifecycle does
+   * NOT include a TL verification step.
+   *
+   * The Reconciler service is the only system-actor caller and uses
+   * `actorRole='system'`, which bypasses the actor check while still
+   * respecting the state-machine legality check.
+   *
+   * @param workItemId - WorkItem id
+   * @param actorRole - Role of the caller (`'agent'`, `'system'`, etc.)
+   * @param result - Optional result payload to attach
+   * @returns The updated WorkItem, or `null` if the WI was deleted
+   *   between the find and the update (race window)
+   * @throws When the WorkItem is missing, the transition is invalid, or
+   *   the actor is not permitted to perform `running → done`.
+   */
+  async completeSimpleItem(
+    workItemId: string,
+    actorRole: WorkItemOwner,
+    result?: Record<string, unknown>,
+  ): Promise<WorkItem | null> {
+    await this.releaseClaim(workItemId, 'completed');
+    const updated = await this.transitionStatus(
+      workItemId,
+      'done',
+      actorRole,
+      (wi) => {
+        if (result) wi.result = result;
+      },
+    );
+    // Promote any blocked dependents whose deps are now all satisfied.
+    await this.resolveBlockedDependents(workItemId);
+    await this.storage.flush();
+    this.logger.info('WorkItem completed', { workItemId, actorRole });
+    return updated;
+  }
+
+  /**
+   * TL records a verdict on a WorkItem in `done_by_worker` status.
+   *
+   * `verified` advances to terminal success and unblocks dependents;
+   * `rejected` parks the item until the TL re-queues it (which TRANS-1
+   * gates to TL/orchestrator/system actors). Worker-actor calls throw
+   * automatically via {@link transitionStatus}'s permission gate — we
+   * do NOT need to add an explicit role check here, the matrix in
+   * `TRANSITION_PERMISSIONS` handles it.
+   *
+   * @param workItemId - WorkItem id (must currently be `done_by_worker`)
+   * @param actorRole - Role of the caller (`'team_lead'` or `'orchestrator'`
+   *   for verify/reject; worker calls throw)
+   * @param verdict - `'verified'` or `'rejected'`
+   * @param comment - Optional reviewer comment recorded in `wi.error`
+   *   (the field is reused — the WorkItem schema does not yet have a
+   *   dedicated `verifierComment` slot; keeping this on `error` lets
+   *   downstream UIs render TL feedback alongside failure causes)
+   * @returns The updated WorkItem, or `null` on race-window deletion
+   * @throws When the WorkItem is missing, the verdict is invalid, the
+   *   transition is illegal, or the actor is not permitted to verify.
+   */
+  async verifyItem(
+    workItemId: string,
+    actorRole: WorkItemOwner,
+    verdict: 'verified' | 'rejected',
+    comment?: string,
+  ): Promise<WorkItem | null> {
+    if (verdict !== 'verified' && verdict !== 'rejected') {
+      throw new Error(
+        `Invalid verdict: "${verdict}". Must be "verified" or "rejected".`,
+      );
+    }
+    const updated = await this.transitionStatus(
+      workItemId,
+      verdict,
+      actorRole,
+      (wi) => {
+        if (comment) wi.error = comment;
+      },
+    );
+    if (verdict === 'verified') {
+      await this.resolveBlockedDependents(workItemId);
+    }
+    await this.storage.flush();
+    this.logger.info('WorkItem verdict recorded', { workItemId, verdict, actorRole });
+    return updated;
+  }
+
+  /**
+   * Legacy facade — picks the verification path for the caller.
+   *
+   * Existing call sites (REST controller, task-management controllers,
+   * V3 data service) invoke `completeItem(id, result)` without an
+   * explicit actor role. The facade reads the WorkItem, applies the
+   * {@link requiresVerification} policy, and dispatches to either
+   * {@link submitForVerification} (delegate items / explicit opt-in)
+   * or {@link completeSimpleItem} (everything else).
+   *
+   * The legacy actor role for these implicit callers is `'agent'`.
+   * Migrations to explicit-actor calls can land in follow-up tickets
+   * without touching the five call sites in this PR.
+   *
+   * @param workItemId - WorkItem id
+   * @param result - Optional result payload
+   * @throws When the WorkItem is missing or the underlying transition
+   *   is rejected (invalid state, forbidden actor).
    */
   async completeItem(
     workItemId: string,
@@ -390,34 +586,11 @@ export class TaskPoolService {
     if (!workItem) {
       throw new Error(`WorkItem not found: ${workItemId}`);
     }
-    if (workItem.status !== 'running') {
-      throw new Error(
-        `Cannot complete WorkItem: status must be 'running', got '${workItem.status}'`,
-      );
+    if (this.requiresVerification(workItem)) {
+      await this.submitForVerification(workItemId, 'agent', result);
+    } else {
+      await this.completeSimpleItem(workItemId, 'agent', result);
     }
-
-    // Release the claim
-    const claim = await this.storage.findActiveClaimByWorkItem(workItemId);
-    if (claim) {
-      await this.storage.updateClaim(claim.id, (c) => {
-        c.status = 'released';
-        c.endedAt = new Date().toISOString();
-        c.endReason = 'completed';
-      });
-    }
-
-    // Mark item done
-    await this.storage.updateWorkItem(workItemId, (wi) => {
-      wi.status = 'done';
-      wi.completedAt = new Date().toISOString();
-      if (result) wi.result = result;
-    });
-
-    // Promote any blocked dependents whose deps are now all satisfied.
-    await this.resolveBlockedDependents(workItemId);
-
-    await this.storage.flush();
-    this.logger.info('WorkItem completed', { workItemId });
   }
 
   /**
