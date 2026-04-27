@@ -179,4 +179,128 @@ describe('OnboardingService', () => {
       expect(updated!.discoveryAnswers).toEqual(answers);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Tenant scoping (N1 — Phase E pre-beta)
+  //
+  // Every read and mutation must respect the optional `ownerUserId` scope so
+  // Cloud Portal multi-tenant mode does not leak sessions across users. Each
+  // method's "missing or not owned" cases must collapse to the same `null`
+  // return so cross-tenant id enumeration cannot probe for existence.
+  // ---------------------------------------------------------------------------
+  describe('tenant scoping', () => {
+    const USER_A = 'user-aaa';
+    const USER_B = 'user-bbb';
+
+    const samplePrefill: OnboardingPrefillData = {
+      businessName: 'Acme',
+      confidence: 'high',
+    };
+    const sampleAnswers: DiscoveryAnswers = {
+      identity: { name: 'Acme', vertical: 'Software/Tech', size: 'small' },
+    };
+
+    it('createSession persists ownerUserId on the session record', () => {
+      const s = svc.createSession('https://a.com', USER_A);
+      expect(s.ownerUserId).toBe(USER_A);
+    });
+
+    it('createSession leaves ownerUserId undefined when not provided (OSS legacy mode)', () => {
+      const s = svc.createSession('https://a.com');
+      expect(s.ownerUserId).toBeUndefined();
+    });
+
+    it('listSessions(ownerUserId) returns only that user\'s sessions', () => {
+      svc.createSession('https://a.com', USER_A);
+      svc.createSession('https://a2.com', USER_A);
+      svc.createSession('https://b.com', USER_B);
+
+      const aList = svc.listSessions(USER_A);
+      const bList = svc.listSessions(USER_B);
+
+      expect(aList).toHaveLength(2);
+      expect(aList.every((s) => s.ownerUserId === USER_A)).toBe(true);
+      expect(bList).toHaveLength(1);
+      expect(bList[0]?.ownerUserId).toBe(USER_B);
+    });
+
+    it('listSessions() with no scope returns ALL sessions (admin/legacy access)', () => {
+      svc.createSession('https://a.com', USER_A);
+      svc.createSession('https://b.com', USER_B);
+      svc.createSession('https://c.com');
+
+      expect(svc.listSessions()).toHaveLength(3);
+    });
+
+    it('listSessions(ownerUserId) excludes unscoped (ownerUserId-undefined) sessions', () => {
+      svc.createSession('https://a.com', USER_A);
+      svc.createSession('https://legacy.com'); // no owner
+
+      const aList = svc.listSessions(USER_A);
+      expect(aList).toHaveLength(1);
+      expect(aList[0]?.websiteUrl).toBe('https://a.com');
+    });
+
+    it('getSession returns null when scope does not match (no enumeration leak)', () => {
+      const s = svc.createSession('https://a.com', USER_A);
+      // user A can read it
+      expect(svc.getSession(s.id, USER_A)).not.toBeNull();
+      // user B sees the same null shape as a missing id
+      expect(svc.getSession(s.id, USER_B)).toBeNull();
+      expect(svc.getSession('does-not-exist', USER_B)).toBeNull();
+    });
+
+    it('getSession with no scope returns the session regardless of owner (admin/legacy)', () => {
+      const s = svc.createSession('https://a.com', USER_A);
+      expect(svc.getSession(s.id)).not.toBeNull();
+    });
+
+    it('updateSession returns null and does NOT mutate when scope mismatches', () => {
+      const s = svc.createSession('https://a.com', USER_A);
+      const before = svc.getSession(s.id);
+      const result = svc.updateSession(s.id, { websiteUrl: 'https://hacked.com' }, USER_B);
+      expect(result).toBeNull();
+      // Verify nothing was mutated under the hood
+      expect(svc.getSession(s.id)?.websiteUrl).toBe('https://a.com');
+      expect(svc.getSession(s.id)?.updatedAt).toBe(before?.updatedAt);
+    });
+
+    it('updateSession strips ownerUserId from the update payload (no re-targeting)', () => {
+      const s = svc.createSession('https://a.com', USER_A);
+      const updated = svc.updateSession(
+        s.id,
+        { ownerUserId: USER_B, websiteUrl: 'https://still-a.com' } as Partial<typeof s>,
+        USER_A,
+      );
+      expect(updated).not.toBeNull();
+      expect(updated!.ownerUserId).toBe(USER_A);
+      expect(updated!.websiteUrl).toBe('https://still-a.com');
+    });
+
+    it('setPrefillData returns null and does NOT mutate when scope mismatches', () => {
+      const s = svc.createSession('https://a.com', USER_A);
+      const result = svc.setPrefillData(s.id, samplePrefill, USER_B);
+      expect(result).toBeNull();
+      expect(svc.getSession(s.id)?.prefillData).toBeUndefined();
+      expect(svc.getSession(s.id)?.status).toBe('created');
+    });
+
+    it('approveProfile returns null and does NOT mutate when scope mismatches', () => {
+      const s = svc.createSession('https://a.com', USER_A);
+      const result = svc.approveProfile(s.id, sampleAnswers, USER_B);
+      expect(result).toBeNull();
+      expect(svc.getSession(s.id)?.discoveryAnswers).toBeUndefined();
+      expect(svc.getSession(s.id)?.status).toBe('created');
+    });
+
+    it('the owner can still mutate their own session after a foreign attempt', () => {
+      const s = svc.createSession('https://a.com', USER_A);
+      // Foreign attempt is rejected silently
+      svc.updateSession(s.id, { websiteUrl: 'https://hacked.com' }, USER_B);
+      // Owner mutation still works
+      const updated = svc.updateSession(s.id, { websiteUrl: 'https://updated.com' }, USER_A);
+      expect(updated).not.toBeNull();
+      expect(updated!.websiteUrl).toBe('https://updated.com');
+    });
+  });
 });
