@@ -23,8 +23,10 @@ import {
   DEFAULT_INBOUND_TAGS,
   extractSlackThreadTs,
   extractSlackChannelId,
-  type EscalationSlackCallback,
+  setRequestSlaSubscriber,
+  getRequestSlaSubscriber,
 } from './request-sla.subscriber.js';
+import type { EscalationSlackCallback } from './request-sla.subscriber.js';
 import type { Request } from '../../types/v2/request.types.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import type { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -494,6 +496,33 @@ describe('RequestSlaSubscriber', () => {
       await sub.markResolvedByThread('1772899923.865659');
       // No transition recorded — already terminal.
       expect(pool.transitionCalls).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Module-level singleton accessor (INBOUND-1.4 hook)
+  // -------------------------------------------------------------------------
+
+  describe('module-level singleton accessor', () => {
+    afterEach(() => {
+      // Always reset so the next describe block starts with a clean slate.
+      setRequestSlaSubscriber(null);
+    });
+
+    it('getRequestSlaSubscriber returns null until setRequestSlaSubscriber wires one', () => {
+      setRequestSlaSubscriber(null);
+      expect(getRequestSlaSubscriber()).toBeNull();
+    });
+
+    it('setRequestSlaSubscriber publishes the live instance to slack-bridge consumers', () => {
+      setRequestSlaSubscriber(sub);
+      expect(getRequestSlaSubscriber()).toBe(sub);
+    });
+
+    it('setRequestSlaSubscriber(null) clears the wired instance', () => {
+      setRequestSlaSubscriber(sub);
+      setRequestSlaSubscriber(null);
+      expect(getRequestSlaSubscriber()).toBeNull();
     });
   });
 });

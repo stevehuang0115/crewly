@@ -56,6 +56,36 @@ import type { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { RequestService } from './request.service.js';
 
 // ---------------------------------------------------------------------------
+// Module-level singleton accessor (DI for slack-orchestrator-bridge)
+// ---------------------------------------------------------------------------
+
+/**
+ * The currently-wired RequestSlaSubscriber instance, set by the backend
+ * boot path. The slack-orchestrator-bridge calls
+ * {@link getRequestSlaSubscriber} from a lazy import so we don't form a
+ * static cycle between the bridge and the subscriber at module load.
+ */
+let injectedSubscriber: RequestSlaSubscriber | null = null;
+
+/**
+ * Wire the subscriber instance accessible via {@link getRequestSlaSubscriber}.
+ * Called once from boot before the slack listener can dispatch a reply.
+ *
+ * @param sub - The live subscriber, or null to clear (tests)
+ */
+export function setRequestSlaSubscriber(sub: RequestSlaSubscriber | null): void {
+  injectedSubscriber = sub;
+}
+
+/**
+ * Read the currently-wired subscriber, or null if boot has not finished yet.
+ * Returns null in test setups that don't wire one — callers must tolerate.
+ */
+export function getRequestSlaSubscriber(): RequestSlaSubscriber | null {
+  return injectedSubscriber;
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 

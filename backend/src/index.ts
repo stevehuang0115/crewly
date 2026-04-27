@@ -65,6 +65,12 @@ import { ThreadStatusQueueService } from './services/messaging/thread-status-que
 import { EventBusService } from './services/event-bus/index.js';
 import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-bridge.service.js';
 import { AutoLearningSubscriber } from './services/memory/auto-learning.subscriber.js';
+import {
+	RequestSlaSubscriber,
+	setRequestSlaSubscriber,
+} from './services/v3/request-sla.subscriber.js';
+import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
+import { getSlackService } from './services/slack/slack.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -182,6 +188,8 @@ export class CrewlyServer {
 	private eventToWorkItemBridge: EventToWorkItemBridge | null = null;
 	/** LEARN-1: subscribes to terminal task / mission:replanned events and auto-records learnings. */
 	private autoLearningSubscriber: AutoLearningSubscriber | null = null;
+	/** INBOUND-1: subscribes to request:created and tracks 5/10 min SLA on respond_to_user WIs. */
+	private requestSlaSubscriber: RequestSlaSubscriber | null = null;
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
 	private reconcilerService: ReconcilerService | null = null;
@@ -406,6 +414,30 @@ export class CrewlyServer {
 		// contract (V1) and the V7/V9 self-checks in the co-located test.
 		this.autoLearningSubscriber = AutoLearningSubscriber.boot(this.eventBusService);
 		this.autoLearningSubscriber.start();
+
+		// INBOUND-1: wire RequestService → bus, then subscribe SLA tracker.
+		// Order matters: setRequestServiceEventBus must run BEFORE any code
+		// path can call RequestService.create() — the slack listener at
+		// line ~370 is the first hot caller, but the slack service hasn't
+		// been initialised yet at this point in boot, so we're safe.
+		setRequestServiceEventBus(this.eventBusService);
+		this.requestSlaSubscriber = RequestSlaSubscriber.boot(
+			this.eventBusService,
+			RequestService.getInstance(),
+			TaskPoolService.getInstance(),
+			async ({ channelId, threadTs, messageText }) => {
+				// Production wiring of the 10-min escalation hook: nudge the user
+				// in the same Slack thread so they're never blind to the miss.
+				const slack = getSlackService();
+				await slack.sendMessage({
+					channelId,
+					threadTs,
+					text: messageText,
+				});
+			},
+		);
+		this.requestSlaSubscriber.start();
+		setRequestSlaSubscriber(this.requestSlaSubscriber);
 
 		// Initialize Slack thread store for persistent thread conversations
 		const slackThreadStore = new SlackThreadStoreService(this.config.crewlyHome);
@@ -2699,6 +2731,15 @@ export class CrewlyServer {
 				this.autoLearningSubscriber.stop();
 				this.autoLearningSubscriber = null;
 			}
+
+			// INBOUND-1: stop the SLA subscriber and unset the module-level
+			// references so a follow-up start() doesn't see stale singletons.
+			if (this.requestSlaSubscriber) {
+				this.requestSlaSubscriber.stop();
+				this.requestSlaSubscriber = null;
+			}
+			setRequestSlaSubscriber(null);
+			setRequestServiceEventBus(null);
 
 			// Clean up event bus service
 			this.eventBusService.cleanup();
