@@ -361,6 +361,76 @@ describe('onboarding-provision.service', () => {
   });
 
   // =========================================================================
+  // Tenant attribution (N1b — Phase E pre-beta)
+  //
+  // The provision flow must stamp the authenticated principal as the team
+  // owner (`Team.ownerUserId`) so cross-tenant attribution is impossible.
+  // The owner is sourced ONLY from the route's `ownerIdFor(req)` call,
+  // never from the request body — even a body that carries an
+  // `ownerUserId` field must NOT influence the saved team.
+  // =========================================================================
+
+  describe('provisionFromOnboarding — tenant attribution (N1b)', () => {
+    it('stamps the authenticated principal onto Team.ownerUserId', async () => {
+      stubTemplateSuccess('growth-marketing-team');
+      const res = await provisionFromOnboarding(makeRequest(), 'user-aaa');
+
+      expect(res.success).toBe(true);
+      expect(mockSaveTeam).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerUserId: 'user-aaa' }),
+      );
+    });
+
+    it('persists distinct owners for distinct callers', async () => {
+      stubTemplateSuccess('growth-marketing-team');
+      await provisionFromOnboarding(makeRequest(), 'user-aaa');
+      stubTemplateSuccess('growth-marketing-team');
+      await provisionFromOnboarding(makeRequest(), 'user-bbb');
+
+      const calls = mockSaveTeam.mock.calls.map((args) => args[0] as { ownerUserId?: string });
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.ownerUserId).toBe('user-aaa');
+      expect(calls[1]?.ownerUserId).toBe('user-bbb');
+    });
+
+    it('leaves Team.ownerUserId undefined when no principal is provided (OSS legacy)', async () => {
+      stubTemplateSuccess('growth-marketing-team');
+      const res = await provisionFromOnboarding(makeRequest());
+
+      expect(res.success).toBe(true);
+      const savedTeam = mockSaveTeam.mock.calls[0]?.[0] as { ownerUserId?: string };
+      expect(savedTeam?.ownerUserId).toBeUndefined();
+    });
+
+    it('IGNORES any ownerUserId field on the request body (no body-derived attribution)', async () => {
+      stubTemplateSuccess('growth-marketing-team');
+      // Body carries a forged owner — defense in depth: the service must
+      // NOT trust it. Only the principal arg can set ownership.
+      const forged = { ...makeRequest(), ownerUserId: 'attacker-id' } as Record<string, unknown>;
+      await provisionFromOnboarding(forged, 'user-aaa');
+
+      const savedTeam = mockSaveTeam.mock.calls[0]?.[0] as { ownerUserId?: string };
+      expect(savedTeam?.ownerUserId).toBe('user-aaa');
+      expect(savedTeam?.ownerUserId).not.toBe('attacker-id');
+    });
+
+    it('does NOT stamp ownerUserId when validation fails (no half-attributed teams)', async () => {
+      const res = await provisionFromOnboarding({} as unknown, 'user-aaa');
+      expect(res.success).toBe(false);
+      expect(mockSaveTeam).not.toHaveBeenCalled();
+    });
+
+    it('does NOT stamp ownerUserId when budget gate trips (starter tier short-circuits)', async () => {
+      const req = makeRequest() as { customer: { strategy: { budget: string } } };
+      req.customer.strategy.budget = 'starter';
+      const res = await provisionFromOnboarding(req, 'user-aaa');
+
+      expect(res.success).toBe(false);
+      expect(mockSaveTeam).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
   // DEFAULT_TEMPLATE_ID constant is exported correctly
   // =========================================================================
 

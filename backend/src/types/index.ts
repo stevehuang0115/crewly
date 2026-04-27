@@ -136,6 +136,19 @@ export interface Team {
 
   // === Organization Model fields ===
 
+  /**
+   * Authenticated principal that materialised this team (Cloud Portal
+   * multi-tenant attribution — N1b, Phase E pre-beta). Populated by the
+   * provision route from `req.user.userId` so a team is bound to the user
+   * that triggered its creation. Undefined for OSS single-user teams and
+   * for legacy teams created before this field existed; consumers must
+   * tolerate both shapes.
+   *
+   * Read-side scoping (filter Team list/get by `ownerUserId`) is a
+   * separate ticket — N1b only closes the *attribution* leak so audit
+   * trails and future scoping have a stable field to key on.
+   */
+  ownerUserId?: string;
   /** Team-level ownership scope — what this team is responsible for */
   ownershipScope?: import('./team-template.types.js').OwnershipScope;
   /** Service contract — what the team accepts, avoids, and delivers */

@@ -170,7 +170,11 @@ export function createOnboardingRouter(): Router {
    * Provision a team from the Onboarding Agent's discovery output.
    *
    * Validates the handoff payload, resolves the best-match template,
-   * and creates a fully configured team via TemplateService.
+   * and creates a fully configured team via TemplateService. The team
+   * is attributed to the authenticated principal — `ownerIdFor(req)`
+   * is forwarded to {@link provisionFromOnboarding} so the resulting
+   * `Team.ownerUserId` is bound to `req.user.userId` and never sourced
+   * from the request body (N1b — Arch's PR #350 follow-up).
    *
    * Body: OnboardingProvisionRequest
    * Returns 200 with OnboardingProvisionResponse on success.
@@ -178,7 +182,7 @@ export function createOnboardingRouter(): Router {
    */
   router.post('/provision', requireAuth, async (req: Request, res: Response) => {
     try {
-      const result = await provisionFromOnboarding(req.body);
+      const result = await provisionFromOnboarding(req.body, ownerIdFor(req));
 
       if (!result.success) {
         res.status(400).json(result);

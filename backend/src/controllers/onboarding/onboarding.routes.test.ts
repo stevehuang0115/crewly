@@ -426,5 +426,32 @@ describe('Onboarding Routes', () => {
       expect(ownerRes.status).toBe(200);
       expect(ownerRes.body.data.websiteUrl).toBe('https://owner-update.com');
     });
+
+    // -------------------------------------------------------------------------
+    // /provision team-attribution gate (N1b — Arch's PR #350 follow-up)
+    //
+    // Deep attribution behaviour (`Team.ownerUserId` stamping, body-derived
+    // forgery rejection, distinct owners for distinct callers) is exhaustively
+    // covered in `onboarding-provision.service.test.ts`. Here we only assert
+    // the route-level surface: requireAuth gate + that a request with a
+    // garbage-shaped body still surfaces the same 400 validation pathway
+    // even when authenticated (i.e. the auth gate doesn't change the
+    // existing error contract).
+    // -------------------------------------------------------------------------
+    it('POST /provision returns 401 without a valid token (auth gate)', async () => {
+      const res = await request(app).post('/api/onboarding/provision').send({});
+      expect(res.status).toBe(401);
+    });
+
+    it('POST /provision still returns 400 on invalid body when authenticated', async () => {
+      const res = await request(app).post('/api/onboarding/provision')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({});
+      // Auth passes; provisionFromOnboarding rejects the empty body via
+      // its own validator and the route surfaces it as 400 (not 500).
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toBeDefined();
+    });
   });
 });
