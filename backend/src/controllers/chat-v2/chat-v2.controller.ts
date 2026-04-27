@@ -24,10 +24,12 @@ import type { ChatV2DispatcherService } from '../../services/chat-v2/chat-v2.dis
 import type { ChatV2Gateway } from '../../websocket/chat-v2.gateway.js';
 import { buildMessageEvent } from '../../websocket/chat-v2.gateway.js';
 import { getChatV2RealtimeDeps } from '../../services/chat-v2/chat-v2.realtime-holder.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import {
   CHAT_ERROR_CODES,
   ChatError,
   type ChatChannelType,
+  type ChatChannelDTO,
   type ChatMessageDTO,
   type ChatPrincipal,
 } from '../../services/chat-v2/types.js';
@@ -106,6 +108,119 @@ export function runHandler<T>(res: Response, run: () => T): T | undefined {
     }
     return undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// INBOUND-2 helpers — V3 Request + SLA hooks for chat-v2 ingress
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the canonical chat-v2 sourceConversationItemId so the
+ * `RequestSlaSubscriber` can dedupe + extract channel/message ids the
+ * same way it does for Slack (`slack-${channelId}-${ts}`).
+ *
+ * Shape: `chatv2-${channelId}-${messageId}`. Mirrors the Slack format
+ * so the SLA subscriber's symmetric helpers
+ * (`extractChatV2ChannelId` / `extractChatV2MessageId`) can recover both
+ * fields with a single split.
+ *
+ * @param channelId - Persisted chat-v2 channel id
+ * @param messageId - Persisted chat-v2 message id (cuid)
+ * @returns The composite source id, e.g. `chatv2-c-abc-m-xyz`
+ */
+export function buildChatV2SourceId(channelId: string, messageId: string): string {
+  return `chatv2-${channelId}-${messageId}`;
+}
+
+/**
+ * INBOUND-2: decide whether a chat-v2 channel routes user messages to the
+ * orchestrator. v1 scope = `type='dm'` channels whose `agentSession`
+ * field is the orchestrator session. `type='channel'` (team-scoped) is
+ * excluded — the SLA path expects the WI target to be the orchestrator
+ * and team-channels haven't yet defined an orc-tagged routing concept
+ * (see INBOUND-2 task spec, escalation note "no orc-tagged channels yet").
+ *
+ * Exported so tests can lock the scope without relying on private state.
+ *
+ * @param channel - The channel DTO returned by `service.getChannel`.
+ * @returns True iff the channel routes to the orchestrator.
+ */
+export function isOrchestratorRoutedChatV2Channel(channel: ChatChannelDTO): boolean {
+  if (channel.type !== 'dm') return false;
+  if (!channel.agentSession) return false;
+  return channel.agentSession === ORCHESTRATOR_SESSION_NAME;
+}
+
+/**
+ * Fire-and-forget: if a USER-origin chat-v2 message lands in a channel
+ * routed to the orc, register a V3 Request so the
+ * `RequestSlaSubscriber` (INBOUND-1) can attach a respond_to_user
+ * WorkItem with the 5/10min SLA timers.
+ *
+ * Mirrors the Slack pattern at
+ * `slack-orchestrator-bridge.ts:367-395`. Errors are swallowed and
+ * logged at warn-level inside the lazy import — Request creation is
+ * non-critical to the chat ack.
+ *
+ * @param channel - The persisted channel (provides type + agentSession)
+ * @param message - The persisted user message (provides id + content)
+ */
+export function emitChatV2RequestCreated(
+  channel: ChatChannelDTO,
+  message: ChatMessageDTO,
+): void {
+  if (message.senderType !== 'user') return;
+  if (!isOrchestratorRoutedChatV2Channel(channel)) return;
+
+  setImmediate(async () => {
+    try {
+      const { RequestService } = await import('../../services/v3/request.service.js');
+      const svc = RequestService.getInstance();
+      const sourceId = buildChatV2SourceId(channel.id, message.id);
+      const existing = await svc.findBySourceConversationItemId(sourceId);
+      if (existing) return;
+
+      const { generateRequestTitle } = await import('../../services/v3/v3-data.service.js');
+      const rawText = message.content || '';
+      await svc.create({
+        title: generateRequestTitle(rawText, 'other'),
+        description: rawText,
+        sourceConversationItemId: sourceId,
+        priority: 'normal',
+        tags: ['chat-v2'],
+      });
+    } catch {
+      // Non-critical — Request creation failure must not break chat send.
+    }
+  });
+}
+
+/**
+ * Fire-and-forget: when an AGENT-origin chat-v2 message lands in a
+ * channel that may have an outstanding `respond_to_user` WI tracked by
+ * the SLA subscriber, mark it resolved (transitions the WI to `done`,
+ * silences the breach + escalation timers).
+ *
+ * Safe to call for any agent-origin message — `markResolvedByChatV2` is
+ * a no-op when the channel isn't tracked.
+ *
+ * @param message - The persisted message (only agent-origin is acted on)
+ */
+export function notifyChatV2AgentReply(message: ChatMessageDTO): void {
+  if (message.senderType !== 'agent') return;
+
+  setImmediate(async () => {
+    try {
+      const { getRequestSlaSubscriber } = await import(
+        '../../services/v3/request-sla.subscriber.js'
+      );
+      const sub = getRequestSlaSubscriber();
+      if (!sub) return;
+      await sub.markResolvedByChatV2(message.channelId);
+    } catch {
+      // Non-critical — auto-resolve failure must not break chat send.
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +444,18 @@ export function createChatV2Controller(
         }
       } catch {
         // dispatcher must never break the ack
+      }
+
+      // INBOUND-2 — V3 Request + SLA-tracking hooks. Mirrors the Slack
+      // ingress pattern at slack-orchestrator-bridge.ts:367-395.
+      // Fire-and-forget; failures are isolated inside the helpers.
+      try {
+        if (channelForDispatch) {
+          emitChatV2RequestCreated(channelForDispatch, persisted);
+        }
+        notifyChatV2AgentReply(persisted);
+      } catch {
+        // INBOUND-2 hooks must never break the ack
       }
     },
   };

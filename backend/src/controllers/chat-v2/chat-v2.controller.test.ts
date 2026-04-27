@@ -11,9 +11,15 @@
 import express from 'express';
 import request from 'supertest';
 import { createChatV2Router } from './chat-v2.routes.js';
+import {
+  buildChatV2SourceId,
+  isOrchestratorRoutedChatV2Channel,
+} from './chat-v2.controller.js';
 import { ChatV2Service } from '../../services/chat-v2/chat-v2.service.js';
 import { openChatDatabase } from '../../services/chat-v2/sqlite/chat-db.js';
 import { loadChatV2Config } from '../../services/chat-v2/config.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import type { ChatChannelDTO } from '../../services/chat-v2/types.js';
 
 /** Build a test app with the chat router mounted under /api/chat. */
 function buildApp() {
@@ -489,5 +495,63 @@ describe('chat-v2 controller (REST)', () => {
         service.close();
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// INBOUND-2 — pure helper unit tests
+// ---------------------------------------------------------------------------
+
+/** Minimal channel DTO factory for the orchestrator-routing predicate. */
+function makeChannel(overrides: Partial<ChatChannelDTO> = {}): ChatChannelDTO {
+  return {
+    id: 'c-1',
+    agentSession: 'sess-a',
+    name: 'Channel',
+    createdAt: 0,
+    agentPresence: { status: 'online', lastSeenAt: null },
+    type: 'dm',
+    ...overrides,
+  };
+}
+
+describe('buildChatV2SourceId (INBOUND-2)', () => {
+  it('builds the canonical chatv2-${channelId}-${messageId} composite', () => {
+    expect(buildChatV2SourceId('c-abc', 'm-xyz')).toBe('chatv2-c-abc-m-xyz');
+  });
+
+  it('round-trips through the SLA subscriber extractors', async () => {
+    const { extractChatV2ChannelId, extractChatV2MessageId } = await import(
+      '../../services/v3/request-sla.subscriber.js'
+    );
+    const sid = buildChatV2SourceId('cabc123', 'mxyz789');
+    expect(extractChatV2ChannelId(sid)).toBe('cabc123');
+    expect(extractChatV2MessageId(sid)).toBe('mxyz789');
+  });
+});
+
+describe('isOrchestratorRoutedChatV2Channel (INBOUND-2)', () => {
+  it('returns true for type=dm channels bound to the orchestrator session', () => {
+    const ch = makeChannel({ type: 'dm', agentSession: ORCHESTRATOR_SESSION_NAME });
+    expect(isOrchestratorRoutedChatV2Channel(ch)).toBe(true);
+  });
+
+  it('returns false for type=dm channels bound to a non-orc agent', () => {
+    const ch = makeChannel({ type: 'dm', agentSession: 'crewly-product-leo-x' });
+    expect(isOrchestratorRoutedChatV2Channel(ch)).toBe(false);
+  });
+
+  it('returns false for type=channel (team-scoped) — out of v1 scope', () => {
+    const ch = makeChannel({
+      type: 'channel',
+      agentSession: '',
+      teamId: 't-1',
+    });
+    expect(isOrchestratorRoutedChatV2Channel(ch)).toBe(false);
+  });
+
+  it('returns false when agentSession is empty', () => {
+    const ch = makeChannel({ type: 'dm', agentSession: '' });
+    expect(isOrchestratorRoutedChatV2Channel(ch)).toBe(false);
   });
 });
