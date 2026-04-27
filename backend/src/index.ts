@@ -64,6 +64,7 @@ import { MessageQueueService, QueueProcessorService, ResponseRouterService } fro
 import { ThreadStatusQueueService } from './services/messaging/thread-status-queue.service.js';
 import { EventBusService } from './services/event-bus/index.js';
 import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-bridge.service.js';
+import { AutoLearningSubscriber } from './services/memory/auto-learning.subscriber.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -179,6 +180,8 @@ export class CrewlyServer {
 	private eventBusService!: EventBusService;
 	/** BRIDGE-1: subscribes to autonomy events and creates WorkItems. */
 	private eventToWorkItemBridge: EventToWorkItemBridge | null = null;
+	/** LEARN-1: subscribes to terminal task / mission:replanned events and auto-records learnings. */
+	private autoLearningSubscriber: AutoLearningSubscriber | null = null;
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
 	private reconcilerService: ReconcilerService | null = null;
@@ -395,6 +398,14 @@ export class CrewlyServer {
 		// for idempotency contract + retry cap + cron-recursion guard.
 		this.eventToWorkItemBridge = EventToWorkItemBridge.boot(this.eventBusService);
 		this.eventToWorkItemBridge.start();
+
+		// LEARN-1: subscribe to terminal task / mission:replanned events and
+		// auto-record a learning entry via MemoryService.recordLearning. Closes
+		// the prompt-driven "agents-forget-to-record" gap. See
+		// `auto-learning.subscriber.ts` for category mapping + idempotency
+		// contract (V1) and the V7/V9 self-checks in the co-located test.
+		this.autoLearningSubscriber = AutoLearningSubscriber.boot(this.eventBusService);
+		this.autoLearningSubscriber.start();
 
 		// Initialize Slack thread store for persistent thread conversations
 		const slackThreadStore = new SlackThreadStoreService(this.config.crewlyHome);
@@ -2679,6 +2690,14 @@ export class CrewlyServer {
 			if (this.eventToWorkItemBridge) {
 				this.eventToWorkItemBridge.stop();
 				this.eventToWorkItemBridge = null;
+			}
+
+			// LEARN-1: stop the AutoLearningSubscriber on the same window as the
+			// bridge so its in-flight recordLearning calls drain before the bus
+			// is cleaned.
+			if (this.autoLearningSubscriber) {
+				this.autoLearningSubscriber.stop();
+				this.autoLearningSubscriber = null;
 			}
 
 			// Clean up event bus service
