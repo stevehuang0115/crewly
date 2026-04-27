@@ -50,6 +50,35 @@ Record a learning or insight gained during task execution. These learnings are s
 | `--learning` / `-l` | `learning` | Yes | The learning or insight (or pipe via stdin) |
 | `--learning-file` | — | No | Read learning from a file path |
 
+---
+
+## Mandated Format: Karpathy-lite (Entity-Centric)
+
+To support future automated knowledge synthesis, all new learnings MUST follow the **Entity-Centric** format. This moves from "logging what happened" to "building a compounding wiki."
+
+### Formatting Rules:
+1. **Entity First**: Start with the primary entity (concept, file, function, or component) in brackets: `[[Entity Name]]`.
+2. **Concise**: 1-3 sentences maximum. No fluff.
+3. **Linked**: Reference related entities or components.
+4. **Sourced**: Reference the specific Task ID, PR, or Log line where this was learned.
+
+### Examples:
+
+**✅ CORRECT (Entity-Centric):**
+> `[[Fts5IndexService]] SQLite FTS5 rank is a negative double (more-negative = more-relevant). Invert to 100 - rank for score consistency. Learned during PR #320.`
+
+**✅ CORRECT (Component Relationship):**
+> `[[LearningReferenceModule]] injects memory usage instructions via PromptAssemblyService. Related to [[record-learning]] skill. Ref: backend/src/services/ai/prompt-modules/index.ts.`
+
+**❌ INCORRECT (Log-style):**
+> `I fixed a bug today in the FTS5 service where the ranking was inverted. It took me 2 hours because I didn't know SQLite's sign convention.`
+
+### Why this format
+
+The `LearningReferenceModule` (prompt-layer) and the LEARN-1 auto-record subscriber both join learnings on entity references. Free-form prose breaks that join. The `[[Entity]]` bracket convention also matches the cross-doc linking pattern used elsewhere in the project (mirrors Obsidian/Roam-style backlinks for future synthesis tooling).
+
+---
+
 ## Examples — CLI Flags (preferred)
 
 ```bash
