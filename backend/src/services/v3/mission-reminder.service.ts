@@ -29,6 +29,14 @@ import { TERMINAL_WORK_ITEM_STATUSES } from '../../types/v2/work-item.types.js';
 import { atomicWriteJson } from '../../utils/file-io.utils.js';
 import { pickTeamLead } from '../../utils/team.utils.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import type { ReviewReason } from '../../types/review-reason.types.js';
+
+// Re-export so existing import paths
+// (`from '.../mission-reminder.service'`) keep working unchanged. The
+// canonical declaration moved to `types/review-reason.types.ts` once
+// BRIDGE-1 became a second producer of review WorkItems and needed to
+// add `max_retries_exceeded` / `task_blocked` to the vocabulary.
+export type { ReviewReason };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,18 +44,6 @@ import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 /** Minimum interval between reminders for the same mission (24 hours) */
 const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-
-/**
- * Why this review cycle was scheduled. Surfaces on the review WorkItem's
- * `metadata.reviewReason` so the TL queue can render context-appropriate
- * UI (e.g. red badge on `off_track_kr`, neutral badge on
- * `scheduled_review`).
- */
-export type ReviewReason =
-  | 'scheduled_review'
-  | 'off_track_kr'
-  | 'no_active_work'
-  | 'phase_complete';
 
 /**
  * Statuses that *clear* a Mission's `pendingReviewWorkItemId` so the next
