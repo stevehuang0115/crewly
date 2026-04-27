@@ -988,4 +988,168 @@ describe('TaskPoolService', () => {
       ).rejects.toThrow(/Forbidden transition.*actor='agent'/);
     });
   });
+
+  // =========================================================================
+  // TRANS-2: internal call sites route through transitionStatus(actor='system')
+  //
+  // Each test wraps `transitionStatus` on the prototype (so calls dispatched
+  // via `this.transitionStatus` from sibling methods like
+  // `completeSimpleItem` → `resolveBlockedDependents` are also captured) and
+  // asserts the expected (workItemId, newStatus, actorRole) tuple appears.
+  // This is the compile-time guard against a future contributor silently
+  // restoring a direct `storage.updateWorkItem` mutation that would bypass
+  // the V3 actor gate.
+  // =========================================================================
+
+  describe('TRANS-2: internal sites route through transitionStatus(actor="system")', () => {
+    /**
+     * Patch `transitionStatus` on the TaskPoolService prototype so every
+     * invocation is captured as a tuple of [workItemId, newStatus, actorRole].
+     * Patching the prototype (rather than a single instance own-property) is
+     * required because some internal callers (e.g. `resolveBlockedDependents`)
+     * dispatch through `this.transitionStatus` from sibling methods, and
+     * Jest's `spyOn(instance, 'method')` mock with `mockImplementation` does
+     * not always intercept those dispatches. The original implementation is
+     * still invoked unchanged so tests assert the call shape AND end-to-end
+     * behaviour together.
+     */
+    function spyTransitionStatus(): {
+      calls: Array<[string, string, string]>;
+      restore: () => void;
+    } {
+      const calls: Array<[string, string, string]> = [];
+      const proto = TaskPoolService.prototype as TaskPoolService;
+      const original = proto.transitionStatus;
+      proto.transitionStatus = async function (
+        this: TaskPoolService,
+        workItemId: string,
+        newStatus: Parameters<TaskPoolService['transitionStatus']>[1],
+        actorRole: Parameters<TaskPoolService['transitionStatus']>[2],
+        mutator?: Parameters<TaskPoolService['transitionStatus']>[3],
+      ) {
+        calls.push([workItemId, newStatus, actorRole]);
+        return original.call(this, workItemId, newStatus, actorRole, mutator);
+      };
+      return {
+        calls,
+        restore: () => {
+          proto.transitionStatus = original;
+        },
+      };
+    }
+
+    it('claimFromPool calls transitionStatus(queued→running, system)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      const { calls, restore } = spyTransitionStatus();
+      try {
+        const result = await service.claimFromPool('agent-leo');
+        expect(result).not.toBeNull();
+        expect(calls).toContainEqual([wi.id, 'running', 'system']);
+      } finally {
+        restore();
+      }
+    });
+
+    it('claimSpecificItem calls transitionStatus(queued→running, system)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      const { calls, restore } = spyTransitionStatus();
+      try {
+        const result = await service.claimSpecificItem('agent-leo', wi.id);
+        expect(result).not.toBeNull();
+        expect(calls).toContainEqual([wi.id, 'running', 'system']);
+      } finally {
+        restore();
+      }
+    });
+
+    it('releaseBack from running calls transitionStatus(running→queued, system) with retryCount bump', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      const { calls, restore } = spyTransitionStatus();
+      try {
+        await service.releaseBack(wi.id, 'agent busy');
+        expect(calls).toContainEqual([wi.id, 'queued', 'system']);
+
+        // Verify side-effect mutator ran atomically with the status flip.
+        const items = await service.getAllItems();
+        const released = items.find((i) => i.id === wi.id)!;
+        expect(released.status).toBe('queued');
+        expect(released.retryCount).toBe(1);
+        expect(released.startedAt).toBeUndefined();
+      } finally {
+        restore();
+      }
+    });
+
+    it('releaseBack from blocked preserves target via mutator', async () => {
+      const wi = makeWorkItem({ target: 'agent-leo' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      // Force the running item to blocked so releaseBack hits the
+      // blocked → queued branch (which already had a TRANS-1 permission
+      // entry; this test confirms the same path now flows through the
+      // shared transitionStatus helper).
+      await service.updateItemStatus(wi.id, 'blocked');
+      const { calls, restore } = spyTransitionStatus();
+      try {
+        await service.releaseBack(wi.id, 'dependency stalled');
+        expect(calls).toContainEqual([wi.id, 'queued', 'system']);
+
+        const items = await service.getAllItems();
+        const released = items.find((i) => i.id === wi.id)!;
+        expect(released.status).toBe('queued');
+        // Target preserved for the previously-blocked path so the same
+        // agent can re-claim via target filter.
+        expect(released.target).toBe('agent-leo');
+      } finally {
+        restore();
+      }
+    });
+
+    it('resolveBlockedDependents calls transitionStatus(blocked→queued, system)', async () => {
+      const upstream = makeWorkItem({ type: 'cron_run', title: 'upstream' });
+      await service.addToPool(upstream);
+      const downstream = makeWorkItem({
+        type: 'cron_run',
+        title: 'downstream',
+        dependsOn: [upstream.id],
+      });
+      await service.addToPool(downstream);
+      // Drive the upstream to running so it can complete.
+      await service.claimFromPool('agent-a');
+
+      const { calls, restore } = spyTransitionStatus();
+      try {
+        await service.completeItem(upstream.id);
+        // The resolver fires inside completeSimpleItem after the
+        // upstream completes; we expect a blocked→queued promotion for
+        // the downstream item with system actor.
+        expect(calls).toContainEqual([downstream.id, 'queued', 'system']);
+      } finally {
+        restore();
+      }
+    });
+
+    it('failItem calls transitionStatus(running→failed, system) with error in mutator', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      const { calls, restore } = spyTransitionStatus();
+      try {
+        await service.failItem(wi.id, 'agent crashed');
+        expect(calls).toContainEqual([wi.id, 'failed', 'system']);
+
+        const items = await service.getAllItems();
+        const failed = items.find((i) => i.id === wi.id)!;
+        expect(failed.status).toBe('failed');
+        expect(failed.error).toBe('agent crashed');
+        expect(failed.completedAt).toBeDefined();
+      } finally {
+        restore();
+      }
+    });
+  });
 });

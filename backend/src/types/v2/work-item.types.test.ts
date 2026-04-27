@@ -132,6 +132,11 @@ describe('WorkItem Types', () => {
     it('should allow running → blocked', () => {
       expect(isValidWorkItemTransition('running', 'blocked')).toBe(true);
     });
+    // TRANS-2: legalised for TaskPoolService.releaseBack (Reconciler abandon
+    // and TL-initiated busy-release). Permission-gated in TRANSITION_PERMISSIONS.
+    it('should allow running → queued (TRANS-2 releaseBack)', () => {
+      expect(isValidWorkItemTransition('running', 'queued')).toBe(true);
+    });
     it('should allow blocked → queued', () => {
       expect(isValidWorkItemTransition('blocked', 'queued')).toBe(true);
     });
@@ -271,6 +276,24 @@ describe('WorkItem Types', () => {
 
       it('allows system actor for the dependency-resolution path (blocked → queued)', () => {
         expect(isTransitionPermitted('blocked', 'queued', 'system')).toBe(true);
+      });
+
+      // TRANS-2: running → queued is gated to the same set as the other
+      // re-queue transitions. Agents cannot self-revive a claim they hold.
+      it('blocks agent from re-queueing a running WorkItem (claim self-revival hazard)', () => {
+        expect(isTransitionPermitted('running', 'queued', 'agent')).toBe(false);
+      });
+
+      it('allows team_lead to release a running WorkItem back to queued', () => {
+        expect(isTransitionPermitted('running', 'queued', 'team_lead')).toBe(true);
+      });
+
+      it('allows orchestrator to release a running WorkItem back to queued', () => {
+        expect(isTransitionPermitted('running', 'queued', 'orchestrator')).toBe(true);
+      });
+
+      it('allows system actor (Reconciler abandon path) to release running → queued', () => {
+        expect(isTransitionPermitted('running', 'queued', 'system')).toBe(true);
       });
     });
   });
