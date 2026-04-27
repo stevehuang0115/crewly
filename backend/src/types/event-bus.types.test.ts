@@ -55,6 +55,9 @@ describe('Event Bus Types', () => {
         'mission:review_due',
         'mission:stale',
         'mission:replanned',
+        // INBOUND-1 Request lifecycle events
+        'request:created',
+        'request:sla_breached',
         // Hierarchy communication events
         'hierarchy:escalation',
         'hierarchy:delegation',
@@ -159,6 +162,13 @@ describe('Event Bus Types', () => {
       expect(CRITICAL_EVENT_TYPES.has('mission:review_due')).toBe(true);
       expect(CRITICAL_EVENT_TYPES.has('mission:stale')).toBe(true);
       expect(CRITICAL_EVENT_TYPES.has('mission:replanned')).toBe(true);
+    });
+
+    it('should classify INBOUND-1 request events as critical (user-visible)', () => {
+      // request:created seeds the SLA WI for the orc; request:sla_breached
+      // surfaces the missed-response signal — both must bypass debounce.
+      expect(CRITICAL_EVENT_TYPES.has('request:created')).toBe(true);
+      expect(CRITICAL_EVENT_TYPES.has('request:sla_breached')).toBe(true);
     });
   });
 

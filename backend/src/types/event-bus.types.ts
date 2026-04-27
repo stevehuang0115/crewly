@@ -59,6 +59,15 @@ export const EVENT_TYPES = [
   'mission:stale',
   'mission:replanned',
 
+  // INBOUND-1: Request lifecycle events. `request:created` is published by
+  // RequestService.create() so the SLA subscriber can auto-create a
+  // `respond_to_user` WorkItem for the orchestrator when an inbound user
+  // message lands without a corresponding WI on the orc's plate.
+  // `request:sla_breached` is published by RequestSlaSubscriber when the
+  // 5-minute SLA timer fires and the respond_to_user WI is still not done.
+  'request:created',
+  'request:sla_breached',
+
   // Hierarchy communication events
   'hierarchy:escalation',
   'hierarchy:delegation',
@@ -105,6 +114,10 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   'mission:review_due',
   'mission:stale',
   'mission:replanned',
+  // INBOUND-1: a fresh user request and an SLA breach are both
+  // user-visible — must bypass any debounce.
+  'request:created',
+  'request:sla_breached',
 ]);
 
 /**
@@ -225,6 +238,13 @@ export interface AgentEvent {
    * exists incidentally (e.g. the source WI has `missionId`).
    */
   missionId?: string;
+
+  /**
+   * Request id for `request:*` events (INBOUND-1). Carries the Request the
+   * SLA subscriber will key its `respond_to_user` WorkItem on. Optional for
+   * other event types — never read outside the request handlers.
+   */
+  requestId?: string;
 }
 
 // =============================================================================
