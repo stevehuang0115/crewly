@@ -18,7 +18,7 @@ import type {
   WorkItemType,
   WorkItemOwner,
 } from '../../types/v2/work-item.types.js';
-import { isWorkItem, isValidWorkItemTransition } from '../../types/v2/work-item.types.js';
+import { isWorkItem, isValidWorkItemTransition, isTransitionPermitted } from '../../types/v2/work-item.types.js';
 import {
   createTaskClaim,
   type TaskClaim,
@@ -700,11 +700,23 @@ export class TaskPoolService {
    * Updates a work item's status directly.
    * Used by the Reconciler for corrections (e.g., stuck → blocked).
    *
+   * Reconciler invocations pass through `actorRole='system'` (default) which
+   * bypasses the per-role gate at {@link isTransitionPermitted} but still
+   * enforces the state-machine via {@link isValidWorkItemTransition}. Other
+   * callers MUST supply the actor's role so TRANS-1 V3 enforcement applies.
+   *
    * @param workItemId - The work item ID
    * @param newStatus - The target status
-   * @throws Error if work item not found or transition is invalid
+   * @param actorRole - Role of the caller (defaults to `'system'` for Reconciler)
+   * @throws Error if work item not found
+   * @throws Error if transition is invalid (state machine — see WORK_ITEM_TRANSITIONS)
+   * @throws Error if actor is not permitted (role check — see TRANSITION_PERMISSIONS)
    */
-  async updateItemStatus(workItemId: string, newStatus: WorkItemStatus): Promise<void> {
+  async updateItemStatus(
+    workItemId: string,
+    newStatus: WorkItemStatus,
+    actorRole: WorkItemOwner = 'system',
+  ): Promise<void> {
     const items = await this.storage.getWorkItems();
     const item = items.find((wi) => wi.id === workItemId);
 
@@ -715,6 +727,14 @@ export class TaskPoolService {
     if (!isValidWorkItemTransition(item.status, newStatus)) {
       throw new Error(
         `Invalid status transition for WorkItem ${workItemId}: ${item.status} → ${newStatus}`,
+      );
+    }
+
+    // TRANS-1 V3: enforce per-role permissions. system role always passes.
+    if (!isTransitionPermitted(item.status, newStatus, actorRole)) {
+      throw new Error(
+        `Forbidden transition for WorkItem ${workItemId}: actor='${actorRole}' ` +
+          `not permitted to perform ${item.status} → ${newStatus}.`,
       );
     }
 
@@ -732,7 +752,113 @@ export class TaskPoolService {
       workItemId,
       from: item.status,
       to: newStatus,
+      actorRole,
     });
+  }
+
+  /**
+   * Public guarded transition helper — TRANS-1's canonical entrypoint.
+   *
+   * Routes any externally-initiated WorkItem status change through the
+   * combined state-machine + actor-role gates. Designed as the public API
+   * VERIF-1 will call from `submitForVerification` / `verifyItem`, and as
+   * the recommended path for any future caller that previously reached
+   * for `storage.updateWorkItem` to flip status.
+   *
+   * Differences vs {@link updateItemStatus}:
+   *   - Requires `actorRole` explicitly (no default) — forces the caller to
+   *     decide the trust posture rather than silently inheriting `'system'`.
+   *   - Accepts an optional `mutator` so callers can carry additional field
+   *     updates (e.g. `result`, `error`, `completedAt`) atomically with the
+   *     status flip — preventing races between status update and metadata
+   *     attachment that direct `storage.updateWorkItem` callers risked.
+   *
+   * @param workItemId - The work item ID
+   * @param newStatus - The target status
+   * @param actorRole - Role of the caller (REQUIRED; pass `'system'` for trusted server-internal paths)
+   * @param mutator - Optional additional WorkItem field updates applied atomically with the status change
+   * @returns The updated WorkItem after the transition
+   * @throws Error if work item not found
+   * @throws Error if transition is invalid (state machine)
+   * @throws Error if actor is not permitted (role check)
+   *
+   * @example
+   * ```typescript
+   * // VERIF-1 worker submitting for verification
+   * await pool.transitionStatus(wiId, 'done_by_worker', 'agent', (wi) => {
+   *   wi.result = output;
+   * });
+   *
+   * // VERIF-1 TL verifying
+   * await pool.transitionStatus(wiId, 'verified', 'team_lead');
+   *
+   * // VERIF-1 TL rejecting (allowed for TL only)
+   * await pool.transitionStatus(wiId, 'rejected', 'team_lead', (wi) => {
+   *   wi.error = 'Did not meet acceptance criteria';
+   * });
+   * ```
+   */
+  async transitionStatus(
+    workItemId: string,
+    newStatus: WorkItemStatus,
+    actorRole: WorkItemOwner,
+    mutator?: (wi: WorkItem) => void,
+  ): Promise<WorkItem | null> {
+    const item = await this.storage.findWorkItem(workItemId);
+    if (!item) {
+      throw new Error(`WorkItem not found: ${workItemId}`);
+    }
+
+    if (!isValidWorkItemTransition(item.status, newStatus)) {
+      throw new Error(
+        `Invalid status transition for WorkItem ${workItemId}: ${item.status} → ${newStatus}`,
+      );
+    }
+
+    if (!isTransitionPermitted(item.status, newStatus, actorRole)) {
+      throw new Error(
+        `Forbidden transition for WorkItem ${workItemId}: actor='${actorRole}' ` +
+          `not permitted to perform ${item.status} → ${newStatus}.`,
+      );
+    }
+
+    const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
+      wi.status = newStatus;
+      // Standard timestamp side-effects mirror updateItemStatus so callers
+      // get consistent metadata regardless of which API they used.
+      if (newStatus === 'running') {
+        wi.startedAt = new Date().toISOString();
+      } else if (
+        newStatus === 'done' ||
+        newStatus === 'failed' ||
+        newStatus === 'verified' ||
+        newStatus === 'done_by_worker' ||
+        newStatus === 'rejected'
+      ) {
+        wi.completedAt = new Date().toISOString();
+      }
+      if (mutator) mutator(wi);
+    });
+
+    if (!ok) {
+      // Race window: someone else removed the WorkItem between findWorkItem
+      // and updateWorkItem. Surface as null so callers can distinguish from
+      // a thrown invalid-transition / forbidden-transition error.
+      return null;
+    }
+
+    this.logger.info('WorkItem transitioned', {
+      workItemId,
+      from: item.status,
+      to: newStatus,
+      actorRole,
+    });
+
+    // Return the post-update WorkItem snapshot so callers can chain on the
+    // resolved value rather than re-fetching. Coerce `undefined` (item
+    // removed during the race window) to `null` to match the declared
+    // return type.
+    return (await this.storage.findWorkItem(workItemId)) ?? null;
   }
 
   /**

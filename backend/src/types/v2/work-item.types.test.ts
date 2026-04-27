@@ -234,6 +234,45 @@ describe('WorkItem Types', () => {
       expect(isTransitionPermitted('queued', 'proposed', 'orchestrator')).toBe(true);
       expect(isTransitionPermitted('queued', 'proposed', 'agent')).toBe(false);
     });
+
+    // -------------------------------------------------------------------
+    // TRANS-1 F-F: rejected→queued / failed→queued / blocked→queued are
+    // restricted to TL/orchestrator/system. Agent self-revival is blocked.
+    // -------------------------------------------------------------------
+
+    describe('F-F: re-queue gates (rejected/failed/blocked → queued)', () => {
+      it('blocks agent from re-queueing a rejected WorkItem (self-revival hazard)', () => {
+        expect(isTransitionPermitted('rejected', 'queued', 'agent')).toBe(false);
+      });
+
+      it('allows team_lead to re-queue a rejected WorkItem', () => {
+        expect(isTransitionPermitted('rejected', 'queued', 'team_lead')).toBe(true);
+      });
+
+      it('allows orchestrator to re-queue a rejected WorkItem', () => {
+        expect(isTransitionPermitted('rejected', 'queued', 'orchestrator')).toBe(true);
+      });
+
+      it('allows system actor (Reconciler) to re-queue a rejected WorkItem', () => {
+        expect(isTransitionPermitted('rejected', 'queued', 'system')).toBe(true);
+      });
+
+      it('blocks agent from re-queueing a failed WorkItem (BRIDGE-1 retry path is canonical)', () => {
+        expect(isTransitionPermitted('failed', 'queued', 'agent')).toBe(false);
+      });
+
+      it('allows team_lead to re-queue a failed WorkItem', () => {
+        expect(isTransitionPermitted('failed', 'queued', 'team_lead')).toBe(true);
+      });
+
+      it('blocks agent from re-queueing a blocked WorkItem', () => {
+        expect(isTransitionPermitted('blocked', 'queued', 'agent')).toBe(false);
+      });
+
+      it('allows system actor for the dependency-resolution path (blocked → queued)', () => {
+        expect(isTransitionPermitted('blocked', 'queued', 'system')).toBe(true);
+      });
+    });
   });
 
   // -----------------------------------------------------------------------

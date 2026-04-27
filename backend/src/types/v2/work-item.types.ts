@@ -293,6 +293,20 @@ export const TRANSITION_PERMISSIONS: Record<string, ReadonlySet<WorkItemOwner>> 
   'done_by_worker→rejected':  new Set(['team_lead']),
   // Simple done — allowed for agents (simple tasks) and system (reconciler)
   'running→done':             new Set(['agent', 'system', 'orchestrator']),
+  // TRANS-1 F-F: only TL / orchestrator / system may re-queue a rejected
+  // WorkItem. Without this entry, the backward-compat default-allow at
+  // isTransitionPermitted line ~322 lets any actor (including the agent
+  // whose work was rejected) re-queue itself — a self-revival hazard.
+  // BRIDGE-1 retry policy is the canonical re-queueing path; manual
+  // TL action (or system reconciler) is the only other legal path.
+  'rejected→queued':          new Set(['team_lead', 'orchestrator', 'system']),
+  // failed→queued (BRIDGE-1 retry path) — same gate as rejected→queued.
+  // Agent cannot self-resurrect a failed WorkItem.
+  'failed→queued':            new Set(['team_lead', 'orchestrator', 'system']),
+  // blocked→queued (dependency-resolution path) — system-only by
+  // default. The TaskPoolService.resolveBlockedDependents() helper
+  // is the canonical caller and runs as system.
+  'blocked→queued':           new Set(['team_lead', 'orchestrator', 'system']),
 };
 
 /**
