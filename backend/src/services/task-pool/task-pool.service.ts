@@ -245,14 +245,21 @@ export class TaskPoolService {
 
       const selected = candidates[0];
 
-      // Transition item to 'running'
-      const updated = await this.storage.updateWorkItem(selected.id, (wi) => {
-        wi.status = 'running';
-        wi.startedAt = new Date().toISOString();
-        wi.target = agentId;
-      });
+      // TRANS-2: route the queued → running flip through the guarded
+      // transitionStatus helper so internal callers are subject to the
+      // same V3 actor-role + state-machine gates as external callers.
+      // `startedAt` is set automatically by transitionStatus when
+      // newStatus === 'running'; the mutator carries the agent target.
+      const claimedItem = await this.transitionStatus(
+        selected.id,
+        'running',
+        'system',
+        (wi) => {
+          wi.target = agentId;
+        },
+      );
 
-      if (!updated) {
+      if (!claimedItem) {
         this.logger.warn('Failed to update WorkItem during claim', { workItemId: selected.id });
         return null;
       }
@@ -273,10 +280,8 @@ export class TaskPoolService {
         title: selected.title,
       });
 
-      // Return the updated item
-      const claimedItem = await this.storage.findWorkItem(selected.id);
       return {
-        workItem: claimedItem!,
+        workItem: claimedItem,
         claim,
       };
     });
@@ -306,12 +311,17 @@ export class TaskPoolService {
       const claims = await this.storage.getClaims();
       if (claims.some((c) => c.workItemId === workItemId && c.status === 'active')) return null;
 
-      const updated = await this.storage.updateWorkItem(workItemId, (wi) => {
-        wi.status = 'running';
-        wi.startedAt = new Date().toISOString();
-        wi.target = agentId;
-      });
-      if (!updated) return null;
+      // TRANS-2: route the queued → running flip through transitionStatus
+      // (mirrors claimFromPool — same V3 + state-machine gates).
+      const claimedItem = await this.transitionStatus(
+        workItemId,
+        'running',
+        'system',
+        (wi) => {
+          wi.target = agentId;
+        },
+      );
+      if (!claimedItem) return null;
 
       const claimInput: CreateClaimInput = { workItemId, agentId };
       const claim = createTaskClaim(claimInput);
@@ -320,8 +330,7 @@ export class TaskPoolService {
 
       this.logger.info('WorkItem claimed (specific)', { workItemId, agentId, claimId: claim.id });
 
-      const claimedItem = await this.storage.findWorkItem(workItemId);
-      return claimedItem ? { workItem: claimedItem, claim } : null;
+      return { workItem: claimedItem, claim };
     });
   }
 
@@ -355,11 +364,14 @@ export class TaskPoolService {
       });
     }
 
-    // Revert item to queued. Preserve target when unblocking so the
-    // same agent can re-claim via target filter.
+    // TRANS-2: route the (running|blocked) → queued flip through the
+    // guarded transitionStatus helper. The state-machine entry for
+    // `running → queued` is a TRANS-2 addition, gated to system/TL/orc;
+    // `blocked → queued` was already TL/orc/system-gated by TRANS-1.
+    // Side-effect mutations (startedAt clear, target preservation when
+    // unblocking, retryCount bump) move into the atomic mutator.
     const wasBlocked = workItem.status === 'blocked';
-    await this.storage.updateWorkItem(workItemId, (wi) => {
-      wi.status = 'queued';
+    await this.transitionStatus(workItemId, 'queued', 'system', (wi) => {
       wi.startedAt = undefined;
       if (!wasBlocked) {
         wi.target = undefined;
@@ -624,9 +636,12 @@ export class TaskPoolService {
         );
         if (!allSatisfied) continue;
 
-        await this.storage.updateWorkItem(candidate.id, (wi) => {
-          wi.status = 'queued';
-        });
+        // TRANS-2: route the blocked → queued promotion through
+        // transitionStatus. The 'system' actor matches both the V3
+        // permission gate (blocked→queued requires TL/orc/system) and
+        // the existing intent — dependency resolution is server-side
+        // bookkeeping, not a user-initiated action.
+        await this.transitionStatus(candidate.id, 'queued', 'system');
         this.logger.info('WorkItem unblocked — all deps satisfied', {
           workItemId: candidate.id,
           via: completedId,
@@ -663,10 +678,10 @@ export class TaskPoolService {
       });
     }
 
-    // Mark item failed
-    await this.storage.updateWorkItem(workItemId, (wi) => {
-      wi.status = 'failed';
-      wi.completedAt = new Date().toISOString();
+    // TRANS-2: route the running → failed flip through transitionStatus.
+    // `completedAt` is set automatically when newStatus === 'failed'; the
+    // mutator only needs to attach the error description.
+    await this.transitionStatus(workItemId, 'failed', 'system', (wi) => {
       wi.error = error;
     });
 

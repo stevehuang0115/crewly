@@ -256,7 +256,12 @@ export const WORK_ITEM_TRANSITIONS: Record<WorkItemStatus, ReadonlySet<WorkItemS
   scheduled:      new Set(['queued', 'cancelled']),
   proposed:       new Set(['accepted', 'rejected', 'cancelled']),
   accepted:       new Set(['running', 'cancelled']),
-  running:        new Set(['done', 'done_by_worker', 'failed', 'blocked', 'escalated', 'cancelled']),
+  // TRANS-2: `running → queued` legalised so TaskPoolService.releaseBack
+  // (Reconciler abandon path, controller-initiated agent-busy releases)
+  // can route through the guarded {@link transitionStatus} helper. Gated
+  // in TRANSITION_PERMISSIONS to TL/orchestrator/system — agents cannot
+  // self-revive a running claim.
+  running:        new Set(['done', 'done_by_worker', 'failed', 'blocked', 'escalated', 'cancelled', 'queued']),
   blocked:        new Set(['queued', 'cancelled']),
   escalated:      new Set(['queued', 'cancelled']),
   done_by_worker: new Set(['verified', 'rejected']),
@@ -307,6 +312,11 @@ export const TRANSITION_PERMISSIONS: Record<string, ReadonlySet<WorkItemOwner>> 
   // default. The TaskPoolService.resolveBlockedDependents() helper
   // is the canonical caller and runs as system.
   'blocked→queued':           new Set(['team_lead', 'orchestrator', 'system']),
+  // TRANS-2: running→queued (releaseBack abandon path). Same gate as
+  // the other re-queue transitions — Reconciler revoke and TL manual
+  // release are the legitimate callers; agents cannot self-revive a
+  // running claim by re-queueing it.
+  'running→queued':           new Set(['team_lead', 'orchestrator', 'system']),
 };
 
 /**
