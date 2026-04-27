@@ -4,7 +4,9 @@
  * @module services/v3/request.service.test
  */
 
-import { RequestService, type RequestPlan } from './request.service.js';
+import { RequestService, setRequestServiceEventBus, type RequestPlan } from './request.service.js';
+import type { EventBusService } from '../event-bus/event-bus.service.js';
+import type { AgentEvent } from '../../types/event-bus.types.js';
 
 // Mock file I/O
 const mockFiles = new Map<string, string>();
@@ -83,6 +85,130 @@ describe('RequestService', () => {
           description: 'test',
         }),
       ).rejects.toThrow('Invalid CreateRequestInput');
+    });
+
+    // -----------------------------------------------------------------------
+    // INBOUND-1: request:created event publication
+    // -----------------------------------------------------------------------
+
+    describe('request:created event (INBOUND-1)', () => {
+      /**
+       * Build a fake EventBusService that captures publish() calls. The fake
+       * implements only the surface RequestService touches — no inheritance
+       * required.
+       */
+      function buildFakeBus(opts?: { throwOnPublish?: boolean }): {
+        bus: EventBusService;
+        published: AgentEvent[];
+      } {
+        const published: AgentEvent[] = [];
+        const bus = {
+          publish: jest.fn((event: AgentEvent) => {
+            if (opts?.throwOnPublish) throw new Error('bus failure');
+            published.push(event);
+          }),
+        } as unknown as EventBusService;
+        return { bus, published };
+      }
+
+      afterEach(() => {
+        // Clear any wired bus so suite-level isolation holds.
+        setRequestServiceEventBus(null);
+      });
+
+      it('publishes request:created with the correct shape after save', async () => {
+        const { bus, published } = buildFakeBus();
+        setRequestServiceEventBus(bus);
+
+        const service = RequestService.getInstance('/tmp/test-project');
+        const request = await service.create({
+          sourceConversationItemId: 'slack-C123-1',
+          title: 'Help with Slack',
+          description: 'A user message',
+          tags: ['slack'],
+        });
+
+        expect(published).toHaveLength(1);
+        const event = published[0];
+        expect(event.type).toBe('request:created');
+        expect(event.id).toBe(`request:created:${request.id}`);
+        expect(event.requestId).toBe(request.id);
+        expect(event.newValue).toBe('open');
+        expect(event.previousValue).toBe('');
+        expect(event.timestamp).toBe(request.createdAt);
+        // changedField uses the existing 'taskStatus' enum member; spelled out
+        // in publishCreatedEvent's inline comment to discourage churn.
+        expect(event.changedField).toBe('taskStatus');
+      });
+
+      it('silently skips publish when no bus is wired', async () => {
+        // No setRequestServiceEventBus call — wired bus stays null.
+        const service = RequestService.getInstance('/tmp/test-project');
+        const request = await service.create({
+          sourceConversationItemId: 'conv-no-bus',
+          title: 'No bus available',
+          description: 'Should still persist',
+        });
+
+        // Persistence still succeeded.
+        expect(request.id).toBeDefined();
+        expect(request.status).toBe('open');
+      });
+
+      it('does not roll back the create when bus.publish throws', async () => {
+        const { bus } = buildFakeBus({ throwOnPublish: true });
+        setRequestServiceEventBus(bus);
+
+        const service = RequestService.getInstance('/tmp/test-project');
+        const request = await service.create({
+          sourceConversationItemId: 'conv-publish-err',
+          title: 'Publish will throw',
+          description: 'But the Request must persist',
+        });
+
+        // The Request is persisted regardless of the publish failure.
+        expect(request.id).toBeDefined();
+        expect(request.status).toBe('open');
+        const stored = await service.getById(request.id);
+        expect(stored).not.toBeNull();
+      });
+
+      it('forwards missionId on the event when present on the Request', async () => {
+        const { bus, published } = buildFakeBus();
+        setRequestServiceEventBus(bus);
+
+        const service = RequestService.getInstance('/tmp/test-project');
+        await service.create({
+          sourceConversationItemId: 'conv-mission',
+          title: 'Mission-tied',
+          description: 'Linked to a mission',
+          missionId: 'mission-42',
+        });
+
+        expect(published[0].missionId).toBe('mission-42');
+      });
+
+      it('clears the wired bus when setRequestServiceEventBus(null) is called', async () => {
+        const { bus, published } = buildFakeBus();
+        setRequestServiceEventBus(bus);
+
+        const service = RequestService.getInstance('/tmp/test-project');
+        await service.create({
+          sourceConversationItemId: 'conv-1',
+          title: 'First',
+          description: 'wired',
+        });
+        expect(published).toHaveLength(1);
+
+        setRequestServiceEventBus(null);
+        await service.create({
+          sourceConversationItemId: 'conv-2',
+          title: 'Second',
+          description: 'unwired',
+        });
+        // No new publish — count stays at 1.
+        expect(published).toHaveLength(1);
+      });
     });
   });
 
