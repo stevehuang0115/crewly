@@ -68,6 +68,15 @@ export const EVENT_TYPES = [
   'request:created',
   'request:sla_breached',
 
+  // INBOUND-1.f1: WorkItem queue mutation event. Published by
+  // TaskPoolService.addToPool whenever a fresh WorkItem is enqueued. Carries
+  // both the new WorkItem id and — when the WI was decomposed from a Request
+  // (e.g. the orc decomposed an inbound Slack message into delegate WIs) —
+  // the source `requestId` so the RequestSlaSubscriber can self-resolve a
+  // tracked respond_to_user WI on decomposition (auto-close path b).
+  // Treated as CRITICAL — queue mutations are user-visible.
+  'workitem:queued',
+
   // Hierarchy communication events
   'hierarchy:escalation',
   'hierarchy:delegation',
@@ -118,6 +127,9 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   // user-visible — must bypass any debounce.
   'request:created',
   'request:sla_breached',
+  // INBOUND-1.f1: queue mutations are user-visible (the SLA subscriber
+  // depends on every decomposition firing exactly once for auto-close).
+  'workitem:queued',
 ]);
 
 /**

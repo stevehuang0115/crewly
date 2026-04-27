@@ -25,6 +25,7 @@ import {
   extractSlackChannelId,
   setRequestSlaSubscriber,
   getRequestSlaSubscriber,
+  respondToUserWorkItemId,
 } from './request-sla.subscriber.js';
 import type { EscalationSlackCallback } from './request-sla.subscriber.js';
 import type { Request } from '../../types/v2/request.types.js';
@@ -225,8 +226,11 @@ describe('RequestSlaSubscriber', () => {
   // -------------------------------------------------------------------------
 
   describe('subscription contract', () => {
-    it('subscribes to exactly request:created', () => {
-      expect(REQUEST_SLA_SUBSCRIBED_EVENTS).toEqual(['request:created']);
+    it('subscribes to request:created and workitem:queued (INBOUND-1 + INBOUND-1.f1)', () => {
+      expect(REQUEST_SLA_SUBSCRIBED_EVENTS).toEqual([
+        'request:created',
+        'workitem:queued',
+      ]);
     });
 
     it('start() is idempotent — calling twice does not double-subscribe', async () => {
@@ -597,6 +601,201 @@ describe('RequestSlaSubscriber', () => {
       await sub.markResolvedByThread('1772899923.865659');
       // No transition recorded — already terminal.
       expect(pool.transitionCalls).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // INBOUND-1.f1: Auto-close path b — workitem:queued decompose hook
+  // -------------------------------------------------------------------------
+
+  describe('handleWorkItemQueued — auto-close path b (INBOUND-1.f1)', () => {
+    /**
+     * Helper: build a `workitem:queued` AgentEvent (for direct bus.publish).
+     * Mirrors the publisher contract in TaskPoolService.publishWorkItemQueued.
+     */
+    function buildQueuedEvent(args: {
+      workItemId: string;
+      requestId?: string;
+      missionId?: string;
+      sessionName?: string;
+    }) {
+      return {
+        id: `workitem:queued:${args.workItemId}`,
+        type: 'workitem:queued' as const,
+        timestamp: new Date().toISOString(),
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: args.sessionName ?? '',
+        previousValue: '',
+        newValue: 'queued',
+        changedField: 'taskStatus' as const,
+        workItemId: args.workItemId,
+        requestId: args.requestId,
+        missionId: args.missionId,
+      };
+    }
+
+    it('resolves the tracked respond_to_user WI when the orc decomposes the Request into a delegate WI', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+
+      // Seed: respond_to_user WI tracked for this Request.
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+      expect(sub.trackedCount).toBe(1);
+
+      // Orc decomposes the Request → addToPool fires workitem:queued for
+      // a delegate WI. The id is NOT the respond_to_user shape, so the
+      // self-recursion guard does not match.
+      bus.publish(
+        buildQueuedEvent({
+          workItemId: 'wi-delegate-1',
+          requestId: r.id,
+          sessionName: 'pool-publisher', // bypass the bus's per-(type,session) debounce
+        }) as unknown as Parameters<EventBusService['publish']>[0],
+      );
+      await sub.flushPending();
+
+      // The tracked WI was transitioned to 'done' with reason 'workitem_decompose'.
+      expect(pool.transitionCalls).toEqual([
+        { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
+      ]);
+      expect(sub.trackedCount).toBe(0);
+
+      // Subsequent timers are silent — the chain is closed.
+      const breachListener = jest.fn();
+      bus.onInProcess('request:sla_breached', breachListener);
+      jest.advanceTimersByTime(60_000);
+      for (let i = 0; i < 3; i += 1) await Promise.resolve();
+      expect(breachListener).not.toHaveBeenCalled();
+    });
+
+    it('writes slaResolvedReason="workitem_decompose" into the WI metadata', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      bus.publish(
+        buildQueuedEvent({
+          workItemId: 'wi-delegate-1',
+          requestId: r.id,
+          sessionName: 'pool-publisher',
+        }) as unknown as Parameters<EventBusService['publish']>[0],
+      );
+      await sub.flushPending();
+
+      // The fake taskPool's transitionStatus runs the mutator — we can read
+      // the resulting metadata via findWorkItem.
+      const wi = await pool.taskPool.findWorkItem(respondToUserWorkItemId(r.id));
+      expect(wi?.metadata?.slaResolvedReason).toBe('workitem_decompose');
+      expect(typeof wi?.metadata?.slaResolvedAt).toBe('string');
+    });
+
+    it('id-shape self-recursion guard: the respond_to_user WI\'s own enqueue does NOT trigger its own resolution', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+
+      // The handleRequestCreated path itself fires addToPool — in production
+      // the publisher would emit workitem:queued for the respond_to_user WI.
+      // We seed the tracker AND simulate the self-emit.
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      // Self-emit — same id as the respond_to_user WI.
+      bus.publish(
+        buildQueuedEvent({
+          workItemId: respondToUserWorkItemId(r.id),
+          requestId: r.id,
+          sessionName: 'pool-publisher',
+        }) as unknown as Parameters<EventBusService['publish']>[0],
+      );
+      await sub.flushPending();
+
+      // No transition — the guard short-circuits.
+      expect(pool.transitionCalls).toHaveLength(0);
+      // Still tracked.
+      expect(sub.trackedCount).toBe(1);
+    });
+
+    it('no-op when workitem:queued event is missing requestId (orphan WI)', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      bus.publish(
+        buildQueuedEvent({
+          workItemId: 'wi-orphan',
+          // requestId intentionally omitted
+          sessionName: 'pool-publisher',
+        }) as unknown as Parameters<EventBusService['publish']>[0],
+      );
+      await sub.flushPending();
+
+      expect(pool.transitionCalls).toHaveLength(0);
+      expect(sub.trackedCount).toBe(1);
+    });
+
+    it('no-op when workitem:queued references an untracked Request (already resolved or non-inbound)', async () => {
+      // No request:created seeded — the requestId is unknown to the subscriber.
+      bus.publish(
+        buildQueuedEvent({
+          workItemId: 'wi-strange-1',
+          requestId: 'req-unknown',
+          sessionName: 'pool-publisher',
+        }) as unknown as Parameters<EventBusService['publish']>[0],
+      );
+      await sub.flushPending();
+
+      expect(pool.transitionCalls).toHaveLength(0);
+    });
+
+    it('no regression on path a (markResolvedByThread still works after path b is wired)', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      await sub.markResolvedByThread('1772899923.865659');
+
+      expect(pool.transitionCalls).toEqual([
+        { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
+      ]);
+      expect(sub.trackedCount).toBe(0);
+
+      // A subsequent decompose event finds nothing tracked → no-op.
+      bus.publish(
+        buildQueuedEvent({
+          workItemId: 'wi-late-1',
+          requestId: r.id,
+          sessionName: 'pool-publisher',
+        }) as unknown as Parameters<EventBusService['publish']>[0],
+      );
+      await sub.flushPending();
+      // Still only 1 transition (the path-a one) — path b is a clean no-op.
+      expect(pool.transitionCalls).toHaveLength(1);
+    });
+
+    it('no regression on path c (timer self-check still silences breach when WI is terminal)', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      // Externally mark the WI done (e.g. via taskPool.completeItem).
+      pool.setStatus(respondToUserWorkItemId(r.id), 'done');
+
+      const breachListener = jest.fn();
+      bus.onInProcess('request:sla_breached', breachListener);
+
+      jest.advanceTimersByTime(5_000);
+      for (let i = 0; i < 3; i += 1) await Promise.resolve();
+
+      // path c: terminal WI silences breach via the timer self-check.
+      expect(breachListener).not.toHaveBeenCalled();
     });
   });
 
