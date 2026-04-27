@@ -584,4 +584,178 @@ describe('TaskPoolService', () => {
       expect(claims[0].status).toBe('expiring');
     });
   });
+
+  // =========================================================================
+  // TRANS-1: transitionStatus + role-based permission enforcement (V3)
+  // =========================================================================
+
+  describe('transitionStatus — TRANS-1 V3 enforcement', () => {
+    /**
+     * Helper: add a WorkItem to the pool and claim it so it reaches 'running'
+     * status, mirroring the steady-state of an in-flight task. Used by the
+     * verification gate tests.
+     */
+    async function makeRunning(): Promise<{ id: string; agent: string }> {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      const result = await service.claimFromPool('agent-test');
+      expect(result).not.toBeNull();
+      return { id: result!.workItem.id, agent: 'agent-test' };
+    }
+
+    it('throws when WorkItem does not exist', async () => {
+      await expect(
+        service.transitionStatus('does-not-exist', 'done', 'system'),
+      ).rejects.toThrow(/WorkItem not found/);
+    });
+
+    it('throws on illegal state-machine transition (e.g. done → running)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-test');
+      // Drive to terminal 'done' first via the legitimate path.
+      await service.transitionStatus(wi.id, 'done', 'system');
+      // Now attempt to revert — disallowed by WORK_ITEM_TRANSITIONS.
+      await expect(
+        service.transitionStatus(wi.id, 'running', 'system'),
+      ).rejects.toThrow(/Invalid status transition/);
+    });
+
+    it('agent CANNOT verify their own work (running → verified blocked for agent)', async () => {
+      const { id } = await makeRunning();
+      // Move to done_by_worker via agent — this is allowed.
+      await service.transitionStatus(id, 'done_by_worker', 'agent');
+      // Attempt agent self-verification — must throw.
+      await expect(
+        service.transitionStatus(id, 'verified', 'agent'),
+      ).rejects.toThrow(/Forbidden transition.*actor='agent'/);
+    });
+
+    it('team_lead CAN verify worker output (done_by_worker → verified)', async () => {
+      const { id } = await makeRunning();
+      await service.transitionStatus(id, 'done_by_worker', 'agent');
+      const verified = await service.transitionStatus(id, 'verified', 'team_lead');
+      expect(verified).not.toBeNull();
+      expect(verified!.status).toBe('verified');
+    });
+
+    it('team_lead CAN reject worker output with custom mutator carrying the error', async () => {
+      const { id } = await makeRunning();
+      await service.transitionStatus(id, 'done_by_worker', 'agent');
+      const rejected = await service.transitionStatus(id, 'rejected', 'team_lead', (wi) => {
+        wi.error = 'Did not meet acceptance criteria';
+      });
+      expect(rejected!.status).toBe('rejected');
+      expect(rejected!.error).toBe('Did not meet acceptance criteria');
+    });
+
+    // -----------------------------------------------------------------------
+    // F-F: rejected → queued is gated to TL/orchestrator/system only
+    // -----------------------------------------------------------------------
+
+    it('F-F: agent CANNOT self-revive a rejected WorkItem (rejected → queued)', async () => {
+      const { id } = await makeRunning();
+      await service.transitionStatus(id, 'done_by_worker', 'agent');
+      await service.transitionStatus(id, 'rejected', 'team_lead');
+      // Attempt agent self-revival — must throw per F-F.
+      await expect(
+        service.transitionStatus(id, 'queued', 'agent'),
+      ).rejects.toThrow(/Forbidden transition.*actor='agent'/);
+    });
+
+    it('F-F: team_lead CAN re-queue a rejected WorkItem', async () => {
+      const { id } = await makeRunning();
+      await service.transitionStatus(id, 'done_by_worker', 'agent');
+      await service.transitionStatus(id, 'rejected', 'team_lead');
+      const requeued = await service.transitionStatus(id, 'queued', 'team_lead');
+      expect(requeued!.status).toBe('queued');
+    });
+
+    it('F-F: orchestrator CAN re-queue a rejected WorkItem', async () => {
+      const { id } = await makeRunning();
+      await service.transitionStatus(id, 'done_by_worker', 'agent');
+      await service.transitionStatus(id, 'rejected', 'team_lead');
+      const requeued = await service.transitionStatus(id, 'queued', 'orchestrator');
+      expect(requeued!.status).toBe('queued');
+    });
+
+    it('F-F: system actor (Reconciler) CAN re-queue a rejected WorkItem', async () => {
+      const { id } = await makeRunning();
+      await service.transitionStatus(id, 'done_by_worker', 'agent');
+      await service.transitionStatus(id, 'rejected', 'team_lead');
+      const requeued = await service.transitionStatus(id, 'queued', 'system');
+      expect(requeued!.status).toBe('queued');
+    });
+
+    it('F-F: agent CANNOT self-revive a failed WorkItem (failed → queued)', async () => {
+      const { id } = await makeRunning();
+      // Move to failed via the existing failItem path.
+      await service.failItem(id, 'simulated failure');
+      // Attempt agent self-revival — must throw per F-F.
+      await expect(
+        service.transitionStatus(id, 'queued', 'agent'),
+      ).rejects.toThrow(/Forbidden transition.*actor='agent'/);
+    });
+
+    it('system actor passes through any legal transition (Reconciler exemption)', async () => {
+      const { id } = await makeRunning();
+      // Reconciler stuck-running corrective: running → blocked.
+      const blocked = await service.transitionStatus(id, 'blocked', 'system');
+      expect(blocked!.status).toBe('blocked');
+    });
+
+    // -----------------------------------------------------------------------
+    // mutator atomicity
+    // -----------------------------------------------------------------------
+
+    it('mutator runs atomically with the status update', async () => {
+      const { id } = await makeRunning();
+      const updated = await service.transitionStatus(id, 'done', 'system', (wi) => {
+        wi.result = { reportPath: '/tmp/done.md' };
+        wi.cost = 0.42;
+      });
+      expect(updated!.status).toBe('done');
+      expect(updated!.result).toEqual({ reportPath: '/tmp/done.md' });
+      expect(updated!.cost).toBe(0.42);
+      expect(updated!.completedAt).toBeDefined();
+    });
+
+    it('refreshes startedAt on transition into running', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      const before = new Date().toISOString();
+      const updated = await service.transitionStatus(wi.id, 'running', 'system');
+      expect(updated!.status).toBe('running');
+      expect(updated!.startedAt).toBeDefined();
+      expect(updated!.startedAt! >= before).toBe(true);
+    });
+  });
+
+  // =========================================================================
+  // TRANS-1: updateItemStatus actor-role gate (Reconciler legacy entry)
+  // =========================================================================
+
+  describe('updateItemStatus — TRANS-1 V3 actor gate', () => {
+    it('defaults actorRole to "system" when omitted (Reconciler default)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      // No third arg — defaults to system per backwards compat.
+      await service.updateItemStatus(wi.id, 'running');
+      const items = await service.getAvailableItems();
+      // Legacy callers continue to work unchanged.
+      expect(items.find((x) => x.id === wi.id)).toBeUndefined(); // no longer queued
+    });
+
+    it('rejects an agent attempting an unauthorised transition via updateItemStatus', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-test');
+      // agent moves to done_by_worker (allowed).
+      await service.updateItemStatus(wi.id, 'done_by_worker', 'agent');
+      // agent now attempts to verify themselves — must throw.
+      await expect(
+        service.updateItemStatus(wi.id, 'verified', 'agent'),
+      ).rejects.toThrow(/Forbidden transition.*actor='agent'/);
+    });
+  });
 });
