@@ -89,20 +89,26 @@ function mapRequestPriority(backendPriority: string): RequestPriority {
  */
 function apiToRequestItems(rawRequests: Record<string, unknown>[]): RequestItem[] {
   return rawRequests
-    .map((r): RequestItem => ({
-      id: (r.id as string) || '',
-      title: (r.title as string) || 'Untitled Request',
-      status: mapRequestStatus((r.status as string) || ''),
-      priority: mapRequestPriority((r.priority as string) || ''),
-      source: ((r.tags as string[]) || []).includes('slack') ? 'slack' : 'api',
-      requester: 'user',
-      updatedAt: (r.updatedAt as string) || (r.createdAt as string) || new Date().toISOString(),
-      missionLink: r.missionId ? `Mission: ${(r.missionId as string).slice(0, 8)}` : undefined,
-      totalInputTokens: (r.totalInputTokens as number) || 0,
-      totalOutputTokens: (r.totalOutputTokens as number) || 0,
-      totalCost: (r.totalCost as number) || 0,
-      ownerAgent: (r.ownerAgent as string) || undefined,
-    }))
+    .map((r): RequestItem => {
+      const workItemIds = Array.isArray(r.workItemIds) ? (r.workItemIds as string[]) : [];
+      const rawCategory = r.intentCategory as string | undefined;
+      return {
+        id: (r.id as string) || '',
+        title: (r.title as string) || 'Untitled Request',
+        status: mapRequestStatus((r.status as string) || ''),
+        priority: mapRequestPriority((r.priority as string) || ''),
+        source: ((r.tags as string[]) || []).includes('slack') ? 'slack' : 'api',
+        requester: 'user',
+        category: rawCategory && rawCategory.length > 0 ? rawCategory : undefined,
+        workItemCount: workItemIds.length,
+        updatedAt: (r.updatedAt as string) || (r.createdAt as string) || new Date().toISOString(),
+        missionLink: r.missionId ? `Mission: ${(r.missionId as string).slice(0, 8)}` : undefined,
+        totalInputTokens: (r.totalInputTokens as number) || 0,
+        totalOutputTokens: (r.totalOutputTokens as number) || 0,
+        totalCost: (r.totalCost as number) || 0,
+        ownerAgent: (r.ownerAgent as string) || undefined,
+      };
+    })
     .sort(
       (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
     );
