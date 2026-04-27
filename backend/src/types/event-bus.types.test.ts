@@ -14,6 +14,7 @@ import {
   getCriticalEventTypes,
 } from './event-bus.types.js';
 import type {
+  AgentEvent,
   EventType,
   CreateSubscriptionInput,
 } from './event-bus.types.js';
@@ -47,6 +48,13 @@ describe('Event Bus Types', () => {
         'task:blocked',
         'task:needs_clarification',
         'team:all_tasks_done',
+        // BRIDGE-1 worker / verification lifecycle events
+        'task:done_by_worker',
+        'task:rejected',
+        // BRIDGE-1 mission-level events
+        'mission:review_due',
+        'mission:stale',
+        'mission:replanned',
         // Hierarchy communication events
         'hierarchy:escalation',
         'hierarchy:delegation',
@@ -82,6 +90,17 @@ describe('Event Bus Types', () => {
       expect(isValidEventType('hierarchy:escalation')).toBe(true);
       expect(isValidEventType('hierarchy:delegation')).toBe(true);
       expect(isValidEventType('hierarchy:report_up')).toBe(true);
+    });
+
+    it('should return true for BRIDGE-1 worker / verification event types', () => {
+      expect(isValidEventType('task:done_by_worker')).toBe(true);
+      expect(isValidEventType('task:rejected')).toBe(true);
+    });
+
+    it('should return true for BRIDGE-1 mission-level event types', () => {
+      expect(isValidEventType('mission:review_due')).toBe(true);
+      expect(isValidEventType('mission:stale')).toBe(true);
+      expect(isValidEventType('mission:replanned')).toBe(true);
     });
 
     it('should return false for invalid event types', () => {
@@ -130,6 +149,16 @@ describe('Event Bus Types', () => {
       expect(CRITICAL_EVENT_TYPES.has('agent:busy' as EventType)).toBe(false);
       expect(CRITICAL_EVENT_TYPES.has('agent:status_changed' as EventType)).toBe(false);
       expect(INFO_EVENT_TYPES.has('agent:busy')).toBe(true);
+    });
+
+    it('should classify BRIDGE-1 events as critical (queue-creating)', () => {
+      // Worker/verification events drive WorkItem creation in BRIDGE-1; if any
+      // of these get debounced into oblivion the autonomy chain stalls.
+      expect(CRITICAL_EVENT_TYPES.has('task:done_by_worker')).toBe(true);
+      expect(CRITICAL_EVENT_TYPES.has('task:rejected')).toBe(true);
+      expect(CRITICAL_EVENT_TYPES.has('mission:review_due')).toBe(true);
+      expect(CRITICAL_EVENT_TYPES.has('mission:stale')).toBe(true);
+      expect(CRITICAL_EVENT_TYPES.has('mission:replanned')).toBe(true);
     });
   });
 
@@ -285,6 +314,50 @@ describe('Event Bus Types', () => {
         ...validInput,
         messageTemplate: 123,
       })).toBe(false);
+    });
+  });
+
+  describe('AgentEvent BRIDGE-1 correlation fields', () => {
+    /**
+     * Build a minimal AgentEvent. The new `workItemId` / `missionId` fields
+     * are optional, so the BRIDGE-1 contract tests assert both presence and
+     * absence — publishers without the value in scope must still produce a
+     * valid event (bridge falls back to a storage lookup keyed on `taskId`).
+     */
+    function buildEvent(overrides: Partial<AgentEvent> = {}): AgentEvent {
+      return {
+        id: 'evt-1',
+        type: 'task:done_by_worker',
+        timestamp: new Date().toISOString(),
+        teamId: 'team-1',
+        teamName: 'Crewly Product',
+        memberId: 'm-1',
+        memberName: 'Leo',
+        sessionName: 'crewly-product-leo',
+        previousValue: 'running',
+        newValue: 'done_by_worker',
+        changedField: 'taskStatus',
+        ...overrides,
+      };
+    }
+
+    it('accepts workItemId on task events when publisher has it in scope', () => {
+      const event = buildEvent({ workItemId: 'wi-123' });
+      expect(event.workItemId).toBe('wi-123');
+    });
+
+    it('accepts missionId on mission events', () => {
+      const event = buildEvent({
+        type: 'mission:review_due',
+        missionId: 'mission-abc',
+      });
+      expect(event.missionId).toBe('mission-abc');
+    });
+
+    it('keeps both fields optional for backward-compat', () => {
+      const event = buildEvent();
+      expect(event.workItemId).toBeUndefined();
+      expect(event.missionId).toBeUndefined();
     });
   });
 });

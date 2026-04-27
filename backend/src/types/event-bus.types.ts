@@ -44,6 +44,21 @@ export const EVENT_TYPES = [
   'task:needs_clarification',
   'team:all_tasks_done',
 
+  // BRIDGE-1: worker / verification lifecycle events the EventToWorkItemBridge
+  // consumes to auto-create verification, retry, and review WorkItems.
+  // `task:done_by_worker` is published by `submitForVerification`; `task:rejected`
+  // is published by `verifyItem` when a TL rejects a worker's submission.
+  'task:done_by_worker',
+  'task:rejected',
+
+  // BRIDGE-1: mission-level events the bridge fans out into review WorkItems.
+  // `mission:review_due` is REVIEW-1's cadence-driven trigger; `mission:stale`
+  // and `mission:replanned` cover the missing autonomy hooks the doc review
+  // called out (see autonomy_v1 §4 item 5).
+  'mission:review_due',
+  'mission:stale',
+  'mission:replanned',
+
   // Hierarchy communication events
   'hierarchy:escalation',
   'hierarchy:delegation',
@@ -83,6 +98,13 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   'task:needs_clarification',
   'task:assigned',
   'team:all_tasks_done',
+  // BRIDGE-1: worker submission, TL rejection, and mission-level reviews are
+  // all queue-creating events — they MUST not be debounced into oblivion.
+  'task:done_by_worker',
+  'task:rejected',
+  'mission:review_due',
+  'mission:stale',
+  'mission:replanned',
 ]);
 
 /**
@@ -179,6 +201,30 @@ export interface AgentEvent {
 
   /** Parent member ID of the member who triggered the event */
   parentMemberId?: string;
+
+  // === BRIDGE-1 autonomy correlation fields (optional) ===
+  // The EventToWorkItemBridge needs the source WorkItem and Mission ids to
+  // build deterministic idempotency keys + look up `triggerSource` /
+  // `retryCount` from storage. Publishers fill these where the value is
+  // already in scope (e.g. `submitForVerification` has `workItemId`
+  // trivially); bridge falls back to a storage lookup keyed on `taskId`
+  // when both are absent. Adding two optional fields was preferred over a
+  // discriminated union to avoid forcing every existing publish call site
+  // through a type-level rewrite.
+
+  /**
+   * Source WorkItem id for `task:*` events the BRIDGE-1 service consumes.
+   * Optional everywhere except inside the bridge handlers, which require
+   * either this or `taskId` to resolve the source WI.
+   */
+  workItemId?: string;
+
+  /**
+   * Mission id for `mission:*` events. Required for mission events to be
+   * actionable downstream; optional on task events where a mission link
+   * exists incidentally (e.g. the source WI has `missionId`).
+   */
+  missionId?: string;
 }
 
 // =============================================================================
