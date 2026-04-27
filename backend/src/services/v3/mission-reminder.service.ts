@@ -52,15 +52,26 @@ export type ReviewReason =
 /**
  * Statuses that *clear* a Mission's `pendingReviewWorkItemId` so the next
  * sweep tick can fire a new review. The set mirrors
- * {@link TERMINAL_WORK_ITEM_STATUSES} but adds `failed` because a failed
- * review WI has also exited the active queue and shouldn't block the
- * next cadence. The reentrancy lock is sweep-time lazy: we don't subscribe
- * to TRANS-1 events here, we just observe the WorkItem's current state on
- * each sweep and clear the lock when it's terminal.
+ * {@link TERMINAL_WORK_ITEM_STATUSES} (`done`, `verified`, `cancelled`) but
+ * adds two statuses that the canonical TERMINAL set excludes for valid
+ * reasons elsewhere — yet which DO represent "exited the active queue" for
+ * the V8 reentrancy-lock perspective:
+ *
+ * - `failed`: a failed review WI has terminated execution; not blocking next cadence.
+ * - `rejected`: a TL-rejected review WI ({@link WorkItemStatus} reachable from
+ *   the review path per work-item.types.ts) has likewise exited the queue.
+ *   Without this, a single TL rejection of a review WI would silently freeze
+ *   that mission's lock forever — exactly the V8 failure mode this lock
+ *   exists to prevent (Arch N1 BLOCKING fix on PR #354).
+ *
+ * The reentrancy lock is sweep-time lazy: we don't subscribe to TRANS-1
+ * events here, we just observe the WorkItem's current state on each sweep
+ * and clear the lock when it's terminal.
  */
 const PENDING_REVIEW_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   ...TERMINAL_WORK_ITEM_STATUSES,
   'failed',
+  'rejected',
 ]);
 
 function getMissionsDir(): string {

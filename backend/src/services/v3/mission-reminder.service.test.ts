@@ -471,6 +471,39 @@ describe('MissionReminderService', () => {
       expect(persistedMission.pendingReviewWorkItemId).toBe('m-cadence:review:2026-04-28');
     });
 
+    // V8 N1 regression guard (Arch BLOCKING on PR #354):
+    // PENDING_REVIEW_TERMINAL_STATUSES must include every status a review
+    // WorkItem can reach that represents "exited the active queue", otherwise
+    // a single rejection / failure freezes the lock and silently skips all
+    // future cadence ticks for that mission.
+    it.each([
+      ['done',      'done'],
+      ['verified',  'verified'],
+      ['cancelled', 'cancelled'],
+      ['failed',    'failed'],
+      ['rejected',  'rejected'], // ← N1: TL-rejected review WI must clear the lock
+    ])('clears pendingReviewWorkItemId when prior WI status is %s', async (_label, priorStatus) => {
+      pinNow('2026-04-28T10:00:00Z');
+      const mission = makeMissionWithCadence({
+        lastReviewAt: '2026-04-27T09:30:00.000Z',
+        pendingReviewWorkItemId: 'm-cadence:review:2026-04-27',
+      });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+      mockTaskPool.findWorkItem.mockResolvedValue({
+        id: 'm-cadence:review:2026-04-27',
+        status: priorStatus,
+      });
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(1);
+      const lastSaveCall = (atomicWriteJson as any).mock.calls.at(-1);
+      const persistedMission = lastSaveCall[1];
+      expect(persistedMission.pendingReviewWorkItemId).toBe('m-cadence:review:2026-04-28');
+    });
+
     it.each([
       ['CONSERVATIVE', '0 9 * * 1', '2026-04-27T10:00:00Z', '2026-04-27'], // Mon 09:00 UTC
       ['MODERATE',     '0 9 * * 1,4', '2026-04-23T10:00:00Z', '2026-04-23'], // Thu 09:00 UTC
