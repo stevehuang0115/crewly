@@ -38,7 +38,11 @@ import { ContextWindowMonitorService } from './context-window-monitor.service.js
 import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
-import { PromptBuilderService } from '../ai/prompt-builder.service.js';
+import {
+	PromptBuilderService,
+	buildModuleConfigFromTeamMember,
+	type SessionRuntimeContext,
+} from '../ai/prompt-builder.service.js';
 import { PromptAssemblyService } from '../ai/prompt-modules/prompt-assembly.service.js';
 import type { ModuleConfig } from '../ai/prompt-modules/prompt-module.interface.js';
 import type { SubordinateInfo, TeamMemberSessionConfig, Team, TeamMember } from '../../types/index.js';
@@ -1650,52 +1654,73 @@ export class AgentRegistrationService {
 				const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
 				const tlSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'team-leader');
 
-				const moduleConfig: ModuleConfig = {
-					sessionName,
-					memberId: memberId ?? foundMember?.id ?? '',
-					role,
-					teamId: foundTeam?.id,
-					projectPath,
-					runtimeType: runtimeType as ModuleConfig['runtimeType'],
-					canDelegate: foundMember?.canDelegate,
-					subordinates: foundMember?.subordinateIds
-						?.map((subId) => {
-							const subMember = foundTeam?.members?.find((m) => m.id === subId);
-							if (!subMember) return null;
-							return {
-								name: subMember.name,
-								sessionName: subMember.sessionName || '',
-								role: subMember.role || 'developer',
-								memberId: subMember.id || subId,
-							};
-						})
-						.filter((s): s is NonNullable<typeof s> => s !== null),
-					agentSkillsPath,
-					tlSkillsPath,
-					projectRoot: this.projectRoot,
-					// Architecture Upgrade: derive orgRole from team hierarchy
-					orgRole: role === 'orchestrator' ? 'orchestrator'
-						: foundMember?.canDelegate ? 'team-lead'
-						: 'executor',
-					autonomyLevel: foundMember?.autonomyLevel ?? 'directed',
-					capabilities: foundMember?.capabilities,
-					domainSOP: foundMember?.domainSOP,
-					riskPolicy: foundMember?.riskPolicy,
-					// Organization Model fields
-					jobTitle: foundMember?.jobTitle,
-					jobDescription: foundMember?.jobDescription,
-					ownershipScope: foundMember?.ownershipScope as ModuleConfig['ownershipScope'],
-					teamOwnershipScope: foundTeam?.ownershipScope as ModuleConfig['teamOwnershipScope'],
-					serviceContract: foundTeam?.serviceContract as ModuleConfig['serviceContract'],
-					expertId: foundMember?.expertId,
-					teamDescription: foundTeam?.description,
-					teamMission: foundTeam?.mission,
-					teamBudget: foundTeam?.budget as ModuleConfig['teamBudget'],
-					teamQualityGate: foundTeam?.qualityGate as ModuleConfig['teamQualityGate'],
-					teamNormsPath: foundTeam?.id
-						? path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME, 'teams', foundTeam.id, 'norms')
-						: undefined,
-				};
+				// Pre-compute the subordinate roster — used by both the helper
+				// path (passed via runtime.subordinates) and the orchestrator
+				// fallback path below.
+				const subordinates = foundMember?.subordinateIds
+					?.map((subId) => {
+						const subMember = foundTeam?.members?.find((m) => m.id === subId);
+						if (!subMember) return null;
+						return {
+							name: subMember.name,
+							sessionName: subMember.sessionName || '',
+							role: subMember.role || 'developer',
+							memberId: subMember.id || subId,
+						};
+					})
+					.filter((s): s is NonNullable<typeof s> => s !== null);
+
+				const teamNormsPath = foundTeam?.id
+					? path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME, 'teams', foundTeam.id, 'norms')
+					: undefined;
+
+				let moduleConfig: ModuleConfig;
+				if (foundMember && foundTeam) {
+					// WIRE-2: When the agent is a TeamMember of a Team, build the
+					// canonical ModuleConfig via the shared helper so every
+					// autonomy / org / team-level field reaches the assembler.
+					// Caller-side overlay covers the two registration-specific
+					// fields the helper doesn't know about (teamNormsPath +
+					// the registration's `memberId` override which may differ
+					// from member.id when the caller passed an explicit id).
+					const runtime: SessionRuntimeContext = {
+						sessionName,
+						projectPath,
+						runtimeType: runtimeType as ModuleConfig['runtimeType'],
+						subordinates,
+						agentSkillsPath,
+						tlSkillsPath,
+						projectRoot: this.projectRoot,
+					};
+					moduleConfig = {
+						...buildModuleConfigFromTeamMember(foundMember, foundTeam, runtime),
+						memberId: memberId ?? foundMember.id ?? '',
+						teamNormsPath,
+					};
+				} else {
+					// Orchestrator + legacy paths: foundMember/foundTeam not
+					// present (orchestrator config lives outside getTeams()).
+					// Keep the inline fallback so registration still works for
+					// the orchestrator and any caller without team context.
+					moduleConfig = {
+						sessionName,
+						memberId: memberId ?? '',
+						role,
+						teamId: foundTeam?.id,
+						projectPath,
+						runtimeType: runtimeType as ModuleConfig['runtimeType'],
+						canDelegate: foundMember?.canDelegate,
+						subordinates,
+						agentSkillsPath,
+						tlSkillsPath,
+						projectRoot: this.projectRoot,
+						orgRole: role === 'orchestrator' ? 'orchestrator'
+							: foundMember?.canDelegate ? 'team-lead'
+							: 'executor',
+						autonomyLevel: foundMember?.autonomyLevel ?? 'directed',
+						teamNormsPath,
+					};
+				}
 
 				const assembler = new PromptAssemblyService();
 				const { prompt: modularPrompt, report } = await assembler.assemble(moduleConfig);
