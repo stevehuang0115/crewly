@@ -312,4 +312,48 @@ describe('CrewlyServer headless mode', () => {
 			);
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// BRIDGE-1.5 — boot wiring smoke tests for the EventToWorkItemBridge.
+	//
+	// We can't load the real index.ts (uses import.meta.url) so these
+	// tests verify the constructor + lifecycle methods that the boot path
+	// relies on, plus the fact that EventToWorkItemBridge.boot accepts
+	// only an EventBusService and produces a usable instance.
+	// -----------------------------------------------------------------------
+	describe('Boot wiring — EventToWorkItemBridge', () => {
+		it('boot(eventBus) returns an instance with start/stop/flushPending', async () => {
+			const { EventBusService } = await import('./services/event-bus/event-bus.service.js');
+			const { EventToWorkItemBridge } = await import(
+				'./services/event-bus/event-to-workitem-bridge.service.js'
+			);
+			const bus = new EventBusService();
+			const bridge = EventToWorkItemBridge.boot(bus);
+
+			expect(typeof bridge.start).toBe('function');
+			expect(typeof bridge.stop).toBe('function');
+			expect(typeof bridge.flushPending).toBe('function');
+
+			// start/stop without throwing
+			expect(() => bridge.start()).not.toThrow();
+			expect(() => bridge.stop()).not.toThrow();
+
+			bus.cleanup();
+		});
+
+		it('exposes the 7 BRIDGE-1 event types via BRIDGE_SUBSCRIBED_EVENTS', async () => {
+			const { BRIDGE_SUBSCRIBED_EVENTS } = await import(
+				'./services/event-bus/event-to-workitem-bridge.service.js'
+			);
+			expect(BRIDGE_SUBSCRIBED_EVENTS).toEqual([
+				'task:done_by_worker',
+				'task:rejected',
+				'task:blocked',
+				'team:all_tasks_done',
+				'mission:review_due',
+				'mission:stale',
+				'mission:replanned',
+			]);
+		});
+	});
 });

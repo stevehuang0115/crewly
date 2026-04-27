@@ -63,6 +63,7 @@ import { initializeCloudIfConfigured } from './services/cloud/cloud-initializer.
 import { MessageQueueService, QueueProcessorService, ResponseRouterService } from './services/messaging/index.js';
 import { ThreadStatusQueueService } from './services/messaging/thread-status-queue.service.js';
 import { EventBusService } from './services/event-bus/index.js';
+import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-bridge.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -176,6 +177,8 @@ export class CrewlyServer {
 	private queueProcessorService!: QueueProcessorService;
 	private threadStatusQueueService!: ThreadStatusQueueService;
 	private eventBusService!: EventBusService;
+	/** BRIDGE-1: subscribes to autonomy events and creates WorkItems. */
+	private eventToWorkItemBridge: EventToWorkItemBridge | null = null;
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
 	private reconcilerService: ReconcilerService | null = null;
@@ -383,6 +386,15 @@ export class CrewlyServer {
 				taskId: payload.taskId,
 			});
 		});
+
+		// BRIDGE-1: subscribe to autonomy events (task:done_by_worker,
+		// task:rejected, task:blocked, team:all_tasks_done, mission:*) and
+		// create the appropriate WorkItem(s) — verification WI for TL on
+		// done_by_worker, retry WI / escalation WI on rejected, review WI on
+		// blocked / mission events. See `event-to-workitem-bridge.service.ts`
+		// for idempotency contract + retry cap + cron-recursion guard.
+		this.eventToWorkItemBridge = EventToWorkItemBridge.boot(this.eventBusService);
+		this.eventToWorkItemBridge.start();
 
 		// Initialize Slack thread store for persistent thread conversations
 		const slackThreadStore = new SlackThreadStoreService(this.config.crewlyHome);
@@ -2661,6 +2673,13 @@ export class CrewlyServer {
 
 			// Stop message queue processor
 			this.queueProcessorService.stop();
+
+			// Stop the EventToWorkItemBridge BEFORE cleaning the event bus so
+			// in-flight handler dispatches drain against a still-live bus.
+			if (this.eventToWorkItemBridge) {
+				this.eventToWorkItemBridge.stop();
+				this.eventToWorkItemBridge = null;
+			}
 
 			// Clean up event bus service
 			this.eventBusService.cleanup();
