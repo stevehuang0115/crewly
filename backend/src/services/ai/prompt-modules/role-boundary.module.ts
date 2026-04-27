@@ -40,13 +40,43 @@ export class RoleBoundaryModule implements PromptModule {
 	 * @returns Formatted markdown role boundary section
 	 */
 	async build(config: ModuleConfig): Promise<string> {
+		// === Fail-fast misconfiguration guards (WIRE-1 V4 + F-G) ===========
+		// (1) canDelegate=true && orgRole undefined → throw.
+		// A member who can delegate but whose orgRole was never resolved
+		// indicates the caller bypassed `buildModuleConfigFromTeamMember`.
+		// The previous silent `?? 'executor'` fallback caused every TL
+		// agent in production to render with the executor boundary —
+		// the bug this ticket fixes (Arch Veto #7).
+		if (config.canDelegate === true && config.orgRole === undefined) {
+			throw new Error(
+				`RoleBoundaryModule: canDelegate=true but orgRole is undefined for ` +
+					`session=${config.sessionName ?? '<unknown>'}. ` +
+					`Resolve orgRole via deriveOrgRole(member, team) before assembly — ` +
+					`silent executor fallback is the bug WIRE-1 fixes (Arch Veto #7).`,
+			);
+		}
+		// (2) Symmetric misconfig (F-G): canDelegate=false && orgRole='team-lead'.
+		// Refuse to render TL authority for a member that cannot delegate.
+		if (config.canDelegate === false && config.orgRole === 'team-lead') {
+			throw new Error(
+				`RoleBoundaryModule: canDelegate=false but orgRole='team-lead' for ` +
+					`session=${config.sessionName ?? '<unknown>'}. ` +
+					`Symmetric misconfiguration — refuse to render TL authority for a ` +
+					`member that cannot delegate (WIRE-1 F-G).`,
+			);
+		}
+
 		// Try loading a custom role fragment first
 		const fragment = loadRoleFragment(config.projectRoot, config.role, 'role-boundary');
 		if (fragment) {
 			return fragment + this.buildOrganizationContext(config);
 		}
 
-		// Fall back to inline content based on orgRole (default: executor)
+		// Fall back to inline content based on orgRole. Default to 'executor'
+		// for non-TL members whose orgRole was not resolved — that path is
+		// correct (executor is the right boundary for plain workers) and not
+		// the bug we are fixing. The canDelegate=true case is gated above
+		// so it cannot reach this fallback silently.
 		const orgRole = config.orgRole ?? 'executor';
 
 		let boundary: string;

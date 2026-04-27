@@ -1,12 +1,188 @@
 import { readFile, access } from 'fs/promises';
 import * as path from 'path';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { TeamMemberSessionConfig, SubordinateInfo, SOPRole } from '../../types/index.js';
+import { TeamMemberSessionConfig, SubordinateInfo, SOPRole, TeamMember, Team } from '../../types/index.js';
 import { MemoryService } from '../memory/memory.service.js';
 import { SOPService } from '../sop/sop.service.js';
 import { getRoleService } from '../settings/role.service.js';
 import { PromptAssemblyService } from './prompt-modules/prompt-assembly.service.js';
-import type { ModuleConfig } from './prompt-modules/prompt-module.interface.js';
+import type { ModuleConfig, OrgRole } from './prompt-modules/prompt-module.interface.js';
+
+// =============================================================================
+// WIRE-1: Autonomy field injection helpers
+// =============================================================================
+
+/**
+ * Derive the organisational role for a member from team-hierarchy facts.
+ *
+ * Resolution cascade (first match wins):
+ *   1. `role === 'orchestrator'`        → `'orchestrator'`
+ *   2. `canDelegate === true`           → `'team-lead'`
+ *   3. has subordinates in the team     → `'team-lead'`
+ *   4. otherwise                        → `'executor'`
+ *
+ * This function is total — every member resolves to one of the three roles —
+ * so it never throws. Fail-fast on misconfiguration is enforced downstream
+ * by {@link RoleBoundaryModule} (a member with `canDelegate=true` whose
+ * `orgRole` is undefined when the boundary is rendered indicates the
+ * caller bypassed `buildModuleConfigFromTeamMember` — that boundary throws).
+ *
+ * @param member - Full TeamMember record
+ * @param team - Full Team record (used to detect implicit subordination)
+ * @returns The resolved organisational role
+ */
+export function deriveOrgRole(member: TeamMember, team: Team): OrgRole {
+	if (member.role === 'orchestrator') return 'orchestrator';
+	if (member.canDelegate === true) return 'team-lead';
+	if (Array.isArray(member.subordinateIds) && member.subordinateIds.length > 0) return 'team-lead';
+	// Some legacy team shapes record the relationship on the team side only —
+	// catch members who appear as a parent of any other member.
+	if (team.members?.some((m) => m.parentMemberId === member.id)) return 'team-lead';
+	return 'executor';
+}
+
+/**
+ * Snapshot of the SessionConfig fields the helper needs that are NOT
+ * carried on TeamMember/Team (runtime-host concerns: session name, project
+ * path, runtime type, and the precomputed subordinate list).
+ *
+ * Splitting these out keeps {@link buildModuleConfigFromTeamMember} pure —
+ * it can be invoked anywhere TeamMember + Team are available without
+ * coupling to the legacy `TeamMemberSessionConfig` shape.
+ */
+export interface SessionRuntimeContext {
+	/** Agent's session name (e.g. 'crewly-product-sam-dd2b46f7'). */
+	sessionName: string;
+	/** Absolute path to the project directory. */
+	projectPath?: string;
+	/** Runtime host (claude-code, gemini-cli, codex, crewly-agent). */
+	runtimeType?: ModuleConfig['runtimeType'];
+	/** Optional precomputed subordinate list. When omitted, the helper
+	 * resolves it from `team.members` and `member.subordinateIds`. */
+	subordinates?: SubordinateInfo[];
+	/** Absolute path to agent skill scripts (e.g. `<projectRoot>/config/skills/agent`). */
+	agentSkillsPath: string;
+	/** Absolute path to team-leader skill scripts. */
+	tlSkillsPath: string;
+	/** Absolute path to the project root (where config/ lives). */
+	projectRoot: string;
+}
+
+/**
+ * Build a complete {@link ModuleConfig} from a TeamMember + Team pair.
+ *
+ * Wires every autonomy / organisation / team-context field declared on
+ * `TeamMember` and `Team` into the prompt assembler — the gap that caused
+ * every TL agent in production to silently render with the executor
+ * boundary (because `orgRole` was never injected, and
+ * `RoleBoundaryModule.build()` previously fell back to `'executor'`).
+ *
+ * Fields wired from `member`:
+ *   - `autonomyLevel`, `domainSOP`, `riskPolicy`, `capabilities`
+ *   - `jobTitle`, `jobDescription`, `ownershipScope`, `expertId`
+ *
+ * Fields wired from `team`:
+ *   - `team.mission` → `teamMission`
+ *   - `team.budget` → `teamBudget`
+ *   - `team.qualityGate` → `teamQualityGate`
+ *   - `team.serviceContract` → `serviceContract`
+ *   - `team.ownershipScope` → `teamOwnershipScope`
+ *   - `team.description` → `teamDescription`
+ *
+ * `orgRole` is resolved via {@link deriveOrgRole}. `canDelegate` is mirrored
+ * from the member record. The subordinate list is taken from
+ * `runtime.subordinates` when supplied, otherwise resolved from `team.members`.
+ *
+ * @param member - Full TeamMember record
+ * @param team - Full Team record
+ * @param runtime - Runtime-host context (session name, project paths, etc.)
+ * @returns A fully populated ModuleConfig
+ *
+ * @example
+ * ```typescript
+ * const config = buildModuleConfigFromTeamMember(member, team, {
+ *   sessionName: 'crewly-product-sam-dd2b46f7',
+ *   projectPath: '/Users/.../crewly',
+ *   runtimeType: 'claude-code',
+ *   agentSkillsPath: path.join(projectRoot, 'config/skills/agent'),
+ *   tlSkillsPath: path.join(projectRoot, 'config/skills/team-leader'),
+ *   projectRoot,
+ * });
+ * const { prompt } = await new PromptAssemblyService().assemble(config);
+ * ```
+ */
+export function buildModuleConfigFromTeamMember(
+	member: TeamMember,
+	team: Team,
+	runtime: SessionRuntimeContext,
+): ModuleConfig {
+	const orgRole = deriveOrgRole(member, team);
+	const subordinates = runtime.subordinates ?? resolveSubordinatesFromTeam(member, team);
+
+	return {
+		// Identity / runtime
+		sessionName: runtime.sessionName,
+		memberId: member.id ?? '',
+		role: member.role,
+		teamId: team.id,
+		projectPath: runtime.projectPath,
+		runtimeType: runtime.runtimeType,
+
+		// Hierarchy
+		canDelegate: member.canDelegate,
+		subordinates,
+
+		// Skill paths
+		agentSkillsPath: runtime.agentSkillsPath,
+		tlSkillsPath: runtime.tlSkillsPath,
+		projectRoot: runtime.projectRoot,
+
+		// === Autonomy + capability overlay (member-level) ===
+		orgRole,
+		autonomyLevel: member.autonomyLevel,
+		capabilities: member.capabilities,
+		domainSOP: member.domainSOP,
+		riskPolicy: member.riskPolicy,
+
+		// === Organisation model (member-level) ===
+		jobTitle: member.jobTitle,
+		jobDescription: member.jobDescription,
+		ownershipScope: member.ownershipScope,
+		expertId: member.expertId,
+
+		// === Team-level injection ===
+		teamDescription: team.description,
+		teamMission: team.mission,
+		teamBudget: team.budget,
+		teamQualityGate: team.qualityGate,
+		serviceContract: team.serviceContract,
+		teamOwnershipScope: team.ownershipScope,
+	};
+}
+
+/**
+ * Resolve a member's subordinate roster from the team record.
+ *
+ * Used when {@link buildModuleConfigFromTeamMember} is called without a
+ * pre-computed `runtime.subordinates`. Maps `member.subordinateIds` to the
+ * matching `team.members` entries, dropping any unresolved ids.
+ */
+function resolveSubordinatesFromTeam(member: TeamMember, team: Team): SubordinateInfo[] | undefined {
+	if (!Array.isArray(member.subordinateIds) || member.subordinateIds.length === 0) return undefined;
+	const byId = new Map(team.members?.map((m) => [m.id, m]) ?? []);
+	const subs: SubordinateInfo[] = [];
+	for (const subId of member.subordinateIds) {
+		const sub = byId.get(subId);
+		if (!sub) continue;
+		subs.push({
+			name: sub.name,
+			sessionName: sub.sessionName ?? '',
+			role: sub.role ?? 'developer',
+			memberId: sub.id ?? subId,
+		});
+	}
+	return subs.length > 0 ? subs : undefined;
+}
 
 /**
  * Options for building system prompts
