@@ -40,6 +40,12 @@ export type RequestPrimaryFilter = 'all' | RequestStatus;
 
 /**
  * A single request item in the request list.
+ *
+ * The two-tier scan model (per Ava's V3 design report 2026-04-05):
+ *   Top line — source icon + title + status pill (compact identity scan)
+ *   Bottom line — priority, category, mission link, work item count, updated time
+ * Cost / tokens / source label live on the detail page or the expandable
+ * context area, not on the baseline row scan line.
  */
 export interface RequestItem {
   /** Unique request ID */
@@ -56,15 +62,19 @@ export interface RequestItem {
   requester: string;
   /** Associated mission name (optional) */
   missionLink?: string;
+  /** Intent category (optional) — surfaces on the row's bottom line */
+  category?: string;
+  /** Number of WorkItems backing this Request (0 when no delegation occurred) */
+  workItemCount: number;
   /** Last updated timestamp (ISO string) */
   updatedAt: string;
   /** Child work items (optional) */
   childItems?: RequestChildItem[];
-  /** Total input tokens consumed */
+  /** Total input tokens consumed (kept for detail-page stats) */
   totalInputTokens: number;
-  /** Total output tokens consumed */
+  /** Total output tokens consumed (kept for detail-page stats) */
   totalOutputTokens: number;
-  /** Total cost in USD */
+  /** Total cost in USD (kept for detail-page stats) */
   totalCost: number;
   /** Agent that handled the request directly (no WorkItem delegation) */
   ownerAgent?: string;

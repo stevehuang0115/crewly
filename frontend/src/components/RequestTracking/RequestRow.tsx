@@ -1,12 +1,18 @@
 /**
- * Request Row Component
+ * Request Row Component — V3
  *
- * Renders a single request as a Card with:
- * - Source icon (lucide-react), title, StatusBadge, priority Badge
- * - Requester, updated time, mission link
- * - Expandable child work items with StatusDot
+ * Two-tier scan model per Ava's V3 design report (2026-04-05) and the
+ * matching V3 UI PRD §3.1:
+ *   Top line     — source icon, title, status pill (Dark/Calm palette)
+ *   Bottom line  — priority, category, mission link, work item count, updated time
  *
- * Uses shared UI components: Card, StatusBadge, Badge, StatusDot.
+ * Cost / tokens / source label live on the detail page or the expandable
+ * context area, not on the baseline row scan line. The whole row never
+ * animates; only the `active` status dot inside `<RequestStatusPill>` does.
+ *
+ * Clicking the row navigates to `/tasks/:id` (the consolidated V3 Request
+ * surface). Expanding the chevron toggles the inline child WorkItem rail
+ * for fast triage without leaving the list.
  *
  * @module components/RequestTracking/RequestRow
  */
@@ -22,21 +28,18 @@ import {
   ChevronDown,
   ChevronRight,
   Inbox,
+  Layers,
 } from 'lucide-react';
 import { Card } from '../UI/Card';
-import { StatusBadge } from '../UI/StatusBadge';
 import { Badge } from '../UI/Badge';
 import { StatusDot } from '../UI/StatusDot';
+import { RequestStatusPill } from './RequestStatusPill';
 import type { RequestItem, RequestChildItem, RequestSource } from './request-tracking.types';
 import {
-  getStatusBadgeType,
-  getRequestStatusLabel,
   getPriorityBadgeVariant,
   getRequestPriorityLabel,
   getSourceLabel,
   formatRequestTime,
-  formatCost,
-  formatTokens,
 } from './request-tracking.types';
 
 // =============================================================================
@@ -110,9 +113,13 @@ const ChildItemRow: React.FC<{ item: RequestChildItem }> = ({ item }) => {
 // =============================================================================
 
 /**
- * Renders a request row card with expandable child items.
- * Uses Card for the container, StatusBadge for status, Badge for priority,
- * and lucide-react icons for the source channel.
+ * Renders a Request row card with the V3 two-tier scan model.
+ *
+ * Top line keeps a single visual identity (icon + title + status pill);
+ * the bottom line packs the meta-fields users filter by — priority,
+ * category, mission link, work item count, updated time. Clicking the
+ * row navigates to the canonical `/tasks/:id` detail; the chevron
+ * toggles the inline children without navigating.
  *
  * @param props.request - Request data
  * @returns Request row JSX element
@@ -120,11 +127,15 @@ const ChildItemRow: React.FC<{ item: RequestChildItem }> = ({ item }) => {
 export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const navigate = useNavigate();
-  const hasChildren = request.childItems && request.childItems.length > 0;
+  const hasChildren = !!(request.childItems && request.childItems.length > 0);
 
-  /** Navigate to the request detail page */
+  /**
+   * Navigate to the canonical V3 Request detail at `/tasks/:id`.
+   * `/requests/:id` was the staging route during the design iteration
+   * and is being consolidated onto `/tasks/:id` in the same change set.
+   */
   const handleNavigate = useCallback(() => {
-    navigate(`/requests/${request.id}`);
+    navigate(`/tasks/${request.id}`);
   }, [navigate, request.id]);
 
   const handleToggle = useCallback((e: React.MouseEvent) => {
@@ -152,8 +163,9 @@ export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
   );
 
   const SourceIcon = SOURCE_ICONS[request.source] ?? Inbox;
-  const statusType = getStatusBadgeType(request.status);
   const priorityVariant = getPriorityBadgeVariant(request.priority);
+  const sourceLabel = getSourceLabel(request.source);
+  const updatedLabel = formatRequestTime(request.updatedAt);
 
   return (
     <li className="list-none">
@@ -168,53 +180,61 @@ export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
           className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-background-dark/30 transition-colors"
           role="button"
           tabIndex={0}
+          aria-label={`Open request: ${request.title}`}
           onClick={handleNavigate}
           onKeyDown={handleKeyDown}
         >
-          {/* Source icon */}
+          {/* Source icon — provides at-a-glance channel context */}
           <SourceIcon
             className="h-5 w-5 text-text-secondary-dark flex-shrink-0"
-            aria-label={getSourceLabel(request.source)}
+            aria-label={sourceLabel}
           />
 
-          {/* Content */}
+          {/* Two-tier content */}
           <div className="flex-1 min-w-0 flex flex-col gap-1">
-            <div className="flex items-start gap-2">
+            {/* Top: title + status pill (no priority — it lives below) */}
+            <div className="flex items-start gap-2" data-testid="request-tier-top">
               <span className="text-[15px] font-semibold leading-5 text-text-primary-dark line-clamp-2 flex-1 min-w-0">
                 {request.title}
               </span>
-              <StatusBadge status={statusType}>
-                {getRequestStatusLabel(request.status)}
-              </StatusBadge>
+              <RequestStatusPill status={request.status} className="flex-shrink-0" />
+            </div>
+
+            {/* Bottom: priority, category, mission link, work item count, updated time */}
+            <div
+              className="flex items-center gap-3 text-xs text-text-secondary-dark/70 flex-wrap"
+              data-testid="request-tier-bottom"
+            >
               <Badge variant={priorityVariant} size="sm">
                 {getRequestPriorityLabel(request.priority)}
               </Badge>
-            </div>
-            <div className="flex items-center gap-3 text-xs text-text-secondary-dark/60">
-              <Badge variant="default" size="sm">{getSourceLabel(request.source)}</Badge>
-              {request.ownerAgent && (
-                <span className="text-text-secondary-dark">
-                  {request.ownerAgent}
+              {request.category && (
+                <span data-testid="request-meta-category" className="text-text-secondary-dark">
+                  {request.category}
                 </span>
               )}
-              {request.totalCost > 0 && (
-                <span className="text-emerald-400 font-medium" title={`${formatTokens(request.totalInputTokens)} in / ${formatTokens(request.totalOutputTokens)} out`}>
-                  {formatCost(request.totalCost)}
-                </span>
-              )}
-              {(request.totalInputTokens > 0 || request.totalOutputTokens > 0) && (
-                <span className="text-text-secondary-dark/50">
-                  {formatTokens(request.totalInputTokens + request.totalOutputTokens)} tokens
-                </span>
-              )}
-              <span className="ml-auto whitespace-nowrap">
-                {formatRequestTime(request.updatedAt)}
-              </span>
               {request.missionLink && (
-                <span className="whitespace-nowrap">
+                <span data-testid="request-meta-mission" className="whitespace-nowrap">
                   Mission: <span className="text-primary">{request.missionLink}</span>
                 </span>
               )}
+              <span
+                data-testid="request-meta-workitems"
+                className="inline-flex items-center gap-1 whitespace-nowrap"
+                title={`${request.workItemCount} work item${request.workItemCount === 1 ? '' : 's'}`}
+              >
+                <Layers className="h-3 w-3" aria-hidden="true" />
+                {request.workItemCount}
+                <span className="sr-only">
+                  {' '}work item{request.workItemCount === 1 ? '' : 's'}
+                </span>
+              </span>
+              <span
+                data-testid="request-meta-updated"
+                className="ml-auto whitespace-nowrap"
+              >
+                {updatedLabel}
+              </span>
             </div>
           </div>
 
@@ -233,12 +253,25 @@ export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
           )}
         </div>
 
-        {/* Expandable children */}
-        {isExpanded && hasChildren && (
-          <div className="border-t border-border-dark px-4 py-2" data-testid="request-children">
-            {request.childItems!.map((child) => (
-              <ChildItemRow key={child.id} item={child} />
-            ))}
+        {/* Expandable context area — children + secondary metadata that
+            doesn't belong on the baseline scan line. */}
+        {isExpanded && (
+          <div className="border-t border-border-dark px-4 py-2 space-y-1.5" data-testid="request-children">
+            {/* Source label kept here as expandable context (not on top line) */}
+            <div className="flex items-center gap-2 text-xs text-text-secondary-dark/60">
+              <span className="uppercase tracking-wide">Source</span>
+              <Badge variant="default" size="sm">{sourceLabel}</Badge>
+              {request.ownerAgent && (
+                <span className="text-text-secondary-dark">via {request.ownerAgent}</span>
+              )}
+            </div>
+            {hasChildren && (
+              <div>
+                {request.childItems!.map((child) => (
+                  <ChildItemRow key={child.id} item={child} />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </Card>

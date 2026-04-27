@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { AppLayout } from './components/Layout/AppLayout';
 import { Dashboard } from './pages/Dashboard';
 import { Projects } from './pages/Projects';
@@ -27,13 +27,24 @@ import { AuthCallback } from './pages/AuthCallback';
 import { Auth } from './pages/Auth';
 import { Pricing } from './pages/Pricing';
 import { CloudPortal } from './pages/CloudPortal';
-import { TasksPage } from './pages/TasksPage';
 import { Missions } from './pages/Missions';
 import { MissionDetail } from './pages/MissionDetail';
 import { WorkItems } from './pages/WorkItems';
 import { RequestsPage } from './pages/RequestsPage';
 import { RequestDetail } from './pages/RequestDetail';
 
+
+/**
+ * Redirect helper: maps `/requests/:id` → `/tasks/:id` while preserving
+ * the request id so deep-links continue to resolve to the same detail
+ * view after the route consolidation.
+ *
+ * @returns `<Navigate>` element pointing at the canonical V3 detail path
+ */
+function NavigateToTask() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/tasks/${id ?? ''}`} replace />;
+}
 
 function App() {
   return (
@@ -68,13 +79,21 @@ function App() {
               <Route path="settings" element={<Settings />} />
               <Route path="pricing" element={<Pricing />} />
               <Route path="cloud" element={<CloudPortal />} />
-              <Route path="tasks" element={<TasksPage />} />
+              {/* V3 Request surface — `/tasks` is the canonical user-facing route per
+                  PRD §3.1 ("Request List, Route: /tasks") and Ava's design report
+                  (2026-04-05). The `/requests*` paths are kept as backward-compatible
+                  redirects so any existing bookmarks / Slack permalinks land on the
+                  same page. The legacy `TasksPage` (Intent Task surface) and its
+                  `TaskTracking/*` component family were removed in this same
+                  change set since nothing else mounted them. */}
+              <Route path="tasks" element={<RequestsPage />} />
+              <Route path="tasks/:id" element={<RequestDetail />} />
+              <Route path="requests" element={<Navigate to="/tasks" replace />} />
+              <Route path="requests/:id" element={<NavigateToTask />} />
               <Route path="missions" element={<Missions />} />
               <Route path="missions/:id" element={<MissionDetail />} />
               <Route path="workitems" element={<WorkItems />} />
               <Route path="workitems/:id" element={<WorkItems />} />
-              <Route path="requests" element={<RequestsPage />} />
-              <Route path="requests/:id" element={<RequestDetail />} />
 
               <Route
                 path="chat"

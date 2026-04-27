@@ -83,7 +83,8 @@ const NAV_GROUPS: NavGroup[] = [
 		label: 'SYSTEM',
 		items: [
 			{ name: 'Work Items', href: '/workitems', icon: ClipboardList },
-			{ name: 'Requests', href: '/requests', icon: Inbox },
+			// V3 Request surface — canonical route is `/tasks` per PRD §3.1.
+			{ name: 'Requests', href: '/tasks', icon: Inbox },
 			{ name: 'Cloud Portal', href: '/cloud', icon: Cloud },
 			{ name: 'Usage', href: '/usage', icon: DollarSign },
 			{ name: 'Security', href: '/security', icon: Shield },

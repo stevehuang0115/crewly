@@ -3,7 +3,10 @@
  *
  * Displays the full details of a single Request including header with status,
  * description, stats sidebar, and a WorkItem execution timeline.
- * Fetches data from GET /api/requests/:id and GET /api/task-pool/all (filtered).
+ * Mounted at `/tasks/:id` (canonical) and reachable via the
+ * `/requests/:id` → `/tasks/:id` backward-compat redirect set up in
+ * `App.tsx`. Fetches data from GET /api/requests/:id and
+ * GET /api/task-pool/all (filtered).
  *
  * @module pages/RequestDetail
  */
@@ -364,9 +367,9 @@ export const RequestDetail: React.FC = () => {
     return () => clearInterval(interval);
   }, [request?.status, loadData]);
 
-  /** Navigate back to the request list */
+  /** Navigate back to the canonical V3 Request list at `/tasks`. */
   const handleBack = useCallback(() => {
-    navigate('/requests');
+    navigate('/tasks');
   }, [navigate]);
 
   /** Navigate to a specific WorkItem detail */
