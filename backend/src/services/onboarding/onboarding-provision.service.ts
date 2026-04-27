@@ -83,10 +83,20 @@ export function collectIntegrations(
  * Provision a team from an onboarding discovery payload.
  *
  * Validates the request, resolves the matching template, gates on budget tier,
- * creates the team via TemplateService, and returns a structured response with
- * team details, lead agent focus, and pending integrations.
+ * creates the team via TemplateService, attributes the team to the
+ * authenticated principal (`ownerUserId` — N1b, Phase E pre-beta), persists
+ * via StorageService, and returns a structured response with team details,
+ * lead agent focus, and pending integrations.
+ *
+ * The owner attribution is sourced *only* from the authenticated principal
+ * (passed in by the route layer), never from the request body — this closes
+ * the cross-tenant team-attribution leak Arch flagged on PR #350. When
+ * `ownerUserId` is omitted, the team is created without an owner (OSS
+ * single-user / legacy callers); the field stays undefined and read-side
+ * scoping (separate ticket) treats those teams as unscoped.
  *
  * @param request - The onboarding handoff payload from the Onboarding Agent
+ * @param ownerUserId - Authenticated principal id (`req.user.userId`)
  * @returns Structured response indicating success or failure with details
  *
  * @example
@@ -96,13 +106,15 @@ export function collectIntegrations(
  *     identity: { name: 'Acme Corp', vertical: 'Content/Marketing', size: 'small' },
  *     strategy: { goal: 'Scale', budget: 'pro', urgency: 'immediate' },
  *   },
- * });
+ * }, 'user-aaa');
  * // response.success === true
  * // response.data.teamName === 'Acme Corp Growth Team'
+ * // (the persisted team carries ownerUserId === 'user-aaa')
  * ```
  */
 export async function provisionFromOnboarding(
   request: unknown,
+  ownerUserId?: string,
 ): Promise<OnboardingProvisionResponse> {
   // Step a: Validate request
   const validation = validateProvisionRequest(request);
@@ -148,7 +160,19 @@ export async function provisionFromOnboarding(
     };
   }
 
-  // Step e.1: Persist the created team to storage
+  // Step e.1: Attribute the team to the authenticated principal (N1b).
+  //
+  // The owner is sourced ONLY from the route's `ownerIdFor(req)` call,
+  // never from the request body. Even if `request` happened to carry an
+  // `ownerUserId` field, we ignore it — body-derived attribution would
+  // re-open the cross-tenant leak Arch flagged on PR #350. Undefined
+  // `ownerUserId` (OSS single-user mode) leaves the field unset; the team
+  // is treated as legacy/unscoped by consumers.
+  if (ownerUserId !== undefined) {
+    result.team.ownerUserId = ownerUserId;
+  }
+
+  // Step e.2: Persist the created team to storage
   // This ensures the team is visible in the dashboard and to other agents.
   const storage = StorageService.getInstance();
   await storage.saveTeam(result.team);
