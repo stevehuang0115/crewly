@@ -12,6 +12,7 @@
 import { PoolStorage } from './pool-storage.js';
 import { ClaimService, type HeartbeatResult, type ExtendLeaseResult, type ExpiredClaimsSummary } from './claim.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { formatError } from '../../utils/format-error.js';
 import type {
   WorkItem,
   WorkItemStatus,
@@ -24,6 +25,7 @@ import {
   type TaskClaim,
   type CreateClaimInput,
 } from '../../types/v2/claim.types.js';
+import type { EventBusService } from '../event-bus/event-bus.service.js';
 
 // ---------------------------------------------------------------------------
 // Filter / Snapshot Types
@@ -106,6 +108,16 @@ export class TaskPoolService {
   private readonly logger: ComponentLogger;
 
   /**
+   * Optional EventBus reference — wired via {@link setEventBusService} from
+   * the boot path. When set, {@link addToPool} publishes a `workitem:queued`
+   * event so subscribers (notably {@link RequestSlaSubscriber}) can react to
+   * queue mutations. Optional because singleton callers (tests, CLI) bring
+   * up the pool before the bus exists; missing bus is treated as a no-op
+   * publish at warn level.
+   */
+  private eventBus: EventBusService | null = null;
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -118,6 +130,18 @@ export class TaskPoolService {
     this.storage = storage ?? new PoolStorage();
     this.claimService = new ClaimService(this.storage);
     this.logger = LoggerService.getInstance().createComponentLogger('TaskPoolService');
+  }
+
+  /**
+   * Wire the EventBus reference used by {@link addToPool} to publish
+   * `workitem:queued` events (INBOUND-1.f1). Called from the backend boot
+   * path after both services have been constructed. Idempotent and may be
+   * called with `null` to disable publishing (testing).
+   *
+   * @param bus - The EventBus instance, or null to clear
+   */
+  setEventBusService(bus: EventBusService | null): void {
+    this.eventBus = bus;
   }
 
   /**
@@ -191,6 +215,70 @@ export class TaskPoolService {
       type: workItem.type,
       title: workItem.title,
     });
+
+    // INBOUND-1.f1: announce the queue mutation so subscribers (notably the
+    // RequestSlaSubscriber) can react. We publish AFTER the storage flush
+    // so any subscriber that re-reads via taskPool.findWorkItem sees the
+    // committed item. Publish failures are logged-but-isolated — the pool
+    // mutation is the source of truth, the event is informational.
+    this.publishWorkItemQueued(workItem);
+  }
+
+  /**
+   * INBOUND-1.f1 helper: publish a `workitem:queued` event with correlation
+   * ids the SLA subscriber needs (`requestId`, `missionId`, plus the new
+   * `workItemId`). Called by {@link addToPool} after the storage flush.
+   *
+   * Stays a separate method (vs inlining) so:
+   *   1. The dependency on EventBus stays explicit and grep-able.
+   *   2. A future caller adding an alternate enqueue path (e.g. a batch
+   *      addAll) can route through the same publisher for consistent
+   *      observability.
+   *   3. Error handling stays in one place — a thrown publisher must NOT
+   *      back out the pool mutation (the storage write already committed).
+   */
+  private publishWorkItemQueued(workItem: WorkItem): void {
+    if (!this.eventBus) {
+      this.logger.debug('No EventBus wired — skipping workitem:queued publish', {
+        workItemId: workItem.id,
+      });
+      return;
+    }
+    try {
+      this.eventBus.publish({
+        // Deterministic event id keyed on the WI id so a redelivered storage
+        // path (theoretical) collapses through the bus's per-(type,session)
+        // debounce window without firing the SLA handler twice.
+        id: `workitem:queued:${workItem.id}`,
+        type: 'workitem:queued',
+        timestamp: new Date().toISOString(),
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        // sessionName is empty — `workitem:queued` is a system-level event
+        // not attributable to a specific agent session. The bus's dedup key
+        // is `${type}:${sessionName}` so a unique sessionName per WI would
+        // defeat the dedup; an empty sessionName scoped per-id is fine since
+        // the event id already encodes the WI uniquely.
+        sessionName: '',
+        previousValue: '',
+        newValue: workItem.status,
+        changedField: 'taskStatus',
+        // INBOUND-1.f1 correlation fields. Mandatory: workItemId. Optional:
+        // requestId, missionId — populated when the WI carries them. The SLA
+        // subscriber no-ops when requestId is undefined (per spec), so we
+        // don't need a fallback chain here.
+        workItemId: workItem.id,
+        requestId: workItem.requestId,
+        missionId: workItem.missionId,
+      });
+    } catch (err) {
+      this.logger.warn('workitem:queued publish threw', {
+        workItemId: workItem.id,
+        error: formatError(err),
+      });
+    }
   }
 
   /**

@@ -347,6 +347,12 @@ export class CrewlyServer {
 		responseRouter.setThreadStatusQueue(this.threadStatusQueueService);
 		this.queueProcessorService.setThreadStatusQueue(this.threadStatusQueueService);
 
+		// INBOUND-1.f1: Wire EventBus into the TaskPool singleton so addToPool
+		// can publish `workitem:queued` events. Must run before any code path
+		// triggers addToPool — the slack listener / TaskPool router below both
+		// depend on this for the auto-close path b chain. Idempotent.
+		TaskPoolService.getInstance().setEventBusService(this.eventBusService);
+
 		// Wire Task Pool router so [TASK]-prefixed messages route through the pool
 		this.queueProcessorService.setTaskPoolRouter(async (messageContent: string, targetSession: string) => {
 			const { createWorkItem } = await import('./types/v2/work-item.types.js');

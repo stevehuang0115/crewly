@@ -58,6 +58,8 @@ describe('Event Bus Types', () => {
         // INBOUND-1 Request lifecycle events
         'request:created',
         'request:sla_breached',
+        // INBOUND-1.f1 WorkItem queue mutation event
+        'workitem:queued',
         // Hierarchy communication events
         'hierarchy:escalation',
         'hierarchy:delegation',
@@ -104,6 +106,10 @@ describe('Event Bus Types', () => {
       expect(isValidEventType('mission:review_due')).toBe(true);
       expect(isValidEventType('mission:stale')).toBe(true);
       expect(isValidEventType('mission:replanned')).toBe(true);
+    });
+
+    it('should return true for INBOUND-1.f1 workitem:queued event type', () => {
+      expect(isValidEventType('workitem:queued')).toBe(true);
     });
 
     it('should return false for invalid event types', () => {
@@ -169,6 +175,12 @@ describe('Event Bus Types', () => {
       // surfaces the missed-response signal — both must bypass debounce.
       expect(CRITICAL_EVENT_TYPES.has('request:created')).toBe(true);
       expect(CRITICAL_EVENT_TYPES.has('request:sla_breached')).toBe(true);
+    });
+
+    it('should classify INBOUND-1.f1 workitem:queued as critical (queue mutations are user-visible)', () => {
+      // workitem:queued drives the auto-close path b — every decomposition
+      // must dispatch exactly once or the SLA chain keeps ticking.
+      expect(CRITICAL_EVENT_TYPES.has('workitem:queued')).toBe(true);
     });
   });
 

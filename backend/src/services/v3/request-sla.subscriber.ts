@@ -20,7 +20,15 @@
  *   (a) {@link markResolvedByThread} — `slack-orchestrator-bridge` calls
  *       this when the orc replies in a thread, so the WI auto-transitions
  *       to `done` and the SLA timers no-op against a terminal status.
- *   (b) Timer self-check — every breach handler reads the WI status before
+ *   (b) {@link handleWorkItemQueued} (INBOUND-1.f1) — when the orc decomposes
+ *       a Request into other WorkItems via `taskPool.addToPool`, every new
+ *       WI fires `workitem:queued`. The handler treats decomposition as
+ *       "the orc has done the right thing" and resolves the tracked
+ *       respond_to_user WI with reason `workitem_decompose`. Self-recursion
+ *       is prevented by an id-shape guard
+ *       (`request:${requestId}:respond_to_user`) — the respond_to_user WI's
+ *       own enqueue cannot trigger its own resolution.
+ *   (c) Timer self-check — every breach handler reads the WI status before
  *       publishing or escalating, so a manual orc completeItem() also
  *       silences the chain.
  *
@@ -109,12 +117,32 @@ export const DEFAULT_ESCALATION_MS = 10 * 60 * 1000;
 export const DEFAULT_INBOUND_TAGS: readonly string[] = ['slack', 'chat-v2'];
 
 /**
- * Event types the subscriber listens to. Single-event for now —
- * future iterations may add `request:cancelled` etc. for cleanup.
+ * Event types the subscriber listens to.
+ *
+ * - `request:created` (INBOUND-1) — seed a respond_to_user WI for inbound
+ *   user messages.
+ * - `workitem:queued` (INBOUND-1.f1) — auto-close path b: when the orc
+ *   decomposes a Request into other WorkItems, the respond_to_user WI for
+ *   that Request resolves automatically.
+ *
+ * Future iterations may add `request:cancelled` etc. for cleanup.
  */
 export const REQUEST_SLA_SUBSCRIBED_EVENTS: readonly EventType[] = [
   'request:created',
+  'workitem:queued',
 ] as const;
+
+/**
+ * Build the deterministic respond_to_user WorkItem id for a Request. The
+ * SLA subscriber uses this both for creating the WI and as the id-shape
+ * guard against self-resolve recursion in {@link handleWorkItemQueued}.
+ *
+ * @param requestId - The Request id
+ * @returns The deterministic WI id
+ */
+export function respondToUserWorkItemId(requestId: string): string {
+  return `request:${requestId}:respond_to_user`;
+}
 
 /**
  * Terminal WorkItem statuses — the SLA timers no-op when the WI has reached
@@ -466,7 +494,7 @@ export class RequestSlaSubscriber {
       return;
     }
 
-    const wiId = `request:${request.id}:respond_to_user`;
+    const wiId = respondToUserWorkItemId(request.id);
     const threadTs = extractSlackThreadTs(request.sourceConversationItemId);
     const channelId = extractSlackChannelId(request.sourceConversationItemId);
 
@@ -503,6 +531,74 @@ export class RequestSlaSubscriber {
       threadTs,
       slaMs: this.slaMs,
     });
+  };
+
+  /**
+   * `workitem:queued` handler (INBOUND-1.f1, auto-close path b).
+   *
+   * Treats decomposition of a Request into other WorkItems as "the orc has
+   * done the right thing" and resolves the tracked respond_to_user WI for
+   * that Request.
+   *
+   * Self-recursion guard: the respond_to_user WI itself fires
+   * `workitem:queued` from {@link handleRequestCreated}'s `addToPool` call.
+   * Without a guard this handler would call markResolved against its own
+   * enqueue and prematurely close the SLA chain. The id-shape check
+   * (`incomingId === respondToUserWorkItemId(requestId)`) is more reliable
+   * than reading `wi.metadata.slaSource` — the metadata can in principle
+   * be mutated, the id cannot.
+   *
+   * No-ops:
+   *   - event missing `requestId` (orphan WI, can't correlate)
+   *   - event missing `workItemId` (malformed publisher)
+   *   - the respond_to_user WI's own enqueue (id-shape match)
+   *   - no tracked respond_to_user WI for the requestId (already resolved
+   *     or never tracked because the source Request wasn't inbound-tagged)
+   *
+   * @param event - The `workitem:queued` event from TaskPoolService.addToPool
+   */
+  private handleWorkItemQueued = async (event: AgentEvent): Promise<void> => {
+    const requestId = event.requestId;
+    const incomingWorkItemId = event.workItemId;
+    if (!requestId) {
+      // Per the f1 spec: undefined requestId = no auto-close. Most enqueues
+      // fall here (queue mutations not derived from a Request).
+      this.logger.debug('workitem:queued event missing requestId — auto-close no-op', {
+        eventId: event.id,
+        workItemId: incomingWorkItemId,
+      });
+      return;
+    }
+    if (!incomingWorkItemId) {
+      this.logger.warn('workitem:queued event missing workItemId — malformed', {
+        eventId: event.id,
+        requestId,
+      });
+      return;
+    }
+
+    // Self-recursion guard. The respond_to_user WI's own enqueue must NOT
+    // trigger its own resolution.
+    if (incomingWorkItemId === respondToUserWorkItemId(requestId)) {
+      this.logger.debug('workitem:queued is the respond_to_user WI itself — skip', {
+        workItemId: incomingWorkItemId,
+        requestId,
+      });
+      return;
+    }
+
+    // Only act when we're actively tracking this Request — otherwise the
+    // queue mutation is for a Request we never SLA-tracked (no inbound tag,
+    // already resolved, etc.).
+    if (!this.trackedByRequest.has(requestId)) {
+      this.logger.debug('workitem:queued for untracked Request — skip', {
+        workItemId: incomingWorkItemId,
+        requestId,
+      });
+      return;
+    }
+
+    await this.markResolved(requestId, 'workitem_decompose');
   };
 
   /**
@@ -690,6 +786,8 @@ export class RequestSlaSubscriber {
       try {
         if (eventType === 'request:created') {
           await this.handleRequestCreated(event);
+        } else if (eventType === 'workitem:queued') {
+          await this.handleWorkItemQueued(event);
         }
       } catch (err) {
         this.logger.error('SLA subscriber handler threw', {

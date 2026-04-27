@@ -111,6 +111,85 @@ describe('TaskPoolService', () => {
       expect(items).toHaveLength(1);
       expect(items[0].status).toBe('blocked');
     });
+
+    // ---------------------------------------------------------------------
+    // INBOUND-1.f1: workitem:queued publish hook
+    // ---------------------------------------------------------------------
+
+    describe('workitem:queued publish (INBOUND-1.f1)', () => {
+      it('publishes workitem:queued with workItemId + requestId + missionId when EventBus is wired', async () => {
+        const publishCalls: any[] = [];
+        const fakeBus = {
+          publish: jest.fn((event: any) => publishCalls.push(event)),
+        } as any;
+        service.setEventBusService(fakeBus);
+
+        const wi = makeWorkItem({ requestId: 'req-99', missionId: 'm-7' });
+        await service.addToPool(wi);
+
+        expect(publishCalls).toHaveLength(1);
+        expect(publishCalls[0].type).toBe('workitem:queued');
+        expect(publishCalls[0].workItemId).toBe(wi.id);
+        expect(publishCalls[0].requestId).toBe('req-99');
+        expect(publishCalls[0].missionId).toBe('m-7');
+        // Deterministic event id keyed on the WI id (dedup contract).
+        expect(publishCalls[0].id).toBe(`workitem:queued:${wi.id}`);
+        expect(publishCalls[0].newValue).toBe(wi.status);
+      });
+
+      it('does NOT publish workitem:queued when no EventBus is wired (legacy/test path)', async () => {
+        // No setEventBusService — eventBus stays null, addToPool must not throw.
+        const wi = makeWorkItem();
+        await expect(service.addToPool(wi)).resolves.toBeUndefined();
+      });
+
+      it('does NOT publish workitem:queued when addToPool short-circuits on a duplicate id', async () => {
+        const publishCalls: any[] = [];
+        const fakeBus = {
+          publish: jest.fn((event: any) => publishCalls.push(event)),
+        } as any;
+        service.setEventBusService(fakeBus);
+
+        const wi = makeWorkItem({ requestId: 'req-dup' });
+        await service.addToPool(wi);
+        await service.addToPool(wi); // duplicate id — short-circuits
+
+        expect(publishCalls).toHaveLength(1);
+      });
+
+      it('omits requestId/missionId when the WI does not carry them', async () => {
+        const publishCalls: any[] = [];
+        const fakeBus = {
+          publish: jest.fn((event: any) => publishCalls.push(event)),
+        } as any;
+        service.setEventBusService(fakeBus);
+
+        const wi = makeWorkItem(); // no requestId, no missionId
+        await service.addToPool(wi);
+
+        expect(publishCalls).toHaveLength(1);
+        expect(publishCalls[0].requestId).toBeUndefined();
+        expect(publishCalls[0].missionId).toBeUndefined();
+        expect(publishCalls[0].workItemId).toBe(wi.id);
+      });
+
+      it('isolates EventBus.publish errors from the pool mutation (storage commit wins)', async () => {
+        const fakeBus = {
+          publish: jest.fn(() => {
+            throw new Error('bus blew up');
+          }),
+        } as any;
+        service.setEventBusService(fakeBus);
+
+        const wi = makeWorkItem();
+        await expect(service.addToPool(wi)).resolves.toBeUndefined();
+
+        // Pool mutation committed even though publish threw.
+        const items = await service.getAllItems();
+        expect(items).toHaveLength(1);
+        expect(items[0].id).toBe(wi.id);
+      });
+    });
   });
 
   // -----------------------------------------------------------------------
