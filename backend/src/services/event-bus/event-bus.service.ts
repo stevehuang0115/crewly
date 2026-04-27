@@ -19,8 +19,25 @@ import type {
   AgentEvent,
   EventSubscription,
   CreateSubscriptionInput,
+  EventType,
 } from '../../types/event-bus.types.js';
 import { isValidCreateSubscriptionInput, isCriticalEventType } from '../../types/event-bus.types.js';
+
+/**
+ * In-process event handler signature used by {@link EventBusService.onInProcess}.
+ *
+ * Handlers may be sync or async. Async handlers run concurrently with the
+ * publisher's synchronous control flow — `publish()` does NOT await pending
+ * promises, but rejected promises are caught and logged, never propagated.
+ */
+export type InProcessEventHandler = (event: AgentEvent) => void | Promise<void>;
+
+/**
+ * Detach function returned by {@link EventBusService.onInProcess}. Invoke to
+ * unregister the handler from the bus. Idempotent — calling more than once is
+ * a no-op.
+ */
+export type InProcessUnsubscribe = () => void;
 
 /**
  * Buffered notification entry pending delivery after debounce window.
@@ -82,6 +99,19 @@ export class EventBusService extends EventEmitter {
    * Key: `${eventType}:${sessionName}`, value: timestamp (ms).
    */
   private recentPublishMap: Map<string, number> = new Map();
+
+  /**
+   * In-process subscribers keyed by event type. Used by internal services
+   * (EventToWorkItemBridge, LEARN-1's auto-record-learning subscriber) that
+   * need to react to events synchronously without going through the
+   * agent-session subscription queue.
+   *
+   * The agent-session subscriptions ({@link subscriptions}) and these
+   * in-process handlers are intentionally separate — the former routes
+   * through MessageQueueService and is rate-limited / debounced, the
+   * latter fires immediately and is meant for trusted internal callers.
+   */
+  private inProcessHandlers: Map<EventType, Set<InProcessEventHandler>> = new Map();
 
   constructor() {
     super();
@@ -230,6 +260,11 @@ export class EventBusService extends EventEmitter {
       sessionName: event.sessionName,
     });
 
+    // Dispatch to in-process handlers (BRIDGE-1, LEARN-1, …). Errors are
+    // isolated — a throwing handler MUST NOT affect other handlers or the
+    // publisher's control flow.
+    this.dispatchInProcess(event);
+
     const toRemove: string[] = [];
 
     const now = new Date();
@@ -264,6 +299,111 @@ export class EventBusService extends EventEmitter {
     // Clean up one-shot and expired subscriptions
     for (const id of toRemove) {
       this.subscriptions.delete(id);
+    }
+  }
+
+  /**
+   * Register an in-process handler for one or more event types.
+   *
+   * Used by trusted internal services (EventToWorkItemBridge, LEARN-1's
+   * auto-record-learning subscriber) that need synchronous reactivity to
+   * the event stream without going through the agent-session subscription
+   * queue. These handlers fire from `publish()` immediately after the
+   * `event_published` EventEmitter signal, before the debounced
+   * notification flush, so callers can rely on the same publish ordering
+   * semantics as `EventEmitter.on('event_published', …)` listeners.
+   *
+   * Handler errors are isolated:
+   *   - synchronous throws are caught and logged
+   *   - rejected promises returned by async handlers are caught and logged
+   *   - neither propagates to other in-process handlers nor to the
+   *     publisher's `publish()` call site
+   *
+   * Returned `unsubscribe` is idempotent.
+   *
+   * @param eventTypes - One event type or an array of event types to listen for
+   * @param handler - Sync or async handler invoked once per matching event
+   * @returns A function that detaches the handler when called
+   *
+   * @example
+   * ```typescript
+   * const unsubscribe = eventBus.onInProcess(
+   *   ['task:done_by_worker', 'task:rejected'],
+   *   async (event) => {
+   *     await bridge.handleTaskEvent(event);
+   *   },
+   * );
+   * // Later: unsubscribe();
+   * ```
+   */
+  onInProcess(
+    eventTypes: EventType | EventType[],
+    handler: InProcessEventHandler,
+  ): InProcessUnsubscribe {
+    if (typeof handler !== 'function') {
+      throw new Error('onInProcess handler must be a function');
+    }
+    const types = Array.isArray(eventTypes) ? eventTypes : [eventTypes];
+    if (types.length === 0) {
+      throw new Error('onInProcess requires at least one event type');
+    }
+
+    for (const type of types) {
+      let handlerSet = this.inProcessHandlers.get(type);
+      if (!handlerSet) {
+        handlerSet = new Set();
+        this.inProcessHandlers.set(type, handlerSet);
+      }
+      handlerSet.add(handler);
+    }
+
+    let detached = false;
+    return () => {
+      if (detached) return;
+      detached = true;
+      for (const type of types) {
+        const handlerSet = this.inProcessHandlers.get(type);
+        if (!handlerSet) continue;
+        handlerSet.delete(handler);
+        if (handlerSet.size === 0) {
+          this.inProcessHandlers.delete(type);
+        }
+      }
+    };
+  }
+
+  /**
+   * Invoke every in-process handler registered for an event's type.
+   * Sync throws and async rejections are caught + logged; never propagated.
+   *
+   * @param event - The event being published
+   */
+  private dispatchInProcess(event: AgentEvent): void {
+    const handlerSet = this.inProcessHandlers.get(event.type);
+    if (!handlerSet || handlerSet.size === 0) return;
+
+    // Snapshot so a handler that calls unsubscribe() during dispatch does
+    // not mutate the iterator.
+    const handlers = Array.from(handlerSet);
+    for (const handler of handlers) {
+      try {
+        const maybePromise = handler(event);
+        if (maybePromise && typeof (maybePromise as Promise<void>).then === 'function') {
+          (maybePromise as Promise<void>).catch((error) => {
+            this.logger.error('In-process event handler rejected', {
+              error: formatError(error),
+              eventId: event.id,
+              eventType: event.type,
+            });
+          });
+        }
+      } catch (error) {
+        this.logger.error('In-process event handler threw synchronously', {
+          error: formatError(error),
+          eventId: event.id,
+          eventType: event.type,
+        });
+      }
     }
   }
 
@@ -327,6 +467,7 @@ export class EventBusService extends EventEmitter {
 
     this.subscriptions.clear();
     this.recentPublishMap.clear();
+    this.inProcessHandlers.clear();
     this.logger.info('EventBusService cleaned up');
   }
 
