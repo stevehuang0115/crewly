@@ -723,4 +723,128 @@ describe('EventBusService', () => {
       expect(targets).toContain('crewly-assistant');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // BRIDGE-1.2 — onInProcess() in-process subscriber API
+  //
+  // Used by trusted internal services (EventToWorkItemBridge, LEARN-1) to
+  // react synchronously to events without going through the agent-session
+  // subscription queue. Errors from one handler MUST NOT affect others or
+  // the publisher's control flow.
+  // -------------------------------------------------------------------------
+  describe('onInProcess (BRIDGE-1.2)', () => {
+    it('invokes a handler when a matching event is published', () => {
+      const handler = jest.fn();
+      eventBus.onInProcess('task:done_by_worker', handler);
+
+      const event = createTestEvent({ type: 'task:done_by_worker' });
+      eventBus.publish(event);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith(event);
+    });
+
+    it('does not invoke handlers for non-matching event types', () => {
+      const handler = jest.fn();
+      eventBus.onInProcess('task:done_by_worker', handler);
+
+      eventBus.publish(createTestEvent({ type: 'task:rejected' }));
+
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('supports multi-event subscription via array', () => {
+      const handler = jest.fn();
+      eventBus.onInProcess(['task:done_by_worker', 'task:rejected'], handler);
+
+      eventBus.publish(createTestEvent({ type: 'task:done_by_worker' }));
+      eventBus.publish(createTestEvent({
+        type: 'task:rejected',
+        sessionName: 'agent-other', // dedup-key differs so not suppressed
+      }));
+
+      expect(handler).toHaveBeenCalledTimes(2);
+    });
+
+    it('returned unsubscribe detaches the handler', () => {
+      const handler = jest.fn();
+      const unsubscribe = eventBus.onInProcess('task:done_by_worker', handler);
+
+      unsubscribe();
+      eventBus.publish(createTestEvent({ type: 'task:done_by_worker' }));
+
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('unsubscribe is idempotent (calling more than once is a no-op)', () => {
+      const handler = jest.fn();
+      const unsubscribe = eventBus.onInProcess('task:done_by_worker', handler);
+
+      unsubscribe();
+      unsubscribe();
+      unsubscribe();
+      // No throw and handler stays detached
+      eventBus.publish(createTestEvent({ type: 'task:done_by_worker' }));
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('isolates a synchronously-throwing handler from other handlers', () => {
+      const throwing = jest.fn(() => {
+        throw new Error('boom');
+      });
+      const goodHandler = jest.fn();
+      eventBus.onInProcess('task:done_by_worker', throwing);
+      eventBus.onInProcess('task:done_by_worker', goodHandler);
+
+      // Publisher must not throw
+      expect(() => {
+        eventBus.publish(createTestEvent({ type: 'task:done_by_worker' }));
+      }).not.toThrow();
+
+      expect(throwing).toHaveBeenCalledTimes(1);
+      expect(goodHandler).toHaveBeenCalledTimes(1);
+    });
+
+    it('isolates a rejecting async handler from other handlers', async () => {
+      const rejecting = jest.fn(async () => {
+        throw new Error('async boom');
+      });
+      const goodHandler = jest.fn();
+      eventBus.onInProcess('task:done_by_worker', rejecting);
+      eventBus.onInProcess('task:done_by_worker', goodHandler);
+
+      expect(() => {
+        eventBus.publish(createTestEvent({ type: 'task:done_by_worker' }));
+      }).not.toThrow();
+
+      // Both handlers fire synchronously even though the rejection arrives later
+      expect(rejecting).toHaveBeenCalledTimes(1);
+      expect(goodHandler).toHaveBeenCalledTimes(1);
+
+      // Drain the microtask queue so the rejection settles + .catch logs.
+      await Promise.resolve();
+    });
+
+    it('throws when handler is not a function', () => {
+      expect(() =>
+        eventBus.onInProcess('task:done_by_worker', undefined as unknown as () => void),
+      ).toThrow(/handler must be a function/);
+    });
+
+    it('throws when an empty event-type array is supplied', () => {
+      expect(() =>
+        eventBus.onInProcess([], jest.fn()),
+      ).toThrow(/at least one event type/);
+    });
+
+    it('cleanup() detaches all in-process handlers', () => {
+      const handler = jest.fn();
+      eventBus.onInProcess('task:done_by_worker', handler);
+
+      eventBus.cleanup();
+      // After cleanup, publishing must not invoke previously-registered handlers
+      eventBus.publish(createTestEvent({ type: 'task:done_by_worker' }));
+      expect(handler).not.toHaveBeenCalled();
+    });
+  });
 });
