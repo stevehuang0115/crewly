@@ -126,6 +126,19 @@ export interface DiscoveryAnswers {
 export interface OnboardingSession {
   /** Unique session identifier (UUID v4). */
   id: string;
+  /**
+   * Owner user/tenant id (the authenticated principal that created the
+   * session). Populated at `createSession()` time from the auth context
+   * (`req.user.userId`). When undefined, the session is treated as
+   * unscoped — this preserves OSS single-user behaviour for callers that
+   * do not run behind the auth middleware. In Cloud Portal multi-tenant
+   * mode the auth middleware ensures this is always populated, so all
+   * read/write paths apply ownership checks and cross-tenant access
+   * returns HTTP 404 with no enumeration leak.
+   *
+   * @see N1 — Phase E pre-beta tenant scoping
+   */
+  ownerUserId?: string;
   /** Optional website URL provided at session creation. */
   websiteUrl?: string;
   /** Current lifecycle status. */
