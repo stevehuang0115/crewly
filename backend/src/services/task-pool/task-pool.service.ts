@@ -842,6 +842,23 @@ export class TaskPoolService {
   }
 
   /**
+   * Find a WorkItem by id without mutating it.
+   *
+   * Public read accessor used by callers that need to inspect a
+   * specific item — for example REVIEW-1's reentrancy lock checks the
+   * status of a Mission's `pendingReviewWorkItemId` to decide whether
+   * to clear the lock. Returns `null` (not `undefined`) so callers can
+   * use a uniform null-fallthrough idiom shared with
+   * `getWorkItemSnapshot` and `transitionStatus`.
+   *
+   * @param workItemId - WorkItem id to look up
+   * @returns The WorkItem, or `null` if no item has that id
+   */
+  async findWorkItem(workItemId: string): Promise<WorkItem | null> {
+    return (await this.storage.findWorkItem(workItemId)) ?? null;
+  }
+
+  /**
    * Removes a WorkItem from the pool entirely.
    * Used for purging old completed/cancelled items.
    *
