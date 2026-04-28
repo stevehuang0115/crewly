@@ -200,12 +200,20 @@ export function extractSlackChannelId(sourceId: string | undefined): string | nu
 }
 
 /**
+ * Inter-field delimiter inside a chat-v2 sourceConversationItemId.
+ * Picked as the double-underscore `__` because production channel +
+ * message ids are minted via `randomUUID()` (4 dashes per UUID) — a
+ * single-dash delimiter would collide with the embedded UUID dashes
+ * and corrupt the round-trip. UUIDs are hex-digits + dashes only and
+ * cannot contain `_`, so `__` is collision-free against any current
+ * or future hex-shaped id. See Arch on PR #364 / INBOUND-2.f1.
+ */
+const CHATV2_FIELD_DELIM = '__';
+
+/**
  * Extract the chat-v2 channel id from a Request's
  * `sourceConversationItemId`. The chat-v2 controller (INBOUND-2) stamps
- * these as `chatv2-${channelId}-${messageId}` — mirrors the Slack shape.
- *
- * Channel ids in chat-v2 are cuid-shaped (no `-`) and message ids are
- * cuid-shaped too — so the LAST `-` cleanly separates them.
+ * these as `chatv2-${channelId}__${messageId}` — UUID-safe delimiter.
  *
  * @param sourceId - The Request's sourceConversationItemId
  * @returns The channelId, or null if the id doesn't match the chat-v2 shape
@@ -213,13 +221,13 @@ export function extractSlackChannelId(sourceId: string | undefined): string | nu
 export function extractChatV2ChannelId(sourceId: string | undefined): string | null {
   if (!sourceId || !sourceId.startsWith('chatv2-')) return null;
   const rest = sourceId.slice('chatv2-'.length);
-  const lastDash = rest.lastIndexOf('-');
-  if (lastDash < 1) return null;
-  return rest.slice(0, lastDash);
+  const sep = rest.indexOf(CHATV2_FIELD_DELIM);
+  if (sep < 1) return null;
+  return rest.slice(0, sep);
 }
 
 /**
- * Extract the chat-v2 message id from a `chatv2-${channelId}-${messageId}`
+ * Extract the chat-v2 message id from a `chatv2-${channelId}__${messageId}`
  * sourceConversationItemId. The messageId acts as the auto-close lookup
  * key analog to a Slack threadTs.
  *
@@ -228,9 +236,10 @@ export function extractChatV2ChannelId(sourceId: string | undefined): string | n
  */
 export function extractChatV2MessageId(sourceId: string | undefined): string | null {
   if (!sourceId || !sourceId.startsWith('chatv2-')) return null;
-  const lastDash = sourceId.lastIndexOf('-');
-  if (lastDash < 0 || lastDash === sourceId.length - 1) return null;
-  const id = sourceId.slice(lastDash + 1);
+  const rest = sourceId.slice('chatv2-'.length);
+  const sep = rest.indexOf(CHATV2_FIELD_DELIM);
+  if (sep < 0) return null;
+  const id = rest.slice(sep + CHATV2_FIELD_DELIM.length);
   if (id.length === 0) return null;
   return id;
 }

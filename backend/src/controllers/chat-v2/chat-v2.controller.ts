@@ -119,17 +119,22 @@ export function runHandler<T>(res: Response, run: () => T): T | undefined {
  * `RequestSlaSubscriber` can dedupe + extract channel/message ids the
  * same way it does for Slack (`slack-${channelId}-${ts}`).
  *
- * Shape: `chatv2-${channelId}-${messageId}`. Mirrors the Slack format
- * so the SLA subscriber's symmetric helpers
- * (`extractChatV2ChannelId` / `extractChatV2MessageId`) can recover both
- * fields with a single split.
+ * Shape: `chatv2-${channelId}__${messageId}`. The inter-field delimiter
+ * is the double underscore `__` rather than a single dash because
+ * `channel.store.ts:86` and `message.store.ts:165` mint ids via
+ * `randomUUID()` (4 dashes embedded in each id). A single-dash
+ * delimiter collides with the embedded UUID dashes and corrupts the
+ * round-trip — see Arch's review on PR #364 / INBOUND-2.f1.
+ * UUIDs are hex digits + dashes only and cannot contain `_`, so `__`
+ * is collision-free against any current or future hex-shaped id.
  *
- * @param channelId - Persisted chat-v2 channel id
- * @param messageId - Persisted chat-v2 message id (cuid)
- * @returns The composite source id, e.g. `chatv2-c-abc-m-xyz`
+ * @param channelId - Persisted chat-v2 channel id (UUIDv4 in production)
+ * @param messageId - Persisted chat-v2 message id (UUIDv4 in production)
+ * @returns The composite source id, e.g.
+ *   `chatv2-8b3c9a4e-5a02-4d51-9e7a-6f8c4d2e8a1b__fa1e2c3d-4567-89ab-cdef-0123456789ab`
  */
 export function buildChatV2SourceId(channelId: string, messageId: string): string {
-  return `chatv2-${channelId}-${messageId}`;
+  return `chatv2-${channelId}__${messageId}`;
 }
 
 /**

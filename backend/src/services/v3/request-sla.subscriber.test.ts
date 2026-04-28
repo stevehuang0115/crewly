@@ -202,18 +202,33 @@ describe('respondToUserWorkItemId', () => {
 });
 
 describe('extractChatV2ChannelId / extractChatV2MessageId (INBOUND-2)', () => {
-  it('extracts channelId and messageId from a real-shaped chat-v2 id', () => {
-    const sid = 'chatv2-c-abc123-m-xyz789';
-    expect(extractChatV2ChannelId(sid)).toBe('c-abc123-m');
-    expect(extractChatV2MessageId(sid)).toBe('xyz789');
+  // INBOUND-2.f1 (Arch on PR #364): production channel + message ids are
+  // minted via `randomUUID()` (4 dashes per UUID, e.g.
+  // `8b3c9a4e-5a02-4d51-9e7a-6f8c4d2e8a1b`). The original `lastIndexOf('-')`
+  // split corrupted the round-trip — now using the `__` UUID-safe delimiter.
+  const PROD_CHANNEL_UUID = '8b3c9a4e-5a02-4d51-9e7a-6f8c4d2e8a1b';
+  const PROD_MESSAGE_UUID = 'fa1e2c3d-4567-89ab-cdef-0123456789ab';
+
+  it('round-trips a production-shaped UUIDv4 channel + message id without corruption', () => {
+    // The CRITICAL spec — pinned to real production data shape so a regression
+    // to a single-dash delimiter (or any other UUID-colliding char) fails here
+    // before any behavioural test gets a chance to mask the corruption.
+    const sid = `chatv2-${PROD_CHANNEL_UUID}__${PROD_MESSAGE_UUID}`;
+    expect(extractChatV2ChannelId(sid)).toBe(PROD_CHANNEL_UUID);
+    expect(extractChatV2MessageId(sid)).toBe(PROD_MESSAGE_UUID);
   });
 
-  it('handles cuid-style ids without internal dashes (production shape)', () => {
-    // ChatV2Service produces cuid ids like `m-xxx` and `c-yyy` — single dash
-    // between prefix and the cuid body, no internal dashes inside the cuid.
-    const sid = 'chatv2-cabc123-mxyz789';
+  it('round-trips a no-dash id (non-UUID, e.g. cuid-ish or short test fixture)', () => {
+    const sid = 'chatv2-cabc123__mxyz789';
     expect(extractChatV2ChannelId(sid)).toBe('cabc123');
     expect(extractChatV2MessageId(sid)).toBe('mxyz789');
+  });
+
+  it('round-trips an id with a single-dash inside the channel segment', () => {
+    // Defensive case — earlier `lastIndexOf('-')` impl would corrupt this too.
+    const sid = 'chatv2-c-abc-123__m-xyz-789';
+    expect(extractChatV2ChannelId(sid)).toBe('c-abc-123');
+    expect(extractChatV2MessageId(sid)).toBe('m-xyz-789');
   });
 
   it('returns null for non-chatv2 ids', () => {
@@ -228,7 +243,12 @@ describe('extractChatV2ChannelId / extractChatV2MessageId (INBOUND-2)', () => {
 
   it('returns null when the chatv2 id is missing the message segment', () => {
     expect(extractChatV2ChannelId('chatv2-')).toBeNull();
-    expect(extractChatV2MessageId('chatv2-only-channel-')).toBeNull();
+    expect(extractChatV2MessageId('chatv2-only-channel-no-delim')).toBeNull();
+  });
+
+  it('returns null when the chatv2 id has the delim but no message body after it', () => {
+    expect(extractChatV2ChannelId('chatv2-cabc__')).toBe('cabc');
+    expect(extractChatV2MessageId('chatv2-cabc__')).toBeNull();
   });
 });
 
@@ -321,7 +341,7 @@ describe('RequestSlaSubscriber', () => {
 
     it('also triggers for chat-v2-tagged Requests (default inbound list)', async () => {
       expect(DEFAULT_INBOUND_TAGS).toContain('chat-v2');
-      const r = buildRequest({ tags: ['chat-v2'], sourceConversationItemId: 'chatv2-C-1' });
+      const r = buildRequest({ tags: ['chat-v2'], sourceConversationItemId: 'chatv2-C__1' });
       svc.registry.set(r.id, r);
       bus.publish(buildEvent(r.id));
       await sub.flushPending();
@@ -858,7 +878,7 @@ describe('RequestSlaSubscriber', () => {
     it('builds the respond_to_user WI with chatV2 metadata for a chatv2-shaped sourceId', async () => {
       const r = buildRequest({
         tags: ['chat-v2'],
-        sourceConversationItemId: 'chatv2-cabc-mxyz',
+        sourceConversationItemId: 'chatv2-cabc__mxyz',
       });
       svc.registry.set(r.id, r);
       bus.publish(buildEvent(r.id));
@@ -908,7 +928,7 @@ describe('RequestSlaSubscriber', () => {
     it('transitions the matching WI to done and clears the timers', async () => {
       const r = buildRequest({
         tags: ['chat-v2'],
-        sourceConversationItemId: 'chatv2-cabc-mxyz',
+        sourceConversationItemId: 'chatv2-cabc__mxyz',
       });
       svc.registry.set(r.id, r);
       bus.publish(buildEvent(r.id));
@@ -950,7 +970,7 @@ describe('RequestSlaSubscriber', () => {
       const chatReq = buildRequest({
         id: 'req-chatv2',
         tags: ['chat-v2'],
-        sourceConversationItemId: 'chatv2-cabc-mxyz',
+        sourceConversationItemId: 'chatv2-cabc__mxyz',
       });
       svc.registry.set(slackReq.id, slackReq);
       svc.registry.set(chatReq.id, chatReq);
@@ -980,7 +1000,7 @@ describe('RequestSlaSubscriber', () => {
     it('skips Slack DM escalation hook on a chat-v2 source at 10min (no chat-v2 nudge wired in v1)', async () => {
       const r = buildRequest({
         tags: ['chat-v2'],
-        sourceConversationItemId: 'chatv2-cabc-mxyz',
+        sourceConversationItemId: 'chatv2-cabc__mxyz',
       });
       svc.registry.set(r.id, r);
       bus.publish(buildEvent(r.id));

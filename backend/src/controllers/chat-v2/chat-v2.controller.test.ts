@@ -516,11 +516,26 @@ function makeChannel(overrides: Partial<ChatChannelDTO> = {}): ChatChannelDTO {
 }
 
 describe('buildChatV2SourceId (INBOUND-2)', () => {
-  it('builds the canonical chatv2-${channelId}-${messageId} composite', () => {
-    expect(buildChatV2SourceId('c-abc', 'm-xyz')).toBe('chatv2-c-abc-m-xyz');
+  it('builds the canonical chatv2-${channelId}__${messageId} composite (UUID-safe delim)', () => {
+    expect(buildChatV2SourceId('c-abc', 'm-xyz')).toBe('chatv2-c-abc__m-xyz');
   });
 
-  it('round-trips through the SLA subscriber extractors', async () => {
+  it('round-trips through the SLA subscriber extractors (production UUIDv4 shape)', async () => {
+    // INBOUND-2.f1 (Arch on PR #364): channel + message ids are minted via
+    // randomUUID() — must NOT corrupt round-trip. Pin the production shape
+    // here so any future regression to a UUID-colliding delimiter fails.
+    const { extractChatV2ChannelId, extractChatV2MessageId } = await import(
+      '../../services/v3/request-sla.subscriber.js'
+    );
+    const channelUuid = '8b3c9a4e-5a02-4d51-9e7a-6f8c4d2e8a1b';
+    const messageUuid = 'fa1e2c3d-4567-89ab-cdef-0123456789ab';
+    const sid = buildChatV2SourceId(channelUuid, messageUuid);
+    expect(sid).toBe(`chatv2-${channelUuid}__${messageUuid}`);
+    expect(extractChatV2ChannelId(sid)).toBe(channelUuid);
+    expect(extractChatV2MessageId(sid)).toBe(messageUuid);
+  });
+
+  it('round-trips through the SLA subscriber extractors (short cuid-ish ids)', async () => {
     const { extractChatV2ChannelId, extractChatV2MessageId } = await import(
       '../../services/v3/request-sla.subscriber.js'
     );
