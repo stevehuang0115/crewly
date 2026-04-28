@@ -282,6 +282,114 @@ export class TaskPoolService {
   }
 
   /**
+   * F1-BRIDGE-1 helper: publish `task:done_by_worker` after a successful
+   * `submitForVerification` transition. The {@link EventToWorkItemBridge}
+   * subscribes to this event and creates a verification WorkItem for the
+   * resolved team-lead session.
+   *
+   * Stays a separate method (mirrors {@link publishWorkItemQueued}) so:
+   *   1. The dependency on EventBus stays explicit and grep-able — Arch's
+   *      grep guard checks both the type declaration AND a publish call
+   *      site for `task:done_by_worker`.
+   *   2. Error handling is uniform with the other publishers — a thrown
+   *      bus must NOT back out the verified state transition; the storage
+   *      flush has already committed.
+   *   3. A future caller adding an alternate verification-submission path
+   *      (e.g. an admin endpoint or a CLI) routes through the same publisher.
+   *
+   * The deterministic event id (`task:done_by_worker:${workItemId}`) keys
+   * dedup so a redelivered submitForVerification (theoretical) collapses
+   * through the bus without firing the bridge handler twice.
+   */
+  private publishTaskDoneByWorker(workItem: WorkItem): void {
+    if (!this.eventBus) {
+      this.logger.debug('No EventBus wired — skipping task:done_by_worker publish', {
+        workItemId: workItem.id,
+      });
+      return;
+    }
+    try {
+      this.eventBus.publish({
+        id: `task:done_by_worker:${workItem.id}`,
+        type: 'task:done_by_worker',
+        timestamp: new Date().toISOString(),
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        // sessionName is empty — `task:done_by_worker` is published from the
+        // pool layer which doesn't carry the worker's PTY session. The bridge
+        // uses `workItemId` (and falls back to `taskId`) to resolve the
+        // source WI; sessionName is informational. Empty matches the
+        // workitem:queued publish convention.
+        sessionName: '',
+        // The state machine just landed at done_by_worker. Carry both ends
+        // so any subscriber filtering on (previousValue, newValue) sees
+        // the canonical transition.
+        previousValue: 'running',
+        newValue: 'done_by_worker',
+        changedField: 'taskStatus',
+        // BRIDGE-1.1 hybrid extension. `workItemId` is mandatory for the
+        // bridge handler; the `taskId` fallback path is unused here because
+        // WorkItem itself does not carry a taskId (the bridge resolves the
+        // source WI by id alone via taskPool.findWorkItem).
+        workItemId: workItem.id,
+        missionId: workItem.missionId,
+        requestId: workItem.requestId,
+      });
+    } catch (err) {
+      this.logger.warn('task:done_by_worker publish threw', {
+        workItemId: workItem.id,
+        error: formatError(err),
+      });
+    }
+  }
+
+  /**
+   * F1-BRIDGE-1 helper: publish `task:rejected` after a successful
+   * `verifyItem` transition with verdict='rejected'. The
+   * {@link EventToWorkItemBridge} subscribes and either creates a retry
+   * WI (`retryCount < maxRetries`) or escalates to a TL review WI with
+   * `reviewReason='max_retries_exceeded'` at the cap.
+   *
+   * Mirrors {@link publishTaskDoneByWorker} for symmetry. Only the
+   * verdict='rejected' branch reaches this publisher — `verdict='verified'`
+   * does NOT publish (terminal-success path goes through
+   * {@link resolveBlockedDependents}, which is not a bridge trigger).
+   */
+  private publishTaskRejected(workItem: WorkItem): void {
+    if (!this.eventBus) {
+      this.logger.debug('No EventBus wired — skipping task:rejected publish', {
+        workItemId: workItem.id,
+      });
+      return;
+    }
+    try {
+      this.eventBus.publish({
+        id: `task:rejected:${workItem.id}`,
+        type: 'task:rejected',
+        timestamp: new Date().toISOString(),
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: '',
+        previousValue: 'done_by_worker',
+        newValue: 'rejected',
+        changedField: 'taskStatus',
+        workItemId: workItem.id,
+        missionId: workItem.missionId,
+        requestId: workItem.requestId,
+      });
+    } catch (err) {
+      this.logger.warn('task:rejected publish threw', {
+        workItemId: workItem.id,
+        error: formatError(err),
+      });
+    }
+  }
+
+  /**
    * Claims the next available WorkItem from the pool for an agent.
    *
    * Selection strategy: FIFO among matching unclaimed 'queued' items.
@@ -561,11 +669,18 @@ export class TaskPoolService {
     this.logger.info('WorkItem submitted for verification', {
       workItemId,
       actorRole,
-      // BRIDGE-1 will turn this into a real `task:done_by_worker` event
-      // that wakes the TL session. For now the log line is the wake
-      // signal — a TL-watching subscriber can grep on it.
+      // BRIDGE-1 turns this into a real `task:done_by_worker` event below
+      // (F1-BRIDGE-1). The log line is preserved as a wake signal for any
+      // tail-based TL-watching subscriber that still greps it.
       tlWakeRequested: true,
     });
+    // F1-BRIDGE-1: publish AFTER the storage flush so any subscriber that
+    // re-reads via taskPool.findWorkItem sees the committed `done_by_worker`
+    // status. `updated` is null only on race-window deletion — skip the
+    // publish in that case (no source WI for the bridge to resolve).
+    if (updated) {
+      this.publishTaskDoneByWorker(updated);
+    }
     return updated;
   }
 
@@ -656,6 +771,13 @@ export class TaskPoolService {
     }
     await this.storage.flush();
     this.logger.info('WorkItem verdict recorded', { workItemId, verdict, actorRole });
+    // F1-BRIDGE-1: only the `rejected` branch publishes. The bridge's
+    // task:rejected handler creates the retry-or-escalate WI; the `verified`
+    // branch is terminal-success and unblocks dependents above without any
+    // bridge involvement. Skip the publish on race-window deletion.
+    if (verdict === 'rejected' && updated) {
+      this.publishTaskRejected(updated);
+    }
     return updated;
   }
 
