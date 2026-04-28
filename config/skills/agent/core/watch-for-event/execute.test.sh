@@ -37,6 +37,16 @@ OUTPUT=$(bash "$SCRIPT_DIR/execute.sh" --help 2>&1) || true
 assert_contains "Help lists --event-type" -- "--event-type" "$OUTPUT"
 assert_contains "Help lists --filter-session" -- "--filter-session" "$OUTPUT"
 assert_contains "Help mentions agent:idle example" "agent:idle" "$OUTPUT"
+# autonomy_v1.f1 — --source flag exposed in help
+assert_contains "Help lists --source" -- "--source" "$OUTPUT"
+
+echo ""
+echo "--- --source flag (autonomy_v1.f1) ---"
+
+# Invalid --source value rejected at the skill boundary (server-side default
+# would coerce silently — the skill catches typos early).
+OUTPUT=$(bash "$SCRIPT_DIR/execute.sh" --event-type agent:idle --title "X" --source bogus 2>&1) || true
+assert_contains "Invalid --source rejected" "must be one of: local | remote | any" "$OUTPUT"
 
 echo ""
 echo "=== Results: ${PASS} passed, ${FAIL} failed ==="

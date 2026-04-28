@@ -39,6 +39,10 @@ Options:
   --name            Stable name for cancel/dedup. Auto-generated if absent.
   --max-fires       Stop after N fires (default: unlimited — use --max-idle-fires as safety)
   --max-idle-fires  Auto-cancel after N consecutive unproductive fires (default: 3)
+  --source          Origin filter (autonomy_v1.f1): "local" (default), "remote", or "any".
+                    "remote" fires only on cross-machine events relayed via Cloud Relay;
+                    "any" fires on both local and remote. Default "local" preserves the
+                    backward-compat scope of every existing trigger (Arch Q2).
   --json      | -j  Raw JSON payload (legacy)
   --help      | -h  Show this help
 EOF_USAGE
@@ -54,6 +58,7 @@ DESCRIPTION=""
 NAME=""
 MAX_FIRES=""
 MAX_IDLE_FIRES="3"
+SOURCE=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
@@ -71,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --name)               NAME="$2"; shift 2 ;;
     --max-fires)          MAX_FIRES="$2"; shift 2 ;;
     --max-idle-fires)     MAX_IDLE_FIRES="$2"; shift 2 ;;
+    --source)             SOURCE="$2"; shift 2 ;;
     --json|-j)            INPUT_JSON="$2"; shift 2 ;;
     --help|-h)            print_usage; exit 0 ;;
     --)                   shift; break ;;
@@ -95,6 +101,15 @@ if [ -n "$INPUT_JSON" ]; then
   NAME=$(printf '%s' "$INPUT_JSON" | jq -r '.name // empty')
   MAX_FIRES=$(printf '%s' "$INPUT_JSON" | jq -r '.maxFires // empty')
   MAX_IDLE_FIRES=$(printf '%s' "$INPUT_JSON" | jq -r '.maxIdleFires // "3"')
+  [ -z "$SOURCE" ] && SOURCE=$(printf '%s' "$INPUT_JSON" | jq -r '.source // empty')
+fi
+
+# autonomy_v1.f1 — validate --source value at the skill boundary so typos
+# surface immediately rather than coercing silently to default at the
+# server. Accepted values mirror SignalTriggerConfig.source.
+if [ -n "$SOURCE" ] && [ "$SOURCE" != "local" ] && [ "$SOURCE" != "remote" ] && [ "$SOURCE" != "any" ]; then
+  echo "{\"error\":\"--source must be one of: local | remote | any (got: $SOURCE)\"}" >&2
+  exit 1
 fi
 
 [ -z "$EVENT_TYPE" ] && { echo '{"error":"--event-type is required"}' >&2; exit 1; }
@@ -127,6 +142,13 @@ if [ -n "$FILTER_OBJ" ]; then
   CONFIG_JSON=$(jq -n --arg et "$EVENT_TYPE" --argjson f "$FILTER_OBJ" '{type:"signal", eventType:$et, filter:$f}')
 else
   CONFIG_JSON=$(jq -n --arg et "$EVENT_TYPE" '{type:"signal", eventType:$et}')
+fi
+
+# autonomy_v1.f1 — propagate origin filter into SignalTriggerConfig.source.
+# Omitted at the skill layer when unset so the server-side default
+# ('local' per Arch Q2) governs without an explicit override on the wire.
+if [ -n "$SOURCE" ]; then
+  CONFIG_JSON=$(printf '%s' "$CONFIG_JSON" | jq --arg s "$SOURCE" '. + {source:$s}')
 fi
 
 WI_JSON=$(jq -n \

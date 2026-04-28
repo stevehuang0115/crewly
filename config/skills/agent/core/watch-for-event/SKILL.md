@@ -44,6 +44,34 @@ bash execute.sh --event-type task:completed \
   --title "Q2 mission task landed"
 ```
 
+## Cross-machine triggers — `--source` (autonomy_v1.f1)
+
+When Cloud Relay is paired with another device, events emitted on a peer
+device can fire local triggers via the inbound event bridge. Use `--source`
+to scope which origins this watcher reacts to.
+
+| Value | Fires on |
+|-------|----------|
+| `local` (default) | Events emitted on this device only — same scope as every pre-f1 trigger. |
+| `remote` | Events relayed via Cloud Relay from a paired device only. |
+| `any` | Both local and remote events. |
+
+```bash
+# Wake the local Marketing team when iriss-air finishes a scrape (XHS pipeline).
+bash execute.sh --event-type xhs:scrape:done \
+  --source remote \
+  --target crewly-marketing-orc \
+  --title "Remote scrape landed — kick off analysis pipeline"
+```
+
+The default is `local` to preserve the scope of every existing trigger
+(Arch Q2 backward-compat lock). Defaulting to `any` would silently broaden
+trigger scope — opt in explicitly.
+
+For the loop close (forwarding LOCAL events to peer devices), the
+`CloudEventForwarder` reads an opt-in allow-list from `crewly.json`
+(`crossMachineEvents: [...]`) — separate from the watcher.
+
 ## Key invariants
 
 - Every watcher is **team-scoped**, listed under `list-my-followups`,
