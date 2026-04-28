@@ -24,6 +24,19 @@ export function setEventBusService(service: EventBusService): void {
 }
 
 /**
+ * Get the module-level EventBusService instance, or null when boot hasn't
+ * wired it yet. Used by services that initialise lazily (e.g. the
+ * autonomy_v1.f1 cross-machine event bridges started after Cloud
+ * connects). Mirrors `getEventBusServiceForTaskCleanup` in
+ * task-management.controller.
+ *
+ * @returns The configured EventBusService or null when not yet set.
+ */
+export function getEventBusService(): EventBusService | null {
+  return eventBusService;
+}
+
+/**
  * POST /api/events/subscribe
  *
  * Create a new event subscription.

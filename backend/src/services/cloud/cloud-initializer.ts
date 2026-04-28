@@ -105,6 +105,74 @@ export function startMessageRouter(): void {
 }
 
 /**
+ * Start the cross-machine event bridges (autonomy_v1.f1).
+ *
+ * Wires up both halves of the bidirectional cross-machine event loop:
+ *   - Inbound: `CloudEventInboundBridge` listens for `'event'` MessageType
+ *     from CloudSyncService and re-publishes onto the local EventBus,
+ *     stamped with `source = 'remote'` + `originDeviceId`.
+ *   - Outbound: `CloudEventForwarder` subscribes to local EventBus events
+ *     whose type is on the `crewly.json` allow-list and forwards them via
+ *     `cloudSync.sendMessage(broadcast, 'event', payload)`. Loop-prevention
+ *     fence: the forwarder skips events with `source === 'remote'` (Q5).
+ *
+ * Non-blocking: failures are logged but do not affect Cloud connectivity.
+ *
+ * @param projectPath - Project root used for `crewly.json` allow-list lookup.
+ */
+export function startCrossMachineEventBridges(projectPath: string): void {
+	try {
+		// Dynamic imports to avoid circular dependency at module-load time.
+		Promise.all([
+			import('./cloud-event-bridge.service.js'),
+			import('./cloud-event-forwarder.service.js'),
+			import('../../controllers/event-bus/event-bus.controller.js'),
+			import('./device-identity.service.js'),
+		])
+			.then(async ([bridgeMod, forwarderMod, eventBusController, identityMod]) => {
+				const cloudSync = CloudSyncService.getInstance();
+				const eventBus = eventBusController.getEventBusService();
+				if (!eventBus) {
+					logger.warn(
+						'CrossMachineEventBridges deferred — EventBusService not yet wired by boot',
+					);
+					return;
+				}
+				const identity = await identityMod.DeviceIdentityService.getInstance().getOrCreateIdentity();
+
+				// Inbound first so any in-flight `'event'` messages already in
+				// the cloud queue are translated before the forwarder starts
+				// echoing local events back.
+				const inboundBridge = new bridgeMod.CloudEventInboundBridge({
+					cloudSync,
+					eventBus,
+				});
+				inboundBridge.start();
+				logger.info('CloudEventInboundBridge started', { deviceId: identity.deviceId });
+
+				const forwarder = new forwarderMod.CloudEventForwarder({
+					cloudSync,
+					eventBus,
+					originDeviceId: identity.deviceId,
+					originDeviceName: identity.deviceName,
+					projectPath,
+				});
+				await forwarder.start();
+				logger.info('CloudEventForwarder started', { deviceId: identity.deviceId });
+			})
+			.catch((err) => {
+				logger.warn('Failed to start cross-machine event bridges (non-fatal)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+	} catch (err) {
+		logger.warn('Failed to start cross-machine event bridges (non-fatal)', {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+/**
  * Start the BrowserRelayAdapter auto-discovery to listen for Chrome Extension
  * devices coming online via CloudSync. When a device with role 'browser' is
  * detected, the adapter automatically sets its device ID as the relay target.
@@ -229,6 +297,12 @@ export async function initializeCloudIfConfigured(): Promise<CloudInitResult> {
 
 			// Start browser extension auto-discovery via CloudSync device events
 			startBrowserRelayAutoDiscovery();
+
+			// autonomy_v1.f1 — start cross-machine event inbound bridge +
+			// outbound forwarder. Inbound translates remote events onto
+			// the local EventBus; outbound forwards allow-listed local
+			// events to paired devices via Cloud Relay broadcast.
+			startCrossMachineEventBridges(process.cwd());
 		} catch (syncError) {
 			logger.warn('CloudSyncService start failed during initialization (non-fatal)', {
 				error: syncError instanceof Error ? syncError.message : String(syncError),

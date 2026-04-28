@@ -200,6 +200,16 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
       } catch {
         logger.debug('MessageRouterService start deferred (non-fatal)');
       }
+
+      // autonomy_v1.f1 — start the cross-machine event bridges so paired
+      // devices can fire local triggers (inbound) and so allow-listed
+      // local events broadcast to peers (outbound). Non-blocking.
+      try {
+        const { startCrossMachineEventBridges } = await import('../../services/cloud/cloud-initializer.js');
+        startCrossMachineEventBridges(process.cwd());
+      } catch {
+        logger.debug('CrossMachineEventBridges start deferred (non-fatal)');
+      }
     } catch (syncErr) {
       logger.warn('CloudSyncService start failed (non-fatal)', {
         error: syncErr instanceof Error ? syncErr.message : String(syncErr),
