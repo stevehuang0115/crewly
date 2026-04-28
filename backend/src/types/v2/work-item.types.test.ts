@@ -9,6 +9,7 @@ import {
   WORK_ITEM_OWNERS,
   WORK_ITEM_STATUSES,
   TERMINAL_WORK_ITEM_STATUSES,
+  SLA_TERMINAL_WORK_ITEM_STATUSES,
   WORK_ITEM_TRANSITIONS,
   TRANSITION_PERMISSIONS,
   DEFAULT_MAX_RETRIES,
@@ -61,6 +62,31 @@ describe('WorkItem Types', () => {
     });
     it('should have exactly 3 entries', () => {
       expect(TERMINAL_WORK_ITEM_STATUSES.size).toBe(3);
+    });
+  });
+
+  describe('SLA_TERMINAL_WORK_ITEM_STATUSES (INBOUND-1.f2 N2 hoist)', () => {
+    it('should contain all strict-terminal statuses + failed + rejected', () => {
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('done')).toBe(true);
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('verified')).toBe(true);
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('cancelled')).toBe(true);
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('failed')).toBe(true);
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('rejected')).toBe(true);
+    });
+    it('should have exactly 5 entries', () => {
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.size).toBe(5);
+    });
+    it('should be a strict superset of TERMINAL_WORK_ITEM_STATUSES', () => {
+      for (const s of TERMINAL_WORK_ITEM_STATUSES) {
+        expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has(s)).toBe(true);
+      }
+    });
+    it('should NOT include non-terminal active-queue statuses', () => {
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('queued')).toBe(false);
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('running')).toBe(false);
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('blocked')).toBe(false);
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('done_by_worker')).toBe(false);
+      expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('escalated')).toBe(false);
     });
   });
 

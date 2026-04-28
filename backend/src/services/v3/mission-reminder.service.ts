@@ -25,7 +25,7 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { Mission } from '../../types/v2/mission.types.js';
 import type { MissionOKRSummary } from '../../types/v2/key-result.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
-import { TERMINAL_WORK_ITEM_STATUSES } from '../../types/v2/work-item.types.js';
+import { SLA_TERMINAL_WORK_ITEM_STATUSES } from '../../types/v2/work-item.types.js';
 import { atomicWriteJson } from '../../utils/file-io.utils.js';
 import { pickTeamLead } from '../../utils/team.utils.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
@@ -47,28 +47,29 @@ const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Statuses that *clear* a Mission's `pendingReviewWorkItemId` so the next
- * sweep tick can fire a new review. The set mirrors
- * {@link TERMINAL_WORK_ITEM_STATUSES} (`done`, `verified`, `cancelled`) but
- * adds two statuses that the canonical TERMINAL set excludes for valid
- * reasons elsewhere — yet which DO represent "exited the active queue" for
- * the V8 reentrancy-lock perspective:
+ * sweep tick can fire a new review. Aliases the canonical
+ * {@link SLA_TERMINAL_WORK_ITEM_STATUSES} (work-item.types.ts) per Arch's
+ * N2 hoist on PR #357 — single source of truth for the broader 5-element
+ * "exited active queue" set previously redeclared inline.
  *
- * - `failed`: a failed review WI has terminated execution; not blocking next cadence.
- * - `rejected`: a TL-rejected review WI ({@link WorkItemStatus} reachable from
- *   the review path per work-item.types.ts) has likewise exited the queue.
- *   Without this, a single TL rejection of a review WI would silently freeze
- *   that mission's lock forever — exactly the V8 failure mode this lock
- *   exists to prevent (Arch N1 BLOCKING fix on PR #354).
+ * Members (`done`, `verified`, `cancelled`, `failed`, `rejected`) cover both
+ * the strict-terminal set and the SLA-terminal additions:
+ *
+ * - `done` / `verified` / `cancelled` — strictly terminal in the state
+ *   machine sense.
+ * - `failed`: a failed review WI has terminated execution; not blocking
+ *   next cadence.
+ * - `rejected`: a TL-rejected review WI has likewise exited the queue.
+ *   Without this, a single TL rejection would silently freeze the mission's
+ *   reentrancy lock forever — exactly the V8 failure mode this lock exists
+ *   to prevent (Arch N1 BLOCKING fix on PR #354).
  *
  * The reentrancy lock is sweep-time lazy: we don't subscribe to TRANS-1
  * events here, we just observe the WorkItem's current state on each sweep
- * and clear the lock when it's terminal.
+ * and clear the lock when it's in any of the SLA-terminal states.
  */
-const PENDING_REVIEW_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
-  ...TERMINAL_WORK_ITEM_STATUSES,
-  'failed',
-  'rejected',
-]);
+const PENDING_REVIEW_TERMINAL_STATUSES: ReadonlySet<string> =
+  SLA_TERMINAL_WORK_ITEM_STATUSES;
 
 function getMissionsDir(): string {
   return path.join(process.cwd(), '.crewly', 'missions');

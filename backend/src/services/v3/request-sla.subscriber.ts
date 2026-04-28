@@ -57,6 +57,7 @@ import {
   type WorkItem,
   type WorkItemStatus,
   DEFAULT_MAX_RETRIES,
+  SLA_TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
 import type { Request } from '../../types/v2/request.types.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
@@ -147,18 +148,15 @@ export function respondToUserWorkItemId(requestId: string): string {
 
 /**
  * Terminal WorkItem statuses — the SLA timers no-op when the WI has reached
- * any of these by the time the timer fires. Typed as
- * `ReadonlySet<WorkItemStatus>` so a future addition (e.g.
- * `'verified_with_warnings'`) or a typo'd member fails compilation here
- * rather than silently leaking through. Aligns the JSDoc claim with reality.
+ * any of these by the time the timer fires. Aliases
+ * {@link SLA_TERMINAL_WORK_ITEM_STATUSES} (work-item.types.ts) per Arch's
+ * N2 hoist on PR #357 — single source of truth for the broader 5-element
+ * "exited active queue" set, replacing the previously duplicated local
+ * constant. The local alias is retained so the existing call sites in
+ * this file stay terse and the diff stays minimal.
  */
-const TERMINAL_WI_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>([
-  'done',
-  'cancelled',
-  'failed',
-  'verified',
-  'rejected',
-]);
+const TERMINAL_WI_STATUSES: ReadonlySet<WorkItemStatus> =
+  SLA_TERMINAL_WORK_ITEM_STATUSES;
 
 // ---------------------------------------------------------------------------
 // Helpers
