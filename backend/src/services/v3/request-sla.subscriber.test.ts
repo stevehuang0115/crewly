@@ -23,6 +23,8 @@ import {
   DEFAULT_INBOUND_TAGS,
   extractSlackThreadTs,
   extractSlackChannelId,
+  extractChatV2ChannelId,
+  extractChatV2MessageId,
   setRequestSlaSubscriber,
   getRequestSlaSubscriber,
   respondToUserWorkItemId,
@@ -199,6 +201,57 @@ describe('respondToUserWorkItemId', () => {
   });
 });
 
+describe('extractChatV2ChannelId / extractChatV2MessageId (INBOUND-2)', () => {
+  // INBOUND-2.f1 (Arch on PR #364): production channel + message ids are
+  // minted via `randomUUID()` (4 dashes per UUID, e.g.
+  // `8b3c9a4e-5a02-4d51-9e7a-6f8c4d2e8a1b`). The original `lastIndexOf('-')`
+  // split corrupted the round-trip — now using the `__` UUID-safe delimiter.
+  const PROD_CHANNEL_UUID = '8b3c9a4e-5a02-4d51-9e7a-6f8c4d2e8a1b';
+  const PROD_MESSAGE_UUID = 'fa1e2c3d-4567-89ab-cdef-0123456789ab';
+
+  it('round-trips a production-shaped UUIDv4 channel + message id without corruption', () => {
+    // The CRITICAL spec — pinned to real production data shape so a regression
+    // to a single-dash delimiter (or any other UUID-colliding char) fails here
+    // before any behavioural test gets a chance to mask the corruption.
+    const sid = `chatv2-${PROD_CHANNEL_UUID}__${PROD_MESSAGE_UUID}`;
+    expect(extractChatV2ChannelId(sid)).toBe(PROD_CHANNEL_UUID);
+    expect(extractChatV2MessageId(sid)).toBe(PROD_MESSAGE_UUID);
+  });
+
+  it('round-trips a no-dash id (non-UUID, e.g. cuid-ish or short test fixture)', () => {
+    const sid = 'chatv2-cabc123__mxyz789';
+    expect(extractChatV2ChannelId(sid)).toBe('cabc123');
+    expect(extractChatV2MessageId(sid)).toBe('mxyz789');
+  });
+
+  it('round-trips an id with a single-dash inside the channel segment', () => {
+    // Defensive case — earlier `lastIndexOf('-')` impl would corrupt this too.
+    const sid = 'chatv2-c-abc-123__m-xyz-789';
+    expect(extractChatV2ChannelId(sid)).toBe('c-abc-123');
+    expect(extractChatV2MessageId(sid)).toBe('m-xyz-789');
+  });
+
+  it('returns null for non-chatv2 ids', () => {
+    expect(extractChatV2ChannelId('slack-C123-1.2')).toBeNull();
+    expect(extractChatV2MessageId('slack-C123-1.2')).toBeNull();
+  });
+
+  it('returns null for empty / missing input', () => {
+    expect(extractChatV2ChannelId(undefined)).toBeNull();
+    expect(extractChatV2MessageId('')).toBeNull();
+  });
+
+  it('returns null when the chatv2 id is missing the message segment', () => {
+    expect(extractChatV2ChannelId('chatv2-')).toBeNull();
+    expect(extractChatV2MessageId('chatv2-only-channel-no-delim')).toBeNull();
+  });
+
+  it('returns null when the chatv2 id has the delim but no message body after it', () => {
+    expect(extractChatV2ChannelId('chatv2-cabc__')).toBe('cabc');
+    expect(extractChatV2MessageId('chatv2-cabc__')).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Subscriber behaviour
 // ---------------------------------------------------------------------------
@@ -288,7 +341,7 @@ describe('RequestSlaSubscriber', () => {
 
     it('also triggers for chat-v2-tagged Requests (default inbound list)', async () => {
       expect(DEFAULT_INBOUND_TAGS).toContain('chat-v2');
-      const r = buildRequest({ tags: ['chat-v2'], sourceConversationItemId: 'chatv2-C-1' });
+      const r = buildRequest({ tags: ['chat-v2'], sourceConversationItemId: 'chatv2-C__1' });
       svc.registry.set(r.id, r);
       bus.publish(buildEvent(r.id));
       await sub.flushPending();
@@ -814,6 +867,157 @@ describe('RequestSlaSubscriber', () => {
       expect(breachListener).not.toHaveBeenCalled();
     });
   });
+
+
+
+  // -------------------------------------------------------------------------
+  // INBOUND-2 — chat-v2 source path
+  // -------------------------------------------------------------------------
+
+  describe('chat-v2 source ingress', () => {
+    it('builds the respond_to_user WI with chatV2 metadata for a chatv2-shaped sourceId', async () => {
+      const r = buildRequest({
+        tags: ['chat-v2'],
+        sourceConversationItemId: 'chatv2-cabc__mxyz',
+      });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      const wi = pool.addCalls[0];
+      expect(wi.metadata?.inboundSource).toBe('chat-v2');
+      expect(wi.metadata?.chatV2ChannelId).toBe('cabc');
+      expect(wi.metadata?.chatV2MessageId).toBe('mxyz');
+      // Slack fields are null when the source is chat-v2.
+      expect(wi.metadata?.slackThreadTs).toBeNull();
+      expect(wi.metadata?.slackChannelId).toBeNull();
+    });
+
+    it('builds the WI with slack metadata when the source is slack-shaped', async () => {
+      const r = buildRequest({
+        tags: ['slack'],
+        sourceConversationItemId: 'slack-C123-1772899923.865659',
+      });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      const wi = pool.addCalls[0];
+      expect(wi.metadata?.inboundSource).toBe('slack');
+      expect(wi.metadata?.slackThreadTs).toBe('1772899923.865659');
+      expect(wi.metadata?.slackChannelId).toBe('C123');
+      expect(wi.metadata?.chatV2ChannelId).toBeNull();
+      expect(wi.metadata?.chatV2MessageId).toBeNull();
+    });
+
+    it('flags inboundSource="unknown" for tagged Requests with no recognisable source shape', async () => {
+      const r = buildRequest({
+        tags: ['chat-v2'],
+        sourceConversationItemId: 'opaque-source-id',
+      });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      const wi = pool.addCalls[0];
+      expect(wi.metadata?.inboundSource).toBe('unknown');
+    });
+  });
+
+  describe('markResolvedByChatV2 (INBOUND-2 auto-close)', () => {
+    it('transitions the matching WI to done and clears the timers', async () => {
+      const r = buildRequest({
+        tags: ['chat-v2'],
+        sourceConversationItemId: 'chatv2-cabc__mxyz',
+      });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      expect(sub.trackedCount).toBe(1);
+
+      await sub.markResolvedByChatV2('cabc');
+
+      expect(pool.transitionCalls).toEqual([
+        { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
+      ]);
+      expect(sub.trackedCount).toBe(0);
+
+      // Subsequent timer firings are silent.
+      const breachListener = jest.fn();
+      bus.onInProcess('request:sla_breached', breachListener);
+      jest.advanceTimersByTime(60_000);
+      for (let i = 0; i < 3; i += 1) await Promise.resolve();
+      expect(breachListener).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op for an unknown channelId', async () => {
+      await sub.markResolvedByChatV2('c-unknown');
+      expect(pool.transitionCalls).toHaveLength(0);
+    });
+
+    it('is a no-op for an empty channelId', async () => {
+      await sub.markResolvedByChatV2('');
+      expect(pool.transitionCalls).toHaveLength(0);
+    });
+
+    it('does not interfere with a parallel slack-tracked Request', async () => {
+      const slackReq = buildRequest({
+        id: 'req-slack',
+        tags: ['slack'],
+        sourceConversationItemId: 'slack-C123-1772899923.865659',
+      });
+      const chatReq = buildRequest({
+        id: 'req-chatv2',
+        tags: ['chat-v2'],
+        sourceConversationItemId: 'chatv2-cabc__mxyz',
+      });
+      svc.registry.set(slackReq.id, slackReq);
+      svc.registry.set(chatReq.id, chatReq);
+      bus.publish(buildEvent(slackReq.id));
+      bus.publish({
+        ...buildEvent(chatReq.id),
+        sessionName: 'distinct-session',
+      } as unknown as Parameters<EventBusService['publish']>[0]);
+      await sub.flushPending();
+
+      expect(sub.trackedCount).toBe(2);
+
+      await sub.markResolvedByChatV2('cabc');
+
+      // Only the chat-v2 WI auto-resolved.
+      expect(pool.transitionCalls).toEqual([
+        { id: respondToUserWorkItemId(chatReq.id), status: 'done', actor: 'system' },
+      ]);
+      expect(sub.trackedCount).toBe(1);
+
+      // Slack auto-close still works for the survivor.
+      await sub.markResolvedByThread('1772899923.865659');
+      expect(pool.transitionCalls).toHaveLength(2);
+      expect(sub.trackedCount).toBe(0);
+    });
+
+    it('skips Slack DM escalation hook on a chat-v2 source at 10min (no chat-v2 nudge wired in v1)', async () => {
+      const r = buildRequest({
+        tags: ['chat-v2'],
+        sourceConversationItemId: 'chatv2-cabc__mxyz',
+      });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      jest.advanceTimersByTime(10_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+      // Slack DM callback is wired in this beforeEach but must NOT be
+      // invoked for a chat-v2 source — chat-v2 has no DM-back analog yet.
+      expect(escalateCalls).toHaveLength(0);
+      // Tracking is dropped after the escalation handler fires.
+      expect(sub.trackedCount).toBe(0);
+    });
+  });
+
+
 
   // -------------------------------------------------------------------------
   // Module-level singleton accessor (INBOUND-1.4 hook)

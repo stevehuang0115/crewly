@@ -199,6 +199,51 @@ export function extractSlackChannelId(sourceId: string | undefined): string | nu
   return rest.slice(0, lastDash);
 }
 
+/**
+ * Inter-field delimiter inside a chat-v2 sourceConversationItemId.
+ * Picked as the double-underscore `__` because production channel +
+ * message ids are minted via `randomUUID()` (4 dashes per UUID) — a
+ * single-dash delimiter would collide with the embedded UUID dashes
+ * and corrupt the round-trip. UUIDs are hex-digits + dashes only and
+ * cannot contain `_`, so `__` is collision-free against any current
+ * or future hex-shaped id. See Arch on PR #364 / INBOUND-2.f1.
+ */
+const CHATV2_FIELD_DELIM = '__';
+
+/**
+ * Extract the chat-v2 channel id from a Request's
+ * `sourceConversationItemId`. The chat-v2 controller (INBOUND-2) stamps
+ * these as `chatv2-${channelId}__${messageId}` — UUID-safe delimiter.
+ *
+ * @param sourceId - The Request's sourceConversationItemId
+ * @returns The channelId, or null if the id doesn't match the chat-v2 shape
+ */
+export function extractChatV2ChannelId(sourceId: string | undefined): string | null {
+  if (!sourceId || !sourceId.startsWith('chatv2-')) return null;
+  const rest = sourceId.slice('chatv2-'.length);
+  const sep = rest.indexOf(CHATV2_FIELD_DELIM);
+  if (sep < 1) return null;
+  return rest.slice(0, sep);
+}
+
+/**
+ * Extract the chat-v2 message id from a `chatv2-${channelId}__${messageId}`
+ * sourceConversationItemId. The messageId acts as the auto-close lookup
+ * key analog to a Slack threadTs.
+ *
+ * @param sourceId - The Request's sourceConversationItemId
+ * @returns The messageId, or null if the id doesn't match the chat-v2 shape
+ */
+export function extractChatV2MessageId(sourceId: string | undefined): string | null {
+  if (!sourceId || !sourceId.startsWith('chatv2-')) return null;
+  const rest = sourceId.slice('chatv2-'.length);
+  const sep = rest.indexOf(CHATV2_FIELD_DELIM);
+  if (sep < 0) return null;
+  const id = rest.slice(sep + CHATV2_FIELD_DELIM.length);
+  if (id.length === 0) return null;
+  return id;
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -259,14 +304,30 @@ export interface RequestSlaSubscriberDependencies {
 }
 
 /**
+ * Source channel kind for a tracked respond_to_user WI. Used by the
+ * escalation handler to pick the right user-facing nudge path (Slack DM
+ * vs chat-v2 channel reply).
+ */
+type InboundSourceKind = 'slack' | 'chat-v2' | 'unknown';
+
+/**
  * Internal record per-tracked respond_to_user WI. Held in memory so
- * {@link markResolvedByThread} can map threadTs → WI in O(1).
+ * {@link markResolvedByThread} (Slack) and {@link markResolvedByChatV2}
+ * (chat-v2) can map their lookup key → WI in O(1).
  */
 interface TrackedRespondWi {
   workItemId: string;
   requestId: string;
+  /** Source surface — slack | chat-v2 | unknown. INBOUND-2 addition. */
+  source: InboundSourceKind;
+  /** Slack threadTs (only when source='slack'). */
   threadTs: string | null;
+  /** Slack channelId (only when source='slack'). */
   channelId: string | null;
+  /** chat-v2 channel id (only when source='chat-v2'). INBOUND-2. */
+  chatV2ChannelId: string | null;
+  /** chat-v2 message id (only when source='chat-v2'). INBOUND-2. */
+  chatV2MessageId: string | null;
   breachTimer: NodeJS.Timeout;
   escalationTimer: NodeJS.Timeout;
   request: Request;
@@ -297,8 +358,15 @@ export class RequestSlaSubscriber {
   private started = false;
   /** requestId → tracked record; primary index for breach handlers. */
   private trackedByRequest: Map<string, TrackedRespondWi> = new Map();
-  /** threadTs → requestId; secondary index for {@link markResolvedByThread}. */
+  /** Slack threadTs → requestId; secondary index for {@link markResolvedByThread}. */
   private threadIndex: Map<string, string> = new Map();
+  /**
+   * chat-v2 channelId → requestId. INBOUND-2 secondary index used by
+   * {@link markResolvedByChatV2}. Last-write-wins when multiple inbound
+   * Requests pile up in the same channel — v1 polish accepts the simpler
+   * 1:1 semantics; the orphan handler still cleans the WI on escalation.
+   */
+  private chatV2Index: Map<string, string> = new Map();
   /** In-flight async dispatch promises (test affordance). */
   private pendingDispatches: Set<Promise<void>> = new Set();
 
@@ -388,6 +456,7 @@ export class RequestSlaSubscriber {
     }
     this.trackedByRequest.clear();
     this.threadIndex.clear();
+    this.chatV2Index.clear();
     this.started = false;
     this.logger.info('RequestSlaSubscriber stopped');
   }
@@ -409,6 +478,23 @@ export class RequestSlaSubscriber {
   }
 
   /**
+   * INBOUND-2: mark the in-flight respond_to_user WI as done because an
+   * agent replied in the chat-v2 channel where the user's message arrived.
+   * Called by `chat-v2.controller.sendMessage` after a `senderType=agent`
+   * message persists to the channel.
+   *
+   * Best-effort: a non-tracked or unknown channelId is a no-op.
+   *
+   * @param channelId - The chat-v2 channel where the agent just replied
+   */
+  async markResolvedByChatV2(channelId: string): Promise<void> {
+    if (!channelId) return;
+    const requestId = this.chatV2Index.get(channelId);
+    if (!requestId) return;
+    await this.markResolved(requestId, 'chatv2_reply');
+  }
+
+  /**
    * Mark an in-flight respond_to_user WI as done by Request id (e.g. the
    * orc decomposed the Request into other WorkItems and we want to silence
    * the SLA chain). v1 is called by {@link markResolvedByThread} only;
@@ -427,6 +513,7 @@ export class RequestSlaSubscriber {
     clearTimeout(tracked.escalationTimer);
     this.trackedByRequest.delete(requestId);
     if (tracked.threadTs) this.threadIndex.delete(tracked.threadTs);
+    if (tracked.chatV2ChannelId) this.chatV2Index.delete(tracked.chatV2ChannelId);
 
     try {
       const wi = await this.taskPool.findWorkItem(tracked.workItemId);
@@ -496,10 +583,26 @@ export class RequestSlaSubscriber {
     }
 
     const wiId = respondToUserWorkItemId(request.id);
+
+    // Detect source kind from sourceConversationItemId shape. Slack ids
+    // start with `slack-`; chat-v2 ids start with `chatv2-` (INBOUND-2).
     const threadTs = extractSlackThreadTs(request.sourceConversationItemId);
     const channelId = extractSlackChannelId(request.sourceConversationItemId);
+    const chatV2ChannelId = extractChatV2ChannelId(request.sourceConversationItemId);
+    const chatV2MessageId = extractChatV2MessageId(request.sourceConversationItemId);
+    const source: InboundSourceKind = threadTs
+      ? 'slack'
+      : chatV2ChannelId
+        ? 'chat-v2'
+        : 'unknown';
 
-    const wi = this.buildRespondWorkItem(request, wiId, threadTs, channelId);
+    const wi = this.buildRespondWorkItem(request, wiId, {
+      source,
+      threadTs,
+      channelId,
+      chatV2ChannelId,
+      chatV2MessageId,
+    });
 
     // addToPool short-circuits on duplicate id (V1 dedup).
     await this.taskPool.addToPool(wi);
@@ -518,18 +621,24 @@ export class RequestSlaSubscriber {
     this.trackedByRequest.set(request.id, {
       workItemId: wiId,
       requestId: request.id,
+      source,
       threadTs,
       channelId,
+      chatV2ChannelId,
+      chatV2MessageId,
       breachTimer,
       escalationTimer,
       request,
     });
     if (threadTs) this.threadIndex.set(threadTs, request.id);
+    if (chatV2ChannelId) this.chatV2Index.set(chatV2ChannelId, request.id);
 
     this.logger.info('SLA respond_to_user WorkItem queued', {
       workItemId: wiId,
       requestId: request.id,
+      source,
       threadTs,
+      chatV2ChannelId,
       slaMs: this.slaMs,
     });
   };
@@ -674,6 +783,20 @@ export class RequestSlaSubscriber {
     // still transition the orphan WI to 'failed' afterwards.
     const wiId = stillTracked.workItemId;
 
+    // INBOUND-2: chat-v2 source has no DM-back analog yet. Log the
+    // escalation, clean up tracking, and close the orphan WI. A follow-up
+    // ticket can wire a chat-v2 nudge (e.g. agent-side reply via
+    // reply-channel).
+    if (stillTracked.source === 'chat-v2') {
+      this.logger.warn('SLA escalation reached 10min on chat-v2 — no chat-v2 nudge hook wired', {
+        requestId,
+        chatV2ChannelId: stillTracked.chatV2ChannelId,
+      });
+      this.cleanupTracked(requestId);
+      await this.failOrphanRespondWi(wiId, requestId);
+      return;
+    }
+
     if (!this.sendEscalationDm) {
       this.logger.warn('SLA escalation reached 10min — no Slack DM hook wired', {
         requestId,
@@ -777,6 +900,7 @@ export class RequestSlaSubscriber {
     clearTimeout(tracked.escalationTimer);
     this.trackedByRequest.delete(requestId);
     if (tracked.threadTs) this.threadIndex.delete(tracked.threadTs);
+    if (tracked.chatV2ChannelId) this.chatV2Index.delete(tracked.chatV2ChannelId);
   }
 
   /**
@@ -792,12 +916,21 @@ export class RequestSlaSubscriber {
 
   /**
    * Build the respond_to_user WorkItem with the standard metadata invariants.
+   *
+   * INBOUND-2: metadata embeds slack-* OR chatV2-* fields based on the
+   * source surface so downstream consumers (status panes, escalation
+   * hooks) can branch without re-parsing `sourceConversationItemId`.
    */
   private buildRespondWorkItem(
     request: Request,
     wiId: string,
-    threadTs: string | null,
-    channelId: string | null,
+    sourceContext: {
+      source: InboundSourceKind;
+      threadTs: string | null;
+      channelId: string | null;
+      chatV2ChannelId: string | null;
+      chatV2MessageId: string | null;
+    },
   ): WorkItem {
     const now = new Date().toISOString();
     const slaDeadline = new Date(Date.now() + this.slaMs).toISOString();
@@ -828,8 +961,11 @@ export class RequestSlaSubscriber {
         slaEscalationDeadline: escalationDeadline,
         slaBreachLevel: 0,
         inboundTag: request.tags.find((t) => this.inboundTags.has(t)),
-        slackThreadTs: threadTs,
-        slackChannelId: channelId,
+        inboundSource: sourceContext.source,
+        slackThreadTs: sourceContext.threadTs,
+        slackChannelId: sourceContext.channelId,
+        chatV2ChannelId: sourceContext.chatV2ChannelId,
+        chatV2MessageId: sourceContext.chatV2MessageId,
       },
     };
   }
