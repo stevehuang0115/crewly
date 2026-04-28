@@ -108,11 +108,52 @@ export class MissionReminderService {
   private readonly logger: ComponentLogger;
   private readonly storageService: StorageService;
   private readonly krTrackingService: KRTrackingService;
+  /**
+   * Cached TaskPoolService singleton (Arch NTH-4 on PR #354).
+   * Resolved lazily on first access via {@link getTaskPool} and reused
+   * across every sweep × mission call site for the lifetime of this
+   * MissionReminderService instance. Tests that need to swap the
+   * underlying TaskPool must call {@link resetInstance} to also discard
+   * this cached reference.
+   */
+  private taskPool: TaskPoolService | null = null;
+
+  /**
+   * Counter of cron-parse failures observed across all sweeps (Arch NTH-3
+   * on PR #354). Bumped each time {@link CronExpressionParser.parse}
+   * throws on a mission's `reviewSchedule`. Exposed via
+   * {@link cronParseFailureCount} for tests + (future) Prom metric.
+   */
+  private cronParseFailures = 0;
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('MissionReminder');
     this.storageService = StorageService.getInstance();
     this.krTrackingService = KRTrackingService.getInstance();
+  }
+
+  /**
+   * Total number of cron-parse failures observed since this service
+   * instance was constructed. Read by tests (asserting the warn-log path
+   * also bumps the counter) and intended as the source for a future
+   * Prometheus gauge (sister F4 follow-up filed on the OKR Mission
+   * Reminder spec).
+   */
+  public get cronParseFailureCount(): number {
+    return this.cronParseFailures;
+  }
+
+  /**
+   * Cached TaskPoolService accessor. Resolves the singleton on first call
+   * and reuses it thereafter. Allows test harnesses to reset the cache
+   * via {@link resetInstance}, which clears both the
+   * MissionReminderService singleton and any private references it holds.
+   */
+  private getTaskPool(): TaskPoolService {
+    if (!this.taskPool) {
+      this.taskPool = TaskPoolService.getInstance();
+    }
+    return this.taskPool;
   }
 
   static getInstance(): MissionReminderService {
@@ -252,14 +293,21 @@ export class MissionReminderService {
     // Reentrancy lock (Arch Veto V8).
     // Lazily clear the pending pointer when the previous review WI has
     // reached terminal status; otherwise short-circuit creation.
+    //
+    // NTH-2 (Arch on PR #354): defer the saveMission for the lock-clear
+    // until we know whether a new review WI will be created in the same
+    // sweep tick. If yes, both writes (clear + new id) collapse to one
+    // saveMission at the end of the success path. If no (skipped /
+    // noop), we still need to persist the cleared lock — handled in the
+    // exit branches below.
     // -----------------------------------------------------------------
+    let pendingLockCleared = false;
     if (mission.pendingReviewWorkItemId) {
-      const taskPool = TaskPoolService.getInstance();
-      const pendingWI = await taskPool.findWorkItem(mission.pendingReviewWorkItemId);
+      const pendingWI = await this.getTaskPool().findWorkItem(mission.pendingReviewWorkItemId);
       if (!pendingWI || PENDING_REVIEW_TERMINAL_STATUSES.has(pendingWI.status)) {
-        // Pending WI is gone or terminal — clear and continue.
+        // Pending WI is gone or terminal — clear in memory; persist on exit.
         mission.pendingReviewWorkItemId = undefined;
-        await this.saveMission(mission);
+        pendingLockCleared = true;
       } else {
         return 'skipped';
       }
@@ -279,11 +327,23 @@ export class MissionReminderService {
       });
       boundary = interval.prev().toDate();
     } catch (err) {
+      // NTH-3 (Arch on PR #354): bump the cron-parse failure counter so
+      // ops can see how often this fires + which missions are affected.
+      // The warn-log already carried mission id + cron + error message.
+      this.cronParseFailures += 1;
       this.logger.warn('Mission has unparseable review cadence cron — skipping review WI', {
         missionId: mission.id,
         reviewSchedule: cadence.reviewSchedule,
         error: err instanceof Error ? err.message : String(err),
+        totalCronParseFailures: this.cronParseFailures,
       });
+      // Persist the cleared reentrancy lock if we cleared it earlier in
+      // this method but are now bailing out of WI creation — the
+      // mission's in-memory state would otherwise leak the cleared
+      // pointer to the next sweep without disk-backed durability.
+      if (pendingLockCleared) {
+        await this.saveMission(mission);
+      }
       return 'noop';
     }
 
@@ -291,6 +351,10 @@ export class MissionReminderService {
       const lastReview = new Date(mission.lastReviewAt);
       if (lastReview.getTime() >= boundary.getTime()) {
         // Already reviewed within the current cadence cycle.
+        // NTH-2: persist any deferred lock-clear before bailing.
+        if (pendingLockCleared) {
+          await this.saveMission(mission);
+        }
         return 'skipped';
       }
     }
@@ -331,10 +395,11 @@ export class MissionReminderService {
       },
     };
 
-    const taskPool = TaskPoolService.getInstance();
-    await taskPool.addToPool(reviewWorkItem);
+    await this.getTaskPool().addToPool(reviewWorkItem);
 
     // Persist the reentrancy lock + bookkeeping fields.
+    // NTH-2: this is the canonical single saveMission per sweep tick —
+    // any earlier in-memory lock-clear collapses into this write.
     mission.pendingReviewWorkItemId = reviewWorkItemId;
     mission.lastReviewAt = now.toISOString();
     await this.saveMission(mission);

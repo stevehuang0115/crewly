@@ -538,6 +538,21 @@ describe('MissionReminderService', () => {
     it.each([
       ['off_track_kr',     defaultSummary({ offTrack: 2 }), { activeProjectTaskIds: ['pt-1'] }],
       ['no_active_work',   defaultSummary(),                { activeProjectTaskIds: [] }],
+      // NTH-1 (Arch on PR #354): positive test for `phase_complete`. Fires
+      // when the mission's current phase has advanced past whatever the
+      // previous review summary captured (`lastReviewSummary` does NOT
+      // include `phase=<currentPhase>`). Must come BEFORE the
+      // `scheduled_review` default, but AFTER off_track_kr / no_active_work
+      // since those have higher precedence in `inferReviewReason`.
+      [
+        'phase_complete',
+        defaultSummary(),
+        {
+          activeProjectTaskIds: ['pt-1'],
+          currentPhase: 2,
+          lastReviewSummary: 'phase=1, on track',
+        },
+      ],
       ['scheduled_review', defaultSummary(),                { activeProjectTaskIds: ['pt-1'] }],
     ])('reviewReason routing → %s', async (expectedReason, summary, missionOverrides) => {
       pinNow('2026-04-27T10:00:00Z');
@@ -653,6 +668,166 @@ describe('MissionReminderService', () => {
       expect(result.reviewsCreated).toBe(1);
       expect(mockSlackBridge.sendNotification).toHaveBeenCalled();
       expect(mockTaskPool.addToPool).toHaveBeenCalled();
+    });
+
+    // -------------------------------------------------------------------
+    // Arch NTH-2 / NTH-3 / NTH-4 on PR #354 — efficiency + reliability
+    // -------------------------------------------------------------------
+
+    it('NTH-2: collapses lock-clear + new-WI persistence into a SINGLE saveMission per sweep tick', async () => {
+      pinNow('2026-04-28T10:00:00Z'); // next cycle past lastReviewAt
+      const mission = makeMissionWithCadence({
+        // Reentrancy lock points at a WI that has already terminalized.
+        pendingReviewWorkItemId: 'm-cadence:review:2026-04-27',
+        lastReviewAt: '2026-04-27T09:00:00.000Z',
+      });
+      mockTaskPool.findWorkItem.mockResolvedValueOnce({
+        id: 'm-cadence:review:2026-04-27',
+        status: 'verified', // terminal — triggers lazy clear
+      });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      // Reset write-counter before the assertion window so the NTH-2 count
+      // is isolated from any reads/writes in the runSweep setup phase.
+      (atomicWriteJson as any).mockClear();
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(1);
+      // BEFORE NTH-2: 2 writes (clear + new id). AFTER: 1 write only.
+      expect(atomicWriteJson).toHaveBeenCalledTimes(1);
+
+      // Verify the single write carries BOTH the cleared lock-then-new-id
+      // AND the bumped lastReviewAt — proving the collapse is correct
+      // (we did not silently drop the lock-clear).
+      const persistedMission = (atomicWriteJson as any).mock.calls[0][1];
+      expect(persistedMission.pendingReviewWorkItemId).toBe('m-cadence:review:2026-04-28');
+      expect(persistedMission.lastReviewAt).toBe('2026-04-28T10:00:00.000Z');
+    });
+
+    it('NTH-2: still persists the cleared lock when the NEW-WI path bails (skipped/noop)', async () => {
+      // Same setup as above (terminal pendingReview, lock-clear path), but
+      // pin now BEFORE the cadence boundary so the new-WI path returns
+      // 'skipped' — the cleared lock must still be persisted.
+      pinNow('2026-04-27T08:59:59Z'); // BEFORE today's 09:00 boundary
+      const mission = makeMissionWithCadence({
+        pendingReviewWorkItemId: 'm-cadence:review:2026-04-26',
+        lastReviewAt: '2026-04-27T05:00:00.000Z', // covers the previous 09:00 boundary
+      });
+      mockTaskPool.findWorkItem.mockResolvedValueOnce({
+        id: 'm-cadence:review:2026-04-26',
+        status: 'verified',
+      });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      (atomicWriteJson as any).mockClear();
+
+      await service.runSweep();
+
+      // The exit-branch saveMission MUST fire so the cleared lock is durable.
+      expect(atomicWriteJson).toHaveBeenCalledTimes(1);
+      const persistedMission = (atomicWriteJson as any).mock.calls[0][1];
+      expect(persistedMission.pendingReviewWorkItemId).toBeUndefined();
+    });
+
+    it('NTH-3: bumps cronParseFailureCount + warn-logs total on a malformed cron', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence({
+        policy: {
+          missionId: 'm-bad-cron',
+          executionCadence: {
+            reviewSchedule: 'this is not a cron expression',
+            dailyItemLimit: 0,
+            workHours: null,
+            phaseGateApproval: 'none',
+            requireVerificationGate: false,
+          },
+        },
+      });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      const startCount = service.cronParseFailureCount;
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(0);
+      expect(mockTaskPool.addToPool).not.toHaveBeenCalled();
+      // The failure counter incremented by exactly 1.
+      expect(service.cronParseFailureCount).toBe(startCount + 1);
+    });
+
+    it('NTH-3: cronParseFailureCount accumulates across multiple bad missions in one sweep', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const startCount = service.cronParseFailureCount;
+      const m1 = makeMissionWithCadence({
+        id: 'm-bad-1',
+        policy: {
+          missionId: 'm-bad-1',
+          executionCadence: {
+            reviewSchedule: 'garbage-cron-1',
+            dailyItemLimit: 0,
+            workHours: null,
+            phaseGateApproval: 'none',
+            requireVerificationGate: false,
+          },
+        },
+      });
+      const m2 = makeMissionWithCadence({
+        id: 'm-bad-2',
+        policy: {
+          missionId: 'm-bad-2',
+          executionCadence: {
+            reviewSchedule: 'garbage-cron-2',
+            dailyItemLimit: 0,
+            workHours: null,
+            phaseGateApproval: 'none',
+            requireVerificationGate: false,
+          },
+        },
+      });
+      (fs.readdir as any).mockResolvedValue(['m-bad-1.json', 'm-bad-2.json']);
+      (fs.readFile as any).mockImplementation((p: string) => {
+        if (p.includes('m-bad-1')) return Promise.resolve(JSON.stringify(m1));
+        if (p.includes('m-bad-2')) return Promise.resolve(JSON.stringify(m2));
+        return Promise.reject(new Error('File not found'));
+      });
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      await service.runSweep();
+
+      // Both missions failed cron parse → counter += 2.
+      expect(service.cronParseFailureCount).toBe(startCount + 2);
+    });
+
+    it('NTH-4: caches the TaskPoolService.getInstance() result for the service lifetime', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      // Reset the spy counter just before the runSweep so prior test
+      // setup work (constructor calls etc.) does not leak into this
+      // assertion. The service was constructed at line 74 in beforeEach.
+      (TaskPoolService.getInstance as any).mockClear();
+
+      // Run multiple sweeps in a row — same call-site path each time
+      // (review WI creation + lock check + addToPool).
+      await service.runSweep();
+      await service.runSweep();
+      await service.runSweep();
+
+      // BEFORE NTH-4: TaskPoolService.getInstance() called per call site
+      // per mission per sweep (~6 times across 3 sweeps × 2 sites).
+      // AFTER NTH-4: cached in the private field after first access,
+      // so AT MOST 1 call across the entire service lifetime.
+      expect((TaskPoolService.getInstance as any).mock.calls.length).toBeLessThanOrEqual(1);
     });
   });
 });
