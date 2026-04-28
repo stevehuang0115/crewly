@@ -19,6 +19,7 @@ import type {
 } from './request-tracking.types';
 import { computeRequestStats } from './request-tracking.types';
 import { RequestRow } from './RequestRow';
+import { ConversationGroupCard } from './ConversationGroupCard';
 import { SkeletonRows } from '../UI/SkeletonRows';
 import { apiService } from '../../services/api.service';
 
@@ -94,6 +95,7 @@ function apiToRequestItems(rawRequests: Record<string, unknown>[]): RequestItem[
       const rawCategory = r.intentCategory as string | undefined;
       return {
         id: (r.id as string) || '',
+        sourceConversationItemId: (r.sourceConversationItemId as string) || undefined,
         title: (r.title as string) || 'Untitled Request',
         status: mapRequestStatus((r.status as string) || ''),
         priority: mapRequestPriority((r.priority as string) || ''),
@@ -205,6 +207,25 @@ export const RequestList: React.FC<RequestListProps> = ({
     return result;
   }, [requests, activeFilter, secondaryFilters, searchQuery]);
 
+  const grouped = useMemo(() => {
+    const groups = new Map<string, RequestItem[]>();
+
+    for (const request of filtered) {
+      const key = request.sourceConversationItemId?.trim() || 'unlinked';
+      const existing = groups.get(key);
+      if (existing) {
+        existing.push(request);
+      } else {
+        groups.set(key, [request]);
+      }
+    }
+
+    return Array.from(groups.entries()).map(([conversationLabel, items]) => ({
+      conversationLabel,
+      items,
+    }));
+  }, [filtered]);
+
   if (loading) {
     return (
       <div data-testid="request-list-loading">
@@ -241,9 +262,17 @@ export const RequestList: React.FC<RequestListProps> = ({
   }
 
   return (
-    <div className="flex flex-col gap-2" data-testid="request-list">
-      {filtered.map((request) => (
-        <RequestRow key={request.id} request={request} />
+    <div className="flex flex-col gap-3" data-testid="request-list">
+      {grouped.map((group) => (
+        <ConversationGroupCard
+          key={group.conversationLabel}
+          conversationLabel={group.conversationLabel}
+          requestCount={group.items.length}
+        >
+          {group.items.map((request) => (
+            <RequestRow key={request.id} request={request} />
+          ))}
+        </ConversationGroupCard>
       ))}
     </div>
   );

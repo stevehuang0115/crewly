@@ -25,6 +25,7 @@ vi.mock('../services/api.service', () => ({
 const mockRequests = [
   {
     id: 'req-1',
+    sourceConversationItemId: 'slack-C123-1775336540.0000',
     title: 'Fix billing issue',
     status: 'open',
     priority: 'high',
@@ -33,6 +34,7 @@ const mockRequests = [
   },
   {
     id: 'req-2',
+    sourceConversationItemId: 'slack-C999-1775336500.0000',
     title: 'Deploy staging',
     status: 'done',
     priority: 'medium',
@@ -47,48 +49,79 @@ describe('RequestsPage', () => {
     vi.mocked(apiService.getRequests).mockResolvedValue(mockRequests);
   });
 
-  it('renders page title', () => {
+  it('renders page title', async () => {
     render(<MemoryRouter><RequestsPage /></MemoryRouter>);
-    expect(screen.getByText('Request List')).toBeDefined();
+    expect(screen.getByText('Requests')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiService.getRequests).toHaveBeenCalled();
+    });
   });
 
-  it('renders subtitle', () => {
+  it('renders subtitle', async () => {
     render(<MemoryRouter><RequestsPage /></MemoryRouter>);
-    expect(screen.getByText(/Incoming requests from all channels/)).toBeDefined();
+    expect(screen.getByText(/Monitor and triage incoming work from all channels/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiService.getRequests).toHaveBeenCalled();
+    });
   });
 
   it('renders summary bar, filters, and list after loading', async () => {
     render(<MemoryRouter><RequestsPage /></MemoryRouter>);
-    expect(screen.getByTestId('requests-page')).toBeDefined();
+    expect(screen.getByTestId('requests-page')).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.getByTestId('request-list')).toBeDefined();
+      expect(screen.getByTestId('request-list')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('request-filters')).toBeDefined();
+    expect(screen.getByRole('tab', { name: /All/i })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Search requests...')).toBeInTheDocument();
   });
 
-  it('filters requests when clicking a status chip', async () => {
+  it('filters requests when clicking a status tab', async () => {
     render(<MemoryRouter><RequestsPage /></MemoryRouter>);
 
     await waitFor(() => {
-      expect(screen.getByTestId('request-list')).toBeDefined();
+      expect(screen.getByText('Fix billing issue')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId('request-filter-blocked'));
-    const blockedChip = screen.getByTestId('request-filter-blocked');
-    expect(blockedChip.className).toContain('text-primary');
+    fireEvent.click(screen.getByRole('tab', { name: /Done/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Deploy staging')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Fix billing issue')).not.toBeInTheDocument();
   });
 
   it('filters requests when searching', async () => {
     render(<MemoryRouter><RequestsPage /></MemoryRouter>);
 
     await waitFor(() => {
-      expect(screen.getByTestId('request-list')).toBeDefined();
+      expect(screen.getByText('Fix billing issue')).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByTestId('request-search-input'), {
+    fireEvent.change(screen.getByPlaceholderText('Search requests...'), {
       target: { value: 'billing' },
     });
-    expect(screen.getByText(/billing/i)).toBeDefined();
+
+    await waitFor(() => {
+      expect(screen.getByText('Fix billing issue')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Deploy staging')).not.toBeInTheDocument();
+  });
+
+  it('groups requests by source conversation', async () => {
+    render(<MemoryRouter><RequestsPage /></MemoryRouter>);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('request-list')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /All/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Deploy staging')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('conversation-group-slack-C123-1775336540.0000')).toBeInTheDocument();
+    expect(screen.getByTestId('conversation-group-slack-C999-1775336500.0000')).toBeInTheDocument();
   });
 });

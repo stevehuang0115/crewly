@@ -10,6 +10,7 @@ import {
   RequestFilters,
   RequestList,
   RequestRow,
+  ConversationGroupCard,
 } from './index';
 
 describe('RequestTracking barrel exports', () => {
@@ -27,5 +28,9 @@ describe('RequestTracking barrel exports', () => {
 
   it('exports RequestRow', () => {
     expect(RequestRow).toBeDefined();
+  });
+
+  it('exports ConversationGroupCard', () => {
+    expect(ConversationGroupCard).toBeDefined();
   });
 });

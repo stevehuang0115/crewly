@@ -187,8 +187,13 @@ describe('RequestDetail', () => {
     });
   });
 
-  it('shows approval and rejection buttons for non-terminal requests', async () => {
-    vi.mocked(apiService.getRequest).mockResolvedValue(mockRequest);
+  it('shows approval and rejection buttons only for waiting confirmation requests', async () => {
+    const waitingRequest = {
+      ...mockRequest,
+      status: 'waiting_confirmation',
+      requiresConfirmation: true,
+    };
+    vi.mocked(apiService.getRequest).mockResolvedValue(waitingRequest);
     vi.mocked(apiService.getWorkItemsByRequest).mockResolvedValue([]);
 
     renderWithRouter();

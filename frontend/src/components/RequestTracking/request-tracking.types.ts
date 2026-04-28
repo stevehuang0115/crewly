@@ -50,6 +50,8 @@ export type RequestPrimaryFilter = 'all' | RequestStatus;
 export interface RequestItem {
   /** Unique request ID */
   id: string;
+  /** Source conversation identifier used for feed grouping */
+  sourceConversationItemId?: string;
   /** Request title / summary */
   title: string;
   /** Current status */
