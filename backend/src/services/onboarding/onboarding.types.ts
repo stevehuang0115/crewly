@@ -27,16 +27,21 @@
  *   prefilled → reviewed   (free-form PUT updates while user reviews)
  *   reviewed  → approved   (after POST /sessions/:id/approve)
  *   approved  → provisioned (after POST /provision succeeds)
+ *   provisioned → completed (after POST /sessions/:id/complete — terminal,
+ *                            stamps the magic-moment KR3 telemetry timestamp)
  *
  * Backwards transitions are allowed via PUT updates so the user can revise
- * answers before approving.
+ * answers before approving. The `completed` state is the terminal flag set
+ * by the frontend wizard once the user reaches the post-provision success
+ * screen — it lets us measure end-to-end onboarding wall-clock time.
  */
 export type OnboardingSessionStatus =
   | 'created'
   | 'prefilled'
   | 'reviewed'
   | 'approved'
-  | 'provisioned';
+  | 'provisioned'
+  | 'completed';
 
 /**
  * Confidence band for an AI-extracted prefill field.
@@ -151,4 +156,19 @@ export interface OnboardingSession {
   createdAt: string;
   /** ISO 8601 timestamp of the last mutation. */
   updatedAt: string;
+  /**
+   * ISO 8601 timestamp of when the onboarding flow was marked terminal via
+   * POST /sessions/:id/complete. Populated only after the user reaches the
+   * post-provision success screen — used as the KR3 magic-moment wall-clock
+   * marker (createdAt → completedAt = end-to-end onboarding duration).
+   */
+  completedAt?: string;
+  /**
+   * Optional knowledge-directory hint forwarded by the frontend's complete
+   * call (`{ teamKnowledgeDir: '.crewly/knowledge' }`). Stored opaquely so
+   * downstream tooling that wants to write team-knowledge artefacts post
+   * onboarding can recover the location the wizard used; not interpreted by
+   * the service itself.
+   */
+  teamKnowledgeDir?: string;
 }
