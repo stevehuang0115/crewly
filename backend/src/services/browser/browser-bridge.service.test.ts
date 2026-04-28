@@ -47,6 +47,27 @@ jest.mock('../core/logger.service.js', () => ({
 	},
 }));
 
+const mockRelayAdapter = {
+	isAvailable: jest.fn<boolean, []>(() => false),
+	getExtensionDeviceId: jest.fn<string | null, []>(() => null),
+};
+
+const mockBrowserProxyService = {
+	isAvailable: jest.fn<boolean, []>(() => false),
+};
+
+jest.mock('./browser-relay-adapter.service.js', () => ({
+	BrowserRelayAdapter: {
+		getInstance: () => mockRelayAdapter,
+	},
+}));
+
+jest.mock('./browser-proxy.service.js', () => ({
+	BrowserProxyService: {
+		getInstance: () => mockBrowserProxyService,
+	},
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -93,6 +114,9 @@ describe('BrowserBridgeService', () => {
 		// Tests that override env vars must also clean up; do it here as a safety net.
 		delete process.env.CREWLY_TAB_BIND_MAX;
 		delete process.env.CREWLY_TAB_BIND_TTL_MINUTES;
+		mockRelayAdapter.isAvailable.mockReset().mockReturnValue(false);
+		mockRelayAdapter.getExtensionDeviceId.mockReset().mockReturnValue(null);
+		mockBrowserProxyService.isAvailable.mockReset().mockReturnValue(false);
 	});
 
 	describe('getInstance', () => {
@@ -119,6 +143,17 @@ describe('BrowserBridgeService', () => {
 			expect(status.wsPath).toBe('/ws/browser');
 			// New per-tab field — initially zero.
 			expect(status.bindingCount).toBe(0);
+		});
+
+		it('should return connected when only the proxy path is available', () => {
+			mockBrowserProxyService.isAvailable.mockReturnValue(true);
+			const bridge = BrowserBridgeService.getInstance();
+			const status = bridge.getStatus();
+
+			expect(status.connected).toBe(true);
+			expect(status.clientCount).toBe(0);
+			expect(status.relayAvailable).toBe(false);
+			expect(status.proxyAvailable).toBe(true);
 		});
 	});
 

@@ -94,6 +94,8 @@ export interface BrowserBridgeStatus {
 	wsPath: string;
 	/** Whether the Cloud relay path to an Extension is available */
 	relayAvailable?: boolean;
+	/** Whether the Cloud Relay proxy path currently has a reachable browser. */
+	proxyAvailable?: boolean;
 	/** Cloud device ID of the relay-connected Extension (null if not discovered) */
 	relayDeviceId?: string | null;
 	/** Number of currently active agent→tab bindings (per-tab dispatch). */
@@ -798,6 +800,7 @@ export class BrowserBridgeService {
 	getStatus(): BrowserBridgeStatus {
 		const directConnected = this.clients.size > 0;
 		let relayAvailable = false;
+		let proxyAvailable = false;
 		let relayDeviceId: string | null = null;
 
 		try {
@@ -813,11 +816,22 @@ export class BrowserBridgeService {
 			// Relay adapter not available
 		}
 
+		try {
+			const { BrowserProxyService } = nodeRequire('./browser-proxy.service.js');
+			const proxy = BrowserProxyService.getInstance() as {
+				isAvailable: () => boolean;
+			};
+			proxyAvailable = proxy.isAvailable();
+		} catch {
+			// Proxy service not available
+		}
+
 		return {
-			connected: directConnected || relayAvailable,
+			connected: directConnected || relayAvailable || proxyAvailable,
 			clientCount: this.clients.size,
 			wsPath: BROWSER_BRIDGE_CONSTANTS.WS_PATH,
 			relayAvailable,
+			proxyAvailable,
 			relayDeviceId,
 			bindingCount: this.agentTabBindings.size,
 		};
