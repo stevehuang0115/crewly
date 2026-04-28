@@ -68,6 +68,7 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('lifecycle');
 			expect(names).toContain('user_profile_reference');
 			expect(names).toContain('learning_references');
+			expect(names).toContain('sop_norm_distinction');
 			// Architecture Upgrade modules
 			expect(names).toContain('role-boundary');
 			expect(names).toContain('capability-overlay');
@@ -84,7 +85,7 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('lazy-anti-patterns');
 			// Default Execution Loop (P1 Fix 6 — behavioral mandate, priority 3.8)
 			expect(names).toContain('default-execution-loop');
-			expect(names.length).toBe(23);
+			expect(names.length).toBe(24);
 		});
 
 		it('should use default token budget of 28000', () => {
