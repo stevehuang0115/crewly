@@ -43,6 +43,36 @@ const TRIGGERS_DIR = 'triggers';
 /** File name for persisted trigger store. */
 const TRIGGERS_FILE = 'triggers.json';
 
+/**
+ * Bounded LRU capacity for the per-trigger fired-event dedup. Sized for
+ * 24 h × N triggers worth of events under typical load. Memory cost is
+ * negligible (~80 bytes/key × 2000 = ~160 KB).
+ *
+ * Per Arch Q6: this LRU is in-memory only. After process restart it starts
+ * empty, so a re-delivered cross-machine event in the restart window
+ * COULD double-fire. Symmetric with cloud-side `processedMessageIds`
+ * which is also in-memory. The startup warn-log breadcrumb in `start()`
+ * makes this trade-off observable to ops without leaking it as a silent
+ * gotcha.
+ */
+const TRIGGER_FIRE_DEDUP_CAPACITY = 2000;
+
+/**
+ * Wider event-bus emit payload consumed by `signalListener`. Mirrors the
+ * `'event_published'` shape after the autonomy_v1.f1 widening (see
+ * `event-bus.service.ts` near the `this.emit('event_published', ...)`
+ * call). The `source` and `originDeviceId` fields are optional only
+ * because legacy publishers leave them unset (defaulted to `'local'` at
+ * publish time).
+ */
+interface SignalEventData {
+  eventId: string;
+  eventType: string;
+  sessionName: string;
+  source?: 'local' | 'remote';
+  originDeviceId?: string;
+}
+
 /** How often to check time-based triggers (60 seconds). */
 const TIME_CHECK_INTERVAL_MS = 60_000;
 
@@ -106,8 +136,28 @@ export class TriggerEngine {
    * don't accumulate a new copy on every `start()`. Without this, repeated
    * start/stop cycles (dev reloads, tests, escalation restarts) would
    * register additional listeners that each fire independently.
+   *
+   * Payload widened (autonomy_v1.f1): the EventBus now emits
+   * `{ eventId, eventType, sessionName, source?, originDeviceId? }` so the
+   * source filter on `SignalTriggerConfig` can read both fields without an
+   * event-id lookup. Listeners that only read the original three fields
+   * are unaffected (TS structural extension).
    */
-  private signalListener: ((eventData: { eventId: string; eventType: string; sessionName: string }) => void) | null = null;
+  private signalListener: ((eventData: SignalEventData) => void) | null = null;
+
+  /**
+   * Per-trigger dedup LRU keyed on `${triggerId}:${eventId}`. Bounds growth
+   * across long-lived processes (autonomy_v1.f1). Catches at-least-once
+   * cloud delivery that slipped past CloudSync's `processedMessageIds`
+   * (different cloud-message-ids wrapping the same `event.id`) AND past
+   * the EventBus recent-publish suppression (different (type, sessionName)
+   * but same event.id arriving outside the 5s window).
+   *
+   * Key shape is INTENTIONALLY DISJOINT from BRIDGE-1's per-handler keys
+   * (workItemId / missionId / verifyId / retryId / blockedId / escalationId)
+   * so the two layers compose without collision (see decomp memo §(d)).
+   */
+  private firedDedup: Set<string> = new Set();
 
   /** Callback for executing trigger actions. */
   private actionHandler: TriggerActionHandler | null = null;
@@ -197,6 +247,18 @@ export class TriggerEngine {
     this.setupSignalListeners();
     this.setupOneShotTimers();
     this.running = true;
+
+    // Q6 breadcrumb (autonomy_v1.f1): the per-trigger dedup LRU is
+    // in-memory only. After process restart it starts empty, so any
+    // cross-machine event re-delivered by Cloud Relay during the restart
+    // window could double-fire its trigger. Symmetric with cloud-side
+    // `processedMessageIds`. Surfacing this at startup gives ops a
+    // breadcrumb to correlate any double-fire reports with restarts.
+    this.logger.warn(
+      'TriggerEngine dedup LRU is in-memory; cross-machine events delivered during the restart window may double-fire',
+      { dedupCapacity: TRIGGER_FIRE_DEDUP_CAPACITY },
+    );
+
     this.logger.info('TriggerEngine started', { triggerCount: this.triggers.size });
   }
 
@@ -659,32 +721,67 @@ export class TriggerEngine {
   /**
    * Handles an EventBus event by checking all active signal triggers.
    *
-   * @param eventData - The event data from EventBus
+   * autonomy_v1.f1: applies the per-trigger `${triggerId}:${eventId}` dedup
+   * BEFORE firing so duplicate cloud deliveries (e.g. CloudSync
+   * `processedMessageIds` LRU evicted before a retry) cannot double-fire
+   * a trigger. Dedup key is intentionally disjoint from BRIDGE-1's
+   * per-handler `idempotencyKey` shapes (workItemId / missionId /
+   * verifyId / etc.) — see decomp memo §(d) for the layered proof.
+   *
+   * @param eventData - The widened event data from EventBus
+   *   (`{ eventId, eventType, sessionName, source?, originDeviceId? }`)
    */
-  public async handleSignalEvent(eventData: {
-    eventId: string;
-    eventType: string;
-    sessionName: string;
-  }): Promise<TriggerFireResult[]> {
+  public async handleSignalEvent(eventData: SignalEventData): Promise<TriggerFireResult[]> {
     const results: TriggerFireResult[] = [];
 
     for (const trigger of this.triggers.values()) {
       if (trigger.status !== 'active') continue;
 
+      let matched = false;
       if (trigger.config.type === 'signal') {
-        if (this.signalMatches(trigger.config, eventData)) {
-          const result = await this.fire(trigger);
-          results.push(result);
-        }
+        matched = this.signalMatches(trigger.config, eventData);
       } else if (trigger.config.type === 'compound') {
-        if (this.compoundSignalMatches(trigger.config, eventData)) {
-          const result = await this.fire(trigger);
-          results.push(result);
-        }
+        matched = this.compoundSignalMatches(trigger.config, eventData);
       }
+
+      if (!matched) continue;
+
+      // Per-trigger dedup. We dedup AFTER signal-match so we don't pollute
+      // the LRU with non-matching events (which would shorten the
+      // effective window the LRU covers).
+      const dedupKey = `${trigger.id}:${eventData.eventId}`;
+      if (this.firedDedup.has(dedupKey)) {
+        this.logger.debug('TriggerEngine dedup: skipping already-fired (trigger, eventId)', {
+          triggerId: trigger.id,
+          eventId: eventData.eventId,
+        });
+        continue;
+      }
+      this.firedDedup.add(dedupKey);
+      this.evictDedupIfFull();
+
+      const result = await this.fire(trigger);
+      results.push(result);
     }
 
     return results;
+  }
+
+  /**
+   * Bound the dedup LRU. When at capacity, drop the oldest entries
+   * (insertion-order via Set). Capacity is tuned for 24h × N triggers
+   * (see {@link TRIGGER_FIRE_DEDUP_CAPACITY}); memory cost is negligible.
+   */
+  private evictDedupIfFull(): void {
+    if (this.firedDedup.size <= TRIGGER_FIRE_DEDUP_CAPACITY) return;
+    // Drop the oldest 10% to amortise eviction cost.
+    const dropCount = Math.max(1, Math.floor(TRIGGER_FIRE_DEDUP_CAPACITY * 0.1));
+    const iter = this.firedDedup.values();
+    for (let i = 0; i < dropCount; i++) {
+      const next = iter.next();
+      if (next.done) break;
+      this.firedDedup.delete(next.value);
+    }
   }
 
   /**
@@ -696,16 +793,27 @@ export class TriggerEngine {
    */
   private signalMatches(
     config: SignalTriggerConfig,
-    eventData: { eventType: string; sessionName: string },
+    eventData: SignalEventData,
   ): boolean {
     if (config.eventType !== eventData.eventType) {
       return false;
     }
 
+    // autonomy_v1.f1 source filter (Arch Q2 LOCKED).
+    // Default at evaluation = 'local' for backward compat — every existing
+    // trigger registered before f1 had no `source` field; defaulting to
+    // 'any' would silently flip their scope (the WIRE-1 V4 veto scenario).
+    const triggerSource = config.source ?? 'local';
+    const eventSource = eventData.source ?? 'local';
+    if (triggerSource !== 'any' && triggerSource !== eventSource) {
+      return false;
+    }
+
     // Apply filter if present
     if (config.filter) {
+      const fields = eventData as unknown as Record<string, unknown>;
       for (const [key, value] of Object.entries(config.filter)) {
-        if ((eventData as Record<string, unknown>)[key] !== value) {
+        if (fields[key] !== value) {
           return false;
         }
       }
@@ -724,7 +832,7 @@ export class TriggerEngine {
    */
   private compoundSignalMatches(
     config: CompoundTriggerConfig,
-    eventData: { eventType: string; sessionName: string },
+    eventData: SignalEventData,
   ): boolean {
     const signalConditions = config.conditions.filter(
       (c): c is SignalTriggerConfig => c.type === 'signal',
