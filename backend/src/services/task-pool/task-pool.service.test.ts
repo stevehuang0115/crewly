@@ -561,6 +561,90 @@ describe('TaskPoolService', () => {
       await expect(service.submitForVerification(wi.id, 'agent'))
         .rejects.toThrow(/Invalid status transition/);
     });
+
+    // ---------------------------------------------------------------------
+    // F1-BRIDGE-1: task:done_by_worker publish hook
+    // ---------------------------------------------------------------------
+
+    describe('task:done_by_worker publish (F1-BRIDGE-1)', () => {
+      it('publishes task:done_by_worker exactly once per successful submit, with workItemId + correlation fields', async () => {
+        const publishCalls: any[] = [];
+        const fakeBus = {
+          publish: jest.fn((event: any) => publishCalls.push(event)),
+        } as any;
+        service.setEventBusService(fakeBus);
+
+        const wi = makeWorkItem({ type: 'delegate', requestId: 'req-42', missionId: 'm-9' });
+        await service.addToPool(wi);
+        await service.claimFromPool('agent-leo');
+
+        await service.submitForVerification(wi.id, 'agent', { output: 'draft' });
+
+        // 1 workitem:queued (from addToPool) + 1 task:done_by_worker
+        const doneEvents = publishCalls.filter((e) => e.type === 'task:done_by_worker');
+        expect(doneEvents).toHaveLength(1);
+        expect(doneEvents[0].workItemId).toBe(wi.id);
+        expect(doneEvents[0].requestId).toBe('req-42');
+        expect(doneEvents[0].missionId).toBe('m-9');
+        expect(doneEvents[0].previousValue).toBe('running');
+        expect(doneEvents[0].newValue).toBe('done_by_worker');
+        // Deterministic event id keyed on the WI id (dedup contract — mirrors workitem:queued)
+        expect(doneEvents[0].id).toBe(`task:done_by_worker:${wi.id}`);
+      });
+
+      it('does NOT publish task:done_by_worker when the transition throws (state-machine gate)', async () => {
+        const publishCalls: any[] = [];
+        const fakeBus = {
+          publish: jest.fn((event: any) => publishCalls.push(event)),
+        } as any;
+        service.setEventBusService(fakeBus);
+
+        const wi = makeWorkItem({ type: 'delegate' });
+        await service.addToPool(wi);
+        // Skip claimFromPool so the WI stays in `queued`, not `running` —
+        // submitForVerification must throw on the invalid transition, and
+        // the publisher must NEVER fire on a rolled-back transition.
+        await expect(service.submitForVerification(wi.id, 'agent'))
+          .rejects.toThrow(/Invalid status transition/);
+
+        const doneEvents = publishCalls.filter((e) => e.type === 'task:done_by_worker');
+        expect(doneEvents).toHaveLength(0);
+      });
+
+      it('does NOT publish task:done_by_worker when no EventBus is wired (legacy/test path)', async () => {
+        const wi = makeWorkItem({ type: 'delegate' });
+        await service.addToPool(wi);
+        await service.claimFromPool('agent-leo');
+
+        // No setEventBusService — eventBus stays null, submitForVerification must not throw.
+        await expect(
+          service.submitForVerification(wi.id, 'agent', { output: 'draft' }),
+        ).resolves.not.toBeNull();
+      });
+
+      it('isolates EventBus.publish errors from the verification transition (state commit wins)', async () => {
+        const fakeBus = {
+          publish: jest.fn((event: any) => {
+            // Only blow up on task:done_by_worker so the addToPool publish
+            // (workitem:queued) does not throw and dirty the setup phase.
+            if (event.type === 'task:done_by_worker') {
+              throw new Error('bus blew up');
+            }
+          }),
+        } as any;
+        service.setEventBusService(fakeBus);
+
+        const wi = makeWorkItem({ type: 'delegate' });
+        await service.addToPool(wi);
+        await service.claimFromPool('agent-leo');
+
+        const updated = await service.submitForVerification(wi.id, 'agent', { output: 'draft' });
+
+        // Transition committed even though the bus threw.
+        expect(updated).not.toBeNull();
+        expect(updated!.status).toBe('done_by_worker');
+      });
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -681,6 +765,97 @@ describe('TaskPoolService', () => {
 
       await expect(service.verifyItem(wi.id, 'team_lead', 'verified'))
         .rejects.toThrow(/Invalid status transition/);
+    });
+
+    // ---------------------------------------------------------------------
+    // F1-BRIDGE-1: task:rejected publish hook
+    // ---------------------------------------------------------------------
+
+    describe('task:rejected publish (F1-BRIDGE-1)', () => {
+      it('publishes task:rejected exactly once on a rejected verdict, with workItemId + correlation fields', async () => {
+        const publishCalls: any[] = [];
+        const fakeBus = {
+          publish: jest.fn((event: any) => publishCalls.push(event)),
+        } as any;
+        // Wire the bus AFTER the setup helper so we don't capture the
+        // workitem:queued + task:done_by_worker events from the seeding
+        // submitForVerification call. We're isolating the verifyItem
+        // publish here.
+        const wi = await makeAwaitingVerification();
+        service.setEventBusService(fakeBus);
+
+        await service.verifyItem(wi.id, 'team_lead', 'rejected', 'Output incomplete');
+
+        const rejectEvents = publishCalls.filter((e) => e.type === 'task:rejected');
+        expect(rejectEvents).toHaveLength(1);
+        expect(rejectEvents[0].workItemId).toBe(wi.id);
+        expect(rejectEvents[0].previousValue).toBe('done_by_worker');
+        expect(rejectEvents[0].newValue).toBe('rejected');
+        // Deterministic event id (dedup contract).
+        expect(rejectEvents[0].id).toBe(`task:rejected:${wi.id}`);
+      });
+
+      it('does NOT publish task:rejected on the verified branch (success path is bridge-silent)', async () => {
+        const publishCalls: any[] = [];
+        const fakeBus = {
+          publish: jest.fn((event: any) => publishCalls.push(event)),
+        } as any;
+        const wi = await makeAwaitingVerification();
+        service.setEventBusService(fakeBus);
+
+        await service.verifyItem(wi.id, 'team_lead', 'verified');
+
+        const rejectEvents = publishCalls.filter((e) => e.type === 'task:rejected');
+        expect(rejectEvents).toHaveLength(0);
+      });
+
+      it('does NOT publish task:rejected when the transition throws (state-machine gate)', async () => {
+        const publishCalls: any[] = [];
+        const fakeBus = {
+          publish: jest.fn((event: any) => publishCalls.push(event)),
+        } as any;
+        service.setEventBusService(fakeBus);
+
+        const wi = makeWorkItem({ type: 'delegate' });
+        await service.addToPool(wi);
+        // Never claimed / submitted — verifyItem on a queued item must throw.
+        await expect(service.verifyItem(wi.id, 'team_lead', 'rejected'))
+          .rejects.toThrow(/Invalid status transition/);
+
+        const rejectEvents = publishCalls.filter((e) => e.type === 'task:rejected');
+        expect(rejectEvents).toHaveLength(0);
+      });
+
+      it('does NOT publish task:rejected when no EventBus is wired (legacy/test path)', async () => {
+        const wi = await makeAwaitingVerification();
+        // No setEventBusService — eventBus stays null, verifyItem must not throw.
+        await expect(
+          service.verifyItem(wi.id, 'team_lead', 'rejected', 'no-bus-test'),
+        ).resolves.not.toBeNull();
+      });
+
+      it('isolates EventBus.publish errors from the rejection transition (state commit wins)', async () => {
+        const fakeBus = {
+          publish: jest.fn((event: any) => {
+            if (event.type === 'task:rejected') {
+              throw new Error('bus blew up');
+            }
+          }),
+        } as any;
+        const wi = await makeAwaitingVerification();
+        service.setEventBusService(fakeBus);
+
+        const updated = await service.verifyItem(
+          wi.id,
+          'team_lead',
+          'rejected',
+          'reviewer comment',
+        );
+
+        // Transition committed even though the bus threw.
+        expect(updated).not.toBeNull();
+        expect(updated!.status).toBe('rejected');
+      });
     });
   });
 
