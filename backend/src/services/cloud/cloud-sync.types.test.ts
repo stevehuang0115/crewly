@@ -11,6 +11,7 @@ import {
   isIncomingMessage,
   isCloudSyncConfig,
   isAgentMessagePayload,
+  isEventMessagePayload,
   CLOUD_SYNC_STATES,
   MESSAGE_TYPES,
 } from './cloud-sync.types.js';
@@ -48,11 +49,91 @@ describe('cloud-sync.types', () => {
       expect(isMessageType('task_update')).toBe(true);
     });
 
+    // autonomy_v1.f1 — new 'event' MessageType for cross-machine event fan-out
+    it("should include the new 'event' MessageType (autonomy_v1.f1)", () => {
+      expect(isMessageType('event')).toBe(true);
+      expect(MESSAGE_TYPES).toContain('event');
+    });
+
+    it("preserves the prior-art 'cross-machine' MessageType (M1 parallel-types regression guard)", () => {
+      // Per Arch verdict 2026-04-28 M1: 'cross-machine' (free-text orchestrator
+      // messages) and 'event' (typed AgentEvent objects) are kept parallel.
+      // If anyone later collapses one into the other, this assertion fails.
+      expect(isMessageType('cross-machine')).toBe(true);
+      expect(isMessageType('event')).toBe(true);
+      expect(MESSAGE_TYPES).toContain('cross-machine');
+      expect(MESSAGE_TYPES).toContain('event');
+    });
+
     it('should return false for invalid values', () => {
       expect(isMessageType('chat')).toBe(false);
       expect(isMessageType('')).toBe(false);
       expect(isMessageType(null)).toBe(false);
       expect(isMessageType(123)).toBe(false);
+    });
+  });
+
+  // autonomy_v1.f1 — EventMessagePayload guard
+  describe('isEventMessagePayload', () => {
+    const validPayload = {
+      event: {
+        id: 'evt-uuid-1',
+        type: 'xhs:scrape:done',
+        sessionName: 'iriss-air-marketing',
+        timestamp: '2026-04-28T01:44:12.345Z',
+      },
+      originDeviceId: 'device-A',
+      originDeviceName: 'iriss-air',
+    };
+
+    it('accepts a well-formed payload', () => {
+      expect(isEventMessagePayload(validPayload)).toBe(true);
+    });
+
+    it('accepts payload with extra event fields (forward-compatible)', () => {
+      expect(isEventMessagePayload({
+        ...validPayload,
+        event: { ...validPayload.event, payload: { items: 42 } },
+      })).toBe(true);
+    });
+
+    it('rejects null / non-object', () => {
+      expect(isEventMessagePayload(null)).toBe(false);
+      expect(isEventMessagePayload(undefined)).toBe(false);
+      expect(isEventMessagePayload('string')).toBe(false);
+      expect(isEventMessagePayload(42)).toBe(false);
+    });
+
+    it('rejects missing originDeviceId', () => {
+      const { originDeviceId: _drop, ...bad } = validPayload;
+      expect(isEventMessagePayload(bad)).toBe(false);
+    });
+
+    it('rejects empty originDeviceId', () => {
+      expect(isEventMessagePayload({ ...validPayload, originDeviceId: '' })).toBe(false);
+    });
+
+    it('rejects missing event', () => {
+      expect(isEventMessagePayload({ originDeviceId: 'device-A' })).toBe(false);
+    });
+
+    it('rejects event without id / type / sessionName / timestamp', () => {
+      expect(isEventMessagePayload({
+        ...validPayload,
+        event: { ...validPayload.event, id: '' },
+      })).toBe(false);
+      expect(isEventMessagePayload({
+        ...validPayload,
+        event: { ...validPayload.event, type: '' },
+      })).toBe(false);
+      expect(isEventMessagePayload({
+        ...validPayload,
+        event: { ...validPayload.event, sessionName: 42 as unknown as string },
+      })).toBe(false);
+      expect(isEventMessagePayload({
+        ...validPayload,
+        event: { ...validPayload.event, timestamp: undefined as unknown as string },
+      })).toBe(false);
     });
   });
 

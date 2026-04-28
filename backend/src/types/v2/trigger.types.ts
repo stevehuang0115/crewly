@@ -72,6 +72,19 @@ export interface SignalTriggerConfig {
   eventType: string;
   /** Optional filter — only fire if event payload matches */
   filter?: Record<string, unknown>;
+  /**
+   * Origin filter for cross-machine event triggers (autonomy_v1.f1).
+   * - `'local'` (default): only fire on events emitted on this device.
+   * - `'remote'`: only fire on events relayed from a paired device via
+   *   Cloud Relay.
+   * - `'any'`: fire on both local and remote events.
+   *
+   * Defaults to `'local'` at evaluation when unset — backward compatible
+   * for every existing trigger. Defaulting to `'any'` would silently flip
+   * every trigger's scope, the exact regression the WIRE-1 V4 veto was
+   * designed to prevent (Arch verdict 2026-04-28 Q2 LOCKED).
+   */
+  source?: 'local' | 'remote' | 'any';
 }
 
 /**
@@ -219,8 +232,16 @@ export function isValidTriggerConfig(config: TriggerConfig): boolean {
   switch (config.type) {
     case 'time':
       return !!(config.cronExpression || config.delayMs || config.fireAt);
-    case 'signal':
-      return typeof config.eventType === 'string' && config.eventType.length > 0;
+    case 'signal': {
+      if (typeof config.eventType !== 'string' || config.eventType.length === 0) return false;
+      // autonomy_v1.f1: source filter is optional but, when present, must be
+      // one of the three accepted values. Reject malformed values instead of
+      // silently coercing to default (which would mask typos at registration).
+      if (config.source !== undefined && config.source !== 'local' && config.source !== 'remote' && config.source !== 'any') {
+        return false;
+      }
+      return true;
+    }
     case 'compound':
       return (
         (config.operator === 'and' || config.operator === 'or') &&

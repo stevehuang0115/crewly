@@ -138,7 +138,8 @@ export type MessageType =
   | 'agent_message'
   | 'cross-machine'
   | 'browser_command'
-  | 'browser_response';
+  | 'browser_response'
+  | 'event';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -153,6 +154,7 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'cross-machine',
   'browser_command',
   'browser_response',
+  'event',
 ] as const;
 
 /**
@@ -254,6 +256,71 @@ export function isAgentMessagePayload(value: unknown): value is AgentMessagePayl
     typeof obj.message === 'string' &&
     typeof obj.fromDevice === 'string' &&
     typeof obj.fromDeviceName === 'string'
+  );
+}
+
+/**
+ * Cross-machine AgentEvent payload — the wire format for the `'event'`
+ * MessageType (autonomy_v1.f1).
+ *
+ * Distinct from `AgentMessagePayload` and `'cross-machine'` MessageType:
+ *   - `'cross-machine'` routes free-text orchestrator MESSAGES (slack-style).
+ *   - `'event'` broadcasts typed AgentEvent OBJECTS (schema-stable).
+ *
+ * Different shape, different consumer (router vs CloudEventInboundBridge),
+ * different validation paths. Kept parallel by Arch verdict 2026-04-28 (M1).
+ *
+ * The Cloud Relay fan-out (web/) duplicates this payload into N device
+ * queues; each queue assigns its own message id, so the local
+ * `processedMessageIds` LRU dedupes at-least-once delivery transparently.
+ */
+export interface EventMessagePayload {
+  /**
+   * The serialised AgentEvent the origin device published locally.
+   * Carries `event.id` (origin-assigned uuid, stable across fan-out),
+   * `event.type`, `event.sessionName`, `event.timestamp`, and the
+   * event-specific payload fields. The receiving CloudEventInboundBridge
+   * stamps `source: 'remote'` + `originDeviceId` before re-publishing on
+   * the local EventBus; those two fields are NOT shipped on the wire to
+   * keep the contract symmetric (any device, on any side, computes the
+   * tag from the message envelope).
+   */
+  event: {
+    id: string;
+    type: string;
+    sessionName: string;
+    timestamp: string;
+    [extra: string]: unknown;
+  };
+
+  /** Origin device id — echoes the sender so the receiver can stamp `originDeviceId` on the re-published event. */
+  originDeviceId: string;
+
+  /** Human-readable origin device name for log lines + ops audit. */
+  originDeviceName?: string;
+}
+
+/**
+ * Check if an object satisfies the EventMessagePayload interface shape.
+ *
+ * Validates the minimum schema needed for the inbound bridge to safely
+ * re-publish: a non-empty `event.id`, `event.type`, `event.sessionName`,
+ * `event.timestamp`, and a non-empty `originDeviceId`.
+ *
+ * @param value - Value to check
+ * @returns True if the value has the required EventMessagePayload fields
+ */
+export function isEventMessagePayload(value: unknown): value is EventMessagePayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.originDeviceId !== 'string' || obj.originDeviceId.length === 0) return false;
+  if (typeof obj.event !== 'object' || obj.event === null) return false;
+  const evt = obj.event as Record<string, unknown>;
+  return (
+    typeof evt.id === 'string' && evt.id.length > 0 &&
+    typeof evt.type === 'string' && evt.type.length > 0 &&
+    typeof evt.sessionName === 'string' &&
+    typeof evt.timestamp === 'string'
   );
 }
 

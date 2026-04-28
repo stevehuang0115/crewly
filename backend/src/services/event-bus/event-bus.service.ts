@@ -218,16 +218,36 @@ export class EventBusService extends EventEmitter {
    * @param event - The agent lifecycle event to publish
    */
   publish(event: AgentEvent): void {
-    // Dedup: ignore duplicate events for the same (type, sessionName) within
-    // the debounce window. This prevents redundant notifications when both
-    // the file watcher and ActivityMonitor detect the same status transition.
-    const dedupKey = `${event.type}:${event.sessionName}`;
+    // autonomy_v1.f1: default `source` to 'local' when absent so the rest of
+    // the pipeline (TriggerEngine source filter, EventFilter consumers) sees
+    // a stable invariant. Local publishers leave it unset; the
+    // CloudEventInboundBridge sets it to 'remote' before calling publish.
+    if (event.source === undefined) {
+      event.source = 'local';
+    }
+
+    // Dedup: ignore TRUE-duplicate events (same id) for the same
+    // (type, sessionName) within the debounce window. Prevents redundant
+    // notifications when both the file watcher and ActivityMonitor detect
+    // the same status transition.
+    //
+    // M2 fix (autonomy_v1.f1, Arch verdict 2026-04-28): the previous key
+    // `${type}:${sessionName}` over-merged — two LEGITIMATE distinct events
+    // from the same session within the 5 s window were silently dropped
+    // (e.g. iriss-air emits `xhs:scrape:done` for session-A twice in 4 s
+    // due to two parallel scrape jobs). Cross-machine surfaces this more
+    // because remote events arrive in dense bursts. Widening to include
+    // `event.id` is strictly more permissive — true duplicates (same id
+    // re-arriving) are still suppressed; legitimate distinct events both
+    // publish.
+    const dedupKey = `${event.type}:${event.sessionName}:${event.id}`;
     const nowMs = Date.now();
     const lastPublished = this.recentPublishMap.get(dedupKey);
     if (lastPublished && nowMs - lastPublished < EVENT_BUS_CONSTANTS.EVENT_DEBOUNCE_WINDOW_MS) {
       this.logger.debug('Duplicate event suppressed within debounce window', {
         type: event.type,
         sessionName: event.sessionName,
+        eventId: event.id,
         msSinceLast: nowMs - lastPublished,
       });
       return;
@@ -253,11 +273,20 @@ export class EventBusService extends EventEmitter {
     });
 
     // Emit event_published for any listener that needs to react to ALL events
-    // regardless of subscriptions (e.g., auditor monitoring agent:inactive)
+    // regardless of subscriptions (e.g., auditor monitoring agent:inactive,
+    // TriggerEngine signal triggers).
+    //
+    // autonomy_v1.f1: payload widened to carry `source` + `originDeviceId`
+    // so the TriggerEngine source filter (read inside `signalMatches`) can
+    // honour `'local' | 'remote' | 'any'` without a separate per-event
+    // lookup. Existing listeners that only read the original three fields
+    // are unaffected — TS structural extension, no behaviour change.
     this.emit('event_published', {
       eventId: event.id,
       eventType: event.type,
       sessionName: event.sessionName,
+      source: event.source,
+      originDeviceId: event.originDeviceId,
     });
 
     // Dispatch to in-process handlers (BRIDGE-1, LEARN-1, …). Errors are
@@ -656,6 +685,16 @@ export class EventBusService extends EventEmitter {
       return false;
     }
     if (filter.parentMemberId && filter.parentMemberId !== event.parentMemberId) {
+      return false;
+    }
+
+    // autonomy_v1.f1 (Arch Q3): cross-device origin disambiguation. When
+    // the consumer sets `originDeviceId` it wants to match ONLY events that
+    // originated on a specific paired device (or, when the event is local,
+    // local events have no originDeviceId so the filter always rejects).
+    // Filters that don't set this field accept events from any origin
+    // (subject to higher-layer source filtering in TriggerEngine).
+    if (filter.originDeviceId && filter.originDeviceId !== event.originDeviceId) {
       return false;
     }
 

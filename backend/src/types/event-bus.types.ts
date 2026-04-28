@@ -89,6 +89,36 @@ export const EVENT_TYPES = [
 export type EventType = (typeof EVENT_TYPES)[number];
 
 /**
+ * Runtime-only event-type alias used at the cross-machine inbound bridge
+ * boundary (autonomy_v1.f1, Arch Q4).
+ *
+ * The closed `EVENT_TYPES` enum stays closed — paired devices may roll out
+ * new event types one at a time without forcing a deployment-ordering
+ * constraint across the fleet. The inbound bridge accepts unknown peer
+ * types as `string`, then casts to `EventType` at the local re-publish
+ * boundary so the rest of the local pipeline (TriggerEngine, EventBus
+ * subscribers) sees the type as if it were native. A debug log inside the
+ * bridge names any unrecognised type so ops can audit drift.
+ *
+ * Do NOT use this alias outside the inbound-bridge boundary — local
+ * publishers must use the closed `EventType` union.
+ */
+export type RemoteEventType = string;
+
+/**
+ * Source of an event — local origin or relayed from a paired device.
+ *
+ * - `'local'` (default): emitted by an in-process publisher on this device.
+ * - `'remote'`: re-published by the CloudEventInboundBridge after arriving
+ *   from a paired device via Cloud Relay.
+ *
+ * `EventBusService.publish` defaults missing `source` to `'local'`.
+ * `SignalTriggerConfig.source` filters on this value to scope which
+ * triggers fire on which origins (default `'local'` for backwards compat).
+ */
+export type EventSource = 'local' | 'remote';
+
+/**
  * Event priority levels used for subscriber filtering.
  * Critical events are delivered immediately; info events may be suppressed
  * or debounced for subscribers that opt into critical-only mode.
@@ -257,6 +287,29 @@ export interface AgentEvent {
    * other event types — never read outside the request handlers.
    */
   requestId?: string;
+
+  // === Cross-machine fields (autonomy_v1.f1) ===
+  // The CloudEventInboundBridge stamps these when re-publishing an event
+  // received from a paired device. Local publishers leave both unset; the
+  // bus treats absent `source` as `'local'`. SignalTriggerConfig `source`
+  // filter and EventFilter.originDeviceId disambiguate cross-device
+  // consumers.
+
+  /**
+   * Origin of this event. `'local'` for in-process publishers, `'remote'`
+   * for events relayed via Cloud Relay from a paired device. Defaults to
+   * `'local'` at publish time when unset.
+   */
+  source?: EventSource;
+
+  /**
+   * Device id of the origin paired device. Set ONLY when `source === 'remote'`;
+   * the inbound bridge stamps this from the cloud message envelope. Triggers
+   * needing cross-device disambiguation filter on this field via
+   * {@link EventFilter.originDeviceId}; `sessionName` is left origin-pristine
+   * so existing filter consumers continue to key on it unchanged.
+   */
+  originDeviceId?: string;
 }
 
 // =============================================================================
@@ -284,6 +337,20 @@ export interface EventFilter {
 
   /** Match events from subordinates of a specific parent member */
   parentMemberId?: string;
+
+  /**
+   * Match events that originated from a specific paired device
+   * (autonomy_v1.f1, Arch Q3). Set ONLY when the consumer wants to
+   * disambiguate by origin device — e.g. when two paired devices both
+   * have a session of the same `sessionName`. When unset, the filter
+   * matches events from any origin (local + remote alike, subject to
+   * the trigger's `source` filter).
+   *
+   * `sessionName` is intentionally left origin-pristine — adding this
+   * field instead avoids mutating a public field that every existing
+   * filter consumer keys on.
+   */
+  originDeviceId?: string;
 }
 
 /**

@@ -106,6 +106,30 @@ describe('Trigger Types', () => {
       expect(isValidTriggerConfig(config)).toBe(false);
     });
 
+    // autonomy_v1.f1 — source filter validation
+    it("should accept signal config with source = 'local'", () => {
+      const config: SignalTriggerConfig = { type: 'signal', eventType: 'agent:idle', source: 'local' };
+      expect(isValidTriggerConfig(config)).toBe(true);
+    });
+    it("should accept signal config with source = 'remote'", () => {
+      const config: SignalTriggerConfig = { type: 'signal', eventType: 'agent:idle', source: 'remote' };
+      expect(isValidTriggerConfig(config)).toBe(true);
+    });
+    it("should accept signal config with source = 'any'", () => {
+      const config: SignalTriggerConfig = { type: 'signal', eventType: 'agent:idle', source: 'any' };
+      expect(isValidTriggerConfig(config)).toBe(true);
+    });
+    it('should accept signal config with source unset (defaults at evaluation)', () => {
+      const config: SignalTriggerConfig = { type: 'signal', eventType: 'agent:idle' };
+      expect(isValidTriggerConfig(config)).toBe(true);
+    });
+    it('should reject signal config with malformed source value', () => {
+      // Reject typos / unknown values at registration so they surface
+      // immediately rather than silently coercing to default.
+      const config = { type: 'signal', eventType: 'agent:idle', source: 'global' } as unknown as SignalTriggerConfig;
+      expect(isValidTriggerConfig(config)).toBe(false);
+    });
+
     it('should validate compound config', () => {
       const config: CompoundTriggerConfig = {
         type: 'compound',
