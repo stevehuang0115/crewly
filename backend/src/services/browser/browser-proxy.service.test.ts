@@ -455,6 +455,82 @@ describe('BrowserProxyService', () => {
         'No browser instances connected',
       );
     });
+
+    it('auto-selects the freshest instance when multiple are connected and no target specified', async () => {
+      const proxy = BrowserProxyService.getInstance();
+      proxy.connect('test-token');
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-1' }),
+      );
+      // Two instances: 'Stale' seen 5min ago, 'Fresh' seen just now.
+      // Mirrors the extension-reconnect ghost scenario where the relay still
+      // reports a previous sessionId alongside the live one.
+      const now = Date.now();
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-stale',
+              instanceName: 'Stale',
+              sessionId: 'bs-old',
+              lastSeenAt: new Date(now - 5 * 60_000).toISOString(),
+            },
+            {
+              instanceId: 'id-fresh',
+              instanceName: 'Fresh',
+              sessionId: 'bs-new',
+              lastSeenAt: new Date(now).toISOString(),
+            },
+          ],
+        }),
+      );
+
+      const cmdPromise = proxy.sendCommand('getTabs');
+      const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
+      expect(sentMsg.type).toBe('relay_to');
+      expect(sentMsg.targetInstance).toBe('Fresh');
+
+      // Resolve to avoid hanging promise
+      const payload = JSON.parse(sentMsg.payload as string);
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'relay',
+          payload: JSON.stringify({ id: payload.id, success: true, result: [] }),
+        }),
+      );
+      await cmdPromise;
+    });
+
+    it('auto-select error message distinguishes empty from ambiguous when all timestamps are unparseable', async () => {
+      const proxy = BrowserProxyService.getInstance();
+      proxy.connect('test-token');
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-1' }),
+      );
+      // Two instances with garbage timestamps so resolveInstance returns null
+      // even though instances.size > 0. This validates the new error branch.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            { instanceId: 'a', instanceName: 'A', sessionId: 's-a', lastSeenAt: 'not-a-date' },
+            { instanceId: 'b', instanceName: 'B', sessionId: 's-b', lastSeenAt: 'also-bad' },
+          ],
+        }),
+      );
+
+      await expect(proxy.sendCommand('navigate')).rejects.toThrow(
+        /Could not resolve a browser instance from 2 candidates/,
+      );
+    });
   });
 
   describe('getInstances', () => {

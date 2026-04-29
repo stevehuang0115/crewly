@@ -329,7 +329,9 @@ export class BrowserProxyService {
       throw new Error(
         instance
           ? `Browser instance "${instance}" not found. Available: ${available || 'none'}`
-          : `No browser instances connected`,
+          : this.instances.size === 0
+            ? `No browser instances connected`
+            : `Could not resolve a browser instance from ${this.instances.size} candidates (none have a recent lastSeenAt). Available: ${available}`,
       );
     }
 
@@ -370,16 +372,39 @@ export class BrowserProxyService {
   /**
    * Resolve which browser instance to target.
    *
+   * Auto-select rules when no explicit `instance` is provided:
+   *   - 0 instances → null (caller raises "No browser instances connected")
+   *   - 1 instance  → that instance
+   *   - N>1 instances → the freshest by `lastSeenAt`. This handles two cases:
+   *       (a) Multiple Chromes connected (user gets the most-recently-active one).
+   *       (b) Ghost entries left behind by a relay that has not yet pruned a
+   *           stale session after the extension reconnected with a new sessionId.
+   *           The freshest entry is the live one.
+   *     Ties on `lastSeenAt` are broken by insertion order (Map iteration).
+   *
    * @param instance - Explicit instance name/ID, or undefined for auto-select
    * @returns Matching BrowserInstanceInfo or null
    */
   private resolveInstance(instance?: string): BrowserInstanceInfo | null {
     if (!instance) {
-      // Auto-select: use the only instance if there's exactly one
-      if (this.instances.size === 1) {
+      const size = this.instances.size;
+      if (size === 0) return null;
+      if (size === 1) {
         return this.instances.values().next().value ?? null;
       }
-      return null;
+      // Multiple candidates → pick the freshest by lastSeenAt to tolerate
+      // ghost entries from extension reconnect cycles and to pick the most
+      // active browser when several are genuinely connected.
+      let freshest: BrowserInstanceInfo | null = null;
+      let freshestTs = -Infinity;
+      for (const info of this.instances.values()) {
+        const ts = Date.parse(info.lastSeenAt);
+        if (Number.isFinite(ts) && ts > freshestTs) {
+          freshestTs = ts;
+          freshest = info;
+        }
+      }
+      return freshest;
     }
 
     // Search by name or ID
