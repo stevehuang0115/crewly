@@ -194,6 +194,22 @@ export const TERMINAL_GATEWAY_CONSTANTS = {
 	MAX_BUFFER_SIZE: 100 * 1024,
 	/** Trim threshold for partial line buffer (characters) */
 	BUFFER_TRIM_THRESHOLD: 1000,
+	/**
+	 * Backoff schedule (ms) for retrying eager orchestrator chat monitoring
+	 * when the PTY session is not yet registered in the SessionBackend.
+	 *
+	 * Background: startOrchestratorChatMonitoring is invoked from boot,
+	 * setup, and restart paths immediately after createAgentSession resolves.
+	 * The SessionBackend may not have fully registered the new session by
+	 * then — leaving the orchestrator's PTY without an onData listener for
+	 * the rest of its lifetime, which silently drops responses to user
+	 * messages until the side panel is opened (RCA 2026-04-29 / 2026-04-30).
+	 *
+	 * Total budget ≈ 8.6s with 5 attempts. Tuned to outlast typical
+	 * createAgentSession→backend-register lag (sub-1s on local, up to ~3s
+	 * under heavy load) without unbounded retries.
+	 */
+	MONITORING_RETRY_BACKOFFS_MS: [100, 500, 1000, 2000, 5000] as readonly number[],
 } as const;
 
 // Chat routing constants (message markers and patterns for orchestrator communication)
