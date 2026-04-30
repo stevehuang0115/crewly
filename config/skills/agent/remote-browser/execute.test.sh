@@ -342,6 +342,74 @@ assert_eq "no X-Agent-Session header" "" "$hdr"
   || fail "body has no tabId field" "body=$body"
 scenario_teardown
 
+# Scenario 9: scroll with passthrough params produces valid JSON body
+# Regression guard for the `${EXTRA_PARAMS:-{}}` bash bug — when EXTRA_PARAMS
+# was non-empty, the literal trailing `}` from the default leaked through and
+# produced `{"direction":"down"}}` (invalid JSON), causing express.json() to
+# reject the request with HTTP 400. The fix routes through emit_body().
+scenario_init "scenario 9: scroll with extra params emits valid JSON"
+queue_response '{"success":true,"data":{"scrolled":true}}'
+start_stub
+unset CREWLY_SESSION_NAME
+"$SKILL" '{"action":"scroll","direction":"down","amount":500}' > /dev/null 2>&1 || true
+body=$(request_field 0 body)
+# Body must be parseable JSON — the old buggy path would emit a stray `}`.
+if printf '%s' "$body" | python3 -c 'import sys, json; json.loads(sys.stdin.read())' 2>/dev/null; then
+  pass "scroll body parses as JSON"
+else
+  fail "scroll body parses as JSON" "body=$body"
+fi
+assert_contains "scroll body has direction:down" "$body" '"direction":"down"'
+assert_contains "scroll body has amount:500" "$body" '"amount":500'
+# Negative assertion: no double-closing brace
+case "$body" in
+  *'}}'*) fail "scroll body must not have trailing }}" "body=$body" ;;
+  *) pass "scroll body has no trailing }}" ;;
+esac
+scenario_teardown
+
+# Scenario 10: scroll with NO extra params emits valid `{}`
+scenario_init "scenario 10: scroll without params emits {}"
+queue_response '{"success":true,"data":{"scrolled":false}}'
+start_stub
+unset CREWLY_SESSION_NAME
+"$SKILL" --action scroll > /dev/null 2>&1 || true
+body=$(request_field 0 body)
+assert_eq "empty-params scroll body == {}" '{}' "$body"
+scenario_teardown
+
+# Scenario 11: select-option with explicit value
+# Native <select> dropdowns can't be operated by CDP click — verify the new
+# select-option action routes to /browser/select-option with selector+value.
+scenario_init "scenario 11: select-option with --selector + --value"
+queue_response '{"success":true,"data":{"selected":true,"matchedBy":"value"}}'
+start_stub
+unset CREWLY_SESSION_NAME
+"$SKILL" --action select-option --selector "#status" --value "active" > /dev/null 2>&1 || true
+assert_eq "POST /api/browser/select-option" "POST /api/browser/select-option" "$(request_field 0 method) $(request_field 0 path)"
+body=$(request_field 0 body)
+assert_contains "body has selector" "$body" '"selector":"#status"'
+assert_contains "body has value" "$body" '"value":"active"'
+scenario_teardown
+
+# Scenario 12: select-option via JSON input — label + index pass through
+scenario_init "scenario 12: select-option JSON with label + index"
+queue_response '{"success":true,"data":{"selected":true,"matchedBy":"index"}}'
+start_stub
+unset CREWLY_SESSION_NAME
+"$SKILL" '{"action":"select-option","selector":".course-filter","label":"Active","index":2}' > /dev/null 2>&1 || true
+body=$(request_field 0 body)
+# Body must be valid JSON (regression on the same bash gotcha from scenario 9).
+if printf '%s' "$body" | python3 -c 'import sys, json; json.loads(sys.stdin.read())' 2>/dev/null; then
+  pass "select-option body parses as JSON"
+else
+  fail "select-option body parses as JSON" "body=$body"
+fi
+assert_contains "body has selector" "$body" '"selector":".course-filter"'
+assert_contains "body has label" "$body" '"label":"Active"'
+assert_contains "body has index" "$body" '"index":2'
+scenario_teardown
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

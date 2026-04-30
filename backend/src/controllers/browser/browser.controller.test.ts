@@ -170,6 +170,38 @@ describe('Browser Controller', () => {
 			expect(res.status).toBe(503);
 		});
 	});
+
+	describe('POST /api/browser/select-option', () => {
+		it('should return 503 when not connected', async () => {
+			const res = await request(app)
+				.post('/api/browser/select-option')
+				.send({ selector: '#status', value: 'active' });
+			expect(res.status).toBe(503);
+		});
+
+		it('should forward selector + value + label + index to the bridge', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			markBridgeConnected(bridge);
+			const sendSpy = jest
+				.spyOn(bridge, 'sendCommand')
+				.mockResolvedValue({ id: 'mock', success: true, result: { selected: true } });
+
+			const res = await request(app)
+				.post('/api/browser/select-option')
+				.send({ selector: '#status', label: 'Active', index: 2 });
+
+			expect(res.status).toBe(200);
+			expect(sendSpy).toHaveBeenCalledTimes(1);
+			expect(sendSpy.mock.calls[0][0]).toBe('selectOption');
+			expect(sendSpy.mock.calls[0][1]).toEqual(
+				expect.objectContaining({
+					selector: '#status',
+					label: 'Active',
+					index: 2,
+				}),
+			);
+		});
+	});
 });
 
 // ---------------------------------------------------------------------------

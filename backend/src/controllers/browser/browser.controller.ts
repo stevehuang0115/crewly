@@ -565,6 +565,29 @@ export async function listOptions(req: Request, res: Response): Promise<void> {
 }
 
 /**
+ * POST /api/browser/select-option
+ * Set the selected option of a native HTML <select> element.
+ *
+ * Native <select> elements cannot be operated by CDP click — clicking the
+ * <select> opens an OS-level popup the debugger cannot reach, and clicking
+ * <option> children is a no-op (options are not real DOM click targets).
+ * This handler delegates to the Extension which sets HTMLSelectElement.value
+ * (or selectedIndex) programmatically and dispatches input + change events
+ * so framework onChange handlers (React/Vue/Svelte) fire.
+ *
+ * Selection precedence: `index` > `value` > `label`. Exactly one MUST be
+ * supplied — the Extension returns `{ selected: false, error: ... }` when
+ * no selector matches.
+ *
+ * @param req - Express request with body
+ *   { selector: string, value?: string, label?: string, index?: number }
+ * @param res - Express response
+ */
+export async function selectOption(req: Request, res: Response): Promise<void> {
+	await sendToolCommand(req, res, 'selectOption', req.body || {});
+}
+
+/**
  * POST /api/browser/set-file-input
  * Set files on a file input element using CDP, bypassing the OS file picker.
  *

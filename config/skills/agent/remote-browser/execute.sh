@@ -65,6 +65,12 @@
 #   get-interactive-elements — { textContains?: string }
 #   search-text         — { text: string, exact?: boolean }
 #   list-options        — { selector: string }
+#   select-option       — { selector: string, value?: string, label?: string, index?: number }
+#                          Operates native <select> dropdowns by setting
+#                          HTMLSelectElement value programmatically and
+#                          dispatching input + change events. CDP-click on
+#                          a <select> opens an OS popup the debugger cannot
+#                          reach — use this action instead.
 #   set-file-input      — { selector: string, filePaths: string[] }
 #   bind-tab            — bind a fresh tab for this agent
 #   unbind-tab          — release this agent's bound tab
@@ -145,7 +151,7 @@ while [[ $# -gt 0 ]]; do
       echo "         scroll, hover, press-key, get-element, wait-for-selector,"
       echo "         execute-js, tabs, cookies, console, local-storage,"
       echo "         get-interactive-elements, search-text, full-page-screenshot,"
-      echo "         list-options, set-file-input"
+      echo "         list-options, select-option, set-file-input"
       exit 0
       ;;
     --)
@@ -279,6 +285,24 @@ _effective_tab_id() {
 
 # ---- Map action to HTTP method + endpoint + body ----
 
+# Helper: emit the body for a passthrough action. Returns EXTRA_PARAMS verbatim
+# when set, otherwise the literal "{}".
+#
+# Why a helper instead of `${EXTRA_PARAMS:-{}}`: bash's parameter-expansion
+# parser greedily consumes the first `}` after `:-` to close the expansion,
+# so `${VAR:-{}}` becomes `${VAR:-{}` plus a literal trailing `}`. When VAR is
+# non-empty (e.g. `{"direction":"down"}`), the leftover `}` is concatenated,
+# producing malformed JSON like `{"direction":"down"}}` and a 400 from
+# express.json(). Using a quoted default does not help (quotes leak into the
+# value); a tiny helper is the clearest fix.
+emit_body() {
+  if [ -n "$EXTRA_PARAMS" ]; then
+    printf '%s' "$EXTRA_PARAMS"
+  else
+    printf '%s' '{}'
+  fi
+}
+
 METHOD="POST"
 ENDPOINT=""
 BODY=""
@@ -333,11 +357,11 @@ case "$ACTION" in
     ;;
   scroll)
     ENDPOINT="/browser/scroll"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY="$(emit_body)"
     ;;
   scroll-in-element)
     ENDPOINT="/browser/scroll-in-element"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY="$(emit_body)"
     ;;
   hover)
     require_param "selector (--selector)" "$SELECTOR"
@@ -346,7 +370,7 @@ case "$ACTION" in
     ;;
   press-key)
     ENDPOINT="/browser/press-key"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY="$(emit_body)"
     ;;
   get-element)
     require_param "selector (--selector)" "$SELECTOR"
@@ -363,7 +387,7 @@ case "$ACTION" in
     if [ -n "$CODE" ]; then
       BODY=$(jq -n --arg c "$CODE" '{code: $c}')
     else
-      BODY="${EXTRA_PARAMS:-{}}"
+      BODY="$(emit_body)"
     fi
     ;;
   tabs)
@@ -380,11 +404,11 @@ case "$ACTION" in
     ;;
   local-storage)
     ENDPOINT="/browser/local-storage"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY="$(emit_body)"
     ;;
   get-interactive-elements)
     ENDPOINT="/browser/get-interactive-elements"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY="$(emit_body)"
     ;;
   search-text)
     require_param "text (--text)" "$TEXT"
@@ -396,9 +420,32 @@ case "$ACTION" in
     ENDPOINT="/browser/list-options"
     BODY=$(jq -n --arg s "$SELECTOR" '{selector: $s}')
     ;;
+  select-option)
+    # Native <select> dropdowns can't be operated by CDP click (the OS popup
+    # is unreachable). This action sets HTMLSelectElement.value/selectedIndex
+    # programmatically and dispatches input + change events so React/Vue
+    # onChange handlers fire. One of {value, label, index} must be supplied.
+    #
+    # Body shape: { selector, value? , label? , index? }
+    # Selection precedence (matches backend/extension): index > value > label.
+    # Always emit compact JSON (jq -c) so wire shape is stable for tests and
+    # downstream consumers.
+    require_param "selector (--selector)" "$SELECTOR"
+    ENDPOINT="/browser/select-option"
+    # Start from EXTRA_PARAMS (pass-through) merged with --selector; if --value
+    # is set we treat it as the option value (NOT the form-field value used by
+    # `fill`).
+    if [ -n "$EXTRA_PARAMS" ]; then
+      BODY=$(printf '%s' "$EXTRA_PARAMS" | jq -c --arg s "$SELECTOR" '. + {selector: $s}')
+    elif [ -n "$VALUE" ]; then
+      BODY=$(jq -n -c --arg s "$SELECTOR" --arg v "$VALUE" '{selector: $s, value: $v}')
+    else
+      BODY=$(jq -n -c --arg s "$SELECTOR" '{selector: $s}')
+    fi
+    ;;
   set-file-input)
     ENDPOINT="/browser/set-file-input"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY="$(emit_body)"
     ;;
   proxy-connect)
     ENDPOINT="/browser/proxy/connect"
