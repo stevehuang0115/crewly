@@ -108,6 +108,16 @@ export class BrowserProxyService {
    * the heartbeat — guards against the relay dropping a `disconnected` event.
    */
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Periodic `list_browsers` refresh timer. Runs every
+   * {@link BROWSER_PROXY_CONSTANTS.LIST_BROWSERS_REFRESH_INTERVAL_MS} and asks
+   * the relay for a fresh snapshot. The handler updates `lastSeenAt` on each
+   * live instance, which is what protects an idle-but-connected extension
+   * from being purged by `sweepTimer`. Without this timer, an extension that
+   * registers but receives no tool calls keeps its initial `lastSeenAt` and
+   * is evicted at the 5-min mark even though it is heartbeating to the relay.
+   */
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
   /** Auth token for relay registration */
   private authToken: string | null = null;
   /** Relay WebSocket URL */
@@ -456,6 +466,7 @@ export class BrowserProxyService {
         this.reconnectAttempts = 0; // Reset backoff on successful registration
         this.startHeartbeat();
         this.startSweepTimer();
+        this.startRefreshTimer();
         this.logger.info('Registered with relay', { sessionId: this.sessionId });
         // Request browser instance list
         this.sendRaw({ type: 'list_browsers' });
@@ -790,6 +801,47 @@ export class BrowserProxyService {
   }
 
   /**
+   * Start the periodic `list_browsers` refresh timer.
+   *
+   * Every {@link BROWSER_PROXY_CONSTANTS.LIST_BROWSERS_REFRESH_INTERVAL_MS} the
+   * proxy asks the relay for the current set of connected browsers. The
+   * relay's response is handled by {@link handleBrowserList}, which rebuilds
+   * `this.instances` and refreshes each entry's `lastSeenAt`. This is the
+   * mechanism that keeps an idle-but-live extension visible — without an
+   * active refresh, `lastSeenAt` would freeze at the initial `connected`
+   * event and the TTL sweep would evict the live entry once the threshold
+   * elapsed.
+   *
+   * Why active polling rather than passive listening: the relay does not
+   * push periodic heartbeat-derived updates per-instance. Tool-response
+   * `relay` messages do refresh `lastSeenAt` (see {@link handleMessage}
+   * `case 'relay'`), but extensions that connect without receiving any tool
+   * calls would never trigger that path.
+   *
+   * Idempotent: calls {@link stopRefreshTimer} first to avoid stacking
+   * intervals on reconnect / re-registration.
+   */
+  private startRefreshTimer(): void {
+    this.stopRefreshTimer();
+    this.refreshTimer = setInterval(() => {
+      if (this.state !== 'connected') return;
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      this.sendRaw({ type: 'list_browsers' });
+    }, BROWSER_PROXY_CONSTANTS.LIST_BROWSERS_REFRESH_INTERVAL_MS);
+  }
+
+  /**
+   * Stop the periodic `list_browsers` refresh timer. Safe to call when no
+   * timer is running (no-op via the null guard).
+   */
+  private stopRefreshTimer(): void {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+  }
+
+  /**
    * Collapse older entries in `this.instances` that share a `deviceFingerprint`
    * with the incoming entry.
    *
@@ -841,6 +893,7 @@ export class BrowserProxyService {
     this.sessionId = null;
     this.stopHeartbeat();
     this.stopSweepTimer();
+    this.stopRefreshTimer();
 
     // Clean up old WebSocket reference
     if (this.ws) {
@@ -936,6 +989,7 @@ export class BrowserProxyService {
   private cleanup(): void {
     this.stopHeartbeat();
     this.stopSweepTimer();
+    this.stopRefreshTimer();
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

@@ -1309,4 +1309,155 @@ describe('BrowserProxyService', () => {
       expect(ids).toEqual(['id-new', 'id-old']);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Periodic list_browsers refresh
+  //
+  // Spec: fix/browser-proxy-periodic-refresh — without this refresh, an
+  // idle-but-connected extension's `lastSeenAt` freezes at the initial
+  // `connected` event timestamp. The TTL sweep then evicts the live entry at
+  // the 5-min mark even though the extension is heartbeating to the relay.
+  // ---------------------------------------------------------------------------
+  describe('periodic list_browsers refresh', () => {
+    /**
+     * Helper: bring the proxy to the connected state so `startRefreshTimer`
+     * has fired alongside `startSweepTimer`.
+     */
+    function connectAndRegister(): void {
+      const proxy = BrowserProxyService.getInstance();
+      proxy.connect('test-token');
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-1' }),
+      );
+    }
+
+    /**
+     * Count `list_browsers` messages in `mockWs.send.mock.calls`. Each call
+     * receives a single string argument — JSON-encoded message — so we filter
+     * by `type === 'list_browsers'`.
+     */
+    function countListBrowsersSends(): number {
+      const ws = latestMockWs!;
+      return ws.send.mock.calls.reduce((acc: number, call: unknown[]) => {
+        try {
+          const payload = JSON.parse(call[0] as string) as { type?: string };
+          return payload?.type === 'list_browsers' ? acc + 1 : acc;
+        } catch {
+          return acc;
+        }
+      }, 0);
+    }
+
+    it('sends list_browsers periodically after registration', () => {
+      connectAndRegister();
+
+      // One initial list_browsers fires inside the `case 'registered'` handler.
+      const initialSends = countListBrowsersSends();
+      expect(initialSends).toBe(1);
+
+      // After 1 refresh interval, the timer should have fired exactly once.
+      jest.advanceTimersByTime(
+        BROWSER_PROXY_CONSTANTS.LIST_BROWSERS_REFRESH_INTERVAL_MS + 1,
+      );
+      expect(countListBrowsersSends()).toBe(initialSends + 1);
+
+      // After two more intervals, two more sends.
+      jest.advanceTimersByTime(
+        BROWSER_PROXY_CONSTANTS.LIST_BROWSERS_REFRESH_INTERVAL_MS * 2 + 1,
+      );
+      expect(countListBrowsersSends()).toBe(initialSends + 3);
+    });
+
+    it('keeps a live extension visible past STALE_PURGE_THRESHOLD_MS when relay refreshes lastSeenAt', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // Initial relay snapshot: one connected ext.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-live',
+              instanceName: 'Live Chrome',
+              sessionId: 'bs-live',
+              lastSeenAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      );
+      expect(proxy.getInstances()).toHaveLength(1);
+
+      // Walk forward 6 min in 60s steps. Each tick:
+      //   1. Refresh timer fires → proxy sends list_browsers
+      //   2. We simulate the relay responding with a fresh lastSeenAt
+      //   3. Sweep timer fires → entry survives because lastSeenAt was just refreshed
+      const stepMs = BROWSER_PROXY_CONSTANTS.LIST_BROWSERS_REFRESH_INTERVAL_MS;
+      const totalMs = 6 * 60_000; // exceeds the 5-min purge threshold
+      let elapsed = 0;
+      while (elapsed < totalMs) {
+        jest.advanceTimersByTime(stepMs);
+        elapsed += stepMs;
+        // Simulate the relay's response carrying a current timestamp. In
+        // production the relay knows the ext is alive because it is still
+        // receiving heartbeats from it.
+        latestMockWs!._trigger(
+          'message',
+          JSON.stringify({
+            type: 'browser_list',
+            instances: [
+              {
+                instanceId: 'id-live',
+                instanceName: 'Live Chrome',
+                sessionId: 'bs-live',
+                lastSeenAt: new Date().toISOString(),
+              },
+            ],
+          }),
+        );
+      }
+
+      expect(proxy.getInstances()).toHaveLength(1);
+      expect(proxy.getInstances()[0].instanceId).toBe('id-live');
+    });
+
+    it('disconnect clears the refresh timer (no leaked interval after teardown)', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+      const ws = latestMockWs!;
+
+      // Confirm the timer is running by advancing one interval and observing
+      // a refresh send.
+      jest.advanceTimersByTime(
+        BROWSER_PROXY_CONSTANTS.LIST_BROWSERS_REFRESH_INTERVAL_MS + 1,
+      );
+      const sendsBeforeDisconnect = countListBrowsersSends();
+
+      proxy.disconnect();
+
+      // After disconnect, advancing past several refresh intervals must NOT
+      // produce additional list_browsers sends. If the timer were leaked,
+      // the fake-timer scheduler would still fire it.
+      jest.advanceTimersByTime(
+        BROWSER_PROXY_CONSTANTS.LIST_BROWSERS_REFRESH_INTERVAL_MS * 5,
+      );
+      // After disconnect, the WS reference is detached. We assert no NEW
+      // list_browsers sends happened on the captured ws mock (the singleton's
+      // `this.ws` is now null and any leaked timer would no-op via the
+      // readyState guard, but a leaked timer would still try to fire — the
+      // most direct check is: no new list_browsers sends on the ws we held).
+      expect(countListBrowsersSends()).toBe(sendsBeforeDisconnect);
+      // Defensive: ensure the ws reference we captured did not receive any
+      // additional sends post-disconnect (catches future regressions where
+      // the timer might dereference a stale ws).
+      const totalSendsOnWs = ws.send.mock.calls.length;
+      jest.advanceTimersByTime(
+        BROWSER_PROXY_CONSTANTS.LIST_BROWSERS_REFRESH_INTERVAL_MS * 3,
+      );
+      expect(ws.send.mock.calls.length).toBe(totalSendsOnWs);
+    });
+  });
 });

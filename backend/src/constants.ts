@@ -122,6 +122,15 @@ export const BROWSER_PROXY_CONSTANTS = {
 	 *  relay/network blips without prematurely evicting a live ext connection
 	 *  (heartbeat fires every 25s, so 5 min = ~12 missed heartbeats). */
 	STALE_PURGE_THRESHOLD_MS: 5 * 60_000,
+	/** Cadence (ms) at which the proxy actively re-requests the relay's full
+	 *  `browser_list` so each live instance's `lastSeenAt` advances before the
+	 *  TTL sweep can mistakenly purge it. Without this active refresh, an
+	 *  idle-but-connected extension (no tool calls in flight) sees its
+	 *  `lastSeenAt` frozen at the moment of the initial `connected` event,
+	 *  and the 5-min sweep evicts the live entry. The refresh interval must
+	 *  be strictly less than `STALE_PURGE_THRESHOLD_MS` — 60s gives a 5×
+	 *  safety margin against transient relay slowdowns. */
+	LIST_BROWSERS_REFRESH_INTERVAL_MS: 60_000,
 } as const;
 
 // Agent runtime types
