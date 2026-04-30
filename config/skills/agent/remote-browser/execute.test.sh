@@ -410,6 +410,19 @@ assert_contains "body has label" "$body" '"label":"Active"'
 assert_contains "body has index" "$body" '"index":2'
 scenario_teardown
 
+# Scenario 13: select-option with strategy="aria" passes through verbatim
+# Used for custom React comboboxes (Radix/HeadlessUI/MUI/Mantine/Ant Design).
+scenario_init "scenario 13: select-option strategy=aria passthrough"
+queue_response '{"success":true,"data":{"selected":true,"strategy":"aria","matchedBy":"label"}}'
+start_stub
+unset CREWLY_SESSION_NAME
+"$SKILL" '{"action":"select-option","selector":"[role=combobox]","label":"Math 101","strategy":"aria"}' > /dev/null 2>&1 || true
+body=$(request_field 0 body)
+assert_contains "body has strategy:aria" "$body" '"strategy":"aria"'
+assert_contains "body has selector" "$body" '"selector":"[role=combobox]"'
+assert_contains "body has label" "$body" '"label":"Math 101"'
+scenario_teardown
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

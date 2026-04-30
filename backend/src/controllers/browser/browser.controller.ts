@@ -566,21 +566,33 @@ export async function listOptions(req: Request, res: Response): Promise<void> {
 
 /**
  * POST /api/browser/select-option
- * Set the selected option of a native HTML <select> element.
+ * Set the selected option of a dropdown — native HTML `<select>` OR
+ * ARIA-pattern custom React combobox (Radix / HeadlessUI / MUI / Mantine /
+ * Ant Design).
  *
- * Native <select> elements cannot be operated by CDP click — clicking the
- * <select> opens an OS-level popup the debugger cannot reach, and clicking
- * <option> children is a no-op (options are not real DOM click targets).
- * This handler delegates to the Extension which sets HTMLSelectElement.value
- * (or selectedIndex) programmatically and dispatches input + change events
- * so framework onChange handlers (React/Vue/Svelte) fire.
+ * Native `<select>` elements cannot be operated by CDP click — the OS-level
+ * popup is unreachable to the debugger and clicking `<option>` children is a
+ * no-op. Custom comboboxes have a different problem: clicking the trigger
+ * may not expand the listbox because focus management is JS-driven. This
+ * handler covers both via two strategies:
+ *
+ *   - `strategy: "native"` (default): the Extension sets
+ *     `HTMLSelectElement.value` via the prototype's native setter (Playwright
+ *     / Cypress pattern — required for React controlled components) and
+ *     dispatches input + change events.
+ *
+ *   - `strategy: "aria"`: the Extension focuses the combobox trigger,
+ *     dispatches keydown ArrowDown to open the listbox, polls for the
+ *     `[role="listbox"]` node, finds the matching `[role="option"]`, and
+ *     synthesizes the full mouse sequence (mousedown → mouseup → click).
  *
  * Selection precedence: `index` > `value` > `label`. Exactly one MUST be
  * supplied — the Extension returns `{ selected: false, error: ... }` when
- * no selector matches.
+ * no option matches and includes `availableOptions` for caller diagnostics.
  *
  * @param req - Express request with body
- *   { selector: string, value?: string, label?: string, index?: number }
+ *   { selector: string, value?: string, label?: string, index?: number,
+ *     strategy?: "native" | "aria" }
  * @param res - Express response
  */
 export async function selectOption(req: Request, res: Response): Promise<void> {

@@ -201,6 +201,27 @@ describe('Browser Controller', () => {
 				}),
 			);
 		});
+
+		// Customer-demo 2026-04-30: ARIA combobox strategy must reach the
+		// extension verbatim. Backend handler is body-passthrough so the only
+		// risk is a future refactor that strips unknown fields — this test
+		// locks the contract.
+		it('should forward strategy=aria to the extension verbatim', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			markBridgeConnected(bridge);
+			const sendSpy = jest
+				.spyOn(bridge, 'sendCommand')
+				.mockResolvedValue({ id: 'mock', success: true, result: { selected: true, strategy: 'aria' } });
+
+			const res = await request(app)
+				.post('/api/browser/select-option')
+				.send({ selector: '[role=combobox]', label: 'Math 101', strategy: 'aria' });
+
+			expect(res.status).toBe(200);
+			expect(sendSpy.mock.calls[0][1]).toEqual(
+				expect.objectContaining({ strategy: 'aria' }),
+			);
+		});
 	});
 });
 

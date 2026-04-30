@@ -65,12 +65,18 @@
 #   get-interactive-elements — { textContains?: string }
 #   search-text         — { text: string, exact?: boolean }
 #   list-options        — { selector: string }
-#   select-option       — { selector: string, value?: string, label?: string, index?: number }
-#                          Operates native <select> dropdowns by setting
-#                          HTMLSelectElement value programmatically and
-#                          dispatching input + change events. CDP-click on
-#                          a <select> opens an OS popup the debugger cannot
-#                          reach — use this action instead.
+#   select-option       — { selector: string, value?: string, label?: string,
+#                            index?: number, strategy?: "native" | "aria" }
+#                          Operates dropdowns. strategy="native" (default) for
+#                          real <select> elements: sets HTMLSelectElement value
+#                          via the prototype native setter (React-friendly) and
+#                          dispatches input + change events.
+#                          strategy="aria" for custom React combobox patterns
+#                          (Radix / HeadlessUI / MUI / Mantine / Ant Design):
+#                          focuses the trigger, dispatches ArrowDown to open,
+#                          polls for [role="listbox"], finds the matching
+#                          [role="option"], and synthesizes the full mouse
+#                          sequence (mousedown → mouseup → click).
 #   set-file-input      — { selector: string, filePaths: string[] }
 #   bind-tab            — bind a fresh tab for this agent
 #   unbind-tab          — release this agent's bound tab
@@ -421,12 +427,14 @@ case "$ACTION" in
     BODY=$(jq -n --arg s "$SELECTOR" '{selector: $s}')
     ;;
   select-option)
-    # Native <select> dropdowns can't be operated by CDP click (the OS popup
-    # is unreachable). This action sets HTMLSelectElement.value/selectedIndex
-    # programmatically and dispatches input + change events so React/Vue
-    # onChange handlers fire. One of {value, label, index} must be supplied.
+    # Operates dropdowns — both native <select> and ARIA-pattern custom
+    # React comboboxes (Radix / HeadlessUI / MUI / Mantine / Ant Design).
+    # Native <select> can't be operated by CDP click (OS popup unreachable);
+    # custom comboboxes can't be opened reliably by click either (focus
+    # management is JS-driven).
     #
-    # Body shape: { selector, value? , label? , index? }
+    # Body shape: { selector, value? , label? , index? , strategy? }
+    #   strategy: "native" (default) for <select>, "aria" for combobox.
     # Selection precedence (matches backend/extension): index > value > label.
     # Always emit compact JSON (jq -c) so wire shape is stable for tests and
     # downstream consumers.
@@ -434,7 +442,7 @@ case "$ACTION" in
     ENDPOINT="/browser/select-option"
     # Start from EXTRA_PARAMS (pass-through) merged with --selector; if --value
     # is set we treat it as the option value (NOT the form-field value used by
-    # `fill`).
+    # `fill`). strategy comes through EXTRA_PARAMS when supplied via JSON.
     if [ -n "$EXTRA_PARAMS" ]; then
       BODY=$(printf '%s' "$EXTRA_PARAMS" | jq -c --arg s "$SELECTOR" '. + {selector: $s}')
     elif [ -n "$VALUE" ]; then
