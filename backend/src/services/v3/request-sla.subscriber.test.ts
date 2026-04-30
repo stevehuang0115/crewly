@@ -28,10 +28,17 @@ import {
   setRequestSlaSubscriber,
   getRequestSlaSubscriber,
   respondToUserWorkItemId,
+  pickResolveTarget,
+  pickFailTarget,
+  closeRequestPath,
 } from './request-sla.subscriber.js';
 import type { EscalationSlackCallback } from './request-sla.subscriber.js';
-import type { Request } from '../../types/v2/request.types.js';
-import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
+import type { Request, RequestStatus } from '../../types/v2/request.types.js';
+import {
+  type WorkItem,
+  type WorkItemStatus,
+  WORK_ITEM_TRANSITIONS,
+} from '../../types/v2/work-item.types.js';
 import type { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { RequestService } from './request.service.js';
 
@@ -79,6 +86,14 @@ function buildRequest(overrides: Partial<Request> = {}): Request {
  * Stub TaskPoolService — captures addToPool + transitionStatus calls and
  * lets each test set the WI's status for findWorkItem so terminal-status
  * branches can be exercised.
+ *
+ * IMPORTANT (2026-04-29 hardening, Steve bug): the fake's `transitionStatus`
+ * now enforces the real `WORK_ITEM_TRANSITIONS` matrix. The previous lenient
+ * stub silently accepted illegal transitions (e.g. `queued → done`),
+ * masking a production-only failure where the SLA close path threw and got
+ * swallowed by `markResolved`'s catch. Using the canonical matrix here
+ * means the same code path tests run against the same gate prod runs
+ * against — that class of bug fails CI next time, not in users' faces.
  */
 function buildFakeTaskPool(): {
   taskPool: TaskPoolService;
@@ -97,6 +112,7 @@ function buildFakeTaskPool(): {
       addCalls.push(wi);
     }),
     findWorkItem: jest.fn(async (id: string) => stored.get(id) ?? null),
+    getAllItems: jest.fn(async () => Array.from(stored.values())),
     transitionStatus: jest.fn(
       async (
         id: string,
@@ -106,6 +122,13 @@ function buildFakeTaskPool(): {
       ) => {
         const wi = stored.get(id);
         if (!wi) return null;
+        // Enforce the real state machine — mirrors TaskPoolService.transitionStatus.
+        const allowed = WORK_ITEM_TRANSITIONS[wi.status];
+        if (!allowed.has(status)) {
+          throw new Error(
+            `Invalid status transition for WorkItem ${id}: ${wi.status} → ${status}`,
+          );
+        }
         wi.status = status;
         if (mutator) mutator(wi);
         transitionCalls.push({ id, status, actor });
@@ -126,17 +149,35 @@ function buildFakeTaskPool(): {
 }
 
 /**
- * Stub RequestService — only `getById` is touched.
+ * Stub RequestService — `getById` for read, `update` for the cascade close
+ * path added in 2026-04-29's bug fix. The stub mutates the in-memory
+ * registry and records every status change so tests can assert the
+ * Request lifecycle without spinning up filesystem persistence.
  */
 function buildFakeRequestService(initial: Request[] = []): {
   service: RequestService;
   registry: Map<string, Request>;
+  updateCalls: Array<{ id: string; status?: RequestStatus; result?: string }>;
 } {
   const registry = new Map<string, Request>(initial.map((r) => [r.id, r]));
+  const updateCalls: Array<{ id: string; status?: RequestStatus; result?: string }> = [];
   const service = {
     getById: jest.fn(async (id: string) => registry.get(id) ?? null),
+    update: jest.fn(async (id: string, updates: Partial<Request>) => {
+      const r = registry.get(id);
+      if (!r) throw new Error(`Request not found: ${id}`);
+      if (updates.status !== undefined) r.status = updates.status;
+      if (updates.result !== undefined) r.result = updates.result;
+      r.updatedAt = new Date().toISOString();
+      updateCalls.push({
+        id,
+        status: updates.status,
+        result: updates.result,
+      });
+      return r;
+    }),
   } as unknown as RequestService;
-  return { service, registry };
+  return { service, registry, updateCalls };
 }
 
 /**
@@ -182,6 +223,123 @@ describe('extractSlackThreadTs / extractSlackChannelId', () => {
   it('returns null for empty / missing input', () => {
     expect(extractSlackThreadTs(undefined)).toBeNull();
     expect(extractSlackChannelId('')).toBeNull();
+  });
+});
+
+describe('pickResolveTarget', () => {
+  // 2026-04-29 bug fix: pin the legal mapping so a future change to the
+  // WORK_ITEM_TRANSITIONS matrix that breaks our targets fails CI loudly.
+  it('routes queued WIs to "cancelled" (queued→done is illegal)', () => {
+    expect(pickResolveTarget('queued')).toBe('cancelled');
+  });
+
+  it('routes running WIs to "done"', () => {
+    expect(pickResolveTarget('running')).toBe('done');
+  });
+
+  it('routes done_by_worker to "verified" (the only success edge from done_by_worker)', () => {
+    expect(pickResolveTarget('done_by_worker')).toBe('verified');
+  });
+
+  it('routes other live statuses to "cancelled" (defensive default)', () => {
+    expect(pickResolveTarget('blocked')).toBe('cancelled');
+    expect(pickResolveTarget('escalated')).toBe('cancelled');
+    expect(pickResolveTarget('proposed')).toBe('cancelled');
+    expect(pickResolveTarget('accepted')).toBe('cancelled');
+    expect(pickResolveTarget('scheduled')).toBe('cancelled');
+  });
+
+  it('always returns a status that is reachable from the input per WORK_ITEM_TRANSITIONS', () => {
+    // Property-style spec: whatever pickResolveTarget returns, the V3 state
+    // machine MUST permit that edge from the input. This catches any drift
+    // where the matrix tightens but the helper isn't updated.
+    const liveStatuses: WorkItemStatus[] = [
+      'queued',
+      'running',
+      'blocked',
+      'escalated',
+      'proposed',
+      'accepted',
+      'done_by_worker',
+      'scheduled',
+    ];
+    for (const from of liveStatuses) {
+      const to = pickResolveTarget(from);
+      const allowed = WORK_ITEM_TRANSITIONS[from];
+      expect(allowed.has(to)).toBe(true);
+    }
+  });
+});
+
+describe('pickFailTarget', () => {
+  it('routes queued WIs to "cancelled" (queued→failed is illegal)', () => {
+    expect(pickFailTarget('queued')).toBe('cancelled');
+  });
+
+  it('routes running WIs to "failed"', () => {
+    expect(pickFailTarget('running')).toBe('failed');
+  });
+
+  it('routes done_by_worker to "rejected" (the only fail-shaped edge)', () => {
+    expect(pickFailTarget('done_by_worker')).toBe('rejected');
+  });
+
+  it('always returns a status that is reachable from the input per WORK_ITEM_TRANSITIONS', () => {
+    const liveStatuses: WorkItemStatus[] = [
+      'queued',
+      'running',
+      'blocked',
+      'escalated',
+      'proposed',
+      'accepted',
+      'done_by_worker',
+      'scheduled',
+    ];
+    for (const from of liveStatuses) {
+      const to = pickFailTarget(from);
+      const allowed = WORK_ITEM_TRANSITIONS[from];
+      expect(allowed.has(to)).toBe(true);
+    }
+  });
+});
+
+describe('closeRequestPath', () => {
+  it('returns ["done"] for direct-close statuses', () => {
+    expect(closeRequestPath('open')).toEqual(['done']);
+    expect(closeRequestPath('running')).toEqual(['done']);
+    expect(closeRequestPath('waiting_confirmation')).toEqual(['done']);
+  });
+
+  it('returns ["running","done"] for two-step statuses', () => {
+    expect(closeRequestPath('ready')).toEqual(['running', 'done']);
+    expect(closeRequestPath('blocked')).toEqual(['running', 'done']);
+  });
+
+  it('returns [] for already-terminal statuses', () => {
+    expect(closeRequestPath('done')).toEqual([]);
+    expect(closeRequestPath('cancelled')).toEqual([]);
+  });
+
+  it('every step in the returned path is a legal Request transition', () => {
+    // Property: for any non-terminal start, walking the returned path must
+    // never violate REQUEST_TRANSITIONS. Pins the helper against silent drift.
+    const liveStatuses: RequestStatus[] = [
+      'open',
+      'ready',
+      'running',
+      'blocked',
+      'waiting_confirmation',
+    ];
+    for (const start of liveStatuses) {
+      let current: RequestStatus = start;
+      for (const next of closeRequestPath(start)) {
+        // Hand-rolled to avoid pulling REQUEST_TRANSITIONS into the test —
+        // the closeRequestPath impl already calls isValidRequestTransition.
+        expect(['done', 'running']).toContain(next);
+        current = next;
+      }
+      expect(current).toBe('done');
+    }
   });
 });
 
@@ -521,7 +679,9 @@ describe('RequestSlaSubscriber', () => {
     // ---------------------------------------------------------------------
     // Arch N3 on PR #357 — orphan respond_to_user WI close on escalation
     // ---------------------------------------------------------------------
-    it('transitions the orphan respond_to_user WI to "failed" with slaResolvedReason="escalation_timeout" after a 10min escalation (DM success path)', async () => {
+    it('transitions the orphan respond_to_user WI to "cancelled" with slaResolvedReason="escalation_timeout" after a 10min escalation (queued WI, DM success path)', async () => {
+      // Bug fix 2026-04-29: queued→failed is illegal in WORK_ITEM_TRANSITIONS,
+      // so an unclaimed SLA tracker now routes to `cancelled` on escalation.
       const r = buildRequest();
       svc.registry.set(r.id, r);
       bus.publish(buildEvent(r.id));
@@ -530,21 +690,20 @@ describe('RequestSlaSubscriber', () => {
       jest.advanceTimersByTime(10_000);
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
-      // The respond_to_user WI must be transitioned to 'failed' after the DM.
       const wiId = respondToUserWorkItemId(r.id);
-      const failTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
-      expect(failTransitions).toHaveLength(1);
-      expect(failTransitions[0].status).toBe('failed');
-      expect(failTransitions[0].actor).toBe('system');
+      const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
+      expect(closeTransitions).toHaveLength(1);
+      expect(closeTransitions[0].status).toBe('cancelled');
+      expect(closeTransitions[0].actor).toBe('system');
 
       // Mutator must stamp slaResolvedReason for ops visibility.
       const wi = await pool.taskPool.findWorkItem(wiId);
-      expect(wi?.status).toBe('failed');
+      expect(wi?.status).toBe('cancelled');
       expect(wi?.metadata?.slaResolvedReason).toBe('escalation_timeout');
       expect(typeof wi?.metadata?.slaResolvedAt).toBe('string');
     });
 
-    it('still transitions the orphan WI to "failed" when no Slack DM hook is wired', async () => {
+    it('still closes the orphan WI when no Slack DM hook is wired', async () => {
       sub.stop();
       sub = new RequestSlaSubscriber({
         eventBus: bus,
@@ -565,12 +724,13 @@ describe('RequestSlaSubscriber', () => {
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
       const wiId = respondToUserWorkItemId(r.id);
-      const failTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
-      expect(failTransitions).toHaveLength(1);
-      expect(failTransitions[0].status).toBe('failed');
+      const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
+      expect(closeTransitions).toHaveLength(1);
+      // queued WI → cancelled (legal); only running WIs go to failed.
+      expect(closeTransitions[0].status).toBe('cancelled');
     });
 
-    it('still transitions the orphan WI to "failed" when the Slack DM callback throws', async () => {
+    it('still closes the orphan WI when the Slack DM callback throws', async () => {
       sub.stop();
       const throwingEscalate: EscalationSlackCallback = jest.fn(async () => {
         throw new Error('slack 503');
@@ -594,9 +754,31 @@ describe('RequestSlaSubscriber', () => {
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
       const wiId = respondToUserWorkItemId(r.id);
-      const failTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
-      expect(failTransitions).toHaveLength(1);
-      expect(failTransitions[0].status).toBe('failed');
+      const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
+      expect(closeTransitions).toHaveLength(1);
+      expect(closeTransitions[0].status).toBe('cancelled');
+    });
+
+    it('routes a CLAIMED orphan respond_to_user WI to "failed" on escalation', async () => {
+      // The other escalation tests exercise the queued case (default for SLA
+      // trackers that the orc never explicitly claims). This case pins the
+      // running→failed branch — important for the rare path where someone
+      // manually claims the SLA WI and then misses the 10min window.
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      // Simulate a claim before the 10min mark.
+      const wiId = respondToUserWorkItemId(r.id);
+      pool.setStatus(wiId, 'running');
+
+      jest.advanceTimersByTime(10_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+      const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
+      expect(closeTransitions).toHaveLength(1);
+      expect(closeTransitions[0].status).toBe('failed');
     });
 
     it('does NOT transition the WI when it is already terminal at escalation time', async () => {
@@ -612,11 +794,9 @@ describe('RequestSlaSubscriber', () => {
       jest.advanceTimersByTime(10_000);
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
-      // No transition to 'failed' because the WI is already terminal.
-      const failTransitions = pool.transitionCalls.filter(
-        (c) => c.id === wiId && c.status === 'failed',
-      );
-      expect(failTransitions).toHaveLength(0);
+      // No additional transition recorded — already terminal.
+      const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
+      expect(closeTransitions).toHaveLength(0);
     });
   });
 
@@ -625,19 +805,35 @@ describe('RequestSlaSubscriber', () => {
   // -------------------------------------------------------------------------
 
   describe('markResolvedByThread', () => {
-    it('transitions the matching WI to done and clears the timers', async () => {
+    it('transitions the queued SLA WI to "cancelled" and cascades the Request to "done"', async () => {
+      // The user-visible bug Steve reported (2026-04-29): orc replied on
+      // Slack but Request stayed Active. Root cause was queued→done illegal.
+      // Post-fix: queued→cancelled (legal) + Request open→done cascade.
       const r = buildRequest();
       svc.registry.set(r.id, r);
       bus.publish(buildEvent(r.id));
       await sub.flushPending();
 
       expect(sub.trackedCount).toBe(1);
+      expect(svc.registry.get(r.id)?.status).toBe('open');
 
       await sub.markResolvedByThread('1772899923.865659');
 
+      // WI: queued → cancelled (legal) with slaResolvedReason metadata.
       expect(pool.transitionCalls).toEqual([
-        { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
+        { id: respondToUserWorkItemId(r.id), status: 'cancelled', actor: 'system' },
       ]);
+      const wi = await pool.taskPool.findWorkItem(respondToUserWorkItemId(r.id));
+      expect(wi?.metadata?.slaResolvedReason).toBe('orc_reply');
+      expect(typeof wi?.metadata?.slaResolvedAt).toBe('string');
+
+      // Request: open → done (cascade close, no other live WIs).
+      expect(svc.updateCalls).toEqual([
+        expect.objectContaining({ id: r.id, status: 'done' }),
+      ]);
+      expect(svc.registry.get(r.id)?.status).toBe('done');
+      expect(svc.registry.get(r.id)?.result).toContain('orc_reply');
+
       expect(sub.trackedCount).toBe(0);
 
       // Subsequent timer firings are silent.
@@ -646,6 +842,120 @@ describe('RequestSlaSubscriber', () => {
       jest.advanceTimersByTime(60_000);
       for (let i = 0; i < 3; i += 1) await Promise.resolve();
       expect(breachListener).not.toHaveBeenCalled();
+    });
+
+    it('routes a CLAIMED SLA WI to "done" on resolve (not "cancelled")', async () => {
+      // Pin the running→done branch — important for the rare path where
+      // someone explicitly claims the SLA WI before the orc replies.
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      pool.setStatus(respondToUserWorkItemId(r.id), 'running');
+
+      await sub.markResolvedByThread('1772899923.865659');
+
+      expect(pool.transitionCalls).toEqual([
+        { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
+      ]);
+    });
+
+    it('keeps the parent Request open when other non-terminal WIs exist (orc decomposed)', async () => {
+      // Orc decomposes a Request into delegate WIs and ALSO replies in-thread.
+      // The reply auto-resolves the SLA tracker but the decomposition WIs
+      // are still in flight — we MUST NOT close the Request prematurely.
+      const r = buildRequest({ status: 'running' });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      // Inject a sibling delegate WI for the same Request (status=running).
+      const sibling: WorkItem = {
+        id: 'wi-delegate-1',
+        type: 'delegate',
+        owner: 'team_lead',
+        target: 'leo',
+        title: 'Decomposed sub-task',
+        description: 'Real work spawned from the same Request',
+        status: 'running',
+        createdAt: new Date().toISOString(),
+        retryCount: 0,
+        maxRetries: 3,
+        requestId: r.id,
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: 0,
+      };
+      await pool.taskPool.addToPool(sibling);
+
+      await sub.markResolvedByThread('1772899923.865659');
+
+      // SLA tracker still flips to cancelled.
+      expect(pool.transitionCalls).toEqual([
+        { id: respondToUserWorkItemId(r.id), status: 'cancelled', actor: 'system' },
+      ]);
+      // …but Request stays in 'running' — cascade is gated on "no other live WIs".
+      expect(svc.updateCalls).toHaveLength(0);
+      expect(svc.registry.get(r.id)?.status).toBe('running');
+    });
+
+    it('still cascades the Request when sibling WIs are all terminal', async () => {
+      const r = buildRequest({ status: 'running' });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      // Sibling WI exists but already done — should not block cascade.
+      const doneSibling: WorkItem = {
+        id: 'wi-delegate-done',
+        type: 'delegate',
+        owner: 'team_lead',
+        target: 'leo',
+        title: 'Already-done sibling',
+        description: 'Completed before the orc replied',
+        status: 'done',
+        createdAt: new Date().toISOString(),
+        retryCount: 0,
+        maxRetries: 3,
+        requestId: r.id,
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: 0,
+      };
+      await pool.taskPool.addToPool(doneSibling);
+
+      await sub.markResolvedByThread('1772899923.865659');
+
+      expect(svc.registry.get(r.id)?.status).toBe('done');
+    });
+
+    it('routes through "running" on a "ready" Request (two-step close)', async () => {
+      // ready→done is illegal per REQUEST_TRANSITIONS. The cascade picks
+      // ready→running→done. Pin the ordering so a refactor that drops the
+      // intermediate step fails CI loudly.
+      const r = buildRequest({ status: 'ready' });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      await sub.markResolvedByThread('1772899923.865659');
+
+      expect(svc.updateCalls.map((c) => c.status)).toEqual(['running', 'done']);
+      expect(svc.registry.get(r.id)?.status).toBe('done');
+    });
+
+    it('skips Request cascade when the Request is already terminal', async () => {
+      const r = buildRequest({ status: 'cancelled' });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      await sub.markResolvedByThread('1772899923.865659');
+
+      // No Request.update — already terminal.
+      expect(svc.updateCalls).toHaveLength(0);
+      expect(svc.registry.get(r.id)?.status).toBe('cancelled');
     });
 
     it('is a no-op for an unknown threadTs', async () => {
@@ -658,18 +968,21 @@ describe('RequestSlaSubscriber', () => {
       expect(pool.transitionCalls).toHaveLength(0);
     });
 
-    it('is a no-op when the WI is already terminal', async () => {
+    it('skips the WI transition when it is already terminal but still cascades the Request', async () => {
+      // Out-of-band cleanup left the WI cancelled. The cascade should
+      // still run so the parent Request doesn't sit on Active forever.
       const r = buildRequest();
       svc.registry.set(r.id, r);
       bus.publish(buildEvent(r.id));
       await sub.flushPending();
 
-      // Externally transition first.
       pool.setStatus(respondToUserWorkItemId(r.id), 'verified');
 
       await sub.markResolvedByThread('1772899923.865659');
-      // No transition recorded — already terminal.
+      // No new WI transition recorded — already terminal.
       expect(pool.transitionCalls).toHaveLength(0);
+      // …but Request still cascades to done.
+      expect(svc.registry.get(r.id)?.status).toBe('done');
     });
   });
 
@@ -727,9 +1040,14 @@ describe('RequestSlaSubscriber', () => {
       );
       await sub.flushPending();
 
-      // The tracked WI was transitioned to 'done' with reason 'workitem_decompose'.
+      // The tracked WI was cancelled with reason 'workitem_decompose'.
+      // (Bug fix 2026-04-29: queued→cancelled, not queued→done.)
+      // The decomposed delegate WI was registered via the workitem:queued
+      // event publisher, but the test fake's `addToPool` is what actually
+      // stores WIs — we don't store the delegate WI here, so the cascade's
+      // "no other live WIs" gate sees no siblings and closes the Request.
       expect(pool.transitionCalls).toEqual([
-        { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
+        { id: respondToUserWorkItemId(r.id), status: 'cancelled', actor: 'system' },
       ]);
       expect(sub.trackedCount).toBe(0);
 
@@ -831,7 +1149,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.markResolvedByThread('1772899923.865659');
 
       expect(pool.transitionCalls).toEqual([
-        { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
+        { id: respondToUserWorkItemId(r.id), status: 'cancelled', actor: 'system' },
       ]);
       expect(sub.trackedCount).toBe(0);
 
@@ -939,8 +1257,11 @@ describe('RequestSlaSubscriber', () => {
       await sub.markResolvedByChatV2('cabc');
 
       expect(pool.transitionCalls).toEqual([
-        { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
+        { id: respondToUserWorkItemId(r.id), status: 'cancelled', actor: 'system' },
       ]);
+      // Bug fix 2026-04-29: chat-v2 reply also cascades the Request close.
+      expect(svc.registry.get(r.id)?.status).toBe('done');
+      expect(svc.registry.get(r.id)?.result).toContain('chatv2_reply');
       expect(sub.trackedCount).toBe(0);
 
       // Subsequent timer firings are silent.
@@ -987,13 +1308,14 @@ describe('RequestSlaSubscriber', () => {
 
       // Only the chat-v2 WI auto-resolved.
       expect(pool.transitionCalls).toEqual([
-        { id: respondToUserWorkItemId(chatReq.id), status: 'done', actor: 'system' },
+        { id: respondToUserWorkItemId(chatReq.id), status: 'cancelled', actor: 'system' },
       ]);
       expect(sub.trackedCount).toBe(1);
 
       // Slack auto-close still works for the survivor.
       await sub.markResolvedByThread('1772899923.865659');
       expect(pool.transitionCalls).toHaveLength(2);
+      expect(pool.transitionCalls[1].status).toBe('cancelled');
       expect(sub.trackedCount).toBe(0);
     });
 

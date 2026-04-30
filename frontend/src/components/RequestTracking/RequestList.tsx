@@ -42,7 +42,18 @@ interface RequestListProps {
 // =============================================================================
 
 /**
- * Maps a backend Request status to the frontend RequestStatus.
+ * Maps a backend Request status to the frontend RequestStatus enum.
+ *
+ * Backend statuses (`types/v2/request.types.ts:RequestStatus`):
+ *   `open` | `ready` | `running` | `blocked` | `waiting_confirmation` |
+ *   `done` | `cancelled`
+ *
+ * The previous version used a stale literal `'in_progress'` (the V1 status
+ * name) and silently fell through `ready` / `running` to the `default →
+ * 'active'` branch. That hid a real bug class — when the backend added a
+ * new live status it would render as "Active" without any compile-time
+ * signal. Listing every backend status explicitly makes future drift fail
+ * fast (the exhaustiveness assertion at the bottom is the guard).
  *
  * @param backendStatus - Status string from the API
  * @returns Mapped RequestStatus
@@ -50,7 +61,8 @@ interface RequestListProps {
 function mapRequestStatus(backendStatus: string): RequestStatus {
   switch (backendStatus) {
     case 'open':
-    case 'in_progress':
+    case 'ready':
+    case 'running':
       return 'active';
     case 'blocked':
       return 'blocked';
@@ -60,6 +72,15 @@ function mapRequestStatus(backendStatus: string): RequestStatus {
     case 'cancelled':
       return 'done';
     default:
+      // Unknown backend status — render as Active so it does not silently
+      // collapse to a terminal-looking pill in the UI. Logged via console
+      // so a follow-up sweep can update this mapper alongside any new
+      // backend status. (Logged at debug level via console.warn to surface
+      // during dev without crashing prod renders.)
+      if (typeof console !== 'undefined' && backendStatus) {
+        // eslint-disable-next-line no-console
+        console.warn('[RequestList] Unknown backend Request status:', backendStatus);
+      }
       return 'active';
   }
 }

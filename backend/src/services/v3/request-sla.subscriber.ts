@@ -58,7 +58,12 @@ import {
   type WorkItemStatus,
   DEFAULT_MAX_RETRIES,
 } from '../../types/v2/work-item.types.js';
-import type { Request } from '../../types/v2/request.types.js';
+import {
+  type Request,
+  type RequestStatus,
+  TERMINAL_REQUEST_STATUSES,
+  isValidRequestTransition,
+} from '../../types/v2/request.types.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 import type { EventBusService, InProcessUnsubscribe } from '../event-bus/event-bus.service.js';
 import type { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -143,6 +148,76 @@ export const REQUEST_SLA_SUBSCRIBED_EVENTS: readonly EventType[] = [
  */
 export function respondToUserWorkItemId(requestId: string): string {
   return `request:${requestId}:respond_to_user`;
+}
+
+/**
+ * Pick the legal terminal status for resolving an SLA-tracked WI. The V3
+ * `WORK_ITEM_TRANSITIONS` matrix (see `types/v2/work-item.types.ts`)
+ * forbids `queued → done`, so the previous `markResolved` always-`'done'`
+ * path was throwing in production while the test fake silently accepted it.
+ *
+ * Mapping:
+ *   - `running`        → `done`      (someone explicitly claimed; close cleanly).
+ *   - `done_by_worker` → `verified`  (the only edge `done_by_worker` permits
+ *     toward terminal-success; `done_by_worker → cancelled` is illegal).
+ *   - `proposed`       → `accepted` then handled separately — but in practice
+ *     the SLA WI never lands here, so we route to `cancelled` (legal).
+ *   - everything else  → `cancelled` (the V3 matrix permits `* → cancelled`
+ *     from all of `queued`/`scheduled`/`accepted`/`blocked`/`escalated`).
+ *
+ * @param current - The WI's current (non-terminal) status.
+ * @returns The legal terminal status to transition into.
+ */
+export function pickResolveTarget(current: WorkItemStatus): WorkItemStatus {
+  if (current === 'running') return 'done';
+  if (current === 'done_by_worker') return 'verified';
+  return 'cancelled';
+}
+
+/**
+ * Pick the legal terminal status for FAILING an SLA-tracked WI on
+ * escalation timeout (10-minute miss).
+ *
+ * Mapping:
+ *   - `running`        → `failed`    (canonical fail edge).
+ *   - `done_by_worker` → `rejected`  (the only fail-shaped edge from
+ *     `done_by_worker`; `done_by_worker → failed` is illegal).
+ *   - everything else  → `cancelled` (queued/scheduled/etc. cannot reach
+ *     `failed` directly, so we route them to `cancelled` — matches the
+ *     "we gave up tracking, nothing actually failed" semantic).
+ *
+ * @param current - The WI's current (non-terminal) status.
+ * @returns The legal terminal status to transition into.
+ */
+export function pickFailTarget(current: WorkItemStatus): WorkItemStatus {
+  if (current === 'running') return 'failed';
+  if (current === 'done_by_worker') return 'rejected';
+  return 'cancelled';
+}
+
+/**
+ * Compute the legal Request status path from the current state to `done`.
+ * Returns an empty array if the Request is already terminal (no work to
+ * do) — the call site is expected to guard for this.
+ *
+ * Per `REQUEST_TRANSITIONS` in `types/v2/request.types.ts`:
+ *   - `open` → `done`                         (direct)
+ *   - `running` → `done`                      (direct)
+ *   - `waiting_confirmation` → `done`         (direct)
+ *   - `ready` → `running` → `done`            (two-step; ready→done illegal)
+ *   - `blocked` → `running` → `done`          (two-step; blocked→done illegal)
+ *
+ * @param from - Current Request status (must be non-terminal).
+ * @returns Ordered array of statuses to transition through (excluding `from`).
+ */
+export function closeRequestPath(from: RequestStatus): RequestStatus[] {
+  if (from === 'done' || from === 'cancelled') return [];
+  if (isValidRequestTransition(from, 'done')) return ['done'];
+  // ready / blocked: route via running.
+  if (isValidRequestTransition(from, 'running') && isValidRequestTransition('running', 'done')) {
+    return ['running', 'done'];
+  }
+  return [];
 }
 
 /**
@@ -495,13 +570,30 @@ export class RequestSlaSubscriber {
   }
 
   /**
-   * Mark an in-flight respond_to_user WI as done by Request id (e.g. the
-   * orc decomposed the Request into other WorkItems and we want to silence
-   * the SLA chain). v1 is called by {@link markResolvedByThread} only;
-   * follow-up tickets may wire a Request-status hook.
+   * Mark an in-flight respond_to_user WI as resolved by Request id (e.g. the
+   * orc replied on Slack, or decomposed the Request into other WorkItems and
+   * we want to silence the SLA chain). After the WI transitions, we also
+   * cascade the close to the parent Request when this was the last
+   * non-terminal WI for it (Steve 2026-04-29: Requests stuck on "Active" in
+   * /tasks UI even after the team replied).
+   *
+   * Transition path is selected from the WI's current status to satisfy the
+   * V3 state machine — `transitionStatus` enforces `WORK_ITEM_TRANSITIONS`
+   * and `queued → done` is NOT a legal edge:
+   *   - `queued` → `cancelled`: SLA tracker was a placeholder, never claimed.
+   *     Semantic: "no longer needed because the orc handled this directly".
+   *   - `running` → `done`:    Someone explicitly claimed the SLA WI; close
+   *     it as a normal completion.
+   *   - terminal status:        no-op (already settled).
+   *
+   * Before this fix, `markResolved` always called `transitionStatus(_, 'done')`
+   * which threw on the queued case, the catch swallowed it at warn level, the
+   * WI stayed `queued` forever, and the Request never closed — the
+   * user-reported "Active count never goes down" bug.
    *
    * @param requestId - The Request whose SLA chain should be silenced
-   * @param reason - Diagnostic tag for the resolution log entry
+   * @param reason    - Diagnostic tag (`orc_reply` / `chatv2_reply` /
+   *   `workitem_decompose`) recorded in WI metadata + Request `result`.
    */
   async markResolved(requestId: string, reason: string): Promise<void> {
     const tracked = this.trackedByRequest.get(requestId);
@@ -517,23 +609,28 @@ export class RequestSlaSubscriber {
 
     try {
       const wi = await this.taskPool.findWorkItem(tracked.workItemId);
-      if (!wi) return;
-      if (TERMINAL_WI_STATUSES.has(wi.status)) {
-        // Already terminal — nothing to do.
-        return;
+      if (wi && !TERMINAL_WI_STATUSES.has(wi.status)) {
+        const target = pickResolveTarget(wi.status);
+        await this.taskPool.transitionStatus(tracked.workItemId, target, 'system', (item) => {
+          item.metadata = {
+            ...(item.metadata ?? {}),
+            slaResolvedReason: reason,
+            slaResolvedAt: new Date().toISOString(),
+          };
+        });
+        this.logger.info('SLA WorkItem auto-resolved', {
+          workItemId: tracked.workItemId,
+          requestId,
+          reason,
+          fromStatus: wi.status,
+          toStatus: target,
+        });
       }
-      await this.taskPool.transitionStatus(tracked.workItemId, 'done', 'system', (item) => {
-        item.metadata = {
-          ...(item.metadata ?? {}),
-          slaResolvedReason: reason,
-          slaResolvedAt: new Date().toISOString(),
-        };
-      });
-      this.logger.info('SLA WorkItem auto-resolved', {
-        workItemId: tracked.workItemId,
-        requestId,
-        reason,
-      });
+
+      // Cascade: close the parent Request when this was the last live WI.
+      // Runs even if the WI was already terminal — covers the case where
+      // the WI was closed out-of-band but the Request didn't get cascaded.
+      await this.maybeCloseRequest(requestId, reason);
     } catch (err) {
       this.logger.warn('SLA auto-resolve threw', {
         workItemId: tracked.workItemId,
@@ -541,6 +638,93 @@ export class RequestSlaSubscriber {
         error: formatError(err),
       });
     }
+  }
+
+  /**
+   * Cascade close the parent Request after an SLA-tracked WI resolves.
+   *
+   * The Request is moved to `done` only when:
+   *   1. it exists and is not already terminal (`done`/`cancelled`), AND
+   *   2. no other non-terminal WIs remain for it (the orc may have
+   *      decomposed the Request into other WIs that are still in flight —
+   *      in that case we leave the Request alone and let the existing
+   *      `cascadeRequestStatus` machinery in v3-data.service close it
+   *      when those WIs finish).
+   *
+   * Picks the shortest legal transition path per `REQUEST_TRANSITIONS`:
+   *   - `open` / `running` / `waiting_confirmation` → `done` (direct)
+   *   - `ready` / `blocked`                         → `running` → `done`
+   *
+   * Errors are caught at the call site (markResolved); this method must
+   * never propagate, so a Request-update failure does not leak into the
+   * Slack-reply flow.
+   *
+   * @param requestId - The Request to close.
+   * @param reason    - The same reason tag recorded on the WI; passed
+   *   through to `Request.result` so the UI shows why it auto-closed.
+   */
+  private async maybeCloseRequest(requestId: string, reason: string): Promise<void> {
+    const request = await this.requestService.getById(requestId);
+    if (!request) return;
+    if (TERMINAL_REQUEST_STATUSES.has(request.status)) return;
+
+    const otherActiveCount = await this.countOtherActiveWorkItems(requestId);
+    if (otherActiveCount > 0) {
+      this.logger.debug('Request kept open — other non-terminal WIs still in flight', {
+        requestId,
+        otherActiveCount,
+        reason,
+      });
+      return;
+    }
+
+    const path = closeRequestPath(request.status);
+    if (path.length === 0) {
+      // Should be impossible given the TERMINAL guard above, but be defensive.
+      return;
+    }
+
+    try {
+      for (const next of path) {
+        await this.requestService.update(requestId, {
+          status: next,
+          ...(next === 'done' ? { result: `Auto-closed by SLA: ${reason}` } : {}),
+        });
+      }
+      this.logger.info('Request auto-closed by SLA cascade', {
+        requestId,
+        from: request.status,
+        path,
+        reason,
+      });
+    } catch (err) {
+      this.logger.warn('Request auto-close threw', {
+        requestId,
+        from: request.status,
+        path,
+        error: formatError(err),
+      });
+    }
+  }
+
+  /**
+   * Count WorkItems linked to the given Request that are NOT the SLA tracker
+   * AND are still non-terminal. Returns 0 when only the SLA tracker existed.
+   *
+   * @param requestId - The Request id to scan.
+   * @returns Count of other in-flight WorkItems.
+   */
+  private async countOtherActiveWorkItems(requestId: string): Promise<number> {
+    const slaWiId = respondToUserWorkItemId(requestId);
+    const all = await this.taskPool.getAllItems();
+    let count = 0;
+    for (const wi of all) {
+      if (wi.requestId !== requestId) continue;
+      if (wi.id === slaWiId) continue;
+      if (TERMINAL_WI_STATUSES.has(wi.status)) continue;
+      count += 1;
+    }
+    return count;
   }
 
   /**
@@ -869,16 +1053,22 @@ export class RequestSlaSubscriber {
         // Already terminal — nothing to do.
         return;
       }
-      await this.taskPool.transitionStatus(workItemId, 'failed', 'system', (item) => {
+      // Same state-machine constraint as markResolved: `queued → failed`
+      // is illegal per WORK_ITEM_TRANSITIONS. Route queued WIs to
+      // `cancelled`; running WIs go to `failed` as before.
+      const target = pickFailTarget(wi.status);
+      await this.taskPool.transitionStatus(workItemId, target, 'system', (item) => {
         item.metadata = {
           ...(item.metadata ?? {}),
           slaResolvedReason: 'escalation_timeout',
           slaResolvedAt: new Date().toISOString(),
         };
       });
-      this.logger.info('SLA escalation orphan WI auto-failed', {
+      this.logger.info('SLA escalation orphan WI auto-closed', {
         workItemId,
         requestId,
+        fromStatus: wi.status,
+        toStatus: target,
       });
     } catch (err) {
       this.logger.warn('SLA escalation orphan-fail threw', {
