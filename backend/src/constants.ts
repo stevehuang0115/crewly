@@ -103,6 +103,27 @@ export const BROWSER_BRIDGE_CONSTANTS = {
 	TAB_BIND_RETRY_AFTER_MS: 30000,
 } as const;
 
+/**
+ * Crewly Cloud Relay proxy constants for browser instance lifecycle hygiene.
+ * Used by `BrowserProxyService` to keep its in-memory instances Map free of
+ * stale entries when the relay drops a `disconnected` event or when the user
+ * reinstalls the extension (fresh `instanceId` UUID — old one would otherwise
+ * linger forever).
+ *
+ * See `.crewly/specs/browser-ext-stale-status-fix-2026-04-30.md`.
+ */
+export const BROWSER_PROXY_CONSTANTS = {
+	/** Cadence of the wall-clock TTL sweep (ms). Every interval the service
+	 *  walks `this.instances` and purges entries whose `lastSeenAt` exceeds
+	 *  `STALE_PURGE_THRESHOLD_MS`. */
+	SWEEP_INTERVAL_MS: 60_000,
+	/** Inactivity threshold (ms) after which an instance is considered stale
+	 *  and purged by the sweep. 5 min is generous enough to tolerate transient
+	 *  relay/network blips without prematurely evicting a live ext connection
+	 *  (heartbeat fires every 25s, so 5 min = ~12 missed heartbeats). */
+	STALE_PURGE_THRESHOLD_MS: 5 * 60_000,
+} as const;
+
 // Agent runtime types
 export const RUNTIME_TYPES = {
 	CLAUDE_CODE: 'claude-code',

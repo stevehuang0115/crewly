@@ -5,6 +5,7 @@
  */
 
 import { BrowserProxyService } from './browser-proxy.service.js';
+import { BROWSER_PROXY_CONSTANTS } from '../../constants.js';
 
 // Capture event handlers registered on mock WebSocket instances
 type WsHandler = (...args: unknown[]) => void;
@@ -968,6 +969,344 @@ describe('BrowserProxyService', () => {
         }),
       );
       expect(proxy.isAvailable()).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // BE-1: TTL sweep + fingerprint dedup
+  //
+  // Spec: .crewly/specs/browser-ext-stale-status-fix-2026-04-30.md
+  // Task: .crewly/tasks/delegated/be-1-browser-proxy-sweep-and-dedup.md
+  //
+  // The sweep timer is started from the relay 'registered' handler (alongside
+  // heartbeat) — these tests connect+register first, then drive scenarios.
+  // ---------------------------------------------------------------------------
+  describe('TTL sweep (BE-1)', () => {
+    /**
+     * Helper: bring the proxy to the connected state so `startSweepTimer`
+     * has fired. Returns the ms timestamp captured at connect time so tests
+     * can author `lastSeenAt` values relative to it.
+     */
+    function connectAndRegister(): number {
+      const proxy = BrowserProxyService.getInstance();
+      proxy.connect('test-token');
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-1' }),
+      );
+      return Date.now();
+    }
+
+    it('purges entries whose lastSeenAt exceeds STALE_PURGE_THRESHOLD_MS', () => {
+      const now = connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // Seed one stale entry (6 min old) — older than the 5-min purge threshold.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-stale',
+              instanceName: 'Stale Chrome',
+              sessionId: 'bs-stale',
+              lastSeenAt: new Date(now - 6 * 60_000).toISOString(),
+            },
+          ],
+        }),
+      );
+      expect(proxy.getInstances()).toHaveLength(1);
+
+      // Advance one sweep tick — sweep should run and purge the stale row.
+      jest.advanceTimersByTime(BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS + 1);
+
+      expect(proxy.getInstances()).toHaveLength(0);
+    });
+
+    it('keeps fresh entries (lastSeenAt under threshold) across a sweep tick', () => {
+      const now = connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // Seed one fresh entry (1 min old) — well under the 5-min threshold.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-fresh',
+              instanceName: 'Fresh Chrome',
+              sessionId: 'bs-fresh',
+              lastSeenAt: new Date(now - 60_000).toISOString(),
+            },
+          ],
+        }),
+      );
+
+      jest.advanceTimersByTime(BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS + 1);
+
+      const after = proxy.getInstances();
+      expect(after).toHaveLength(1);
+      expect(after[0].instanceId).toBe('id-fresh');
+    });
+
+    it('purges only the stale row when fresh and stale entries coexist', () => {
+      const now = connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-stale',
+              instanceName: 'Stale',
+              sessionId: 'bs-stale',
+              lastSeenAt: new Date(now - 10 * 60_000).toISOString(),
+            },
+            {
+              instanceId: 'id-fresh',
+              instanceName: 'Fresh',
+              sessionId: 'bs-fresh',
+              lastSeenAt: new Date(now - 30_000).toISOString(),
+            },
+          ],
+        }),
+      );
+
+      jest.advanceTimersByTime(BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS + 1);
+
+      const survivors = proxy.getInstances().map((i) => i.instanceId);
+      expect(survivors).toEqual(['id-fresh']);
+    });
+
+    it('disconnect clears the sweep timer (no leaked interval after teardown)', () => {
+      const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+      // After registered, both heartbeat and sweep timers are running.
+      // Reset the spy so we only count clears triggered by disconnect().
+      clearIntervalSpy.mockClear();
+
+      proxy.disconnect();
+
+      // disconnect() → cleanup() calls stopHeartbeat() + stopSweepTimer(),
+      // each of which calls clearInterval once. We assert at least 2 clears
+      // (one for each timer) — exact count is decoupled from internals.
+      expect(clearIntervalSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      // Advancing time past the sweep interval must NOT trigger any further
+      // sweep work — if the timer were leaked, fake timers would still fire it.
+      // We rely on the absence of additional state changes to verify this.
+      const before = proxy.getInstances().length;
+      jest.advanceTimersByTime(BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS * 5);
+      expect(proxy.getInstances().length).toBe(before);
+
+      clearIntervalSpy.mockRestore();
+    });
+  });
+
+  describe('fingerprint dedup (BE-1)', () => {
+    /**
+     * Helper: bring the proxy to the connected state, identical to the one
+     * used by the TTL-sweep block. Local to keep the dedup tests self-contained.
+     */
+    function connectAndRegister(): void {
+      const proxy = BrowserProxyService.getInstance();
+      proxy.connect('test-token');
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-1' }),
+      );
+    }
+
+    it('collapses an older entry on browser_event:connected when fingerprints match', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // Pre-seed an existing entry with deviceFingerprint 'fp-A'.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-old',
+              instanceName: 'Old Install',
+              sessionId: 'bs-old',
+              lastSeenAt: new Date().toISOString(),
+              deviceFingerprint: 'fp-A',
+            },
+          ],
+        }),
+      );
+      expect(proxy.getInstances()).toHaveLength(1);
+
+      // User reinstalls extension — relay sends a `connected` event with a
+      // fresh instanceId UUID but the same deviceFingerprint.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_event',
+          event: 'connected',
+          instanceId: 'id-new',
+          instanceName: 'New Install',
+          deviceFingerprint: 'fp-A',
+        }),
+      );
+
+      const survivors = proxy.getInstances();
+      expect(survivors).toHaveLength(1);
+      expect(survivors[0].instanceId).toBe('id-new');
+    });
+
+    it('collapses ghost rows during browser_list rebuild when fingerprints collide', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // The relay snapshot itself contains a ghost row alongside the live row,
+      // both reporting the same deviceFingerprint. Dedup must collapse them
+      // during the rebuild pass.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-ghost',
+              instanceName: 'Ghost',
+              sessionId: 'bs-ghost',
+              lastSeenAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+              deviceFingerprint: 'fp-A',
+            },
+            {
+              instanceId: 'id-live',
+              instanceName: 'Live',
+              sessionId: 'bs-live',
+              lastSeenAt: new Date().toISOString(),
+              deviceFingerprint: 'fp-A',
+            },
+          ],
+        }),
+      );
+
+      const survivors = proxy.getInstances();
+      // Exactly one survivor — order of dedup walks Map insertion order, so
+      // when the second entry ('id-live') is processed it removes the first.
+      expect(survivors).toHaveLength(1);
+      expect(survivors[0].instanceId).toBe('id-live');
+    });
+
+    it('does NOT dedup when deviceFingerprint is absent on either side (backward compat)', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // Pre-seed an entry without fingerprint (old ext build).
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-old',
+              instanceName: 'Old Build',
+              sessionId: 'bs-old',
+              lastSeenAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      );
+
+      // New `connected` event also lacks deviceFingerprint — must NOT collapse.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_event',
+          event: 'connected',
+          instanceId: 'id-new',
+          instanceName: 'New',
+        }),
+      );
+
+      const ids = proxy.getInstances().map((i) => i.instanceId).sort();
+      expect(ids).toEqual(['id-new', 'id-old']);
+    });
+
+    it('does NOT dedup when fingerprints differ (different physical devices)', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-laptop',
+              instanceName: 'Laptop',
+              sessionId: 'bs-laptop',
+              lastSeenAt: new Date().toISOString(),
+              deviceFingerprint: 'fp-laptop',
+            },
+          ],
+        }),
+      );
+
+      // A genuinely different physical device connects with a different fp.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_event',
+          event: 'connected',
+          instanceId: 'id-desktop',
+          instanceName: 'Desktop',
+          deviceFingerprint: 'fp-desktop',
+        }),
+      );
+
+      const ids = proxy.getInstances().map((i) => i.instanceId).sort();
+      expect(ids).toEqual(['id-desktop', 'id-laptop']);
+    });
+
+    it('treats empty-string deviceFingerprint as absent (no dedup)', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'id-old',
+              instanceName: 'Old',
+              sessionId: 'bs-old',
+              lastSeenAt: new Date().toISOString(),
+              deviceFingerprint: '',
+            },
+          ],
+        }),
+      );
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_event',
+          event: 'connected',
+          instanceId: 'id-new',
+          instanceName: 'New',
+          deviceFingerprint: '',
+        }),
+      );
+
+      // Empty-string fingerprint must be treated as absent — both rows survive.
+      const ids = proxy.getInstances().map((i) => i.instanceId).sort();
+      expect(ids).toEqual(['id-new', 'id-old']);
     });
   });
 });
