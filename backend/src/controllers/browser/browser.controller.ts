@@ -575,6 +575,33 @@ export async function setFileInput(req: Request, res: Response): Promise<void> {
 	await sendToolCommand(req, res, 'setFileInput', req.body || {});
 }
 
+/**
+ * POST /api/browser/select-option
+ *
+ * Select an option in a native HTML `<select>` element. CDP click on
+ * a `<select>` does not open the dropdown (Chrome blocks synthetic
+ * events on native form controls), and `<option>` children are rendered
+ * by the OS rather than the DOM, so the existing `click` flow can't
+ * reach them. This endpoint forwards to the extension's `selectOption`
+ * tool, which sets `el.value` directly and dispatches `input` + `change`
+ * events with `bubbles: true` so frameworks (React, Vue, etc.) pick the
+ * change up via their controlled-component handlers.
+ *
+ * Selection precedence (one of these is required):
+ *   - `value`  — match `<option>` by its `value` attribute
+ *   - `label`  — match `<option>` by its visible text (`.text`)
+ *   - `index`  — match `<option>` by zero-based position
+ *
+ * @param req - Express request with body
+ *   `{ selector: string, value?: string, label?: string, index?: number,
+ *      strategy?: "native" | "aria", tabId?: number }`
+ * @param res - Express response — `{ success, selectedValue, selectedText }`
+ *   on hit; `{ success: false, error }` on miss.
+ */
+export async function selectOption(req: Request, res: Response): Promise<void> {
+	await sendToolCommand(req, res, 'selectOption', req.body || {});
+}
+
 // ---------------------------------------------------------------------------
 // Per-tab dispatch (§4.2) — bind / unbind / list bindings
 // ---------------------------------------------------------------------------

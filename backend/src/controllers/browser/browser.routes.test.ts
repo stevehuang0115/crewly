@@ -72,6 +72,7 @@ describe('createBrowserRouter', () => {
 		expect(routePaths).toContain('POST /get-interactive-elements');
 		expect(routePaths).toContain('POST /search-text');
 		expect(routePaths).toContain('POST /list-options');
+		expect(routePaths).toContain('POST /select-option');
 		expect(routePaths).toContain('POST /set-file-input');
 		// Per-tab dispatch (M2)
 		expect(routePaths).toContain('POST /bind');
@@ -79,10 +80,11 @@ describe('createBrowserRouter', () => {
 		expect(routePaths).toContain('GET /bindings');
 	});
 
-	it('should have exactly 29 routes', () => {
-		// 26 legacy routes + 3 per-tab dispatch routes (bind / unbind / bindings).
+	it('should have exactly 30 routes', () => {
+		// 27 legacy routes (added /select-option) + 3 per-tab dispatch routes
+		// (bind / unbind / bindings).
 		const router = createBrowserRouter();
 		const routes = router.stack.filter((layer: any) => layer.route);
-		expect(routes.length).toBe(29);
+		expect(routes.length).toBe(30);
 	});
 });

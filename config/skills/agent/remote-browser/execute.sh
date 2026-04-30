@@ -65,6 +65,8 @@
 #   get-interactive-elements — { textContains?: string }
 #   search-text         — { text: string, exact?: boolean }
 #   list-options        — { selector: string }
+#   select-option       — { selector: string, value?: string, label?: string,
+#                           index?: number, strategy?: "native" | "aria" }
 #   set-file-input      — { selector: string, filePaths: string[] }
 #   bind-tab            — bind a fresh tab for this agent
 #   unbind-tab          — release this agent's bound tab
@@ -145,7 +147,7 @@ while [[ $# -gt 0 ]]; do
       echo "         scroll, hover, press-key, get-element, wait-for-selector,"
       echo "         execute-js, tabs, cookies, console, local-storage,"
       echo "         get-interactive-elements, search-text, full-page-screenshot,"
-      echo "         list-options, set-file-input"
+      echo "         list-options, select-option, set-file-input"
       exit 0
       ;;
     --)
@@ -246,6 +248,29 @@ _purge_cached_tab() {
   rm -f "$cache_path" 2>/dev/null || true
 }
 
+# Returns the JSON body to send: $1 if non-empty, otherwise the canonical
+# empty-object literal `{}`. This replaces the `${EXTRA_PARAMS:-{}}` pattern,
+# which is mis-parsed by bash: the closing `}` of the parameter expansion is
+# the FIRST `}` it sees, so `${EXTRA_PARAMS:-{}}` becomes `${EXTRA_PARAMS:-{}`
+# (default = the literal `{`) followed by a stray literal `}`. The bug only
+# surfaces when EXTRA_PARAMS is set — then the body is `<value>}` with a
+# trailing extra `}` that fails JSON parse server-side, triggering 400 errors
+# on scroll / press-key / local-storage / get-interactive-elements / set-file-input
+# / scroll-in-element / execute-js fallback. When EXTRA_PARAMS is empty, the
+# bug masks itself by accident (the `{` default + stray `}` happen to spell
+# `{}`).
+#
+# @stdout the JSON body string (no trailing newline)
+# @example  BODY=$(_body_or_empty "$EXTRA_PARAMS")
+_body_or_empty() {
+  local v="${1:-}"
+  if [ -n "$v" ]; then
+    printf '%s' "$v"
+  else
+    printf '%s' '{}'
+  fi
+}
+
 # Inject `tabId` into a JSON body if we have one, leaving an explicit override
 # alone. Reads BODY as input, sets BODY to the augmented version. Always emits
 # compact (single-line) JSON via `jq -c` so downstream consumers and test
@@ -333,11 +358,11 @@ case "$ACTION" in
     ;;
   scroll)
     ENDPOINT="/browser/scroll"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY=$(_body_or_empty "$EXTRA_PARAMS")
     ;;
   scroll-in-element)
     ENDPOINT="/browser/scroll-in-element"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY=$(_body_or_empty "$EXTRA_PARAMS")
     ;;
   hover)
     require_param "selector (--selector)" "$SELECTOR"
@@ -346,7 +371,7 @@ case "$ACTION" in
     ;;
   press-key)
     ENDPOINT="/browser/press-key"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY=$(_body_or_empty "$EXTRA_PARAMS")
     ;;
   get-element)
     require_param "selector (--selector)" "$SELECTOR"
@@ -363,7 +388,7 @@ case "$ACTION" in
     if [ -n "$CODE" ]; then
       BODY=$(jq -n --arg c "$CODE" '{code: $c}')
     else
-      BODY="${EXTRA_PARAMS:-{}}"
+      BODY=$(_body_or_empty "$EXTRA_PARAMS")
     fi
     ;;
   tabs)
@@ -380,11 +405,11 @@ case "$ACTION" in
     ;;
   local-storage)
     ENDPOINT="/browser/local-storage"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY=$(_body_or_empty "$EXTRA_PARAMS")
     ;;
   get-interactive-elements)
     ENDPOINT="/browser/get-interactive-elements"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY=$(_body_or_empty "$EXTRA_PARAMS")
     ;;
   search-text)
     require_param "text (--text)" "$TEXT"
@@ -396,9 +421,28 @@ case "$ACTION" in
     ENDPOINT="/browser/list-options"
     BODY=$(jq -n --arg s "$SELECTOR" '{selector: $s}')
     ;;
+  select-option)
+    # Select an option in a native <select> by value / label / index.
+    # Resolution priority: value > label > index. The selector itself is
+    # always required. When --params is supplied we accept it as the
+    # canonical body source (lets agents pass {label,...} or {index,...}
+    # without dedicated CLI flags); otherwise we project --selector +
+    # --value into the body.
+    require_param "selector (--selector)" "$SELECTOR"
+    ENDPOINT="/browser/select-option"
+    if [ -n "$EXTRA_PARAMS" ]; then
+      # Merge --selector into the supplied params so callers don't have
+      # to duplicate it. `jq` overwrites EXTRA_PARAMS.selector if absent.
+      BODY=$(printf '%s' "$EXTRA_PARAMS" | jq -c --arg s "$SELECTOR" '. + {selector: ($s)}')
+    elif [ -n "$VALUE" ]; then
+      BODY=$(jq -n -c --arg s "$SELECTOR" --arg v "$VALUE" '{selector: $s, value: $v}')
+    else
+      error_exit "select-option requires --value (or --params with value/label/index)"
+    fi
+    ;;
   set-file-input)
     ENDPOINT="/browser/set-file-input"
-    BODY="${EXTRA_PARAMS:-{}}"
+    BODY=$(_body_or_empty "$EXTRA_PARAMS")
     ;;
   proxy-connect)
     ENDPOINT="/browser/proxy/connect"
