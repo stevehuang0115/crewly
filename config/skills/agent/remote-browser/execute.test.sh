@@ -343,6 +343,132 @@ assert_eq "no X-Agent-Session header" "" "$hdr"
 scenario_teardown
 
 # ---------------------------------------------------------------------------
+# Scenarios 9–13: brace-injection bug regression coverage
+#
+# Repro: `BODY="${EXTRA_PARAMS:-{}}"` was mis-parsed by bash — the closing
+# `}` of the parameter expansion was the FIRST `}`, so `${EXTRA_PARAMS:-{}}`
+# was read as `${EXTRA_PARAMS:-{}` (default = literal `{`) followed by a
+# stray literal `}`. With EXTRA_PARAMS set, body became `<value>}` —
+# malformed JSON. With EXTRA_PARAMS empty, the bug coincidentally produced
+# `{}` and masked itself. Fix replaces the pattern with `_body_or_empty`.
+#
+# These scenarios drive --params with a non-empty value through every
+# affected action and assert the wire body is parseable JSON without a
+# trailing stray `}`. Each action is a separate scenario so a regression
+# in one branch does not mask another.
+# ---------------------------------------------------------------------------
+
+# Helper for the brace-bug regression scenarios — drives one action with
+# a known payload and asserts the body is exactly that payload (no stray
+# trailing `}`).
+_assert_brace_clean() {
+  local action="$1" payload="$2"
+  scenario_init "scenario brace-clean: $action --params"
+  queue_response '{"success":true,"data":{}}'
+  start_stub
+  unset CREWLY_SESSION_NAME
+  "$SKILL" --action "$action" --params "$payload" > /dev/null 2>&1 || true
+  local body
+  body=$(request_field 0 body)
+  # Body must parse cleanly as JSON (the bug appended a literal `}`).
+  if printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+    pass "[$action] body parses as JSON"
+  else
+    fail "[$action] body parses as JSON" "body=$body"
+  fi
+  # Body must equal the payload byte-for-byte (no trailing extra char).
+  assert_eq "[$action] body == payload" "$payload" "$body"
+  scenario_teardown
+}
+
+# Scenario 9: scroll
+_assert_brace_clean "scroll" '{"direction":"down","amount":500}'
+# Scenario 10: scroll-in-element
+_assert_brace_clean "scroll-in-element" '{"selector":".sb","amount":200}'
+# Scenario 11: press-key
+_assert_brace_clean "press-key" '{"key":"Enter","modifiers":["Shift"]}'
+# Scenario 12: local-storage
+_assert_brace_clean "local-storage" '{"keys":["uid","theme"]}'
+# Scenario 13: get-interactive-elements
+_assert_brace_clean "get-interactive-elements" '{"textContains":"Submit"}'
+# Scenario 14: set-file-input (was missing from Olivias original list)
+_assert_brace_clean "set-file-input" '{"selector":"input","filePaths":["/tmp/a"]}'
+
+# Scenario 15: empty --params still produces a valid `{}` body
+scenario_init "scenario 15: empty --params produces {} (back-compat)"
+queue_response '{"success":true,"data":{}}'
+start_stub
+unset CREWLY_SESSION_NAME
+"$SKILL" --action scroll > /dev/null 2>&1 || true
+body=$(request_field 0 body)
+assert_eq "empty params → body is canonical {}" "{}" "$body"
+scenario_teardown
+
+# ---------------------------------------------------------------------------
+# Scenarios 16–18: select-option route + body shapes
+# ---------------------------------------------------------------------------
+
+# Scenario 16: select-option with --value projects {selector, value}
+scenario_init "scenario 16: select-option --selector --value"
+queue_response '{"success":true,"data":{"selectedValue":"opt2","selectedText":"Option 2"}}'
+start_stub
+unset CREWLY_SESSION_NAME
+"$SKILL" --action select-option --selector "#level" --value "opt2" > /dev/null 2>&1 || true
+assert_eq "POST /api/browser/select-option" \
+  "POST /api/browser/select-option" \
+  "$(request_field 0 method) $(request_field 0 path)"
+body=$(request_field 0 body)
+assert_eq "body has selector" "#level" "$(printf '%s' "$body" | jq -r '.selector')"
+assert_eq "body has value" "opt2" "$(printf '%s' "$body" | jq -r '.value')"
+scenario_teardown
+
+# Scenario 17: select-option with --params (label-based)
+scenario_init "scenario 17: select-option --params with label"
+queue_response '{"success":true,"data":{}}'
+start_stub
+unset CREWLY_SESSION_NAME
+"$SKILL" --action select-option --selector "#level" \
+  --params '{"label":"Beginner"}' > /dev/null 2>&1 || true
+body=$(request_field 0 body)
+assert_eq "body has selector merged from --selector" "#level" \
+  "$(printf '%s' "$body" | jq -r '.selector')"
+assert_eq "body has label from --params" "Beginner" \
+  "$(printf '%s' "$body" | jq -r '.label')"
+# Must be parseable JSON (regression guard against the brace bug since
+# this path also uses EXTRA_PARAMS in a jq pipeline).
+if printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+  pass "select-option --params body parses as JSON"
+else
+  fail "select-option --params body parses as JSON" "body=$body"
+fi
+scenario_teardown
+
+# Scenario 18: select-option with --params (index-based)
+scenario_init "scenario 18: select-option --params with index"
+queue_response '{"success":true,"data":{}}'
+start_stub
+unset CREWLY_SESSION_NAME
+"$SKILL" --action select-option --selector "#level" \
+  --params '{"index":2}' > /dev/null 2>&1 || true
+body=$(request_field 0 body)
+assert_eq "body has index from --params" "2" \
+  "$(printf '%s' "$body" | jq -r '.index')"
+scenario_teardown
+
+# Scenario 19: select-option missing --value AND --params errors out
+scenario_init "scenario 19: select-option without value or params errors"
+queue_response '{"success":true,"data":{}}'
+start_stub
+unset CREWLY_SESSION_NAME
+out=$("$SKILL" --action select-option --selector "#level" 2>&1) || true
+assert_contains "error message mentions value/params requirement" "$out" \
+  "select-option requires"
+# Stub should NOT have received any request (hard-fail before HTTP).
+total_reqs=$(wc -l < "$LOG_FILE" | tr -d ' ')
+assert_eq "stub received 0 requests" "0" "$total_reqs"
+scenario_teardown
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo

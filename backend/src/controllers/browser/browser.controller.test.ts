@@ -170,6 +170,68 @@ describe('Browser Controller', () => {
 			expect(res.status).toBe(503);
 		});
 	});
+
+	describe('POST /api/browser/select-option', () => {
+		it('should return 503 when not connected', async () => {
+			const res = await request(app)
+				.post('/api/browser/select-option')
+				.send({ selector: '#level', value: 'opt2' });
+			expect(res.status).toBe(503);
+		});
+
+		it('forwards selector + value through sendCommand as the selectOption tool', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			markBridgeConnected(bridge);
+			const sendSpy = jest
+				.spyOn(bridge, 'sendCommand')
+				.mockResolvedValue({
+					id: 'sel-1',
+					success: true,
+					result: { selectedValue: 'opt2', selectedText: 'Option 2' },
+				} as Awaited<ReturnType<typeof bridge.sendCommand>>);
+
+			const res = await request(app)
+				.post('/api/browser/select-option')
+				.send({ selector: '#level', value: 'opt2' });
+
+			expect(res.status).toBe(200);
+			expect(sendSpy).toHaveBeenCalledTimes(1);
+			expect(sendSpy.mock.calls[0][0]).toBe('selectOption');
+			expect(sendSpy.mock.calls[0][1]).toEqual(
+				expect.objectContaining({ selector: '#level', value: 'opt2' }),
+			);
+		});
+
+		it('accepts label / index / strategy alternatives in the body', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			markBridgeConnected(bridge);
+			const sendSpy = jest
+				.spyOn(bridge, 'sendCommand')
+				.mockResolvedValue({
+					id: 'sel-2',
+					success: true,
+					result: { selectedValue: '', selectedText: '' },
+				} as Awaited<ReturnType<typeof bridge.sendCommand>>);
+
+			await request(app)
+				.post('/api/browser/select-option')
+				.send({ selector: '#level', label: 'Beginner', strategy: 'aria' });
+			expect(sendSpy.mock.calls[0][1]).toEqual(
+				expect.objectContaining({
+					selector: '#level',
+					label: 'Beginner',
+					strategy: 'aria',
+				}),
+			);
+
+			await request(app)
+				.post('/api/browser/select-option')
+				.send({ selector: '#level', index: 2 });
+			expect(sendSpy.mock.calls[1][1]).toEqual(
+				expect.objectContaining({ selector: '#level', index: 2 }),
+			);
+		});
+	});
 });
 
 // ---------------------------------------------------------------------------

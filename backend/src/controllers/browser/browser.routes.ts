@@ -35,6 +35,7 @@ import {
 	getInteractiveElements,
 	searchText,
 	listOptions,
+	selectOption,
 	setFileInput,
 	bindTab,
 	unbindTab,
@@ -123,6 +124,9 @@ export function createBrowserRouter(): Router {
 
 	// POST /api/browser/list-options — list select options
 	router.post('/list-options', listOptions);
+
+	// POST /api/browser/select-option — select an option in a native <select>
+	router.post('/select-option', selectOption);
 
 	// POST /api/browser/set-file-input — set files on file input via CDP
 	router.post('/set-file-input', setFileInput);
