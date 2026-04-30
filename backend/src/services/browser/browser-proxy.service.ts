@@ -15,7 +15,7 @@
 import WebSocket from 'ws';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { BrowserCommandResponse } from './browser-bridge.service.js';
-import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
+import { BROWSER_BRIDGE_CONSTANTS, BROWSER_PROXY_CONSTANTS } from '../../constants.js';
 
 /** Minimal info about a connected browser instance. */
 export interface BrowserInstanceInfo {
@@ -27,6 +27,16 @@ export interface BrowserInstanceInfo {
   sessionId: string;
   /** ISO timestamp of last activity (heartbeat, command, or event) */
   lastSeenAt: string;
+  /**
+   * Optional stable identifier of the physical device the extension runs on.
+   * Used to dedup re-install events that produce a fresh `instanceId` UUID
+   * for the same underlying browser. Backward compatible: if absent on either
+   * side of a comparison, dedup is skipped — older ext builds that do not
+   * emit this field continue to behave exactly as before.
+   *
+   * Spec: `.crewly/specs/browser-ext-stale-status-fix-2026-04-30.md`.
+   */
+  deviceFingerprint?: string;
 }
 
 /** Pending command waiting for a relay response. */
@@ -91,6 +101,13 @@ export class BrowserProxyService {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   /** Reconnect timer */
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Wall-clock TTL sweep timer. Runs every {@link BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS}
+   * and purges any `BrowserInstanceInfo` whose `lastSeenAt` exceeds
+   * {@link BROWSER_PROXY_CONSTANTS.STALE_PURGE_THRESHOLD_MS}. Independent of
+   * the heartbeat — guards against the relay dropping a `disconnected` event.
+   */
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
   /** Auth token for relay registration */
   private authToken: string | null = null;
   /** Relay WebSocket URL */
@@ -438,6 +455,7 @@ export class BrowserProxyService {
         this.state = 'connected';
         this.reconnectAttempts = 0; // Reset backoff on successful registration
         this.startHeartbeat();
+        this.startSweepTimer();
         this.logger.info('Registered with relay', { sessionId: this.sessionId });
         // Request browser instance list
         this.sendRaw({ type: 'list_browsers' });
@@ -529,6 +547,16 @@ export class BrowserProxyService {
   /**
    * Handle browser_list message from relay.
    *
+   * Behavior:
+   * 1. Clear and rebuild the local instance Map from the relay snapshot.
+   *    `deviceFingerprint`, when present on incoming entries, is preserved
+   *    via the spread so the dedup pass below can use it.
+   * 2. Group entries by `deviceFingerprint`. For each group with more than
+   *    one entry (relay snapshot contains a ghost row alongside the live
+   *    row, e.g. extension was reinstalled and the relay still caches the
+   *    previous session), invoke `dedupByFingerprint` with the freshest
+   *    entry in the group — the freshest "wins" and older rows are removed.
+   *
    * @param instances - Array of browser instance info from relay
    */
   private handleBrowserList(instances: BrowserInstanceInfo[]): void {
@@ -540,6 +568,38 @@ export class BrowserProxyService {
         lastSeenAt: inst.lastSeenAt || now,
       });
     }
+
+    // Dedup pass: for each fingerprint group with >1 entries, keep the
+    // freshest by lastSeenAt and let dedupByFingerprint delete the rest.
+    const fingerprintGroups = new Map<string, BrowserInstanceInfo[]>();
+    for (const inst of this.instances.values()) {
+      const fp = inst.deviceFingerprint;
+      if (typeof fp !== 'string' || fp.length === 0) continue;
+      const group = fingerprintGroups.get(fp);
+      if (group) {
+        group.push(inst);
+      } else {
+        fingerprintGroups.set(fp, [inst]);
+      }
+    }
+    for (const group of fingerprintGroups.values()) {
+      if (group.length < 2) continue;
+      let freshest = group[0];
+      let freshestTs = Date.parse(freshest.lastSeenAt);
+      if (!Number.isFinite(freshestTs)) freshestTs = 0;
+      for (let i = 1; i < group.length; i++) {
+        const ts = Date.parse(group[i].lastSeenAt);
+        const tsNum = Number.isFinite(ts) ? ts : 0;
+        // `>=` (not `>`) so that ties resolve to the later-inserted entry,
+        // matching Map iteration order semantics callers may rely on.
+        if (tsNum >= freshestTs) {
+          freshestTs = tsNum;
+          freshest = group[i];
+        }
+      }
+      this.dedupByFingerprint(freshest);
+    }
+
     this.logger.info('Browser instances updated', {
       count: this.instances.size,
       names: instances.map((i) => i.instanceName),
@@ -549,27 +609,45 @@ export class BrowserProxyService {
   /**
    * Handle browser_event (connected/disconnected/updated) from relay.
    *
+   * On `connected`, propagates the optional `deviceFingerprint` from the
+   * relay payload onto the new entry, then runs `dedupByFingerprint` so
+   * an older entry with the same fingerprint (e.g. previous install of
+   * the extension on this device) is collapsed in favor of the new one.
+   *
    * @param msg - Event message
    */
   private handleBrowserEvent(msg: Record<string, unknown>): void {
     const event = msg.event as string;
     const instanceId = msg.instanceId as string;
     const instanceName = msg.instanceName as string;
+    const rawFingerprint = msg.deviceFingerprint;
+    const deviceFingerprint =
+      typeof rawFingerprint === 'string' && rawFingerprint.length > 0
+        ? rawFingerprint
+        : undefined;
 
     const now = new Date().toISOString();
 
     switch (event) {
-      case 'connected':
-        this.instances.set(instanceId, {
+      case 'connected': {
+        const incoming: BrowserInstanceInfo = {
           instanceId,
           instanceName,
           sessionId: '', // Will be populated by next list_browsers
           lastSeenAt: now,
+          deviceFingerprint,
+        };
+        this.instances.set(instanceId, incoming);
+        this.dedupByFingerprint(incoming);
+        this.logger.info('Browser instance connected', {
+          instanceId,
+          instanceName,
+          hasFingerprint: deviceFingerprint !== undefined,
         });
-        this.logger.info('Browser instance connected', { instanceId, instanceName });
         // Refresh full list to get sessionId
         this.sendRaw({ type: 'list_browsers' });
         break;
+      }
 
       case 'disconnected':
         this.instances.delete(instanceId);
@@ -655,6 +733,97 @@ export class BrowserProxyService {
   }
 
   /**
+   * Start the wall-clock TTL sweep timer.
+   *
+   * Independent of the heartbeat. Every
+   * {@link BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS} (default 60s) it walks
+   * `this.instances` and deletes any entry whose `lastSeenAt` is older than
+   * {@link BROWSER_PROXY_CONSTANTS.STALE_PURGE_THRESHOLD_MS} (default 5 min).
+   *
+   * Why: the relay is supposed to push a `browser_event:disconnected` when
+   * an extension drops, but in practice that event is occasionally lost
+   * (network blip, ext crash without graceful close). Without a sweep, the
+   * `instances` Map accumulates phantom entries that the Cloud Portal then
+   * renders as "Online" even though their `lastSeenAt` is hours stale.
+   *
+   * Idempotent: calls `stopSweepTimer()` first to avoid stacking intervals
+   * on an already-running proxy (e.g. on reconnect).
+   */
+  private startSweepTimer(): void {
+    this.stopSweepTimer();
+    this.sweepTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [instanceId, info] of this.instances) {
+        const lastSeenMs = Date.parse(info.lastSeenAt);
+        if (!Number.isFinite(lastSeenMs)) {
+          // Bad timestamp — treat as stale to drain garbage rather than keep
+          // a row we cannot reason about.
+          this.instances.delete(instanceId);
+          this.logger.info('Purged browser instance with unparseable lastSeenAt', {
+            instanceId,
+            instanceName: info.instanceName,
+            lastSeenAt: info.lastSeenAt,
+          });
+          continue;
+        }
+        if (now - lastSeenMs > BROWSER_PROXY_CONSTANTS.STALE_PURGE_THRESHOLD_MS) {
+          this.instances.delete(instanceId);
+          this.logger.info('Purged stale browser instance', {
+            instanceId,
+            instanceName: info.instanceName,
+            lastSeenAt: info.lastSeenAt,
+          });
+        }
+      }
+    }, BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS);
+  }
+
+  /**
+   * Stop the wall-clock TTL sweep timer. Safe to call when no timer is
+   * running (no-op via the null guard).
+   */
+  private stopSweepTimer(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
+  }
+
+  /**
+   * Collapse older entries in `this.instances` that share a `deviceFingerprint`
+   * with the incoming entry.
+   *
+   * Use case: a user reinstalls / updates the Chrome extension. The fresh
+   * install generates a new `instanceId` UUID and registers via the relay.
+   * Without dedup, the Cloud Portal would show two rows for the same
+   * physical browser — the new live one and the old phantom one — until
+   * the TTL sweep eventually purges the old row 5 min later.
+   *
+   * Backward compatible: if `incoming.deviceFingerprint` is falsy or empty,
+   * this is a no-op. Older ext builds that do not yet emit `deviceFingerprint`
+   * therefore continue to behave exactly as before — the TTL sweep alone
+   * still cleans them up over the 5-min threshold.
+   *
+   * @param incoming - Entry that was just registered/refreshed
+   */
+  private dedupByFingerprint(incoming: BrowserInstanceInfo): void {
+    const fp = incoming.deviceFingerprint;
+    if (typeof fp !== 'string' || fp.length === 0) return;
+
+    for (const [otherId, other] of this.instances) {
+      if (otherId === incoming.instanceId) continue;
+      if (other.deviceFingerprint === fp) {
+        this.instances.delete(otherId);
+        this.logger.info('Deduped older instance by fingerprint', {
+          keptInstanceId: incoming.instanceId,
+          removedInstanceId: otherId,
+          deviceFingerprint: fp,
+        });
+      }
+    }
+  }
+
+  /**
    * Handle disconnection — clean up and optionally reconnect with backoff.
    *
    * Protected against double-invocation (e.g. error + close events) via
@@ -671,6 +840,7 @@ export class BrowserProxyService {
     this.state = 'disconnected';
     this.sessionId = null;
     this.stopHeartbeat();
+    this.stopSweepTimer();
 
     // Clean up old WebSocket reference
     if (this.ws) {
@@ -765,6 +935,7 @@ export class BrowserProxyService {
    */
   private cleanup(): void {
     this.stopHeartbeat();
+    this.stopSweepTimer();
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

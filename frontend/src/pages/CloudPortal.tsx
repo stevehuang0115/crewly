@@ -42,6 +42,7 @@ import { LoadingSpinner } from '../components/UI/LoadingSpinner';
 import { useAuth } from '../contexts/AuthContext';
 import { apiService } from '../services/api.service';
 import { formatRelativeTimeCompact } from '../utils/time';
+import { getInstanceStatus, type BrowserInstanceStatus } from '../utils/browser-instance-status';
 import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../constants/cloud.constants';
 
 // ---------------------------------------------------------------------------
@@ -419,6 +420,53 @@ interface BrowserInstance {
   lastSeenAt?: string;
 }
 
+/**
+ * Visual styling for each browser-instance status — co-located with the
+ * status helper so adding a new status requires touching exactly one map.
+ */
+const BROWSER_INSTANCE_STATUS_STYLES: Record<
+  BrowserInstanceStatus,
+  { textClass: string; dotClass: string; label: string }
+> = {
+  online: {
+    textClass: 'text-emerald-400',
+    dotClass: 'bg-emerald-400',
+    label: 'Online',
+  },
+  stale: {
+    textClass: 'text-amber-400',
+    dotClass: 'bg-amber-400',
+    label: 'Stale',
+  },
+  offline: {
+    textClass: 'text-text-secondary-dark',
+    dotClass: 'bg-gray-500',
+    label: 'Offline',
+  },
+};
+
+/**
+ * Render a small colored pill (dot + label) for a browser-extension instance
+ * based on its threshold-derived status.
+ *
+ * @param status - One of `'online' | 'stale' | 'offline'`.
+ * @returns A `<span>` with the appropriate color and label.
+ */
+const BrowserInstanceStatusBadge: React.FC<{ status: BrowserInstanceStatus }> = ({
+  status,
+}) => {
+  const style = BROWSER_INSTANCE_STATUS_STYLES[status];
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-xs ${style.textClass}`}
+      data-testid={`browser-instance-status-${status}`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${style.dotClass}`} />
+      {style.label}
+    </span>
+  );
+};
+
 const BrowserExtensionsSection: React.FC = () => {
   const [instances, setInstances] = useState<BrowserInstance[]>([]);
   const [proxyConnected, setProxyConnected] = useState(false);
@@ -509,10 +557,7 @@ const BrowserExtensionsSection: React.FC = () => {
                 </div>
               </div>
               <div className="flex flex-col items-end gap-0.5">
-                <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  Online
-                </span>
+                <BrowserInstanceStatusBadge status={getInstanceStatus(inst.lastSeenAt)} />
                 {inst.lastSeenAt && (
                   <span className="text-[10px] text-text-secondary-dark">
                     Last seen: {formatRelativeTimeCompact(inst.lastSeenAt)}

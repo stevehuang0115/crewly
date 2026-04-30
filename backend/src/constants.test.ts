@@ -7,6 +7,7 @@
  * critically the OAuth scope set used to issue new Google credentials.
  */
 import {
+  BROWSER_PROXY_CONSTANTS,
   GOOGLE_OAUTH_CONSTANTS,
 } from './constants.js';
 
@@ -68,5 +69,24 @@ describe('GOOGLE_OAUTH_CONSTANTS', () => {
       expect(Array.isArray(ws)).toBe(true);
       expect(ws.length).toBeGreaterThan(0);
     });
+  });
+});
+
+describe('BROWSER_PROXY_CONSTANTS', () => {
+  it('SWEEP_INTERVAL_MS is 60s — wall-clock cadence the relay-side stale watcher runs on', () => {
+    expect(BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS).toBe(60_000);
+  });
+
+  it('STALE_PURGE_THRESHOLD_MS is 5 minutes — wide enough to absorb transient relay blips without evicting live ext connections', () => {
+    expect(BROWSER_PROXY_CONSTANTS.STALE_PURGE_THRESHOLD_MS).toBe(5 * 60 * 1000);
+  });
+
+  it('purge threshold strictly exceeds the sweep interval so each instance gets multiple sweep checks before being purged', () => {
+    // If the threshold equalled or undercut the interval, an instance could
+    // be purged on the very same tick that would have refreshed it via a
+    // pending heartbeat — that is the bug we are explicitly avoiding.
+    expect(BROWSER_PROXY_CONSTANTS.STALE_PURGE_THRESHOLD_MS).toBeGreaterThan(
+      BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS,
+    );
   });
 });
