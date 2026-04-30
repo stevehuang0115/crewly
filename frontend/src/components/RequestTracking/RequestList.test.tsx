@@ -136,6 +136,61 @@ describe('RequestList', () => {
     expect(rows.length).toBe(2);
   });
 
+  it('maps backend "ready" and "running" to frontend "active" (Steve 2026-04-29 mapper fix)', async () => {
+    // Pre-fix bug: the mapper used a stale literal 'in_progress'; backend
+    // statuses 'ready'/'running' fell through to the default→'active' branch.
+    // Same display result, but the missing explicit cases meant any future
+    // backend status would silently render as Active. Now both are listed
+    // explicitly + a default-branch console.warn surfaces unknown statuses
+    // during dev.
+    const baseRow = {
+      priority: 'normal',
+      createdAt: '2026-04-01T10:00:00Z',
+      updatedAt: '2026-04-01T10:00:00Z',
+    };
+    (apiService.getRequests as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'r-ready', title: 'Ready request', status: 'ready', ...baseRow },
+      { id: 'r-running', title: 'Running request', status: 'running', ...baseRow },
+      { id: 'r-cancelled', title: 'Cancelled request', status: 'cancelled', ...baseRow },
+    ]);
+    render(
+      <MemoryRouter>
+        <RequestList {...defaultProps} activeFilter="active" />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('request-list')).toBeDefined();
+    });
+    const list = screen.getByTestId('request-list');
+    const rows = list.querySelectorAll('[data-testid^="request-row-"]');
+    // Filter activeFilter="active" → only ready + running render; cancelled
+    // maps to 'done' (via the same explicit case) and is filtered out.
+    expect(rows.length).toBe(2);
+  });
+
+  it('warns on an unknown backend status and falls back to "active"', async () => {
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    (apiService.getRequests as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: 'r-future',
+        title: 'Future-status request',
+        status: 'totally_unknown_future_status',
+        priority: 'normal',
+        createdAt: '2026-04-01T10:00:00Z',
+        updatedAt: '2026-04-01T10:00:00Z',
+      },
+    ]);
+    render(<MemoryRouter><RequestList {...defaultProps} /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByTestId('request-list')).toBeDefined();
+    });
+    expect(consoleSpy).toHaveBeenCalledWith(
+      '[RequestList] Unknown backend Request status:',
+      'totally_unknown_future_status',
+    );
+    consoleSpy.mockRestore();
+  });
+
   it('shows error state when API fails', async () => {
     (apiService.getRequests as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Network error'));
     render(<MemoryRouter><RequestList {...defaultProps} /></MemoryRouter>);
