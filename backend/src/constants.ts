@@ -122,6 +122,14 @@ export const BROWSER_PROXY_CONSTANTS = {
 	 *  relay/network blips without prematurely evicting a live ext connection
 	 *  (heartbeat fires every 25s, so 5 min = ~12 missed heartbeats). */
 	STALE_PURGE_THRESHOLD_MS: 5 * 60_000,
+	/** Re-issue `list_browsers` to the relay every Nth heartbeat tick.
+	 *  Defensive sync against missing `browser_event:updated` pushes from
+	 *  the cloud relay. With heartbeat at 25s and N=8, refresh fires every
+	 *  ~200s — comfortably under STALE_PURGE_THRESHOLD_MS (300s) so a live
+	 *  ext that is mid-refresh never crosses the purge boundary.
+	 *  Boundary math: register@T0 → first refresh@T0+200s → next sweep
+	 *  evaluates lastSeenAt at most 200s old → far below 300s threshold. */
+	LIST_REFRESH_EVERY_N_HEARTBEATS: 8,
 } as const;
 
 // Agent runtime types

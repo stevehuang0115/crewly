@@ -1309,4 +1309,275 @@ describe('BrowserProxyService', () => {
       expect(ids).toEqual(['id-new', 'id-old']);
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Periodic list_browsers refresh (P0 hotfix — 2026-04-30 SteamFun demo)
+  // ─────────────────────────────────────────────────────────────────────────
+  // Background: cloud relay does NOT reliably push `browser_event:updated`
+  // on ext heartbeats, so without defensive sync the local `instances`
+  // Map's `lastSeenAt` stays frozen at registration time and the 5-min
+  // sweep purges live ext entries — surfacing 503 NO_BROWSER_CLIENT to
+  // callers. The fix: re-issue `list_browsers` every 8th heartbeat tick
+  // (25s × 8 = 200s, comfortably under the 300s purge threshold).
+  describe('periodic list_browsers refresh (heartbeat-driven resync)', () => {
+    /**
+     * Helper: connect, register, and grab the mock WS instance plus a
+     * helper to count `list_browsers` sends across the WS.send mock.
+     */
+    function setupAndRegister(): {
+      ws: MockWsInstance;
+      proxy: BrowserProxyService;
+      countListBrowsers: () => number;
+    } {
+      const proxy = BrowserProxyService.getInstance();
+      proxy.connect('test-token');
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-x' }),
+      );
+      // The `registered` handler ALWAYS issues an initial `list_browsers`
+      // (browser-proxy.service.ts:461). Tests in this block assert
+      // ADDITIONAL refreshes beyond that initial call.
+      const ws = latestMockWs!;
+      const countListBrowsers = (): number =>
+        ws.send.mock.calls.filter((args) => {
+          try {
+            return (JSON.parse(args[0] as string) as { type: string }).type === 'list_browsers';
+          } catch {
+            return false;
+          }
+        }).length;
+      return { ws, proxy, countListBrowsers };
+    }
+
+    it('does NOT re-issue list_browsers before the 8th heartbeat tick', () => {
+      const { countListBrowsers } = setupAndRegister();
+      const initialCount = countListBrowsers();
+      expect(initialCount).toBe(1); // The one fired by `registered` handler
+
+      // Advance 7 heartbeats × 25s = 175s. Should be exactly 7 heartbeats sent,
+      // and ZERO additional list_browsers (8th tick has not fired yet).
+      jest.advanceTimersByTime(7 * 25_000);
+
+      expect(countListBrowsers()).toBe(initialCount);
+    });
+
+    it('re-issues list_browsers exactly on the 8th heartbeat tick (~200s)', () => {
+      const { countListBrowsers } = setupAndRegister();
+      const initialCount = countListBrowsers();
+
+      // 8 heartbeats × 25s = 200s — defensive resync should fire on the 8th.
+      jest.advanceTimersByTime(8 * 25_000);
+
+      expect(countListBrowsers()).toBe(initialCount + 1);
+    });
+
+    it('re-issues list_browsers every 8 heartbeats (16th, 24th, ...)', () => {
+      const { countListBrowsers } = setupAndRegister();
+      const initialCount = countListBrowsers();
+
+      jest.advanceTimersByTime(24 * 25_000); // 600s = 24 ticks
+
+      // 3 refresh fires at ticks 8, 16, 24.
+      expect(countListBrowsers()).toBe(initialCount + 3);
+    });
+
+    it('keeps the live ext stable past the 260s sweep boundary (regression guard)', () => {
+      // Real-world failure mode the hotfix targets: at T+260s the sweep would
+      // have purged a stale lastSeenAt anchored at T=0 (260s > old threshold
+      // would NOT have purged at 260s either since threshold is 300s, but
+      // by T+305s it WOULD have, see next test). Confirm the periodic
+      // resync at T+200s rebuilds lastSeenAt so the entry survives the sweep
+      // at T+260s.
+      const { ws, proxy } = setupAndRegister();
+
+      // Seed instance via initial list_browsers response.
+      ws._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'ext-fe835f17',
+              instanceName: 'SteamFun Chrome',
+              sessionId: 'bs-1',
+              lastSeenAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      );
+      expect(proxy.getInstances()).toHaveLength(1);
+
+      // Advance to T+200s — periodic resync sends list_browsers.
+      jest.advanceTimersByTime(200_000);
+
+      // Relay responds with the same instance, fresh lastSeenAt.
+      ws._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'ext-fe835f17',
+              instanceName: 'SteamFun Chrome',
+              sessionId: 'bs-1',
+              lastSeenAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      );
+
+      // Advance further to T+260s. Sweep runs at T+60s, T+120s, T+180s, T+240s.
+      // At T+240s the entry's lastSeenAt is from T+200s → 40s old < 300s → safe.
+      jest.advanceTimersByTime(60_000);
+
+      expect(proxy.getInstances()).toHaveLength(1);
+      expect(proxy.getInstances()[0].instanceId).toBe('ext-fe835f17');
+    });
+
+    it('keeps the live ext stable past the 305s sweep boundary', () => {
+      // Without the hotfix, lastSeenAt would be anchored at T=0 → at T+300s
+      // the sweep purges the entry → 503 NO_BROWSER_CLIENT to callers. With
+      // the hotfix, the T+200s refresh anchors lastSeenAt to T+200s; the
+      // sweep at T+300s sees age=100s → safe. Confirm.
+      const { ws, proxy } = setupAndRegister();
+
+      ws._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'ext-fe835f17',
+              instanceName: 'SteamFun Chrome',
+              sessionId: 'bs-1',
+              lastSeenAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      );
+
+      // Advance to T+200s, simulate refresh response.
+      jest.advanceTimersByTime(200_000);
+      ws._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'ext-fe835f17',
+              instanceName: 'SteamFun Chrome',
+              sessionId: 'bs-1',
+              lastSeenAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      );
+
+      // Advance to T+305s — sweep at T+300s evaluates age=100s → safe.
+      jest.advanceTimersByTime(105_000);
+
+      expect(proxy.getInstances()).toHaveLength(1);
+      expect(proxy.getInstances()[0].instanceId).toBe('ext-fe835f17');
+    });
+
+    it('purges if relay stops responding to refresh (cloud truly offline)', () => {
+      // Counter-test: if the relay genuinely loses the ext (so refresh
+      // returns an empty list), the sweep MUST eventually purge. This
+      // prevents the hotfix from masking real disconnections.
+      const { ws, proxy } = setupAndRegister();
+
+      ws._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            {
+              instanceId: 'ext-fe835f17',
+              instanceName: 'SteamFun Chrome',
+              sessionId: 'bs-1',
+              lastSeenAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      );
+
+      // Advance past 8 heartbeats — refresh fires.
+      jest.advanceTimersByTime(200_000);
+
+      // Relay responds with EMPTY list (ext dropped on cloud side).
+      ws._trigger(
+        'message',
+        JSON.stringify({ type: 'browser_list', instances: [] }),
+      );
+
+      // After empty list_browsers, instances should be cleared by
+      // handleBrowserList (it does Map.clear() before rebuilding).
+      expect(proxy.getInstances()).toHaveLength(0);
+    });
+
+    it('resets the heartbeat tick counter on reconnect', () => {
+      const { countListBrowsers, proxy, ws } = setupAndRegister();
+      const initialCount = countListBrowsers();
+
+      // Advance 5 heartbeats — counter at 5, no refresh yet.
+      jest.advanceTimersByTime(5 * 25_000);
+      expect(countListBrowsers()).toBe(initialCount);
+
+      // Simulate a clean disconnect + reconnect cycle.
+      ws.readyState = 3; // CLOSED
+      ws._trigger('close', 1006, Buffer.from(''));
+
+      // Wait for reconnect timer (RECONNECT_DELAY_MS = 5_000).
+      jest.advanceTimersByTime(5_000);
+
+      // After reconnect: re-register and re-establish baseline.
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-y' }),
+      );
+
+      // From this point, advance 7 heartbeats — counter starts at 0 post-reset,
+      // so 7 ticks should NOT trigger a refresh (would have if counter
+      // continued from pre-reconnect state of 5 → 5+7=12 → would fire on 8).
+      // Sanity-check: if pre-reconnect counter persisted, we'd see a refresh.
+      const postReconnectInitial = latestMockWs!.send.mock.calls.filter((args) => {
+        try {
+          return (JSON.parse(args[0] as string) as { type: string }).type === 'list_browsers';
+        } catch {
+          return false;
+        }
+      }).length;
+
+      jest.advanceTimersByTime(7 * 25_000);
+
+      const postReconnectAfter7Ticks = latestMockWs!.send.mock.calls.filter((args) => {
+        try {
+          return (JSON.parse(args[0] as string) as { type: string }).type === 'list_browsers';
+        } catch {
+          return false;
+        }
+      }).length;
+
+      expect(postReconnectAfter7Ticks).toBe(postReconnectInitial);
+
+      // 1 more tick (8 total post-reconnect) — refresh fires.
+      jest.advanceTimersByTime(25_000);
+
+      const postReconnectAfter8Ticks = latestMockWs!.send.mock.calls.filter((args) => {
+        try {
+          return (JSON.parse(args[0] as string) as { type: string }).type === 'list_browsers';
+        } catch {
+          return false;
+        }
+      }).length;
+
+      expect(postReconnectAfter8Ticks).toBe(postReconnectInitial + 1);
+
+      // Silence unused variable warnings.
+      void proxy;
+    });
+  });
 });

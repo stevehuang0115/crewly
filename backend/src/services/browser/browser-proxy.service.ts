@@ -102,6 +102,15 @@ export class BrowserProxyService {
   /** Reconnect timer */
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /**
+   * Heartbeat tick counter. Resets on each `startHeartbeat()` call (i.e. on
+   * fresh registration). Used to fire a defensive `list_browsers` re-issue
+   * every {@link BROWSER_PROXY_CONSTANTS.LIST_REFRESH_EVERY_N_HEARTBEATS}
+   * ticks so the local `instances` Map stays bounded against the 5-min
+   * sweep purge even when the cloud relay drops `browser_event:updated`
+   * pushes (observed during 2026-04-30 SteamFun customer demo).
+   */
+  private heartbeatTickCounter = 0;
+  /**
    * Wall-clock TTL sweep timer. Runs every {@link BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS}
    * and purges any `BrowserInstanceInfo` whose `lastSeenAt` exceeds
    * {@link BROWSER_PROXY_CONSTANTS.STALE_PURGE_THRESHOLD_MS}. Independent of
@@ -707,17 +716,46 @@ export class BrowserProxyService {
 
   /**
    * Start heartbeat interval to keep relay connection alive.
+   *
+   * Beyond the basic relay keepalive, every Nth tick (controlled by
+   * {@link BROWSER_PROXY_CONSTANTS.LIST_REFRESH_EVERY_N_HEARTBEATS}) we
+   * re-issue `list_browsers` so the local `instances` Map is refreshed
+   * even if the cloud relay drops `browser_event:updated` pushes. This
+   * is a defensive sync against a real bug observed during the 2026-04-30
+   * SteamFun customer demo where ext registrations were correctly synced
+   * on initial connect but `lastSeenAt` was never refreshed by ongoing
+   * heartbeats — leading to the 5-min sweep purging live ext entries and
+   * surfacing 503 NO_BROWSER_CLIENT to callers.
+   *
+   * Resets the tick counter so a re-`start` (e.g. after reconnect) does
+   * not accidentally fire the refresh on the very first tick post-reset.
    */
   private startHeartbeat(): void {
     this.stopHeartbeat();
+    this.heartbeatTickCounter = 0;
     this.heartbeatTimer = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.sendRaw({ type: 'heartbeat' });
-      } else {
-        // WS not open but heartbeat still running — stop and trigger reconnect
+      if (this.ws?.readyState !== WebSocket.OPEN) {
+        // WS not open but heartbeat still running — stop and trigger reconnect.
         this.logger.warn('Heartbeat firing but WS not open, triggering disconnect');
         this.stopHeartbeat();
         this.handleDisconnect();
+        return;
+      }
+
+      this.sendRaw({ type: 'heartbeat' });
+      this.heartbeatTickCounter += 1;
+
+      if (
+        this.heartbeatTickCounter % BROWSER_PROXY_CONSTANTS.LIST_REFRESH_EVERY_N_HEARTBEATS
+        === 0
+      ) {
+        // Defensive resync — refresh the local instances Map from the relay
+        // snapshot. Idempotent on the relay side and on `handleBrowserList`
+        // (which clears + rebuilds the Map). Logged at debug to avoid noise.
+        this.logger.debug('Re-issuing list_browsers (periodic resync)', {
+          tick: this.heartbeatTickCounter,
+        });
+        this.sendRaw({ type: 'list_browsers' });
       }
     }, HEARTBEAT_INTERVAL_MS);
   }
