@@ -44,6 +44,15 @@ export class TerminalGateway {
 	/** Set of sessions with persistent monitoring (not stopped on client disconnect) */
 	private persistentMonitoringSessions: Set<string> = new Set();
 
+	/**
+	 * Pending retry timers for eager monitoring attempts that fired before the
+	 * PTY session was registered in the SessionBackend.
+	 *
+	 * Keyed by session name. Cleared on first successful attach, on stop, and
+	 * on destroy so a backoff schedule never leaks a timer past the gateway.
+	 */
+	private pendingMonitoringRetries: Map<string, NodeJS.Timeout> = new Map();
+
 	/** Current active chat conversation ID for orchestrator responses */
 	private activeConversationId: string | null = null;
 
@@ -355,13 +364,26 @@ export class TerminalGateway {
 
 	/**
 	 * Start persistent monitoring for the orchestrator session.
-	 * This ensures chat responses are captured even when no WebSocket clients are viewing the terminal.
+	 *
+	 * Ensures chat responses are captured even when no WebSocket clients are
+	 * viewing the terminal. If the PTY session is not yet registered in the
+	 * SessionBackend (e.g. eager call from boot fires before
+	 * createAgentSession's backend registration completes), schedules bounded
+	 * retries on the {@link TERMINAL_GATEWAY_CONSTANTS.MONITORING_RETRY_BACKOFFS_MS}
+	 * backoff schedule. Persistent flag stays set across retries so a parallel
+	 * subscriber path doesn't bypass eventual attachment.
 	 *
 	 * @param sessionName - The orchestrator session name to monitor
-	 * @returns True if monitoring started successfully
+	 * @returns True if monitoring started synchronously on first attempt; false
+	 *          if a retry was scheduled (caller-visible failure is reserved for
+	 *          terminal failure after all retries, surfaced via ERROR log only).
 	 */
 	startOrchestratorChatMonitoring(sessionName: string): boolean {
 		this.logger.info('Starting persistent orchestrator chat monitoring', { sessionName });
+
+		// Cancel any in-flight retry from a previous start call so we don't
+		// stack two backoff schedules on the same session.
+		this.clearPendingMonitoringRetry(sessionName);
 
 		// Force cleanup any stale subscription from a previous session.
 		// When the orchestrator is restarted, the old PTY session is destroyed but
@@ -378,20 +400,108 @@ export class TerminalGateway {
 		this.persistentMonitoringSessions.add(sessionName);
 
 		const started = this.startPtyStreaming(sessionName);
-		if (!started) {
-			this.logger.warn('Failed to start orchestrator chat monitoring', { sessionName });
-			this.persistentMonitoringSessions.delete(sessionName);
+		if (started) {
+			return true;
 		}
-		return started;
+
+		// Backend hasn't registered the session yet (race with createAgentSession).
+		// Keep persistentMonitoringSessions flagged and schedule bounded retries.
+		this.logger.warn(
+			'PTY not ready for orchestrator chat monitoring, scheduling retries',
+			{ sessionName, schedule: TERMINAL_GATEWAY_CONSTANTS.MONITORING_RETRY_BACKOFFS_MS },
+		);
+		this.scheduleMonitoringRetry(sessionName, 0);
+		return false;
+	}
+
+	/**
+	 * Schedule the next bounded retry attempt to attach orchestrator monitoring.
+	 *
+	 * @param sessionName - Session name being monitored
+	 * @param attemptIndex - 0-based index into MONITORING_RETRY_BACKOFFS_MS
+	 */
+	private scheduleMonitoringRetry(sessionName: string, attemptIndex: number): void {
+		const schedule = TERMINAL_GATEWAY_CONSTANTS.MONITORING_RETRY_BACKOFFS_MS;
+
+		if (attemptIndex >= schedule.length) {
+			// Exhausted retries — log diagnostics and give up. Drop the
+			// persistent flag so a subsequent subscriber-driven attach can
+			// still proceed via the normal subscribeToSession path.
+			const backend = getSessionBackendSync();
+			this.logger.error(
+				'Orchestrator chat monitoring failed after all retries — orc output will not stream until a client subscribes',
+				{
+					sessionName,
+					attempts: schedule.length,
+					availableSessions: backend?.listSessions() ?? [],
+				},
+			);
+			this.persistentMonitoringSessions.delete(sessionName);
+			this.pendingMonitoringRetries.delete(sessionName);
+			return;
+		}
+
+		const delayMs = schedule[attemptIndex];
+		const timer = setTimeout(() => {
+			this.pendingMonitoringRetries.delete(sessionName);
+
+			// Stop guard: the persistent flag is cleared by
+			// stopOrchestratorChatMonitoring. If it's gone, abandon retry.
+			if (!this.persistentMonitoringSessions.has(sessionName)) {
+				this.logger.debug('Monitoring retry abandoned — persistent flag cleared', {
+					sessionName,
+					attemptIndex,
+				});
+				return;
+			}
+
+			const started = this.startPtyStreaming(sessionName);
+			if (started) {
+				this.logger.info('Orchestrator chat monitoring attached on retry', {
+					sessionName,
+					attemptIndex: attemptIndex + 1,
+					delayMs,
+				});
+				return;
+			}
+
+			this.scheduleMonitoringRetry(sessionName, attemptIndex + 1);
+		}, delayMs);
+
+		// Allow the process to exit even if a retry is still pending.
+		// Without unref, lingering timers keep node alive past graceful shutdown.
+		if (typeof timer.unref === 'function') {
+			timer.unref();
+		}
+		this.pendingMonitoringRetries.set(sessionName, timer);
+	}
+
+	/**
+	 * Clear any pending monitoring retry timer for a session.
+	 *
+	 * Idempotent — safe to call when no retry is queued.
+	 *
+	 * @param sessionName - Session name whose retry should be cleared
+	 */
+	private clearPendingMonitoringRetry(sessionName: string): void {
+		const timer = this.pendingMonitoringRetries.get(sessionName);
+		if (timer) {
+			clearTimeout(timer);
+			this.pendingMonitoringRetries.delete(sessionName);
+		}
 	}
 
 	/**
 	 * Stop persistent monitoring for the orchestrator session.
 	 *
+	 * Cancels any in-flight retry schedule so a stop mid-backoff doesn't leak
+	 * a timer that later attaches to a session the caller already gave up on.
+	 *
 	 * @param sessionName - The orchestrator session name
 	 */
 	stopOrchestratorChatMonitoring(sessionName: string): void {
 		this.logger.info('Stopping persistent orchestrator chat monitoring', { sessionName });
+		this.clearPendingMonitoringRetry(sessionName);
 		this.stopPtyStreaming(sessionName, true);
 	}
 
@@ -908,6 +1018,14 @@ export class TerminalGateway {
 	 * Destroy the gateway and clean up all subscriptions.
 	 */
 	destroy(): void {
+		// Cancel any pending monitoring retries before tearing down.
+		// Otherwise a queued retry could fire after destroy and attach
+		// a listener to a session whose owner has gone away.
+		for (const timer of this.pendingMonitoringRetries.values()) {
+			clearTimeout(timer);
+		}
+		this.pendingMonitoringRetries.clear();
+
 		// Unsubscribe from all PTY sessions
 		for (const unsubscribe of this.sessionSubscriptions.values()) {
 			unsubscribe();

@@ -554,4 +554,121 @@ describe('TerminalGateway', () => {
 			expect(mockLogBuffer.removeListener).toHaveBeenCalledWith('data', expect.any(Function));
 		});
 	});
+
+	describe('startOrchestratorChatMonitoring (eager-attach race fix, RCA 2026-04-30)', () => {
+		const orcSession = 'crewly-orc';
+
+		beforeEach(() => {
+			jest.useFakeTimers();
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		it('attaches synchronously when the PTY is already registered', () => {
+			mockSessionBackend.getSession.mockReturnValue(mockSession);
+
+			const result = gateway.startOrchestratorChatMonitoring(orcSession);
+
+			expect(result).toBe(true);
+			expect(mockSession.onData).toHaveBeenCalledTimes(1);
+			expect(gateway.getConnectionStats().activeStreams).toBe(1);
+		});
+
+		it('returns false and schedules a retry when the PTY is not yet registered', () => {
+			mockSessionBackend.getSession.mockReturnValueOnce(null);
+
+			const result = gateway.startOrchestratorChatMonitoring(orcSession);
+
+			expect(result).toBe(false);
+			// Listener not attached on first attempt — backend hadn't registered the session.
+			expect(mockSession.onData).not.toHaveBeenCalled();
+			// Persistent flag must remain set across the retry window so a parallel
+			// subscriber doesn't bypass eventual attachment.
+			expect(gateway.getConnectionStats().activeStreams).toBe(0);
+		});
+
+		it('attaches on a later retry once the session becomes available', () => {
+			// First attempt: session not yet registered. Subsequent attempts: registered.
+			mockSessionBackend.getSession
+				.mockReturnValueOnce(null)
+				.mockReturnValue(mockSession);
+
+			gateway.startOrchestratorChatMonitoring(orcSession);
+			expect(mockSession.onData).not.toHaveBeenCalled();
+
+			// First retry fires after 100ms — should attach.
+			jest.advanceTimersByTime(100);
+
+			expect(mockSession.onData).toHaveBeenCalledTimes(1);
+			expect(gateway.getConnectionStats().activeStreams).toBe(1);
+		});
+
+		it('keeps retrying through the full backoff schedule before giving up', () => {
+			// Backend never registers the session — exhaust all retries.
+			mockSessionBackend.getSession.mockReturnValue(null);
+
+			gateway.startOrchestratorChatMonitoring(orcSession);
+
+			// Total budget = 100 + 500 + 1000 + 2000 + 5000 = 8600ms. Advance past it.
+			jest.advanceTimersByTime(9000);
+
+			// All getSession lookups happened: 1 sync + 5 retries = 6.
+			expect(mockSessionBackend.getSession).toHaveBeenCalledTimes(6);
+			expect(mockSession.onData).not.toHaveBeenCalled();
+			// After exhaustion the persistent flag is dropped so subscriber-driven
+			// attach can still proceed via the normal subscribeToSession path.
+			expect(gateway.getConnectionStats().activeStreams).toBe(0);
+		});
+
+		it('cancels in-flight retries when stopOrchestratorChatMonitoring is called', () => {
+			mockSessionBackend.getSession.mockReturnValue(null);
+
+			gateway.startOrchestratorChatMonitoring(orcSession);
+			// One sync attempt happened; retry queued.
+			expect(mockSessionBackend.getSession).toHaveBeenCalledTimes(1);
+
+			gateway.stopOrchestratorChatMonitoring(orcSession);
+
+			// Advance well past the full backoff window. No further attach attempts
+			// should fire because the retry timer was cleared on stop.
+			jest.advanceTimersByTime(10000);
+
+			expect(mockSessionBackend.getSession).toHaveBeenCalledTimes(1);
+			expect(mockSession.onData).not.toHaveBeenCalled();
+		});
+
+		it('does not leak retry timers when destroy() is called mid-backoff', () => {
+			mockSessionBackend.getSession.mockReturnValue(null);
+
+			gateway.startOrchestratorChatMonitoring(orcSession);
+			expect(mockSessionBackend.getSession).toHaveBeenCalledTimes(1);
+
+			gateway.destroy();
+
+			// After destroy, no queued retry should ever attach a listener.
+			jest.advanceTimersByTime(10000);
+
+			expect(mockSessionBackend.getSession).toHaveBeenCalledTimes(1);
+			expect(mockSession.onData).not.toHaveBeenCalled();
+		});
+
+		it('replaces a stale retry schedule when start is called twice in a row', () => {
+			// First call queues a retry; second call should cancel it before
+			// queuing a fresh schedule (otherwise both schedules would race).
+			mockSessionBackend.getSession.mockReturnValue(null);
+
+			gateway.startOrchestratorChatMonitoring(orcSession);
+			gateway.startOrchestratorChatMonitoring(orcSession);
+
+			// Two sync attempts have happened (one per call). No double-stacking
+			// of timers — we still only see one timer fire per backoff slot.
+			jest.advanceTimersByTime(100);
+
+			// Sync calls (2) + first retry (1) = 3. If the old schedule weren't
+			// cancelled there would be 4 (a duplicate retry for the same slot).
+			expect(mockSessionBackend.getSession).toHaveBeenCalledTimes(3);
+		});
+	});
 });
