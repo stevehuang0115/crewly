@@ -33,6 +33,7 @@ import { WEB_CONSTANTS } from '../../../../config/constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { SessionMemoryService } from '../memory/session-memory.service.js';
+import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { ContextWindowMonitorService } from './context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
@@ -1586,6 +1587,38 @@ export class AgentRegistrationService {
 						error: tlError instanceof Error ? tlError.message : String(tlError),
 					});
 				}
+			}
+
+			// Issue #395: Inject the authoritative active-work briefing FIRST,
+			// so the agent's reading order is "what am I on the hook for RIGHT
+			// NOW" before the supplementary memory context. Soft-fail with WARN
+			// — TaskPool/Request hiccups must not block agent boot.
+			try {
+				const activeWorkService = ActiveWorkBriefingService.getInstance();
+				const activeWorkBriefing = await activeWorkService.generateActiveWorkBriefing(
+					sessionName,
+					role,
+				);
+				const activeWorkMd = activeWorkService.formatBriefingAsMarkdown(activeWorkBriefing);
+				if (activeWorkMd && activeWorkMd.length > 30) {
+					prompt += `\n\n---\n\n${activeWorkMd}`;
+					this.logger.info('Active-work briefing injected into prompt', {
+						sessionName,
+						role,
+						openRequests: activeWorkBriefing.openRequests.length,
+						activeWorkItems: activeWorkBriefing.activeWorkItems.length,
+						pendingReviews: activeWorkBriefing.pendingReviews.length,
+						outboundDelegations: activeWorkBriefing.outboundDelegations.length,
+						recentlyAutoResolved: activeWorkBriefing.recentlyAutoResolved.length,
+						truncated: activeWorkBriefing.truncated,
+						briefingLength: activeWorkMd.length,
+					});
+				}
+			} catch (activeWorkError) {
+				this.logger.warn('Failed to generate active-work briefing (non-critical)', {
+					sessionName,
+					error: activeWorkError instanceof Error ? activeWorkError.message : String(activeWorkError),
+				});
 			}
 
 			// Generate and inject startup briefing from session memory

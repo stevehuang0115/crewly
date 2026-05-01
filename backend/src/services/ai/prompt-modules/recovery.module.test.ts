@@ -42,10 +42,22 @@ describe('RecoveryModule', () => {
 
 		expect(result).toContain('## Session Recovery Protocol (MANDATORY)');
 		expect(result).toContain('### Step 1: Recall previous knowledge');
+		expect(result).toContain('### Step 1.5: Read your active work');
 		expect(result).toContain('### Step 2: Load your full context');
 		expect(result).toContain('### Step 3: Check for pending tasks');
 		expect(result).toContain('### Step 4: Register yourself as active');
 		expect(result).toContain('### Step 5: Assess and report');
+	});
+
+	it('should reference get-my-active-work skill in Step 1.5 (issue #395)', async () => {
+		const result = await module.build(baseConfig);
+
+		expect(result).toContain('core/get-my-active-work/execute.sh');
+		expect(result).toContain('--session');
+		expect(result).toContain(baseConfig.sessionName);
+		// State precedence rule must be highlighted so the agent does not silently
+		// override the briefing with their own memory.
+		expect(result).toContain('State always wins over memory');
 	});
 
 	it('should include recall command with correct parameters', async () => {

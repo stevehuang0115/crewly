@@ -46,6 +46,7 @@ import { createV2WorkspaceRouter } from '../controllers/v2-workspace/workspace.r
 import { createTriggerRouter } from '../controllers/trigger/trigger.routes.js';
 import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
+import { createActiveWorkRouter } from '../controllers/active-work/active-work.controller.js';
 import { createChatV2Router } from '../controllers/chat-v2/index.js';
 import { getChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
 import { createOssTeamMembershipValidator } from '../services/chat-v2/chat-v2.team-membership.js';
@@ -181,6 +182,10 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Task Projection routes — V3.1 TaskRecord + TaskEvent observability layer
   router.use('/task-projection', taskProjectionRouter);
+
+  // Active-work briefing routes — backs the `core/get-my-active-work` skill
+  // (issue #395). Mounted at /api/v3/agents/:sessionName/active-work.
+  router.use('/v3/agents', createActiveWorkRouter());
 
   // Chat V2 (Agent-First Chat MVP Phase 1) — mounts /api/chat/channels/*
   // Coexists with the legacy /api/chat/{send,messages,conversations,...} routes

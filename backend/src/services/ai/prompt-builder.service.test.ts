@@ -1520,7 +1520,7 @@ Decompose and delegate.`;
 			expect(result).toContain('"projectPath":"/test/project"');
 		});
 
-		it('should include all three recovery steps', () => {
+		it('should include all recovery steps including Step 1.5 (issue #395)', () => {
 			const result = service.buildSessionRecoverySection(
 				'test-agent',
 				'qa',
@@ -1528,8 +1528,23 @@ Decompose and delegate.`;
 			);
 
 			expect(result).toContain('Step 1: Recall previous knowledge');
+			expect(result).toContain('Step 1.5: Read your active work');
 			expect(result).toContain('Step 2: Load your full context');
-			expect(result).toContain('Step 3: Assess and report');
+			expect(result).toContain('Step 3: Register yourself as active');
+			expect(result).toContain('Step 4: Assess and report');
+		});
+
+		it('should reference get-my-active-work skill in Step 1.5 (issue #395)', () => {
+			const result = service.buildSessionRecoverySection(
+				'test-agent',
+				'developer',
+				'/projects/app'
+			);
+
+			expect(result).toContain('core/get-my-active-work/execute.sh');
+			expect(result).toContain('--session test-agent');
+			expect(result).toContain('--role developer');
+			expect(result).toContain('State always wins over memory');
 		});
 
 		it('should include instructions to check for unfinished work', () => {

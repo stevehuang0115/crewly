@@ -1063,6 +1063,19 @@ Action over deliberation — a wrong tool call is better than no tool call.`);
 bash ${this.agentSkillsPath}/core/recall/execute.sh '{"agentId":"${sessionName}","context":"${role} session startup, recent tasks, unfinished work, blockers, key decisions","projectPath":"${projectPath}"}'
 \`\`\`
 
+### Step 1.5: Read your active work (authoritative state)
+The system has already injected your current Requests + WorkItems above
+under \`## Your Active Work\` — that section is the source of truth.
+**State always wins over memory.** If a row carries a \`(memory: ...)\` annotation,
+the state value is what you should act on; the memory note flags a divergence
+to investigate, not to override the state.
+
+Call this skill mid-session if the briefing was truncated (\`... and X more\` marker)
+or stale (>5 minutes since registration, especially after long-running tasks):
+\`\`\`bash
+bash ${this.agentSkillsPath}/core/get-my-active-work/execute.sh --session ${sessionName} --role ${role}
+\`\`\`
+
 ### Step 2: Load your full context
 \`\`\`bash
 bash ${this.agentSkillsPath}/core/get-my-context/execute.sh '{"agentId":"${sessionName}","agentRole":"${role}","projectPath":"${projectPath}"}'
