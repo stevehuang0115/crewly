@@ -3527,8 +3527,25 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 						}
 					}
 
-					// On retries: also check if agent is not at prompt AND our
-					// message text is NOT stuck at the bottom.
+					// On retries: log informationally if the agent is mid-task and
+					// our message text isn't visible at the bottom of the pane.
+					// Historically this branch returned `true` (silent skip) on
+					// `notAtPrompt && !textStuck`, which silently dropped Slack
+					// messages whenever the orc was busy on a prior task and the
+					// force-deliver fallback's first internal write had been
+					// suppressed by the spinner-dedup guard above. Steve's
+					// 2026-04-30 UTC 17:28 / 18:37 incident: messages acked by
+					// the queue, never reached the orc PTY.
+					//
+					// Correct semantics: the only safe condition for skipping is
+					// a positive recent-duplicate hash match (handled in the
+					// `hasSpinner` block above via `isRecentDuplicate`). If we
+					// reach this point we KNOW the new message has not been
+					// confirmed-written this round, so proceed to the actual
+					// `session.write` below — the PTY input buffer will queue
+					// the bytes until the agent is ready to consume them. A
+					// duplicate is recoverable on the agent side; a silent loss
+					// is not.
 					if (attempt > 1) {
 						const notAtPrompt = !this.isClaudeAtPrompt(preWriteCheck, runtimeType);
 						if (notAtPrompt) {
@@ -3537,13 +3554,12 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 								: message).replace(/\s+/g, ' ').trim();
 							const bottomLines = preWriteCheck.split('\n').slice(-10).join(' ').replace(/\s+/g, ' ');
 							const textStuck = bottomLines.includes(msgSnippet);
-							if (!textStuck) {
-								this.logger.info('Agent not at prompt and message not stuck — skipping re-write (#128)', {
-									sessionName,
-									attempt,
-								});
-								return true;
-							}
+							this.logger.info('Agent busy on retry — proceeding to write (no silent skip)', {
+								sessionName,
+								attempt,
+								textStuck,
+							});
+							// No early return — fall through to session.write.
 						}
 					}
 				}
