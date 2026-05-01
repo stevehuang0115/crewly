@@ -1336,6 +1336,179 @@ describe('SlackOrchestratorBridge', () => {
         'Recorded response'
       );
     });
+
+    // ---------------------------------------------------------------------
+    // Bug 2 regression — Steve 2026-04-30 false-done Request cascade
+    // ---------------------------------------------------------------------
+    // Scenario reproduced from `crewly-2026-04-30.log` UTC 17:28 / 18:37:
+    // Slack messages were lost on the input path (Bug 1) so the orc never
+    // replied, but `sendToOrchestrator`'s 30s placeholder fallback fired
+    // anyway. Pre-fix, `sendSlackResponse` unconditionally called
+    // `markResolvedByThread`, which the V3 SLA subscriber treated as a
+    // legitimate orc reply and cascaded the parent Request to `done`.
+    //
+    // Post-fix: `sendSlackResponse` accepts `fromOrcReply` and gates the
+    // SLA hook on it. Only real orc replies (slackResolve callback fired
+    // by the reply-slack skill) reach `markResolvedByThread`.
+
+    it('should NOT call markResolvedByThread when fromOrcReply=false (responseTimeoutMs placeholder path)', async () => {
+      const mockSubscriber = {
+        markResolvedByThread: jest.fn().mockResolvedValue(undefined),
+      };
+
+      // Inject a mock subscriber via `setRequestSlaSubscriber` so the lazy
+      // import inside sendSlackResponse picks it up.
+      const { setRequestSlaSubscriber } = await import('../v3/request-sla.subscriber.js');
+      setRequestSlaSubscriber(mockSubscriber as any);
+
+      try {
+        const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
+        // The exact placeholder string sendToOrchestrator returns on
+        // responseTimeoutMs — pinned here so a future copy-edit of the
+        // placeholder doesn't silently re-introduce the false-resolve bug.
+        await sendSlackResponse(
+          makeMessage(),
+          'The orchestrator is still processing your request. It will reply here when ready — no need to resend.',
+          false, // fromOrcReply = false (placeholder / timeout / fallback)
+        );
+
+        expect(mockSubscriber.markResolvedByThread).not.toHaveBeenCalled();
+      } finally {
+        setRequestSlaSubscriber(null);
+      }
+    });
+
+    it('should call markResolvedByThread when fromOrcReply=true (real orc reply path)', async () => {
+      const mockSubscriber = {
+        markResolvedByThread: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const { setRequestSlaSubscriber } = await import('../v3/request-sla.subscriber.js');
+      setRequestSlaSubscriber(mockSubscriber as any);
+
+      try {
+        const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
+        await sendSlackResponse(
+          makeMessage({ ts: '1777570119.119589' }),
+          'Real orc reply content from reply-slack skill',
+          true, // fromOrcReply = true (slackResolve callback fired)
+        );
+
+        expect(mockSubscriber.markResolvedByThread).toHaveBeenCalledWith('1777570119.119589');
+      } finally {
+        setRequestSlaSubscriber(null);
+      }
+    });
+
+    it('should default fromOrcReply=true to preserve mention-routing behaviour for legacy callers', async () => {
+      const mockSubscriber = {
+        markResolvedByThread: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const { setRequestSlaSubscriber } = await import('../v3/request-sla.subscriber.js');
+      setRequestSlaSubscriber(mockSubscriber as any);
+
+      try {
+        const sendSlackResponse = (bridge as any).sendSlackResponse.bind(bridge);
+        // Two-arg call (no fromOrcReply) — legacy mention-routing path.
+        await sendSlackResponse(
+          makeMessage({ ts: '1777570119.119589' }),
+          'Agent reply content',
+        );
+
+        expect(mockSubscriber.markResolvedByThread).toHaveBeenCalledWith('1777570119.119589');
+      } finally {
+        setRequestSlaSubscriber(null);
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Bug 2 regression — end-to-end: timeout-placeholder must NOT auto-resolve
+  // -----------------------------------------------------------------------
+  // Replays Steve's UTC 17:28 path through the full bridge:
+  // slackService.emit('message') → handleSlackMessage → sendToOrchestrator
+  // (slackResolve never fires) → responseTimeoutMs → placeholder returned
+  // → sendSlackResponse called with fromOrcReply=false → markResolvedByThread
+  // is NOT invoked → V3 cascade does not close the parent Request.
+  describe('end-to-end SLA gating on responseTimeoutMs (Bug 2 regression)', () => {
+    let mockQueueService: any;
+    let chatService: ReturnType<typeof getChatService>;
+
+    function makeChatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
+      return {
+        id: 'msg-1',
+        conversationId: 'conv-123',
+        from: { type: 'orchestrator', name: 'Orchestrator' },
+        content: 'Hello from orchestrator',
+        contentType: 'text',
+        timestamp: new Date().toISOString(),
+        ...overrides,
+      } as ChatMessage;
+    }
+
+    beforeEach(() => {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
+      chatService = getChatService();
+      jest.spyOn(chatService, 'sendMessage').mockResolvedValue({
+        message: makeChatMessage(),
+        conversation: { id: 'conv-123', title: 'test', messages: [], createdAt: '', updatedAt: '' } as any,
+      });
+      mockQueueService = {
+        enqueue: jest.fn().mockReturnValue({ id: 'q-1' }),
+      };
+    });
+
+    it('should NOT auto-resolve the SLA tracker when sendToOrchestrator hits responseTimeoutMs', async () => {
+      // enqueue does NOT invoke slackResolve — exact reproduction of
+      // Steve's incident (orc never replied within the timeout).
+      const bridge = new SlackOrchestratorBridge({ responseTimeoutMs: 200 });
+      bridge.setMessageQueueService(mockQueueService);
+      await bridge.initialize();
+
+      const mockSubscriber = {
+        markResolvedByThread: jest.fn().mockResolvedValue(undefined),
+      };
+      const { setRequestSlaSubscriber } = await import('../v3/request-sla.subscriber.js');
+      setRequestSlaSubscriber(mockSubscriber as any);
+
+      try {
+        const messagePromise = new Promise<string>((resolve) => {
+          bridge.on('message_handled', (event: any) => resolve(event.response));
+        });
+
+        const slackService = (bridge as any).slackService;
+        jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+        jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+        jest.spyOn(slackService, 'getConversationContext').mockReturnValue({
+          conversationId: 'conv-123',
+          channelId: 'D0AC7NF5N7L',
+          userId: 'U_STEVE',
+        });
+
+        slackService.emit('message', {
+          text: 'Important Slack message orc never receives',
+          channelId: 'D0AC7NF5N7L',
+          userId: 'U_STEVE',
+          ts: '1777469680.609509',
+        });
+
+        const response = await messagePromise;
+
+        // Confirms the placeholder path was hit (matches sendToOrchestrator's
+        // exact timeout string).
+        expect(response).toBe(
+          'The orchestrator is still processing your request. It will reply here when ready — no need to resend.',
+        );
+
+        // The actual regression guard: SLA tracker was NOT auto-resolved.
+        // Pre-fix this would have fired with reason=orc_reply and the V3
+        // cascade would have closed the parent Request to `done`.
+        expect(mockSubscriber.markResolvedByThread).not.toHaveBeenCalled();
+      } finally {
+        setRequestSlaSubscriber(null);
+      }
+    }, 30000);
   });
 
   describe('auditor prefix routing', () => {

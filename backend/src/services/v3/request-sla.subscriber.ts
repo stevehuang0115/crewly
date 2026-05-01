@@ -235,6 +235,37 @@ const TERMINAL_WI_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus
   'rejected',
 ]);
 
+/**
+ * Reason tags that represent a VERIFIED actual reply / decomposition by an
+ * agent and therefore permit the parent Request to cascade-close to `done`.
+ *
+ * Defense-in-depth gate for {@link RequestSlaSubscriber.maybeCloseRequest}
+ * (Steve 2026-04-30 incident): even if an upstream caller somehow invokes
+ * `markResolved` with a non-reply reason, the Request must NOT be flipped
+ * to `done` unless the reason is one of these verified paths.
+ *
+ * - `orc_reply`           — slackResolve callback fired (real orc reply via
+ *                           reply-slack skill). Gated by the `fromOrcReply`
+ *                           flag on the orchestrator bridge so timeout
+ *                           placeholders cannot reach this branch.
+ * - `chatv2_reply`        — chat-v2 controller persisted an agent-typed
+ *                           reply to the channel (real agent reply).
+ * - `workitem_decompose`  — the orc decomposed the Request into other WIs;
+ *                           those WIs carry the actual work, so the
+ *                           respond_to_user tracker is silenced and the
+ *                           Request close is gated separately by the
+ *                           sibling-count check.
+ *
+ * Any other reason ({@link RequestSlaSubscriber.failOrphanRespondWi} fires
+ * `escalation_timeout`, callers MAY pass arbitrary diagnostic strings) is
+ * treated as "do NOT auto-close the parent Request".
+ */
+export const VERIFIED_REPLY_REASONS: ReadonlySet<string> = new Set<string>([
+  'orc_reply',
+  'chatv2_reply',
+  'workitem_decompose',
+]);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -643,9 +674,14 @@ export class RequestSlaSubscriber {
   /**
    * Cascade close the parent Request after an SLA-tracked WI resolves.
    *
-   * The Request is moved to `done` only when:
-   *   1. it exists and is not already terminal (`done`/`cancelled`), AND
-   *   2. no other non-terminal WIs remain for it (the orc may have
+   * The Request is moved to `done` only when ALL of:
+   *   1. `reason` is in {@link VERIFIED_REPLY_REASONS} (defense-in-depth
+   *      against false-resolve paths — see Steve 2026-04-30 incident,
+   *      where a `responseTimeoutMs` placeholder fired
+   *      `markResolvedByThread` and cascaded the Request to `done`
+   *      without an actual orc reply).
+   *   2. it exists and is not already terminal (`done`/`cancelled`), AND
+   *   3. no other non-terminal WIs remain for it (the orc may have
    *      decomposed the Request into other WIs that are still in flight —
    *      in that case we leave the Request alone and let the existing
    *      `cascadeRequestStatus` machinery in v3-data.service close it
@@ -664,6 +700,19 @@ export class RequestSlaSubscriber {
    *   through to `Request.result` so the UI shows why it auto-closed.
    */
   private async maybeCloseRequest(requestId: string, reason: string): Promise<void> {
+    // Defense-in-depth: even if an upstream caller wires `markResolved` with
+    // a non-reply reason in the future, the cascade close is suppressed
+    // unless the reason is one we recognise as a verified actual reply or
+    // decomposition path. The primary fix lives in the orchestrator bridge
+    // (`fromOrcReply` flag); this gate is the second line of defense.
+    if (!VERIFIED_REPLY_REASONS.has(reason)) {
+      this.logger.debug('Request cascade close skipped — reason not in verified-reply set', {
+        requestId,
+        reason,
+      });
+      return;
+    }
+
     const request = await this.requestService.getById(requestId);
     if (!request) return;
     if (TERMINAL_REQUEST_STATUSES.has(request.status)) return;
