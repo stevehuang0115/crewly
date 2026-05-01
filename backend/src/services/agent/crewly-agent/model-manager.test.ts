@@ -89,6 +89,10 @@ describe('ModelManager', () => {
       // implicitly via the createOpenAI factory, which is covered by upstream
       // tests in @ai-sdk/openai itself.
       expect((model as any).modelId).toBe('deepseek-chat');
+      // Regression guard: must route via the .chat() factory (chat-completions
+      // path), not the bare function-call form (which @ai-sdk/openai routes to
+      // /responses — unsupported by DeepSeek). See PR #400 review M1 / M2.
+      expect((model as any).provider).toBe('openai.chat');
     });
 
     it('should use default config when none provided', async () => {

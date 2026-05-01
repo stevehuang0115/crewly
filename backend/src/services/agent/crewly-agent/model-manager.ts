@@ -22,6 +22,14 @@ import { getSettingsService } from '../../settings/settings.service.js';
 import { ApiKeyProvider } from '../../../types/settings.types.js';
 
 /**
+ * Base URL for DeepSeek's OpenAI-compatible chat completions endpoint.
+ * DeepSeek implements /chat/completions only — not /responses — so we
+ * must route via the `.chat(modelId)` factory of @ai-sdk/openai's
+ * createOpenAI() return value. Extracted per CLAUDE.md no-hardcoded-values rule.
+ */
+const DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1';
+
+/**
  * Factory for creating AI SDK language model instances from configuration.
  *
  * Uses dynamic imports to avoid loading provider SDKs that aren't needed,
@@ -95,12 +103,16 @@ export class ModelManager {
         }
         case 'deepseek': {
           // DeepSeek API is OpenAI-compatible — reuse the OpenAI SDK with a custom baseURL.
+          // IMPORTANT: must call deepseekProvider.chat(modelId), NOT deepseekProvider(modelId).
+          // The bare function-call form on @ai-sdk/openai >=3.x routes to /responses, which
+          // DeepSeek does not implement — it only exposes /chat/completions. The .chat factory
+          // forces the chat-completions path. See PR #400 review for full trace.
           const { createOpenAI } = await import('@ai-sdk/openai');
           const deepseekProvider = createOpenAI({
-            baseURL: 'https://api.deepseek.com/v1',
+            baseURL: DEEPSEEK_BASE_URL,
             apiKey: process.env.DEEPSEEK_API_KEY,
           });
-          providerFn = (modelId: string) => deepseekProvider(modelId);
+          providerFn = (modelId: string) => deepseekProvider.chat(modelId);
           break;
         }
         default:
