@@ -987,6 +987,84 @@ describe('RequestSlaSubscriber', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Bug 2 defense-in-depth — VERIFIED_REPLY_REASONS gate on maybeCloseRequest
+  // -------------------------------------------------------------------------
+  // Steve 2026-04-30: a `responseTimeoutMs` placeholder reached the SLA
+  // subscriber and cascaded the parent Request to `done` without an actual
+  // orc reply. The primary fix lives in slack-orchestrator-bridge.ts (the
+  // `fromOrcReply` flag), but this gate is the second line of defense:
+  // even if a future caller somehow invokes `markResolved` with a
+  // non-reply reason, the parent Request must not auto-close.
+  describe('maybeCloseRequest — VERIFIED_REPLY_REASONS gate (Bug 2 defense-in-depth)', () => {
+    it('does NOT cascade-close the Request when reason is not in the verified-reply set', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+      expect(svc.registry.get(r.id)?.status).toBe('open');
+
+      // Direct call to the protected `markResolved` with a non-reply reason
+      // — exercises the gate without depending on a future caller bug.
+      // `escalation_timeout` is the reason `failOrphanRespondWi` uses today;
+      // any other diagnostic string would behave the same way.
+      await (sub as unknown as { markResolved: (id: string, reason: string) => Promise<void> }).markResolved(
+        r.id,
+        'escalation_timeout',
+      );
+
+      // The WI may still transition (queued → cancelled is legal) but the
+      // PARENT Request must NOT have been cascaded to `done`.
+      expect(svc.updateCalls).toEqual([]);
+      expect(svc.registry.get(r.id)?.status).toBe('open');
+    });
+
+    it('does cascade-close the Request when reason is "orc_reply" (verified-reply path)', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      await (sub as unknown as { markResolved: (id: string, reason: string) => Promise<void> }).markResolved(
+        r.id,
+        'orc_reply',
+      );
+
+      expect(svc.registry.get(r.id)?.status).toBe('done');
+      expect(svc.registry.get(r.id)?.result).toContain('orc_reply');
+    });
+
+    it('does cascade-close the Request when reason is "chatv2_reply"', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      await (sub as unknown as { markResolved: (id: string, reason: string) => Promise<void> }).markResolved(
+        r.id,
+        'chatv2_reply',
+      );
+
+      expect(svc.registry.get(r.id)?.status).toBe('done');
+      expect(svc.registry.get(r.id)?.result).toContain('chatv2_reply');
+    });
+
+    it('does cascade-close the Request when reason is "workitem_decompose"', async () => {
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      await (sub as unknown as { markResolved: (id: string, reason: string) => Promise<void> }).markResolved(
+        r.id,
+        'workitem_decompose',
+      );
+
+      expect(svc.registry.get(r.id)?.status).toBe('done');
+      expect(svc.registry.get(r.id)?.result).toContain('workitem_decompose');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // INBOUND-1.f1: Auto-close path b — workitem:queued decompose hook
   // -------------------------------------------------------------------------
 
