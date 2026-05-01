@@ -63,6 +63,33 @@ export interface SlackBridgeConfig {
 }
 
 /**
+ * Internal envelope for orchestrator-bound responses.
+ *
+ * The orchestrator bridge needs to distinguish a real orc reply (delivered
+ * via the `slackResolve` callback fired by the orc's reply-slack skill)
+ * from a placeholder string returned on `responseTimeoutMs` /
+ * orchestrator-offline / queue-error fallbacks. Only real orc replies
+ * may auto-resolve the V3 SLA tracker (`markResolvedByThread`).
+ *
+ * Steve 2026-04-30 incident: a 30s timeout placeholder was firing
+ * `markResolvedByThread`, then PR #382's cascade closed the parent
+ * Request to `done` even though the orc never received the message
+ * (Bug 1: agent-registration skip-rewrite swallowed the input).
+ *
+ * @internal
+ */
+interface OrcResponse {
+  /** Response text shown to the user (real orc reply OR placeholder). */
+  response: string;
+  /**
+   * `true` only when the response originated from the orc's `slackResolve`
+   * callback (reply-slack skill). `false` for any timeout / offline /
+   * fallback path. Drives whether the SLA chain is auto-resolved.
+   */
+  fromOrcReply: boolean;
+}
+
+/**
  * Default bridge configuration
  */
 const DEFAULT_CONFIG: SlackBridgeConfig = {
@@ -344,25 +371,39 @@ export class SlackOrchestratorBridge extends EventEmitter {
         await this.addTypingIndicator(message);
       }
 
-      // Handle based on intent
+      // Handle based on intent.
+      // `response` is the user-visible text; `fromOrcReply` tracks whether
+      // the response came from the orc's reply-slack callback (true) or a
+      // local string / fallback / placeholder (false). Only true responses
+      // may auto-resolve the V3 SLA tracker downstream.
       let response: string;
+      let fromOrcReply = false;
       let isOrchestratorRoute = false;
       switch (command.intent) {
         case 'help':
           response = this.getHelpMessage();
           break;
-        case 'status':
-          response = await this.handleStatusCommand(command, context);
+        case 'status': {
+          const r = await this.handleStatusCommand(command, context);
+          response = r.response;
+          fromOrcReply = r.fromOrcReply;
           break;
+        }
         case 'list_projects':
         case 'list_teams':
-        case 'list_agents':
-          response = await this.handleListCommand(command, context);
+        case 'list_agents': {
+          const r = await this.handleListCommand(command, context);
+          response = r.response;
+          fromOrcReply = r.fromOrcReply;
           break;
+        }
         case 'pause':
-        case 'resume':
-          response = await this.handleControlCommand(command, context);
+        case 'resume': {
+          const r = await this.handleControlCommand(command, context);
+          response = r.response;
+          fromOrcReply = r.fromOrcReply;
           break;
+        }
         default:
           // V3 Request creation for Slack user messages — fire-and-forget
           setImmediate(async () => {
@@ -394,12 +435,18 @@ export class SlackOrchestratorBridge extends EventEmitter {
             }
           });
           // Send to orchestrator for processing
-          response = await this.sendToOrchestrator(message.text, context);
+          {
+            const r = await this.sendToOrchestrator(message.text, context);
+            response = r.response;
+            fromOrcReply = r.fromOrcReply;
+          }
           isOrchestratorRoute = true;
       }
 
-      // Send response back to Slack
-      await this.sendSlackResponse(message, response);
+      // Send response back to Slack. The `fromOrcReply` flag gates the V3
+      // SLA auto-resolve hook inside sendSlackResponse — placeholders and
+      // fallbacks must NOT mark the respond_to_user WI as resolved.
+      await this.sendSlackResponse(message, response, fromOrcReply);
 
       // For orchestrator-routed messages, defer ✅ until reply-slack delivers
       // the actual response. Store pending reaction keyed by channel+thread
@@ -556,7 +603,7 @@ Just type naturally to chat with the orchestrator!`;
   private async handleStatusCommand(
     command: ParsedSlackCommand,
     context: SlackConversationContext
-  ): Promise<string> {
+  ): Promise<OrcResponse> {
     return await this.sendToOrchestrator(
       `Give me a brief status update. ${command.rawText}`,
       context
@@ -573,7 +620,7 @@ Just type naturally to chat with the orchestrator!`;
   private async handleListCommand(
     command: ParsedSlackCommand,
     context: SlackConversationContext
-  ): Promise<string> {
+  ): Promise<OrcResponse> {
     const prompts: Record<string, string> = {
       list_projects: 'List all active projects with their status.',
       list_teams: 'List all teams and their current assignments.',
@@ -596,7 +643,7 @@ Just type naturally to chat with the orchestrator!`;
   private async handleControlCommand(
     command: ParsedSlackCommand,
     context: SlackConversationContext
-  ): Promise<string> {
+  ): Promise<OrcResponse> {
     const action = command.intent === 'pause' ? 'Pause' : 'Resume';
     const target = command.parameters.target || command.parameters.mention || 'all agents';
 
@@ -616,7 +663,7 @@ Just type naturally to chat with the orchestrator!`;
   private async sendToOrchestrator(
     message: string,
     context?: SlackConversationContext
-  ): Promise<string> {
+  ): Promise<OrcResponse> {
     try {
       // Check if orchestrator is active before attempting to send
       const isActive = await isOrchestratorActive();
@@ -626,12 +673,16 @@ Just type naturally to chat with the orchestrator!`;
         const auditorActive = await isAgentActive(auditorSession);
         if (auditorActive) {
           this.logger.info('Orchestrator offline — routing message to Auditor agent');
-          return this.sendToAuditorFallback(message, context);
+          // Auditor fallback is NOT an orc reply — caller must not auto-resolve SLA.
+          const fallback = await this.sendToAuditorFallback(message, context);
+          return { response: fallback, fromOrcReply: false };
         }
 
         // #247: Queue the message for replay when orchestrator comes back online,
         // instead of silently dropping it. The queue processor defers delivery
         // until the orchestrator registers (agentStatus === 'active').
+        // NOTE: This is an offline-path acknowledgement, NOT a real orc reply —
+        // every return from this branch must set `fromOrcReply: false`.
         if (this.messageQueueService) {
           this.logger.info('Orchestrator offline — queuing message for replay when it comes back online');
 
@@ -689,7 +740,10 @@ Just type naturally to chat with the orchestrator!`;
               }
             }
 
-            return 'The orchestrator is currently offline. Your message has been queued and will be processed when it comes back online.';
+            return {
+              response: 'The orchestrator is currently offline. Your message has been queued and will be processed when it comes back online.',
+              fromOrcReply: false,
+            };
           } catch (enqueueErr) {
             this.logger.warn('Failed to queue message for offline orchestrator', {
               error: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr),
@@ -698,13 +752,16 @@ Just type naturally to chat with the orchestrator!`;
         }
 
         this.logger.info('Orchestrator is not active, returning offline message');
-        return getOrchestratorOfflineMessage(true);
+        return { response: getOrchestratorOfflineMessage(true), fromOrcReply: false };
       }
 
       // Check if message queue service is available
       if (!this.messageQueueService) {
         this.logger.error('Message queue service not configured');
-        return 'The Slack bridge is not properly configured. Please restart the server.';
+        return {
+          response: 'The Slack bridge is not properly configured. Please restart the server.',
+          fromOrcReply: false,
+        };
       }
 
       // Enrich message with thread file path hint for orchestrator context
@@ -728,13 +785,22 @@ Just type naturally to chat with the orchestrator!`;
       // Enqueue the message with a resolve callback for response routing.
       // The QueueProcessorService will call slackResolve() when the
       // orchestrator responds, unblocking this promise.
-      const response = await new Promise<string>((resolve) => {
+      //
+      // The promise resolves with `{response, fromOrcReply}`. `fromOrcReply`
+      // is `true` ONLY when slackResolve fires (orc's reply-slack skill
+      // delivered an actual reply). On responseTimeoutMs or enqueue failure
+      // it is `false` — the placeholder must NOT auto-resolve the SLA
+      // tracker (Steve 2026-04-30 incident: false-done Request cascade).
+      const orcResponse = await new Promise<OrcResponse>((resolve) => {
         let resolved = false;
 
         const timeoutId = setTimeout(() => {
           if (!resolved) {
             resolved = true;
-            resolve('The orchestrator is still processing your request. It will reply here when ready — no need to resend.');
+            resolve({
+              response: 'The orchestrator is still processing your request. It will reply here when ready — no need to resend.',
+              fromOrcReply: false,
+            });
           }
         }, this.config.responseTimeoutMs);
 
@@ -748,7 +814,8 @@ Just type naturally to chat with the orchestrator!`;
                 if (!resolved) {
                   resolved = true;
                   clearTimeout(timeoutId);
-                  resolve(resp);
+                  // Real orc reply path — safe to auto-resolve the SLA tracker.
+                  resolve({ response: resp, fromOrcReply: true });
                 }
               },
               userId: context?.userId,
@@ -784,12 +851,15 @@ Just type naturally to chat with the orchestrator!`;
           if (!resolved) {
             resolved = true;
             clearTimeout(timeoutId);
-            resolve(`Failed to enqueue message: ${enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr)}`);
+            resolve({
+              response: `Failed to enqueue message: ${enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr)}`,
+              fromOrcReply: false,
+            });
           }
         }
       });
 
-      return response;
+      return orcResponse;
     } catch (error) {
       this.logger.error('Error sending to orchestrator', { error: error instanceof Error ? error.message : String(error) });
       throw error;
@@ -1274,19 +1344,47 @@ Just type naturally to chat with the orchestrator!`;
    * Record response to thread store. Slack delivery is handled exclusively
    * by the reply-slack skill via the API — no terminal output fallback needed.
    *
+   * The `fromOrcReply` flag gates the V3 SLA auto-resolve hook
+   * (`markResolvedByThread`). Only real orc replies (delivered via the
+   * orc's reply-slack skill → `slackResolve` callback) may auto-resolve
+   * the SLA tracker. Placeholder / timeout / offline / fallback responses
+   * must NOT trigger the cascade — doing so closes the parent Request to
+   * `done` even though the orc never actually replied (Steve 2026-04-30
+   * incident: false-done Request, paired with Bug 1 silent-drop in
+   * agent-registration.service.ts).
+   *
+   * Default `fromOrcReply = true` preserves the legacy behaviour for the
+   * mention-routing call site (line ~327) which currently has no
+   * placeholder semantics — its `sendToAgent` path delivers a direct
+   * agent reply when reachable. If that path later grows a timeout
+   * fallback, the call site should pass `false` explicitly.
+   *
    * @param originalMessage - Original incoming message
-   * @param response - Response content
+   * @param response        - Response content (real reply or placeholder)
+   * @param fromOrcReply    - `true` only when the response came from a
+   *   real agent/orc reply path. `false` for any timeout / fallback /
+   *   offline acknowledgement. Drives whether the SLA tracker is
+   *   auto-resolved for the matching Slack thread.
    */
   private async sendSlackResponse(
     originalMessage: SlackIncomingMessage,
-    response: string
+    response: string,
+    fromOrcReply: boolean = true,
   ): Promise<void> {
     await this.recordThreadReply(originalMessage, response);
 
     // INBOUND-1.4: notify the RequestSlaSubscriber that the orc replied to
     // this Slack thread so any tracked respond_to_user WorkItem can
-    // auto-transition to `done` and the SLA timers no-op. Lazy import
-    // breaks the static cycle (subscriber boot wires this bridge).
+    // auto-transition and the SLA timers no-op. Lazy import breaks the
+    // static cycle (subscriber boot wires this bridge).
+    if (!fromOrcReply) {
+      this.logger.debug('Skipping SLA auto-resolve — response is not a real orc reply', {
+        threadTs: originalMessage.ts,
+        responsePreview: response.slice(0, 60),
+      });
+      return;
+    }
+
     try {
       const { getRequestSlaSubscriber } = await import('../v3/request-sla.subscriber.js');
       const sub = getRequestSlaSubscriber();
