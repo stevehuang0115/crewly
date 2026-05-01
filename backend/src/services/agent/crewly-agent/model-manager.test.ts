@@ -79,6 +79,18 @@ describe('ModelManager', () => {
       expect((model as any).modelId).toBe('llama3.3:70b');
     });
 
+    it('should create a DeepSeek model via the OpenAI-compatible API', async () => {
+      process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+      const model = await manager.getModel({ provider: 'deepseek', modelId: 'deepseek-chat' });
+      expect(model).toBeDefined();
+      // The DeepSeek model is built on top of @ai-sdk/openai's createOpenAI
+      // pointed at https://api.deepseek.com/v1; we only assert that the model
+      // instance is produced without throwing — baseURL routing is exercised
+      // implicitly via the createOpenAI factory, which is covered by upstream
+      // tests in @ai-sdk/openai itself.
+      expect((model as any).modelId).toBe('deepseek-chat');
+    });
+
     it('should use default config when none provided', async () => {
       const model = await manager.getModel();
       expect(model).toBeDefined();
@@ -106,6 +118,7 @@ describe('ModelManager', () => {
       delete process.env.OPENAI_API_KEY;
       delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
       delete process.env.GEMINI_API_KEY;
+      delete process.env.DEEPSEEK_API_KEY;
 
       const available = await manager.getAvailableProviders();
 
@@ -113,6 +126,13 @@ describe('ModelManager', () => {
       expect(available.openai).toBe(false);
       expect(available.google).toBe(false);
       expect(available.ollama).toBe(true); // Ollama is always available (local)
+      expect(available.deepseek).toBe(false);
+    });
+
+    it('should detect DeepSeek API key from env', async () => {
+      process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+      const available = await manager.getAvailableProviders();
+      expect(available.deepseek).toBe(true);
     });
 
     it('should detect Anthropic API key', async () => {

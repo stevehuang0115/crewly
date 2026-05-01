@@ -27,7 +27,8 @@ describe('Crewly Agent Types', () => {
       expect(MODEL_PROVIDERS).toContain('openai');
       expect(MODEL_PROVIDERS).toContain('google');
       expect(MODEL_PROVIDERS).toContain('ollama');
-      expect(MODEL_PROVIDERS).toHaveLength(4);
+      expect(MODEL_PROVIDERS).toContain('deepseek');
+      expect(MODEL_PROVIDERS).toHaveLength(5);
     });
   });
 

@@ -8,6 +8,7 @@
  * - ANTHROPIC_API_KEY
  * - OPENAI_API_KEY
  * - GOOGLE_GENERATIVE_AI_API_KEY
+ * - DEEPSEEK_API_KEY (DeepSeek; served via OpenAI-compatible API)
  *
  * Ollama runs locally and does not require an API key.
  * Configure the Ollama base URL via OLLAMA_BASE_URL (default: http://localhost:11434).
@@ -92,6 +93,16 @@ export class ModelManager {
           providerFn = (modelId: string) => ollamaProvider(modelId) as unknown as LanguageModel;
           break;
         }
+        case 'deepseek': {
+          // DeepSeek API is OpenAI-compatible — reuse the OpenAI SDK with a custom baseURL.
+          const { createOpenAI } = await import('@ai-sdk/openai');
+          const deepseekProvider = createOpenAI({
+            baseURL: 'https://api.deepseek.com/v1',
+            apiKey: process.env.DEEPSEEK_API_KEY,
+          });
+          providerFn = (modelId: string) => deepseekProvider(modelId);
+          break;
+        }
         default:
           throw new Error(`Unknown model provider: ${provider}`);
       }
@@ -129,29 +140,39 @@ export class ModelManager {
       openai: !!openaiKey,
       google: !!geminiKey,
       ollama: true, // Ollama runs locally, always "available" if installed
+      // DeepSeek is not yet wired through the settings service (ApiKeyProvider union),
+      // so availability is detected from the env var directly.
+      deepseek: !!process.env.DEEPSEEK_API_KEY,
     };
   }
 
   /**
    * Map model provider name to API key provider name.
-   * Only applicable for cloud providers (not ollama).
+   * Only applicable for cloud providers wired through the settings service
+   * (anthropic, openai, google). Ollama runs locally; DeepSeek currently
+   * reads its key directly from DEEPSEEK_API_KEY (see ensureApiKeyInEnv).
    *
    * @param provider - Cloud model provider (anthropic, openai, or google)
    * @returns Corresponding ApiKeyProvider name
    */
-  private static providerToApiKeyProvider(provider: Exclude<ModelProvider, 'ollama'>): ApiKeyProvider {
+  private static providerToApiKeyProvider(provider: Exclude<ModelProvider, 'ollama' | 'deepseek'>): ApiKeyProvider {
     return provider === 'google' ? 'gemini' : provider;
   }
 
   /**
    * Ensure the API key for a provider is available in process.env
    * by resolving it from settings if not already present.
-   * Ollama runs locally and does not require an API key — this is a no-op for 'ollama'.
+   *
+   * No-op for providers that do not flow through the settings service:
+   * - 'ollama' runs locally and needs no key
+   * - 'deepseek' reads DEEPSEEK_API_KEY directly from the environment
+   *   (will be migrated to the settings service in a follow-up; see PR notes)
    *
    * @param provider - The model provider
    */
   private async ensureApiKeyInEnv(provider: ModelProvider): Promise<void> {
     if (provider === 'ollama') return; // Ollama is local, no API key needed
+    if (provider === 'deepseek') return; // DEEPSEEK_API_KEY read directly from env
     const apiKeyProvider = ModelManager.providerToApiKeyProvider(provider);
     const settingsService = getSettingsService();
     const key = await settingsService.getApiKey(apiKeyProvider, { runtime: 'crewly-agent' });

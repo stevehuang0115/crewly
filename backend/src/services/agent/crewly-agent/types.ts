@@ -13,9 +13,15 @@ import type { McpServerConfig } from '../../mcp-client.js';
 import type { McpSensitivityOverrides } from './mcp-tool-bridge.js';
 
 /**
- * Supported model providers for Crewly Agent
+ * Supported model providers for Crewly Agent.
+ *
+ * Note: 'deepseek' is served through the OpenAI-compatible API at
+ * https://api.deepseek.com/v1, but is exposed as a distinct provider
+ * so users can select it explicitly. Its API key (DEEPSEEK_API_KEY) is
+ * read from the environment, not from the settings service — see
+ * model-manager.ts for details.
  */
-export type ModelProvider = 'anthropic' | 'openai' | 'google' | 'ollama';
+export type ModelProvider = 'anthropic' | 'openai' | 'google' | 'ollama' | 'deepseek';
 
 /**
  * All valid model providers
@@ -25,6 +31,7 @@ export const MODEL_PROVIDERS: readonly ModelProvider[] = [
   'openai',
   'google',
   'ollama',
+  'deepseek',
 ] as const;
 
 /**
