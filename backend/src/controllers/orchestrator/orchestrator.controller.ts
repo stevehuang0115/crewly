@@ -16,6 +16,7 @@ import {
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import { MemoryService } from '../../services/memory/memory.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { isModelProvider } from '../../services/agent/crewly-agent/types.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('OrchestratorController');
 
@@ -605,20 +606,35 @@ export async function assignTaskToOrchestrator(
 }
 
 /**
- * Validate a modelId string of the form "provider/modelId".
- *
- * Uses a permissive regex first (cheap) then confirms the parsed result is
- * a real ModelConfig — `parseModelId()` falls back to DEFAULT_MODEL on
- * invalid input, so we explicitly check that the parsed result matches
- * the supplied input rather than the default.
- *
- * @param modelId - User-supplied model id (e.g. "deepseek/deepseek-chat")
- * @returns true if the modelId is well-formed AND its provider is supported
+ * Permissive structural regex for a "provider/modelId" pair.
+ * Provider: lowercase letters/digits/hyphens. ModelId: any printable
+ * id-safe character set we've observed across providers.
  */
-function isValidModelIdFormat(modelId: string): boolean {
-	// Cheap structural check — provider/modelId with conservative charsets
-	if (!/^[a-z0-9-]+\/[a-zA-Z0-9.\-_]+$/.test(modelId)) return false;
-	return true;
+const MODEL_ID_FORMAT_RE = /^[a-z0-9-]+\/[a-zA-Z0-9.\-_]+$/;
+
+/**
+ * Validate a user-supplied modelId in two stages:
+ *   1. Cheap structural regex — rejects gibberish without imports.
+ *   2. Provider whitelist via {@link isModelProvider} — rejects providers
+ *      the runtime cannot construct, regardless of structural validity.
+ *
+ * Returning a structured result lets the caller surface a precise 400
+ * error message ("malformed" vs "unsupported provider").
+ *
+ * @param modelId - Format: "provider/modelId"
+ * @returns Validation outcome with a typed reason on failure
+ */
+function validateModelId(modelId: string):
+	| { ok: true }
+	| { ok: false; reason: 'malformed' | 'unsupported_provider' } {
+	if (!MODEL_ID_FORMAT_RE.test(modelId)) {
+		return { ok: false, reason: 'malformed' };
+	}
+	const provider = modelId.substring(0, modelId.indexOf('/'));
+	if (!isModelProvider(provider)) {
+		return { ok: false, reason: 'unsupported_provider' };
+	}
+	return { ok: true };
 }
 
 export async function updateOrchestratorRuntime(
@@ -652,29 +668,16 @@ export async function updateOrchestratorRuntime(
 			}
 		}
 
-		// Validate modelId format when present.
-		// parseModelId() falls back to DEFAULT_MODEL on bad input, so a regex
-		// check up front is the cheapest way to surface a 400 to the caller.
+		// Validate modelId format and provider when present.
 		if (hasModelId) {
-			if (!isValidModelIdFormat(modelId!)) {
+			const validation = validateModelId(modelId!);
+			if (!validation.ok) {
+				const errorMessage = validation.reason === 'malformed'
+					? 'Invalid modelId format. Expected "provider/modelId" (e.g. "deepseek/deepseek-chat")'
+					: 'Invalid modelId. Provider not supported by Crewly Agent runtime.';
 				res.status(400).json({
 					success: false,
-					error: 'Invalid modelId format. Expected "provider/modelId" (e.g. "deepseek/deepseek-chat")',
-				} as ApiResponse);
-				return;
-			}
-			// Defense-in-depth: confirm parseModelId accepts the provider.
-			const { parseModelId, CREWLY_AGENT_DEFAULTS } = await import('../../services/agent/crewly-agent/types.js');
-			const parsed = parseModelId(modelId!);
-			const matchesDefault = parsed.provider === CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.provider
-				&& parsed.modelId === CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.modelId;
-			const expectedDefaultId = `${CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.provider}/${CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.modelId}`;
-			if (matchesDefault && modelId !== expectedDefaultId) {
-				// parseModelId returned the default but the input wasn't asking for it →
-				// the provider was rejected. Surface a 400.
-				res.status(400).json({
-					success: false,
-					error: 'Invalid modelId. Provider not supported by Crewly Agent runtime.',
+					error: errorMessage,
 				} as ApiResponse);
 				return;
 			}

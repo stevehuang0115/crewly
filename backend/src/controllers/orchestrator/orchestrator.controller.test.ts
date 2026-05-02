@@ -1296,7 +1296,7 @@ describe('Orchestrator Handlers', () => {
       expect(mockStorageService.updateOrchestratorRuntimeType).not.toHaveBeenCalled();
     });
 
-    it('rejects with 400 for malformed modelId (no slash)', async () => {
+    it('rejects with 400 for malformed modelId (no slash) and surfaces "format" error', async () => {
       mockRequest.body = { modelId: 'gibberish' };
 
       await orchestratorHandlers.updateOrchestratorRuntime.call(
@@ -1307,11 +1307,15 @@ describe('Orchestrator Handlers', () => {
 
       expect(mockResponse.status).toHaveBeenCalledWith(400);
       expect(mockStorageService.updateOrchestratorModelId).not.toHaveBeenCalled();
+      // Round-1 refactor surfaces a typed "malformed" reason in the error body.
+      const errorBody = (mockResponse.json as jest.Mock).mock.calls[0][0];
+      expect(errorBody.error).toMatch(/format/i);
     });
 
-    it('rejects with 400 for modelId with unsupported provider', async () => {
-      // Format passes regex (provider/modelId) but provider is not in MODEL_PROVIDERS,
-      // so parseModelId() falls back to DEFAULT_MODEL — controller must catch this.
+    it('rejects with 400 for modelId with unsupported provider and surfaces "provider" error', async () => {
+      // Format passes the structural regex (provider/modelId) but the provider
+      // is not in MODEL_PROVIDERS — so isModelProvider() returns false and we
+      // surface a precise "Provider not supported" error message.
       mockRequest.body = { modelId: 'fakeprovider/some-model' };
 
       await orchestratorHandlers.updateOrchestratorRuntime.call(
@@ -1322,6 +1326,8 @@ describe('Orchestrator Handlers', () => {
 
       expect(mockResponse.status).toHaveBeenCalledWith(400);
       expect(mockStorageService.updateOrchestratorModelId).not.toHaveBeenCalled();
+      const errorBody = (mockResponse.json as jest.Mock).mock.calls[0][0];
+      expect(errorBody.error).toMatch(/Provider not supported/i);
     });
 
     it('accepts the canonical default modelId without flagging it as invalid', async () => {
