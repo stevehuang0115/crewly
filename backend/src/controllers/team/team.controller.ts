@@ -226,6 +226,9 @@ function buildOrchestratorTeam(
       agentStatus: actualAgentStatus as TeamMember['agentStatus'],
       workingStatus: (orchestratorStatus?.workingStatus || CREWLY_CONSTANTS.WORKING_STATUSES.IDLE) as TeamMember['workingStatus'],
       runtimeType: (orchestratorStatus?.runtimeType || 'claude-code') as TeamMember['runtimeType'],
+      // Surface configured modelId so the in-process Crewly Agent runtime can use it.
+      // Only set when present — undefined preserves "use DEFAULT_MODEL" semantics.
+      ...(orchestratorStatus?.modelId ? { modelId: orchestratorStatus.modelId } : {}),
       createdAt: orchestratorStatus?.createdAt || now,
       updatedAt: orchestratorStatus?.updatedAt || now
     },
