@@ -604,39 +604,101 @@ export async function assignTaskToOrchestrator(
 	}
 }
 
+/**
+ * Validate a modelId string of the form "provider/modelId".
+ *
+ * Uses a permissive regex first (cheap) then confirms the parsed result is
+ * a real ModelConfig — `parseModelId()` falls back to DEFAULT_MODEL on
+ * invalid input, so we explicitly check that the parsed result matches
+ * the supplied input rather than the default.
+ *
+ * @param modelId - User-supplied model id (e.g. "deepseek/deepseek-chat")
+ * @returns true if the modelId is well-formed AND its provider is supported
+ */
+function isValidModelIdFormat(modelId: string): boolean {
+	// Cheap structural check — provider/modelId with conservative charsets
+	if (!/^[a-z0-9-]+\/[a-zA-Z0-9.\-_]+$/.test(modelId)) return false;
+	return true;
+}
+
 export async function updateOrchestratorRuntime(
 	this: ApiContext,
 	req: Request,
 	res: Response
 ): Promise<void> {
 	try {
-		const { runtimeType } = req.body as { runtimeType: string };
+		const { runtimeType, modelId } = req.body as { runtimeType?: string; modelId?: string };
 
-		if (!runtimeType || typeof runtimeType !== 'string') {
+		// At least one field must be provided. Empty strings count as "not provided".
+		const hasRuntimeType = typeof runtimeType === 'string' && runtimeType.length > 0;
+		const hasModelId = typeof modelId === 'string' && modelId.length > 0;
+		if (!hasRuntimeType && !hasModelId) {
 			res.status(400).json({
 				success: false,
-				error: 'runtimeType is required and must be a string',
+				error: 'At least one of runtimeType or modelId must be provided',
 			} as ApiResponse);
 			return;
 		}
 
-		// Validate runtime type
-		const validRuntimeTypes: string[] = Object.values(RUNTIME_TYPES);
-		if (!validRuntimeTypes.includes(runtimeType)) {
-			res.status(400).json({
-				success: false,
-				error: `Invalid runtime type. Must be one of: ${validRuntimeTypes.join(', ')}`,
-			} as ApiResponse);
-			return;
+		// Validate runtimeType when present (preserves existing behavior).
+		if (hasRuntimeType) {
+			const validRuntimeTypes: string[] = Object.values(RUNTIME_TYPES);
+			if (!validRuntimeTypes.includes(runtimeType!)) {
+				res.status(400).json({
+					success: false,
+					error: `Invalid runtime type. Must be one of: ${validRuntimeTypes.join(', ')}`,
+				} as ApiResponse);
+				return;
+			}
 		}
 
-		// Update orchestrator runtime type
-		await this.storageService.updateOrchestratorRuntimeType(runtimeType as RuntimeType);
+		// Validate modelId format when present.
+		// parseModelId() falls back to DEFAULT_MODEL on bad input, so a regex
+		// check up front is the cheapest way to surface a 400 to the caller.
+		if (hasModelId) {
+			if (!isValidModelIdFormat(modelId!)) {
+				res.status(400).json({
+					success: false,
+					error: 'Invalid modelId format. Expected "provider/modelId" (e.g. "deepseek/deepseek-chat")',
+				} as ApiResponse);
+				return;
+			}
+			// Defense-in-depth: confirm parseModelId accepts the provider.
+			const { parseModelId, CREWLY_AGENT_DEFAULTS } = await import('../../services/agent/crewly-agent/types.js');
+			const parsed = parseModelId(modelId!);
+			const matchesDefault = parsed.provider === CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.provider
+				&& parsed.modelId === CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.modelId;
+			const expectedDefaultId = `${CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.provider}/${CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.modelId}`;
+			if (matchesDefault && modelId !== expectedDefaultId) {
+				// parseModelId returned the default but the input wasn't asking for it →
+				// the provider was rejected. Surface a 400.
+				res.status(400).json({
+					success: false,
+					error: 'Invalid modelId. Provider not supported by Crewly Agent runtime.',
+				} as ApiResponse);
+				return;
+			}
+		}
+
+		// Persist both fields independently so partial updates are supported.
+		if (hasRuntimeType) {
+			await this.storageService.updateOrchestratorRuntimeType(runtimeType as RuntimeType);
+		}
+		if (hasModelId) {
+			await this.storageService.updateOrchestratorModelId(modelId);
+		}
+
+		const messageParts: string[] = [];
+		if (hasRuntimeType) messageParts.push(`runtime=${runtimeType}`);
+		if (hasModelId) messageParts.push(`modelId=${modelId}`);
 
 		res.json({
 			success: true,
-			data: { runtimeType },
-			message: `Orchestrator runtime updated to ${runtimeType}`,
+			data: {
+				...(hasRuntimeType ? { runtimeType } : {}),
+				...(hasModelId ? { modelId } : {}),
+			},
+			message: `Orchestrator updated (${messageParts.join(', ')})`,
 		} as ApiResponse);
 	} catch (error) {
 		logger.error('Error updating orchestrator runtime', { error: error instanceof Error ? error.message : String(error) });
