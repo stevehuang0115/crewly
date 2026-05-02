@@ -556,4 +556,160 @@ describe('StorageService', () => {
       spy.mockRestore();
     });
   });
+
+  describe('Orchestrator modelId management', () => {
+    /**
+     * existsSync mock that returns true for the orchestrator config file but
+     * false for the legacy teams.json file. This skips the legacy migration
+     * path (which would otherwise consume our readFile mock).
+     */
+    const setOrchestratorExists = (orchestratorExists: boolean): void => {
+      mockFs.existsSync.mockImplementation((p: any) => {
+        if (typeof p !== 'string') return true;
+        if (p.endsWith('teams.json')) return false; // skip legacy migration
+        if (p.includes('orchestrator')) return orchestratorExists;
+        return true;
+      });
+    };
+
+    beforeEach(() => {
+      setOrchestratorExists(true);
+      mockFsPromises.readdir.mockResolvedValue([]); // no flat team files
+    });
+
+    test('updateOrchestratorModelId writes modelId while preserving runtimeType and agentStatus', async () => {
+      const existing = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE,
+        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+        runtimeType: 'crewly-agent',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(existing));
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+
+      await storageService.updateOrchestratorModelId('deepseek/deepseek-chat');
+
+      // atomicWriteFile uses a temp file then rename — find the writeFile call against the orch file or its tmp variant
+      const writeCalls = mockFsPromises.writeFile.mock.calls;
+      const orchWriteCall = writeCalls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('orchestrator')
+      );
+      expect(orchWriteCall).toBeDefined();
+      const written = JSON.parse(orchWriteCall![1] as string);
+      expect(written.modelId).toBe('deepseek/deepseek-chat');
+      // runtimeType and agentStatus must be preserved
+      expect(written.runtimeType).toBe('crewly-agent');
+      expect(written.agentStatus).toBe(CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE);
+      // updatedAt is refreshed
+      expect(written.updatedAt).not.toBe(existing.updatedAt);
+    });
+
+    test('updateOrchestratorModelId(undefined) clears the field', async () => {
+      const existing = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+        runtimeType: 'claude-code',
+        modelId: 'deepseek/deepseek-chat',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(existing));
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+
+      await storageService.updateOrchestratorModelId(undefined);
+
+      const writeCalls = mockFsPromises.writeFile.mock.calls;
+      const orchWriteCall = writeCalls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('orchestrator')
+      );
+      expect(orchWriteCall).toBeDefined();
+      const written = JSON.parse(orchWriteCall![1] as string);
+      expect('modelId' in written).toBe(false);
+      // runtimeType is preserved
+      expect(written.runtimeType).toBe('claude-code');
+    });
+
+    test('updateOrchestratorModelId initializes default config when file missing', async () => {
+      setOrchestratorExists(false);
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+
+      await storageService.updateOrchestratorModelId('anthropic/claude-sonnet-4-20250514');
+
+      const writeCalls = mockFsPromises.writeFile.mock.calls;
+      const orchWriteCall = writeCalls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('orchestrator')
+      );
+      expect(orchWriteCall).toBeDefined();
+      const written = JSON.parse(orchWriteCall![1] as string);
+      expect(written.modelId).toBe('anthropic/claude-sonnet-4-20250514');
+      expect(written.sessionName).toBe(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
+      expect(written.runtimeType).toBeDefined();
+    });
+
+    test('getOrchestratorStatus surfaces modelId when present in config', async () => {
+      const existing = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE,
+        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+        runtimeType: 'crewly-agent',
+        modelId: 'deepseek/deepseek-chat',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+      };
+      setOrchestratorExists(true);
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(existing));
+
+      const status = await storageService.getOrchestratorStatus();
+
+      expect(status).not.toBeNull();
+      expect(status!.modelId).toBe('deepseek/deepseek-chat');
+      expect(status!.runtimeType).toBe('crewly-agent');
+    });
+
+    test('getOrchestratorStatus returns no modelId when not set', async () => {
+      const existing = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+        runtimeType: 'claude-code',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+      };
+      setOrchestratorExists(true);
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(existing));
+
+      const status = await storageService.getOrchestratorStatus();
+
+      expect(status).not.toBeNull();
+      expect(status!.modelId).toBeUndefined();
+    });
+
+    test('updateOrchestratorRuntimeType does not affect existing modelId', async () => {
+      const existing = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE,
+        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+        runtimeType: 'claude-code',
+        modelId: 'openai/gpt-4o',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(existing));
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+
+      await storageService.updateOrchestratorRuntimeType('crewly-agent');
+
+      const writeCalls = mockFsPromises.writeFile.mock.calls;
+      const orchWriteCall = writeCalls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('orchestrator')
+      );
+      expect(orchWriteCall).toBeDefined();
+      const written = JSON.parse(orchWriteCall![1] as string);
+      expect(written.runtimeType).toBe('crewly-agent');
+      expect(written.modelId).toBe('openai/gpt-4o');
+    });
+  });
 });

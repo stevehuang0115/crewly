@@ -3566,4 +3566,101 @@ describe('Teams Handlers', () => {
       expect(saveCallsAfter).toBe(saveCallsBefore);
     });
   });
+
+  /**
+   * Tests for buildOrchestratorTeam's modelId pass-through.
+   *
+   * The orchestrator-member virtual team member needs to expose any
+   * configured `modelId` so the in-process Crewly Agent runtime can
+   * select a non-default model (e.g. deepseek/deepseek-chat).
+   * The Assistant and Auditor virtual members must NOT receive modelId —
+   * they have their own runtimeType and don't run the configurable runtime.
+   */
+  describe('buildOrchestratorTeam modelId pass-through', () => {
+    /**
+     * Helper: invokes getTeams via the public handler and returns the
+     * orchestrator team object (always at index 0 in the response).
+     */
+    const fetchOrchestratorTeam = async (): Promise<any> => {
+      mockStorageService.getTeams.mockResolvedValue([]);
+      await teamsHandlers.getTeams.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+      const responseData = (responseMock.json as jest.Mock).mock.calls[0][0] as any;
+      return responseData.data[0];
+    };
+
+    it('surfaces modelId on orchestrator-member when set in config', async () => {
+      mockStorageService.getOrchestratorStatus.mockResolvedValue({
+        agentStatus: 'active',
+        workingStatus: 'idle',
+        runtimeType: 'crewly-agent',
+        modelId: 'deepseek/deepseek-chat',
+      });
+
+      const orchestratorTeam = await fetchOrchestratorTeam();
+      const orchestratorMember = orchestratorTeam.members.find(
+        (m: any) => m.id === 'orchestrator-member'
+      );
+
+      expect(orchestratorMember).toBeDefined();
+      expect(orchestratorMember.modelId).toBe('deepseek/deepseek-chat');
+      expect(orchestratorMember.runtimeType).toBe('crewly-agent');
+    });
+
+    it('omits modelId on orchestrator-member when not set (DEFAULT_MODEL semantics)', async () => {
+      mockStorageService.getOrchestratorStatus.mockResolvedValue({
+        agentStatus: 'inactive',
+        workingStatus: 'idle',
+        runtimeType: 'claude-code',
+        // no modelId
+      });
+
+      const orchestratorTeam = await fetchOrchestratorTeam();
+      const orchestratorMember = orchestratorTeam.members.find(
+        (m: any) => m.id === 'orchestrator-member'
+      );
+
+      expect(orchestratorMember).toBeDefined();
+      expect(orchestratorMember.modelId).toBeUndefined();
+    });
+
+    it('omits modelId when orchestratorStatus is null (no config yet)', async () => {
+      mockStorageService.getOrchestratorStatus.mockResolvedValue(null);
+
+      const orchestratorTeam = await fetchOrchestratorTeam();
+      const orchestratorMember = orchestratorTeam.members.find(
+        (m: any) => m.id === 'orchestrator-member'
+      );
+
+      expect(orchestratorMember).toBeDefined();
+      expect(orchestratorMember.modelId).toBeUndefined();
+    });
+
+    it('does not propagate modelId to Assistant or Auditor virtual members', async () => {
+      mockStorageService.getOrchestratorStatus.mockResolvedValue({
+        agentStatus: 'active',
+        workingStatus: 'idle',
+        runtimeType: 'crewly-agent',
+        modelId: 'anthropic/claude-sonnet-4-20250514',
+      });
+
+      const orchestratorTeam = await fetchOrchestratorTeam();
+      const assistant = orchestratorTeam.members.find(
+        (m: any) => m.sessionName === 'crewly-orc-assistant'
+      );
+      const auditor = orchestratorTeam.members.find(
+        (m: any) => m.sessionName === 'crewly-auditor'
+      );
+
+      expect(assistant).toBeDefined();
+      expect(assistant.modelId).toBeUndefined();
+      // Auditor may or may not be present depending on auditor settings
+      if (auditor) {
+        expect(auditor.modelId).toBeUndefined();
+      }
+    });
+  });
 });

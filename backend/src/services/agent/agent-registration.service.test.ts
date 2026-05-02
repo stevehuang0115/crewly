@@ -3057,6 +3057,160 @@ describe('AgentRegistrationService', () => {
 			expect(routeSpy).not.toHaveBeenCalled();
 			routeSpy.mockRestore();
 		});
+
+		// ──────────────────────────────────────────────────────────────────
+		// Orchestrator modelId resolution (P1 fix, cloud_pro_v2)
+		// ──────────────────────────────────────────────────────────────────
+		// storage.service.ts:413 excludes the orchestrator from getTeams(),
+		// so the orchestrator's modelId must be read via getOrchestratorStatus
+		// as a fallback. Without this branch, the orchestrator silently
+		// defaults to DEFAULT_MODEL even when a modelId is configured.
+		describe('orchestrator modelId resolution', () => {
+			it('uses orchestratorStatus.modelId when starting the orchestrator session', async () => {
+				mockReadFile.mockResolvedValue('System prompt');
+				mockAccess.mockRejectedValue(new Error('ENOENT'));
+				mockStorageService.getTeams.mockResolvedValue([]); // orchestrator excluded
+				(mockStorageService.getOrchestratorStatus as any).mockResolvedValue({
+					sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+					agentStatus: 'active',
+					workingStatus: 'idle',
+					runtimeType: RUNTIME_TYPES.CREWLY_AGENT,
+					modelId: 'deepseek/deepseek-chat',
+				});
+
+				await service.createAgentSession({
+					sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+					role: 'orchestrator',
+					runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+				});
+
+				expect(mockCrewlyRuntime.initializeInProcess).toHaveBeenCalled();
+				const initArgs = mockCrewlyRuntime.initializeInProcess.mock.calls[0];
+				const config = initArgs[1];
+				expect(config.model).toBeDefined();
+				expect(config.model.provider).toBe('deepseek');
+				expect(config.model.modelId).toBe('deepseek-chat');
+			});
+
+			it('uses orchestratorStatus.modelId when memberId is "orchestrator-member"', async () => {
+				mockReadFile.mockResolvedValue('System prompt');
+				mockAccess.mockRejectedValue(new Error('ENOENT'));
+				mockStorageService.getTeams.mockResolvedValue([]);
+				(mockStorageService.getOrchestratorStatus as any).mockResolvedValue({
+					runtimeType: RUNTIME_TYPES.CREWLY_AGENT,
+					modelId: 'anthropic/claude-sonnet-4-20250514',
+				});
+
+				// Use a non-orchestrator session name but the canonical orch member id —
+				// some flows pass memberId without a matching session name (e.g. virtual member).
+				await service.createAgentSession({
+					sessionName: 'crewly-orc-virtual',
+					role: 'orchestrator',
+					runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+					memberId: 'orchestrator-member',
+				} as any);
+
+				expect(mockCrewlyRuntime.initializeInProcess).toHaveBeenCalled();
+				const config = mockCrewlyRuntime.initializeInProcess.mock.calls[0][1];
+				expect(config.model).toBeDefined();
+				expect(config.model.provider).toBe('anthropic');
+				expect(config.model.modelId).toBe('claude-sonnet-4-20250514');
+			});
+
+			it('falls back to DEFAULT_MODEL when orchestrator has no modelId configured', async () => {
+				mockReadFile.mockResolvedValue('System prompt');
+				mockAccess.mockRejectedValue(new Error('ENOENT'));
+				mockStorageService.getTeams.mockResolvedValue([]);
+				(mockStorageService.getOrchestratorStatus as any).mockResolvedValue({
+					sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+					agentStatus: 'active',
+					runtimeType: RUNTIME_TYPES.CREWLY_AGENT,
+					// no modelId
+				});
+
+				await service.createAgentSession({
+					sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+					role: 'orchestrator',
+					runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+				});
+
+				expect(mockCrewlyRuntime.initializeInProcess).toHaveBeenCalled();
+				const config = mockCrewlyRuntime.initializeInProcess.mock.calls[0][1];
+				// No model override → runtime applies its DEFAULT_MODEL.
+				expect(config.model).toBeUndefined();
+			});
+
+			it('does not call getOrchestratorStatus for non-orchestrator agents', async () => {
+				mockReadFile.mockResolvedValue('System prompt');
+				mockAccess.mockRejectedValue(new Error('ENOENT'));
+				mockStorageService.getTeams.mockResolvedValue([
+					{
+						id: 'team-1',
+						name: 'Team 1',
+						members: [
+							{ id: 'm-leo', name: 'Leo', sessionName: 'leo-session', role: 'developer',
+							  runtimeType: 'crewly-agent', modelId: 'openai/gpt-4o',
+							  systemPrompt: '', agentStatus: 'inactive', workingStatus: 'idle',
+							  createdAt: '', updatedAt: '' },
+						],
+						projectIds: [], createdAt: '', updatedAt: '',
+					},
+				] as any);
+				const orchSpy = mockStorageService.getOrchestratorStatus as any;
+				orchSpy.mockClear();
+
+				await service.createAgentSession({
+					sessionName: 'leo-session',
+					role: 'developer',
+					runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+					memberId: 'm-leo',
+				} as any);
+
+				expect(mockCrewlyRuntime.initializeInProcess).toHaveBeenCalled();
+				const config = mockCrewlyRuntime.initializeInProcess.mock.calls[0][1];
+				expect(config.model).toBeDefined();
+				expect(config.model.provider).toBe('openai');
+				expect(config.model.modelId).toBe('gpt-4o');
+				// Orchestrator fallback must not be consulted for regular team members.
+				expect(orchSpy).not.toHaveBeenCalled();
+			});
+
+			it('prefers team-member modelId over orchestrator modelId when both exist', async () => {
+				// Edge case: orchestrator-member id present in a team config (shouldn't
+				// happen in practice, but the resolution order should still favor the
+				// team-member match found first).
+				mockReadFile.mockResolvedValue('System prompt');
+				mockAccess.mockRejectedValue(new Error('ENOENT'));
+				mockStorageService.getTeams.mockResolvedValue([
+					{
+						id: 'team-x', name: 'X',
+						members: [
+							{ id: 'orchestrator-member', name: 'O', sessionName: 'crewly-orc-x',
+							  role: 'orchestrator', runtimeType: 'crewly-agent',
+							  modelId: 'google/gemini-2.5-flash-preview-05-20',
+							  systemPrompt: '', agentStatus: 'inactive', workingStatus: 'idle',
+							  createdAt: '', updatedAt: '' },
+						],
+						projectIds: [], createdAt: '', updatedAt: '',
+					},
+				] as any);
+				(mockStorageService.getOrchestratorStatus as any).mockResolvedValue({
+					modelId: 'deepseek/deepseek-chat',
+				});
+
+				await service.createAgentSession({
+					sessionName: 'crewly-orc-x',
+					role: 'orchestrator',
+					runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+					memberId: 'orchestrator-member',
+				} as any);
+
+				const config = mockCrewlyRuntime.initializeInProcess.mock.calls[0][1];
+				// Team-member modelId wins.
+				expect(config.model.provider).toBe('google');
+				expect(config.model.modelId).toBe('gemini-2.5-flash-preview-05-20');
+			});
+		});
 	});
 
 	describe('provisionRuntimeConfigFile', () => {

@@ -1188,4 +1188,174 @@ describe('Orchestrator Handlers', () => {
       expect(typeof orchestratorHandlers.getOrchestratorStatus).toBe('function');
     });
   });
+
+  /**
+   * PUT /api/orchestrator/runtime — extended in P1 (cloud_pro_v2) to accept
+   * an optional modelId alongside the existing runtimeType. Tests cover
+   * each combination of present/absent/invalid fields.
+   */
+  describe('updateOrchestratorRuntime', () => {
+    beforeEach(() => {
+      mockStorageService.updateOrchestratorRuntimeType = jest.fn().mockResolvedValue(undefined);
+      mockStorageService.updateOrchestratorModelId = jest.fn().mockResolvedValue(undefined);
+    });
+
+    it('updates runtimeType only when modelId is absent', async () => {
+      mockRequest.body = { runtimeType: 'crewly-agent' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockStorageService.updateOrchestratorRuntimeType).toHaveBeenCalledWith('crewly-agent');
+      expect(mockStorageService.updateOrchestratorModelId).not.toHaveBeenCalled();
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          data: expect.objectContaining({ runtimeType: 'crewly-agent' }),
+        })
+      );
+    });
+
+    it('updates modelId only when runtimeType is absent', async () => {
+      mockRequest.body = { modelId: 'deepseek/deepseek-chat' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockStorageService.updateOrchestratorModelId).toHaveBeenCalledWith('deepseek/deepseek-chat');
+      expect(mockStorageService.updateOrchestratorRuntimeType).not.toHaveBeenCalled();
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          data: expect.objectContaining({ modelId: 'deepseek/deepseek-chat' }),
+        })
+      );
+    });
+
+    it('updates both runtimeType and modelId in a single request', async () => {
+      mockRequest.body = {
+        runtimeType: 'crewly-agent',
+        modelId: 'anthropic/claude-sonnet-4-20250514',
+      };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockStorageService.updateOrchestratorRuntimeType).toHaveBeenCalledWith('crewly-agent');
+      expect(mockStorageService.updateOrchestratorModelId).toHaveBeenCalledWith('anthropic/claude-sonnet-4-20250514');
+      const responseBody = (mockResponse.json as jest.Mock).mock.calls[0][0];
+      expect(responseBody.data.runtimeType).toBe('crewly-agent');
+      expect(responseBody.data.modelId).toBe('anthropic/claude-sonnet-4-20250514');
+    });
+
+    it('rejects with 400 when neither field is provided', async () => {
+      mockRequest.body = {};
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+      expect(mockStorageService.updateOrchestratorRuntimeType).not.toHaveBeenCalled();
+      expect(mockStorageService.updateOrchestratorModelId).not.toHaveBeenCalled();
+    });
+
+    it('rejects with 400 when both fields are empty strings', async () => {
+      mockRequest.body = { runtimeType: '', modelId: '' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+    });
+
+    it('rejects with 400 for invalid runtimeType', async () => {
+      mockRequest.body = { runtimeType: 'not-a-real-runtime' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+      expect(mockStorageService.updateOrchestratorRuntimeType).not.toHaveBeenCalled();
+    });
+
+    it('rejects with 400 for malformed modelId (no slash) and surfaces "format" error', async () => {
+      mockRequest.body = { modelId: 'gibberish' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+      expect(mockStorageService.updateOrchestratorModelId).not.toHaveBeenCalled();
+      // Round-1 refactor surfaces a typed "malformed" reason in the error body.
+      const errorBody = (mockResponse.json as jest.Mock).mock.calls[0][0];
+      expect(errorBody.error).toMatch(/format/i);
+    });
+
+    it('rejects with 400 for modelId with unsupported provider and surfaces "provider" error', async () => {
+      // Format passes the structural regex (provider/modelId) but the provider
+      // is not in MODEL_PROVIDERS — so isModelProvider() returns false and we
+      // surface a precise "Provider not supported" error message.
+      mockRequest.body = { modelId: 'fakeprovider/some-model' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+      expect(mockStorageService.updateOrchestratorModelId).not.toHaveBeenCalled();
+      const errorBody = (mockResponse.json as jest.Mock).mock.calls[0][0];
+      expect(errorBody.error).toMatch(/Provider not supported/i);
+    });
+
+    it('accepts the canonical default modelId without flagging it as invalid', async () => {
+      // Edge case: when the input equals provider/modelId of DEFAULT_MODEL,
+      // parseModelId() returns the default — but that's correct, not a fallback.
+      mockRequest.body = { modelId: 'google/gemini-3-flash-preview' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockResponse.status).not.toHaveBeenCalledWith(400);
+      expect(mockStorageService.updateOrchestratorModelId).toHaveBeenCalledWith('google/gemini-3-flash-preview');
+    });
+
+    it('returns 500 when storage write fails', async () => {
+      mockStorageService.updateOrchestratorModelId.mockRejectedValueOnce(new Error('disk full'));
+      mockRequest.body = { modelId: 'deepseek/deepseek-chat' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(500);
+    });
+  });
 });
