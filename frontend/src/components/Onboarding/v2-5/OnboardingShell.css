@@ -1,0 +1,85 @@
+/**
+ * OnboardingShell + sidebar layout + Progressive Reveal animation.
+ *
+ * Spec ref: §3 Live Blueprint, §12.2 row F1/F2/F8.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Two-pane shell                                                      */
+/* ------------------------------------------------------------------ */
+
+.onboarding-shell {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  grid-template-rows: 1fr;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+}
+
+.onboarding-shell__chat {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.onboarding-shell__sidebar {
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid #e5e7eb;
+  display: flex;
+}
+
+/* Mobile / narrow viewport — sidebar collapses to a drawer toggle.
+   Final hi-fi (Mia W1 EOD) will refine this; the layout intent is
+   "single column with a dismissable sheet" so we adopt that now. */
+@media (max-width: 1023px) {
+  .onboarding-shell {
+    grid-template-columns: 1fr;
+  }
+  .onboarding-shell__sidebar {
+    position: fixed;
+    inset: 0 0 0 auto;
+    width: 320px;
+    max-width: 80vw;
+    border-left: 1px solid #e5e7eb;
+    background: #ffffff;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.08);
+    transform: translateX(100%);
+    transition: transform 240ms ease-out;
+    z-index: 40;
+  }
+  .onboarding-shell[data-sidebar-open='true'] .onboarding-shell__sidebar {
+    transform: translateX(0);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Progressive Reveal — empty → populated transition                   */
+/* ------------------------------------------------------------------ */
+
+.blueprint-block {
+  transition: opacity 280ms ease-out, transform 280ms ease-out;
+}
+
+.blueprint-block[data-state='populated'][data-revealed='false'] {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.blueprint-block[data-state='populated'][data-revealed='true'] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Honour reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  .blueprint-block {
+    transition: none;
+  }
+  .blueprint-block[data-state='populated'][data-revealed='false'] {
+    opacity: 1;
+    transform: none;
+  }
+}

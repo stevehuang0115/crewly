@@ -32,6 +32,7 @@ import { MissionDetail } from './pages/MissionDetail';
 import { WorkItems } from './pages/WorkItems';
 import { RequestsPage } from './pages/RequestsPage';
 import { RequestDetail } from './pages/RequestDetail';
+import { OnboardingPreview } from './pages/OnboardingPreview';
 
 
 /**
@@ -58,6 +59,15 @@ function App() {
             <Route path="/auth/callback" element={<AuthCallback />} />
             {/* Auth page (outside AppLayout — standalone login/register) */}
             <Route path="/auth" element={<Auth />} />
+            {/*
+              Onboarding V2.5 internal preview route — visual harness
+              for F1/F2 (chat-thread shell + Blueprint sidebar) so Mia
+              can review the W1 layout / empty-states / Progressive
+              Reveal animation in a real browser without Storybook.
+              Mounted OUTSIDE AppLayout so the preview takes the full
+              viewport. Spec: docs/crewly-pro/68-onboarding-solution-spec-v2.md §12.2.
+            */}
+            <Route path="/onboarding-preview" element={<OnboardingPreview />} />
 
             {/* Admin / Internal UI */}
             <Route path="/" element={<AppLayout />}>
