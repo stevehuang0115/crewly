@@ -149,6 +149,8 @@ interface OrchestratorStatusInfo {
   agentStatus?: string;
   workingStatus?: string;
   runtimeType?: string;
+  /** Optional model ID for the in-process Crewly Agent runtime (format: provider/modelId) */
+  modelId?: string;
   createdAt?: string;
   updatedAt?: string;
 }

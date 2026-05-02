@@ -1420,7 +1420,7 @@ This is a foundational task that should be completed first before other developm
    *
    * @returns Orchestrator status object or null if not found
    */
-  async getOrchestratorStatus(): Promise<{ sessionName: string; agentStatus: AgentStatus; workingStatus: WorkingStatus; runtimeType: RuntimeType; createdAt: string; updatedAt: string } | null> {
+  async getOrchestratorStatus(): Promise<{ sessionName: string; agentStatus: AgentStatus; workingStatus: WorkingStatus; runtimeType: RuntimeType; modelId?: string; createdAt: string; updatedAt: string } | null> {
     try {
       // Migrate from legacy format if needed
       await this.migrateFromLegacyTeamsFile();
@@ -1571,6 +1571,48 @@ This is a foundational task that should be completed first before other developm
         this.logger.debug('Updated orchestrator runtime type', { runtimeType });
       } catch (error) {
         this.logger.error('Error updating orchestrator runtime type', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * Update orchestrator model ID in teams/orchestrator.json.
+   *
+   * The orchestrator's `modelId` controls which AI model the in-process
+   * Crewly Agent runtime uses (e.g. `deepseek/deepseek-chat`,
+   * `google/gemini-3-flash-preview`). Pass `undefined` to clear the field
+   * and fall back to {@link CREWLY_AGENT_DEFAULTS}.DEFAULT_MODEL.
+   *
+   * Other orchestrator fields (runtimeType, agentStatus, workingStatus) are
+   * preserved by reading the existing config first and merging.
+   *
+   * @param modelId - Format: "provider/modelId" (e.g. "google/gemini-3-flash-preview"), or undefined to clear
+   */
+  async updateOrchestratorModelId(modelId: string | undefined): Promise<void> {
+    return withOperationLock(this.orchestratorFile, async () => {
+      try {
+        let orchestrator;
+        if (existsSync(this.orchestratorFile)) {
+          const content = await fs.readFile(this.orchestratorFile, 'utf-8');
+          orchestrator = JSON.parse(content);
+        } else {
+          orchestrator = this.createDefaultOrchestrator();
+        }
+
+        if (modelId === undefined) {
+          delete orchestrator.modelId;
+        } else {
+          orchestrator.modelId = modelId;
+        }
+        orchestrator.updatedAt = new Date().toISOString();
+
+        await atomicWriteFile(this.orchestratorFile, JSON.stringify(orchestrator, null, 2));
+        this.logger.debug('Updated orchestrator model ID', { modelId: modelId ?? '<cleared>' });
+      } catch (error) {
+        this.logger.error('Error updating orchestrator model ID', {
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
