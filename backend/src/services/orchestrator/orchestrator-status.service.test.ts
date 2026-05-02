@@ -46,6 +46,24 @@ jest.mock('../session/index', () => ({
   },
 }));
 
+// Mock the in-process runtime registry (B0 hot-fix path).
+// Tracks whether the registry should report a session as active so we can
+// exercise the new runtime-aware branch in getOrchestratorStatus.
+const mockInProcessRegistryState: { active: boolean } = { active: false };
+jest.mock('../agent/crewly-agent/in-process-runtime-registry', () => ({
+  isInProcessRuntimeActive: () => mockInProcessRegistryState.active,
+}));
+
+// Mock constants module (RUNTIME_TYPES used by orchestrator-status).
+jest.mock('../../constants', () => ({
+  RUNTIME_TYPES: {
+    CLAUDE_CODE: 'claude-code',
+    CREWLY_AGENT: 'crewly-agent',
+    GEMINI_CLI: 'gemini-cli',
+    CODEX_CLI: 'codex-cli',
+  },
+}));
+
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
@@ -112,6 +130,7 @@ describe('OrchestratorStatusService', () => {
     mockSessionState.exists = false;
     mockSessionState.backendAvailable = true;
     mockSessionState.childProcessAlive = false;
+    mockInProcessRegistryState.active = false;
     mockUpdateAgentStatus.mockClear();
   });
 
@@ -120,6 +139,7 @@ describe('OrchestratorStatusService', () => {
     mockSessionState.exists = false;
     mockSessionState.backendAvailable = true;
     mockSessionState.childProcessAlive = false;
+    mockInProcessRegistryState.active = false;
     mockUpdateAgentStatus.mockClear();
   });
 
@@ -399,6 +419,73 @@ describe('OrchestratorStatusService', () => {
       expect(result.isActive).toBe(true);
       expect(result.agentStatus).toBe('active');
       expect(result.message).toContain('status recovered');
+    });
+  });
+
+  describe('runtime-aware isActive (B0 hot-fix)', () => {
+    /**
+     * Build an orchestrator status entry for a Crewly Agent in-process runtime.
+     * Mirrors createMockOrchestratorStatus but with `runtimeType: 'crewly-agent'`.
+     */
+    function createCrewlyAgentStatus(agentStatus: string): Record<string, unknown> {
+      return {
+        sessionName: 'crewly-orc',
+        agentStatus,
+        workingStatus: 'idle',
+        runtimeType: 'crewly-agent',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    it('reports active when runtime is crewly-agent, PTY check fails, but in-process registry confirms ready', async () => {
+      mockOrchestratorData.value = createCrewlyAgentStatus('active');
+      mockSessionState.exists = false; // PTY-based check would say "dead"
+      mockInProcessRegistryState.active = true; // Registry confirms ready
+
+      const result = await getOrchestratorStatus();
+      expect(result.isActive).toBe(true);
+      expect(result.agentStatus).toBe('active');
+      expect(result.message).toContain('active and ready');
+    });
+
+    it('does not consult in-process registry for claude-code runtime (PTY path untouched)', async () => {
+      mockOrchestratorData.value = createMockOrchestratorStatus('active'); // claude-code
+      mockSessionState.exists = false;
+      mockInProcessRegistryState.active = true; // would report active if consulted
+
+      const result = await getOrchestratorStatus();
+      // Stays inactive — registry is NOT consulted for claude-code
+      expect(result.isActive).toBe(false);
+    });
+
+    it('reports inactive when runtime is crewly-agent but registry has no entry', async () => {
+      mockOrchestratorData.value = createCrewlyAgentStatus('inactive');
+      mockSessionState.exists = false;
+      mockInProcessRegistryState.active = false;
+
+      const result = await getOrchestratorStatus();
+      expect(result.isActive).toBe(false);
+    });
+
+    it('reports active when in-process runtime exists even without PTY session', async () => {
+      // Realistic ESTestNode case: in-process runtime running, no PTY session.
+      mockOrchestratorData.value = createCrewlyAgentStatus('active');
+      mockSessionState.exists = false;
+      mockInProcessRegistryState.active = true;
+
+      const result = await isOrchestratorActive();
+      expect(result).toBe(true);
+    });
+
+    it('does not proactively mark in-process runtime inactive when PTY check fails', async () => {
+      mockOrchestratorData.value = createCrewlyAgentStatus('active');
+      mockSessionState.exists = false;
+      mockInProcessRegistryState.active = true;
+
+      await getOrchestratorStatus();
+      // Should NOT clean up to inactive — runtime is alive in-process.
+      expect(mockUpdateAgentStatus).not.toHaveBeenCalled();
     });
   });
 

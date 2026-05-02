@@ -13,6 +13,10 @@ import {
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { CrewlyAgentRuntimeService } from './crewly-agent/crewly-agent-runtime.service.js';
+import {
+	registerInProcessRuntime,
+	unregisterInProcessRuntime,
+} from './crewly-agent/in-process-runtime-registry.js';
 import { StorageService } from '../core/storage.service.js';
 import {
 	CREWLY_CONSTANTS,
@@ -2566,8 +2570,12 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				const memberId = config.memberId;
 				await crewlyRuntime.initializeInProcess(sessionName, { projectPath, memberId, ...modelConfig }, roleName);
 
-				// Track the in-process runtime for message routing
+				// Track the in-process runtime for message routing.
+				// Mirror to the module-level registry so callers without an
+				// AgentRegistrationService reference (e.g. orchestrator-status
+				// service) can probe runtime liveness — fixes B0 isActive bug.
 				this.inProcessRuntimes.set(sessionName, crewlyRuntime);
+				registerInProcessRuntime(sessionName, crewlyRuntime);
 
 				// Auto-register agent as active — crewly-agent cannot run bash scripts,
 				// so we register on its behalf instead of relying on the register_self tool.
@@ -2587,16 +2595,29 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 				// Do NOT deliver the full registration prompt as a message — that would trigger
 				// a redundant generateText call (60K chars → rate limits). Instead, send a
 				// lightweight activation message that tells the agent to start working.
-				crewlyRuntime.handleMessage(
-					`You are now active as "${role}" (session: ${sessionName}). ` +
-					'Your system prompt is already loaded. Begin by calling register_self, ' +
-					'then wait for tasks.'
-				).catch(promptError => {
-					this.logger.warn('Initial activation message failed (non-fatal for crewly-agent)', {
-						sessionName,
-						error: promptError instanceof Error ? promptError.message : String(promptError),
+				//
+				// B0/B1 cold-start invariant: the orchestrator's `register_self` is performed
+				// by registerMemberActive() above (which writes directly to storage), so the
+				// orchestrator does NOT need an activation message. Skipping it here keeps
+				// `conversationHistory.messageCount === 0` after a fresh setup, which B1's
+				// fresh-install detector relies on. Subordinate agents still receive the
+				// activation kickoff because they are not auto-registered via storage.
+				if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
+					crewlyRuntime.handleMessage(
+						`You are now active as "${role}" (session: ${sessionName}). ` +
+						'Your system prompt is already loaded. Begin by calling register_self, ' +
+						'then wait for tasks.'
+					).catch(promptError => {
+						this.logger.warn('Initial activation message failed (non-fatal for crewly-agent)', {
+							sessionName,
+							error: promptError instanceof Error ? promptError.message : String(promptError),
+						});
 					});
-				});
+				} else {
+					this.logger.debug('Skipping initial activation message for orchestrator (cold-start invariant)', {
+						sessionName,
+					});
+				}
 
 				// Start context window monitoring if applicable
 				if (role !== ORCHESTRATOR_ROLE && config.teamId && config.memberId) {
@@ -2816,11 +2837,14 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 			// Stop context window monitoring before killing the session
 			ContextWindowMonitorService.getInstance().stopSessionMonitoring(sessionName);
 
-			// Shut down in-process Crewly Agent runtime if present
+			// Shut down in-process Crewly Agent runtime if present.
+			// Both maps must stay in sync: the local instance map and the
+			// module-level registry consumed by orchestrator-status service.
 			const inProcessRuntime = this.inProcessRuntimes.get(sessionName);
 			if (inProcessRuntime) {
 				inProcessRuntime.shutdown();
 				this.inProcessRuntimes.delete(sessionName);
+				unregisterInProcessRuntime(sessionName);
 				this.logger.info('In-process Crewly Agent runtime shut down', { sessionName });
 			}
 

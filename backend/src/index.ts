@@ -88,6 +88,7 @@ import { TokenUsageService } from './services/monitoring/token-usage.service.js'
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
 import { RedisCacheService } from './services/cache/redis-cache.service.js';
 import { OrchestratorRestartService } from './services/orchestrator/orchestrator-restart.service.js';
+import { setOrchestratorSetupDependencies } from './services/orchestrator/orchestrator-setup.service.js';
 import { IdleDetectionService } from './services/agent/idle-detection.service.js';
 import { AgentSuspendService } from './services/agent/agent-suspend.service.js';
 import { AgentHeartbeatMonitorService } from './services/agent/agent-heartbeat-monitor.service.js';
@@ -1001,6 +1002,21 @@ export class CrewlyServer {
 				}
 			} catch (error) {
 				this.logger.warn('Failed to wire OrchestratorRestartService (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Wire orchestrator-setup service for SlackBridge auto-recovery (B0).
+			// Without this, the bridge's auto-recovery path returns "deps not
+			// initialized" and falls through to the offline branch.
+			try {
+				setOrchestratorSetupDependencies({
+					agentRegistrationService: this.apiController.agentRegistrationService,
+					storageService: this.storageService,
+				});
+				this.logger.info('OrchestratorSetupService wired with dependencies');
+			} catch (error) {
+				this.logger.warn('Failed to wire OrchestratorSetupService (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}

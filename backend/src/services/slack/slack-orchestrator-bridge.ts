@@ -20,6 +20,7 @@ import {
   isOrchestratorActive,
   isAgentActive,
   getOrchestratorOfflineMessage,
+  triggerOrchestratorSetup,
 } from '../orchestrator/index.js';
 import {
   SlackIncomingMessage,
@@ -100,6 +101,13 @@ const DEFAULT_CONFIG: SlackBridgeConfig = {
   responseTimeoutMs: (MESSAGE_QUEUE_CONSTANTS?.DEFAULT_MESSAGE_TIMEOUT ?? 120000) + 5000,
   skillDeliveryWaitMs: SLACK_BRIDGE_CONSTANTS?.SKILL_DELIVERY_WAIT_MS ?? 3000,
 };
+
+/**
+ * Maximum time to wait for an auto-recovery setup attempt before giving
+ * up and falling through to the offline path. Capped tight to avoid
+ * blocking the message ingress thread when setup is wedged.
+ */
+const AUTO_RECOVERY_TIMEOUT_MS = 5_000;
 
 /**
  * Slack-Orchestrator Bridge singleton
@@ -651,6 +659,50 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
+   * Attempt to auto-recover the orchestrator with a hard timeout.
+   *
+   * Calls `triggerOrchestratorSetup()` from the orchestrator service module
+   * directly (bypassing HTTP). Wraps the attempt in a 5-second deadline so
+   * a wedged setup cannot stall the Slack message ingress thread.
+   *
+   * Behavior:
+   * - Timeout: rejects with a TimeoutError-like message after 5s.
+   * - Setup error: rejects with the underlying error.
+   * - Setup returning `success: false`: rejects with the recorded error
+   *   (the caller treats this the same as a thrown error and falls
+   *   through to the offline path).
+   *
+   * Caller is expected to wrap the call in try/catch and continue down
+   * the offline path on rejection — auto-recovery is best-effort.
+   *
+   * @returns Resolves when setup completes successfully (or was skipped
+   *          because the orc was already healthy)
+   * @throws Error on timeout or setup failure
+   * @internal Visible for tests via class member access.
+   */
+  private async attemptAutoRecovery(): Promise<void> {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error(`auto-recovery setup timed out after ${AUTO_RECOVERY_TIMEOUT_MS}ms`));
+      }, AUTO_RECOVERY_TIMEOUT_MS);
+      // Don't keep the process alive just for this timer
+      timeoutHandle.unref?.();
+    });
+
+    try {
+      const result = await Promise.race([triggerOrchestratorSetup(), timeoutPromise]);
+      if (!result.success) {
+        throw new Error(result.error || 'orchestrator setup returned success=false');
+      }
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  /**
    * Send message to orchestrator via the message queue and wait for response.
    *
    * Checks if the orchestrator is active before sending. Enqueues the message
@@ -666,7 +718,36 @@ Just type naturally to chat with the orchestrator!`;
   ): Promise<OrcResponse> {
     try {
       // Check if orchestrator is active before attempting to send
-      const isActive = await isOrchestratorActive();
+      let isActive = await isOrchestratorActive();
+
+      // Auto-recovery (B0 hot-fix, defense-in-depth):
+      // ESTestNode regression — `isActive` falsely reports offline when the
+      // orchestrator is an in-process Crewly Agent runtime that has lost its
+      // status registration but is otherwise healthy. Before falling
+      // through to the offline path, attempt one synchronous setup call.
+      // This is intentionally once-per-message (not retry-loop). On
+      // success we re-check isActive and proceed normally; on failure we
+      // continue down the existing offline branch (Auditor + queue).
+      if (!isActive) {
+        const recoveryStart = Date.now();
+        this.logger.info('Orchestrator offline — attempting auto-recovery via triggerOrchestratorSetup', {
+          timeoutMs: AUTO_RECOVERY_TIMEOUT_MS,
+        });
+        try {
+          await this.attemptAutoRecovery();
+          isActive = await isOrchestratorActive();
+          this.logger.info('Auto-recovery setup attempt complete', {
+            elapsedMs: Date.now() - recoveryStart,
+            isActiveAfter: isActive,
+          });
+        } catch (err) {
+          this.logger.warn('Auto-recovery setup attempt failed (falling through to offline path)', {
+            elapsedMs: Date.now() - recoveryStart,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
       if (!isActive) {
         // Fallback: route to Auditor agent if it's active
         const auditorSession = AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME;

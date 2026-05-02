@@ -58,3 +58,10 @@ export {
   OrchestratorRestartService,
   type RestartStats,
 } from './orchestrator-restart.service.js';
+
+export {
+  triggerOrchestratorSetup,
+  setOrchestratorSetupDependencies,
+  type OrchestratorSetupResult,
+  type AgentRegistrationServiceLike,
+} from './orchestrator-setup.service.js';
