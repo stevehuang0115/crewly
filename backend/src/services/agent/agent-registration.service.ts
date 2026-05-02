@@ -2513,7 +2513,18 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 				const crewlyRuntime = this.createRuntimeService(runtimeType) as CrewlyAgentRuntimeService;
 
-				// Look up member's modelId from team config (if available)
+				// Look up modelId for this session.
+				//
+				// Resolution order:
+				//   1. Team-member lookup (storage.service.getTeams iterates persisted
+				//      team configs, matched by config.memberId).
+				//   2. Orchestrator fallback — storage.service.getTeams() explicitly
+				//      EXCLUDES the orchestrator directory (storage.service.ts:413),
+				//      so the orchestrator's modelId lives in teams/orchestrator/config.json
+				//      and must be read separately via getOrchestratorStatus().
+				//
+				// Without this orchestrator branch, the orchestrator's modelId would
+				// silently default to DEFAULT_MODEL even when configured.
 				let memberModelId: string | undefined;
 				if (config.memberId) {
 					try {
@@ -2524,6 +2535,22 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 								memberModelId = member.modelId;
 								break;
 							}
+						}
+					} catch {
+						// Non-critical — fall back to orchestrator/default model
+					}
+				}
+
+				// Orchestrator fallback: getTeams() doesn't surface the orchestrator,
+				// so look it up via getOrchestratorStatus when this is the orchestrator
+				// session (or its virtual member id) and no team-level modelId was found.
+				const isOrchestrator = sessionName === ORCHESTRATOR_SESSION_NAME
+					|| config.memberId === 'orchestrator-member';
+				if (!memberModelId && isOrchestrator) {
+					try {
+						const orchestratorStatus = await this.storageService.getOrchestratorStatus();
+						if (orchestratorStatus?.modelId) {
+							memberModelId = orchestratorStatus.modelId;
 						}
 					} catch {
 						// Non-critical — fall back to default model
