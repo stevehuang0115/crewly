@@ -37,6 +37,50 @@ export const MAX_PERSISTED_MESSAGES = 50;
 export const CHECKPOINT_INTERVAL_MS = 60000;
 
 // =============================================================================
+// Orchestrator Mode (Onboarding v3 — B2)
+// =============================================================================
+
+/**
+ * Top-level orchestrator runtime mode.
+ *
+ * - `'normal'` — Standard orchestrator behavior; the role prompt at
+ *   `config/roles/orchestrator/prompt.md` is loaded and the full skill set
+ *   is available.
+ * - `'onboarding'` — Cold-start onboarding mode. The `ONBOARDING_MODE_SYSTEM_PROMPT`
+ *   is loaded instead of the normal role prompt, and the skill set is
+ *   filtered to the `ONBOARDING_SKILL_ALLOWLIST` (recall/remember/record-learning
+ *   + 2 onboarding-specific skills). `delegate-task`, `start-agent`, `stop-agent`
+ *   are disabled — orc cannot delegate while onboarding the customer.
+ * - `'onboarding-provisioning'` — Future-reserved (Onboarding v3 W3+, materializer
+ *   2-phase commit). Declared now so persisted states from later milestones
+ *   round-trip cleanly through `state-persistence.service`. Not wired in W1.
+ *
+ * Detection of the cold-start condition lives in `OnboardingBootstrapService`
+ * (B1); the mode is set during orc bootstrap by `crewly-agent-runtime.service`
+ * before the system prompt is composed.
+ */
+export type OrchestratorMode =
+  | 'normal'
+  | 'onboarding'
+  | 'onboarding-provisioning';
+
+/**
+ * Valid orchestrator modes array — single source of truth for runtime
+ * validation and the type guard below.
+ */
+export const ORCHESTRATOR_MODES: readonly OrchestratorMode[] = [
+  'normal',
+  'onboarding',
+  'onboarding-provisioning',
+] as const;
+
+/**
+ * Default orchestrator mode used when state is freshly initialized or
+ * round-tripped from an older state file that predates the `mode` field.
+ */
+export const DEFAULT_ORCHESTRATOR_MODE: OrchestratorMode = 'normal';
+
+// =============================================================================
 // Checkpoint Reasons
 // =============================================================================
 
@@ -467,6 +511,15 @@ export interface OrchestratorState {
   /** Reason for checkpoint */
   checkpointReason: CheckpointReason;
 
+  /**
+   * Top-level orchestrator runtime mode (Onboarding v3 — B2).
+   *
+   * Optional for backwards compatibility: state files written by versions
+   * predating the field load with `mode === undefined`. Loaders should
+   * default to `DEFAULT_ORCHESTRATOR_MODE` when absent.
+   */
+  mode?: OrchestratorMode;
+
   /** Active conversation contexts */
   conversations: ConversationState[];
   /** Pending/in-progress tasks */
@@ -586,6 +639,20 @@ export interface ResumeInstructions {
  */
 export function isValidCheckpointReason(value: string): value is CheckpointReason {
   return CHECKPOINT_REASONS.includes(value as CheckpointReason);
+}
+
+/**
+ * Check if a value is a valid OrchestratorMode (Onboarding v3 — B2).
+ *
+ * Used by `state-persistence.service` when round-tripping a persisted
+ * state to fall back to `DEFAULT_ORCHESTRATOR_MODE` if the file contains
+ * a corrupted or future-unknown value. Narrows the input to the union.
+ *
+ * @param value - Value to check
+ * @returns True if valid OrchestratorMode
+ */
+export function isValidOrchestratorMode(value: unknown): value is OrchestratorMode {
+  return typeof value === 'string' && ORCHESTRATOR_MODES.includes(value as OrchestratorMode);
 }
 
 /**

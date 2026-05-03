@@ -11,11 +11,15 @@ import {
   MAX_PERSISTED_MESSAGES,
   CHECKPOINT_INTERVAL_MS,
   CHECKPOINT_REASONS,
+  ORCHESTRATOR_MODES,
+  DEFAULT_ORCHESTRATOR_MODE,
   isValidCheckpointReason,
   isValidTaskStatus,
   isValidTaskPriority,
   isValidConversationSource,
+  isValidOrchestratorMode,
   OrchestratorState,
+  OrchestratorMode,
   TaskState,
   ConversationState,
   AgentState,
@@ -86,6 +90,22 @@ describe('Orchestrator State Types', () => {
         expect(CHECKPOINT_REASONS).toHaveLength(6);
       });
     });
+
+    describe('ORCHESTRATOR_MODES (Onboarding v3 — B2)', () => {
+      it('should contain all expected modes', () => {
+        expect(ORCHESTRATOR_MODES).toContain('normal');
+        expect(ORCHESTRATOR_MODES).toContain('onboarding');
+        expect(ORCHESTRATOR_MODES).toContain('onboarding-provisioning');
+      });
+
+      it('should have exactly 3 modes', () => {
+        expect(ORCHESTRATOR_MODES).toHaveLength(3);
+      });
+
+      it('should default to normal', () => {
+        expect(DEFAULT_ORCHESTRATOR_MODE).toBe('normal');
+      });
+    });
   });
 
   describe('Type Guards', () => {
@@ -147,6 +167,28 @@ describe('Orchestrator State Types', () => {
         expect(isValidConversationSource('')).toBe(false);
       });
     });
+
+    describe('isValidOrchestratorMode (Onboarding v3 — B2)', () => {
+      it('should return true for each declared mode', () => {
+        expect(isValidOrchestratorMode('normal')).toBe(true);
+        expect(isValidOrchestratorMode('onboarding')).toBe(true);
+        expect(isValidOrchestratorMode('onboarding-provisioning')).toBe(true);
+      });
+
+      it('should return false for unknown strings', () => {
+        expect(isValidOrchestratorMode('idle')).toBe(false);
+        expect(isValidOrchestratorMode('')).toBe(false);
+        expect(isValidOrchestratorMode('NORMAL')).toBe(false); // case-sensitive
+      });
+
+      it('should return false for non-string inputs (defends against corrupt JSON)', () => {
+        expect(isValidOrchestratorMode(undefined)).toBe(false);
+        expect(isValidOrchestratorMode(null)).toBe(false);
+        expect(isValidOrchestratorMode(0)).toBe(false);
+        expect(isValidOrchestratorMode({ mode: 'normal' })).toBe(false);
+        expect(isValidOrchestratorMode(['normal'])).toBe(false);
+      });
+    });
   });
 
   describe('Type Interfaces', () => {
@@ -174,6 +216,80 @@ describe('Orchestrator State Types', () => {
         expect(state.id).toBe('state-123');
         expect(state.conversations).toHaveLength(0);
         expect(state.metadata.pid).toBe(12345);
+      });
+
+      it('should accept state with onboarding mode (Onboarding v3 — B2)', () => {
+        const state: OrchestratorState = {
+          id: 'state-onboarding',
+          version: '1.0.0',
+          checkpointedAt: new Date().toISOString(),
+          checkpointReason: 'scheduled',
+          mode: 'onboarding',
+          conversations: [],
+          tasks: [],
+          agents: [],
+          projects: [],
+          metadata: {
+            version: '1.0.0',
+            hostname: 'test-host',
+            pid: 12345,
+            startedAt: new Date().toISOString(),
+            uptimeSeconds: 0,
+            restartCount: 0,
+          },
+        };
+
+        expect(state.mode).toBe('onboarding');
+      });
+
+      it('should accept state with onboarding-provisioning mode (future-reserved)', () => {
+        const mode: OrchestratorMode = 'onboarding-provisioning';
+        const state: OrchestratorState = {
+          id: 'state-prov',
+          version: '1.0.0',
+          checkpointedAt: new Date().toISOString(),
+          checkpointReason: 'scheduled',
+          mode,
+          conversations: [],
+          tasks: [],
+          agents: [],
+          projects: [],
+          metadata: {
+            version: '1.0.0',
+            hostname: 'test-host',
+            pid: 12345,
+            startedAt: new Date().toISOString(),
+            uptimeSeconds: 0,
+            restartCount: 0,
+          },
+        };
+
+        expect(state.mode).toBe('onboarding-provisioning');
+      });
+
+      it('should treat mode as optional for backwards compatibility', () => {
+        // State files written before the `mode` field existed must still
+        // parse — the loader backfills via `DEFAULT_ORCHESTRATOR_MODE`.
+        const state: OrchestratorState = {
+          id: 'state-legacy',
+          version: '1.0.0',
+          checkpointedAt: new Date().toISOString(),
+          checkpointReason: 'scheduled',
+          conversations: [],
+          tasks: [],
+          agents: [],
+          projects: [],
+          metadata: {
+            version: '1.0.0',
+            hostname: 'test-host',
+            pid: 12345,
+            startedAt: new Date().toISOString(),
+            uptimeSeconds: 0,
+            restartCount: 0,
+          },
+        };
+
+        expect(state.mode).toBeUndefined();
       });
 
       it('should accept state with selfImprovement', () => {
