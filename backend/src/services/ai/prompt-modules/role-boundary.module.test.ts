@@ -1,5 +1,11 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { RoleBoundaryModule } from './role-boundary.module.js';
 import { ModuleConfig } from './prompt-module.interface.js';
+
+jest.mock('fs');
+
+const mockedFs = fs as jest.Mocked<typeof fs>;
 
 /**
  * Tests for the RoleBoundaryModule.
@@ -334,5 +340,135 @@ describe('RoleBoundaryModule', () => {
 		expect(result).toContain('Objective owner');
 		expect(result).toContain('Delegator');
 		expect(result).toContain('Quality verifier');
+	});
+
+	// =========================================================================
+	// P0-1 Phase 2: TL overlay (canDelegate=true → role-boundaries.md)
+	// =========================================================================
+
+	describe('TL overlay (canDelegate=true loads top-level role-boundaries.md)', () => {
+		const TL_BOUNDARY_FIXTURE =
+			'## Role Boundaries — Team Leader\n\n### What You ARE\n- TL fixture marker — role-boundaries.md content\n';
+
+		afterEach(() => {
+			jest.restoreAllMocks();
+		});
+
+		/**
+		 * Happy path: canDelegate=true loads
+		 * `config/roles/team-leader/role-boundaries.md` (the new top-level file
+		 * shipped in P0-1 Phase 1, PR #414) in preference to both the
+		 * `fragments/role-boundary.md` and the inline buildTeamLeadBoundary.
+		 */
+		it('loads top-level role-boundaries.md when canDelegate=true', async () => {
+			const expectedPath = path.join(
+				baseConfig.projectRoot,
+				'config',
+				'roles',
+				'team-leader',
+				'role-boundaries.md',
+			);
+			jest.spyOn(fs, 'readFileSync').mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				if (String(filePath) === expectedPath) return TL_BOUNDARY_FIXTURE;
+				throw new Error('ENOENT');
+			});
+
+			const config: ModuleConfig = {
+				...baseConfig,
+				canDelegate: true,
+				orgRole: 'team-lead',
+			};
+			const result = await module.build(config);
+
+			expect(result).toContain('TL fixture marker — role-boundaries.md content');
+			expect(result).toContain('Role Boundaries — Team Leader');
+			// Must NOT have rendered the inline buildTeamLeadBoundary content
+			// (those use a different heading: "## Role Boundaries" not "Role Boundaries — Team Leader")
+			expect(result).not.toContain('Objective owner, planner, and task decomposer');
+		});
+
+		/**
+		 * Falls through silently when role-boundaries.md is absent (so
+		 * deployments without P0-1 Phase 1 markdown don't regress).
+		 */
+		it('falls through to legacy boundary when role-boundaries.md is missing', async () => {
+			jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
+				throw new Error('ENOENT');
+			});
+
+			const config: ModuleConfig = {
+				...baseConfig,
+				canDelegate: true,
+				orgRole: 'team-lead',
+			};
+			const result = await module.build(config);
+
+			// Legacy inline TL boundary still renders
+			expect(result).toContain('Objective owner');
+			expect(result).toContain('Delegator');
+			expect(result).not.toContain('TL fixture marker');
+		});
+
+		/**
+		 * canDelegate=false (or undefined) MUST NOT trigger the TL overlay
+		 * load even when role-boundaries.md exists on disk. Defensive guard
+		 * against accidentally promoting non-TL agents to TL framing.
+		 */
+		it('does NOT load TL overlay when canDelegate is false', async () => {
+			const expectedPath = path.join(
+				baseConfig.projectRoot,
+				'config',
+				'roles',
+				'team-leader',
+				'role-boundaries.md',
+			);
+			// Configure fs so the TL path WOULD return content if it were read.
+			// The output assertions below prove the code never asks for it.
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				if (String(filePath) === expectedPath) return TL_BOUNDARY_FIXTURE;
+				throw new Error('ENOENT');
+			});
+
+			// canDelegate=false explicitly — orgRole must NOT be 'team-lead' (would throw via F-G guard)
+			const result = await module.build({ ...baseConfig, canDelegate: false, orgRole: 'executor' });
+
+			// If the TL path had been read, TL_BOUNDARY_FIXTURE would appear in
+			// the result. It doesn't — the canDelegate guard at line 90 of
+			// role-boundary.module.ts gates the entire TL overlay block.
+			expect(result).not.toContain('TL fixture marker');
+			expect(result).toContain('Scoped implementer'); // executor inline rendered
+		});
+
+		/**
+		 * Organization context (jobTitle, ownership, serviceContract) is
+		 * appended to the TL overlay output — same as for inline boundaries.
+		 */
+		it('appends organization context to TL overlay output', async () => {
+			const expectedPath = path.join(
+				baseConfig.projectRoot,
+				'config',
+				'roles',
+				'team-leader',
+				'role-boundaries.md',
+			);
+			jest.spyOn(fs, 'readFileSync').mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				if (String(filePath) === expectedPath) return TL_BOUNDARY_FIXTURE;
+				throw new Error('ENOENT');
+			});
+
+			const config: ModuleConfig = {
+				...baseConfig,
+				canDelegate: true,
+				orgRole: 'team-lead',
+				jobTitle: 'Tech Lead',
+				jobDescription: 'Owns Crewly Product team execution',
+			};
+			const result = await module.build(config);
+
+			expect(result).toContain('TL fixture marker');
+			expect(result).toContain('### Your Position');
+			expect(result).toContain('**Job Title:** Tech Lead');
+			expect(result).toContain('**Responsibility:** Owns Crewly Product team execution');
+		});
 	});
 });

@@ -1,4 +1,20 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
+
+/**
+ * Read a file synchronously, returning trimmed content or null when absent.
+ * Local helper kept private to this module — mirrors the SoulModule pattern
+ * so both modules behave identically when an optional asset is missing.
+ */
+function readFileIfExists(filePath: string): string | null {
+	try {
+		const content = fs.readFileSync(filePath, 'utf-8').trim();
+		return content.length > 0 ? content : null;
+	} catch {
+		return null;
+	}
+}
 
 /**
  * Role Boundary module — enforces per-role boundaries and the Try-Before-Refuse protocol.
@@ -64,6 +80,25 @@ export class RoleBoundaryModule implements PromptModule {
 					`Symmetric misconfiguration — refuse to render TL authority for a ` +
 					`member that cannot delegate (WIRE-1 F-G).`,
 			);
+		}
+
+		// (3) TL overlay (P0-1 Phase 2): when canDelegate=true, prefer the
+		// top-level `config/roles/team-leader/role-boundaries.md` over both the
+		// per-role fragment and the inline boundary builders below.
+		// Falls through silently when the file is absent so deployments
+		// without the markdown asset don't regress (file ships in PR #414).
+		if (config.canDelegate === true) {
+			const tlBoundaryPath = path.join(
+				config.projectRoot,
+				'config',
+				'roles',
+				'team-leader',
+				'role-boundaries.md',
+			);
+			const tlBoundary = readFileIfExists(tlBoundaryPath);
+			if (tlBoundary) {
+				return tlBoundary + this.buildOrganizationContext(config);
+			}
 		}
 
 		// Try loading a custom role fragment first
