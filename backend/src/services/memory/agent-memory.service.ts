@@ -14,7 +14,7 @@ import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 
-/** Constants for memory scoring and decay (v2) */
+/** Constants for memory scoring and decay (v2 + v3 M3) */
 const DECAY_CONSTANTS = {
   /** Recency tiers in days */
   RECENCY_TIERS_DAYS: { RECENT: 30, MEDIUM: 90, OLD: 180 } as const,
@@ -34,6 +34,12 @@ const DECAY_CONSTANTS = {
   MIN_CONFIDENCE_FLOOR: 0.1,
   /** Milliseconds per day */
   MS_PER_DAY: 86_400_000,
+  /**
+   * v3 (M3): Confidence floor for default auto-injection.
+   * Entries below this are only returned on explicit recall calls,
+   * never auto-injected into agent prompt context.
+   */
+  AUTO_INJECT_MIN_CONFIDENCE: 0.5,
 } as const;
 import {
   AgentMemory,
@@ -43,6 +49,7 @@ import {
   ErrorPattern,
   DEFAULT_AGENT_MEMORY,
   MEMORY_SCHEMA_VERSION,
+  MEMORY_V2_MIGRATION_DEFAULTS,
   type RoleKnowledgeCategory,
 } from '../../types/memory.types.js';
 import { MEMORY_CONSTANTS, CREWLY_CONSTANTS } from '../../constants.js';
@@ -78,6 +85,12 @@ export interface IAgentMemoryService {
   generateAgentContext(agentId: string): Promise<string>;
   pruneStaleEntries(agentId: string, olderThanDays: number): Promise<number>;
   getAgentMemory(agentId: string): Promise<AgentMemory | null>;
+  /**
+   * v3 (M3): True if this entry should be hidden from default recall
+   * (superseded, expired ttl, or low confidence). See implementation in
+   * AgentMemoryService for the exact rules.
+   */
+  isHiddenFromDefaultRecall(entry: RoleKnowledgeEntry, nowIso: string): boolean;
 }
 
 /**
@@ -217,14 +230,89 @@ export class AgentMemoryService implements IAgentMemoryService {
   }
 
   /**
-   * Loads agent memory from disk
+   * Loads agent memory from disk and lazily migrates pre-v2 entries.
+   *
+   * Migration is **non-destructive**: missing fields are filled in-memory
+   * with `MEMORY_V2_MIGRATION_DEFAULTS`. The migrated memory is NOT
+   * written back to disk here — that happens on the next call to
+   * {@link saveAgentMemory}, which always touches `updatedAt` and persists
+   * the full object (with the bumped `schemaVersion`).
+   *
+   * Reading a v2-or-newer store is a no-op fast path.
    *
    * @param agentId - The agent's unique identifier
-   * @returns Agent memory or null if not initialized
+   * @returns Agent memory (migrated to current schema if needed) or null if not initialized
    */
   private async loadAgentMemory(agentId: string): Promise<AgentMemory | null> {
     const memoryPath = this.getFilePath(agentId, MEMORY_CONSTANTS.AGENT_FILES.MEMORY);
-    return safeReadJson<AgentMemory | null>(memoryPath, null, this.logger);
+    const memory = await safeReadJson<AgentMemory | null>(memoryPath, null, this.logger);
+    if (!memory) {
+      return null;
+    }
+    return this.migrateMemoryShape(memory);
+  }
+
+  /**
+   * Apply lazy non-destructive migration to bring an AgentMemory object up to
+   * the current `MEMORY_SCHEMA_VERSION`. Pure, in-memory.
+   *
+   * v1 → v2 changes (Memory Phase 1, M3):
+   * - `importance`, `evidence`, `shouldInjectByDefault` get default values from
+   *   {@link MEMORY_V2_MIGRATION_DEFAULTS} when missing on a RoleKnowledgeEntry.
+   * - `confidence` is left untouched if already present (v1 always populated it);
+   *   only filled with the v2 default if somehow undefined (defensive).
+   * - `ttl` is intentionally left undefined — pre-v2 entries do not expire.
+   *
+   * Existing fields (id, content, category, superseded, supersededBy, etc.) are
+   * never overwritten.
+   *
+   * @param memory - The freshly-loaded memory object (may be any schema version ≥ 1)
+   * @returns A new memory object with all entries conforming to the current schema
+   */
+  private migrateMemoryShape(memory: AgentMemory): AgentMemory {
+    // Fast path: already at current schema and no entries need backfill.
+    const needsEntryMigration = memory.roleKnowledge.some(
+      (e) => e.importance === undefined || e.evidence === undefined || e.shouldInjectByDefault === undefined
+    );
+    if ((memory.schemaVersion ?? 1) >= MEMORY_SCHEMA_VERSION && !needsEntryMigration) {
+      return memory;
+    }
+
+    const migrated: AgentMemory = {
+      ...memory,
+      schemaVersion: MEMORY_SCHEMA_VERSION,
+      roleKnowledge: memory.roleKnowledge.map((entry) => this.migrateEntry(entry)),
+    };
+
+    if (needsEntryMigration) {
+      this.logger.debug('Lazy-migrated agent memory to current schema', {
+        agentId: memory.agentId,
+        fromVersion: memory.schemaVersion ?? 1,
+        toVersion: MEMORY_SCHEMA_VERSION,
+        entryCount: memory.roleKnowledge.length,
+      });
+    }
+
+    return migrated;
+  }
+
+  /**
+   * Apply v2 migration defaults to a single RoleKnowledgeEntry.
+   * Returns a new object — never mutates the input. Existing values win.
+   *
+   * @param entry - Possibly-pre-v2 knowledge entry
+   * @returns Entry with v2 fields filled if missing
+   */
+  private migrateEntry(entry: RoleKnowledgeEntry): RoleKnowledgeEntry {
+    return {
+      ...entry,
+      importance: entry.importance ?? MEMORY_V2_MIGRATION_DEFAULTS.importance,
+      confidence: entry.confidence ?? MEMORY_V2_MIGRATION_DEFAULTS.confidence,
+      evidence: entry.evidence ?? [...MEMORY_V2_MIGRATION_DEFAULTS.evidence],
+      shouldInjectByDefault:
+        entry.shouldInjectByDefault ?? MEMORY_V2_MIGRATION_DEFAULTS.shouldInjectByDefault,
+      // ttl, lastVerifiedAt, supersededBy intentionally untouched
+    };
   }
 
   /**
@@ -595,12 +683,18 @@ export class AgentMemoryService implements IAgentMemoryService {
 
     const { roleKnowledge, preferences, performance } = memory;
 
-    // v2: Filter using effective score (confidence × recency × verification)
-    // Exclude performance memories — those are for TL/orchestrator scheduling, not self-use
+    // v2 + v3 (M3): Filter using effective score (confidence × recency × verification)
+    // Exclude performance memories — those are for TL/orchestrator scheduling, not self-use.
+    // M3 default-recall hides:
+    //  - explicitly superseded (boolean OR supersededBy ref)
+    //  - expired ttl
+    //  - low confidence (< AUTO_INJECT_MIN_CONFIDENCE) — only surfaced on explicit recall
+    const nowIso = new Date().toISOString();
     const scored = roleKnowledge
-      .filter(k => !k.superseded && k.memoryType !== 'performance')
-      .map(k => ({ entry: k, score: this.calculateEffectiveScore(k) }))
-      .filter(s => s.score >= DECAY_CONSTANTS.MIN_EFFECTIVE_SCORE)
+      .filter((k) => !this.isHiddenFromDefaultRecall(k, nowIso))
+      .filter((k) => k.memoryType !== 'performance')
+      .map((k) => ({ entry: k, score: this.calculateEffectiveScore(k) }))
+      .filter((s) => s.score >= DECAY_CONSTANTS.MIN_EFFECTIVE_SCORE)
       .sort((a, b) => b.score - a.score)
       .slice(0, 20);
 
@@ -769,6 +863,43 @@ ${performanceMemories.map(s => {
   }
 
   // ========================= v2: Memory Scoring & Decay =========================
+
+  /**
+   * v3 (M3): Should this entry be hidden from the **default** recall path?
+   *
+   * Default recall is what feeds auto-injection into agent prompts. Three rules
+   * (any one matching → hide):
+   *
+   * 1. **Superseded** — `superseded === true` OR `supersededBy` is set.
+   *    Old facts that have been explicitly replaced should never auto-inject.
+   * 2. **Expired ttl** — entry has a `ttl` and it is in the past.
+   *    Time-bounded facts (e.g. "this week's mission") expire silently.
+   * 3. **Low confidence** — `confidence < AUTO_INJECT_MIN_CONFIDENCE` (0.5).
+   *    Tactical guesses and unverified observations stay out of the default
+   *    context; they only surface when an agent actively `recall`s them.
+   *
+   * Explicit recall callers can opt to bypass this filter by NOT calling
+   * `isHiddenFromDefaultRecall` and instead returning the raw `roleKnowledge`.
+   *
+   * @param entry - Entry to evaluate
+   * @param nowIso - Current ISO timestamp (passed in for testability + batch consistency)
+   * @returns true if the entry should be excluded from default recall
+   */
+  public isHiddenFromDefaultRecall(entry: RoleKnowledgeEntry, nowIso: string): boolean {
+    // Rule 1: Superseded (boolean OR ref-based).
+    if (entry.superseded || entry.supersededBy) {
+      return true;
+    }
+    // Rule 2: Expired ttl.
+    if (entry.ttl && entry.ttl < nowIso) {
+      return true;
+    }
+    // Rule 3: Low confidence — only surface on explicit recall.
+    if (entry.confidence < DECAY_CONSTANTS.AUTO_INJECT_MIN_CONFIDENCE) {
+      return true;
+    }
+    return false;
+  }
 
   /**
    * Calculate effective score for a knowledge entry.

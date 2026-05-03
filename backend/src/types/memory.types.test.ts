@@ -85,6 +85,62 @@ describe('Memory Types', () => {
       expect(MEMORY_SCHEMA_VERSION).toBeGreaterThan(0);
       expect(Number.isInteger(MEMORY_SCHEMA_VERSION)).toBe(true);
     });
+
+    it('should be at version 2 (Memory Phase 1 — M3 fields)', () => {
+      // v1 = original schema; v2 = adds importance/evidence/ttl/shouldInjectByDefault.
+      // If you bump this past 2, also update DEFAULT_AGENT_MEMORY.schemaVersion in
+      // memory.types.ts and the migration logic in agent-memory.service.ts.
+      expect(MEMORY_SCHEMA_VERSION).toBe(2);
+    });
+  });
+
+  describe('MEMORY_V2_MIGRATION_DEFAULTS', () => {
+    it('exposes the Phase 1 (M3) backfill defaults', async () => {
+      const { MEMORY_V2_MIGRATION_DEFAULTS } = await import('./memory.types.js');
+      expect(MEMORY_V2_MIGRATION_DEFAULTS.importance).toBe(0.5);
+      expect(MEMORY_V2_MIGRATION_DEFAULTS.confidence).toBe(0.7);
+      expect(MEMORY_V2_MIGRATION_DEFAULTS.evidence).toEqual([]);
+      expect(MEMORY_V2_MIGRATION_DEFAULTS.shouldInjectByDefault).toBe(false);
+    });
+
+    it('does NOT include a default ttl (pre-v2 entries do not expire)', async () => {
+      const { MEMORY_V2_MIGRATION_DEFAULTS } = await import('./memory.types.js');
+      expect((MEMORY_V2_MIGRATION_DEFAULTS as Record<string, unknown>).ttl).toBeUndefined();
+    });
+  });
+
+  describe('RoleKnowledgeEntry v3 (M3) optional fields', () => {
+    it('accepts importance, evidence, ttl, shouldInjectByDefault on a fresh entry', () => {
+      const entry: RoleKnowledgeEntry = {
+        id: 'rk-v3-001',
+        category: 'best-practice',
+        content: 'Steve prefers vehicle-tier pricing reviewed quarterly',
+        confidence: 0.9,
+        createdAt: '2026-05-03T17:00:00Z',
+        importance: 0.95,
+        evidence: ['slack:1772912297.332929', 'request:req-pricing-2026-q2'],
+        ttl: '2026-08-01T00:00:00Z',
+        shouldInjectByDefault: true,
+      };
+      expect(entry.importance).toBe(0.95);
+      expect(entry.evidence).toHaveLength(2);
+      expect(entry.ttl).toBe('2026-08-01T00:00:00Z');
+      expect(entry.shouldInjectByDefault).toBe(true);
+    });
+
+    it('treats all v3 fields as optional (existing v1-shape entries still typecheck)', () => {
+      const entry: RoleKnowledgeEntry = {
+        id: 'rk-legacy-001',
+        category: 'workflow',
+        content: 'Old entry without v3 fields',
+        confidence: 0.7,
+        createdAt: '2026-01-01T00:00:00Z',
+      };
+      expect(entry.importance).toBeUndefined();
+      expect(entry.evidence).toBeUndefined();
+      expect(entry.ttl).toBeUndefined();
+      expect(entry.shouldInjectByDefault).toBeUndefined();
+    });
   });
 
   describe('Type Structure Validation', () => {

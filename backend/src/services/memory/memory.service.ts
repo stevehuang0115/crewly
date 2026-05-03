@@ -114,6 +114,13 @@ export interface RecallParams {
   scope: MemoryScope;
   /** Maximum number of results */
   limit?: number;
+  /**
+   * v3 (M3): When true, bypass the default-recall hide filter and return
+   * superseded / low-confidence / expired-ttl entries as well. Use this for
+   * audit / diagnostic / "explicit recall" callers; default `false` matches
+   * the auto-injection contract.
+   */
+  includeHidden?: boolean;
 }
 
 /**
@@ -742,11 +749,17 @@ export class MemoryService implements IMemoryService {
     // Build parallel fetch promises
     const promises: Promise<void>[] = [];
 
-    // Fetch from agent memory
+    // Fetch from agent memory.
+    // v3 (M3): apply the default-recall hide filter (superseded / expired ttl /
+    // low confidence) unless caller asked for explicit/full recall.
     if (params.scope === 'agent' || params.scope === 'both') {
+      const nowIso = new Date().toISOString();
       promises.push(
         this.agentMemory.getRoleKnowledge(params.agentId).then((knowledge) => {
-          result.agentMemories = this.filterRelevant(knowledge, params.context, params.limit);
+          const visible = params.includeHidden
+            ? knowledge
+            : knowledge.filter((k) => !this.agentMemory.isHiddenFromDefaultRecall(k, nowIso));
+          result.agentMemories = this.filterRelevant(visible, params.context, params.limit);
         }),
       );
     }
