@@ -16,6 +16,7 @@ import { DailyLogService } from '../../services/memory/daily-log.service.js';
 import { LearningAccumulationService } from '../../services/memory/learning-accumulation.service.js';
 import { KnowledgeService } from '../../services/knowledge/knowledge.service.js';
 import { UserProfileService } from '../../services/memory/user-profile.service.js';
+import { MemorySupersessionService } from '../../services/memory/memory-supersession.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('MemoryController');
@@ -183,6 +184,62 @@ export async function recall(req: Request, res: Response, next: NextFunction): P
     res.json({ success: true, data: result });
   } catch (error) {
     logger.error('Failed to recall memory', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    next(error);
+  }
+}
+
+/**
+ * POST /api/memory/supersede (Memory Phase 1 — M4)
+ *
+ * Mark an existing memory entry as superseded by a newer one. Both entries
+ * must already exist in the agent's memory store. The old entry is hidden
+ * from default recall after this call but remains in the raw store for
+ * audit purposes.
+ *
+ * @param req - Express request with body: { agentId, oldId, newId, reason? }
+ * @param res - Express response returning { success, data: SupersedeResult }
+ * @param next - Express next function for error propagation
+ *
+ * @example
+ * ```
+ * POST /api/memory/supersede
+ * {
+ *   "agentId": "crewly-product-max-c69ce8e6",
+ *   "oldId": "rk-pricing-799",
+ *   "newId": "rk-pricing-800-plus-credits",
+ *   "reason": "Steve updated pricing 2026-05-01"
+ * }
+ * ```
+ */
+export async function supersedeMemory(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { agentId, oldId, newId, reason } = req.body;
+
+    if (!agentId || !oldId || !newId) {
+      res.status(400).json({
+        success: false,
+        error: 'Missing required parameters: agentId, oldId, newId',
+      });
+      return;
+    }
+
+    const supersessionService = MemorySupersessionService.getInstance();
+    try {
+      const result = await supersessionService.supersede({ agentId, oldId, newId, reason });
+      logger.info('Memory entry superseded via REST', { agentId, oldId, newId });
+      res.json({ success: true, data: result });
+    } catch (err) {
+      // Service throws on validation failures (id mismatch, missing entries,
+      // missing memory store). Surface as 400 — the request was structurally
+      // valid but referenced data that does not exist.
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn('Supersede rejected', { agentId, oldId, newId, error: message });
+      res.status(400).json({ success: false, error: message });
+    }
+  } catch (error) {
+    logger.error('Failed to supersede memory', {
       error: error instanceof Error ? error.message : String(error),
     });
     next(error);

@@ -7,7 +7,7 @@
  * @module controllers/memory/memory.controller.test
  */
 
-import { remember, recall, recordLearning, getMyContext } from './memory.controller.js';
+import { remember, recall, recordLearning, getMyContext, supersedeMemory } from './memory.controller.js';
 
 // Mock LoggerService before any imports that use it
 jest.mock('../../services/core/logger.service.js', () => ({
@@ -77,6 +77,16 @@ jest.mock('../../services/knowledge/knowledge.service.js', () => ({
   },
 }));
 
+// Mock MemorySupersessionService (M4)
+const mockSupersede = jest.fn();
+jest.mock('../../services/memory/memory-supersession.service.js', () => ({
+  MemorySupersessionService: {
+    getInstance: () => ({
+      supersede: mockSupersede,
+    }),
+  },
+}));
+
 describe('MemoryController', () => {
   let mockRes: { json: jest.Mock; status: jest.Mock };
   let mockNext: jest.Mock;
@@ -91,6 +101,7 @@ describe('MemoryController', () => {
     mockRemember.mockReset();
     mockRecall.mockReset();
     mockRecordLearning.mockReset();
+    mockSupersede.mockReset();
   });
 
   // ========================= remember =========================
@@ -847,6 +858,110 @@ describe('MemoryController', () => {
       );
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
+    });
+  });
+
+  // ========================= supersedeMemory (M4) =========================
+
+  describe('supersedeMemory', () => {
+    it('persists supersession and returns 200 with the result', async () => {
+      const supersededAt = '2026-05-03T18:00:00.000Z';
+      mockSupersede.mockResolvedValue({
+        oldId: 'rk-old',
+        newId: 'rk-new',
+        supersededAt,
+        reason: 'updated',
+      });
+
+      await supersedeMemory(
+        {
+          body: {
+            agentId: 'crewly-product-max-c69ce8e6',
+            oldId: 'rk-old',
+            newId: 'rk-new',
+            reason: 'updated',
+          },
+        } as any,
+        mockRes as any,
+        mockNext,
+      );
+
+      expect(mockSupersede).toHaveBeenCalledWith({
+        agentId: 'crewly-product-max-c69ce8e6',
+        oldId: 'rk-old',
+        newId: 'rk-new',
+        reason: 'updated',
+      });
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: true,
+        data: { oldId: 'rk-old', newId: 'rk-new', supersededAt, reason: 'updated' },
+      });
+      expect(mockRes.status).not.toHaveBeenCalledWith(400);
+    });
+
+    it('passes through with reason omitted', async () => {
+      mockSupersede.mockResolvedValue({
+        oldId: 'a',
+        newId: 'b',
+        supersededAt: '2026-05-03T18:00:00.000Z',
+      });
+
+      await supersedeMemory(
+        { body: { agentId: 'agent-1', oldId: 'a', newId: 'b' } } as any,
+        mockRes as any,
+        mockNext,
+      );
+
+      expect(mockSupersede).toHaveBeenCalledWith({
+        agentId: 'agent-1',
+        oldId: 'a',
+        newId: 'b',
+        reason: undefined,
+      });
+    });
+
+    it('returns 400 when agentId is missing', async () => {
+      await supersedeMemory(
+        { body: { oldId: 'a', newId: 'b' } } as any,
+        mockRes as any,
+        mockNext,
+      );
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockSupersede).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when oldId is missing', async () => {
+      await supersedeMemory(
+        { body: { agentId: 'agent-1', newId: 'b' } } as any,
+        mockRes as any,
+        mockNext,
+      );
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+    });
+
+    it('returns 400 when newId is missing', async () => {
+      await supersedeMemory(
+        { body: { agentId: 'agent-1', oldId: 'a' } } as any,
+        mockRes as any,
+        mockNext,
+      );
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+    });
+
+    it('returns 400 with the service error message when validation throws', async () => {
+      mockSupersede.mockRejectedValue(new Error('Old memory entry "rk-missing" not found for agent "agent-1"'));
+
+      await supersedeMemory(
+        { body: { agentId: 'agent-1', oldId: 'rk-missing', newId: 'rk-new' } } as any,
+        mockRes as any,
+        mockNext,
+      );
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Old memory entry "rk-missing" not found for agent "agent-1"',
+      });
     });
   });
 });
