@@ -59,7 +59,7 @@ describe('Onboarding mode loader (Onboarding v3 — B3)', () => {
   });
 
   describe('loadOnboardingPrompt', () => {
-    it('returns a non-empty string on this branch (fallback path)', async () => {
+    it('returns a non-empty string (fallback or production)', async () => {
       const prompt = await loadOnboardingPrompt();
       expect(typeof prompt).toBe('string');
       expect(prompt.length).toBeGreaterThan(0);
@@ -75,16 +75,38 @@ describe('Onboarding mode loader (Onboarding v3 — B3)', () => {
       const first = await loadOnboardingPrompt();
       _resetOnboardingModeLoaderForTesting();
       const second = await loadOnboardingPrompt();
-      // Same value (fallback), but the resolution path ran twice — that's
-      // verified by the reset call, not by identity here.
-      expect(second).toBe(first);
+      // Resolution path ran twice — second call reaches the dynamic import
+      // again; equality (not identity) is the invariant that holds across
+      // both fallback and production paths.
+      expect(second).toEqual(first);
     });
   });
 
   describe('loadOnboardingSkillAllowlist', () => {
-    it('returns the fallback allowlist on this branch', async () => {
+    /**
+     * Post-integration with Max's `onboarding-mode.skill-allowlist.ts`, the
+     * loader resolves the production allowlist (which is a strict superset
+     * of the fallback). Pre-integration this test asserted the fallback
+     * was returned. We keep both invariants below: the fallback is the
+     * minimum contract and the production list satisfies it.
+     */
+    it('returns an allowlist that satisfies the brief (superset of fallback)', async () => {
       const list = await loadOnboardingSkillAllowlist();
-      expect(list).toEqual(ONBOARDING_FALLBACK_ALLOWLIST);
+      // Every fallback skill MUST be in the resolved list — that is the
+      // contract the loader honours regardless of which path resolved.
+      for (const skill of ONBOARDING_FALLBACK_ALLOWLIST) {
+        expect(list).toContain(skill);
+      }
+    });
+
+    it('explicitly excludes destructive delegation skills', async () => {
+      // Sam's brief: orc cannot delegate while onboarding the customer.
+      // This invariant must hold whether the loader picks the fallback
+      // or the production allowlist.
+      const list = await loadOnboardingSkillAllowlist();
+      expect(list).not.toContain('delegate-task');
+      expect(list).not.toContain('start-agent');
+      expect(list).not.toContain('stop-agent');
     });
 
     it('caches the resolved allowlist', async () => {
