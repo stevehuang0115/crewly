@@ -257,4 +257,44 @@ export class OnboardingService {
     this.sessions.set(sessionId, merged);
     return merged;
   }
+
+  /**
+   * Mark an onboarding session terminal and stamp the KR3 magic-moment
+   * telemetry timestamp.
+   *
+   * Called by the frontend wizard's post-provision success screen via
+   * POST /sessions/:id/complete. Stamps `completedAt` (and `updatedAt`)
+   * with a fresh ISO timestamp and advances `status` to `'completed'`.
+   * Idempotent — a second call refreshes both timestamps but keeps the
+   * status terminal.
+   *
+   * Cross-tenant calls return `null` (no enumeration leak — same shape as
+   * a missing session).
+   *
+   * @param sessionId - Session id
+   * @param ownerUserId - Optional owner scope (`req.user.userId` in HTTP)
+   * @param options - Optional metadata forwarded by the frontend; today
+   *   `teamKnowledgeDir` is the only field and is stored opaquely.
+   * @returns The updated session, or `null` if missing or not owned
+   */
+  completeSession(
+    sessionId: string,
+    ownerUserId?: string,
+    options?: { teamKnowledgeDir?: string },
+  ): OnboardingSession | null {
+    const existing = this.resolveOwned(sessionId, ownerUserId);
+    if (!existing) return null;
+    const now = new Date().toISOString();
+    const merged: OnboardingSession = {
+      ...existing,
+      ...(options?.teamKnowledgeDir
+        ? { teamKnowledgeDir: options.teamKnowledgeDir }
+        : {}),
+      status: 'completed',
+      completedAt: now,
+      updatedAt: now,
+    };
+    this.sessions.set(sessionId, merged);
+    return merged;
+  }
 }

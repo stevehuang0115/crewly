@@ -181,6 +181,63 @@ describe('OnboardingService', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // completeSession (KR3 magic-moment terminal step)
+  // ---------------------------------------------------------------------------
+  describe('completeSession', () => {
+    it('marks the session "completed" and stamps completedAt + updatedAt', () => {
+      const s = svc.createSession();
+      const before = s.updatedAt;
+      // Ensure a non-zero clock delta so the after-stamp is strictly later.
+      const updated = svc.completeSession(s.id);
+      expect(updated).not.toBeNull();
+      expect(updated!.status).toBe('completed');
+      expect(updated!.completedAt).toBeDefined();
+      expect(updated!.completedAt).toBe(updated!.updatedAt);
+      expect(new Date(updated!.updatedAt).getTime())
+        .toBeGreaterThanOrEqual(new Date(before).getTime());
+    });
+
+    it('persists the optional teamKnowledgeDir hint when provided', () => {
+      const s = svc.createSession();
+      const updated = svc.completeSession(s.id, undefined, {
+        teamKnowledgeDir: '.crewly/knowledge',
+      });
+      expect(updated!.teamKnowledgeDir).toBe('.crewly/knowledge');
+    });
+
+    it('omits teamKnowledgeDir when the hint is not provided', () => {
+      const s = svc.createSession();
+      const updated = svc.completeSession(s.id);
+      expect(updated!.teamKnowledgeDir).toBeUndefined();
+    });
+
+    it('returns null for a missing id', () => {
+      expect(svc.completeSession('nope')).toBeNull();
+    });
+
+    it('is idempotent — second call refreshes timestamps but stays terminal', () => {
+      const s = svc.createSession();
+      const first = svc.completeSession(s.id);
+      const second = svc.completeSession(s.id);
+      expect(second!.status).toBe('completed');
+      expect(second!.completedAt).toBeDefined();
+      // Both stamps are valid ISO strings; ordering monotonic.
+      expect(new Date(second!.completedAt!).getTime())
+        .toBeGreaterThanOrEqual(new Date(first!.completedAt!).getTime());
+    });
+
+    it('returns null for cross-tenant calls (no enumeration leak)', () => {
+      const s = svc.createSession('https://a.com', 'user-aaa');
+      // Foreign caller gets the same null shape as a missing id.
+      expect(svc.completeSession(s.id, 'user-bbb')).toBeNull();
+      // Underlying record is untouched — owner can still complete it.
+      const owner = svc.completeSession(s.id, 'user-aaa');
+      expect(owner!.status).toBe('completed');
+      expect(owner!.ownerUserId).toBe('user-aaa');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Tenant scoping (N1 — Phase E pre-beta)
   //
   // Every read and mutation must respect the optional `ownerUserId` scope so

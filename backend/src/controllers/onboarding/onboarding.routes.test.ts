@@ -232,6 +232,45 @@ describe('Onboarding Routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // POST /sessions/:id/complete (KR3 magic-moment terminal step)
+  // ---------------------------------------------------------------------------
+
+  describe('POST /api/onboarding/sessions/:id/complete', () => {
+    it('marks the session "completed" and stamps completedAt', async () => {
+      const create = await request(app).post('/api/onboarding/sessions').send({});
+      const id = create.body.data.id as string;
+      const res = await request(app)
+        .post(`/api/onboarding/sessions/${id}/complete`)
+        .send({ teamKnowledgeDir: '.crewly/knowledge' });
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.status).toBe('completed');
+      expect(res.body.data.completedAt).toBeDefined();
+      expect(res.body.data.teamKnowledgeDir).toBe('.crewly/knowledge');
+    });
+
+    it('accepts an empty body (teamKnowledgeDir is optional)', async () => {
+      const create = await request(app).post('/api/onboarding/sessions').send({});
+      const id = create.body.data.id as string;
+      const res = await request(app)
+        .post(`/api/onboarding/sessions/${id}/complete`)
+        .send({});
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe('completed');
+      expect(res.body.data.teamKnowledgeDir).toBeUndefined();
+    });
+
+    it('returns 404 for a missing id (same shape as cross-tenant)', async () => {
+      const res = await request(app)
+        .post('/api/onboarding/sessions/missing/complete')
+        .send({ teamKnowledgeDir: '.crewly/knowledge' });
+      expect(res.status).toBe(404);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toBe('Session not found');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // POST /provision
   // ---------------------------------------------------------------------------
 
@@ -395,6 +434,29 @@ describe('Onboarding Routes', () => {
         .set('Authorization', `Bearer ${tokenA}`);
       expect(verify.body.data.discoveryAnswers).toBeUndefined();
       expect(verify.body.data.status).toBe('created');
+    });
+
+    it('POST /sessions/:id/complete from a foreign tenant returns 404 and does NOT mutate', async () => {
+      const create = await request(app).post('/api/onboarding/sessions')
+        .set('Authorization', `Bearer ${tokenA}`).send({});
+      const id = create.body.data.id as string;
+
+      const foreignRes = await request(app).post(`/api/onboarding/sessions/${id}/complete`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ teamKnowledgeDir: '.crewly/knowledge' });
+      expect(foreignRes.status).toBe(404);
+      expect(foreignRes.body.error).toBe('Session not found');
+
+      // Owner-side state is unchanged — status still 'created', no completedAt
+      const verify = await request(app).get(`/api/onboarding/sessions/${id}`)
+        .set('Authorization', `Bearer ${tokenA}`);
+      expect(verify.body.data.status).toBe('created');
+      expect(verify.body.data.completedAt).toBeUndefined();
+    });
+
+    it('POST /sessions/:id/complete returns 401 without a valid token (auth gate)', async () => {
+      const res = await request(app).post('/api/onboarding/sessions/anything/complete').send({});
+      expect(res.status).toBe(401);
     });
 
     it('POST /sessions creates sessions stamped with the caller as owner', async () => {

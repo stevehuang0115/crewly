@@ -8,6 +8,7 @@
  *   PUT    /api/onboarding/sessions/:id      — Update session (owner-scoped)
  *   POST   /api/onboarding/sessions/:id/prefill   — Store prefill data (owner-scoped)
  *   POST   /api/onboarding/sessions/:id/approve   — Approve profile (owner-scoped)
+ *   POST   /api/onboarding/sessions/:id/complete  — Mark session terminal (owner-scoped, KR3 magic-moment timestamp)
  *   POST   /api/onboarding/provision         — Provision final team (owner-scoped)
  *
  * Every endpoint runs behind `requireAuth` so each request carries
@@ -152,6 +153,39 @@ export function createOnboardingRouter(): Router {
         req.params.id,
         req.body.answers,
         ownerIdFor(req),
+      );
+      if (!session) {
+        res.status(404).json({ success: false, error: 'Session not found' });
+        return;
+      }
+      res.json({ success: true, data: session });
+    } catch (err) {
+      res.status(400).json({
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  /**
+   * Mark an onboarding session terminal and stamp the KR3 magic-moment
+   * telemetry timestamp.
+   *
+   * Called by the frontend wizard's post-provision success screen so we can
+   * measure end-to-end onboarding wall-clock time (createdAt → completedAt).
+   * Body: { teamKnowledgeDir?: string } — opaque metadata stored on the
+   * session for downstream tooling that wants to recover the knowledge dir
+   * the wizard used.
+   *
+   * Cross-tenant calls resolve to 404 (same shape as a missing session) so
+   * cross-tenant id enumeration cannot probe for existence.
+   */
+  router.post('/sessions/:id/complete', requireAuth, (req: Request, res: Response) => {
+    try {
+      const session = service.completeSession(
+        req.params.id,
+        ownerIdFor(req),
+        { teamKnowledgeDir: req.body?.teamKnowledgeDir },
       );
       if (!session) {
         res.status(404).json({ success: false, error: 'Session not found' });
