@@ -61,6 +61,7 @@ jest.mock('../controllers/browser/browser.routes.js', () => ({ createBrowserRout
 jest.mock('../controllers/cross-machine/index.js', () => ({ createCrossMachineRouter: () => Router() }));
 jest.mock('../controllers/onboarding/website-analysis.routes.js', () => ({ createWebsiteAnalysisRouter: () => Router() }));
 jest.mock('../controllers/onboarding/onboarding.routes.js', () => ({ createOnboardingRouter: () => Router() }));
+jest.mock('../controllers/orchestrator-onboarding/orchestrator-onboarding.routes.js', () => ({ createOrchestratorOnboardingRouter: () => Router() }));
 jest.mock('../controllers/data/data.routes.js', () => ({ createDataRouter: () => Router() }));
 jest.mock('../controllers/intent-task/intent-task.routes.js', () => ({ createIntentTaskRouter: () => Router() }));
 jest.mock('../controllers/task-pool/task-pool.routes.js', () => ({ createTaskPoolRouter: () => Router() }));

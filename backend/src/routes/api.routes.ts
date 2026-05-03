@@ -34,6 +34,7 @@ import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
 import { createWebsiteAnalysisRouter } from '../controllers/onboarding/website-analysis.routes.js';
 import { createOnboardingRouter } from '../controllers/onboarding/onboarding.routes.js';
+import { createOrchestratorOnboardingRouter } from '../controllers/orchestrator-onboarding/orchestrator-onboarding.routes.js';
 import { createDataRouter } from '../controllers/data/data.routes.js';
 import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
 import { createTaskPoolRouter } from '../controllers/task-pool/task-pool.routes.js';
@@ -146,6 +147,10 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Onboarding session routes for KR3 Cloud Portal onboarding flow
   router.use('/onboarding', createOnboardingRouter());
+
+  // Orchestrator-Onboarding routes (v3 cold-start) — recommend-team + materialize-team.
+  // Invoked by the onboarding-only bash skills under config/skills/agent/onboarding/.
+  router.use('/orchestrator/onboarding', createOrchestratorOnboardingRouter());
 
   // Data Architecture V2 — Unified Data Model, Schemas, Sinks
   router.use('/v2/data', createDataRouter());
