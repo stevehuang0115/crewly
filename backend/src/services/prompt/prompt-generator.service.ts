@@ -17,6 +17,7 @@ import { existsSync } from 'fs';
 import * as fs from 'fs/promises';
 import { StorageService } from '../core/storage.service.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { MissionContextService } from '../memory/mission-context.service.js';
 import type { TeamMember, Team } from '../../types/index.js';
 
 /**
@@ -97,6 +98,28 @@ export class PromptGeneratorService {
           sections.push('');
         }
       }
+    }
+
+    // M1: Mission/OKR Auto-Injection — load mission context card
+    // Fail-soft: any error reading goals/missions logs a warning and skips injection
+    // so prompt assembly never breaks. Empty card → no section emitted.
+    try {
+      const missionContextService = MissionContextService.getInstance();
+      const missionCard = await missionContextService.getContextForAgent({
+        agentId: member.id,
+        projectPath: process.cwd(),
+        teamId,
+      });
+      if (missionCard && missionCard.trim().length > 0) {
+        sections.push(missionCard);
+        sections.push('');
+      }
+    } catch (error) {
+      this.logger.warn('Failed to load mission context', {
+        memberId: member.id,
+        teamId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     // Add context reminder footer

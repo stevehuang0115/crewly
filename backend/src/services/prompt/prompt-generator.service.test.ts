@@ -40,11 +40,23 @@ jest.mock('fs/promises', () => ({
   readFile: jest.fn(),
 }));
 
+// Mock MissionContextService — default to empty so legacy tests stay clean.
+// Individual tests that need a populated mission card override this mock.
+const mockGetContextForAgent = jest.fn().mockResolvedValue('');
+jest.mock('../memory/mission-context.service.js', () => ({
+  MissionContextService: {
+    getInstance: jest.fn(() => ({
+      getContextForAgent: mockGetContextForAgent,
+    })),
+  },
+}));
+
 describe('PromptGeneratorService', () => {
   let service: PromptGeneratorService;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetContextForAgent.mockResolvedValue('');
     PromptGeneratorService.resetInstance();
     service = PromptGeneratorService.getInstance();
   });
@@ -92,6 +104,86 @@ describe('PromptGeneratorService', () => {
       expect(prompt).toContain('## Context Reminder');
       expect(prompt).toContain('If you lose context about who you are, read this file');
       expect(prompt).toContain('/home/user/.crewly/teams/team-1/prompts/member-1.md');
+    });
+
+    // M1: Mission/OKR Auto-Injection
+    describe('mission context injection (M1)', () => {
+      it('should inject mission card when service returns non-empty content', async () => {
+        const missionCard = '## Mission Context\n\n### Active Goals\n- Ship Sprint 3 Cloud MVP';
+        mockGetContextForAgent.mockResolvedValueOnce(missionCard);
+
+        const prompt = await service.generateMemberPrompt(mockMember, 'team-1');
+
+        expect(prompt).toContain('## Mission Context');
+        expect(prompt).toContain('Ship Sprint 3 Cloud MVP');
+      });
+
+      it('should call MissionContextService with member.id, projectPath, and teamId', async () => {
+        await service.generateMemberPrompt(mockMember, 'team-1');
+
+        expect(mockGetContextForAgent).toHaveBeenCalledWith({
+          agentId: 'member-1',
+          projectPath: process.cwd(),
+          teamId: 'team-1',
+        });
+      });
+
+      it('should place mission card between Skills block and Context Reminder footer', async () => {
+        const missionCard = '## Mission Context\n\n### Active Goals\n- Goal A';
+        mockGetContextForAgent.mockResolvedValueOnce(missionCard);
+
+        // Member with at least one skill so the Skills block renders
+        const memberWithSkills: TeamMember = {
+          ...mockMember,
+          skillOverrides: ['chrome-browser'],
+        };
+
+        // Spy to make a skill produce visible content
+        jest.spyOn(service, 'getRoleAssignedSkills').mockResolvedValue([]);
+        jest.spyOn(service, 'getSkillInstructions').mockResolvedValue('Use Chrome via remote-browser.');
+
+        const prompt = await service.generateMemberPrompt(memberWithSkills, 'team-1');
+
+        const skillsIdx = prompt.indexOf('## Assigned Skills');
+        const missionIdx = prompt.indexOf('## Mission Context');
+        const reminderIdx = prompt.indexOf('## Context Reminder');
+
+        expect(skillsIdx).toBeGreaterThan(-1);
+        expect(missionIdx).toBeGreaterThan(-1);
+        expect(reminderIdx).toBeGreaterThan(-1);
+        expect(missionIdx).toBeGreaterThan(skillsIdx);
+        expect(reminderIdx).toBeGreaterThan(missionIdx);
+      });
+
+      it('should skip injection when service returns empty string', async () => {
+        mockGetContextForAgent.mockResolvedValueOnce('');
+
+        const prompt = await service.generateMemberPrompt(mockMember, 'team-1');
+
+        expect(prompt).not.toContain('## Mission Context');
+        // Other sections still render normally
+        expect(prompt).toContain('# Test Developer');
+        expect(prompt).toContain('## Context Reminder');
+      });
+
+      it('should skip injection when service returns whitespace-only content', async () => {
+        mockGetContextForAgent.mockResolvedValueOnce('   \n  \n');
+
+        const prompt = await service.generateMemberPrompt(mockMember, 'team-1');
+
+        expect(prompt).not.toContain('## Mission Context');
+      });
+
+      it('should fail-soft when MissionContextService throws', async () => {
+        mockGetContextForAgent.mockRejectedValueOnce(new Error('boom'));
+
+        // Must not throw — prompt assembly should never break on mission read failure
+        const prompt = await service.generateMemberPrompt(mockMember, 'team-1');
+
+        expect(prompt).toContain('# Test Developer');
+        expect(prompt).toContain('## Context Reminder');
+        expect(prompt).not.toContain('## Mission Context');
+      });
     });
   });
 
