@@ -12,7 +12,7 @@
  * @module pages/OnboardingPreview
  */
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   BLUEPRINT_SIDEBAR_STORIES,
 } from '../components/Onboarding/v2-5/stories/BlueprintSidebar.stories';
@@ -93,12 +93,106 @@ function ProgressiveRevealDemo(): ReactNode {
 }
 
 /**
+ * Map `?stage=S2|S3|S4|S5` URL params to the matching shell story id.
+ * Lets reviewers (Mia / Steve) deep-link to a specific stage without
+ * clicking through the left-rail picker.
+ */
+const STAGE_TO_STORY_ID: Record<string, string> = {
+  S2: 'shell-all-empty',
+  S3: 'shell-business-profile',
+  S4: 'shell-match-report',
+  S5: 'shell-all-populated',
+};
+
+/**
+ * Read `?stage=...` (and `?story=...`) from the URL. Returns the
+ * matching STORIES entry id, or `undefined` if nothing maps. Tolerates
+ * SSR-less envs (`window` undefined) and case-insensitive stage codes.
+ */
+function readInitialStoryIdFromUrl(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const params = new URLSearchParams(window.location.search);
+  const directStory = params.get('story');
+  if (directStory && STORIES.some((s) => s.id === directStory)) {
+    return directStory;
+  }
+  const stage = params.get('stage');
+  if (stage) {
+    const mapped = STAGE_TO_STORY_ID[stage.toUpperCase()];
+    if (mapped && STORIES.some((s) => s.id === mapped)) {
+      return mapped;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Read `?w=narrow|<pixels>` from the URL. When set, the preview wraps
+ * the selected story in a fixed-width iframe so reviewers can see the
+ * <1024px drawer-collapse layout without resizing their actual window.
+ *
+ * Returns the desired iframe width in px, or `undefined` to render at
+ * full window width. `narrow` aliases to 768.
+ */
+function readNarrowWidthFromUrl(): number | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const raw = new URLSearchParams(window.location.search).get('w');
+  if (!raw) return undefined;
+  if (raw.toLowerCase() === 'narrow') return 768;
+  const px = Number(raw);
+  return Number.isFinite(px) && px > 0 ? Math.min(px, 1023) : undefined;
+}
+
+/** Returns true if `?bare=1` is set — renders only the story, no chrome. */
+function readBareFromUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  const raw = new URLSearchParams(window.location.search).get('bare');
+  return raw === '1' || raw === 'true';
+}
+
+/**
  * Top-level preview page. Renders a left-rail story picker + the
- * selected story.
+ * selected story. Honours `?stage=S2..S5` and `?story=<id>` URL
+ * params for deep-linking, plus `?w=narrow` to preview the
+ * <1024px drawer-collapse layout in a width-constrained iframe and
+ * `?bare=1` to render the story without the surrounding nav (used
+ * by `?w=narrow` for its iframe src).
  */
 export function OnboardingPreview(): ReactNode {
-  const [selectedId, setSelectedId] = useState<string>(STORIES[0].id);
+  const [selectedId, setSelectedId] = useState<string>(
+    () => readInitialStoryIdFromUrl() ?? STORIES[0].id
+  );
+  const narrowWidth = readNarrowWidthFromUrl();
+  const bare = readBareFromUrl();
+
+  // Re-sync if the stage param changes after mount (e.g. user edits URL).
+  useEffect(() => {
+    const next = readInitialStoryIdFromUrl();
+    if (next && next !== selectedId) {
+      setSelectedId(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const selected = STORIES.find((s) => s.id === selectedId) ?? STORIES[0];
+
+  // `?bare=1` short-circuits the outer chrome — used by the narrow
+  // iframe so the inner instance renders ONLY the story content.
+  if (bare) {
+    return (
+      <div
+        data-testid="onboarding-preview-bare"
+        style={{
+          height: '100vh',
+          width: '100vw',
+          fontFamily: 'system-ui, sans-serif',
+          background: '#ffffff',
+        }}
+      >
+        {selected.render()}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -159,8 +253,52 @@ export function OnboardingPreview(): ReactNode {
           <h2 style={{ margin: 0, fontSize: 18 }}>{selected.label}</h2>
           <code style={{ fontSize: 12, color: '#6b7280' }}>id: {selected.id}</code>
         </header>
-        <div data-testid="onboarding-preview-render">{selected.render()}</div>
+        <div data-testid="onboarding-preview-render">
+          {narrowWidth !== undefined ? (
+            <NarrowFrame width={narrowWidth} storyId={selected.id} />
+          ) : (
+            selected.render()
+          )}
+        </div>
       </main>
+    </div>
+  );
+}
+
+/**
+ * Renders the same story inside a width-constrained iframe so the
+ * inner viewport hits the `@media (max-width: 1023px)` rules and the
+ * BlueprintSidebar collapses into its off-canvas drawer form.
+ *
+ * The iframe loads `/onboarding-preview?story=<id>` (no `w=` param)
+ * so the inner instance renders the story at full width *of the iframe*.
+ */
+function NarrowFrame({
+  width,
+  storyId,
+}: {
+  width: number;
+  storyId: string;
+}): ReactNode {
+  const src = `/onboarding-preview?story=${encodeURIComponent(storyId)}&bare=1`;
+  return (
+    <div
+      data-testid="onboarding-preview-narrow-frame"
+      style={{
+        width,
+        height: 760,
+        border: '1px dashed #9ca3af',
+        borderRadius: 8,
+        overflow: 'hidden',
+        background: '#ffffff',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+      }}
+    >
+      <iframe
+        src={src}
+        title="Onboarding preview (narrow)"
+        style={{ width: '100%', height: '100%', border: 'none' }}
+      />
     </div>
   );
 }

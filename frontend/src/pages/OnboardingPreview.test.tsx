@@ -4,11 +4,28 @@
  * @module pages/OnboardingPreview.test
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { OnboardingPreview } from './OnboardingPreview';
 
+/**
+ * Stub window.location.search so the URL-driven deep-link helpers can
+ * be exercised without navigating the JSDOM frame. Restores the
+ * original href in afterEach.
+ */
+function setSearch(qs: string): void {
+  const url = new URL('http://localhost' + (qs ? `/onboarding-preview${qs.startsWith('?') ? qs : '?' + qs}` : '/onboarding-preview'));
+  window.history.replaceState({}, '', url.pathname + url.search);
+}
+
 describe('OnboardingPreview', () => {
+  beforeEach(() => {
+    setSearch('');
+  });
+  afterEach(() => {
+    setSearch('');
+  });
+
   it('renders the nav + stage shell', () => {
     render(<OnboardingPreview />);
     expect(screen.getByTestId('onboarding-preview')).toBeInTheDocument();
@@ -49,6 +66,52 @@ describe('OnboardingPreview', () => {
       'data-state',
       'populated'
     );
+  });
+
+  it('honors ?stage=S5 to deep-link directly to shell-all-populated', () => {
+    setSearch('?stage=S5');
+    render(<OnboardingPreview />);
+    expect(screen.getByTestId('onboarding-shell')).toBeInTheDocument();
+    expect(screen.getByTestId('blueprint-block-business-profile')).toHaveAttribute(
+      'data-state',
+      'populated'
+    );
+  });
+
+  it('honors ?stage=s3 (case-insensitive) to deep-link to shell-business-profile', () => {
+    setSearch('?stage=s3');
+    render(<OnboardingPreview />);
+    expect(screen.getByTestId('onboarding-shell')).toBeInTheDocument();
+  });
+
+  it('honors ?story=<id> direct deep-link', () => {
+    setSearch('?story=shell-match-report');
+    render(<OnboardingPreview />);
+    expect(screen.getByTestId('onboarding-shell')).toBeInTheDocument();
+    expect(screen.getByTestId('blueprint-block-match-report')).toHaveAttribute(
+      'data-state',
+      'populated'
+    );
+  });
+
+  it('falls back to first story when ?stage value is unrecognised', () => {
+    setSearch('?stage=S99');
+    render(<OnboardingPreview />);
+    // First story is BLUEPRINT_SIDEBAR_STORIES[0] = "all-empty".
+    expect(screen.getByTestId('blueprint-sidebar')).toBeInTheDocument();
+  });
+
+  it('?w=narrow wraps the story in a fixed-width iframe (drawer-collapse preview)', () => {
+    setSearch('?w=narrow');
+    render(<OnboardingPreview />);
+    expect(screen.getByTestId('onboarding-preview-narrow-frame')).toBeInTheDocument();
+  });
+
+  it('?bare=1 renders the story without the surrounding nav', () => {
+    setSearch('?bare=1');
+    render(<OnboardingPreview />);
+    expect(screen.getByTestId('onboarding-preview-bare')).toBeInTheDocument();
+    expect(screen.queryByTestId('onboarding-preview-nav')).not.toBeInTheDocument();
   });
 
   it('progressive-reveal-demo walks through all 4 stages', () => {
