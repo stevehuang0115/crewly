@@ -147,6 +147,128 @@ describe('StatePersistenceService', () => {
     });
   });
 
+  describe('orchestrator mode round-trip (Onboarding v3 — B2)', () => {
+    it('should default to "normal" on a fresh state', async () => {
+      await service.initialize();
+      expect(service.getMode()).toBe('normal');
+      const state = service.getState();
+      expect(state?.mode).toBe('normal');
+    });
+
+    it('should round-trip the "onboarding" mode through atomicWriteJson', async () => {
+      await service.initialize();
+      service.setMode('onboarding');
+      await service.saveState('user_request');
+
+      // Re-read via a fresh service to prove it survives the disk hop.
+      const service2 = new StatePersistenceService(testDir);
+      additionalServices.push(service2);
+      const loadedState = await service2.initialize();
+
+      expect(loadedState).not.toBeNull();
+      expect(loadedState?.mode).toBe('onboarding');
+      expect(service2.getMode()).toBe('onboarding');
+    });
+
+    it('should round-trip the "onboarding-provisioning" future-reserved value', async () => {
+      await service.initialize();
+      service.setMode('onboarding-provisioning');
+      await service.saveState('scheduled');
+
+      const service2 = new StatePersistenceService(testDir);
+      additionalServices.push(service2);
+      const loadedState = await service2.initialize();
+
+      expect(loadedState?.mode).toBe('onboarding-provisioning');
+    });
+
+    it('should backfill mode to "normal" when loading legacy state files', async () => {
+      // Simulate a state file written by a Crewly version that predates
+      // the `mode` field. The loader must not crash; it must default.
+      const stateDir = path.join(testDir, STATE_PATHS.STATE_DIR);
+      await fs.mkdir(stateDir, { recursive: true });
+      const legacyState: Omit<OrchestratorState, 'mode'> = {
+        id: 'legacy-state',
+        version: STATE_VERSION,
+        checkpointedAt: new Date().toISOString(),
+        checkpointReason: 'scheduled',
+        conversations: [],
+        tasks: [],
+        agents: [],
+        projects: [],
+        metadata: {
+          version: STATE_VERSION,
+          hostname: 'legacy-host',
+          pid: 1,
+          startedAt: new Date().toISOString(),
+          uptimeSeconds: 0,
+          restartCount: 0,
+        },
+      };
+      await fs.writeFile(
+        path.join(stateDir, STATE_PATHS.CURRENT_STATE),
+        JSON.stringify(legacyState),
+        'utf-8',
+      );
+
+      const service2 = new StatePersistenceService(testDir);
+      additionalServices.push(service2);
+      const loadedState = await service2.initialize();
+
+      expect(loadedState).not.toBeNull();
+      expect(loadedState?.mode).toBe('normal');
+    });
+
+    it('should sanitize unknown mode values to the default', async () => {
+      // Defends against a future Crewly writing a value this build doesn't
+      // recognize, or a hand-edited / corrupted state file.
+      const stateDir = path.join(testDir, STATE_PATHS.STATE_DIR);
+      await fs.mkdir(stateDir, { recursive: true });
+      const corruptState = {
+        id: 'corrupt-state',
+        version: STATE_VERSION,
+        checkpointedAt: new Date().toISOString(),
+        checkpointReason: 'scheduled',
+        mode: 'totally-bogus-mode',
+        conversations: [],
+        tasks: [],
+        agents: [],
+        projects: [],
+        metadata: {
+          version: STATE_VERSION,
+          hostname: 'corrupt-host',
+          pid: 1,
+          startedAt: new Date().toISOString(),
+          uptimeSeconds: 0,
+          restartCount: 0,
+        },
+      };
+      await fs.writeFile(
+        path.join(stateDir, STATE_PATHS.CURRENT_STATE),
+        JSON.stringify(corruptState),
+        'utf-8',
+      );
+
+      const service2 = new StatePersistenceService(testDir);
+      additionalServices.push(service2);
+      const loadedState = await service2.initialize();
+
+      expect(loadedState?.mode).toBe('normal');
+    });
+
+    it('setMode should be idempotent', async () => {
+      await service.initialize();
+      service.setMode('onboarding');
+      service.setMode('onboarding'); // second call — no change expected
+      expect(service.getMode()).toBe('onboarding');
+    });
+
+    it('getMode should return default before initialization', () => {
+      // Pre-init: no currentState yet — must not throw, must return default.
+      expect(service.getMode()).toBe('normal');
+    });
+  });
+
   describe('getState', () => {
     it('should return null before initialization', () => {
       expect(service.getState()).toBeNull();

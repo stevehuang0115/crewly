@@ -805,4 +805,35 @@ describe('ChatV2Service', () => {
       ).toThrow(ChatError);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // countAllMessages — Onboarding v3 (B1) cold-start probe
+  // -------------------------------------------------------------------------
+
+  describe('countAllMessages (Onboarding v3 — B1)', () => {
+    it('returns 0 on a fresh service before any channel exists', () => {
+      expect(service.countAllMessages()).toBe(0);
+    });
+
+    it('counts messages across the channels owned by every principal', () => {
+      // Two channels, two owners, three messages — sum is 3.
+      const ch1 = createSam();
+      const ch2 = service.createChannel({
+        agentSession: 'sess-b',
+        name: 'Other Agent',
+        principal: otherUser,
+      });
+      service.sendMessage({ channelId: ch1.id, principal: owner, content: 'a' });
+      service.sendMessage({ channelId: ch1.id, principal: owner, content: 'b' });
+      service.sendMessage({ channelId: ch2.id, principal: otherUser, content: 'c' });
+
+      expect(service.countAllMessages()).toBe(3);
+    });
+
+    it('is callable without an HTTP-request principal (orc bootstrap path)', () => {
+      // The orc bootstrap calls this from a closure with no principal —
+      // verify there's no implicit auth guard that would throw.
+      expect(() => service.countAllMessages()).not.toThrow();
+    });
+  });
 });

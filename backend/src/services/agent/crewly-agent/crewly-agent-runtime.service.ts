@@ -29,6 +29,9 @@ import { PtyActivityTrackerService } from '../pty-activity-tracker.service.js';
 import { TokenUsageService } from '../../monitoring/token-usage.service.js';
 import { getSettingsService } from '../../settings/settings.service.js';
 import { AgentStreamService } from './agent-stream.service.js';
+import { getOnboardingBootstrapService } from '../../orchestrator/onboarding-bootstrap.service.js';
+import { loadOnboardingPrompt } from '../../orchestrator/onboarding-mode-loader.js';
+import { getStatePersistenceService } from '../../orchestrator/state-persistence.service.js';
 
 
 /**
@@ -147,6 +150,13 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
    * Loads the system prompt from config/roles/orchestrator/prompt.md,
    * creates the AgentRunnerService (in-process or worker), and initializes the model.
    *
+   * Onboarding v3 (B3): when the role is `'orchestrator'` and the cold-start
+   * detector ({@link OnboardingBootstrapService}) reports a fresh OSS install,
+   * the runtime swaps the role prompt for the onboarding-mode prompt
+   * ({@link loadOnboardingPrompt}) and flips persisted state to
+   * `mode: 'onboarding'`. The state-persistence checkpoint is saved before
+   * the AgentRunner initialises so a crash mid-init still resumes correctly.
+   *
    * @param sessionName - Session name for this agent instance
    * @param config - Optional partial config overrides. Set `useWorkerProcess: true` to run in a child process.
    * @param roleName - Role name for system prompt lookup (default: 'orchestrator')
@@ -160,8 +170,17 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     this.currentMemberId = config?.memberId;
     this.useWorkerProcess = config?.useWorkerProcess ?? false;
 
-    // Build enhanced system prompt with skills and addon awareness
-    const systemPrompt = await this.buildEnhancedSystemPrompt(roleName || 'orchestrator');
+    const effectiveRoleName = roleName || 'orchestrator';
+
+    // Onboarding v3 (B3) — cold-start detection. Only the orc bootstrap
+    // path participates; subordinate agents always use their role prompt.
+    const onboardingMode = await this.detectOnboardingMode(effectiveRoleName);
+
+    // Build enhanced system prompt with skills and addon awareness, OR
+    // swap to the onboarding-mode prompt when cold-start fired.
+    const systemPrompt = onboardingMode
+      ? await loadOnboardingPrompt()
+      : await this.buildEnhancedSystemPrompt(effectiveRoleName);
 
     // Build full config with defaults
     const fullConfig: CrewlyAgentConfig = {
@@ -208,7 +227,112 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
       mode,
       model: `${fullConfig.model.provider}/${fullConfig.model.modelId}`,
       maxSteps: fullConfig.maxSteps,
+      onboardingMode,
     });
+
+    // Onboarding v3 (B3) — best-effort first-launch marker. Runs after
+    // bootstrap success regardless of mode; idempotent on repeated boots.
+    // Errors are swallowed by `markProjectAsLaunched` so a marker write
+    // hiccup never fails the demo path.
+    if (effectiveRoleName === 'orchestrator' && config?.projectPath) {
+      await this.markFirstLaunchForCwd(config.projectPath);
+    }
+  }
+
+  /**
+   * Decide whether this orc bootstrap should enter onboarding mode.
+   *
+   * Returns false (no-op) for non-orchestrator roles, when the bootstrap
+   * service hasn't been wired yet, or when detection throws — fail-closed
+   * so transient errors never falsely trigger onboarding.
+   *
+   * Side effects: when true, flips the persisted orchestrator mode to
+   * `'onboarding'` and saves a checkpoint immediately, so a crash before
+   * the AgentRunner finishes initialising still resumes in onboarding mode.
+   *
+   * @param roleName - The resolved role name for this bootstrap
+   * @returns True iff cold-start fired and the prompt should be swapped
+   */
+  private async detectOnboardingMode(roleName: string): Promise<boolean> {
+    if (roleName !== 'orchestrator') {
+      return false;
+    }
+
+    const detector = getOnboardingBootstrapService();
+    if (!detector) {
+      this.logger.debug('OnboardingBootstrapService not wired; skipping cold-start probe');
+      return false;
+    }
+
+    let isCold: boolean;
+    try {
+      isCold = await detector.shouldEnterOnboardingMode();
+    } catch (err) {
+      this.logger.warn('Cold-start probe threw; defaulting to normal mode', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+
+    if (!isCold) {
+      return false;
+    }
+
+    // Flip persisted state immediately so a crash between here and
+    // AgentRunner.initialize() still resumes in onboarding mode (B4).
+    try {
+      const stateService = getStatePersistenceService();
+      if (stateService.isInitialized()) {
+        stateService.setMode('onboarding');
+        await stateService.saveState('user_request');
+      } else {
+        this.logger.debug('State-persistence not initialized; mode flip deferred to caller');
+      }
+    } catch (err) {
+      // Don't abort the demo just because the checkpoint write failed.
+      this.logger.warn('Failed to persist onboarding mode flip; in-memory mode still applied', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return true;
+  }
+
+  /**
+   * Best-effort `firstLaunchedAt` marker write for the project at
+   * `projectPath`.
+   *
+   * Resolves the project record by matching `Project.path` against the
+   * given path, then delegates to `OnboardingBootstrapService.markProjectAsLaunched`.
+   * No-op if the bootstrap service isn't wired or if no project record
+   * matches (fresh installs without an explicit project bind never reach
+   * this branch — the orc bootstrap doesn't pass `projectPath` then).
+   *
+   * @param projectPath - Absolute filesystem path of the bound project
+   */
+  private async markFirstLaunchForCwd(projectPath: string): Promise<void> {
+    const detector = getOnboardingBootstrapService();
+    if (!detector) return;
+
+    // The detector's storage probe already resolves projects; reuse it
+    // here to avoid an extra import. Marker resolution is best-effort —
+    // any throw is logged at warn and swallowed.
+    try {
+      // Late-bind the storage probe via a fresh getProjects() call. The
+      // bootstrap service's internal storage was injected at wire time;
+      // this method is intentionally narrow (no extra coupling).
+      const { StorageService } = await import('../../core/storage.service.js');
+      const projects = await StorageService.getInstance().getProjects();
+      const target = projects.find((p) => p.path === projectPath);
+      if (target) {
+        await detector.markProjectAsLaunched(target.id);
+      }
+    } catch (err) {
+      this.logger.warn('First-launch marker write skipped', {
+        projectPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**

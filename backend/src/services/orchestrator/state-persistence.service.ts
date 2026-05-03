@@ -21,11 +21,14 @@ import {
   SelfImprovementState,
   OrchestratorMetadata,
   CheckpointReason,
+  OrchestratorMode,
   ResumeInstructions,
   STATE_PATHS,
   STATE_VERSION,
   MAX_PERSISTED_MESSAGES,
   CHECKPOINT_INTERVAL_MS,
+  DEFAULT_ORCHESTRATOR_MODE,
+  isValidOrchestratorMode,
 } from '../../types/orchestrator-state.types.js';
 
 /**
@@ -100,6 +103,18 @@ export class StatePersistenceService {
 
     // Initialize current state
     this.currentState = this.createEmptyState();
+
+    // Onboarding v3 (B2): top-level scalars on `OrchestratorState` (mode)
+    // restore automatically into the fresh currentState so `getMode()`
+    // returns the correct value across restart. Entity collections
+    // (conversations, tasks, agents, projects) intentionally do NOT
+    // auto-restore here — callers consume `previousState` from the return
+    // value and re-add entities they want to resume. This matches the
+    // existing "fresh currentState, generate resume instructions" pattern.
+    if (previousState && isValidOrchestratorMode(previousState.mode)) {
+      this.currentState.mode = previousState.mode;
+    }
+
     this.initialized = true;
 
     // Start periodic checkpointing
@@ -128,6 +143,10 @@ export class StatePersistenceService {
       version: STATE_VERSION,
       checkpointedAt: new Date().toISOString(),
       checkpointReason: 'scheduled',
+      // Onboarding v3 (B2): always start with the default mode. The orc
+      // bootstrap path (`crewly-agent-runtime.service`) flips this to
+      // `'onboarding'` via `setMode()` if cold-start detection (B1) fires.
+      mode: DEFAULT_ORCHESTRATOR_MODE,
       conversations: [],
       tasks: [],
       agents: [],
@@ -170,6 +189,20 @@ export class StatePersistenceService {
       if (state.version !== STATE_VERSION) {
         this.logger.info('State version mismatch, migration needed');
         return await this.migrateState(state);
+      }
+
+      // Onboarding v3 (B2): backfill `mode` for state files written before
+      // the field existed, and sanitize unknown values from a future
+      // version that this code doesn't recognize. Treat anything we can't
+      // identify as the safe default; corrupt values must not crash boot.
+      if (!isValidOrchestratorMode(state.mode)) {
+        if (state.mode !== undefined) {
+          this.logger.warn('Persisted orchestrator mode is unknown; defaulting', {
+            persistedMode: state.mode,
+            defaultedTo: DEFAULT_ORCHESTRATOR_MODE,
+          });
+        }
+        state.mode = DEFAULT_ORCHESTRATOR_MODE;
       }
 
       return state;
@@ -414,6 +447,43 @@ export class StatePersistenceService {
   updateSelfImprovement(state: SelfImprovementState): void {
     if (!this.currentState) return;
     this.currentState.selfImprovement = state;
+  }
+
+  /**
+   * Set the orchestrator's runtime mode (Onboarding v3 — B2).
+   *
+   * Called by the orc bootstrap path (`crewly-agent-runtime.service`)
+   * after cold-start detection. Idempotent — repeated calls with the same
+   * mode are no-ops aside from a debug log. The mode is persisted on the
+   * next checkpoint (`saveState`), which the bootstrap path triggers
+   * explicitly so a restart mid-conversation resumes in the right mode.
+   *
+   * @param mode - The new orchestrator mode
+   */
+  setMode(mode: OrchestratorMode): void {
+    if (!this.currentState) return;
+    if (this.currentState.mode === mode) {
+      this.logger.debug('Orchestrator mode unchanged', { mode });
+      return;
+    }
+    this.logger.info('Orchestrator mode changed', {
+      from: this.currentState.mode ?? DEFAULT_ORCHESTRATOR_MODE,
+      to: mode,
+    });
+    this.currentState.mode = mode;
+  }
+
+  /**
+   * Get the orchestrator's current runtime mode.
+   *
+   * Returns `DEFAULT_ORCHESTRATOR_MODE` when state is uninitialized or the
+   * field is missing; never returns undefined so callers can branch
+   * unambiguously on the union value.
+   *
+   * @returns Current orchestrator mode (defaults to `'normal'`)
+   */
+  getMode(): OrchestratorMode {
+    return this.currentState?.mode ?? DEFAULT_ORCHESTRATOR_MODE;
   }
 
   /**

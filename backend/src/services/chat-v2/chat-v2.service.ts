@@ -212,6 +212,22 @@ export class ChatV2Service {
     }
   }
 
+  /**
+   * Count every persisted chat message across every channel.
+   *
+   * Onboarding v3 (B1) — surfaced for the cold-start detector. Defers to
+   * `MessageStore.countAll()`. Intentionally bypasses the principal /
+   * authorization layer because the caller is the orchestrator bootstrap,
+   * which runs without an HTTP-request principal context. The detector
+   * only needs an unsigned "is the store empty" answer; no row contents
+   * are exposed.
+   *
+   * @returns Total message count across all channels (0 on a fresh install)
+   */
+  countAllMessages(): number {
+    return this.messages.countAll();
+  }
+
   // -------------------------------------------------------------------------
   // Channel operations
   // -------------------------------------------------------------------------

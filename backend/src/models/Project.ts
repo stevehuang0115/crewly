@@ -6,6 +6,8 @@ export class ProjectModel implements Project {
   path: string;
   teams: Record<string, string[]>;
   status: 'active' | 'paused' | 'completed' | 'stopped';
+  /** Onboarding v3 (B1) — see `Project.firstLaunchedAt` for semantics. */
+  firstLaunchedAt?: string;
   createdAt: string;
   updatedAt: string;
 
@@ -15,6 +17,7 @@ export class ProjectModel implements Project {
     this.path = data.path || '';
     this.teams = data.teams || {};
     this.status = data.status || 'stopped';
+    this.firstLaunchedAt = data.firstLaunchedAt;
     this.createdAt = data.createdAt || new Date().toISOString();
     this.updatedAt = data.updatedAt || new Date().toISOString();
   }
@@ -60,7 +63,7 @@ export class ProjectModel implements Project {
   }
 
   toJSON(): Project {
-    return {
+    const json: Project = {
       id: this.id,
       name: this.name,
       path: this.path,
@@ -69,6 +72,12 @@ export class ProjectModel implements Project {
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
     };
+    // Onboarding v3 (B1) — only emit `firstLaunchedAt` when set, so legacy
+    // project records round-trip without acquiring an `undefined` field.
+    if (this.firstLaunchedAt !== undefined) {
+      json.firstLaunchedAt = this.firstLaunchedAt;
+    }
+    return json;
   }
 
   static fromJSON(data: Project): ProjectModel {

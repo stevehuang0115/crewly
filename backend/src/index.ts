@@ -1179,6 +1179,27 @@ export class CrewlyServer {
 					path: '/ws/chat',
 					authMode: jwtSecret ? 'jwt' : 'dev-anonymous',
 				});
+
+				// Onboarding v3 (B1) — wire the cold-start detector with the
+				// chat-v2 service we just stood up. The orc bootstrap path
+				// (CrewlyAgentRuntimeService.detectOnboardingMode) probes this
+				// singleton; null means "skip the cold-start probe", so this
+				// wiring is what flips onboarding mode on for the demo path.
+				try {
+					const { OnboardingBootstrapService, setOnboardingBootstrapService } =
+						await import('./services/orchestrator/onboarding-bootstrap.service.js');
+					setOnboardingBootstrapService(
+						new OnboardingBootstrapService({
+							storage: this.storageService,
+							chat: { countAllMessages: () => chatService.countAllMessages() },
+						}),
+					);
+					this.logger.info('OnboardingBootstrapService wired with storage + chat probes');
+				} catch (wireErr) {
+					this.logger.warn('Failed to wire OnboardingBootstrapService (non-critical)', {
+						error: wireErr instanceof Error ? wireErr.message : String(wireErr),
+					});
+				}
 			} catch (error) {
 				this.logger.warn('Failed to start chat-v2 WS gateway (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
