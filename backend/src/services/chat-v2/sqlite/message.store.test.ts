@@ -375,4 +375,34 @@ describe('MessageStore', () => {
       expect(messages.getLastSeq(channelId)).toBe(2);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // countAll — Onboarding v3 (B1) cold-start signal
+  // -------------------------------------------------------------------------
+
+  describe('countAll (Onboarding v3 — B1)', () => {
+    it('returns 0 on a fresh database with no messages', () => {
+      expect(messages.countAll()).toBe(0);
+    });
+
+    it('counts messages across multiple channels', () => {
+      const otherChannelId = channels.create({
+        agentSession: 'sess-b',
+        ownerUserId: 'user-b',
+        name: 'Other',
+        nowMs: 200,
+      }).id;
+
+      messages.insert({ channelId, senderType: 'user', senderId: 'user-a', content: 'a' });
+      messages.insert({ channelId, senderType: 'user', senderId: 'user-a', content: 'b' });
+      messages.insert({ channelId: otherChannelId, senderType: 'user', senderId: 'user-b', content: 'c' });
+
+      expect(messages.countAll()).toBe(3);
+    });
+
+    it('reflects single-channel inserts the same as count(channelId)', () => {
+      messages.insert({ channelId, senderType: 'user', senderId: 'user-a', content: 'a' });
+      expect(messages.countAll()).toBe(messages.count(channelId));
+    });
+  });
 });

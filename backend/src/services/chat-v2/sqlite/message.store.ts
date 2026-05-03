@@ -430,4 +430,28 @@ export class MessageStore {
       .get(channelId) as { n: number };
     return row.n;
   }
+
+  /**
+   * Count all messages across every channel in the database.
+   *
+   * Onboarding v3 (B1) — used by the cold-start detector to decide whether
+   * a fresh OSS install should auto-launch onboarding. The "any chat at all
+   * means user has been here before" semantics is intentional: the detector
+   * combines this with the per-project `firstLaunchedAt` marker to defend
+   * against the case where chat-v2 is wiped accidentally on an existing
+   * install (a non-zero count short-circuits onboarding before the marker
+   * is even consulted).
+   *
+   * Single COUNT(*) over the index — O(rows) in the worst case but
+   * negligible at install time when the table is empty (the only time the
+   * caller actually cares about the result).
+   *
+   * @returns Total number of persisted chat messages
+   */
+  countAll(): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM chat_messages')
+      .get() as { n: number };
+    return row.n;
+  }
 }

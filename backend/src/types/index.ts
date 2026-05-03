@@ -215,6 +215,17 @@ export interface Project {
   teams: Record<string, string[]>; // team assignments
   status: 'active' | 'paused' | 'completed' | 'stopped';
   scheduledMessageId?: string; // ID of auto-assignment scheduled message
+  /**
+   * ISO timestamp of the first successful orchestrator bootstrap against
+   * this project (Onboarding v3 — B1). Set once on first orc launch and
+   * never overwritten thereafter; absence (or undefined) signals a
+   * "cold-start" candidate to the onboarding bootstrap detector.
+   *
+   * Defends the cold-start signal against the edge case where chat-v2 is
+   * wiped accidentally — if the user has been here before, this marker
+   * stays set even if the chat store is empty.
+   */
+  firstLaunchedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
