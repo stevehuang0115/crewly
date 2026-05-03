@@ -90,6 +90,38 @@ export interface RoleKnowledgeEntry {
   superseded?: boolean;
   /** ID of the entry that supersedes this one */
   supersededBy?: string;
+
+  // === v3 (Memory Phase 1 — M3): importance / evidence / ttl / shouldInjectByDefault ===
+  // All optional. Lazy-migrated to defaults on first load by AgentMemoryService.
+
+  /**
+   * Importance score 0–1. Default 0.5 (set by lazy migration).
+   * Combined with confidence by recall to gate auto-injection
+   * (importance >= 0.85 AND confidence >= 0.7 → eligible for auto-inject).
+   */
+  importance?: number;
+
+  /**
+   * Provenance refs that justify this entry. Each item is a free-form ref
+   * such as `request:<id>`, `workItem:<id>`, `slack:<ts>`, or a file path.
+   * Default `[]` (set by lazy migration).
+   */
+  evidence?: string[];
+
+  /**
+   * ISO date when this entry expires. Past-TTL entries are hidden from
+   * default recall and considered archive candidates by the GC sweep.
+   * Default `undefined` (no expiration).
+   */
+  ttl?: string;
+
+  /**
+   * Whether this entry should be auto-injected into the agent prompt
+   * without an explicit `recall` call. Default `false` (set by lazy
+   * migration). Recall is free to override at injection time based on
+   * combined importance/confidence scoring.
+   */
+  shouldInjectByDefault?: boolean;
 }
 
 /**
@@ -720,7 +752,11 @@ export interface ProjectMemoryFileStructure {
 // ========================= VALIDATION AND DEFAULTS =========================
 
 /**
- * Default values for new agent memory
+ * Default values for new agent memory.
+ *
+ * `schemaVersion` is hardcoded to 2 (current MEMORY_SCHEMA_VERSION) — kept in sync
+ * with the const declared below to avoid module-load forward-reference issues.
+ * If you bump MEMORY_SCHEMA_VERSION, also bump this literal.
  */
 export const DEFAULT_AGENT_MEMORY: Omit<AgentMemory, 'agentId' | 'role' | 'createdAt' | 'updatedAt'> = {
   roleKnowledge: [],
@@ -739,21 +775,51 @@ export const DEFAULT_AGENT_MEMORY: Omit<AgentMemory, 'agentId' | 'role' | 'creat
     qualityGatePassRate: 0,
     commonErrors: [],
   },
-  schemaVersion: 1,
+  schemaVersion: 2,
 };
 
 /**
- * Default values for new project memory
+ * Default values for new project memory.
+ *
+ * `schemaVersion` is bumped in lock-step with MEMORY_SCHEMA_VERSION so the
+ * file-format identifier is consistent across agent + project memory stores,
+ * even though M3 (Memory Phase 1) only adds new fields to RoleKnowledgeEntry
+ * — ProjectMemory entry shapes are unchanged at v2.
  */
 export const DEFAULT_PROJECT_MEMORY: Omit<ProjectMemory, 'projectId' | 'projectPath' | 'createdAt' | 'updatedAt'> = {
   patterns: [],
   decisions: [],
   gotchas: [],
   relationships: [],
-  schemaVersion: 1,
+  schemaVersion: 2,
 };
 
 /**
- * Current schema version for memory files
+ * Current schema version for memory files.
+ *
+ * - **v1**: Original schema with `confidence`, `superseded`, v2 task-linked provenance.
+ * - **v2**: Added Memory Phase 1 (M3) fields — `importance`, `evidence`, `ttl`,
+ *   `shouldInjectByDefault`. Lazy non-destructive migration: when an entry
+ *   from a v1 store is read by AgentMemoryService.loadAgentMemory(), missing
+ *   fields are filled with `MEMORY_V2_MIGRATION_DEFAULTS` values. The
+ *   schemaVersion of the persisted memory bumps to 2 on first save after read.
  */
-export const MEMORY_SCHEMA_VERSION = 1;
+export const MEMORY_SCHEMA_VERSION = 2;
+
+/**
+ * Default values applied when migrating a v1 RoleKnowledgeEntry to v2.
+ *
+ * - `importance = 0.5`: middle of scale, neither auto-inject candidate nor low-priority
+ * - `confidence = 0.7`: only used if the entry has `confidence === undefined`
+ *   (existing v1 entries always have `confidence` populated, so this is a safety net)
+ * - `evidence = []`: no provenance refs known retroactively
+ * - `shouldInjectByDefault = false`: opt-in only; v1 entries do not auto-inject
+ *
+ * `ttl` is intentionally left `undefined` — pre-v2 entries do not expire.
+ */
+export const MEMORY_V2_MIGRATION_DEFAULTS = {
+  importance: 0.5,
+  confidence: 0.7,
+  evidence: [] as string[],
+  shouldInjectByDefault: false,
+} as const;

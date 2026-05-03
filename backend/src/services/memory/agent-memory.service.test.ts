@@ -687,4 +687,165 @@ describe('AgentMemoryService', () => {
       expect(result).toEqual({ decayed: 0, pruned: 0 });
     });
   });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // v3 (M3) — schema migration + default-recall hide filter
+  // ───────────────────────────────────────────────────────────────────────
+  describe('v2 schema migration (M3 — non-destructive lazy backfill)', () => {
+    /**
+     * Helper: write a v1-shape memory.json directly to disk, bypassing the
+     * service's normal initializeAgent → addRoleKnowledge path. Simulates an
+     * agent who installed Crewly before Memory Phase 1 landed.
+     */
+    async function seedV1Memory(agentId: string, entries: Partial<RoleKnowledgeEntry>[]): Promise<void> {
+      const agentDir = path.join(testDir, MEMORY_CONSTANTS.PATHS.AGENTS_DIR, agentId);
+      await fs.mkdir(agentDir, { recursive: true });
+      const v1Memory = {
+        agentId,
+        role: 'developer',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        roleKnowledge: entries.map((e, i) => ({
+          id: e.id ?? `legacy-${i}`,
+          category: e.category ?? 'best-practice',
+          content: e.content ?? `legacy entry ${i}`,
+          confidence: e.confidence ?? 0.7,
+          createdAt: e.createdAt ?? '2026-01-01T00:00:00Z',
+          ...e, // allow override / additions
+        })),
+        preferences: {
+          communicationStyle: { verbosity: 'detailed', askBeforeAction: true },
+          workPatterns: { breakdownSize: 'medium' },
+        },
+        performance: {
+          tasksCompleted: 0,
+          averageIterations: 0,
+          qualityGatePassRate: 0,
+          commonErrors: [],
+        },
+        schemaVersion: 1, // explicit v1
+      };
+      await fs.writeFile(
+        path.join(agentDir, MEMORY_CONSTANTS.AGENT_FILES.MEMORY),
+        JSON.stringify(v1Memory, null, 2),
+      );
+    }
+
+    it('backfills v3 fields on read for v1-shape entries (non-destructive)', async () => {
+      await seedV1Memory(testAgentId, [
+        { id: 'legacy-1', content: 'Old entry one', confidence: 0.8 },
+        { id: 'legacy-2', content: 'Old entry two', confidence: 0.6 },
+      ]);
+
+      const memory = await service.getAgentMemory(testAgentId);
+      expect(memory).not.toBeNull();
+      expect(memory!.schemaVersion).toBe(2);
+
+      for (const entry of memory!.roleKnowledge) {
+        expect(entry.importance).toBe(0.5);
+        expect(entry.evidence).toEqual([]);
+        expect(entry.shouldInjectByDefault).toBe(false);
+        expect(entry.ttl).toBeUndefined();
+      }
+
+      // Pre-existing fields (id, content, confidence, category) untouched.
+      const e1 = memory!.roleKnowledge.find((e) => e.id === 'legacy-1');
+      expect(e1?.content).toBe('Old entry one');
+      expect(e1?.confidence).toBe(0.8);
+    });
+
+    it('does NOT clobber v3 fields that are already present', async () => {
+      await seedV1Memory(testAgentId, [
+        {
+          id: 'partial-v3',
+          content: 'Already has importance + evidence',
+          confidence: 0.9,
+          importance: 0.95,
+          evidence: ['slack:1772999999.000001'],
+          shouldInjectByDefault: true,
+        } as RoleKnowledgeEntry,
+      ]);
+
+      const memory = await service.getAgentMemory(testAgentId);
+      const entry = memory!.roleKnowledge[0];
+      expect(entry.importance).toBe(0.95); // preserved
+      expect(entry.evidence).toEqual(['slack:1772999999.000001']); // preserved
+      expect(entry.shouldInjectByDefault).toBe(true); // preserved
+    });
+
+    it('migration is idempotent — second read returns identical shape', async () => {
+      await seedV1Memory(testAgentId, [{ id: 'idem-1', content: 'x', confidence: 0.7 }]);
+
+      const first = await service.getAgentMemory(testAgentId);
+      // Force a cache invalidation by clearing singleton state.
+      AgentMemoryService.clearInstance();
+      const refreshed = AgentMemoryService.getInstance(testDir);
+      const second = await refreshed.getAgentMemory(testAgentId);
+
+      expect(second!.schemaVersion).toBe(2);
+      expect(second!.roleKnowledge[0].importance).toBe(0.5);
+      expect(second!.roleKnowledge[0].evidence).toEqual([]);
+      // Same shape between reads.
+      expect(second).toEqual(first);
+    });
+
+    it('newly initialized agents are born at schemaVersion 2', async () => {
+      await service.initializeAgent('born-v2', 'developer');
+      const memory = await service.getAgentMemory('born-v2');
+      expect(memory?.schemaVersion).toBe(2);
+    });
+  });
+
+  describe('isHiddenFromDefaultRecall (v3 default-recall filter)', () => {
+    const baseEntry = (overrides: Partial<RoleKnowledgeEntry> = {}): RoleKnowledgeEntry => ({
+      id: overrides.id ?? 'e-1',
+      category: 'best-practice',
+      content: 'sample',
+      confidence: 0.8,
+      createdAt: '2026-05-01T00:00:00Z',
+      ...overrides,
+    });
+
+    it('hides entries with superseded=true', () => {
+      const e = baseEntry({ superseded: true });
+      expect(service.isHiddenFromDefaultRecall(e, '2026-05-03T00:00:00Z')).toBe(true);
+    });
+
+    it('hides entries with supersededBy ref', () => {
+      const e = baseEntry({ supersededBy: 'newer-id' });
+      expect(service.isHiddenFromDefaultRecall(e, '2026-05-03T00:00:00Z')).toBe(true);
+    });
+
+    it('hides entries whose ttl is in the past', () => {
+      const e = baseEntry({ ttl: '2026-05-01T00:00:00Z' });
+      expect(service.isHiddenFromDefaultRecall(e, '2026-05-03T00:00:00Z')).toBe(true);
+    });
+
+    it('keeps entries whose ttl is in the future', () => {
+      const e = baseEntry({ ttl: '2026-08-01T00:00:00Z' });
+      expect(service.isHiddenFromDefaultRecall(e, '2026-05-03T00:00:00Z')).toBe(false);
+    });
+
+    it('keeps entries with no ttl', () => {
+      const e = baseEntry();
+      expect(service.isHiddenFromDefaultRecall(e, '2026-05-03T00:00:00Z')).toBe(false);
+    });
+
+    it('hides entries with confidence below the auto-inject floor (0.5)', () => {
+      const e = baseEntry({ confidence: 0.49 });
+      expect(service.isHiddenFromDefaultRecall(e, '2026-05-03T00:00:00Z')).toBe(true);
+    });
+
+    it('keeps entries exactly at the auto-inject floor', () => {
+      const e = baseEntry({ confidence: 0.5 });
+      expect(service.isHiddenFromDefaultRecall(e, '2026-05-03T00:00:00Z')).toBe(false);
+    });
+
+    it('any-rule-matches semantics: combines all three rules with OR', () => {
+      // Three rules, each independently sufficient; here the entry trips
+      // confidence + ttl simultaneously — still hidden.
+      const e = baseEntry({ confidence: 0.2, ttl: '2026-01-01T00:00:00Z' });
+      expect(service.isHiddenFromDefaultRecall(e, '2026-05-03T00:00:00Z')).toBe(true);
+    });
+  });
 });
