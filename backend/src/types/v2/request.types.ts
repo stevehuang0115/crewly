@@ -56,6 +56,52 @@ export const TERMINAL_REQUEST_STATUSES: ReadonlySet<RequestStatus> = new Set([
 ]);
 
 /**
+ * Memory Phase 1 — REQ-X (orc-restart recovery filter).
+ *
+ * Returns `true` if a Request has been **fulfilled** in the strong sense
+ * — final reply sent AND state persisted — and therefore should be EXCLUDED
+ * from agent-restart recovery briefings to avoid the "orc re-replies after
+ * restart" bug.
+ *
+ * Triple-gate (any one missing → return `false` = not fulfilled):
+ *   1. `status === 'done'`     — state machine reached terminal-success
+ *   2. `completedAt` is set    — RequestService.update recorded a wall-clock close
+ *   3. `result` is non-empty   — orc actually generated and committed a reply
+ *
+ * Why each gate matters (per Sam's REQ-X risk surface):
+ *   - Status alone is insufficient: a worker could mutate status but crash
+ *     before completedAt/result land → over-recovery acceptable here.
+ *   - `cancelled` is deliberately NOT counted as fulfilled. A user cancellation
+ *     is terminal but no reply was sent — surfacing it on restart is correct
+ *     (over-recovery, per the conservative bias).
+ *   - `waiting_confirmation` is deliberately NOT counted as fulfilled. The
+ *     work is done but the orc is still on the hook to handle the confirm/reject.
+ *
+ * False is the safe default — better to surface a maybe-fulfilled request
+ * (worst case: orc re-acknowledges to user once) than silently drop one
+ * that needed continuation.
+ *
+ * @param req - Request to evaluate
+ * @returns `true` only if the Request is unambiguously fulfilled
+ *
+ * @example
+ * ```typescript
+ * if (!isRequestFulfilled(req)) {
+ *   // Surface in active-work briefing
+ * }
+ * ```
+ */
+export function isRequestFulfilled(req: Request): boolean {
+  return (
+    req.status === 'done' &&
+    typeof req.completedAt === 'string' &&
+    req.completedAt.length > 0 &&
+    typeof req.result === 'string' &&
+    req.result.length > 0
+  );
+}
+
+/**
  * Intent category carried from v1 IntentTask system.
  */
 export type IntentCategory =

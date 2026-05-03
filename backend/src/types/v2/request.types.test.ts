@@ -15,8 +15,9 @@ import {
   isRequest,
   validateCreateRequestInput,
   createRequest,
+  isRequestFulfilled,
 } from './request.types.js';
-import type { CreateRequestInput, Request } from './request.types.js';
+import type { CreateRequestInput, Request, RequestStatus } from './request.types.js';
 
 describe('Request Types', () => {
   // -----------------------------------------------------------------------
@@ -290,6 +291,89 @@ describe('Request Types', () => {
       expect(req.requiresConfirmation).toBe(true);
       expect(req.confirmationReason).toBe('Production deploy needs approval');
       expect(req.missionId).toBe('mission-001');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // isRequestFulfilled (Memory Phase 1 — REQ-X)
+  // ─────────────────────────────────────────────────────────────────────
+  describe('isRequestFulfilled', () => {
+    /**
+     * Helper: build a Request with explicit overrides. Defaults to a fully
+     * fulfilled shape — `status='done'` + `completedAt` set + `result` non-empty.
+     * Individual tests flip one field at a time to assert each gate independently.
+     */
+    function buildReq(overrides: Partial<Request> = {}): Request {
+      const base = createRequest({
+        sourceConversationItemId: 'msg-1',
+        title: 'Test request',
+        description: 'description',
+      });
+      return {
+        ...base,
+        status: 'done' as RequestStatus,
+        completedAt: '2026-05-03T18:00:00.000Z',
+        result: 'Final reply: shipped fix to main.',
+        ...overrides,
+      };
+    }
+
+    it('returns true for a Request with status=done + completedAt + non-empty result', () => {
+      expect(isRequestFulfilled(buildReq())).toBe(true);
+    });
+
+    it('returns false when status is "open" (worker mid-execution)', () => {
+      // Sam REQ-X risk surface case 1: ack'd but worker mid-execution.
+      expect(isRequestFulfilled(buildReq({ status: 'open' }))).toBe(false);
+    });
+
+    it('returns false when status is "running" (worker mid-execution)', () => {
+      expect(isRequestFulfilled(buildReq({ status: 'running' }))).toBe(false);
+    });
+
+    it('returns false when status is "blocked" (errored mid-stream)', () => {
+      // Sam REQ-X risk surface case 2: errored mid-stream + state never finalized.
+      expect(isRequestFulfilled(buildReq({ status: 'blocked' }))).toBe(false);
+    });
+
+    it('returns false when status is "waiting_confirmation" (orc still owes a handoff)', () => {
+      expect(isRequestFulfilled(buildReq({ status: 'waiting_confirmation' }))).toBe(false);
+    });
+
+    it('returns false when status is "cancelled" (terminal but no reply sent)', () => {
+      // Sam REQ-X risk surface case 4: cancelled is terminal but NOT fulfilled.
+      expect(isRequestFulfilled(buildReq({ status: 'cancelled' }))).toBe(false);
+    });
+
+    it('returns false when status=done but completedAt is missing (worker crashed)', () => {
+      // Sam REQ-X risk surface case 3: reply sent but state-write didn't finalize.
+      expect(
+        isRequestFulfilled(buildReq({ completedAt: undefined }))
+      ).toBe(false);
+    });
+
+    it('returns false when status=done but completedAt is empty string', () => {
+      expect(
+        isRequestFulfilled(buildReq({ completedAt: '' }))
+      ).toBe(false);
+    });
+
+    it('returns false when status=done + completedAt set but result is missing', () => {
+      expect(
+        isRequestFulfilled(buildReq({ result: undefined }))
+      ).toBe(false);
+    });
+
+    it('returns false when status=done + completedAt set but result is empty string', () => {
+      expect(
+        isRequestFulfilled(buildReq({ result: '' }))
+      ).toBe(false);
+    });
+
+    it('over-recovery preference — every degenerate input returns false', () => {
+      // Defense-in-depth: any malformed shape that ESCAPED the type system at
+      // the JSON boundary should be treated as not-fulfilled (safe to surface).
+      expect(isRequestFulfilled({ ...buildReq(), status: undefined as unknown as RequestStatus })).toBe(false);
     });
   });
 });

@@ -32,6 +32,8 @@ jest.mock('../core/logger.service.js', () => {
 
 import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import type { Request } from '../../types/v2/request.types.js';
+import { isRequestFulfilled } from '../../types/v2/request.types.js';
 
 /**
  * Build a minimal WorkItem for tests.
@@ -158,6 +160,139 @@ describe('Active-work briefing — integration', () => {
     expect(aBriefing.activeWorkItems.map((wi) => wi.id).sort()).toEqual(['wi-a-1', 'wi-a-2']);
     expect(bBriefing.activeWorkItems.map((wi) => wi.id)).toEqual(['wi-b-1']);
     expect(bBriefing.activeWorkItems.find((wi) => wi.id === 'wi-stolen')).toBeUndefined();
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Memory Phase 1 — REQ-X (orc-restart recovery filter)
+  // ─────────────────────────────────────────────────────────────────────
+  describe('REQ-X — orc-restart recovery skips fulfilled Requests', () => {
+    /**
+     * Helper: build a Request fixture with explicit fulfillment shape.
+     */
+    function makeRequest(overrides: Partial<Request> = {}): Request {
+      return {
+        id: overrides.id ?? 'req-x',
+        sourceConversationItemId: 'msg-1',
+        title: overrides.title ?? 'A request',
+        description: 'description',
+        status: overrides.status ?? 'running',
+        priority: 'normal',
+        requiresConfirmation: false,
+        workItemIds: [],
+        intentLevel: 'L1',
+        intentCategory: 'other',
+        tags: [],
+        createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCost: 0,
+        ...overrides,
+      };
+    }
+
+    it('orc-recovery briefing surfaces a running Request and skips a fulfilled one', async () => {
+      const fulfilled = makeRequest({
+        id: 'req-fulfilled',
+        title: 'Already replied to user',
+        status: 'done',
+        completedAt: '2026-05-03T17:30:00.000Z',
+        result: 'Final reply: shipped fix to main.',
+      });
+      const inFlight = makeRequest({
+        id: 'req-in-flight',
+        title: 'Worker still investigating',
+        status: 'running',
+      });
+
+      // Pre-condition: the criterion should classify these correctly.
+      expect(isRequestFulfilled(fulfilled)).toBe(true);
+      expect(isRequestFulfilled(inFlight)).toBe(false);
+
+      const service = ActiveWorkBriefingService.createForTest(
+        () => ({ listAll: jest.fn().mockResolvedValue([fulfilled, inFlight]) }) as never,
+        () => ({ getAllItems: jest.fn().mockResolvedValue([]) }) as never,
+      );
+
+      const warn = jest.fn();
+      const prompt = await injectActiveWorkBriefing(
+        service,
+        '## Base prompt',
+        'crewly-orc',
+        'orchestrator',
+        warn,
+      );
+
+      expect(prompt).toContain('req-in-flight');
+      expect(prompt).not.toContain('req-fulfilled');
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('over-recovery preference — a Request with status=done but no result is treated as NOT fulfilled and surfaces', async () => {
+      // Sam REQ-X risk surface case 3: reply sent but worker crashed before
+      // result was persisted. Better to re-surface (over-recover) than drop.
+      const partiallyDone = makeRequest({
+        id: 'req-partial',
+        status: 'done',
+        completedAt: '2026-05-03T17:30:00.000Z',
+        result: undefined, // missing — defense-in-depth
+      });
+
+      expect(isRequestFulfilled(partiallyDone)).toBe(false);
+
+      // The active-work-briefing service excludes terminal `done` from
+      // `ACTIVE_REQUEST_STATUSES`. So even though `isRequestFulfilled`
+      // returns false (over-recovery vote), the briefing's filter still
+      // hides this Request because its `status === 'done'`. This is the
+      // documented gap: the criterion (isRequestFulfilled) and the
+      // briefing's filter (ACTIVE_REQUEST_STATUSES) are NOT identical —
+      // they intentionally serve different purposes:
+      //   - isRequestFulfilled: defensive read of "is the user'\''s ask
+      //     definitively closed". Used by callers that want a strong yes/no.
+      //   - ACTIVE_REQUEST_STATUSES: cheap state-machine prefilter to keep
+      //     terminal rows out of the briefing. Done rows are out, full stop.
+      // If the partial-done case ever surfaces a real-world bug (orc loses
+      // a request because state was prematurely flipped to done), the fix
+      // is to revisit how `done` is set, not to bypass the prefilter here.
+      const service = ActiveWorkBriefingService.createForTest(
+        () => ({ listAll: jest.fn().mockResolvedValue([partiallyDone]) }) as never,
+        () => ({ getAllItems: jest.fn().mockResolvedValue([]) }) as never,
+      );
+      const briefing = await service.generateActiveWorkBriefing('crewly-orc', 'orchestrator');
+      expect(briefing.openRequests.find((r) => r.id === 'req-partial')).toBeUndefined();
+    });
+
+    it('cancelled Requests are also skipped (terminal but not fulfilled)', async () => {
+      const cancelled = makeRequest({
+        id: 'req-cancelled',
+        status: 'cancelled',
+      });
+      expect(isRequestFulfilled(cancelled)).toBe(false); // not fulfilled
+      // ...but ACTIVE_REQUEST_STATUSES still excludes it (terminal).
+      const service = ActiveWorkBriefingService.createForTest(
+        () => ({ listAll: jest.fn().mockResolvedValue([cancelled]) }) as never,
+        () => ({ getAllItems: jest.fn().mockResolvedValue([]) }) as never,
+      );
+      const briefing = await service.generateActiveWorkBriefing('crewly-orc', 'orchestrator');
+      expect(briefing.openRequests).toHaveLength(0);
+    });
+
+    it('waiting_confirmation Requests are surfaced (orc still owes a handoff)', async () => {
+      const awaiting = makeRequest({
+        id: 'req-await',
+        title: 'Awaiting confirm',
+        status: 'waiting_confirmation',
+        requiresConfirmation: true,
+        confirmationReason: 'Production deploy needs approval',
+      });
+      expect(isRequestFulfilled(awaiting)).toBe(false);
+      const service = ActiveWorkBriefingService.createForTest(
+        () => ({ listAll: jest.fn().mockResolvedValue([awaiting]) }) as never,
+        () => ({ getAllItems: jest.fn().mockResolvedValue([]) }) as never,
+      );
+      const briefing = await service.generateActiveWorkBriefing('crewly-orc', 'orchestrator');
+      expect(briefing.openRequests.find((r) => r.id === 'req-await')).toBeDefined();
+    });
   });
 
   it('briefing markdown can be appended after a memory section in the right order', async () => {

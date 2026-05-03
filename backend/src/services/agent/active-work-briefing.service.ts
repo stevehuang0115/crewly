@@ -111,6 +111,23 @@ const MAX_DESCRIPTION_CHARS = 120;
  * Request statuses that count as "open / on the hook" for briefing
  * inclusion. Terminal statuses (`done`, `cancelled`) are excluded —
  * memory recall handles "what did I close last week".
+ *
+ * **Memory Phase 1 — REQ-X (2026-05-03, Steve add-on):**
+ * The orc-restart recovery flow MUST NOT re-surface fulfilled Requests
+ * (final reply already sent), or the orc will generate duplicate replies
+ * to the user. The single-source-of-truth for "fulfilled" is
+ * {@link isRequestFulfilled} in request.types.ts — a triple-gate on
+ * `status === 'done'` AND `completedAt` set AND `result` non-empty.
+ *
+ * This filter is the wire-up: a Request is included in the briefing iff
+ * its status is in this set (which by construction excludes `done`).
+ * `cancelled` is also excluded here, but for a different reason — the
+ * user cancelled the work; surfacing it would imply ongoing action.
+ * `waiting_confirmation` IS included on purpose — the work is done but
+ * the orc still owes a confirm/reject handoff.
+ *
+ * If you need to evaluate fulfillment for a Request you already have in
+ * hand, prefer {@link isRequestFulfilled} over duplicating the criterion.
  */
 const ACTIVE_REQUEST_STATUSES: ReadonlySet<RequestStatus> = new Set<RequestStatus>([
   'open',
