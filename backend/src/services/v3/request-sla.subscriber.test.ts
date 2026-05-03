@@ -31,6 +31,8 @@ import {
   pickResolveTarget,
   pickFailTarget,
   closeRequestPath,
+  MARK_RESOLVED_RETRY_MS,
+  FIND_WI_RETRY_INTERVAL_MS,
 } from './request-sla.subscriber.js';
 import type { EscalationSlackCallback } from './request-sla.subscriber.js';
 import type { Request, RequestStatus } from '../../types/v2/request.types.js';
@@ -983,6 +985,237 @@ describe('RequestSlaSubscriber', () => {
       expect(pool.transitionCalls).toHaveLength(0);
       // …but Request still cascades to done.
       expect(svc.registry.get(r.id)?.status).toBe('done');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 2026-05-03 auto-nudge variant 2 — SLA close-path race fix
+  //
+  // Steve reported the orc was sending 3x "I will reply as soon as I have
+  // an answer (auto-nudge)" with no real reply on ESTestNode 1.6.4. Triage
+  // showed every Slack msg was processed end-to-end (3 today between
+  // 15:17–15:26, all completed in 3–115s with output text), but the SLA
+  // close path was missing because:
+  //
+  //   • slack-bridge wraps `createRequest` in setImmediate (fire-and-forget),
+  //     so `request:created` is published asynchronously.
+  //   • Sequentially, `sendToOrchestrator` → enqueue → QueueProcessor fires
+  //     `slackResolve('')` immediately on delivery.
+  //   • The bridge's promise resolves with `fromOrcReply: true`, sendSlackResponse
+  //     calls `markResolvedByThread(threadTs)`.
+  //   • But the SLA subscriber's `handleRequestCreated` was awaiting
+  //     `taskPool.addToPool` BEFORE setting `threadIndex`. The early lookup
+  //     missed the index by ~10ms and the SLA never closed → 5min/10min
+  //     escalation_dm cascade.
+  //
+  // The primary fix reorders `handleRequestCreated` so the index is
+  // populated synchronously BEFORE the addToPool await. The defensive
+  // retry inside `markResolvedByThread` covers the residual ~1ms race
+  // from the leading `await requestService.getById(...)`.
+  // -------------------------------------------------------------------------
+  describe('SLA close-path race fix (2026-05-03 auto-nudge variant 2)', () => {
+    it('populates threadIndex BEFORE awaiting taskPool.addToPool', async () => {
+      // Pin the ordering invariant: while `taskPool.addToPool` is in flight,
+      // `threadIndex` and `trackedByRequest` are already populated. If a
+      // future refactor moves these sets back below the addToPool await,
+      // the test fails because the index isn't visible during the gating
+      // window.
+      //
+      // We assert the invariant directly (without invoking
+      // markResolvedByThread) to avoid coupling this test to the
+      // findWorkItemWithRetry / fake-timer interaction. The retry path is
+      // covered by separate tests below.
+      let resolveAddToPool: () => void = () => {};
+      const addToPoolDone = new Promise<void>((res) => {
+        resolveAddToPool = res;
+      });
+      const realAddToPool = pool.taskPool.addToPool;
+      pool.taskPool.addToPool = jest.fn(async (wi: WorkItem) => {
+        await addToPoolDone;
+        return realAddToPool.call(pool.taskPool, wi);
+      });
+
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+
+      // Yield enough microtasks for handleRequestCreated to finish its
+      // sync block (timer + tracking + index sets) and be parked on the
+      // addToPool await.
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+      // INVARIANT: tracking + index are populated even though the WI
+      // hasn't been persisted yet.
+      expect(sub.trackedCount).toBe(1);
+      expect(pool.taskPool.addToPool).toHaveBeenCalledTimes(1);
+      expect(pool.addCalls).toHaveLength(0); // addToPool body still parked
+
+      // Drain: let addToPool finish so afterEach can stop cleanly.
+      resolveAddToPool();
+      await sub.flushPending();
+      expect(pool.addCalls).toHaveLength(1);
+    });
+
+    it('closes the SLA when markResolvedByThread fires while addToPool is still in flight', async () => {
+      // The end-to-end production race: bridge calls markResolvedByThread
+      // while addToPool is mid-await. Index lookup hits, but findWorkItem
+      // returns null. The findWorkItemWithRetry inside markResolved
+      // absorbs the WI-not-yet-persisted window and the SLA closes once
+      // addToPool completes.
+      let resolveAddToPool: () => void = () => {};
+      const addToPoolDone = new Promise<void>((res) => {
+        resolveAddToPool = res;
+      });
+      const realAddToPool = pool.taskPool.addToPool;
+      pool.taskPool.addToPool = jest.fn(async (wi: WorkItem) => {
+        await addToPoolDone;
+        return realAddToPool.call(pool.taskPool, wi);
+      });
+
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+
+      // Drain into the addToPool-pending state.
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      expect(sub.trackedCount).toBe(1);
+
+      // Bridge fires the close while addToPool is still in flight.
+      const closePromise = sub.markResolvedByThread('1772899923.865659');
+
+      // Drain microtasks: markResolved enters findWorkItemWithRetry and
+      // is now awaiting the first 50ms tick.
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      expect(pool.transitionCalls).toHaveLength(0); // not yet — WI absent
+
+      // Release addToPool BEFORE the next retry tick fires. The next
+      // findWorkItem call inside the retry loop now sees the WI.
+      resolveAddToPool();
+      await sub.flushPending();
+
+      // Advance fake timers through up to 5 × 50ms retries so the loop
+      // wakes, sees the WI, and transitions.
+      for (let i = 0; i < 5; i += 1) {
+        jest.advanceTimersByTime(FIND_WI_RETRY_INTERVAL_MS);
+        for (let j = 0; j < 5; j += 1) await Promise.resolve();
+      }
+
+      await closePromise;
+
+      expect(pool.transitionCalls).toEqual([
+        { id: respondToUserWorkItemId(r.id), status: 'cancelled', actor: 'system' },
+      ]);
+      expect(sub.trackedCount).toBe(0);
+    });
+
+    it('retries markResolvedByThread on index miss within 250ms', async () => {
+      // Belt-and-suspenders: cover the residual ~1ms window where the
+      // leading `await requestService.getById(...)` hasn't returned yet
+      // when the bridge fires its slackResolve callback. The first lookup
+      // misses; the scheduled retry hits and closes the SLA.
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+
+      // Fire-and-forget the markResolvedByThread BEFORE publishing the
+      // request:created event — exact reproduction of "early-resolve race".
+      const earlyResolve = sub.markResolvedByThread('1772899923.865659');
+
+      // First lookup misses (index is empty). No transitions yet.
+      await earlyResolve;
+      expect(pool.transitionCalls).toHaveLength(0);
+      expect(sub.trackedCount).toBe(0);
+
+      // Publish request:created so the index gets populated.
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+      expect(sub.trackedCount).toBe(1);
+
+      // Advance fake timers past the 250ms retry threshold. The retry
+      // should hit the now-populated index and close the SLA.
+      jest.advanceTimersByTime(300);
+      // Drain the async work the retry triggered.
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+      expect(pool.transitionCalls).toEqual([
+        { id: respondToUserWorkItemId(r.id), status: 'cancelled', actor: 'system' },
+      ]);
+      expect(sub.trackedCount).toBe(0);
+    });
+
+    it('retry no-ops if request:created never arrives (defensive)', async () => {
+      // If the request was never tracked (e.g. createRequest persistently
+      // failed), the retry should not throw and not generate spurious
+      // transitions. Pure best-effort.
+      await sub.markResolvedByThread('9999999999.000000');
+      expect(pool.transitionCalls).toHaveLength(0);
+
+      jest.advanceTimersByTime(500);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+      expect(pool.transitionCalls).toHaveLength(0);
+      expect(sub.trackedCount).toBe(0);
+    });
+
+    it('rolls back tracking when addToPool throws (no leaked timers)', async () => {
+      // Symmetry with the reordering: now that we populate trackedByRequest
+      // before addToPool, we must roll back on failure or we leak timers
+      // and a 5min/10min escalation will fire on a WI that never
+      // persisted.
+      pool.taskPool.addToPool = jest.fn(async () => {
+        throw new Error('disk full (simulated)');
+      });
+
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+
+      // The handler throws; the EventBus error path swallows it. Drain.
+      await sub.flushPending();
+
+      // Tracking rolled back to zero — no leaked entry.
+      expect(sub.trackedCount).toBe(0);
+
+      // Advance past both SLA windows; no breach event, no escalation DM.
+      const breachListener = jest.fn();
+      bus.onInProcess('request:sla_breached', breachListener);
+      jest.advanceTimersByTime(15_000);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      expect(breachListener).not.toHaveBeenCalled();
+      expect(escalateCalls).toHaveLength(0);
+    });
+
+    it('also retries markResolvedByChatV2 on chat-v2 channel index miss', async () => {
+      // Same race shape on chat-v2 surface (INBOUND-2). Mirror the
+      // protection so neither inbound channel can leak escalation_dm
+      // when the agent reply lands faster than tracking setup.
+      const chatV2Request = buildRequest({
+        id: 'req-cv2',
+        // chat-v2 sourceConversationItemId is `chatv2-<channelId>__<messageId>`
+        // (see `extractChatV2ChannelId` / `extractChatV2MessageId`).
+        sourceConversationItemId: 'chatv2-Ccv2__msg1',
+        tags: ['chat-v2'],
+      });
+      svc.registry.set(chatV2Request.id, chatV2Request);
+
+      // Fire markResolvedByChatV2 BEFORE publishing the event.
+      const earlyResolve = sub.markResolvedByChatV2('Ccv2');
+      await earlyResolve;
+      expect(pool.transitionCalls).toHaveLength(0);
+
+      bus.publish(buildEvent(chatV2Request.id, 'evt-cv2'));
+      await sub.flushPending();
+
+      // Advance fake timers past the markResolvedByChatV2 retry (250ms),
+      // then drain the findWorkItemWithRetry that runs inside markResolved.
+      jest.advanceTimersByTime(MARK_RESOLVED_RETRY_MS + 50);
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      // findWorkItemWithRetry first attempt is sync (no setTimeout for
+      // attempt 0), so the WI is found immediately on the retry path.
+
+      expect(pool.transitionCalls).toEqual([
+        { id: respondToUserWorkItemId(chatV2Request.id), status: 'cancelled', actor: 'system' },
+      ]);
+      expect(sub.trackedCount).toBe(0);
     });
   });
 

@@ -116,6 +116,37 @@ export const DEFAULT_SLA_MS = 5 * 60 * 1000;
 export const DEFAULT_ESCALATION_MS = 10 * 60 * 1000;
 
 /**
+ * Defensive retry delay for {@link RequestSlaSubscriber.markResolvedByThread}
+ * and {@link RequestSlaSubscriber.markResolvedByChatV2} on index miss.
+ *
+ * The Slack bridge fires `slackResolve('')` from the queue processor right
+ * after delivering a message — within ~10ms of `request:created`. The
+ * `handleRequestCreated` reordering covers the common case (timer/index
+ * setup is now synchronous, before the `taskPool.addToPool` await), but
+ * the leading `await requestService.getById(...)` still leaves a ~1ms
+ * window. This single delayed retry absorbs that residual race without
+ * adding latency to the happy path.
+ *
+ * 250ms is comfortably above any reasonable in-memory lookup + microtask
+ * scheduling latency, well below the 5min SLA window. Verified for the
+ * 2026-05-03 ESTestNode auto-nudge variant 2 incident.
+ */
+export const MARK_RESOLVED_RETRY_MS = 250;
+
+/**
+ * Retry parameters for {@link RequestSlaSubscriber.findWorkItemWithRetry}.
+ * Cover the case where {@link RequestSlaSubscriber.markResolved} is called
+ * before {@link RequestSlaSubscriber.handleRequestCreated} has completed
+ * its `taskPool.addToPool(wi)` await — i.e. the WI's tracking entry exists
+ * in memory but the pool persistence is still in flight.
+ *
+ * 5 attempts × 50ms = 250ms worst-case wait, matching MARK_RESOLVED_RETRY_MS
+ * so both race windows close on the same upper bound.
+ */
+export const FIND_WI_MAX_ATTEMPTS = 5;
+export const FIND_WI_RETRY_INTERVAL_MS = 50;
+
+/**
  * Tags we treat as "user-facing inbound channels" — Requests with any of
  * these tags get an SLA-tracked respond_to_user WI. Slack is wired today;
  * `chat-v2` is reserved for the channel-rail Phase E surface.
@@ -574,13 +605,37 @@ export class RequestSlaSubscriber {
    *
    * Best-effort: a non-Slack-shaped or unknown threadTs is a no-op.
    *
+   * Defensive retry (Steve 2026-05-03 auto-nudge variant 2): the bridge
+   * may call this *before* {@link handleRequestCreated} has populated
+   * `threadIndex` (e.g. QueueProcessor fires `slackResolve('')` right
+   * after delivery, ~10ms before the SLA subscriber finishes its async
+   * `request:created` handler). On index-miss we schedule a single
+   * delayed retry to absorb that race without holding up the caller.
+   * The reordering inside {@link handleRequestCreated} is the primary
+   * fix; this retry is belt-and-suspenders to absorb any residual
+   * `await requestService.getById` skew.
+   *
    * @param threadTs - The Slack message timestamp the orc replied to
    */
   async markResolvedByThread(threadTs: string): Promise<void> {
     if (!threadTs) return;
     const requestId = this.threadIndex.get(threadTs);
-    if (!requestId) return;
-    await this.markResolved(requestId, 'orc_reply');
+    if (requestId) {
+      await this.markResolved(requestId, 'orc_reply');
+      return;
+    }
+    // Index miss — schedule a single retry after the
+    // `request:created` handler has had time to populate the index.
+    // 250ms covers in-memory getById + microtask scheduling + a margin.
+    const retry = setTimeout(() => {
+      const retryRequestId = this.threadIndex.get(threadTs);
+      if (!retryRequestId) {
+        this.logger.debug('markResolvedByThread retry still missed', { threadTs });
+        return;
+      }
+      void this.markResolved(retryRequestId, 'orc_reply');
+    }, MARK_RESOLVED_RETRY_MS);
+    retry.unref?.();
   }
 
   /**
@@ -596,8 +651,22 @@ export class RequestSlaSubscriber {
   async markResolvedByChatV2(channelId: string): Promise<void> {
     if (!channelId) return;
     const requestId = this.chatV2Index.get(channelId);
-    if (!requestId) return;
-    await this.markResolved(requestId, 'chatv2_reply');
+    if (requestId) {
+      await this.markResolved(requestId, 'chatv2_reply');
+      return;
+    }
+    // Mirror the markResolvedByThread retry. Same race shape applies on
+    // chat-v2: an agent reply may land before the `request:created`
+    // handler has populated `chatV2Index`.
+    const retry = setTimeout(() => {
+      const retryRequestId = this.chatV2Index.get(channelId);
+      if (!retryRequestId) {
+        this.logger.debug('markResolvedByChatV2 retry still missed', { channelId });
+        return;
+      }
+      void this.markResolved(retryRequestId, 'chatv2_reply');
+    }, MARK_RESOLVED_RETRY_MS);
+    retry.unref?.();
   }
 
   /**
@@ -639,7 +708,11 @@ export class RequestSlaSubscriber {
     if (tracked.chatV2ChannelId) this.chatV2Index.delete(tracked.chatV2ChannelId);
 
     try {
-      const wi = await this.taskPool.findWorkItem(tracked.workItemId);
+      // The bridge can call markResolved within ~10ms of `request:created`,
+      // which means `taskPool.addToPool(wi)` inside `handleRequestCreated`
+      // may not have completed yet. Brief retry on null lookup absorbs
+      // that window without blocking the happy path.
+      const wi = await this.findWorkItemWithRetry(tracked.workItemId);
       if (wi && !TERMINAL_WI_STATUSES.has(wi.status)) {
         const target = pickResolveTarget(wi.status);
         await this.taskPool.transitionStatus(tracked.workItemId, target, 'system', (item) => {
@@ -656,6 +729,12 @@ export class RequestSlaSubscriber {
           fromStatus: wi.status,
           toStatus: target,
         });
+      } else if (!wi) {
+        this.logger.warn('SLA auto-resolve: WorkItem never appeared in pool after retry — addToPool likely failed silently', {
+          workItemId: tracked.workItemId,
+          requestId,
+          reason,
+        });
       }
 
       // Cascade: close the parent Request when this was the last live WI.
@@ -669,6 +748,34 @@ export class RequestSlaSubscriber {
         error: formatError(err),
       });
     }
+  }
+
+  /**
+   * Find a WorkItem in the task pool, retrying briefly on null. Covers the
+   * race where {@link markResolved} is called before
+   * {@link handleRequestCreated} has finished `taskPool.addToPool(wi)`
+   * (Steve 2026-05-03 auto-nudge variant 2).
+   *
+   * Up to {@link FIND_WI_MAX_ATTEMPTS} attempts spaced by
+   * {@link FIND_WI_RETRY_INTERVAL_MS}. Total worst-case wait stays well
+   * below the 5min SLA window. Resolves with `null` if the WI never
+   * appears (e.g. addToPool persistently failed); the caller logs and
+   * moves on.
+   *
+   * @param workItemId - The deterministic respond_to_user WI id
+   * @returns The WorkItem if found, or null after all retries exhausted
+   */
+  private async findWorkItemWithRetry(workItemId: string): Promise<WorkItem | null> {
+    for (let attempt = 0; attempt < FIND_WI_MAX_ATTEMPTS; attempt += 1) {
+      const wi = await this.taskPool.findWorkItem(workItemId);
+      if (wi) return wi;
+      if (attempt === FIND_WI_MAX_ATTEMPTS - 1) break;
+      await new Promise<void>((res) => {
+        const t = setTimeout(res, FIND_WI_RETRY_INTERVAL_MS);
+        t.unref?.();
+      });
+    }
+    return null;
   }
 
   /**
@@ -829,19 +936,22 @@ export class RequestSlaSubscriber {
         ? 'chat-v2'
         : 'unknown';
 
-    const wi = this.buildRespondWorkItem(request, wiId, {
-      source,
-      threadTs,
-      channelId,
-      chatV2ChannelId,
-      chatV2MessageId,
-    });
-
-    // addToPool short-circuits on duplicate id (V1 dedup).
-    await this.taskPool.addToPool(wi);
-
-    // Schedule the breach + escalation timers. We unref the timers so a
-    // hung subscriber on shutdown doesn't keep the node process alive.
+    // CRITICAL ORDERING (Steve 2026-05-03 auto-nudge variant 2):
+    // Populate `trackedByRequest` + `threadIndex`/`chatV2Index` BEFORE the
+    // `await taskPool.addToPool(wi)` below. The Slack bridge fires
+    // `slackResolve('')` from `queue-processor.service.ts:690` immediately
+    // when QueueProcessor delivers the message — within ~10ms of
+    // `request:created` being published. If we await `addToPool` first,
+    // the bridge's early `markResolvedByThread(threadTs)` lookup misses
+    // the index, the SLA never closes, and the user sees the 5min/10min
+    // `escalation_dm` "auto-nudge" cascade even though the orc replied
+    // promptly.
+    //
+    // The timer + tracking setup is fully synchronous; only `addToPool`
+    // yields the event loop, and now it does so AFTER the indices are
+    // visible to a concurrent `markResolvedByThread`. If `addToPool`
+    // fails downstream, the catch block below rolls back the in-memory
+    // tracking so we don't leak timers.
     const breachTimer = setTimeout(() => {
       void this.handleBreach(request.id, /*level*/ 5);
     }, this.slaMs);
@@ -865,6 +975,33 @@ export class RequestSlaSubscriber {
     });
     if (threadTs) this.threadIndex.set(threadTs, request.id);
     if (chatV2ChannelId) this.chatV2Index.set(chatV2ChannelId, request.id);
+
+    const wi = this.buildRespondWorkItem(request, wiId, {
+      source,
+      threadTs,
+      channelId,
+      chatV2ChannelId,
+      chatV2MessageId,
+    });
+
+    // addToPool short-circuits on duplicate id (V1 dedup). On failure we
+    // roll back the in-memory tracking populated above to keep the two
+    // states consistent.
+    try {
+      await this.taskPool.addToPool(wi);
+    } catch (err) {
+      clearTimeout(breachTimer);
+      clearTimeout(escalationTimer);
+      this.trackedByRequest.delete(request.id);
+      if (threadTs) this.threadIndex.delete(threadTs);
+      if (chatV2ChannelId) this.chatV2Index.delete(chatV2ChannelId);
+      this.logger.warn('addToPool failed — rolled back SLA tracking', {
+        requestId: request.id,
+        wiId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
 
     this.logger.info('SLA respond_to_user WorkItem queued', {
       workItemId: wiId,
