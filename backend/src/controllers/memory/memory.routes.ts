@@ -23,6 +23,7 @@ import {
   getMyContext,
   getUserProfile,
   updateUserProfile,
+  supersedeMemory,
 } from './memory.controller.js';
 
 /**
@@ -31,6 +32,7 @@ import {
  * Endpoints:
  * - POST /remember        - Store knowledge in agent or project memory
  * - POST /recall          - Retrieve relevant knowledge from memory
+ * - POST /supersede       - Mark a memory entry as superseded by a newer one (M4)
  * - POST /record-learning - Record a learning or discovery
  * - POST /goals           - Set or append a project goal
  * - GET  /goals           - Get active project goals
@@ -51,6 +53,7 @@ export function createMemoryRouter(): Router {
 
   router.post('/remember', remember);
   router.post('/recall', recall);
+  router.post('/supersede', supersedeMemory);
   router.post('/record-learning', recordLearning);
   router.post('/goals', setGoal);
   router.get('/goals', getGoals);

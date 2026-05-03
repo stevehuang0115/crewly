@@ -91,6 +91,11 @@ export interface IAgentMemoryService {
    * AgentMemoryService for the exact rules.
    */
   isHiddenFromDefaultRecall(entry: RoleKnowledgeEntry, nowIso: string): boolean;
+  /**
+   * v3 (M4): Persist a memory object after the supersession service mutates
+   * entries in place. Narrow wrapper around the canonical write path.
+   */
+  saveSupersededMemory(agentId: string, memory: AgentMemory): Promise<void>;
 }
 
 /**
@@ -326,6 +331,24 @@ export class AgentMemoryService implements IAgentMemoryService {
     const memoryPath = this.getFilePath(agentId, MEMORY_CONSTANTS.AGENT_FILES.MEMORY);
     await atomicWriteJson(memoryPath, memory);
     this.invalidateCache(agentId);
+  }
+
+  /**
+   * v3 (M4): Public narrow wrapper around {@link saveAgentMemory} for the
+   * supersession service. The supersession service mutates entries in
+   * place (sets `superseded`/`supersededBy`/extends `evidence`) and needs
+   * to persist via the canonical write path so cache invalidation and
+   * atomic-file semantics are honored.
+   *
+   * Do NOT broaden this surface — full memory replacement should still go
+   * through reinforceKnowledge / addRoleKnowledge / etc. which guard against
+   * concurrent-write surprises.
+   *
+   * @param agentId - Agent whose memory store to persist
+   * @param memory - Full memory object (already migrated + mutated by caller)
+   */
+  public async saveSupersededMemory(agentId: string, memory: AgentMemory): Promise<void> {
+    await this.saveAgentMemory(agentId, memory);
   }
 
   /**
