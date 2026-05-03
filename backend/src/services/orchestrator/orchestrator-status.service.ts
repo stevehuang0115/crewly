@@ -11,6 +11,8 @@
 import { StorageService } from '../core/storage.service.js';
 import { CREWLY_CONSTANTS, WEB_CONSTANTS } from '../../../../config/index.js';
 import { getSessionBackendSync } from '../session/index.js';
+import { isInProcessRuntimeActive } from '../agent/crewly-agent/in-process-runtime-registry.js';
+import { RUNTIME_TYPES } from '../../constants.js';
 
 /** Dashboard URL for user-facing messages */
 const DASHBOARD_URL = `http://localhost:${WEB_CONSTANTS.PORTS.FRONTEND}`;
@@ -76,15 +78,30 @@ export async function getOrchestratorStatus(): Promise<OrchestratorStatusResult>
     // aligning with how the teams controller checks session existence.
     let sessionExists = false;
     let sessionCheckPerformed = false;
+    const sessionName = orchestratorStatus?.sessionName || CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
     try {
       const sessionBackend = getSessionBackendSync();
-      const sessionName = orchestratorStatus?.sessionName || CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
       if (sessionBackend && sessionName) {
         sessionExists = sessionBackend.sessionExists(sessionName);
         sessionCheckPerformed = true;
       }
     } catch {
       // Ignore session check errors - fall back to storage-based status
+    }
+
+    // Runtime-aware fallback (B0 hot-fix):
+    // The PTY-based `sessionExists()` returns false for in-process Crewly
+    // Agent runtimes because they have no PTY session. Treat the session as
+    // alive when the runtime type is `crewly-agent` AND the in-process
+    // registry confirms a ready runtime is registered. The PTY path is
+    // untouched for `claude-code` / other runtimes.
+    if (!sessionExists
+      && orchestratorStatus?.runtimeType === RUNTIME_TYPES.CREWLY_AGENT
+      && sessionName
+      && isInProcessRuntimeActive(sessionName)
+    ) {
+      sessionExists = true;
+      sessionCheckPerformed = true;
     }
 
     if (!orchestratorStatus) {
@@ -122,9 +139,8 @@ export async function getOrchestratorStatus(): Promise<OrchestratorStatusResult>
     if (sessionCheckPerformed && !sessionExists && agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE) {
       try {
         const storageServiceForCleanup = StorageService.getInstance();
-        const cleanupSessionName = orchestratorStatus?.sessionName || CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
         await storageServiceForCleanup.updateAgentStatus(
-          cleanupSessionName,
+          sessionName,
           CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
         );
       } catch {
@@ -152,7 +168,6 @@ export async function getOrchestratorStatus(): Promise<OrchestratorStatusResult>
       let childProcessAlive = false;
       try {
         const sessionBackend = getSessionBackendSync();
-        const sessionName = orchestratorStatus?.sessionName || CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
         childProcessAlive = !!sessionBackend?.isChildProcessAlive?.(sessionName);
       } catch {
         // Ignore check errors
@@ -162,9 +177,8 @@ export async function getOrchestratorStatus(): Promise<OrchestratorStatusResult>
         // Best-effort: persist the recovered status but return active regardless
         try {
           const storageServiceForRecovery = StorageService.getInstance();
-          const recoverySessionName = orchestratorStatus?.sessionName || CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
           await storageServiceForRecovery.updateAgentStatus(
-            recoverySessionName,
+            sessionName,
             CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE
           );
         } catch {

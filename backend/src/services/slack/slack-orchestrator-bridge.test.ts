@@ -20,6 +20,7 @@ jest.mock('../orchestrator/index.js', () => ({
   isOrchestratorActive: jest.fn(),
   isAgentActive: jest.fn().mockResolvedValue(false),
   getOrchestratorOfflineMessage: jest.fn().mockReturnValue('Orchestrator is offline'),
+  triggerOrchestratorSetup: jest.fn().mockResolvedValue({ success: false, error: 'not wired' }),
 }));
 
 // Mock the slack image service
@@ -40,7 +41,7 @@ jest.mock('./slack-image.service.js', () => ({
   resetSlackImageService: jest.fn(),
 }));
 
-import { isOrchestratorActive, isAgentActive, getOrchestratorOfflineMessage } from '../orchestrator/index.js';
+import { isOrchestratorActive, isAgentActive, getOrchestratorOfflineMessage, triggerOrchestratorSetup } from '../orchestrator/index.js';
 import { getChatService } from '../chat/chat.service.js';
 import { ChatMessage } from '../../types/chat.types.js';
 import { getSlackImageService } from './slack-image.service.js';
@@ -1968,6 +1969,152 @@ describe('SlackOrchestratorBridge', () => {
         'utf-8',
       );
       expect(src).not.toMatch(/RequestTracker\.getInstance\(\)\.setActiveRequest/);
+    });
+  });
+
+  describe('B0 auto-recovery (sendToOrchestrator)', () => {
+    /**
+     * Construct a minimal Slack incoming message for routing through
+     * the bridge's handleSlackMessage entrypoint.
+     */
+    function makeIncomingMessage(text: string): SlackIncomingMessage {
+      return {
+        text,
+        channelId: 'C-test',
+        userId: 'U-test',
+        ts: '1.0',
+        threadTs: undefined,
+        hasImages: false,
+        hasFiles: false,
+        files: [],
+        images: [],
+        user: { realName: 'Tester', name: 'tester' },
+      } as unknown as SlackIncomingMessage;
+    }
+
+    it('attempts auto-recovery once when isActive returns false on first check', async () => {
+      // First isActive() → false (offline). After auto-recovery, second
+      // isActive() → true (orc came back). Bridge should proceed normally.
+      (isOrchestratorActive as jest.Mock)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+      (triggerOrchestratorSetup as jest.Mock).mockResolvedValueOnce({
+        success: true,
+        sessionName: 'crewly-orc',
+      });
+      (isAgentActive as jest.Mock).mockResolvedValue(false);
+
+      const bridge = getSlackOrchestratorBridge();
+      const mockQueue = {
+        enqueue: jest.fn(),
+        hasPending: () => false,
+      };
+      bridge.setMessageQueueService(mockQueue as any);
+      await bridge.initialize();
+
+      const chatService = getChatService();
+      jest.spyOn(chatService, 'sendMessage').mockResolvedValue({
+        message: { id: 'm', conversationId: 'c1' } as any,
+        conversation: { id: 'c1' } as any,
+      });
+
+      // Drive a message through the bridge
+      const slack = (bridge as any).slackService;
+      slack.emit('message', makeIncomingMessage('hello'));
+
+      // Allow async tasks to resolve
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(triggerOrchestratorSetup).toHaveBeenCalledTimes(1);
+      // After successful recovery + active recheck, the bridge should
+      // continue down the normal queue-based path and call enqueue.
+      expect(mockQueue.enqueue).toHaveBeenCalled();
+    });
+
+    it('falls through to offline path when auto-recovery fails', async () => {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(false); // always offline
+      (triggerOrchestratorSetup as jest.Mock).mockResolvedValueOnce({
+        success: false,
+        error: 'mock failure',
+      });
+      (isAgentActive as jest.Mock).mockResolvedValue(false);
+
+      const bridge = getSlackOrchestratorBridge();
+      const mockQueue = {
+        enqueue: jest.fn(),
+        hasPending: () => false,
+      };
+      bridge.setMessageQueueService(mockQueue as any);
+      await bridge.initialize();
+
+      const chatService = getChatService();
+      jest.spyOn(chatService, 'sendMessage').mockResolvedValue({
+        message: { id: 'm', conversationId: 'c1' } as any,
+        conversation: { id: 'c1' } as any,
+      });
+
+      const slack = (bridge as any).slackService;
+      slack.emit('message', makeIncomingMessage('hello'));
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Auto-recovery was attempted exactly once (once-per-message contract).
+      expect(triggerOrchestratorSetup).toHaveBeenCalledTimes(1);
+      // When attemptAutoRecovery throws (success=false → wrapped Error),
+      // the bridge falls straight through to the offline path WITHOUT a
+      // second isActive recheck — there's no point rechecking when we
+      // know recovery failed. The previously-cached isActive=false is reused.
+      expect(isOrchestratorActive).toHaveBeenCalledTimes(1);
+    });
+
+    it('attemptAutoRecovery rejects when triggerOrchestratorSetup wedges past 5s timeout', async () => {
+      // Drive attemptAutoRecovery directly to avoid fake-timer interactions
+      // with the surrounding async Slack pipeline. The timeout path is the
+      // only thing this test cares about.
+      jest.useFakeTimers();
+      try {
+        const bridge = new SlackOrchestratorBridge();
+        // Wedged setup — never resolves
+        (triggerOrchestratorSetup as jest.Mock).mockReturnValueOnce(
+          new Promise(() => {}),
+        );
+
+        const recoveryPromise = (bridge as any).attemptAutoRecovery();
+        // Pump microtasks so the race promise schedules its setTimeout
+        await Promise.resolve();
+
+        // Advance past the 5s deadline
+        jest.advanceTimersByTime(5_001);
+
+        await expect(recoveryPromise).rejects.toThrow(/timed out/i);
+        expect(triggerOrchestratorSetup).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('skips auto-recovery when orchestrator is already active', async () => {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
+
+      const bridge = getSlackOrchestratorBridge();
+      const mockQueue = { enqueue: jest.fn(), hasPending: () => false };
+      bridge.setMessageQueueService(mockQueue as any);
+      await bridge.initialize();
+
+      const chatService = getChatService();
+      jest.spyOn(chatService, 'sendMessage').mockResolvedValue({
+        message: { id: 'm', conversationId: 'c1' } as any,
+        conversation: { id: 'c1' } as any,
+      });
+
+      const slack = (bridge as any).slackService;
+      slack.emit('message', makeIncomingMessage('hello'));
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Auto-recovery is NOT invoked when orc is already active
+      expect(triggerOrchestratorSetup).not.toHaveBeenCalled();
     });
   });
 });
