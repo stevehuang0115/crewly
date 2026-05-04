@@ -53,6 +53,10 @@ jest.mock('./model-manager.js', () => ({
     getModel: jest.fn<any>().mockResolvedValue({ modelId: 'test-model' }),
     getAvailableProviders: jest.fn<any>().mockResolvedValue({ google: true }),
     clearCache: jest.fn(),
+    // I2 — DeepSeek reasoning_content extraction. Returns null in this E2E
+    // mock so the integration tests don't capture reasoning (provider is
+    // 'google' here anyway, so the agent-runner short-circuits before calling).
+    consumeDeepseekReasoning: jest.fn<any>().mockResolvedValue(null),
   })),
 }));
 

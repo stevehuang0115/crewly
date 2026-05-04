@@ -30,6 +30,9 @@ describe('AgentRunnerService', () => {
       getModel: jest.fn<any>().mockResolvedValue(mockModel),
       getAvailableProviders: jest.fn<any>(),
       clearCache: jest.fn<any>(),
+      // I2 — DeepSeek reasoning_content extraction. Defaults to no reasoning
+      // captured (returns null) so non-DeepSeek tests are unaffected.
+      consumeDeepseekReasoning: jest.fn<any>().mockResolvedValue(null),
     } as any;
 
     mockApiClient = {
@@ -2226,6 +2229,10 @@ describe('B4 — DeepSeek tool_choice passthrough regression', () => {
       getModel: jest.fn<any>().mockResolvedValue({ provider: 'deepseek', modelId: 'deepseek-chat' }),
       getAvailableProviders: jest.fn<any>(),
       clearCache: jest.fn<any>(),
+      // I2 — DeepSeek reasoning_content extraction. Mocked as null so the
+      // result.reasoning is undefined for these passthrough regression tests
+      // (they assert tool_choice wiring, not reasoning capture).
+      consumeDeepseekReasoning: jest.fn<any>().mockResolvedValue(null),
     } as any;
 
     const mockApiClient = {

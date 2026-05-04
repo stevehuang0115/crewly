@@ -800,6 +800,92 @@ describe('CrewlyAgentRuntimeService', () => {
     });
   });
 
+  describe('I4 — per-model timeout', () => {
+    /**
+     * Locks I4 wiring at executeMessage:425. Behaviour contract:
+     *  - When the active modelId has an entry in MODEL_TIMEOUT_MS, that
+     *    override is used INSTEAD OF MESSAGE_TIMEOUT_MS.
+     *  - When the modelId has no entry, MESSAGE_TIMEOUT_MS is used as fallback.
+     *
+     * The override is the I2/I4 reason DeepSeek-R1 (`deepseek-reasoner`) doesn't
+     * trip the 5min default during multi-step + reasoning_content runs.
+     */
+
+    it('uses MODEL_TIMEOUT_MS override when modelId matches', async () => {
+      const originalTimeout = CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
+      const originalWarning = CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS;
+      const originalModelTimeouts = { ...CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS };
+      // Default short so a non-override would fire fast and FAIL this test.
+      // Override even shorter so the override timeout is what fires.
+      (CREWLY_AGENT_DEFAULTS as any).MESSAGE_TIMEOUT_MS = 5_000;
+      (CREWLY_AGENT_DEFAULTS as any).MESSAGE_SOFT_WARNING_MS = 4_000;
+      (CREWLY_AGENT_DEFAULTS as any).MODEL_TIMEOUT_MS['test-fast-model'] = 150;
+
+      try {
+        mockRun.mockImplementation((_msg: string, _convId: unknown, _meta: unknown, opts: Record<string, unknown>) => {
+          const signal = opts?.abortSignal as AbortSignal | undefined;
+          return new Promise((_resolve, reject) => {
+            if (signal) {
+              signal.addEventListener('abort', () => {
+                reject(new Error('The operation was aborted'));
+              });
+            }
+          });
+        });
+
+        const startedAt = Date.now();
+        await service.initializeInProcess('crewly-orc', {
+          model: { provider: 'deepseek', modelId: 'test-fast-model' },
+        });
+        await expect(service.handleMessage('Hangs forever')).rejects.toThrow(/timed out/i);
+        const elapsed = Date.now() - startedAt;
+        // Override fires at ~150ms; default would fire at ~5000ms.
+        // Pad generously upward to absorb CI jitter, but still well under 5000.
+        expect(elapsed).toBeLessThan(2_000);
+      } finally {
+        (CREWLY_AGENT_DEFAULTS as any).MESSAGE_TIMEOUT_MS = originalTimeout;
+        (CREWLY_AGENT_DEFAULTS as any).MESSAGE_SOFT_WARNING_MS = originalWarning;
+        (CREWLY_AGENT_DEFAULTS as any).MODEL_TIMEOUT_MS = originalModelTimeouts;
+      }
+    }, 10000);
+
+    it('falls back to MESSAGE_TIMEOUT_MS when modelId has no entry', async () => {
+      const originalTimeout = CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
+      const originalWarning = CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS;
+      const originalModelTimeouts = { ...CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS };
+      // Default short so the fallback fires within the test window.
+      // No entry for 'no-override-model' in MODEL_TIMEOUT_MS.
+      (CREWLY_AGENT_DEFAULTS as any).MESSAGE_TIMEOUT_MS = 200;
+      (CREWLY_AGENT_DEFAULTS as any).MESSAGE_SOFT_WARNING_MS = 100;
+
+      try {
+        mockRun.mockImplementation((_msg: string, _convId: unknown, _meta: unknown, opts: Record<string, unknown>) => {
+          const signal = opts?.abortSignal as AbortSignal | undefined;
+          return new Promise((_resolve, reject) => {
+            if (signal) {
+              signal.addEventListener('abort', () => {
+                reject(new Error('The operation was aborted'));
+              });
+            }
+          });
+        });
+
+        await service.initializeInProcess('crewly-orc', {
+          model: { provider: 'deepseek', modelId: 'no-override-model' },
+        });
+        await expect(service.handleMessage('Hangs forever')).rejects.toThrow(/timed out/i);
+      } finally {
+        (CREWLY_AGENT_DEFAULTS as any).MESSAGE_TIMEOUT_MS = originalTimeout;
+        (CREWLY_AGENT_DEFAULTS as any).MESSAGE_SOFT_WARNING_MS = originalWarning;
+        (CREWLY_AGENT_DEFAULTS as any).MODEL_TIMEOUT_MS = originalModelTimeouts;
+      }
+    }, 10000);
+
+    it('exposes deepseek-reasoner: 600_000 in MODEL_TIMEOUT_MS by default', () => {
+      expect(CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS['deepseek-reasoner']).toBe(600_000);
+    });
+  });
+
   describe('streaming callbacks', () => {
     it('should pass streaming callbacks through to runner.run()', async () => {
       const mockResult = {
