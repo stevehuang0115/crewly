@@ -37,6 +37,7 @@ import {
   CREWLY_AGENT_DEFAULTS,
   WRITE_TOOLS,
   MODEL_CONTEXT_WINDOWS,
+  resolveMaxOutputTokens,
 } from './types.js';
 
 /**
@@ -791,7 +792,7 @@ export class AgentRunnerService {
       tools: tools as any,
       stopWhen: stepCountIs(this.config.maxSteps),
       temperature: this.config.model.temperature,
-      maxOutputTokens: this.config.model.maxTokens,
+      maxOutputTokens: resolveMaxOutputTokens(this.config.model),
       abortSignal: mergedSignal,
       onChunk: ({ chunk }: { chunk: { type: string; text?: string } }) => {
         // Emit text chunks in real-time
@@ -989,7 +990,7 @@ export class AgentRunnerService {
       tools,
       stopWhen: stepCountIs(this.config.maxSteps),
       temperature: this.config.model.temperature,
-      maxOutputTokens: this.config.model.maxTokens,
+      maxOutputTokens: resolveMaxOutputTokens(this.config.model),
       abortSignal,
     });
 
@@ -1196,7 +1197,7 @@ export class AgentRunnerService {
         tools: tools as any,
         stopWhen: stepCountIs(20), // Limited steps for follow-up
         temperature: this.config.model.temperature,
-        maxOutputTokens: this.config.model.maxTokens,
+        maxOutputTokens: resolveMaxOutputTokens(this.config.model),
         abortSignal,
       });
 
@@ -1265,7 +1266,7 @@ export class AgentRunnerService {
         model: this.model,
         system: this.state.systemPrompt,
         messages: this.state.messages,
-        maxOutputTokens: this.config.model.maxTokens,
+        maxOutputTokens: resolveMaxOutputTokens(this.config.model),
         temperature: this.config.model.temperature,
       });
 

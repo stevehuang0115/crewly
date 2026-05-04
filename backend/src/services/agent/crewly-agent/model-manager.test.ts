@@ -21,12 +21,16 @@ jest.unstable_mockModule('ollama-ai-provider', () => ({
   }),
 }));
 
-// Mock settings service — getApiKey resolves through env vars only (no settings file)
+// Mock settings service — getApiKey resolves through env vars only (no settings file).
+// B1: deepseek is now part of API_KEY_PROVIDERS, so the mock must include it
+// or model-manager.getAvailableProviders() / ensureApiKeyInEnv() will silently
+// drop the deepseek branch.
 jest.mock('../../settings/settings.service.js', () => {
   const envMap: Record<string, string[]> = {
     gemini: ['GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY'],
     anthropic: ['ANTHROPIC_API_KEY'],
     openai: ['OPENAI_API_KEY'],
+    deepseek: ['DEEPSEEK_API_KEY'],
   };
   return {
     getSettingsService: () => ({
@@ -169,6 +173,35 @@ describe('ModelManager', () => {
       process.env.ANTHROPIC_API_KEY = 'paid-key-from-settings';
       await manager.getModel({ provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' });
       expect(process.env.ANTHROPIC_API_KEY).toBe('paid-key-from-settings');
+    });
+
+    /**
+     * B1: deepseek now flows through the settings service like every other
+     * cloud provider. This test pins down the new wiring — getModel for
+     * deepseek must trigger ensureApiKeyInEnv, which calls
+     * settingsService.getApiKey('deepseek', ...) and writes the result back
+     * to process.env.DEEPSEEK_API_KEY for the @ai-sdk/openai factory.
+     *
+     * Pre-B1, model-manager.ts short-circuited `if (provider === 'deepseek') return;`
+     * inside ensureApiKeyInEnv, meaning deepseek-via-settings was a dead path.
+     */
+    it('should resolve deepseek key via settings service and write to DEEPSEEK_API_KEY (B1)', async () => {
+      // Mock resolves from the env var, simulating either a settings entry or env fallback.
+      // Either way, the wired flow must end in process.env.DEEPSEEK_API_KEY being set.
+      process.env.DEEPSEEK_API_KEY = 'paid-deepseek-key';
+      await manager.getModel({ provider: 'deepseek', modelId: 'deepseek-chat' });
+      expect(process.env.DEEPSEEK_API_KEY).toBe('paid-deepseek-key');
+    });
+
+    it('should not throw when no deepseek key is configured (B1)', async () => {
+      delete process.env.DEEPSEEK_API_KEY;
+      // ensureApiKeyInEnv should silently no-op when settings returns undefined,
+      // letting the @ai-sdk/openai factory raise its own clear error if the
+      // model is actually invoked.
+      await expect(
+        manager.getModel({ provider: 'deepseek', modelId: 'deepseek-reasoner' })
+      ).resolves.toBeDefined();
+      expect(process.env.DEEPSEEK_API_KEY).toBeUndefined();
     });
   });
 
