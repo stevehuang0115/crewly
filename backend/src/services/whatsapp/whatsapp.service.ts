@@ -90,9 +90,18 @@ export class WhatsAppService extends EventEmitter {
     await fs.mkdir(authDir, { recursive: true });
 
     try {
-      // Dynamic import for Baileys (ESM/CJS compatibility)
+      // Dynamic import for Baileys (ESM/CJS compatibility).
+      //
+      // baileys is declared as an `optionalDependencies` in package.json and
+      // may legitimately be absent at install time (skipped optional, platform
+      // mismatch, or deliberate `--omit=optional`). We route the specifier
+      // through a string variable so TypeScript does not try to statically
+      // resolve the module — the typecheck passes whether `node_modules/
+      // @whiskeysockets/baileys` exists or not. Any actual missing-module
+      // failure surfaces at runtime via the surrounding try/catch.
+      const BAILEYS_MODULE = '@whiskeysockets/baileys';
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const baileys: any = await import('@whiskeysockets/baileys');
+      const baileys: any = await import(BAILEYS_MODULE);
       const makeWASocket = baileys.default?.default ?? baileys.default ?? baileys.makeWASocket;
       const useMultiFileAuthState = baileys.useMultiFileAuthState ?? baileys.default?.useMultiFileAuthState;
       const DisconnectReason = baileys.DisconnectReason ?? baileys.default?.DisconnectReason;
