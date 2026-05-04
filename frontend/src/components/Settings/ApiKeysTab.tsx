@@ -32,6 +32,7 @@ const PROVIDER_DISPLAY_NAMES: Record<ApiKeyProvider, string> = {
   gemini: 'Google Gemini',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
+  deepseek: 'DeepSeek',
 };
 
 /**
@@ -41,6 +42,7 @@ const PROVIDER_ENV_HINTS: Record<ApiKeyProvider, string> = {
   gemini: 'GOOGLE_GENERATIVE_AI_API_KEY',
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
 };
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
