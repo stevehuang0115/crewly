@@ -7,7 +7,12 @@
  */
 
 import { Router } from 'express';
-import { getBackupStatus, restoreFromBackup } from './teams-backup.controller.js';
+import {
+  getBackupStatus,
+  restoreFromBackup,
+  getBackupHistory,
+  restoreFromSlot,
+} from './teams-backup.controller.js';
 
 /**
  * Create the teams backup router.
@@ -20,8 +25,14 @@ export function createTeamsBackupRouter(): Router {
   // Check backup vs current status
   router.get('/status', getBackupStatus);
 
-  // Restore teams from backup
+  // List rotating-snapshot history (A2)
+  router.get('/history', getBackupHistory);
+
+  // Restore teams from the live single-file backup
   router.post('/restore', restoreFromBackup);
+
+  // Restore teams from a specific rotating-snapshot slot (A2)
+  router.post('/restore/:slot', restoreFromSlot);
 
   return router;
 }

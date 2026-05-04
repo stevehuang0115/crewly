@@ -7,10 +7,16 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import type { Request, Response, NextFunction } from 'express';
 import type { Team } from '../../types/index.js';
+import type {
+  TeamsBackup,
+  TeamsBackupHistoryEntry,
+} from '../../services/core/teams-backup.service.js';
 
 // Mock data holders
 const mockTeams: { value: Team[] } = { value: [] };
-const mockBackup: { value: { timestamp: string; teams: Team[] } | null } = { value: null };
+const mockBackup: { value: TeamsBackup | null } = { value: null };
+const mockHistory: { value: TeamsBackupHistoryEntry[] } = { value: [] };
+const mockSlots: { value: Record<number, TeamsBackup> } = { value: {} };
 
 jest.mock('../../services/core/storage.service', () => ({
   StorageService: {
@@ -31,6 +37,8 @@ jest.mock('../../services/core/teams-backup.service', () => ({
         backupTimestamp: mockBackup.value?.timestamp || null,
       }),
       readBackup: async () => mockBackup.value,
+      getBackupHistory: async () => mockHistory.value,
+      restoreFromSlot: async (slot: number) => mockSlots.value[slot] ?? null,
     }),
   },
 }));
@@ -48,7 +56,12 @@ jest.mock('../../services/core/logger.service.js', () => ({
   },
 }));
 
-import { getBackupStatus, restoreFromBackup } from './teams-backup.controller.js';
+import {
+  getBackupStatus,
+  restoreFromBackup,
+  getBackupHistory,
+  restoreFromSlot,
+} from './teams-backup.controller.js';
 
 /**
  * Helper to create a mock Team.
@@ -85,6 +98,8 @@ describe('TeamsBackupController', () => {
   beforeEach(() => {
     mockTeams.value = [];
     mockBackup.value = null;
+    mockHistory.value = [];
+    mockSlots.value = {};
     jest.clearAllMocks();
   });
 
@@ -180,6 +195,140 @@ describe('TeamsBackupController', () => {
         data: expect.objectContaining({
           restoredCount: 2,
           totalInBackup: 2,
+        }),
+      });
+    });
+  });
+
+  describe('getBackupHistory (A2)', () => {
+    it('should return empty array when no rotating snapshots exist', async () => {
+      const { req, res, next } = createMockReqRes();
+      await getBackupHistory(req, res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: [],
+      });
+    });
+
+    it('should return populated history entries when slots exist', async () => {
+      mockHistory.value = [
+        { slot: 2, timestamp: '2026-05-03T03:00:00.000Z', teamCount: 4, isHead: true },
+        { slot: 1, timestamp: '2026-05-03T02:00:00.000Z', teamCount: 3, isHead: false },
+        { slot: 0, timestamp: '2026-05-03T01:00:00.000Z', teamCount: 3, isHead: false },
+      ];
+
+      const { req, res, next } = createMockReqRes();
+      await getBackupHistory(req, res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: mockHistory.value,
+      });
+    });
+  });
+
+  describe('restoreFromSlot (A2)', () => {
+    /**
+     * Helper to build a mock Express request with a slot URL parameter.
+     */
+    function reqWithSlot(slot: string): Request {
+      return { params: { slot } } as unknown as Request;
+    }
+
+    it('should return 400 when slot param is non-numeric', async () => {
+      const req = reqWithSlot('abc');
+      const res = {
+        json: jest.fn().mockReturnThis(),
+        status: jest.fn().mockReturnThis(),
+      } as unknown as Response;
+      const next = jest.fn() as unknown as NextFunction;
+
+      await restoreFromSlot(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: 'Invalid slot' })
+      );
+    });
+
+    it('should return 400 when slot is negative', async () => {
+      const req = reqWithSlot('-1');
+      const res = {
+        json: jest.fn().mockReturnThis(),
+        status: jest.fn().mockReturnThis(),
+      } as unknown as Response;
+      const next = jest.fn() as unknown as NextFunction;
+
+      await restoreFromSlot(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 404 when slot is not populated', async () => {
+      // mockSlots.value is empty, so any slot lookup returns null
+      const req = reqWithSlot('5');
+      const res = {
+        json: jest.fn().mockReturnThis(),
+        status: jest.fn().mockReturnThis(),
+      } as unknown as Response;
+      const next = jest.fn() as unknown as NextFunction;
+
+      await restoreFromSlot(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false })
+      );
+    });
+
+    it('should return 404 when slot snapshot has zero teams', async () => {
+      mockSlots.value = {
+        3: { timestamp: '2026-05-03T01:00:00.000Z', teams: [] },
+      };
+
+      const req = reqWithSlot('3');
+      const res = {
+        json: jest.fn().mockReturnThis(),
+        status: jest.fn().mockReturnThis(),
+      } as unknown as Response;
+      const next = jest.fn() as unknown as NextFunction;
+
+      await restoreFromSlot(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+    });
+
+    it('should restore teams from a valid slot and return restoredCount + snapshotTimestamp', async () => {
+      mockSlots.value = {
+        7: {
+          timestamp: '2026-05-03T01:00:00.000Z',
+          teams: [
+            createMockTeam('t1', 'Alpha'),
+            createMockTeam('t2', 'Beta'),
+            createMockTeam('t3', 'Gamma'),
+          ],
+        },
+      };
+
+      const req = reqWithSlot('7');
+      const res = {
+        json: jest.fn().mockReturnThis(),
+        status: jest.fn().mockReturnThis(),
+      } as unknown as Response;
+      const next = jest.fn() as unknown as NextFunction;
+
+      await restoreFromSlot(req, res, next);
+
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(res.status).not.toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: expect.objectContaining({
+          slot: 7,
+          snapshotTimestamp: '2026-05-03T01:00:00.000Z',
+          restoredCount: 3,
+          totalInSnapshot: 3,
         }),
       });
     });

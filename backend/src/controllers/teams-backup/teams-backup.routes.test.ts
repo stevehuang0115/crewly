@@ -34,8 +34,22 @@ describe('Teams Backup Routes', () => {
     expect(route).toBeDefined();
   });
 
-  it('should register exactly 2 routes', () => {
+  it('should have GET route for /history (A2 rotating snapshots)', () => {
+    const route = router.stack.find(
+      (layer: any) => layer.route?.path === '/history' && layer.route?.methods?.get
+    );
+    expect(route).toBeDefined();
+  });
+
+  it('should have POST route for /restore/:slot (A2 rotating snapshots)', () => {
+    const route = router.stack.find(
+      (layer: any) => layer.route?.path === '/restore/:slot' && layer.route?.methods?.post
+    );
+    expect(route).toBeDefined();
+  });
+
+  it('should register exactly 4 routes', () => {
     const routes = router.stack.filter((layer: any) => layer.route);
-    expect(routes).toHaveLength(2);
+    expect(routes).toHaveLength(4);
   });
 });
