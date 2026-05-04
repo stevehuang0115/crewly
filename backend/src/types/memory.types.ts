@@ -90,6 +90,69 @@ export interface RoleKnowledgeEntry {
   superseded?: boolean;
   /** ID of the entry that supersedes this one */
   supersededBy?: string;
+
+  // === v3 (M3): Importance + evidence + lifecycle ===
+  // Per spec 2026-05-03-memory-codebase-improvement-plan.md §158-197:
+  // separates "Steve's strategic preference (high importance, persistent)"
+  // from "agent's tactical guess yesterday (low confidence, expires)" so
+  // recall can stop drowning agents in stale low-signal entries.
+
+  /**
+   * Strategic importance score 0-1.
+   *
+   * Distinct from {@link confidence}:
+   * - importance = how much this should weight in injection decisions
+   *   (a strategic preference is high-importance even when only 0.6
+   *   confident);
+   * - confidence = how reliably true this entry is.
+   *
+   * Default for legacy entries (lazy-migrated on read): 0.5.
+   *
+   * Recall-eligibility (per spec §183-187):
+   * - importance >= 0.85 AND confidence >= 0.7 → eligible for auto-inject
+   *   into context.
+   */
+  importance?: number;
+
+  /**
+   * Provenance refs that back this entry — requestId, workItemId,
+   * slackMessageTs, file paths, etc. Distinct from the legacy
+   * {@link learnedFrom} single-string field which is preserved for
+   * backward compatibility (lazy-migration: when evidence is absent and
+   * learnedFrom is present, evidence resolves to [learnedFrom]).
+   *
+   * Default for legacy entries: [] (or [learnedFrom] when available).
+   */
+  evidence?: string[];
+
+  /**
+   * Optional ISO8601 timestamp at which this entry expires.
+   *
+   * Recall behavior (per spec §187): when {@link ttl} < now, the entry
+   * is hidden from default recall (kept in raw store for audit). Used
+   * for tactical / time-bound facts (e.g., "the staging API key
+   * rotates Friday").
+   */
+  ttl?: string;
+
+  /**
+   * Should this entry be auto-injected into the agent's context by
+   * default?
+   *
+   * Allows the writer to override the derived default. The derivation
+   * (used when this field is undefined) is:
+   *
+   *   importance >= 0.85
+   *   AND confidence >= 0.7
+   *   AND !superseded
+   *   AND (!ttl || ttl > now)
+   *
+   * Setting `false` explicitly forces "show only on explicit recall"
+   * even when the derivation would auto-inject. Setting `true`
+   * explicitly forces auto-inject even if importance/confidence fall
+   * below the gate.
+   */
+  shouldInjectByDefault?: boolean;
 }
 
 /**
