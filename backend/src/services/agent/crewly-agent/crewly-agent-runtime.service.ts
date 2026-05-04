@@ -423,7 +423,14 @@ export class CrewlyAgentRuntimeService extends RuntimeAgentService {
     metadata?: Record<string, string>,
   ): Promise<AgentRunResult> {
     const SOFT_WARNING_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS;
-    const HARD_TIMEOUT_MS = CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
+    // I4 — per-model timeout: lookup the active model's modelId in
+    // MODEL_TIMEOUT_MS first; fall back to MESSAGE_TIMEOUT_MS default.
+    // Models like deepseek-reasoner need a longer ceiling than the 5min default
+    // (live smoke shows R1 multi-step + tool-calls regularly exceeds 6min).
+    const modelId = this.storedConfig?.model?.modelId;
+    const HARD_TIMEOUT_MS =
+      (modelId && CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS[modelId]) ||
+      CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
 
     // Execution tracking for diagnostics
     const executionTracker = {

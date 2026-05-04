@@ -836,95 +836,125 @@ export class AgentRunnerService {
       },
     });
 
-    // Await the full result (stream completes when all steps are done or aborted)
-    let result;
+    // I2 — DeepSeek reasoning buffer leak guard.
+    // The DeepSeek custom fetch wrapper accumulates parser handles per HTTP call.
+    // If streamText throws (timeout, network) BEFORE the success-path consume runs,
+    // those handles never drain and leak across run boundaries. The try/finally
+    // guarantees a consume call happens on every exit path. Consume-once
+    // semantics in ModelManager make double-call on the success path harmless
+    // (second call returns null).
     try {
-      result = await streamResult;
-    } catch (err) {
-      // If aborted due to loop detection, handle gracefully
+      // Await the full result (stream completes when all steps are done or aborted)
+      let result;
+      try {
+        result = await streamResult;
+      } catch (err) {
+        // If aborted due to loop detection, handle gracefully
+        if (loopDetector.loopDetected) {
+          return this.handleLoopDetected(loopDetector, toolCalls, stepCount);
+        }
+        throw err;
+      }
+
+      // Also check post-completion in case the loop threshold was hit on the final step
       if (loopDetector.loopDetected) {
         return this.handleLoopDetected(loopDetector, toolCalls, stepCount);
       }
-      throw err;
-    }
 
-    // Also check post-completion in case the loop threshold was hit on the final step
-    if (loopDetector.loopDetected) {
-      return this.handleLoopDetected(loopDetector, toolCalls, stepCount);
-    }
-
-    // Warn if tool call count is excessive (polling dead-loop protection)
-    const maxToolCalls = CREWLY_AGENT_DEFAULTS.MAX_TOOL_CALLS_PER_RESPONSE;
-    if (toolCalls.length > maxToolCalls) {
-      console.warn('[AgentRunner] Excessive tool calls in single response:', {
-        count: toolCalls.length,
-        limit: maxToolCalls,
-        topTools: toolCalls.slice(0, 5).map(tc => tc.toolName),
-      });
-    }
-
-    // Add assistant response to history
-    let text = await result.text;
-    if (text) {
-      this.state.messages.push({ role: 'assistant', content: text });
-    }
-
-    // Empty response fallback: if model made tool calls but produced no text summary,
-    // prompt it once more to generate a summary (prevents silent completions)
-    if (!text && toolCalls.length > 0) {
-      console.warn('[AgentRunner] Empty text response after tool calls, requesting summary fallback');
-      const fallbackResult = await this.requestSummaryFallback();
-      if (fallbackResult) {
-        text = fallbackResult;
+      // Warn if tool call count is excessive (polling dead-loop protection)
+      const maxToolCalls = CREWLY_AGENT_DEFAULTS.MAX_TOOL_CALLS_PER_RESPONSE;
+      if (toolCalls.length > maxToolCalls) {
+        console.warn('[AgentRunner] Excessive tool calls in single response:', {
+          count: toolCalls.length,
+          limit: maxToolCalls,
+          topTools: toolCalls.slice(0, 5).map(tc => tc.toolName),
+        });
       }
-    }
 
-    // Security guardrail: redact any API keys from agent output
-    if (text) {
-      const scanResult = this.outputFilter.scan(text);
-      if (scanResult.detected) {
-        console.warn('[AgentRunner] API keys redacted from output:', scanResult.matchedPatterns);
-        text = scanResult.redactedText;
+      // Add assistant response to history
+      let text = await result.text;
+      if (text) {
+        this.state.messages.push({ role: 'assistant', content: text });
       }
-    }
 
-    // Update token tracking
-    const resultUsage = await result.usage;
-    const usage = {
-      input: resultUsage?.inputTokens ?? 0,
-      output: resultUsage?.outputTokens ?? 0,
-    };
-    this.state.totalTokens.input += usage.input;
-    this.state.totalTokens.output += usage.output;
+      // Empty response fallback: if model made tool calls but produced no text summary,
+      // prompt it once more to generate a summary (prevents silent completions)
+      if (!text && toolCalls.length > 0) {
+        console.warn('[AgentRunner] Empty text response after tool calls, requesting summary fallback');
+        const fallbackResult = await this.requestSummaryFallback();
+        if (fallbackResult) {
+          text = fallbackResult;
+        }
+      }
 
-    // Check budget after token update
-    const postBudget = this.getContextBudget();
-    const budgetWarning = postBudget.level !== 'normal' ? postBudget.summary : undefined;
+      // Security guardrail: redact any API keys from agent output
+      if (text) {
+        const scanResult = this.outputFilter.scan(text);
+        if (scanResult.detected) {
+          console.warn('[AgentRunner] API keys redacted from output:', scanResult.matchedPatterns);
+          text = scanResult.redactedText;
+        }
+      }
 
-    const finishReason = await result.finishReason;
+      // Update token tracking
+      const resultUsage = await result.usage;
+      const usage = {
+        input: resultUsage?.inputTokens ?? 0,
+        output: resultUsage?.outputTokens ?? 0,
+      };
+      this.state.totalTokens.input += usage.input;
+      this.state.totalTokens.output += usage.output;
 
-    // P0 Stop Hook: In eval mode, check if required output files were created.
-    // If deliverables are missing, inject a corrective message and do one more run.
-    // Note: If loop was detected, we already returned early via handleLoopDetected.
-    if (this.config.evalMode) {
-      const stopHookResult = await this.executeStopHook(toolCalls, tools, abortSignal);
-      if (stopHookResult) {
-        // Merge tool calls and update text from the follow-up run
-        toolCalls.push(...stopHookResult.toolCalls);
-        if (stopHookResult.text) {
-          text = stopHookResult.text;
+      // Check budget after token update
+      const postBudget = this.getContextBudget();
+      const budgetWarning = postBudget.level !== 'normal' ? postBudget.summary : undefined;
+
+      const finishReason = await result.finishReason;
+
+      // P0 Stop Hook: In eval mode, check if required output files were created.
+      // If deliverables are missing, inject a corrective message and do one more run.
+      // Note: If loop was detected, we already returned early via handleLoopDetected.
+      if (this.config.evalMode) {
+        const stopHookResult = await this.executeStopHook(toolCalls, tools, abortSignal);
+        if (stopHookResult) {
+          // Merge tool calls and update text from the follow-up run
+          toolCalls.push(...stopHookResult.toolCalls);
+          if (stopHookResult.text) {
+            text = stopHookResult.text;
+          }
+        }
+      }
+
+      // I2 — DeepSeek-R1 reasoning_content drain.
+      // After streamResult is fully drained, pull any reasoning the custom fetch
+      // wrapper accumulated for this run. Returns null for non-DeepSeek providers
+      // (the wrapper only runs on the DeepSeek provider path) or when no
+      // reasoning was produced.
+      const reasoning = this.config.model.provider === 'deepseek'
+        ? await this.modelManager.consumeDeepseekReasoning()
+        : undefined;
+
+      return {
+        text,
+        steps: stepCount,
+        usage,
+        toolCalls,
+        finishReason,
+        budgetWarning,
+        reasoning,
+      };
+    } finally {
+      // Cleanup-drain — if try block threw before the success-path consume,
+      // this prevents the parser handle array from leaking across runs.
+      // Safe on success path: consume-once semantics return null on 2nd call.
+      if (this.config.model.provider === 'deepseek') {
+        try {
+          await this.modelManager.consumeDeepseekReasoning();
+        } catch (e) {
+          console.warn('[AgentRunner] DeepSeek reasoning cleanup-drain failed:', e);
         }
       }
     }
-
-    return {
-      text,
-      steps: stepCount,
-      usage,
-      toolCalls,
-      finishReason,
-      budgetWarning,
-    };
   }
 
   /**
@@ -1075,6 +1105,13 @@ export class AgentRunnerService {
       }
     }
 
+    // I2 — DeepSeek-R1 reasoning_content drain (generateText path).
+    // Same as the streamText path: pull buffered reasoning the custom fetch
+    // wrapper accumulated. Returns null for non-DeepSeek providers.
+    const reasoning = this.config.model.provider === 'deepseek'
+      ? await this.modelManager.consumeDeepseekReasoning()
+      : undefined;
+
     return {
       text: finalText,
       steps: result.steps.length,
@@ -1082,6 +1119,7 @@ export class AgentRunnerService {
       toolCalls,
       finishReason: result.finishReason,
       budgetWarning,
+      reasoning,
     };
   }
 

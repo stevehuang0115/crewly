@@ -214,4 +214,125 @@ describe('ModelManager', () => {
       expect((model as any).modelId).toBe('test-2');
     });
   });
+
+  /**
+   * I2 — DeepSeek-R1 reasoning_content extraction via custom fetch wrapper.
+   *
+   * The wrapper is installed when getModel('deepseek') is called. We exercise
+   * it by stubbing globalThis.fetch, calling the wrapper directly through
+   * an internal accessor, and asserting reasoning is buffered for consume.
+   *
+   * Note: we don't go through the real @ai-sdk/openai SDK here — that would
+   * require simulating the entire chat-completions request lifecycle. Instead
+   * we test the seam where reasoning extraction happens (the custom fetch),
+   * which is the unit boundary we own. Integration with @ai-sdk is exercised
+   * by the Round 3 smoke test (live DeepSeek call).
+   */
+  describe('DeepSeek custom fetch (I2 reasoning_content)', () => {
+    let originalFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('extracts reasoning_content from a streaming SSE response', async () => {
+      // Stub fetch to return a fake DeepSeek SSE response.
+      const sseBody = [
+        'data: {"choices":[{"delta":{"reasoning_content":"chain-of-thought "}}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_content":"goes here"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"the answer"}}]}\n\n',
+        'data: [DONE]\n\n',
+      ].join('');
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseBody));
+          controller.close();
+        },
+      });
+      globalThis.fetch = jest.fn<any>().mockResolvedValue(
+        new Response(stream, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      );
+
+      // Trigger model creation (installs the custom fetch wrapper inside the provider).
+      await manager.getModel({ provider: 'deepseek', modelId: 'deepseek-reasoner' });
+
+      // Directly invoke the wrapper via the underlying provider invocation path.
+      // We can't easily reach `customFetch` without exporting it, so we instead
+      // call the known wrapper-creator method and exercise it.
+      const customFetch = (manager as any).makeDeepseekFetch();
+      const response: Response = await customFetch('https://api.deepseek.com/v1/chat/completions', {});
+
+      // Drain the consumer side (mimics what AI SDK does)
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let drained = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        drained += decoder.decode(value, { stream: true });
+      }
+      expect(drained).toBe(sseBody); // passthrough must be byte-identical
+
+      const reasoning = await manager.consumeDeepseekReasoning();
+      expect(reasoning).toBe('chain-of-thought goes here');
+    });
+
+    it('returns null from consumeDeepseekReasoning when no fetch happened', async () => {
+      const reasoning = await manager.consumeDeepseekReasoning();
+      expect(reasoning).toBeNull();
+    });
+
+    it('passes through non-SSE responses unchanged', async () => {
+      // 4xx error with JSON body — wrapper must NOT touch it.
+      const errorBody = JSON.stringify({ error: 'bad request' });
+      globalThis.fetch = jest.fn<any>().mockResolvedValue(
+        new Response(errorBody, {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+      const customFetch = (manager as any).makeDeepseekFetch();
+      const response: Response = await customFetch('https://api.deepseek.com/v1/chat/completions', {});
+      expect(response.status).toBe(400);
+      const text = await response.text();
+      expect(text).toBe(errorBody);
+    });
+
+    it('consumes reasoning and resets buffer to null on second call', async () => {
+      const sseBody =
+        'data: {"choices":[{"delta":{"reasoning_content":"first"}}]}\n\ndata: [DONE]\n\n';
+      const encoder = new TextEncoder();
+      globalThis.fetch = jest.fn<any>().mockResolvedValue(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              c.enqueue(encoder.encode(sseBody));
+              c.close();
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        ),
+      );
+
+      const customFetch = (manager as any).makeDeepseekFetch();
+      const r1 = await customFetch('https://api.deepseek.com/v1/chat/completions', {});
+      // Drain to ensure the parser branch sees [DONE]
+      const reader = r1.body!.getReader();
+      while (!(await reader.read()).done) { /* drain */ }
+
+      expect(await manager.consumeDeepseekReasoning()).toBe('first');
+      // Second call: nothing new fetched, buffer was cleared
+      expect(await manager.consumeDeepseekReasoning()).toBeNull();
+    });
+  });
 });
