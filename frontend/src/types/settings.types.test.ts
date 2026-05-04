@@ -8,6 +8,8 @@ import { describe, it, expect } from 'vitest';
 import {
   AI_RUNTIMES,
   AI_RUNTIME_DISPLAY_NAMES,
+  API_KEY_PROVIDERS,
+  ApiKeyProvider,
   getAIRuntimeDisplayName,
   isValidAIRuntime,
 } from './settings.types';
@@ -66,6 +68,31 @@ describe('Settings Types', () => {
       expect(isValidAIRuntime('')).toBe(false);
       expect(isValidAIRuntime('claude')).toBe(false);
       expect(isValidAIRuntime('CLAUDE-CODE')).toBe(false);
+    });
+  });
+
+  describe('API_KEY_PROVIDERS', () => {
+    it('should contain all supported API key providers', () => {
+      expect(API_KEY_PROVIDERS).toContain('gemini');
+      expect(API_KEY_PROVIDERS).toContain('anthropic');
+      expect(API_KEY_PROVIDERS).toContain('openai');
+      expect(API_KEY_PROVIDERS).toContain('deepseek');
+    });
+
+    it('should have exactly 4 providers (mirrors backend ApiKeyProvider union)', () => {
+      expect(API_KEY_PROVIDERS).toHaveLength(4);
+    });
+
+    it('should match the backend provider order so UI rows render consistently', () => {
+      // Order is part of the contract — UI iterates this array to render
+      // global key inputs and per-runtime override inputs.
+      expect([...API_KEY_PROVIDERS]).toEqual(['gemini', 'anthropic', 'openai', 'deepseek']);
+    });
+
+    it('should accept deepseek as a valid ApiKeyProvider value', () => {
+      // Compile-time check: assignment fails if the union excludes 'deepseek'.
+      const provider: ApiKeyProvider = 'deepseek';
+      expect(API_KEY_PROVIDERS).toContain(provider);
     });
   });
 });

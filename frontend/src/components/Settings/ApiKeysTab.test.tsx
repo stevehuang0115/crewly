@@ -67,6 +67,7 @@ describe('ApiKeysTab', () => {
     expect(screen.getByText('Google Gemini')).toBeInTheDocument();
     expect(screen.getByText('Anthropic')).toBeInTheDocument();
     expect(screen.getByText('OpenAI')).toBeInTheDocument();
+    expect(screen.getByText('DeepSeek')).toBeInTheDocument();
   });
 
   it('should render runtime override sections', () => {
@@ -108,7 +109,7 @@ describe('ApiKeysTab', () => {
   it('should render test buttons for each provider', () => {
     render(<ApiKeysTab />);
     const testButtons = screen.getAllByText('Test');
-    expect(testButtons.length).toBe(3); // One per global provider
+    expect(testButtons.length).toBe(4); // One per global provider (gemini, anthropic, openai, deepseek)
   });
 
   it('should show env var hints', () => {
@@ -116,6 +117,7 @@ describe('ApiKeysTab', () => {
     expect(screen.getByText('GOOGLE_GENERATIVE_AI_API_KEY')).toBeInTheDocument();
     expect(screen.getByText('ANTHROPIC_API_KEY')).toBeInTheDocument();
     expect(screen.getByText('OPENAI_API_KEY')).toBeInTheDocument();
+    expect(screen.getByText('DEEPSEEK_API_KEY')).toBeInTheDocument();
   });
 
   it('should render with existing global keys', () => {
@@ -142,6 +144,38 @@ describe('ApiKeysTab', () => {
   it('should show "Not set" for unconfigured keys', () => {
     render(<ApiKeysTab />);
     const notSetElements = screen.getAllByText('Not set');
-    expect(notSetElements.length).toBe(3);
+    expect(notSetElements.length).toBe(4);
+  });
+
+  it('should accept input on the DeepSeek global key field', () => {
+    render(<ApiKeysTab />);
+    const input = screen.getByPlaceholderText('Enter DEEPSEEK_API_KEY') as HTMLInputElement;
+    expect(input).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'sk-deepseek-test-1234' } });
+    expect(input.value).toBe('sk-deepseek-test-1234');
+  });
+
+  it('should render saved DeepSeek global key', async () => {
+    mockUseSettings.mockReturnValue({
+      settings: {
+        general: { defaultRuntime: 'claude-code' as const },
+        chat: {},
+        skills: {},
+        apiKeys: {
+          global: { deepseek: '••••••••wxyz' },
+          runtimeOverrides: {},
+          skillOverrides: {},
+        },
+      },
+      updateSettings: mockUpdateSettings,
+      isLoading: false,
+      error: null,
+    });
+    render(<ApiKeysTab />);
+    // Three providers (gemini/anthropic/openai) report "Not set"; deepseek reports "Saved".
+    await waitFor(() => {
+      expect(screen.getByText('Saved')).toBeInTheDocument();
+      expect(screen.getAllByText('Not set').length).toBe(3);
+    });
   });
 });
