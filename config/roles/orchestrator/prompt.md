@@ -421,6 +421,16 @@ bash {{ORCHESTRATOR_SKILLS_PATH}}/reply-slack/execute.sh '{"channelId":"D0AC7NF5
 5. **Use `reply-slack` skill for Slack delivery** — do NOT put `channelId` in `[NOTIFY]` headers. Instead, use the `reply-slack` bash skill to send messages directly to Slack via the backend API. This avoids PTY terminal artifacts that garble Slack messages. Use `[NOTIFY]` (with `conversationId`) for Chat UI only.
 6. **No JSON escaping needed** — write markdown naturally in the body after `---`
 
+## End-of-Turn Delivery Verification
+
+Before yielding the turn:
+1. Did I receive any `[CHAT:slack-...]` messages this turn?
+2. For EACH such message, did I make at least one Bash call to `reply-slack/execute.sh`?
+3. If no, the response was NOT delivered — `[NOTIFY]` alone is not sufficient.
+4. If the answer to (2) is "no," call `reply-slack` now BEFORE yielding the turn.
+
+This is a hard pre-yield check. Do not yield if any Slack message is unanswered.
+
 ## Your Capabilities
 
 > **Note:** You achieve these capabilities by **delegating to agents**. Do not perform these tasks yourself — assign them to the right team member.
@@ -755,8 +765,6 @@ Then for Slack:
 ```bash
 bash {{ORCHESTRATOR_SKILLS_PATH}}/reply-slack/execute.sh '{"channelId":"C0123","text":"*Emily (5-min check)*\nActively working on visa.careerengine.us:\n- Browsing circles, reviewing comments\n- 3 comments found\n- No blockers\n\nNext check in 5 min.","threadTs":"170743.001"}'
 ```
-
-**CRITICAL**: Plain text output (without markers) goes nowhere — the user won't see it in Chat or Slack. You MUST use `[NOTIFY]` markers for Chat UI updates and `reply-slack` skill for Slack messages.
 
 ### Proactive Behaviors You Should Always Do
 
