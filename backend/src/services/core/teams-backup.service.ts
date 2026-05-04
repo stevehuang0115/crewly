@@ -18,6 +18,10 @@ import * as os from 'os';
 import type { Team } from '../../types/index.js';
 import { LoggerService, ComponentLogger } from './logger.service.js';
 import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
+import {
+  atomicWriteJsonWithGuard,
+  IntegrityViolationError,
+} from '../../utils/integrity-guarded-write.utils.js';
 
 /** File name for the live (most-recent) teams backup */
 const BACKUP_FILENAME = 'teams-backup.json';
@@ -162,18 +166,34 @@ export class TeamsBackupService {
       });
     }
 
-    // 2. Live single-file backup (preserved behavior)
+    // 2. Live single-file backup (integrity-guarded — refuses to wipe out
+    //    a previously healthy backup with an empty teams list).
     try {
       const backup: TeamsBackup = {
         timestamp: new Date().toISOString(),
         teams,
       };
-      await atomicWriteJson(this.backupPath, backup);
+      await atomicWriteJsonWithGuard<TeamsBackup>(this.backupPath, backup, {
+        // backup file is shaped {timestamp, teams[]} — count by teams.length
+        countOf: (b) => (b && Array.isArray(b.teams) ? b.teams.length : 0),
+      });
       this.logger.debug('Teams backup updated', { teamCount: teams.length });
     } catch (error) {
-      this.logger.warn('Failed to update teams backup', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (error instanceof IntegrityViolationError) {
+        this.logger.error(
+          'Teams backup integrity guard rejected write — keeping prior healthy backup',
+          {
+            path: error.path,
+            prevCount: error.prevCount,
+            nextCount: error.nextCount,
+            reason: error.reason,
+          }
+        );
+      } else {
+        this.logger.warn('Failed to update teams backup', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 

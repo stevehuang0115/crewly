@@ -293,28 +293,30 @@ describe('TeamsBackupService', () => {
       expect(restored!.teams[1].name).toBe('B');
     });
 
-    it('preserves rotating snapshots even when subsequent save would corrupt live backup', async () => {
-      // KEY REGRESSION TEST: this is the 2026-05-03 incident scenario.
+    it('integrity-guarded live backup refuses to wipe healthy state; slot 0 still recoverable', async () => {
+      // KEY REGRESSION TEST: the 2026-05-03 incident scenario.
       // Prior healthy state with 3 teams.
       const healthy = [createMockTeam('t1', 'A'), createMockTeam('t2', 'B'), createMockTeam('t3', 'C')];
       await service.updateBackup(healthy);
 
-      // Then a corrupting save propagates to the live single-file backup.
-      // (In real flow, A1's integrity-guarded write would block this; here
-      //  we simulate the race where the corruption made it to the live
-      //  backup before A1 was wired in.)
+      // Then a "corrupting" save attempts to wipe live backup to []. With A1
+      // wired into updateBackup(), the integrity guard REJECTS this write
+      // and the live backup stays at the prior healthy 3-team snapshot.
       await service.updateBackup([]);
 
-      // Live backup is now empty (the corruption is recorded).
+      // Live backup retained the healthy 3-team snapshot — guard fired.
       const liveBackup = await service.readBackup();
-      expect(liveBackup!.teams).toHaveLength(0);
+      expect(liveBackup!.teams).toHaveLength(3);
+      expect(liveBackup!.teams.map((t) => t.id)).toEqual(['t1', 't2', 't3']);
 
-      // BUT the rotating history retains slot 0 with the healthy snapshot.
+      // The rotating history slot 0 also retains the healthy snapshot
+      // (slot 1 may exist with the empty save — rotating snapshots are
+      //  best-effort and not subject to the integrity guard).
       const slot0 = await service.readSlot(0);
       expect(slot0!.teams).toHaveLength(3);
       expect(slot0!.teams.map((t) => t.id)).toEqual(['t1', 't2', 't3']);
 
-      // Operator can restore from the prior-healthy slot.
+      // Operator can restore from the prior-healthy slot if needed.
       const recovered = await service.restoreFromSlot(0);
       expect(recovered!.teams).toHaveLength(3);
     });

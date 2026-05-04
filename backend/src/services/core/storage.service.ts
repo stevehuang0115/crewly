@@ -12,6 +12,7 @@ import { CREWLY_CONSTANTS, RUNTIME_TYPES, type AgentStatus, type WorkingStatus, 
 import { LoggerService, ComponentLogger } from './logger.service.js';
 import { TeamsBackupService } from './teams-backup.service.js';
 import { atomicWriteFile, withOperationLock } from '../../utils/file-io.utils.js';
+import { atomicWriteJsonWithGuard } from '../../utils/integrity-guarded-write.utils.js';
 import { addGeminiTrustedFolders, getProjectTrustPaths } from '../../utils/gemini-trusted-folders.js';
 
 /**
@@ -789,8 +790,12 @@ export class StorageService {
         projects.push(project);
       }
 
-      const newContent = JSON.stringify(projects, null, 2);
-      await atomicWriteFile(this.projectsFile, newContent);
+      // A1: integrity-guarded write — refuses to wipe out all projects
+      // unless the caller explicitly opts in (delete path uses
+      // allowExplicitDelete).
+      await atomicWriteJsonWithGuard(this.projectsFile, projects, {
+        countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
+      });
 
       this.logger.info('Project saved successfully', {
         projectId: project.id,
@@ -1148,7 +1153,10 @@ This is a foundational task that should be completed first before other developm
         messages.push(scheduledMessage);
       }
 
-      await atomicWriteFile(this.scheduledMessagesFile, JSON.stringify(messages, null, 2));
+      // A1: integrity-guarded write — refuses collapse-to-empty
+      await atomicWriteJsonWithGuard(this.scheduledMessagesFile, messages, {
+        countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
+      });
     } catch (error) {
       this.logger.error('Error saving scheduled message', { error: error instanceof Error ? error.message : String(error) });
       throw error;
@@ -1231,7 +1239,10 @@ This is a foundational task that should be completed first before other developm
         checks.push(check);
       }
 
-      await atomicWriteFile(this.recurringChecksFile, JSON.stringify(checks, null, 2));
+      // A1: integrity-guarded write — refuses collapse-to-empty
+      await atomicWriteJsonWithGuard(this.recurringChecksFile, checks, {
+        countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
+      });
     } catch (error) {
       this.logger.error('Error saving recurring check', {
         error: error instanceof Error ? error.message : String(error),
@@ -1328,7 +1339,10 @@ This is a foundational task that should be completed first before other developm
         checks.push(check);
       }
 
-      await atomicWriteFile(this.oneTimeChecksFile, JSON.stringify(checks, null, 2));
+      // A1: integrity-guarded write — refuses collapse-to-empty
+      await atomicWriteJsonWithGuard(this.oneTimeChecksFile, checks, {
+        countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
+      });
     } catch (error) {
       this.logger.error('Error saving one-time check', {
         error: error instanceof Error ? error.message : String(error),
