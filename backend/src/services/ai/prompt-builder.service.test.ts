@@ -726,6 +726,35 @@ describe('PromptBuilderService', () => {
 			});
 			expect(config.subordinates?.[0].name).toBe('Pre-resolved');
 		});
+
+		// Mission/OKR card plumbing — fix #415 secondary findings.
+		// Slug is required to resolve `<slug>-team-sub-okr.md`; ancestor
+		// chain is required for the OKR-hierarchy filter widening.
+		describe('mission-context plumbing (#415)', () => {
+			it('slugifies team.name into teamSlug (lowercase, hyphenated, alnum-only)', () => {
+				const team = { ...buildTeam(), name: 'Crewly Product!' } as Team;
+				const config = buildModuleConfigFromTeamMember(buildMember(), team, runtime);
+				expect(config.teamSlug).toBe('crewly-product');
+			});
+
+			it('teamSlug is undefined when team.name is empty', () => {
+				const team = { ...buildTeam(), name: '' } as Team;
+				const config = buildModuleConfigFromTeamMember(buildMember(), team, runtime);
+				expect(config.teamSlug).toBeUndefined();
+			});
+
+			it('teamAncestorIds contains parentTeamId when set', () => {
+				const team = { ...buildTeam(), parentTeamId: 'parent-team-x' } as Team;
+				const config = buildModuleConfigFromTeamMember(buildMember(), team, runtime);
+				expect(config.teamAncestorIds).toEqual(['parent-team-x']);
+			});
+
+			it('teamAncestorIds is undefined when team has no parent', () => {
+				const team = { ...buildTeam(), parentTeamId: undefined } as Team;
+				const config = buildModuleConfigFromTeamMember(buildMember(), team, runtime);
+				expect(config.teamAncestorIds).toBeUndefined();
+			});
+		});
 	});
 
 	describe('buildSystemPromptWithTeamContext (WIRE-2)', () => {
