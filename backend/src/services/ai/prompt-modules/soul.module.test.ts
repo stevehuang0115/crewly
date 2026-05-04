@@ -158,6 +158,172 @@ describe('SoulModule', () => {
 		expect(result).toContain('Member personality');
 	});
 
+	// =========================================================================
+	// P0-1 Phase 2: TL overlay (canDelegate=true)
+	// =========================================================================
+
+	describe('TL overlay (canDelegate=true)', () => {
+		const TL_SOUL = '# Soul: Team Leader\n\n## Default Operating Mode\nDecompose → Delegate → Unblock → Verify → Report';
+		const DEV_SPECIALTY = '# Soul: Developer Archetype\n\n## Core Values\n- TDD\n- Simplicity';
+
+		/**
+		 * canDelegate=true loads the team-leader archetype as the primary soul
+		 * and appends the role's specialty soul as Capability Specialty.
+		 * This is the happy-path WIRE for TL framing in production.
+		 */
+		it('loads team-leader.md as primary soul + role specialty when canDelegate=true', async () => {
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				if (p.endsWith(path.join('config', 'souls', 'team-leader.md'))) return TL_SOUL;
+				if (p.endsWith(path.join('config', 'souls', 'developer.md'))) return DEV_SPECIALTY;
+				throw new Error('ENOENT');
+			});
+
+			const config: ModuleConfig = { ...baseConfig, canDelegate: true };
+			const result = await module.build(config);
+
+			expect(result).toContain('## Your Soul');
+			expect(result).toContain('_Source: team-leader overlay (canDelegate=true)_');
+			expect(result).toContain('Default Operating Mode');
+			expect(result).toContain('Decompose → Delegate → Unblock → Verify → Report');
+			expect(result).toContain('## Capability Specialty');
+			expect(result).toContain('IC background as developer');
+			expect(result).toContain('Self-Implementation Exception Rule');
+			expect(result).toContain('TDD');
+		});
+
+		/**
+		 * Per-member soul still wins over the TL overlay (explicit override
+		 * always trumps default — same precedence rule as CSS specificity).
+		 * Documented in the resolveSoul() inline comment.
+		 */
+		it('per-member soul wins over TL overlay when both exist', async () => {
+			const memberSoul = '# Soul: Custom Override\n\nMember-specific personality';
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				if (p.includes('members') && p.endsWith('soul.md')) return memberSoul;
+				if (p.endsWith(path.join('config', 'souls', 'team-leader.md'))) return TL_SOUL;
+				throw new Error('ENOENT');
+			});
+
+			const config: ModuleConfig = { ...baseConfig, canDelegate: true };
+			const result = await module.build(config);
+
+			expect(result).toContain('_Source: personal_');
+			expect(result).toContain('Member-specific personality');
+			// TL overlay markers must NOT appear
+			expect(result).not.toContain('_Source: team-leader overlay');
+			expect(result).not.toContain('## Capability Specialty');
+		});
+
+		/**
+		 * When team-leader.md is missing (e.g., deployment without P0-1 Phase 1
+		 * markdown), the overlay branch falls through silently to the legacy
+		 * cascade — no regression. Important because Phase 2 ships before
+		 * Phase 1 markdown is guaranteed everywhere.
+		 */
+		it('falls through to legacy cascade when team-leader.md is missing', async () => {
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				// team-leader.md absent — overlay branch must fall through
+				if (p.endsWith(path.join('config', 'souls', 'developer.md'))) return DEV_SPECIALTY;
+				throw new Error('ENOENT');
+			});
+
+			const config: ModuleConfig = { ...baseConfig, canDelegate: true };
+			const result = await module.build(config);
+
+			// Should land on the developer archetype via the legacy cascade
+			expect(result).toContain('_Source: archetype_');
+			expect(result).toContain('TDD');
+			expect(result).not.toContain('_Source: team-leader overlay');
+		});
+
+		/**
+		 * canDelegate=true with role='team-leader' (the TL archetype itself)
+		 * must NOT recurse into team-leader.md as its own specialty. The
+		 * specialty resolver guards against this explicitly.
+		 */
+		it('skips Capability Specialty when role is team-leader (avoids recursion)', async () => {
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				if (p.endsWith(path.join('config', 'souls', 'team-leader.md'))) return TL_SOUL;
+				throw new Error('ENOENT');
+			});
+
+			const config: ModuleConfig = { ...baseConfig, role: 'team-leader', canDelegate: true };
+			const result = await module.build(config);
+
+			expect(result).toContain('_Source: team-leader overlay (canDelegate=true)_');
+			expect(result).toContain('Default Operating Mode');
+			// No Capability Specialty section when role IS team-leader
+			expect(result).not.toContain('## Capability Specialty');
+		});
+
+		/**
+		 * canDelegate=true with no role-specialty soul on disk renders only
+		 * the primary TL soul without the Capability Specialty appendix.
+		 */
+		it('renders only primary TL soul when role specialty is missing', async () => {
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				if (p.endsWith(path.join('config', 'souls', 'team-leader.md'))) return TL_SOUL;
+				throw new Error('ENOENT');
+			});
+
+			const config: ModuleConfig = { ...baseConfig, canDelegate: true };
+			const result = await module.build(config);
+
+			expect(result).toContain('_Source: team-leader overlay (canDelegate=true)_');
+			expect(result).not.toContain('## Capability Specialty');
+		});
+
+		/**
+		 * canDelegate=false (or undefined) must NOT trigger the TL overlay,
+		 * even when team-leader.md exists on disk. Explicit guard against
+		 * accidentally promoting non-TL agents.
+		 */
+		it('does NOT load TL overlay when canDelegate is false or undefined', async () => {
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				if (p.endsWith(path.join('config', 'souls', 'team-leader.md'))) return TL_SOUL;
+				if (p.endsWith(path.join('config', 'souls', 'developer.md'))) return DEV_SPECIALTY;
+				throw new Error('ENOENT');
+			});
+
+			// canDelegate=false
+			const result1 = await module.build({ ...baseConfig, canDelegate: false });
+			expect(result1).not.toContain('_Source: team-leader overlay');
+			expect(result1).toContain('_Source: archetype_');
+
+			// canDelegate omitted
+			const result2 = await module.build(baseConfig);
+			expect(result2).not.toContain('_Source: team-leader overlay');
+			expect(result2).toContain('_Source: archetype_');
+		});
+
+		/**
+		 * Role specialty resolution prefers role default soul over archetype
+		 * (same precedence as the legacy cascade — keeps consistency).
+		 */
+		it('specialty prefers config/roles/{role}/soul.md over config/souls/{role}.md', async () => {
+			const roleDefault = '# Role default — wins over archetype';
+			mockedFs.readFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				const p = String(filePath);
+				if (p.endsWith(path.join('config', 'souls', 'team-leader.md'))) return TL_SOUL;
+				if (p.endsWith(path.join('config', 'roles', 'developer', 'soul.md'))) return roleDefault;
+				if (p.endsWith(path.join('config', 'souls', 'developer.md'))) return DEV_SPECIALTY;
+				throw new Error('ENOENT');
+			});
+
+			const config: ModuleConfig = { ...baseConfig, canDelegate: true };
+			const result = await module.build(config);
+
+			expect(result).toContain('Role default — wins over archetype');
+			expect(result).not.toContain('TDD'); // archetype content must not appear
+		});
+	});
+
 	describe('Self-Awareness integration', () => {
 		it('should append self-awareness section when self-improvement data exists', async () => {
 			const growthData = {

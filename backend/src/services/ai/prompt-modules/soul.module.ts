@@ -12,13 +12,18 @@ You are a professional, reliable team member. Communicate clearly, ask when unce
 /**
  * Soul module — provides the agent's personality, tone, and working style.
  *
- * Loads the agent's "soul" from the resolution chain:
- * 1. Per-member soul (~/.crewly/teams/{teamId}/members/{memberId}/soul.md)
- * 2. Role default soul (config/roles/{role}/soul.md)
- * 3. Reusable archetype (config/souls/{archetype}.md)
- * 4. Hardcoded minimal fallback
+ * Resolution chain (P0-1 Phase 2):
+ *   0. **TL overlay** — when `canDelegate=true`, layer the team-leader
+ *      archetype (`config/souls/team-leader.md`) as the primary soul and
+ *      append the agent's original-role soul as a Capability Specialty.
+ *      A per-member soul still wins over the overlay (explicit > default).
+ *   1. Per-member soul (~/.crewly/teams/{teamId}/members/{memberId}/soul.md)
+ *   2. Role default soul (config/roles/{role}/soul.md)
+ *   3. Reusable archetype (config/souls/{role}.md)
+ *   4. Hardcoded minimal fallback
  *
- * Sources: Path A Step 5, Path B Section 9, Soul System Design (Section 6).
+ * Sources: Path A Step 5, Path B Section 9, Soul System Design (Section 6),
+ * P0-1 Team-Leader Soul spec.
  */
 export class SoulModule implements PromptModule {
 	name = 'soul';
@@ -53,7 +58,8 @@ export class SoulModule implements PromptModule {
 	 * @returns Soul content string
 	 */
 	private async resolveSoul(config: ModuleConfig): Promise<string> {
-		// 1. Per-member soul
+		// 1. Per-member soul (highest precedence — explicit override always wins,
+		//    even over the TL overlay below — same precedence rule as CSS specificity)
 		if (config.teamId && config.memberId) {
 			const memberSoulPath = this.getMemberSoulPath(config.teamId, config.memberId);
 			const content = this.readFileIfExists(memberSoulPath);
@@ -62,7 +68,22 @@ export class SoulModule implements PromptModule {
 			}
 		}
 
-		// 2. Role default soul (config/roles/{role}/soul.md)
+		// 2. TL overlay (P0-1 Phase 2): when canDelegate=true, the team-leader
+		//    archetype becomes the primary soul, with the original role's soul
+		//    appended as a Capability Specialty. Falls through silently to the
+		//    legacy cascade if `config/souls/team-leader.md` is missing — this
+		//    is intentional so deployments without the markdown asset don't
+		//    regress (the team-leader.md file ships in P0-1 Phase 1, PR #414).
+		if (config.canDelegate === true) {
+			const tlPath = path.join(config.projectRoot, 'config', 'souls', 'team-leader.md');
+			const tlContent = this.readFileIfExists(tlPath);
+			if (tlContent) {
+				const specialty = this.resolveSpecialtySoul(config);
+				return this.formatTLOverlay(tlContent, specialty, config.role);
+			}
+		}
+
+		// 3. Role default soul (config/roles/{role}/soul.md)
 		if (config.role) {
 			const roleSoulPath = path.join(config.projectRoot, 'config', 'roles', config.role, 'soul.md');
 			const content = this.readFileIfExists(roleSoulPath);
@@ -71,7 +92,7 @@ export class SoulModule implements PromptModule {
 			}
 		}
 
-		// 3. Reusable archetype (config/souls/{role}.md as fallback archetype)
+		// 4. Reusable archetype (config/souls/{role}.md as fallback archetype)
 		if (config.role) {
 			const archetypePath = path.join(config.projectRoot, 'config', 'souls', `${config.role}.md`);
 			const content = this.readFileIfExists(archetypePath);
@@ -80,8 +101,56 @@ export class SoulModule implements PromptModule {
 			}
 		}
 
-		// 4. Hardcoded minimal fallback
+		// 5. Hardcoded minimal fallback
 		return DEFAULT_SOUL;
+	}
+
+	/**
+	 * Resolve the agent's specialty soul for the TL overlay layer.
+	 *
+	 * Reuses steps 3 & 4 of the legacy cascade (role default → archetype) but
+	 * deliberately skips the per-member soul (already checked in step 1 above)
+	 * and the team-leader archetype (which would cause infinite recursion when
+	 * `role === 'team-leader'`).
+	 *
+	 * @param config - Module configuration
+	 * @returns Specialty soul content, or null when no role-specific soul exists
+	 *          OR when the role IS team-leader (no specialty to layer).
+	 */
+	private resolveSpecialtySoul(config: ModuleConfig): string | null {
+		if (!config.role || config.role === 'team-leader') return null;
+		const roleSoul = this.readFileIfExists(
+			path.join(config.projectRoot, 'config', 'roles', config.role, 'soul.md'),
+		);
+		if (roleSoul) return roleSoul;
+		return this.readFileIfExists(
+			path.join(config.projectRoot, 'config', 'souls', `${config.role}.md`),
+		);
+	}
+
+	/**
+	 * Format the TL overlay layout: team-leader archetype as the primary soul,
+	 * with the original-role specialty appended as Capability Specialty.
+	 *
+	 * The Capability Specialty section is what the agent draws on when applying
+	 * the Self-Implementation Exception Rule from `team-leader.md` (TL leans on
+	 * IC instincts when self-implementing under specific conditions).
+	 *
+	 * @param tlContent - Raw team-leader.md content
+	 * @param specialty - Specialty soul content (null when no role specialty exists)
+	 * @param role - The agent's original role (used in the specialty header)
+	 * @returns Formatted TL overlay markdown
+	 */
+	private formatTLOverlay(tlContent: string, specialty: string | null, role: string | undefined): string {
+		const primary = `## Your Soul\n_Source: team-leader overlay (canDelegate=true)_\n\n${tlContent}`;
+		if (!specialty) return primary;
+		const roleLabel = role ?? 'IC';
+		return (
+			`${primary}\n\n` +
+			`## Capability Specialty\n` +
+			`_IC background as ${roleLabel} — apply when self-implementing per the Self-Implementation Exception Rule._\n\n` +
+			specialty
+		);
 	}
 
 	/**
