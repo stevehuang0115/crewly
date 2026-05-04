@@ -1752,6 +1752,28 @@ export class CrewlyServer {
 				}
 			}
 
+			// C1 — boot-time state invariant check (Persistence P0 spec).
+			// Refuses to start serving traffic if the live teams directory
+			// is empty but a healthy backup snapshot exists. Override via
+			// CREWLY_FORCE_EMPTY_BOOT=1 for legitimate fresh-install / reset.
+			try {
+				await this.storageService.verifyStateInvariantOnBoot();
+			} catch (invariantErr) {
+				const { StateInvariantViolation } = await import('./services/core/state-invariant.types.js');
+				if (invariantErr instanceof StateInvariantViolation) {
+					this.logger.error(
+						'Boot aborted by state invariant check — refusing to serve traffic with wiped state',
+						{
+							currentTeamCount: invariantErr.currentTeamCount,
+							backupTeamCount: invariantErr.backupTeamCount,
+							backupTimestamp: invariantErr.backupTimestamp,
+							message: invariantErr.message,
+						}
+					);
+				}
+				throw invariantErr;
+			}
+
 			// Start HTTP server with enhanced error handling
 			await this.startHttpServer();
 
