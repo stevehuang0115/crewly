@@ -24,6 +24,7 @@ import { CapabilityOverlayModule } from './capability-overlay.module.js';
 import { DomainSOPModule } from './domain-sop.module.js';
 import { RiskPolicyModule } from './risk-policy.module.js';
 import { TeamNormsModule } from './team-norms.module.js';
+import { WorkingMemoryModule } from './working-memory.module.js';
 
 /**
  * Default total token budget for all prompt modules combined.
@@ -115,6 +116,11 @@ export class PromptAssemblyService {
 			new SkillsReferenceModule(),
 			new TeamReferenceModule(),
 			new CapabilityOverlayModule(),
+			// Mission Card (priority 7) is registered by Leo's M1 dead-code-path
+			// rewire — it lands here once that PR merges. Wake card (priority 8)
+			// must follow the mission card so the agent reads short-term
+			// "why-now" runtime context after the long-term mission frame.
+			new WorkingMemoryModule(),
 			new ProjectReferenceModule(),
 			new CommunicationModule(),
 			new DomainSOPModule(),
