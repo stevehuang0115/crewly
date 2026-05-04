@@ -16,6 +16,7 @@ import { TeamReferenceModule } from './team-reference.module.js';
 import { ProjectReferenceModule } from './project-reference.module.js';
 import { UserProfileReferenceModule } from './user-profile-reference.module.js';
 import { LearningReferenceModule } from './learning-reference.module.js';
+import { MissionContextModule } from './mission-context.module.js';
 import { CommunicationModule } from './communication.module.js';
 import { RecoveryModule } from './recovery.module.js';
 import { LifecycleModule } from './lifecycle.module.js';
@@ -114,6 +115,11 @@ export class PromptAssemblyService {
 			new MemoryReferenceModule(),
 			new SkillsReferenceModule(),
 			new TeamReferenceModule(),
+			// Mission/OKR card — sits right after team references so the
+			// agent first sees who they work with, then the mission they
+			// are serving. Live wire-in for fix #415; replaces the dead
+			// PromptGeneratorService hook.
+			new MissionContextModule(),
 			new CapabilityOverlayModule(),
 			new ProjectReferenceModule(),
 			new CommunicationModule(),

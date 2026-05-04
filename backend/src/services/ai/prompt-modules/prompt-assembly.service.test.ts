@@ -74,7 +74,9 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('domain-sop');
 			expect(names).toContain('risk-policy');
 			expect(names).toContain('team-norms');
-			expect(names.length).toBe(17);
+			// Mission/OKR card (fix #415 — replaces dead PromptGenerator hook)
+			expect(names).toContain('mission_context');
+			expect(names.length).toBe(18);
 		});
 
 		it('should use default token budget of 28000', () => {

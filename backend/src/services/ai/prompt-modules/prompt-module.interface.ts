@@ -90,6 +90,22 @@ export interface ModuleConfig {
 	teamQualityGate?: { reviewerId?: string; autoApprove?: boolean; minQualityScore?: number };
 	/** Absolute path to team norms directory (from template application) */
 	teamNormsPath?: string;
+	/**
+	 * Human-readable team slug used for resolving slug-named team files
+	 * (e.g. `<teamSlug>-team-sub-okr.md` under `.crewly/goals/`).
+	 * Populated by PromptBuilderService from team metadata when available.
+	 * Optional — modules MUST tolerate undefined and skip slug-dependent
+	 * sections silently.
+	 */
+	teamSlug?: string;
+	/**
+	 * Team-graph ancestor IDs (parent, grandparent, ...) used by modules
+	 * that need to surface inherited org context such as parent-team
+	 * missions / OKRs. Caller resolves the chain; modules consume it
+	 * read-only. Empty / undefined means "no ancestors" — modules MUST
+	 * default to a single-team view rather than error.
+	 */
+	teamAncestorIds?: string[];
 
 	// === Eval mode ===
 

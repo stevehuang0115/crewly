@@ -157,7 +157,30 @@ export function buildModuleConfigFromTeamMember(
 		teamQualityGate: team.qualityGate,
 		serviceContract: team.serviceContract,
 		teamOwnershipScope: team.ownershipScope,
+
+		// === Team-graph context (consumed by MissionContextModule) ===
+		// Slug derived from team name; matches the convention used elsewhere
+		// (e.g. template.controller.toSlug + sessionName composition).
+		// Used to resolve `<teamSlug>-team-sub-okr.md` under .crewly/goals/.
+		teamSlug: team.name ? toTeamSlug(team.name) : undefined,
+		// Single-level parent only — modules that need deeper ancestry
+		// should call a graph resolver. Walking the full parent chain
+		// here would require runtime team-graph access this builder
+		// intentionally does not have.
+		teamAncestorIds: team.parentTeamId ? [team.parentTeamId] : undefined,
 	};
+}
+
+/**
+ * Convert a team name to a URL-safe slug (lowercase, hyphens, alnum only).
+ * Mirrors `toSlug` in `controllers/template/template.controller.ts` so
+ * goal / OKR file naming stays consistent across the codebase.
+ *
+ * @param name - Human-readable team name
+ * @returns Lowercase slug suitable for file path segments
+ */
+function toTeamSlug(name: string): string {
+	return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
 }
 
 /**
