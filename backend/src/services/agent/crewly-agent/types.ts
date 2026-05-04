@@ -477,10 +477,19 @@ export const CREWLY_AGENT_DEFAULTS = {
    *  agentic loops can accumulate 30+ steps. 5min default is tight; 10min gives
    *  safety margin without inviting runaway loops. See gap-list spec §I4 for
    *  measurement evidence. */
-  MODEL_TIMEOUT_MS: {
+  /**
+   * Frozen at module load via `Object.freeze` — defensive guard against
+   * runtime mutation. `as const` is compile-time only and the
+   * `Record<string, number>` cast widens it back to mutable, so freeze
+   * is the only line of defense against accidental writes like
+   * `CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS['x'] = 999` from elsewhere
+   * in the codebase. Per-model overrides should be added by editing this
+   * file (treat as a config table, not runtime state).
+   */
+  MODEL_TIMEOUT_MS: Object.freeze({
     /** DeepSeek-R1: 2× default — reasoning chain-of-thought is slower per token. */
     'deepseek-reasoner': 600_000,
-  } as Record<string, number>,
+  }) as Readonly<Record<string, number>>,
   /** Soft warning threshold in milliseconds — logs a warning but does not kill the request.
    *  Override via CREWLY_AGENT_MESSAGE_SOFT_WARNING_MS env var. */
   MESSAGE_SOFT_WARNING_MS: Number(process.env.CREWLY_AGENT_MESSAGE_SOFT_WARNING_MS) || 240_000,

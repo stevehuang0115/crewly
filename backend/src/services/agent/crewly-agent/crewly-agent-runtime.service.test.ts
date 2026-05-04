@@ -814,12 +814,17 @@ describe('CrewlyAgentRuntimeService', () => {
     it('uses MODEL_TIMEOUT_MS override when modelId matches', async () => {
       const originalTimeout = CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
       const originalWarning = CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS;
-      const originalModelTimeouts = { ...CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS };
+      const originalModelTimeouts = CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS;
       // Default short so a non-override would fire fast and FAIL this test.
       // Override even shorter so the override timeout is what fires.
       (CREWLY_AGENT_DEFAULTS as any).MESSAGE_TIMEOUT_MS = 5_000;
       (CREWLY_AGENT_DEFAULTS as any).MESSAGE_SOFT_WARNING_MS = 4_000;
-      (CREWLY_AGENT_DEFAULTS as any).MODEL_TIMEOUT_MS['test-fast-model'] = 150;
+      // MODEL_TIMEOUT_MS is now frozen (defensive guard — see types.ts).
+      // Replace the whole reference instead of in-place mutation.
+      (CREWLY_AGENT_DEFAULTS as any).MODEL_TIMEOUT_MS = {
+        ...originalModelTimeouts,
+        'test-fast-model': 150,
+      };
 
       try {
         mockRun.mockImplementation((_msg: string, _convId: unknown, _meta: unknown, opts: Record<string, unknown>) => {
