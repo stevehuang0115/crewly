@@ -23,6 +23,7 @@ import type { LanguageModel } from 'ai';
 import { type ModelConfig, type ModelProvider, CREWLY_AGENT_DEFAULTS } from './types.js';
 import { getSettingsService } from '../../settings/settings.service.js';
 import { ApiKeyProvider } from '../../../types/settings.types.js';
+import { teeAndParse, type ParsedDeepseekSse } from './deepseek-sse-transform.js';
 
 /**
  * Base URL for DeepSeek's OpenAI-compatible chat completions endpoint.
@@ -47,6 +48,24 @@ const DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1';
 export class ModelManager {
   /** Cached provider module references to avoid re-importing */
   private providerCache = new Map<ModelProvider, (modelId: string) => LanguageModel>();
+
+  /**
+   * Per-instance buffer of parsed DeepSeek-R1 reasoning_content from in-flight
+   * and recently-completed HTTP calls. Each `streamText` call to a DeepSeek
+   * model triggers one or more fetch calls (one per agentic step); each fetch
+   * appends its parsed reasoning to this buffer. Consumer (agent-runner) reads
+   * via `consumeDeepseekReasoning()` after `await streamResult` and the buffer
+   * resets to `''` on read.
+   *
+   * **Concurrency:** AgentRunner uses one ModelManager per session and calls
+   * streamText serially per session (the rate limiter enforces this).
+   * Cross-session concurrency is not a concern because each AgentRunner gets
+   * its own ModelManager via `new ModelManager()` in the constructor.
+   */
+  private deepseekReasoningBuffer = '';
+
+  /** Tracks in-flight parsed-SSE handles so we can wait for drain on consume. */
+  private deepseekParsedHandles: ParsedDeepseekSse[] = [];
 
   /**
    * Get an AI SDK language model instance for the given configuration.
@@ -110,10 +129,19 @@ export class ModelManager {
           // The bare function-call form on @ai-sdk/openai >=3.x routes to /responses, which
           // DeepSeek does not implement — it only exposes /chat/completions. The .chat factory
           // forces the chat-completions path. See PR #400 review for full trace.
+          //
+          // **I2 — reasoning_content extraction:**
+          // Pass a custom `fetch` that tees the SSE response body. One branch flows
+          // through to AI SDK unmodified (zero impact on existing behavior); the other
+          // branch is parsed for `delta.reasoning_content` text and accumulated into
+          // `this.deepseekReasoningBuffer`, which agent-runner consumes after
+          // streamResult drains. See deepseek-sse-transform.ts for the parser.
           const { createOpenAI } = await import('@ai-sdk/openai');
+          const customFetch = this.makeDeepseekFetch();
           const deepseekProvider = createOpenAI({
             baseURL: DEEPSEEK_BASE_URL,
             apiKey: process.env.DEEPSEEK_API_KEY,
+            fetch: customFetch as unknown as typeof globalThis.fetch,
           });
           providerFn = (modelId: string) => deepseekProvider.chat(modelId);
           break;
@@ -211,8 +239,93 @@ export class ModelManager {
 
   /**
    * Clear the provider cache (useful for testing or reconfiguration).
+   * Also clears any buffered DeepSeek reasoning so a fresh test/run starts clean.
    */
   clearCache(): void {
     this.providerCache.clear();
+    this.deepseekReasoningBuffer = '';
+    this.deepseekParsedHandles = [];
+  }
+
+  /**
+   * Build the custom fetch wrapper for the DeepSeek provider.
+   *
+   * Returns a function with the same signature as `globalThis.fetch` that:
+   * 1. Calls native fetch with the supplied input/init.
+   * 2. If the response is a streaming SSE body, tees it and parses one branch
+   *    for `delta.reasoning_content`, accumulating into `this.deepseekReasoningBuffer`.
+   * 3. Returns a new Response wrapping the un-tampered passthrough branch as
+   *    its body, so AI SDK consumes exactly the bytes DeepSeek sent.
+   *
+   * If the response is not an SSE stream (e.g. error JSON, no body), it is
+   * returned unchanged.
+   *
+   * **Why a method, not a free function:** the wrapper closes over `this` to
+   * append to the per-instance reasoning buffer. Each ModelManager instance
+   * has its own buffer (one per AgentRunner per session).
+   */
+  private makeDeepseekFetch(): (input: unknown, init?: unknown) => Promise<Response> {
+    return async (input: unknown, init?: unknown): Promise<Response> => {
+      // Cast through `any` because @ai-sdk/openai's fetch type is the standard
+      // global fetch shape; we re-export native fetch behavior identically.
+      const response: Response = await (globalThis.fetch as any)(input, init);
+
+      // Only intercept successful streaming responses. Non-stream errors
+      // (4xx/5xx with JSON body) and empty bodies pass through untouched.
+      if (!response.ok || !response.body) return response;
+      const contentType = response.headers.get('content-type') ?? '';
+      if (!contentType.includes('text/event-stream')) return response;
+
+      const parsed = teeAndParse(response.body);
+      this.deepseekParsedHandles.push(parsed);
+
+      // Wrap into a new Response with the passthrough branch as body.
+      // Headers, status, and statusText are copied so AI SDK sees an identical
+      // response shape.
+      return new Response(parsed.passthroughBody, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    };
+  }
+
+  /**
+   * Drain any in-flight DeepSeek SSE parser branches and return the accumulated
+   * `reasoning_content` string. Resets the buffer to `''` on each call (consume
+   * semantics).
+   *
+   * **Caller contract:** call AFTER `await streamResult` resolves in agent-runner.
+   * The AI SDK consumer branch must have been fully drained for the parser branch
+   * (which lags slightly due to tee buffering) to have caught up.
+   *
+   * **Multi-step accumulation:** if a single `streamText` call made multiple HTTP
+   * calls (one per agentic step), reasoning from all steps is concatenated in
+   * call order — not separated by step boundary. This matches the user-facing
+   * mental model of "what was the model's full chain of thought for this turn."
+   *
+   * **Returns `null` if no reasoning was captured.** Empty string means a fetch
+   * happened but produced no reasoning content (e.g. non-R1 DeepSeek model).
+   */
+  async consumeDeepseekReasoning(): Promise<string | null> {
+    const handles = this.deepseekParsedHandles;
+    this.deepseekParsedHandles = [];
+    if (handles.length === 0) {
+      const buffered = this.deepseekReasoningBuffer;
+      this.deepseekReasoningBuffer = '';
+      return buffered || null;
+    }
+    // Wait for all parser branches to finish draining (they should already be
+    // done if AI SDK consumer drained, but allow up to one event-loop tick).
+    for (const h of handles) {
+      if (!h.isDrained()) {
+        // Yield once so the parser background reader can flush.
+        await new Promise((r) => setImmediate(r));
+      }
+      this.deepseekReasoningBuffer += h.getReasoning();
+    }
+    const out = this.deepseekReasoningBuffer;
+    this.deepseekReasoningBuffer = '';
+    return out || null;
   }
 }

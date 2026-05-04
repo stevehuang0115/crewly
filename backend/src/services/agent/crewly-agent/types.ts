@@ -117,6 +117,18 @@ export interface AgentRunResult {
   finishReason: string;
   /** Budget warning message when token usage is approaching limits */
   budgetWarning?: string;
+  /**
+   * I2: DeepSeek-R1 chain-of-thought text extracted from `delta.reasoning_content`.
+   *
+   * Present only for `deepseek-reasoner` model runs. `null` if the run did not
+   * produce any reasoning content (e.g. non-R1 model, or R1 returned content-only).
+   * `undefined` for non-DeepSeek providers (no extraction is performed).
+   *
+   * Concatenated across all agentic steps in this single AgentRunResult — i.e.
+   * if the model made N HTTP calls during this run, the reasoning from all N
+   * is joined in call order.
+   */
+  reasoning?: string | null;
 }
 
 /**
@@ -438,8 +450,29 @@ export const CREWLY_AGENT_DEFAULTS = {
   /** Heartbeat interval in milliseconds for keeping in-process agent active between messages */
   HEARTBEAT_INTERVAL_MS: 30_000,
   /** Maximum time in milliseconds for a single message processing (generateText call) — hard abort.
-   *  Override via CREWLY_AGENT_MESSAGE_TIMEOUT_MS env var. */
+   *  Override via CREWLY_AGENT_MESSAGE_TIMEOUT_MS env var.
+   *
+   *  This is the **default** timeout used when the model has no entry in
+   *  `MODEL_TIMEOUT_MS`. Per-model overrides take precedence — see below. */
   MESSAGE_TIMEOUT_MS: Number(process.env.CREWLY_AGENT_MESSAGE_TIMEOUT_MS) || 300_000,
+  /** I4 — Per-model hard-timeout overrides. Looked up by `modelId`.
+   *
+   *  When the runtime service is about to run a message, it checks
+   *  `MODEL_TIMEOUT_MS[config.model.modelId]` first; falls back to
+   *  `MESSAGE_TIMEOUT_MS` if no entry exists.
+   *
+   *  **Why per-model:** different models have radically different latency
+   *  characteristics. DeepSeek-R1 (`deepseek-reasoner`) emits chain-of-thought
+   *  reasoning_tokens which are slower to generate than plain content tokens.
+   *  Live smoke (2026-05-03) measured R1 single-step at avg 2.8s/max 4.8s, but
+   *  long-context (>32k) latency rises sharply per vendor docs, and multi-step
+   *  agentic loops can accumulate 30+ steps. 5min default is tight; 10min gives
+   *  safety margin without inviting runaway loops. See gap-list spec §I4 for
+   *  measurement evidence. */
+  MODEL_TIMEOUT_MS: {
+    /** DeepSeek-R1: 2× default — reasoning chain-of-thought is slower per token. */
+    'deepseek-reasoner': 600_000,
+  } as Record<string, number>,
   /** Soft warning threshold in milliseconds — logs a warning but does not kill the request.
    *  Override via CREWLY_AGENT_MESSAGE_SOFT_WARNING_MS env var. */
   MESSAGE_SOFT_WARNING_MS: Number(process.env.CREWLY_AGENT_MESSAGE_SOFT_WARNING_MS) || 240_000,

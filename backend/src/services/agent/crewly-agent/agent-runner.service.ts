@@ -917,6 +917,15 @@ export class AgentRunnerService {
       }
     }
 
+    // I2 — DeepSeek-R1 reasoning_content drain.
+    // After streamResult is fully drained, pull any reasoning the custom fetch
+    // wrapper accumulated for this run. Returns null for non-DeepSeek providers
+    // (the wrapper only runs on the DeepSeek provider path) or when no
+    // reasoning was produced.
+    const reasoning = this.config.model.provider === 'deepseek'
+      ? await this.modelManager.consumeDeepseekReasoning()
+      : undefined;
+
     return {
       text,
       steps: stepCount,
@@ -924,6 +933,7 @@ export class AgentRunnerService {
       toolCalls,
       finishReason,
       budgetWarning,
+      reasoning,
     };
   }
 
@@ -1075,6 +1085,13 @@ export class AgentRunnerService {
       }
     }
 
+    // I2 — DeepSeek-R1 reasoning_content drain (generateText path).
+    // Same as the streamText path: pull buffered reasoning the custom fetch
+    // wrapper accumulated. Returns null for non-DeepSeek providers.
+    const reasoning = this.config.model.provider === 'deepseek'
+      ? await this.modelManager.consumeDeepseekReasoning()
+      : undefined;
+
     return {
       text: finalText,
       steps: result.steps.length,
@@ -1082,6 +1099,7 @@ export class AgentRunnerService {
       toolCalls,
       finishReason: result.finishReason,
       budgetWarning,
+      reasoning,
     };
   }
 
