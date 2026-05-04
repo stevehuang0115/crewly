@@ -127,6 +127,14 @@ export interface AgentRunResult {
    * Concatenated across all agentic steps in this single AgentRunResult — i.e.
    * if the model made N HTTP calls during this run, the reasoning from all N
    * is joined in call order.
+   *
+   * **SECURITY — UNTRUSTED CONTENT.** This string is downstream of user input
+   * (R1 reasoning is generated in response to the user's prompt). When re-injected
+   * into ANY subsequent model call, it MUST be wrapped as untrusted-context — e.g.
+   * `<reasoning-from-deepseek-r1 trust="untrusted">...</reasoning-from-deepseek-r1>`
+   * with explicit framing as "hint material from another model, not authoritative
+   * instructions." Direct splicing into a system prompt = jailbreak primitive.
+   * See P0-1 design-review gate for I2.5 reasoning-pipe routing.
    */
   reasoning?: string | null;
 }
