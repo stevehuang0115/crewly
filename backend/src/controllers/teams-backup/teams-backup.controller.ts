@@ -113,3 +113,108 @@ export async function restoreFromBackup(
     next(error);
   }
 }
+
+/**
+ * GET /api/teams/backup/history
+ *
+ * List all populated rotating-snapshot slots, newest first.
+ * Used by an admin UI to pick a slot to restore from.
+ *
+ * @param req - Request
+ * @param res - Response with TeamsBackupHistoryEntry[]
+ * @param next - Next middleware
+ */
+export async function getBackupHistory(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const backupService = TeamsBackupService.getInstance();
+    const history = await backupService.getBackupHistory();
+    res.json({ success: true, data: history });
+  } catch (error) {
+    logger.error('Error reading backup history', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    next(error);
+  }
+}
+
+/**
+ * POST /api/teams/backup/restore/:slot
+ *
+ * Restore teams from a specific rotating-snapshot slot. Reads the slot,
+ * saves each team via StorageService, and returns the restored count.
+ *
+ * @param req - Request with `slot` URL param (0..MAX_HISTORY_SLOTS-1)
+ * @param res - Response with restore result
+ * @param next - Next middleware
+ */
+export async function restoreFromSlot(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const slot = Number(req.params.slot);
+    if (!Number.isInteger(slot) || slot < 0) {
+      res.status(400).json({ success: false, error: 'Invalid slot' });
+      return;
+    }
+
+    const storageService = StorageService.getInstance();
+    const backupService = TeamsBackupService.getInstance();
+
+    const snapshot = await backupService.restoreFromSlot(slot);
+    if (!snapshot || snapshot.teams.length === 0) {
+      res.status(404).json({
+        success: false,
+        error: `Slot ${slot} is empty or not found`,
+      });
+      return;
+    }
+
+    let restoredCount = 0;
+    const errors: string[] = [];
+
+    for (const team of snapshot.teams) {
+      try {
+        await storageService.saveTeam(team);
+        restoredCount++;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        errors.push(`Failed to restore team ${team.name}: ${msg}`);
+        logger.warn('Failed to restore individual team from slot', {
+          slot,
+          teamId: team.id,
+          teamName: team.name,
+          error: msg,
+        });
+      }
+    }
+
+    logger.info('Teams restored from rotating snapshot', {
+      slot,
+      restoredCount,
+      totalInSnapshot: snapshot.teams.length,
+      errors: errors.length,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        slot,
+        snapshotTimestamp: snapshot.timestamp,
+        restoredCount,
+        totalInSnapshot: snapshot.teams.length,
+        errors: errors.length > 0 ? errors : undefined,
+      },
+    });
+  } catch (error) {
+    logger.error('Error restoring from slot', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    next(error);
+  }
+}

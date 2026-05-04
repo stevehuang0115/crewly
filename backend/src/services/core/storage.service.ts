@@ -12,7 +12,13 @@ import { CREWLY_CONSTANTS, RUNTIME_TYPES, type AgentStatus, type WorkingStatus, 
 import { LoggerService, ComponentLogger } from './logger.service.js';
 import { TeamsBackupService } from './teams-backup.service.js';
 import { atomicWriteFile, withOperationLock } from '../../utils/file-io.utils.js';
+import { atomicWriteJsonWithGuard } from '../../utils/integrity-guarded-write.utils.js';
 import { addGeminiTrustedFolders, getProjectTrustPaths } from '../../utils/gemini-trusted-folders.js';
+import {
+  StateInvariantViolation,
+  isForceEmptyBootActive,
+  FORCE_EMPTY_BOOT_ENV,
+} from './state-invariant.types.js';
 
 /**
  * Storage-level events emitted after a team is persisted or removed.
@@ -109,6 +115,91 @@ export class StorageService {
    */
   getCrewlyHome(): string {
     return this.crewlyHome;
+  }
+
+  /**
+   * Boot-time state invariant check (C1 of the 2026-05-03 persistence-fix
+   * spec). Compares the current on-disk team count to the latest backup
+   * snapshot. If the live state is empty but a non-empty backup exists,
+   * the invariant has been violated — the backend is refusing to boot
+   * rather than serving an "empty teams" UI that the user might "fix"
+   * by re-creating teams against the wiped state.
+   *
+   * Operators can override via `CREWLY_FORCE_EMPTY_BOOT=1` env var for
+   * legitimate first-boot or explicit-reset scenarios.
+   *
+   * Best-effort: failures inside the backup-status read path log a
+   * warning and do NOT block boot — the invariant should never become a
+   * boot-time hard dependency itself.
+   *
+   * @throws {StateInvariantViolation} when live teams are empty but the
+   *   most-recent backup snapshot has data, and the override env var
+   *   is not set.
+   */
+  async verifyStateInvariantOnBoot(): Promise<void> {
+    let currentTeams: Team[];
+    try {
+      currentTeams = await this.getTeams();
+    } catch (loadError) {
+      // If we can't even load teams, defer to the existing error path —
+      // do not synthesize a violation from a load failure.
+      this.logger.warn('Boot invariant check could not load teams; skipping check', {
+        error: loadError instanceof Error ? loadError.message : String(loadError),
+      });
+      return;
+    }
+
+    let backupStatus;
+    try {
+      const backupService = TeamsBackupService.getInstance(this.crewlyHome);
+      backupStatus = await backupService.getBackupStatus(currentTeams);
+    } catch (statusError) {
+      // Backup-status read failure is non-fatal: better to boot than to
+      // wedge the process on a transient I/O issue with the backup file.
+      this.logger.warn(
+        'Boot invariant check could not read backup status; skipping check',
+        { error: statusError instanceof Error ? statusError.message : String(statusError) }
+      );
+      return;
+    }
+
+    if (!backupStatus.hasMismatch) {
+      this.logger.info('Boot invariant check passed', {
+        currentTeamCount: backupStatus.currentTeamCount,
+        backupTeamCount: backupStatus.backupTeamCount,
+      });
+      return;
+    }
+
+    // hasMismatch === true → currentTeams.length === 0 && backupTeams.length > 0
+    if (isForceEmptyBootActive()) {
+      this.logger.warn(
+        'STATE INVARIANT VIOLATED but FORCE_EMPTY_BOOT override active — booting anyway',
+        {
+          envVar: FORCE_EMPTY_BOOT_ENV,
+          backupTeamCount: backupStatus.backupTeamCount,
+          backupTimestamp: backupStatus.backupTimestamp,
+        }
+      );
+      return;
+    }
+
+    this.logger.error('STATE INVARIANT VIOLATED: empty teams but backup has data', {
+      currentTeamCount: backupStatus.currentTeamCount,
+      backupTeamCount: backupStatus.backupTeamCount,
+      backupTimestamp: backupStatus.backupTimestamp,
+    });
+    throw new StateInvariantViolation(
+      `Refusing to start: teams directory is empty but backup contains ` +
+        `${backupStatus.backupTeamCount} teams (snapshot ${backupStatus.backupTimestamp ?? 'unknown'}). ` +
+        `Restore from POST /api/teams/backup/restore (live) or POST /api/teams/backup/restore/:slot (rotating snapshot), ` +
+        `or set ${FORCE_EMPTY_BOOT_ENV}=1 to override.`,
+      {
+        currentTeamCount: backupStatus.currentTeamCount,
+        backupTeamCount: backupStatus.backupTeamCount,
+        backupTimestamp: backupStatus.backupTimestamp,
+      }
+    );
   }
 
   /**
@@ -789,8 +880,12 @@ export class StorageService {
         projects.push(project);
       }
 
-      const newContent = JSON.stringify(projects, null, 2);
-      await atomicWriteFile(this.projectsFile, newContent);
+      // A1: integrity-guarded write — refuses to wipe out all projects
+      // unless the caller explicitly opts in (delete path uses
+      // allowExplicitDelete).
+      await atomicWriteJsonWithGuard(this.projectsFile, projects, {
+        countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
+      });
 
       this.logger.info('Project saved successfully', {
         projectId: project.id,
@@ -1148,7 +1243,10 @@ This is a foundational task that should be completed first before other developm
         messages.push(scheduledMessage);
       }
 
-      await atomicWriteFile(this.scheduledMessagesFile, JSON.stringify(messages, null, 2));
+      // A1: integrity-guarded write — refuses collapse-to-empty
+      await atomicWriteJsonWithGuard(this.scheduledMessagesFile, messages, {
+        countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
+      });
     } catch (error) {
       this.logger.error('Error saving scheduled message', { error: error instanceof Error ? error.message : String(error) });
       throw error;
@@ -1231,7 +1329,10 @@ This is a foundational task that should be completed first before other developm
         checks.push(check);
       }
 
-      await atomicWriteFile(this.recurringChecksFile, JSON.stringify(checks, null, 2));
+      // A1: integrity-guarded write — refuses collapse-to-empty
+      await atomicWriteJsonWithGuard(this.recurringChecksFile, checks, {
+        countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
+      });
     } catch (error) {
       this.logger.error('Error saving recurring check', {
         error: error instanceof Error ? error.message : String(error),
@@ -1328,7 +1429,10 @@ This is a foundational task that should be completed first before other developm
         checks.push(check);
       }
 
-      await atomicWriteFile(this.oneTimeChecksFile, JSON.stringify(checks, null, 2));
+      // A1: integrity-guarded write — refuses collapse-to-empty
+      await atomicWriteJsonWithGuard(this.oneTimeChecksFile, checks, {
+        countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
+      });
     } catch (error) {
       this.logger.error('Error saving one-time check', {
         error: error instanceof Error ? error.message : String(error),
