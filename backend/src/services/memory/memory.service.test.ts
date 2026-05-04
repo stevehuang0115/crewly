@@ -590,4 +590,93 @@ describe('MemoryService', () => {
       expect(result.agentMemories).toHaveLength(0);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // M3 — recall-eligibility filtering (spec §183-187).
+  //
+  // These wire tests prove that filterRelevant() — the LIVE recall path called
+  // by service.recall() at memory.service.ts:757 — correctly drops entries
+  // that are superseded or expired (TTL in the past). They use the agent
+  // memory service's addRoleKnowledge() API to seed entries with the v3
+  // fields (supersededBy / ttl) that service.remember() does not yet expose
+  // through the high-level API.
+  // ---------------------------------------------------------------------------
+  describe('M3 recall filtering', () => {
+    beforeEach(async () => {
+      await service.initializeForSession(testAgentId, testRole, testProjectPath);
+    });
+
+    it('hides entries with supersededBy set from recall results', async () => {
+      const agentService = service.getAgentMemoryService();
+      // Seed a healthy + a superseded entry that both match the same context.
+      await agentService.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Always validate user input thoroughly',
+        confidence: 0.9,
+      });
+      await agentService.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Stale validation guidance from older spec',
+        confidence: 0.9,
+        supersededBy: 'rk-newer',
+      });
+
+      const result = await service.recall({
+        agentId: testAgentId,
+        context: 'validation user input',
+        scope: 'agent',
+      });
+
+      const joined = result.agentMemories.join('\n');
+      expect(joined).toContain('validate user input thoroughly');
+      expect(joined).not.toContain('Stale validation guidance');
+    });
+
+    it('hides expired entries (ttl < now) from recall results', async () => {
+      const agentService = service.getAgentMemoryService();
+      const PAST_TTL = '2000-01-01T00:00:00Z';
+      await agentService.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Active testing convention',
+        confidence: 0.9,
+      });
+      await agentService.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Expired testing convention from old framework',
+        confidence: 0.9,
+        ttl: PAST_TTL,
+      });
+
+      const result = await service.recall({
+        agentId: testAgentId,
+        context: 'testing convention',
+        scope: 'agent',
+      });
+
+      const joined = result.agentMemories.join('\n');
+      expect(joined).toContain('Active testing convention');
+      expect(joined).not.toContain('Expired testing convention');
+    });
+
+    it('surfaces healthy entries on recall (positive control)', async () => {
+      const agentService = service.getAgentMemoryService();
+      const FUTURE_TTL = '2099-01-01T00:00:00Z';
+      await agentService.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Healthy long-lived pattern about retries',
+        confidence: 0.8,
+        ttl: FUTURE_TTL,
+      });
+
+      const result = await service.recall({
+        agentId: testAgentId,
+        context: 'retries pattern',
+        scope: 'agent',
+      });
+
+      expect(result.agentMemories.join('\n')).toContain(
+        'Healthy long-lived pattern about retries',
+      );
+    });
+  });
 });
