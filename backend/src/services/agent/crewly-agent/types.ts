@@ -288,9 +288,51 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'gpt-4o': 128_000,
   'gpt-4o-mini': 128_000,
   'gpt-4-turbo': 128_000,
+  // DeepSeek — V3 chat and R1 reasoner both ship with a 64k context window.
+  // Without these entries the manager falls back to `default: 128_000`, which
+  // would let Crewly's compaction trigger (0.8 × budget) skip past the real
+  // 64k cap and let DeepSeek 4xx with context_length_exceeded.
+  'deepseek-chat': 64_000,
+  'deepseek-reasoner': 64_000,
   // Fallback
   default: 128_000,
 } as const;
+
+/**
+ * Per-model floor on `maxOutputTokens` (the AI SDK's name for the
+ * `max_tokens` request param). Used to defend against a class of bugs where
+ * a low user-configured limit silently produces an empty response.
+ *
+ * Currently only `deepseek-reasoner` has a real floor: R1 mixes
+ * `reasoning_tokens` into the same `max_tokens` budget as `completion_tokens`,
+ * so a user value < ~200 can be entirely consumed by the reasoning trace,
+ * leaving `message.content = ""` (200 OK, no error).
+ *
+ * Models not listed here resolve to a floor of 0 (no clamp).
+ *
+ * Discovered 2026-05-03 via live smoke test D — see
+ * `.crewly/specs/2026-05-03-crewly-agent-deepseek-gap-list.md` (finding N5).
+ */
+export const MODEL_OUTPUT_TOKEN_FLOORS: Record<string, number> = {
+  'deepseek-reasoner': 1024,
+} as const;
+
+/**
+ * Resolve the effective `maxOutputTokens` for a given model configuration,
+ * applying any per-model floor from `MODEL_OUTPUT_TOKEN_FLOORS`.
+ *
+ * If `config.maxTokens` is unset, falls back to the runtime default
+ * (`CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.maxTokens`). The result is always
+ * `>= floor` for the model, where `floor` defaults to 0.
+ *
+ * @param config - Model configuration (may have `maxTokens` undefined)
+ * @returns Effective max output tokens to pass to generateText/streamText
+ */
+export function resolveMaxOutputTokens(config: ModelConfig): number {
+  const requested = config.maxTokens ?? CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.maxTokens ?? 0;
+  const floor = MODEL_OUTPUT_TOKEN_FLOORS[config.modelId] ?? 0;
+  return Math.max(requested, floor);
+}
 
 /**
  * Result of an autonomous context compaction operation.
@@ -447,6 +489,8 @@ export const SUPPORTED_MODELS: Array<{ id: string; label: string; provider: Mode
   { id: 'anthropic/claude-haiku-4-20250514', label: 'Claude Haiku 4', provider: 'anthropic' },
   { id: 'openai/gpt-4o', label: 'GPT-4o', provider: 'openai' },
   { id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini', provider: 'openai' },
+  { id: 'deepseek/deepseek-chat', label: 'DeepSeek V3', provider: 'deepseek' },
+  { id: 'deepseek/deepseek-reasoner', label: 'DeepSeek R1', provider: 'deepseek' },
   { id: 'ollama/llama3', label: 'Llama 3 (Ollama)', provider: 'ollama' },
 ];
 

@@ -114,14 +114,24 @@ export interface SkillsSettings {
 // ============================================================================
 
 /**
- * Supported AI provider names for API key management
+ * Supported AI provider names for API key management.
+ *
+ * Note: 'deepseek' is served via the OpenAI-compatible endpoint at
+ * https://api.deepseek.com/v1, but is configured as a distinct provider
+ * so users can save a separate API key in Settings. See
+ * services/agent/crewly-agent/model-manager.ts for the runtime wiring.
  */
-export type ApiKeyProvider = 'gemini' | 'anthropic' | 'openai';
+export type ApiKeyProvider = 'gemini' | 'anthropic' | 'openai' | 'deepseek';
 
 /**
  * Array of all valid API key providers
  */
-export const API_KEY_PROVIDERS: readonly ApiKeyProvider[] = ['gemini', 'anthropic', 'openai'] as const;
+export const API_KEY_PROVIDERS: readonly ApiKeyProvider[] = [
+  'gemini',
+  'anthropic',
+  'openai',
+  'deepseek',
+] as const;
 
 /**
  * Environment variable names for each provider's API key
@@ -130,6 +140,7 @@ export const API_KEY_ENV_VARS: Record<ApiKeyProvider, string[]> = {
   gemini: ['GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY'],
   anthropic: ['ANTHROPIC_API_KEY'],
   openai: ['OPENAI_API_KEY'],
+  deepseek: ['DEEPSEEK_API_KEY'],
 } as const;
 
 /**
@@ -154,6 +165,7 @@ export interface ApiKeysSettings {
     gemini?: string;
     anthropic?: string;
     openai?: string;
+    deepseek?: string;
   };
 
   /** Per-runtime API key overrides (e.g. "gemini-cli", "crewly-agent") */
@@ -162,6 +174,7 @@ export interface ApiKeysSettings {
       gemini?: ApiKeyConfig;
       anthropic?: ApiKeyConfig;
       openai?: ApiKeyConfig;
+      deepseek?: ApiKeyConfig;
     };
   };
 
@@ -171,6 +184,7 @@ export interface ApiKeysSettings {
       gemini?: ApiKeyConfig;
       anthropic?: ApiKeyConfig;
       openai?: ApiKeyConfig;
+      deepseek?: ApiKeyConfig;
     };
   };
 }

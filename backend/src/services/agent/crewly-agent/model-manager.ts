@@ -2,9 +2,12 @@
  * Crewly Agent Model Manager
  *
  * Multi-provider model factory that creates AI SDK model instances
- * from configuration. Supports Anthropic, OpenAI, Google, and Ollama providers.
+ * from configuration. Supports Anthropic, OpenAI, Google, DeepSeek, and
+ * Ollama providers.
  *
- * API keys are read from environment variables by the provider SDKs:
+ * API keys for cloud providers are resolved through the settings service
+ * (skill → runtime → global → env var) and injected into process.env so the
+ * provider SDKs can pick them up:
  * - ANTHROPIC_API_KEY
  * - OPENAI_API_KEY
  * - GOOGLE_GENERATIVE_AI_API_KEY
@@ -141,10 +144,11 @@ export class ModelManager {
     const settingsService = getSettingsService();
     const context = { runtime: 'crewly-agent' };
 
-    const [geminiKey, anthropicKey, openaiKey] = await Promise.all([
+    const [geminiKey, anthropicKey, openaiKey, deepseekKey] = await Promise.all([
       settingsService.getApiKey('gemini', context),
       settingsService.getApiKey('anthropic', context),
       settingsService.getApiKey('openai', context),
+      settingsService.getApiKey('deepseek', context),
     ]);
 
     return {
@@ -152,22 +156,20 @@ export class ModelManager {
       openai: !!openaiKey,
       google: !!geminiKey,
       ollama: true, // Ollama runs locally, always "available" if installed
-      // DeepSeek is not yet wired through the settings service (ApiKeyProvider union),
-      // so availability is detected from the env var directly.
-      deepseek: !!process.env.DEEPSEEK_API_KEY,
+      deepseek: !!deepseekKey,
     };
   }
 
   /**
    * Map model provider name to API key provider name.
    * Only applicable for cloud providers wired through the settings service
-   * (anthropic, openai, google). Ollama runs locally; DeepSeek currently
-   * reads its key directly from DEEPSEEK_API_KEY (see ensureApiKeyInEnv).
+   * (anthropic, openai, google, deepseek). Ollama runs locally and is
+   * excluded.
    *
-   * @param provider - Cloud model provider (anthropic, openai, or google)
+   * @param provider - Cloud model provider
    * @returns Corresponding ApiKeyProvider name
    */
-  private static providerToApiKeyProvider(provider: Exclude<ModelProvider, 'ollama' | 'deepseek'>): ApiKeyProvider {
+  private static providerToApiKeyProvider(provider: Exclude<ModelProvider, 'ollama'>): ApiKeyProvider {
     return provider === 'google' ? 'gemini' : provider;
   }
 
@@ -175,16 +177,14 @@ export class ModelManager {
    * Ensure the API key for a provider is available in process.env
    * by resolving it from settings if not already present.
    *
-   * No-op for providers that do not flow through the settings service:
-   * - 'ollama' runs locally and needs no key
-   * - 'deepseek' reads DEEPSEEK_API_KEY directly from the environment
-   *   (will be migrated to the settings service in a follow-up; see PR notes)
+   * No-op for 'ollama' (runs locally, no key required). All other providers —
+   * including 'deepseek' — flow through the settings service so users can
+   * configure them from the UI without touching env vars.
    *
    * @param provider - The model provider
    */
   private async ensureApiKeyInEnv(provider: ModelProvider): Promise<void> {
     if (provider === 'ollama') return; // Ollama is local, no API key needed
-    if (provider === 'deepseek') return; // DEEPSEEK_API_KEY read directly from env
     const apiKeyProvider = ModelManager.providerToApiKeyProvider(provider);
     const settingsService = getSettingsService();
     const key = await settingsService.getApiKey(apiKeyProvider, { runtime: 'crewly-agent' });
@@ -202,6 +202,9 @@ export class ModelManager {
         break;
       case 'google':
         process.env.GOOGLE_GENERATIVE_AI_API_KEY = key;
+        break;
+      case 'deepseek':
+        process.env.DEEPSEEK_API_KEY = key;
         break;
     }
   }

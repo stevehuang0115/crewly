@@ -74,6 +74,7 @@ describe('Settings Types', () => {
         enableProactiveCompact: true,
         enableSelfEvolution: false,
         tokenTracking: false,
+        enableAuditor: false,
       };
 
       expect(settings.defaultRuntime).toBe('claude-code');
@@ -104,6 +105,7 @@ describe('Settings Types', () => {
         enableProactiveCompact: true,
         enableSelfEvolution: false,
         tokenTracking: false,
+        enableAuditor: false,
       };
 
       expect(settings.runtimeCommands['claude-code']).toContain('/custom/path');
@@ -166,6 +168,7 @@ describe('Settings Types', () => {
           enableProactiveCompact: true,
           enableSelfEvolution: false,
           tokenTracking: false,
+          enableAuditor: false,
         },
         chat: {
           showRawTerminalOutput: false,
@@ -621,7 +624,18 @@ describe('API Key Management Types', () => {
       expect(API_KEY_PROVIDERS).toContain('gemini');
       expect(API_KEY_PROVIDERS).toContain('anthropic');
       expect(API_KEY_PROVIDERS).toContain('openai');
-      expect(API_KEY_PROVIDERS).toHaveLength(3);
+      expect(API_KEY_PROVIDERS).toContain('deepseek');
+      expect(API_KEY_PROVIDERS).toHaveLength(4);
+    });
+
+    /**
+     * B1: DeepSeek must appear in API_KEY_PROVIDERS so that the settings
+     * service iterates over it during getApiKey/maskApiKeysSettings/
+     * resolveApiKey, exposing the same skill→runtime→global→env chain
+     * as the other cloud providers.
+     */
+    it('should include deepseek for B1 (provider parity in settings UI/resolution)', () => {
+      expect(API_KEY_PROVIDERS).toContain('deepseek');
     });
   });
 
@@ -632,6 +646,15 @@ describe('API Key Management Types', () => {
       expect(API_KEY_ENV_VARS.anthropic).toContain('ANTHROPIC_API_KEY');
       expect(API_KEY_ENV_VARS.openai).toContain('OPENAI_API_KEY');
     });
+
+    /**
+     * B1: DeepSeek key fallback env var. Required so resolveApiKey('deepseek', ...)
+     * picks up DEEPSEEK_API_KEY when no settings entry is configured — preserves
+     * env-var-only flow for users who don't open the Settings UI.
+     */
+    it('should map deepseek to DEEPSEEK_API_KEY for B1 env-var fallback', () => {
+      expect(API_KEY_ENV_VARS.deepseek).toEqual(['DEEPSEEK_API_KEY']);
+    });
   });
 
   describe('isValidApiKeyProvider', () => {
@@ -639,6 +662,10 @@ describe('API Key Management Types', () => {
       expect(isValidApiKeyProvider('gemini')).toBe(true);
       expect(isValidApiKeyProvider('anthropic')).toBe(true);
       expect(isValidApiKeyProvider('openai')).toBe(true);
+    });
+
+    it('should return true for deepseek (B1)', () => {
+      expect(isValidApiKeyProvider('deepseek')).toBe(true);
     });
 
     it('should return false for invalid providers', () => {
@@ -754,6 +781,64 @@ describe('API Key Management Types', () => {
       process.env.GEMINI_API_KEY = 'gemini-key';
       const result = resolveApiKey('gemini', { global: {} });
       expect(result).toBe('google-key');
+    });
+
+    // ----- B1: deepseek resolution chain (skill → runtime → global → env) -----
+
+    it('should fall back to DEEPSEEK_API_KEY env var for deepseek when no settings (B1)', () => {
+      delete process.env.DEEPSEEK_API_KEY;
+      process.env.DEEPSEEK_API_KEY = 'env-deepseek-key';
+      const result = resolveApiKey('deepseek', undefined);
+      expect(result).toBe('env-deepseek-key');
+    });
+
+    it('should use global deepseek key over DEEPSEEK_API_KEY env var (B1)', () => {
+      process.env.DEEPSEEK_API_KEY = 'env-deepseek-key';
+      const apiKeys: ApiKeysSettings = {
+        global: { deepseek: 'global-deepseek-key' },
+      };
+      const result = resolveApiKey('deepseek', apiKeys);
+      expect(result).toBe('global-deepseek-key');
+    });
+
+    it('should use runtime override deepseek key over global (B1)', () => {
+      const apiKeys: ApiKeysSettings = {
+        global: { deepseek: 'global-deepseek-key' },
+        runtimeOverrides: {
+          'crewly-agent': {
+            deepseek: { key: 'runtime-deepseek-key', source: 'custom' },
+          },
+        },
+      };
+      const result = resolveApiKey('deepseek', apiKeys, { runtime: 'crewly-agent' });
+      expect(result).toBe('runtime-deepseek-key');
+    });
+
+    it('should use skill override deepseek key over runtime override (B1)', () => {
+      const apiKeys: ApiKeysSettings = {
+        global: { deepseek: 'global-deepseek-key' },
+        runtimeOverrides: {
+          'crewly-agent': {
+            deepseek: { key: 'runtime-deepseek-key', source: 'custom' },
+          },
+        },
+        skillOverrides: {
+          'reasoning-task': {
+            deepseek: { key: 'skill-deepseek-key', source: 'custom' },
+          },
+        },
+      };
+      const result = resolveApiKey('deepseek', apiKeys, {
+        runtime: 'crewly-agent',
+        skill: 'reasoning-task',
+      });
+      expect(result).toBe('skill-deepseek-key');
+    });
+
+    it('should return undefined when no deepseek key configured anywhere (B1)', () => {
+      delete process.env.DEEPSEEK_API_KEY;
+      const result = resolveApiKey('deepseek', undefined);
+      expect(result).toBeUndefined();
     });
   });
 

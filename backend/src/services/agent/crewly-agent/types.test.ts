@@ -6,6 +6,9 @@ import {
   CREWLY_AGENT_DEFAULTS,
   WRITE_TOOLS,
   MODEL_CONTEXT_WINDOWS,
+  MODEL_OUTPUT_TOKEN_FLOORS,
+  SUPPORTED_MODELS,
+  resolveMaxOutputTokens,
 } from './types.js';
 import type {
   ToolDefinition,
@@ -342,6 +345,81 @@ describe('Crewly Agent Types', () => {
 
     it('should include known OpenAI models', () => {
       expect(MODEL_CONTEXT_WINDOWS['gpt-4o']).toBe(128_000);
+    });
+
+    it('should include DeepSeek models with the real 64k window (B3)', () => {
+      // Without these entries the lookup falls back to `default: 128_000`,
+      // which would let Crewly's compaction trigger (0.8 × budget) skip past
+      // DeepSeek's real 64k cap and let the API 4xx with context_length_exceeded.
+      expect(MODEL_CONTEXT_WINDOWS['deepseek-chat']).toBe(64_000);
+      expect(MODEL_CONTEXT_WINDOWS['deepseek-reasoner']).toBe(64_000);
+    });
+  });
+
+  describe('SUPPORTED_MODELS (B2)', () => {
+    it('should include both DeepSeek model variants for the model picker', () => {
+      const ids = SUPPORTED_MODELS.map((m) => m.id);
+      expect(ids).toContain('deepseek/deepseek-chat');
+      expect(ids).toContain('deepseek/deepseek-reasoner');
+    });
+
+    it('should tag DeepSeek entries with the deepseek provider', () => {
+      const chat = SUPPORTED_MODELS.find((m) => m.id === 'deepseek/deepseek-chat');
+      const reasoner = SUPPORTED_MODELS.find((m) => m.id === 'deepseek/deepseek-reasoner');
+      expect(chat?.provider).toBe('deepseek');
+      expect(reasoner?.provider).toBe('deepseek');
+      expect(chat?.label).toBeTruthy();
+      expect(reasoner?.label).toBeTruthy();
+    });
+  });
+
+  describe('MODEL_OUTPUT_TOKEN_FLOORS / resolveMaxOutputTokens (N5)', () => {
+    it('should declare a 1024-token floor only for deepseek-reasoner', () => {
+      // R1 mixes reasoning_tokens into the same max_tokens budget as
+      // completion_tokens, so a low limit silently produces empty content.
+      // See live smoke test D in the gap-list spec (2026-05-03).
+      expect(MODEL_OUTPUT_TOKEN_FLOORS['deepseek-reasoner']).toBe(1024);
+      expect(MODEL_OUTPUT_TOKEN_FLOORS['deepseek-chat']).toBeUndefined();
+      expect(MODEL_OUTPUT_TOKEN_FLOORS['gpt-4o']).toBeUndefined();
+    });
+
+    it('should clamp deepseek-reasoner maxTokens up to the 1024 floor', () => {
+      expect(
+        resolveMaxOutputTokens({ provider: 'deepseek', modelId: 'deepseek-reasoner', maxTokens: 30 })
+      ).toBe(1024);
+      expect(
+        resolveMaxOutputTokens({ provider: 'deepseek', modelId: 'deepseek-reasoner', maxTokens: 500 })
+      ).toBe(1024);
+    });
+
+    it('should pass through user-set maxTokens when above the floor', () => {
+      expect(
+        resolveMaxOutputTokens({ provider: 'deepseek', modelId: 'deepseek-reasoner', maxTokens: 8192 })
+      ).toBe(8192);
+    });
+
+    it('should not clamp models without a floor', () => {
+      expect(
+        resolveMaxOutputTokens({ provider: 'deepseek', modelId: 'deepseek-chat', maxTokens: 30 })
+      ).toBe(30);
+      expect(
+        resolveMaxOutputTokens({ provider: 'openai', modelId: 'gpt-4o', maxTokens: 100 })
+      ).toBe(100);
+    });
+
+    it('should fall back to the runtime default when maxTokens is undefined', () => {
+      const fallback = CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.maxTokens ?? 0;
+      expect(
+        resolveMaxOutputTokens({ provider: 'openai', modelId: 'gpt-4o' })
+      ).toBe(fallback);
+    });
+
+    it('should still apply the floor when maxTokens is undefined for deepseek-reasoner', () => {
+      // CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.maxTokens=8192 already clears the
+      // 1024 floor, so the result is the default itself — but the contract
+      // remains: `result >= floor`.
+      const result = resolveMaxOutputTokens({ provider: 'deepseek', modelId: 'deepseek-reasoner' });
+      expect(result).toBeGreaterThanOrEqual(1024);
     });
   });
 
