@@ -67,6 +67,26 @@ describe('Crewly Agent Types', () => {
       expect(guardrails.promptGuardEnabled).toBe(true);
       expect(guardrails.explicitEnvVars).toEqual([]);
     });
+
+    /**
+     * P3 #7 — defensive guard: MODEL_TIMEOUT_MS must be Object.frozen at module
+     * load. `as const` is compile-time only and the `Record<string, number>` cast
+     * widens it back to mutable; without freeze, runtime writes like
+     * `MODEL_TIMEOUT_MS['x'] = 999` silently mutate global config table.
+     * Catches future regressions if anyone removes the freeze wrapper.
+     */
+    it('MODEL_TIMEOUT_MS is Object.frozen (defensive guard against runtime mutation)', () => {
+      expect(Object.isFrozen(CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS)).toBe(true);
+      // In strict mode (which Node ESM modules use by default) writes to a
+      // frozen object throw TypeError. Without strict mode they would fail
+      // silently. Jest runs with strict mode under Node ESM.
+      expect(() => {
+        (CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS as Record<string, number>)['test-mutation'] = 999;
+      }).toThrow(TypeError);
+      // And the existing entry is untouched.
+      expect(CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS['deepseek-reasoner']).toBe(600_000);
+      expect(CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS['test-mutation']).toBeUndefined();
+    });
   });
 
   describe('isModelProvider', () => {
