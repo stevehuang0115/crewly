@@ -76,8 +76,37 @@ jest.mock('../core/logger.service.js', () => ({
 // .crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md.
 // ---------------------------------------------------------------------------
 
-/** Stable name used for dedup + cancel by the agent. */
+/**
+ * Stable name *prefix* used for dedup + cancel by the agent. The full
+ * trigger name is `${IDLE_SELF_PING_NAME}:${target}` (see
+ * {@link idleSelfPingNameForTarget}) — per-target namespacing is required
+ * because the engine dedups on `(createdBy, name)` and `createdBy` is a
+ * constrained literal union (`'user'|'orchestrator'|'system'|'mission'`)
+ * that cannot carry the agent session id.
+ *
+ * ⚠ ARCH 2026-05-05 PR #448 review caught the global-by-name dedup hazard:
+ * if the name had stayed a flat `'idle-self-ping'` constant, two workers
+ * scheduling their idle-self-ping would collide on (createdBy='system',
+ * name='idle-self-ping') and the second worker would silently get the
+ * first worker's trigger (still targeting the first worker). Worker B's
+ * stall fallback would then fire on Worker A's session, breaking both
+ * the wake routing and the §3.5.b ≤2-per-agent cap.
+ */
 export const IDLE_SELF_PING_NAME = 'idle-self-ping';
+
+/**
+ * Builds the per-target dedup name for an idle-self-ping followup.
+ * Mirrors the auto-name pattern in `config/skills/agent/core/schedule-followup`
+ * (which hashes target+title): we use a deterministic
+ * `idle-self-ping:<session>` so `cancel-followup --name` can target it
+ * predictably without needing the session-specific hash.
+ *
+ * @param target - The target agent's session name
+ * @returns Per-target trigger name suitable for the engine's dedup key
+ */
+export function idleSelfPingNameForTarget(target: string): string {
+  return `${IDLE_SELF_PING_NAME}:${target}`;
+}
 
 /** Window guidance in spec §3.5.b — 5–15 minutes. */
 export const IDLE_SELF_PING_MIN_MS = 5 * 60 * 1000;
@@ -121,7 +150,11 @@ export function buildIdleSelfPingTriggerInput(
       },
     },
     createdBy: 'system',
-    name: IDLE_SELF_PING_NAME,
+    // Per-target name (see ARCH note on IDLE_SELF_PING_NAME). The engine's
+    // dedup key is (createdBy, name); since `createdBy` is a constrained
+    // literal union and cannot carry the session id, we namespace `name`
+    // instead. cancel-followup can still target by name predictably.
+    name: idleSelfPingNameForTarget(target),
     maxFires: 1,
     maxIdleFires: DEFAULT_MAX_IDLE_FIRES,
   };
@@ -187,9 +220,14 @@ describe('Idle-Fallback Acceptance Harness (spec §5.2 / §3.5.b)', () => {
       expect(desc.toLowerCase()).toContain('stall');
     });
 
-    it('uses stable name "idle-self-ping" so cancel-followup can target it', () => {
+    it('uses stable per-target name so cancel-followup can target it predictably', () => {
       const input = buildIdleSelfPingTriggerInput(WORKER_SESSION, 10 * 60_000);
-      expect(input.name).toBe(IDLE_SELF_PING_NAME);
+      // ARCH #448: name is per-target — `idle-self-ping:<session>` —
+      // not a flat `idle-self-ping` constant. Cancel-followup callers
+      // pass `idleSelfPingNameForTarget(self)` to find their own ping.
+      expect(input.name).toBe(idleSelfPingNameForTarget(WORKER_SESSION));
+      expect(input.name).toContain(IDLE_SELF_PING_NAME); // prefix invariant
+      expect(input.name).toContain(WORKER_SESSION); // session-id suffix invariant
     });
   });
 
@@ -282,23 +320,63 @@ describe('Idle-Fallback Acceptance Harness (spec §5.2 / §3.5.b)', () => {
   // -------------------------------------------------------------------------
 
   describe('per-agent cap (engine dedup + skill discipline)', () => {
-    it('same-name re-registration returns the existing trigger (no duplicate accumulation)', async () => {
+    it('same-target re-registration returns the existing trigger (no duplicate accumulation)', async () => {
       const input = buildIdleSelfPingTriggerInput(WORKER_SESSION, 5 * 60_000);
       const t1 = await engine.create(input);
       const t2 = await engine.create(input);
       expect(t1.status).toBe('active');
       expect(t2.id).toBe(t1.id);
-      // Only one trigger physically registered.
-      expect(engine.list('active').filter((t) => t.name === IDLE_SELF_PING_NAME)).toHaveLength(1);
+      // Only one trigger physically registered for this target.
+      expect(
+        engine.list('active').filter((t) => t.name === idleSelfPingNameForTarget(WORKER_SESSION)),
+      ).toHaveLength(1);
     });
 
-    it('distinct names register independently (spec allows ≤2 active)', async () => {
+    it('distinct names register independently for the same target (spec allows ≤2 active)', async () => {
       const baseInput = buildIdleSelfPingTriggerInput(WORKER_SESSION, 5 * 60_000);
-      const a = await engine.create({ ...baseInput, name: `${IDLE_SELF_PING_NAME}-1` });
-      const b = await engine.create({ ...baseInput, name: `${IDLE_SELF_PING_NAME}-2` });
+      const a = await engine.create({ ...baseInput, name: `${baseInput.name}-1` });
+      const b = await engine.create({ ...baseInput, name: `${baseInput.name}-2` });
       expect(a.id).not.toBe(b.id);
       expect(a.status).toBe('active');
       expect(b.status).toBe('active');
+    });
+
+    it('creates distinct triggers for distinct agents (cross-agent isolation — Arch #448 review)', async () => {
+      // Regression guard for the "global-by-name dedup" bug Arch caught
+      // on PR #448. With per-target name namespacing, Worker A's
+      // idle-self-ping must NOT alias Worker B's.
+      //
+      // If this test ever fails after a refactor, the engine's
+      // `(createdBy, name)` dedup is leaking across agents — and Worker
+      // B's stall fallback will silently fire on Worker A's session,
+      // so the §3.5.b cap and wake routing both break.
+      const leoInput = buildIdleSelfPingTriggerInput('worker-leo', 10 * 60_000);
+      const maxInput = buildIdleSelfPingTriggerInput('worker-max', 10 * 60_000);
+
+      // Sanity: both inputs share `createdBy='system'` (the only literal
+      // the engine type allows). The ONLY thing that should keep them
+      // apart in the dedup map is `name` being target-namespaced.
+      expect(leoInput.createdBy).toBe(maxInput.createdBy);
+      expect(leoInput.createdBy).toBe('system');
+      expect(leoInput.name).not.toBe(maxInput.name);
+      expect(leoInput.name).toBe(idleSelfPingNameForTarget('worker-leo'));
+      expect(maxInput.name).toBe(idleSelfPingNameForTarget('worker-max'));
+
+      const leoTrigger = await engine.create(leoInput);
+      const maxTrigger = await engine.create(maxInput);
+
+      expect(leoTrigger.id).not.toBe(maxTrigger.id);
+      expect(leoTrigger.action.createWorkItem?.target).toBe('worker-leo');
+      expect(maxTrigger.action.createWorkItem?.target).toBe('worker-max');
+      expect(leoTrigger.status).toBe('active');
+      expect(maxTrigger.status).toBe('active');
+
+      // Both must be present in the active list — engine should not have
+      // silently aliased one to the other.
+      const activePings = engine
+        .list('active')
+        .filter((t) => t.name?.startsWith(`${IDLE_SELF_PING_NAME}:`));
+      expect(activePings).toHaveLength(2);
     });
   });
 
