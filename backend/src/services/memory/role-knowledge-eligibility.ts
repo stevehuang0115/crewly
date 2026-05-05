@@ -125,6 +125,24 @@ export function lazyMigrateEntry(entry: RoleKnowledgeEntry): RoleKnowledgeEntry 
  *               from §185).
  * 4. Otherwise derived: `importance >= 0.85 AND confidence >= 0.7`.
  *
+ * @remarks
+ * **Phase-2 priority filter — DO NOT wire into the prompt path until M5.**
+ *
+ * This helper is forward-declared and intentionally NOT called from any
+ * production prompt-build path in M3. M5 wires it into
+ * `generateRoleKnowledgeContext` and `generateSchedulingContext` AFTER
+ * the legacy-entry backfill lands.
+ *
+ * Wiring it into M3's prompt path would be a P0 regression: pre-migration
+ * entries default to `importance=0.5` and `shouldInjectByDefault=false`
+ * (per spec §191), so the derived gate `importance >= 0.85` would cull
+ * every pre-migration knowledge entry on day one. The backfill in M5 lifts
+ * `importance`/`shouldInjectByDefault` for the entries that actually
+ * deserve auto-injection, then this helper becomes safe to wire.
+ *
+ * See `.crewly/specs/2026-05-03-memory-codebase-improvement-plan.md` M5
+ * for the wiring instruction.
+ *
  * @param entry - Knowledge entry under evaluation (does not need to be pre-migrated)
  * @param now - Reference instant for TTL evaluation. Defaults to Date.now().
  * @returns true when this entry should appear in default-recall results
