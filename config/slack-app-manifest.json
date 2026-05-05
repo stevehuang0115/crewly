@@ -20,7 +20,8 @@
         "groups:history",
         "im:history",
         "mpim:history",
-        "users:read"
+        "users:read",
+        "reactions:write"
       ]
     }
   },
