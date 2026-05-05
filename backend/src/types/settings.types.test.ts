@@ -72,6 +72,7 @@ describe('Settings Types', () => {
         },
         agentIdleTimeoutMinutes: 10,
         enableProactiveCompact: true,
+        enableThresholdCompact: false,
         enableSelfEvolution: false,
         tokenTracking: false,
         enableAuditor: false,
@@ -103,6 +104,7 @@ describe('Settings Types', () => {
         },
         agentIdleTimeoutMinutes: 15,
         enableProactiveCompact: true,
+        enableThresholdCompact: false,
         enableSelfEvolution: false,
         tokenTracking: false,
         enableAuditor: false,
@@ -166,6 +168,7 @@ describe('Settings Types', () => {
           },
           agentIdleTimeoutMinutes: 10,
           enableProactiveCompact: true,
+          enableThresholdCompact: false,
           enableSelfEvolution: false,
           tokenTracking: false,
           enableAuditor: false,
@@ -285,6 +288,16 @@ describe('Settings Types', () => {
       // disables only the proactive trigger; users can re-enable via settings UI.
       const defaults = getDefaultSettings();
       expect(defaults.general.enableProactiveCompact).toBe(false);
+    });
+
+    it('defaults enableThresholdCompact to false so threshold-compact is opt-in', () => {
+      // Per spec 2026-05-05-compact-fix-AB-followup §B: threshold-driven compact at
+      // RED (85%) / CRITICAL (95%) is gated behind this flag. Default `false` aligns
+      // wrapper behavior with Steve's user-position — "Claude Code self-compacts
+      // internally, external compact is unnecessary". Auto-recovery (kill+restart)
+      // still runs at CRITICAL when AUTO_RECOVERY_ENABLED, regardless of this flag.
+      const defaults = getDefaultSettings();
+      expect(defaults.general.enableThresholdCompact).toBe(false);
     });
 
     it('should have runtime commands defaults for all runtimes', () => {
@@ -453,6 +466,19 @@ describe('Settings Types', () => {
       const result = validateSettings(settings);
 
       expect(result.valid).toBe(true);
+    });
+
+    it('should detect non-boolean enableThresholdCompact', () => {
+      // Per spec 2026-05-05-compact-fix-AB-followup §B: validate the new field
+      // alongside enableProactiveCompact. Cast to bypass compile-time type check
+      // — the runtime validator is the contract.
+      const settings = getDefaultSettings();
+      (settings.general as unknown as Record<string, unknown>).enableThresholdCompact = 'yes';
+
+      const result = validateSettings(settings);
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('enableThresholdCompact'))).toBe(true);
     });
   });
 

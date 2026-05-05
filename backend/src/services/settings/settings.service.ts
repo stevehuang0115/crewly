@@ -313,6 +313,34 @@ export class SettingsService {
       runtimeCommands['codex-cli'] = 'codex -a never -s danger-full-access';
     }
 
+    // One-time flip: existing users with proactive compact enabled get switched
+    // off per Steve user-position decision (2026-05-04). The Settings UI still
+    // allows users to opt back in. The `_proactiveCompactMigrated` marker is
+    // idempotent — a user who deliberately re-enables via Settings UI will not
+    // be re-flipped on subsequent loads.
+    //
+    // **Marker persistence note** (per Arch review observation 2 on PR #447):
+    // This migration mutates the in-memory `loaded` object only. The marker
+    // is not separately written to disk here — it lands on disk via the
+    // standard `saveSettings()` flow (e.g. when the user later updates ANY
+    // setting through the UI, or via `mergeSettings`/`updateSettings`).
+    // Until that next save, the marker exists transiently in memory; if the
+    // process restarts before any save, the migration runs again and is
+    // still safe (the same `true → false` flip happens, idempotent in
+    // user-visible outcome). Future maintainers: a missing-on-disk marker
+    // is NOT a bug — it just means the user has not saved settings since
+    // first load post-upgrade.
+    //
+    // Per spec 2026-05-05-compact-fix-AB-followup §A.1
+    if (
+      typeof general['enableProactiveCompact'] === 'boolean' &&
+      general['enableProactiveCompact'] === true &&
+      !general['_proactiveCompactMigrated']
+    ) {
+      general['enableProactiveCompact'] = false;
+      general['_proactiveCompactMigrated'] = true;
+    }
+
     // Clean up legacy fields
     delete general['claudeCodeCommand'];
     delete general['claudeCodeInitScript'];

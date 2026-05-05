@@ -53,6 +53,20 @@ export interface GeneralSettings {
   /** Enable proactive context compaction based on cumulative terminal output volume */
   enableProactiveCompact: boolean;
 
+  /**
+   * Enable threshold-driven context compaction at RED (85%) / CRITICAL (95%).
+   *
+   * When `false` (default), the wrapper does NOT trigger `/compact` based on
+   * context-percent thresholds — the runtime (Claude Code, etc.) handles its
+   * own internal compaction. The threshold path remains as opt-in safety net
+   * for users who want wrapper-driven compaction on top of native compaction.
+   *
+   * Per spec 2026-05-05-compact-fix-AB-followup: aligns wrapper behavior with
+   * Steve's user-position decision — "Claude Code self-compacts internally,
+   * external compact is unnecessary".
+   */
+  enableThresholdCompact: boolean;
+
   /** Enable Self Evolution mode — orchestrator monitors for errors and self-triages */
   enableSelfEvolution: boolean;
 
@@ -308,6 +322,7 @@ export function getDefaultSettings(): CrewlySettings {
       },
       agentIdleTimeoutMinutes: 30,
       enableProactiveCompact: false,
+      enableThresholdCompact: false,
       enableSelfEvolution: false,
       tokenTracking: false,
       enableAuditor: false,
@@ -383,6 +398,10 @@ export function validateSettings(settings: CrewlySettings): SettingsValidationRe
 
   if (typeof settings.general.enableProactiveCompact !== 'boolean') {
     errors.push('enableProactiveCompact must be a boolean');
+  }
+
+  if (typeof settings.general.enableThresholdCompact !== 'boolean') {
+    errors.push('enableThresholdCompact must be a boolean');
   }
 
   if (typeof settings.general.enableSelfEvolution !== 'undefined' && typeof settings.general.enableSelfEvolution !== 'boolean') {

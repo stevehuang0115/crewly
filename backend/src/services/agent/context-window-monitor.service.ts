@@ -249,6 +249,7 @@ export class ContextWindowMonitorService {
 			criticalThreshold: CONTEXT_WINDOW_MONITOR_CONSTANTS.CRITICAL_THRESHOLD_PERCENT,
 		});
 		void this.refreshProactiveCompactSetting();
+		void this.refreshThresholdCompactSetting();
 
 		this.checkTimer = setInterval(() => {
 			this.performCheck();
@@ -535,7 +536,11 @@ export class ContextWindowMonitorService {
 		}
 
 		// At red level: flush memory before compacting (#166)
-		if (state.level === 'red' && !state.compactInProgress) {
+		// Gated by enableThresholdCompact (default false per spec
+		// 2026-05-05-compact-fix-AB-followup §B). When disabled, the wrapper
+		// does NOT trigger /compact at the red threshold; the runtime handles
+		// its own compaction internally.
+		if (this.thresholdCompactEnabled && state.level === 'red' && !state.compactInProgress) {
 			if (state.compactAttempts < CONTEXT_WINDOW_MONITOR_CONSTANTS.MAX_COMPACT_ATTEMPTS) {
 				// #166: Pre-compaction memory flush — send a silent message asking the agent
 				// to save critical context before compaction clears conversation history.
@@ -561,8 +566,12 @@ export class ContextWindowMonitorService {
 		if (state.level === 'critical') {
 			this.publishContextEvent(state, 'agent:context_critical');
 
-			// Try compact if we haven't hit the limit yet
+			// Try compact if we haven't hit the limit yet — gated by
+			// enableThresholdCompact (default false per spec
+			// 2026-05-05-compact-fix-AB-followup §B). When the gate is closed,
+			// auto-recovery still runs as the safety net for runaway sessions.
 			if (
+				this.thresholdCompactEnabled &&
 				!state.compactInProgress &&
 				state.compactAttempts < CONTEXT_WINDOW_MONITOR_CONSTANTS.MAX_COMPACT_ATTEMPTS
 			) {
@@ -1091,8 +1100,9 @@ This is automated — do not ask questions, just save and respond NO_REPLY.`;
 		if (this.proactiveCompactEnabled) {
 			this.checkProactiveCompact(now);
 		}
-		// Refresh cached setting in background so runtime config changes are picked up.
+		// Refresh cached settings in background so runtime config changes are picked up.
 		void this.refreshProactiveCompactSetting();
+		void this.refreshThresholdCompactSetting();
 
 		for (const [sessionName, state] of this.contextStates) {
 			const timeSinceLastDetection = now - state.lastDetectedAt;
@@ -1149,17 +1159,50 @@ This is automated — do not ask questions, just save and respond NO_REPLY.`;
 
 	/** Timestamp of last proactive compact per session for cooldown tracking */
 	private proactiveCompactLastTriggered: Map<string, number> = new Map();
-	/** Cached toggle for proactive compact behavior (loaded from settings) */
-	private proactiveCompactEnabled: boolean = true;
+	/**
+	 * Cached toggle for proactive compact behavior (loaded from settings).
+	 *
+	 * Default: `false` (fail-safe CLOSED). Per spec 2026-05-05-compact-fix-AB-followup §A.2 —
+	 * before the first refresh from settings, the wrapper does NOT proactively compact.
+	 * The runtime (Claude Code) handles its own compaction internally.
+	 */
+	private proactiveCompactEnabled: boolean = false;
+	/**
+	 * Cached toggle for threshold-driven compact at RED (85%) / CRITICAL (95%).
+	 *
+	 * Default: `false` (fail-safe CLOSED). Per spec 2026-05-05-compact-fix-AB-followup §B —
+	 * threshold-driven external compaction is opt-in. Auto-recovery (kill+restart) still
+	 * runs at CRITICAL when AUTO_RECOVERY_ENABLED, regardless of this flag.
+	 */
+	private thresholdCompactEnabled: boolean = false;
 
 	/**
 	 * Refresh the cached proactive compact toggle from persisted settings.
 	 * Non-fatal: any read failure keeps the previous cached value.
+	 *
+	 * Fail-safe semantics: when the persisted setting is undefined, default to
+	 * `false` so an absent configuration cannot enable external compaction.
 	 */
 	private async refreshProactiveCompactSetting(): Promise<void> {
 		try {
 			const settings = await getSettingsService().getSettings();
-			this.proactiveCompactEnabled = settings?.general?.enableProactiveCompact ?? true;
+			this.proactiveCompactEnabled = settings?.general?.enableProactiveCompact ?? false;
+		} catch {
+			// Keep last known value on read failures.
+		}
+	}
+
+	/**
+	 * Refresh the cached threshold compact toggle from persisted settings.
+	 * Non-fatal: any read failure keeps the previous cached value.
+	 *
+	 * Fail-safe semantics: when the persisted setting is undefined, default to
+	 * `false` so an absent configuration cannot enable threshold-driven compaction.
+	 */
+	private async refreshThresholdCompactSetting(): Promise<void> {
+		try {
+			const settings = await getSettingsService().getSettings();
+			this.thresholdCompactEnabled = settings?.general?.enableThresholdCompact ?? false;
 		} catch {
 			// Keep last known value on read failures.
 		}
