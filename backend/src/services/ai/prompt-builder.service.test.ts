@@ -2369,4 +2369,266 @@ describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
 			}
 		});
 	});
+
+	// =============================================================================
+	// §3.0 Universal Delegator Closure (Mia spec patch fold-in):
+	//
+	// §3.0 is the dual of §3.5 — delegator-side closure (subscribe via
+	// watch-for-event + schedule-followup fallback at ~2x ETA + cancel-on-verify).
+	// It MUST land in ALL FOUR role souls (ORC/TL/PM/Worker) plus the kickoff
+	// prompt at buildOrchestratorPrompt, with role-specific ETA tuning per
+	// §3.1/§3.2/§3.3/§3.4 closure paragraphs.
+	//
+	// These tests verify:
+	// 1. Each role's rendered prompt names all three skill-paths (watch-for-event,
+	//    schedule-followup, cancel-followup) so agents can find them.
+	// 2. Each role's rendered prompt contains its role-specific ETA-tuning
+	//    numbers — proves the spec ETA framing actually made it through to the
+	//    runtime prompt, not just an abstract "schedule a fallback" mention.
+	// 3. The watch-for-event invocations parse cleanly (same flag-parse smoke
+	//    convention as the idle-self-ping tests above).
+	// =============================================================================
+	describe('§3.0 Universal Delegator Closure (Mia spec patch fold-in)', () => {
+		/**
+		 * Extract the watch-for-event bash invocation from a rendered prompt.
+		 * Mirrors `extractScheduleFollowupInvocation` above — finds the line
+		 * containing `watch-for-event/execute.sh` and walks forward across
+		 * line continuations.
+		 */
+		function extractWatchForEventInvocation(rendered: string): string {
+			const lines = rendered.split('\n');
+			const startIdx = lines.findIndex((l) => /watch-for-event\/execute\.sh/.test(l));
+			if (startIdx < 0) return '';
+			const collected: string[] = [];
+			for (let i = startIdx; i < lines.length; i++) {
+				collected.push(lines[i] ?? '');
+				if (!/\\\s*$/.test(lines[i] ?? '')) break;
+			}
+			return collected.join('\n');
+		}
+
+		/**
+		 * Assert flag-parse correctness for a watch-for-event invocation per
+		 * `config/skills/agent/core/watch-for-event/execute.sh` argument grammar.
+		 */
+		function assertWatchForEventFlagsValid(invocation: string): void {
+			expect(invocation.length).toBeGreaterThan(0);
+			// Required: --event-type <value>
+			expect(invocation).toMatch(/--event-type\s+/);
+			// Required: --title <value>
+			expect(invocation).toMatch(/--title\s+/);
+			// Best-practice: --filter-session (narrows to specific delegatee per §3.0)
+			expect(invocation).toMatch(/--filter-session\s+/);
+			// Best-practice: bound the watcher (--max-fires) so it can't flap forever
+			expect(invocation).toMatch(/--max-fires\s+/);
+			// Forbidden: --target-self is NOT a valid flag (same as schedule-followup)
+			expect(invocation).not.toMatch(/--target-self\b/);
+		}
+
+		describe('ORC §3.1 closure paragraph', () => {
+			it('ORC role prompt names all three §3.0 skills + ORC ETA tuning numbers', async () => {
+				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+				const orcContent = fs.readFileSync(orcPromptPath, 'utf8');
+				expect(orcContent).toContain('watch-for-event/execute.sh');
+				expect(orcContent).toContain('schedule-followup/execute.sh');
+				expect(orcContent).toContain('cancel-followup/execute.sh');
+				// ORC ETA tuning per §3.1 closure: TL milestone 30–90min → fallback 120,
+				// cross-team 2–8h → 12h (~720 min).
+				expect(orcContent).toMatch(/30[–-]90\s*min/);
+				expect(orcContent).toMatch(/120/); // 120-min fallback
+				expect(orcContent).toMatch(/12\s*h|720/); // 12h fallback
+			});
+
+			it('ORC role prompt watch-for-event invocation parses cleanly', async () => {
+				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+				const orcContent = fs.readFileSync(orcPromptPath, 'utf8');
+				const invocation = extractWatchForEventInvocation(orcContent);
+				assertWatchForEventFlagsValid(invocation);
+			});
+
+			it('buildOrchestratorPrompt kickoff names all three §3.0 skills', () => {
+				const projectData = {
+					projectName: 'Dogfood Test',
+					projectPath: '/test/path',
+					teamDetails: { name: 'Crew', members: [{ name: 'Sam', role: 'TL' }] },
+					requirements: 'ship pipeline-first',
+				};
+				const result = service.buildOrchestratorPrompt(projectData);
+				expect(result).toContain('watch-for-event');
+				expect(result).toContain('schedule-followup');
+				expect(result).toContain('cancel-followup');
+				// Recursion clause naming
+				expect(result).toContain('Recursion clause');
+			});
+		});
+
+		describe('TL §3.2 closure paragraph', () => {
+			it('TL addon names all three §3.0 skills + TL ETA tuning numbers + verified-complete nuance', async () => {
+				const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+				const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(tlAddonContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'tl-session',
+					role: 'developer',
+					canDelegate: true,
+					teamId: 'team-x',
+					memberId: 'mem-x',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+					subordinates: [
+						{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+					],
+				};
+
+				const result = await service.buildTeamLeadSection(config);
+				expect(result).toContain('watch-for-event');
+				expect(result).toContain('schedule-followup');
+				expect(result).toContain('cancel-followup');
+				// TL ETA tuning per §3.2 closure: tactical Worker 20–60min → 90min,
+				// multi-step chains 1–3h → 5h (~300 min).
+				expect(result).toMatch(/20[–-]60\s*min/);
+				expect(result).toMatch(/90/); // 90-min fallback
+				expect(result).toMatch(/5\s*h|300/); // 5h fallback
+				// Nuance Sam called out: cancel on verified-complete, NOT raw complete-task.
+				expect(result).toMatch(/verified[\s-]complete/);
+			});
+
+			it('TL addon watch-for-event invocation parses cleanly', async () => {
+				const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+				const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(tlAddonContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'tl-session',
+					role: 'developer',
+					canDelegate: true,
+					teamId: 'team-x',
+					memberId: 'mem-x',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+					subordinates: [
+						{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+					],
+				};
+
+				const result = await service.buildTeamLeadSection(config);
+				const invocation = extractWatchForEventInvocation(result);
+				assertWatchForEventFlagsValid(invocation);
+			});
+		});
+
+		describe('PM §3.3 closure paragraph', () => {
+			it('PM prompt names all three §3.0 skills + PM ETA tuning numbers + upper-end discipline', async () => {
+				const pmPromptPath = path.join(repoRoot, 'config', 'roles', 'product-manager', 'prompt.md');
+				const pmContent = fs.readFileSync(pmPromptPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(pmContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'pm-session',
+					role: 'product-manager',
+					memberId: 'mem-pm',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+				};
+
+				const result = await service.buildSystemPrompt(config);
+				expect(result).toContain('watch-for-event');
+				expect(result).toContain('schedule-followup');
+				expect(result).toContain('cancel-followup');
+				// PM ETA tuning per §3.3 closure: PM→TL 1–4h → 6h (~360 min),
+				// PM→ORC 4–24h → 36h (~2160 min).
+				expect(result).toMatch(/1[–-]4\s*h/);
+				expect(result).toMatch(/6\s*h|360/);
+				expect(result).toMatch(/4[–-]24\s*h/);
+				expect(result).toMatch(/36\s*h|2160/);
+				// Sam-called-out discipline: err toward upper end of fallback window
+				expect(result).toMatch(/upper end/);
+			});
+
+			it('PM prompt watch-for-event invocation parses cleanly', async () => {
+				const pmPromptPath = path.join(repoRoot, 'config', 'roles', 'product-manager', 'prompt.md');
+				const pmContent = fs.readFileSync(pmPromptPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(pmContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'pm-session',
+					role: 'product-manager',
+					memberId: 'mem-pm',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+				};
+
+				const result = await service.buildSystemPrompt(config);
+				const invocation = extractWatchForEventInvocation(result);
+				assertWatchForEventFlagsValid(invocation);
+			});
+		});
+
+		describe('Worker §3.4 closure paragraph (recursion clause)', () => {
+			it('developer prompt names all three §3.0 skills + Worker ETA tuning + recursion-clause callout + canonical-failure-case naming', async () => {
+				const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+				const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(devContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'dev-session',
+					role: 'developer',
+					memberId: 'mem-dev',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+				};
+
+				const result = await service.buildSystemPrompt(config);
+				expect(result).toContain('watch-for-event');
+				expect(result).toContain('schedule-followup');
+				expect(result).toContain('cancel-followup');
+				// Worker ETA tuning per §3.4 closure: peer sub-WorkItems 10–30min → 45min,
+				// cross-role clarifications 15–60min → 90min.
+				expect(result).toMatch(/10[–-]30\s*min/);
+				expect(result).toMatch(/45/);
+				expect(result).toMatch(/15[–-]60\s*min/);
+				// Sam-called-out: name the canonical failure case explicitly
+				expect(result).toMatch(/Steve manually pinged/i);
+				// Recursion clause non-negotiable framing
+				expect(result).toMatch(/recursion clause.*non-negotiable/i);
+			});
+
+			it('developer prompt watch-for-event invocation parses cleanly', async () => {
+				const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+				const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(devContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'dev-session',
+					role: 'developer',
+					memberId: 'mem-dev',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+				};
+
+				const result = await service.buildSystemPrompt(config);
+				const invocation = extractWatchForEventInvocation(result);
+				assertWatchForEventFlagsValid(invocation);
+			});
+		});
+	});
 });

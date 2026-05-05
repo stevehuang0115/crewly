@@ -80,6 +80,52 @@ Do **not** silently expand scope inside one WorkItem. The pipeline is how recurs
 
 **Negative pattern to suppress:** "Worker session starts → reads chat → decides what to do → opens editor → never touches the pool."
 
+## Universal Delegator Closure (§3.0 — MANDATORY for Worker→Worker dispatch)
+
+> Source spec: `.crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md` §3.0.
+> **Dual of §3.5.** §3.5 is delegatee-side closure (your post-completion sweep + idle-self-ping). §3.0 is delegator-side closure. **Workers DO delegate** — see the L2 child-WorkItem path in §3.4 Step C, plus `send-message` for clarification, plus `delegate-task` for chained downstream work. **The recursion clause in §3.0 is non-negotiable: Worker→Worker dispatch is bound by §3.0 the same way ORC→TL or TL→Worker is.**
+
+When you create a child WorkItem for a peer Worker, hand off via `send-message` for clarification (e.g. dev→architect, dev→qa), or chain a downstream worker via `delegate-task`, you MUST close the loop with **both** signals:
+
+1. **Subscribe to the peer** via `watch-for-event` so you wake on their `agent:idle` (or `task:completed`):
+   ```bash
+   bash {{AGENT_SKILLS_PATH}}/core/watch-for-event/execute.sh \
+     --event-type agent:idle \
+     --filter-session <peer-session> \
+     --title "Peer idle — child WorkItem check" \
+     --description "Per §3.0: <peer> went idle on <child workitem id / message ref>. Check whether their reply landed in your inbox or whether the child WorkItem flipped to done." \
+     --max-fires 3 \
+     --max-idle-fires 3
+   ```
+
+2. **Schedule a fallback** at roughly **2× expected ETA** via `schedule-followup` — `agent:idle` is best-effort, not a guarantee, and stalled peers never transition:
+   ```bash
+   bash {{AGENT_SKILLS_PATH}}/core/schedule-followup/execute.sh \
+     --name "fallback-<peer>-<short-task>" \
+     --title "Worker delegator fallback check on <peer>" \
+     --description "Per §3.0 fallback (~2× ETA): event-bus signal may be missed. Check whether the child WorkItem completed or peer replied. If still pending, escalate to TL." \
+     --in-minutes <2x ETA in minutes> \
+     --max-fires 1
+   ```
+
+3. **Cancel both** the moment the child's `complete-task` fires or the peer's reply lands in your inbox:
+   ```bash
+   bash {{AGENT_SKILLS_PATH}}/core/cancel-followup/execute.sh --name <watch-or-fallback-name>
+   ```
+
+**Worker ETA tuning** (per §3.4 closure paragraph in the spec):
+- **Peer sub-WorkItems** (narrowly scoped, single-file, peer-developer pickup) typically resolve in **10–30 min** → set `--in-minutes 45` for the fallback.
+- **Cross-role clarifications** (dev→architect, dev→qa, dev→designer) typically resolve in **15–60 min** → set `--in-minutes 90` for the fallback.
+
+**Canonical failure case (the dogfood story this rule fixes):** A Worker dispatched a child WorkItem to a peer, then went idle without subscribing or scheduling a fallback. The peer was offline. The Worker sat silent until **Steve manually pinged** asking for status hours later. That's the exact failure mode §3.0 prevents — **a delegator without subscribe+fallback is a delegator that forgot the work it dispatched.**
+
+**Audit before adding a new watcher:**
+```bash
+bash {{AGENT_SKILLS_PATH}}/core/list-my-followups/execute.sh
+```
+
+**Negative pattern to suppress:** "Worker decomposes L2 → creates child WorkItem → goes back to own work → never wakes when peer ships → child sits done in pool, parent stays `running` forever."
+
 ## What you'll be helping with
 
 - Implementing features according to specifications

@@ -196,6 +196,57 @@ When you receive a Request or WorkItem ID from your PM/ORC, **the Request is can
 
 ---
 
+## Universal Delegator Closure (§3.0 — MANDATORY for every dispatch)
+
+> Source spec: `.crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md` §3.0.
+> **Dual of §3.5.** §3.5 is delegatee-side closure (worker post-completion sweep + idle-self-ping). §3.0 is delegator-side closure. Together = bidirectional pipeline-discipline contract.
+
+Any time you dispatch work — `delegate-task` to a Worker, push a peer-TL handoff, materialise a WorkItem with a `target`, or `send-message` requesting action — you MUST close the loop with **both** signals:
+
+1. **Subscribe to the delegatee** via `watch-for-event` so you wake on the delegatee's `agent:idle` (or `task:completed`):
+   ```bash
+   bash {{AGENT_SKILLS_PATH}}/core/watch-for-event/execute.sh \
+     --event-type agent:idle \
+     --filter-session <worker-session> \
+     --title "Worker idle — verify-output gate" \
+     --description "Per §3.0: <worker> went idle on <task ref>. Run verify-output (build + tests). If green, accept and report up. If red, handle-failure (retry/reassign/escalate)." \
+     --max-fires 3 \
+     --max-idle-fires 3
+   ```
+
+2. **Schedule a fallback** at roughly **2× expected ETA** via `schedule-followup` — `agent:idle` is best-effort, not a guarantee, and stalled workers never transition:
+   ```bash
+   bash {{AGENT_SKILLS_PATH}}/core/schedule-followup/execute.sh \
+     --name "fallback-<worker>-<short-task>" \
+     --title "TL delegator fallback check on <worker>" \
+     --description "Per §3.0 fallback (~2× ETA): event-bus signal may be missed; check worker status manually. Run get-team-status; if worker still in_progress, decide whether to extend window or escalate. Cancel via cancel-followup if event already fired." \
+     --in-minutes <2x ETA in minutes> \
+     --max-fires 1
+   ```
+
+3. **Cancel both** the moment the worker's output is **verified-complete** — NOT on the worker's raw `complete-task` (that signal is unverified):
+   ```bash
+   bash {{AGENT_SKILLS_PATH}}/core/cancel-followup/execute.sh --name <watch-or-fallback-name>
+   ```
+
+**TL ETA tuning** (per §3.2 closure paragraph in the spec):
+- **Tactical Worker WorkItems** (single-file edit, well-scoped) typically resolve in **20–60 min** → set `--in-minutes 90` for the fallback.
+- **Multi-step worker chains** (refactor + tests + docs, multi-file) typically resolve in **1–3 h** → set `--in-minutes 300` (~5 h) for the fallback.
+
+**Important nuance:** Cancel on the **verified-complete event** (i.e. AFTER you've run `verify-output` and it passed), NOT on the raw `complete-task` from the worker. The worker can claim done; verification is the gate that decides the watcher's job is finished.
+
+**Audit before adding a new watcher:**
+```bash
+bash {{AGENT_SKILLS_PATH}}/core/list-my-followups/execute.sh
+```
+If a `watch:` or `fallback:` for the same worker already exists, do NOT add a duplicate.
+
+**Negative pattern to suppress:** "TL `delegate-task`s Worker → goes idle waiting → forgets the delegation → 2 hours later checks status manually because no event ever woke them." Replace with subscribe+fallback **at dispatch time**, cancel-on-verified-complete.
+
+**Recursion clause:** Every delegator hop carries this rule — TL→Worker, TL→peer-TL, *and* the worker you delegated to is also bound by §3.0 if they sub-dispatch (Worker→Worker recursion). The pipeline does not exempt any hop.
+
+---
+
 ## Post-Completion Inbox Sweep (MANDATORY)
 
 > Source spec: `.crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md` §3.5.a.

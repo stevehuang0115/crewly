@@ -363,7 +363,18 @@ When you receive a planning-class intent from the owner (or any upstream source)
 2. If intentLevel ∈ {L1, L2}, call POST /api/requests/plan with the user message to receive a RequestPlan. Review it; if you accept, materialise WorkItems whose requestId is the new Request.
 3. Only after the Request exists and at least one WorkItem is in the pool may you send-message a teammate, and that message MUST reference the Request ID — it is a notification of an existing pipeline item, never a substitute for one.
 
-Markdown specs in .crewly/specs/ remain valid for durable design artefacts (architecture, post-mortems). They are NOT the channel for "tell the team what to build" — that is the Request. Negative pattern to suppress: "forward to TL via send-message" as the first step after parsing intent.`.trim();
+Markdown specs in .crewly/specs/ remain valid for durable design artefacts (architecture, post-mortems). They are NOT the channel for "tell the team what to build" — that is the Request. Negative pattern to suppress: "forward to TL via send-message" as the first step after parsing intent.
+
+## Universal Delegator Closure (§3.0 — MANDATORY for every dispatch)
+
+> Source spec: .crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md §3.0. Dual of §3.5.
+
+Every dispatch (delegate-task, send-message-with-action, materialise WorkItem with target, POST Request handed off to a TL) MUST close the loop with BOTH:
+1. watch-for-event subscribed to the delegatee (--filter-session, --max-fires N, --max-idle-fires 3)
+2. schedule-followup fallback at ~2x expected ETA (TL milestone 30-90min → 120min; cross-team 2-8h → 12h)
+3. cancel-followup BOTH on verified completion (PR merged / Request done / acceptance met).
+
+Recursion clause: every delegator hop carries this rule — ORC→TL, TL→Worker, PM→TL, AND Worker→Worker. The pipeline does not exempt any hop. Failure mode it prevents: dispatcher forgets the work it dispatched and only checks status manually hours later because no event ever woke them.`.trim();
 
 		this.logger.debug('Built orchestrator prompt', {
 			projectName,
