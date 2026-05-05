@@ -1,13 +1,13 @@
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter } from 'events';
 import { InProgressTask, InProgressTaskStatus, TaskTrackingData, TaskFileInfo, BlockedReport } from '../../types/task-tracking.types.js';
 import type { OrgRole } from '../ai/prompt-modules/prompt-module.interface.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 export class TaskTrackingService extends EventEmitter {
   private readonly taskTrackingPath: string;
@@ -16,7 +16,7 @@ export class TaskTrackingService extends EventEmitter {
 
   constructor() {
     super();
-    this.taskTrackingPath = path.join(os.homedir(), '.crewly', 'in_progress_tasks.json');
+    this.taskTrackingPath = path.join(getCrewlyHomePath(), 'in_progress_tasks.json');
   }
 
   /**

@@ -9,7 +9,6 @@
  */
 
 import * as path from 'path';
-import * as os from 'os';
 import {
   ensureDir,
   safeReadJson,
@@ -19,6 +18,7 @@ import {
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { TaskClaim } from '../../types/v2/claim.types.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,7 +85,7 @@ export class PoolStorage {
   constructor(options?: PoolStorageOptions) {
     const dataDir =
       options?.dataDir ??
-      path.join(os.homedir(), '.crewly', POOL_DIR_NAME);
+      path.join(getCrewlyHomePath(), POOL_DIR_NAME);
     this.filePath = path.join(dataDir, POOL_FILE_NAME);
     this.logger = LoggerService.getInstance().createComponentLogger('PoolStorage');
   }

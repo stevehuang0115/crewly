@@ -4,8 +4,8 @@ import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { AgentHeartbeatService } from '../agent/agent-heartbeat.service.js';
 import { writeFile, readFile, rename, unlink } from 'fs/promises';
 import { join } from 'path';
-import { homedir } from 'os';
 import { existsSync } from 'fs';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, PTY_CONSTANTS, ACTIVITY_MONITOR_CONSTANTS, RUNTIME_TYPES, type WorkingStatus } from '../../constants.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
@@ -87,7 +87,7 @@ export class ActivityMonitorService {
     this.logger = LoggerService.getInstance().createComponentLogger('ActivityMonitor');
     this.storageService = StorageService.getInstance();
     this.agentHeartbeatService = AgentHeartbeatService.getInstance();
-    this.crewlyHome = join(homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME);
+    this.crewlyHome = getCrewlyHomePath();
     this.teamWorkingStatusFile = join(this.crewlyHome, 'teamWorkingStatus.json');
   }
 

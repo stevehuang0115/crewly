@@ -164,3 +164,53 @@ describe('POST /api/orchestrator/onboarding/materialize-team', () => {
     expect(res.body.error).toMatch(/agents/);
   });
 });
+
+describe('POST /api/orchestrator/onboarding/materialize-team — CREWLY_HOME default resolution', () => {
+  const app = makeApp();
+  let tmpHome: string;
+  const ORIGINAL_CREWLY_HOME = process.env.CREWLY_HOME;
+
+  beforeEach(async () => {
+    tmpHome = path.join(
+      os.tmpdir(),
+      `crewly-home-default-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    await fs.mkdir(tmpHome, { recursive: true });
+    process.env.CREWLY_HOME = tmpHome;
+  });
+
+  afterEach(async () => {
+    if (ORIGINAL_CREWLY_HOME === undefined) {
+      delete process.env.CREWLY_HOME;
+    } else {
+      process.env.CREWLY_HOME = ORIGINAL_CREWLY_HOME;
+    }
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  });
+
+  const sampleRec = {
+    templateId: 'dtc-viral-content-team',
+    agents: [
+      {
+        role: 'content-drafter',
+        responsibilities: 'Drafts content.',
+        skillIds: ['content-drafter'],
+      },
+    ],
+    reasoning: 'because',
+    source: 'hardcoded:ecommerce-content-support',
+  };
+
+  it('writes team config under CREWLY_HOME/teams when teamsDir is omitted', async () => {
+    const res = await request(app)
+      .post('/api/orchestrator/onboarding/materialize-team')
+      .send({ recommendation: sampleRec });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.result.teamConfigPath.startsWith(path.join(tmpHome, 'teams') + path.sep)).toBe(
+      true,
+    );
+    expect(res.body.result.projectFlagPath).toBe(path.join(tmpHome, 'onboarding-complete.json'));
+  });
+});

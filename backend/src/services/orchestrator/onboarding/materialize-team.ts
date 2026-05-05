@@ -105,12 +105,19 @@ export interface MaterializeResult {
  *
  * @example
  * ```ts
+ * import { getCrewlyHomePath } from '../../core/crewly-home.utils.js';
+ *
+ * const crewlyHome = getCrewlyHomePath(); // honours CREWLY_HOME env override
  * const result = await materializeTeam(rec, {
- *   teamsDir: path.join(os.homedir(), '.crewly/teams'),
- *   projectFlagPath: path.join(os.homedir(), '.crewly/onboarding-complete.json'),
+ *   teamsDir: path.join(crewlyHome, 'teams'),
+ *   projectFlagPath: path.join(crewlyHome, 'onboarding-complete.json'),
  * });
  * console.log(result.teamId, '→', result.teamConfigPath);
  * ```
+ *
+ * Do NOT inline `path.join(os.homedir(), '.crewly/teams')` — that
+ * ignores CREWLY_HOME and breaks ESTestNode + dry-run-kit isolation
+ * (see crewly-home.utils.ts for context).
  */
 export async function materializeTeam(
   recommendation: TeamRecommendation,

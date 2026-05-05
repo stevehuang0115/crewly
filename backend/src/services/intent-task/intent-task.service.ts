@@ -14,8 +14,8 @@
 
 import { randomUUID } from 'crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { homedir } from 'os';
 import { join, dirname } from 'path';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import {
   type IntentTask,
   type TaskRun,
@@ -48,8 +48,17 @@ const SUMMARY_INTENT_MAX_LENGTH = 120;
 /** Terminal task statuses that set completedAt */
 const TERMINAL_STATUSES: IntentTaskStatus[] = ['completed', 'failed', 'cancelled'];
 
-/** Default persistence file path */
-const DEFAULT_PERSISTENCE_PATH = join(homedir(), '.crewly', 'data', 'intent-tasks.json');
+/**
+ * Default persistence file path.
+ *
+ * Resolved via {@link getCrewlyHomePath} so test profiles (CREWLY_HOME=/tmp/...)
+ * isolate their intent-task state. Computed lazily so tests that mutate
+ * `process.env.CREWLY_HOME` after module load still pick up the override —
+ * the previous module-level constant captured `homedir()` at import time.
+ */
+function defaultPersistencePath(): string {
+  return join(getCrewlyHomePath(), 'data', 'intent-tasks.json');
+}
 
 /** Debounce delay for file writes in milliseconds */
 const SAVE_DEBOUNCE_MS = 300;
@@ -115,7 +124,7 @@ export class IntentTaskService {
    * @param persistencePath - Override file path (used in tests to avoid touching real data)
    */
   constructor(persistencePath?: string) {
-    this.persistencePath = persistencePath ?? DEFAULT_PERSISTENCE_PATH;
+    this.persistencePath = persistencePath ?? defaultPersistencePath();
     this.loadFromDisk();
   }
 

@@ -1,13 +1,13 @@
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { ScheduledMessage } from '../../types/index.js';
 import { ScheduledMessageModel } from '../../models/ScheduledMessage.js';
 import { StorageService } from '../core/storage.service.js';
 import { PromptTemplateService, CheckinData } from '../ai/prompt-template.service.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 export interface ActiveProject {
   projectId: string;
@@ -30,7 +30,7 @@ export class ActiveProjectsService {
   private readonly logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('ActiveProjectsService');
 
   constructor(storageService?: StorageService) {
-    this.activeProjectsPath = path.join(os.homedir(), '.crewly', 'active_projects.json');
+    this.activeProjectsPath = path.join(getCrewlyHomePath(), 'active_projects.json');
     this.storageService = storageService;
     this.promptTemplateService = new PromptTemplateService();
   }

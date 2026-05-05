@@ -12,12 +12,12 @@
  */
 
 import * as path from 'path';
-import * as os from 'os';
 import { existsSync } from 'fs';
 import * as fs from 'fs/promises';
 import { StorageService } from '../core/storage.service.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import type { TeamMember, Team } from '../../types/index.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 /**
  * Service for generating and managing team member prompts.
@@ -33,7 +33,7 @@ export class PromptGeneratorService {
     this.storageService = StorageService.getInstance();
     this.logger = LoggerService.getInstance().createComponentLogger('PromptGeneratorService');
     this.configDir = path.resolve(process.cwd(), 'config');
-    this.crewlyHome = path.join(os.homedir(), '.crewly');
+    this.crewlyHome = getCrewlyHomePath();
   }
 
   /**

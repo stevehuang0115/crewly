@@ -7,10 +7,10 @@ import { parse as parseYAML, stringify as stringifyYAML } from 'yaml';
 import { Team, TeamMember, Project, Ticket, TicketFilter, ScheduledCheck, ScheduledMessage, MessageDeliveryLog } from '../../types/index.js';
 import { TeamModel, ProjectModel, TicketModel, ScheduledMessageModel, MessageDeliveryLogModel } from '../../models/index.js';
 import { v4 as uuidv4 } from 'uuid';
-import * as os from 'os';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES, type AgentStatus, type WorkingStatus, type RuntimeType } from '../../constants.js';
 import { LoggerService, ComponentLogger } from './logger.service.js';
 import { TeamsBackupService } from './teams-backup.service.js';
+import { getCrewlyHomePath } from './crewly-home.utils.js';
 import { atomicWriteFile, withOperationLock } from '../../utils/file-io.utils.js';
 import { atomicWriteJsonWithGuard } from '../../utils/integrity-guarded-write.utils.js';
 import { addGeminiTrustedFolders, getProjectTrustPaths } from '../../utils/gemini-trusted-folders.js';
@@ -64,7 +64,7 @@ export class StorageService {
 
   constructor(crewlyHome?: string) {
     this.logger = LoggerService.getInstance().createComponentLogger('StorageService');
-    this.crewlyHome = crewlyHome || path.join(os.homedir(), '.crewly');
+    this.crewlyHome = crewlyHome || getCrewlyHomePath();
     this.teamsFile = path.join(this.crewlyHome, 'teams.json'); // Legacy, kept for migration
     this.teamsDir = path.join(this.crewlyHome, 'teams');
     // Orchestrator now uses directory structure: teams/orchestrator/config.json
@@ -85,7 +85,7 @@ export class StorageService {
    * from interfering with each other's file operations
    */
   public static getInstance(crewlyHome?: string): StorageService {
-    const homeDir = crewlyHome || path.join(os.homedir(), '.crewly');
+    const homeDir = crewlyHome || getCrewlyHomePath();
     
     // Return existing instance if it matches the same home directory
     if (StorageService.instance && StorageService.instanceHome === homeDir) {
