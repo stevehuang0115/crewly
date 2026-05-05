@@ -4,6 +4,12 @@ description: "Send a direct message to another agent's terminal session."
 version: 1.0.0
 category: communication
 skillType: claude-skill
+# Per orchestrator-namespace convention: orc has its own send-message wrapper at
+# config/skills/orchestrator/send-message/ which routes through the orc-specific
+# message-routing layer (delivery framing, jargon-hygiene gate, owner-vs-agent
+# audience distinction). Listing orchestrator here would let orc fall back to the
+# generic agent-side path and miss orc-specific behaviors. Keep orchestrator EXCLUDED.
+# Spec provenance: 4-piece skill-mistake fix dispatch (Sam→Quinn, post-PR #446 merge).
 assignableRoles:
   - developer
   - qa

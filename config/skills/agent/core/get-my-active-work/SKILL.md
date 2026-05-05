@@ -19,8 +19,10 @@ assignableRoles:
   - generalist
   - sales
   - support
+  # Canonical convention is hyphenated (`team-lead`); the underscore variant
+  # (`team_lead`) was a duplicate-key typo discovered during the 4-piece skill-mistake
+  # audit (post-PR #446 merge). Removing it to keep the role-name surface single-shape.
   - team-lead
-  - team_lead
   - orchestrator
 triggers:
   - get my active work
