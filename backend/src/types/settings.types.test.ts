@@ -278,6 +278,15 @@ describe('Settings Types', () => {
       expect(defaults.general.autoResumeOnRestart).toBe(true);
     });
 
+    it('defaults enableProactiveCompact to false to prevent proactive-compact state loss', () => {
+      // Per Steve user-position decision (2026-05-04): proactive cumulative-output-bytes
+      // compact trigger causes state loss + idle-after-compact issues. Threshold-driven
+      // compact at RED (85%) / CRITICAL (95%) is preserved separately. This default
+      // disables only the proactive trigger; users can re-enable via settings UI.
+      const defaults = getDefaultSettings();
+      expect(defaults.general.enableProactiveCompact).toBe(false);
+    });
+
     it('should have runtime commands defaults for all runtimes', () => {
       const defaults = getDefaultSettings();
 

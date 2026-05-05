@@ -307,7 +307,7 @@ export function getDefaultSettings(): CrewlySettings {
         'crewly-agent': 'crewly-agent-in-process',
       },
       agentIdleTimeoutMinutes: 30,
-      enableProactiveCompact: true,
+      enableProactiveCompact: false,
       enableSelfEvolution: false,
       tokenTracking: false,
       enableAuditor: false,
