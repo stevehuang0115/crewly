@@ -115,6 +115,16 @@ export interface RecallParams {
   scope: MemoryScope;
   /** Maximum number of results */
   limit?: number;
+  /**
+   * v3 (M4 — NOTE-A): Include entries that are normally hidden from default
+   * recall (superseded or TTL-expired entries). Default `false`.
+   *
+   * Use this to surface audit-only memories — e.g. when a TL is reviewing
+   * what an agent learned before a fact was superseded, or when a debugging
+   * tool needs the full trail. Production prompt-injection paths must keep
+   * this `false` (or unset) so superseded entries do not pollute context.
+   */
+  includeHidden?: boolean;
 }
 
 /**
@@ -375,12 +385,21 @@ export class MemoryService implements IMemoryService {
    * entries via {@link isHiddenFromDefaultRecall}. They remain in the raw
    * store for audit / explicit recall, but they no longer pollute the
    * agent's recall path.
+   *
+   * **M4 (NOTE-A):** Pass `includeHidden=true` to surface superseded /
+   * expired entries (audit-only paths). Production prompt-injection callers
+   * must leave this `false` (default).
    */
-  private filterRelevant(knowledge: RoleKnowledgeEntry[], context: string, limit?: number): string[] {
+  private filterRelevant(
+    knowledge: RoleKnowledgeEntry[],
+    context: string,
+    limit?: number,
+    includeHidden = false,
+  ): string[] {
     const contextWords = context.toLowerCase().split(/\s+/);
 
     const scored = knowledge
-      .filter(entry => !isHiddenFromDefaultRecall(entry))
+      .filter(entry => includeHidden || !isHiddenFromDefaultRecall(entry))
       .map(entry => {
         const contentWords = entry.content.toLowerCase().split(/\s+/);
         const matchCount = contextWords.filter(word =>
@@ -754,7 +773,12 @@ export class MemoryService implements IMemoryService {
     if (params.scope === 'agent' || params.scope === 'both') {
       promises.push(
         this.agentMemory.getRoleKnowledge(params.agentId).then((knowledge) => {
-          result.agentMemories = this.filterRelevant(knowledge, params.context, params.limit);
+          result.agentMemories = this.filterRelevant(
+            knowledge,
+            params.context,
+            params.limit,
+            params.includeHidden,
+          );
         }),
       );
     }
