@@ -16,6 +16,7 @@ PROJECT_PATH=""
 TASK_TYPE="general"
 TEAM_ID=""
 FORCE_CROSS_TEAM="false"
+REQUEST_ID=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -33,6 +34,7 @@ while [[ $# -gt 0 ]]; do
     --project|-p)    PROJECT_PATH="$2";     shift 2 ;;
     --task-type)     TASK_TYPE="$2";        shift 2 ;;
     --team|-g)       TEAM_ID="$2";          shift 2 ;;
+    --request-id|-R) REQUEST_ID="$2";       shift 2 ;;
     --force-cross-team) FORCE_CROSS_TEAM="true"; shift ;;
     --json|-j)       INPUT_JSON="$2";       shift 2 ;;
     --help|-h)
@@ -71,6 +73,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ "$TASK_TYPE" = "general" ] && { TT=$(printf '%s' "$INPUT" | jq -r '.taskType // empty'); [ -n "$TT" ] && TASK_TYPE="$TT"; }
   [ -z "$TEAM_ID" ] && TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
   [ "$FORCE_CROSS_TEAM" = "false" ] && FORCE_CROSS_TEAM=$(printf '%s' "$INPUT" | jq -r '.forceCrossTeam // "false"')
+  [ -z "$REQUEST_ID" ] && REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.requestId // empty')
 fi
 
 require_param "to (--to)" "$TO"
@@ -191,9 +194,13 @@ POOL_BODY=$(jq -n \
   --arg description "$TASK_MESSAGE" \
   --arg priority "$WI_PRIORITY" \
   --arg projectPath "${PROJECT_PATH:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end)')
+  --arg requestId "${REQUEST_ID:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $requestId != "" then {requestId: $requestId} else {} end)')
 
-POOL_RESULT=$(api_call POST "/pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
+# Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch B):
+# Route is /api/task-pool/add (not /api/pool/add — that endpoint does not exist
+# and previously returned 404, silently swallowed by the || fallback below).
+POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
 POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)
 WI_ID=$(echo "$POOL_RESULT" | jq -r '.data.id // .workItemId // empty' 2>/dev/null || true)
 

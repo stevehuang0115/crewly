@@ -295,7 +295,29 @@ export const VERIFIED_REPLY_REASONS: ReadonlySet<string> = new Set<string>([
   'orc_reply',
   'chatv2_reply',
   'workitem_decompose',
+  // Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch E):
+  // second-pass close-attempt after the orc_reply grace window has elapsed.
+  // The first attempt that defers via setTimeout always re-enters with this
+  // reason, so it must be in the verified set to pass the
+  // {@link RequestSlaSubscriber.maybeCloseRequest} defense gate.
+  'orc_reply_recheck',
 ]);
+
+/**
+ * Pipeline-#4 fix (Patch E) — grace window for the orc_reply cascade-close.
+ *
+ * When the orc replies to a Slack thread within {@link ORC_REPLY_GRACE_AGE_MS}
+ * of Request creation AND the Request has zero linked WorkItems, defer the
+ * cascade close by {@link ORC_REPLY_GRACE_MS} for one re-check. If the orc
+ * decomposed the Request during the window, the sibling-count gate inside
+ * {@link RequestSlaSubscriber.maybeCloseRequest} catches the new WIs on the
+ * second pass and the close is suppressed for normal lifecycle.
+ *
+ * Older Requests (creation-age ≥ grace) skip the deferral and close
+ * immediately to preserve legacy behaviour.
+ */
+const ORC_REPLY_GRACE_AGE_MS = 60_000; // 60s after Request creation
+const ORC_REPLY_GRACE_MS = 30_000;     // 30s second-pass deferral
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -824,6 +846,52 @@ export class RequestSlaSubscriber {
     if (!request) return;
     if (TERMINAL_REQUEST_STATUSES.has(request.status)) return;
 
+    // Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch E):
+    // grace window for the orc_reply cascade. If the orc has replied within
+    // {@link ORC_REPLY_GRACE_AGE_MS} of Request creation AND no WorkItems are
+    // linked yet, defer the close by {@link ORC_REPLY_GRACE_MS} for one
+    // re-check pass. This gives a parallel decomposition (e.g. via
+    // break-down-request) time to land its WIs and trip the sibling-count
+    // gate below. Older Requests skip the grace and close immediately so
+    // legacy paths are unchanged.
+    //
+    // The recheck re-enters with reason='orc_reply_recheck' (in
+    // VERIFIED_REPLY_REASONS), so the second pass succeeds the gate and either
+    // closes (no siblings appeared) or is suppressed by the sibling-count
+    // gate (siblings appeared during the window).
+    if (reason === 'orc_reply') {
+      const ageMs = Date.now() - new Date(request.createdAt).getTime();
+      // `linkedSiblings` reflects FIRST-pass state; the recheck re-enters via
+      // setTimeout below and re-fetches `request` at the top of this method,
+      // so the second pass sees fresh `workItemIds` if decomposition landed
+      // during the grace window. Do not move the `linkedSiblings` calculation
+      // outside this block — its semantics are decision-local to the first
+      // pass.
+      const linkedSiblings = (request.workItemIds ?? []).length;
+      if (ageMs < ORC_REPLY_GRACE_AGE_MS && linkedSiblings === 0) {
+        this.logger.debug('Request close deferred — orc_reply grace window active', {
+          requestId,
+          ageMs,
+          graceMs: ORC_REPLY_GRACE_MS,
+        });
+        const t = setTimeout(() => {
+          void this.maybeCloseRequest(requestId, 'orc_reply_recheck').catch((err) => {
+            this.logger.warn('orc_reply_recheck cascade threw', {
+              requestId,
+              error: formatError(err),
+            });
+          });
+        }, ORC_REPLY_GRACE_MS);
+        // unref(): the recheck timer must not keep the process alive on
+        // graceful shutdown. Trade-off: pending rechecks at shutdown silently
+        // skip — acceptable for a long-running PM2 process where the
+        // observable window is bounded by SLA timers anyway. Tests use
+        // jest.advanceTimersByTime to assert the recheck path explicitly.
+        t.unref?.();
+        return;
+      }
+    }
+
     const otherActiveCount = await this.countOtherActiveWorkItems(requestId);
     if (otherActiveCount > 0) {
       this.logger.debug('Request kept open — other non-terminal WIs still in flight', {
@@ -1065,6 +1133,30 @@ export class RequestSlaSubscriber {
         requestId,
       });
       return;
+    }
+
+    // Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch A):
+    // bidirectional link pool-entry → Request.workItemIds[]. Idempotent —
+    // linkWorkItem already short-circuits on duplicate (request.service.ts).
+    //
+    // Runs BEFORE the trackedByRequest gate so it serves BOTH SLA-tracked
+    // (Slack/chat-v2) AND directly-POSTed Requests. The only other site that
+    // calls linkWorkItem is V3DataService.onTaskDelegated, which subscribes
+    // to v3:task_delegated — an event /api/task-pool/add does not emit. So
+    // WorkItems created via the orc's normal materialisation path
+    // (break-down-request, delegate-task) were never linked. Wiring it here
+    // is the architecturally-correct producer side.
+    //
+    // Failure-isolated: a link failure must NOT block markResolved (the SLA
+    // correctness path — Steve 2026-04-30 incident). Logged at warn.
+    try {
+      await this.requestService.linkWorkItem(requestId, incomingWorkItemId);
+    } catch (err) {
+      this.logger.warn('linkWorkItem from workitem:queued failed (non-fatal)', {
+        requestId,
+        workItemId: incomingWorkItemId,
+        error: formatError(err),
+      });
     }
 
     // Only act when we're actively tracking this Request — otherwise the
