@@ -861,6 +861,12 @@ export class RequestSlaSubscriber {
     // gate (siblings appeared during the window).
     if (reason === 'orc_reply') {
       const ageMs = Date.now() - new Date(request.createdAt).getTime();
+      // `linkedSiblings` reflects FIRST-pass state; the recheck re-enters via
+      // setTimeout below and re-fetches `request` at the top of this method,
+      // so the second pass sees fresh `workItemIds` if decomposition landed
+      // during the grace window. Do not move the `linkedSiblings` calculation
+      // outside this block — its semantics are decision-local to the first
+      // pass.
       const linkedSiblings = (request.workItemIds ?? []).length;
       if (ageMs < ORC_REPLY_GRACE_AGE_MS && linkedSiblings === 0) {
         this.logger.debug('Request close deferred — orc_reply grace window active', {
@@ -876,6 +882,11 @@ export class RequestSlaSubscriber {
             });
           });
         }, ORC_REPLY_GRACE_MS);
+        // unref(): the recheck timer must not keep the process alive on
+        // graceful shutdown. Trade-off: pending rechecks at shutdown silently
+        // skip — acceptable for a long-running PM2 process where the
+        // observable window is bounded by SLA timers anyway. Tests use
+        // jest.advanceTimersByTime to assert the recheck path explicitly.
         t.unref?.();
         return;
       }

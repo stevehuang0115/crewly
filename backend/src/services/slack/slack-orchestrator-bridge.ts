@@ -44,6 +44,7 @@ import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { getCrossMachineMessageService } from './cross-machine-message.service.js';
 import type { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
+import { TERMINAL_REQUEST_STATUSES } from '../../types/v2/request.types.js';
 
 /**
  * Bridge configuration
@@ -137,6 +138,28 @@ const TRIVIAL_ACK_PATTERN = /^(ok|好的|收到|thx|thanks|谢谢|👍|✅|got i
  * narrative. Caught before the thread-continuation gate to avoid the lookup.
  */
 const FILE_ONLY_TITLE_PATTERN = /^\[Slack File:[^\]]*\]\.?\s*$/;
+
+/**
+ * Pure pre-fetch gates for auto-Request suppression (Patch D). Exported for
+ * focused unit testing — the full thread-continuation gate also lives in
+ * {@link SlackOrchestratorBridge.shouldSuppressAutoRequest} but requires a
+ * RequestService lookup so cannot be a pure function.
+ *
+ * Each function returns the suppression reason string (matches the values
+ * logged at debug level) or `null` when the gate does not match.
+ */
+export function suppressTrivialOrShort(rawText: string): string | null {
+  const trimmed = rawText.trim();
+  if (trimmed.length < MIN_AUTO_REQUEST_TEXT_LENGTH || TRIVIAL_ACK_PATTERN.test(trimmed)) {
+    return 'trivial_or_short';
+  }
+  return null;
+}
+
+export function suppressFileOnly(rawText: string): string | null {
+  const trimmed = rawText.trim();
+  return FILE_ONLY_TITLE_PATTERN.test(trimmed) ? 'file_only' : null;
+}
 
 /**
  * Slack-Orchestrator Bridge singleton
@@ -693,13 +716,21 @@ Just type naturally to chat with the orchestrator!`;
     }
 
     // Gate 2 — thread continuation: this message is a reply, and the parent
-    // message already has a Request. Cheaper than threading detection at the
-    // SLA layer.
+    // message already has a NON-TERMINAL Request. Cheaper than threading
+    // detection at the SLA layer.
+    //
+    // ARCH 2026-05-05 PR #453 review (NC-1): the gate MUST check
+    // `parentRequest.status` is non-terminal — otherwise a thread that
+    // completed (parent → done via orc_reply / orc_reply_recheck) and then
+    // received a NEW actionable user message would silently suppress the new
+    // Request, re-opening the user-visible reliability gap that INBOUND-1
+    // was built to close. Terminal-parent threads release suppression so the
+    // child message creates a fresh Request.
     const threadTs = message.threadTs;
     if (threadTs && threadTs !== message.ts) {
       const parentMsgId = `slack-${message.channelId}-${threadTs}`;
       const parentRequest = await svc.findBySourceConversationItemId(parentMsgId);
-      if (parentRequest) {
+      if (parentRequest && !TERMINAL_REQUEST_STATUSES.has(parentRequest.status)) {
         return 'thread_continuation';
       }
     }
