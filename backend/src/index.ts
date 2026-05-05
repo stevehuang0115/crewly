@@ -2301,6 +2301,49 @@ export class CrewlyServer {
 					home: this.config.crewlyHome
 				});
 
+				// B0 (interim) per `.crewly/specs/2026-05-05-trigger-persistence-bug.md`:
+				// Broadcast `system:backend_restarted` exactly once per boot. The
+				// trigger engine (`backend/src/services/v3/trigger-engine.service.ts`)
+				// stores all `schedule-followup` / `watch-for-event` triggers in an
+				// in-memory `Map<string, Trigger>` that is wiped on every restart.
+				// Subscribers (e.g. self-watch-scribe, any TL using §3.0 universal
+				// delegator-rule) listen for this event as a freshness signal and
+				// re-arm their watchdogs. Re-arm latency drops from "manual cycle"
+				// to "next event tick" — closes the wipe-coverage-gap to seconds.
+				// B1 (full fix) is disk-backed declarative trigger config per the
+				// spec Path A; B0 is the unblock-first interim until B1 lands.
+				try {
+					// AgentEvent shape (`backend/src/types/event-bus.types.ts:198`)
+					// requires a fixed set of string fields. For system-scoped
+					// events we use 'system' for member/session and leave team
+					// fields empty — subscribers MUST gate on `type` rather than
+					// team/member identity. Boot diagnostics (port, duration) are
+					// already in the preceding `Crewly server started` log;
+					// callers needing them can correlate by `timestamp`.
+					this.eventBusService.publish({
+						id: `system-backend-restarted-${Date.now()}`,
+						type: 'system:backend_restarted',
+						timestamp: new Date().toISOString(),
+						teamId: '',
+						teamName: '',
+						memberId: '',
+						memberName: 'system',
+						sessionName: 'system',
+						previousValue: 'stopped',
+						newValue: 'started',
+						changedField: 'agentStatus'
+					});
+					this.logger.info('Broadcast system:backend_restarted event', {
+						port: this.config.webPort,
+						bootDurationMs: duration
+					});
+				} catch (emitError) {
+					// Failure isolation — never block boot on this telemetry.
+					this.logger.warn('Failed to broadcast system:backend_restarted (non-fatal)', {
+						error: emitError instanceof Error ? emitError.message : String(emitError)
+					});
+				}
+
 				resolve();
 			});
 

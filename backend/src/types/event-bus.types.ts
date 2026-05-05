@@ -81,6 +81,15 @@ export const EVENT_TYPES = [
   'hierarchy:escalation',
   'hierarchy:delegation',
   'hierarchy:report_up',
+
+  // B0 (interim) per `.crewly/specs/2026-05-05-trigger-persistence-bug.md`:
+  // Fired exactly once when the backend HTTP server begins listening, after
+  // EventBusService is wired and all subscribers have had a chance to attach.
+  // Subscribers (e.g. self-watch-scribe) use this as a freshness signal to
+  // re-arm in-memory triggers (`schedule-followup`, `watch-for-event`) that
+  // are wiped on every restart. Treated as CRITICAL because re-arm latency
+  // determines coverage gap of every trigger-dependent watchdog in the system.
+  'system:backend_restarted',
 ] as const;
 
 /**
@@ -130,6 +139,10 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   // INBOUND-1.f1: queue mutations are user-visible (the SLA subscriber
   // depends on every decomposition firing exactly once for auto-close).
   'workitem:queued',
+  // B0 (interim) per `.crewly/specs/2026-05-05-trigger-persistence-bug.md`:
+  // backend-restart broadcast must NOT be debounced — coverage of every
+  // trigger-dependent watchdog depends on exactly-one delivery per restart.
+  'system:backend_restarted',
 ]);
 
 /**
