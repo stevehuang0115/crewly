@@ -13,6 +13,7 @@ import { existsSync, mkdirSync } from 'fs';
 import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
+import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
 
 /** Constants for memory scoring and decay (v2) */
 const DECAY_CONSTANTS = {
@@ -597,8 +598,12 @@ export class AgentMemoryService implements IAgentMemoryService {
 
     // v2: Filter using effective score (confidence × recency × verification)
     // Exclude performance memories — those are for TL/orchestrator scheduling, not self-use
+    // M3 (spec §183-187): isHiddenFromDefaultRecall catches superseded
+    // entries (both `superseded` flag AND `supersededBy` reference) plus
+    // expired entries (ttl < now). Replaces the old `!k.superseded` check
+    // which only saw the boolean flag.
     const scored = roleKnowledge
-      .filter(k => !k.superseded && k.memoryType !== 'performance')
+      .filter(k => !isHiddenFromDefaultRecall(k) && k.memoryType !== 'performance')
       .map(k => ({ entry: k, score: this.calculateEffectiveScore(k) }))
       .filter(s => s.score >= DECAY_CONSTANTS.MIN_EFFECTIVE_SCORE)
       .sort((a, b) => b.score - a.score)
@@ -693,7 +698,10 @@ ${performance.commonErrors.slice(0, 5).map(e => `- ${e.pattern} → ${e.resoluti
     }
 
     const performanceMemories = memory.roleKnowledge
-      .filter(k => !k.superseded && k.memoryType === 'performance')
+      // M3 (spec §183-187): hide superseded + expired entries from
+      // scheduling context too — TL/orc must not schedule against stale
+      // performance signals.
+      .filter(k => !isHiddenFromDefaultRecall(k) && k.memoryType === 'performance')
       .map(k => ({ entry: k, score: this.calculateEffectiveScore(k) }))
       .filter(s => s.score >= DECAY_CONSTANTS.MIN_EFFECTIVE_SCORE)
       .sort((a, b) => b.score - a.score)

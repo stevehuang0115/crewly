@@ -323,4 +323,77 @@ describe('Memory Types', () => {
       });
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // M3 — v3 schema fields on RoleKnowledgeEntry
+  // (spec §158-216: importance, evidence, ttl, shouldInjectByDefault).
+  //
+  // These tests assert the v3 fields are part of the type contract so that
+  // accidental removal/rename produces a compile-time signal in addition to
+  // the runtime eligibility tests in role-knowledge-eligibility.test.ts.
+  // ---------------------------------------------------------------------------
+  describe('RoleKnowledgeEntry v3 fields (M3)', () => {
+    it('accepts an entry with all v3 lifecycle fields', () => {
+      const entry: RoleKnowledgeEntry = {
+        id: 'rk-v3-001',
+        category: 'best-practice',
+        content: 'Use parameterized queries to prevent SQL injection',
+        confidence: 0.95,
+        importance: 0.9,
+        evidence: ['REQ-101', 'wi-202', 'TICKET-303'],
+        ttl: '2099-12-31T23:59:59Z',
+        shouldInjectByDefault: true,
+        createdAt: '2026-05-04T10:00:00Z',
+      };
+
+      expect(entry.importance).toBe(0.9);
+      expect(entry.evidence).toEqual(['REQ-101', 'wi-202', 'TICKET-303']);
+      expect(entry.ttl).toBe('2099-12-31T23:59:59Z');
+      expect(entry.shouldInjectByDefault).toBe(true);
+    });
+
+    it('accepts an entry with supersededBy reference (audit pointer)', () => {
+      const entry: RoleKnowledgeEntry = {
+        id: 'rk-old',
+        category: 'workflow',
+        content: 'Stale workflow note',
+        confidence: 0.7,
+        supersededBy: 'rk-newer',
+        createdAt: '2026-04-01T00:00:00Z',
+      };
+
+      expect(entry.supersededBy).toBe('rk-newer');
+    });
+
+    it('treats v3 fields as optional (legacy entries remain valid)', () => {
+      // A legacy entry without any v3 fields must still compile and behave
+      // correctly — backward compatibility is non-negotiable.
+      const legacy: RoleKnowledgeEntry = {
+        id: 'rk-legacy',
+        category: 'tool-usage',
+        content: 'Legacy entry from pre-M3 schema',
+        confidence: 0.8,
+        createdAt: '2026-04-01T00:00:00Z',
+      };
+
+      expect(legacy.importance).toBeUndefined();
+      expect(legacy.evidence).toBeUndefined();
+      expect(legacy.ttl).toBeUndefined();
+      expect(legacy.shouldInjectByDefault).toBeUndefined();
+    });
+
+    it('accepts shouldInjectByDefault=false for explicit opt-out entries', () => {
+      const entry: RoleKnowledgeEntry = {
+        id: 'rk-opt-out',
+        category: 'anti-pattern',
+        content: 'Niche guidance, only on explicit recall',
+        confidence: 0.9,
+        importance: 0.95,
+        shouldInjectByDefault: false,
+        createdAt: '2026-05-04T10:00:00Z',
+      };
+
+      expect(entry.shouldInjectByDefault).toBe(false);
+    });
+  });
 });

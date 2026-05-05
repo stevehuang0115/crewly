@@ -15,6 +15,7 @@ import { KnowledgeSearchService } from '../knowledge/knowledge-search.service.js
 import { VectorStoreService, type VectorSearchResult } from '../knowledge/vector-store.service.js';
 import { createEmbeddingProvider, type EmbeddingProvider } from '../knowledge/embedding-provider.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
+import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
 import { CREWLY_CONSTANTS, MEMORY_CONSTANTS } from '../../constants.js';
 import type { KnowledgeDocumentSummary } from '../../types/knowledge.types.js';
 import type {
@@ -368,21 +369,28 @@ export class MemoryService implements IMemoryService {
   }
 
   /**
-   * Filters memories by relevance to a context
+   * Filters memories by relevance to a context.
+   *
+   * **M3 (spec §183-187):** Default recall hides superseded and expired
+   * entries via {@link isHiddenFromDefaultRecall}. They remain in the raw
+   * store for audit / explicit recall, but they no longer pollute the
+   * agent's recall path.
    */
   private filterRelevant(knowledge: RoleKnowledgeEntry[], context: string, limit?: number): string[] {
     const contextWords = context.toLowerCase().split(/\s+/);
 
-    const scored = knowledge.map(entry => {
-      const contentWords = entry.content.toLowerCase().split(/\s+/);
-      const matchCount = contextWords.filter(word =>
-        contentWords.some(cw => cw.includes(word) || word.includes(cw))
-      ).length;
-      return {
-        entry,
-        score: matchCount * entry.confidence,
-      };
-    });
+    const scored = knowledge
+      .filter(entry => !isHiddenFromDefaultRecall(entry))
+      .map(entry => {
+        const contentWords = entry.content.toLowerCase().split(/\s+/);
+        const matchCount = contextWords.filter(word =>
+          contentWords.some(cw => cw.includes(word) || word.includes(cw))
+        ).length;
+        return {
+          entry,
+          score: matchCount * (entry.confidence ?? 0.7),
+        };
+      });
 
     return scored
       .filter(s => s.score > 0)

@@ -395,6 +395,79 @@ describe('AgentMemoryService', () => {
       expect(context).toContain('Common error');
       expect(context).toContain('Fix it this way');
     });
+
+    // ---------------------------------------------------------------------
+    // M3 — recall-eligibility filter wire (spec §183-187)
+    // Proves the live agent self-context path honors the new filter.
+    // ---------------------------------------------------------------------
+
+    it('M3 hides entries with supersededBy set even when superseded boolean is absent', async () => {
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'OUTDATED via supersededBy',
+        confidence: 0.9,
+        // Note: superseded boolean intentionally NOT set — only the
+        // supersededBy reference. The pre-M3 filter would have shown
+        // this entry; the M3 wire must hide it.
+        supersededBy: 'rk-newer-id',
+      });
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'CURRENT entry',
+        confidence: 0.9,
+      });
+
+      const context = await service.generateAgentContext(testAgentId);
+      expect(context).not.toContain('OUTDATED via supersededBy');
+      expect(context).toContain('CURRENT entry');
+    });
+
+    it('M3 hides expired entries (ttl < now)', async () => {
+      const pastTtl = new Date(Date.now() - 86_400_000).toISOString(); // yesterday
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'EXPIRED tactical fact',
+        confidence: 0.9,
+        ttl: pastTtl,
+      });
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'EVERGREEN fact',
+        confidence: 0.9,
+      });
+
+      const context = await service.generateAgentContext(testAgentId);
+      expect(context).not.toContain('EXPIRED tactical fact');
+      expect(context).toContain('EVERGREEN fact');
+    });
+
+    it('M3 keeps entries whose ttl is in the future', async () => {
+      const futureTtl = new Date(Date.now() + 86_400_000).toISOString(); // tomorrow
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'NOT-YET-EXPIRED fact',
+        confidence: 0.9,
+        ttl: futureTtl,
+      });
+
+      const context = await service.generateAgentContext(testAgentId);
+      expect(context).toContain('NOT-YET-EXPIRED fact');
+    });
+
+    it('M3 hides entries with malformed ttl gracefully (fail-soft: keeps them visible)', async () => {
+      // Per role-knowledge-eligibility.isExpired: malformed TTL must not
+      // silently disappear an entry. Confirms that a bogus ttl does not
+      // accidentally hide a real fact.
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'KEEP malformed-ttl fact',
+        confidence: 0.9,
+        ttl: 'not-a-real-date',
+      });
+
+      const context = await service.generateAgentContext(testAgentId);
+      expect(context).toContain('KEEP malformed-ttl fact');
+    });
   });
 
   describe('pruneStaleEntries', () => {
