@@ -678,5 +678,67 @@ describe('MemoryService', () => {
         'Healthy long-lived pattern about retries',
       );
     });
+
+    // -----------------------------------------------------------------------
+    // M4 — NOTE-A: includeHidden=true surfaces hidden entries (audit path).
+    // -----------------------------------------------------------------------
+    it('M4/NOTE-A: includeHidden=true surfaces superseded entries', async () => {
+      const agentService = service.getAgentMemoryService();
+      await agentService.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Stale validation guidance from older spec',
+        confidence: 0.9,
+        supersededBy: 'rk-newer',
+      });
+
+      const defaultRecall = await service.recall({
+        agentId: testAgentId,
+        context: 'validation guidance',
+        scope: 'agent',
+      });
+      expect(defaultRecall.agentMemories.join('\n')).not.toContain(
+        'Stale validation guidance',
+      );
+
+      const auditRecall = await service.recall({
+        agentId: testAgentId,
+        context: 'validation guidance',
+        scope: 'agent',
+        includeHidden: true,
+      });
+      expect(auditRecall.agentMemories.join('\n')).toContain(
+        'Stale validation guidance',
+      );
+    });
+
+    it('M4/NOTE-A: includeHidden=true surfaces TTL-expired entries', async () => {
+      const agentService = service.getAgentMemoryService();
+      const PAST_TTL = '2000-01-01T00:00:00Z';
+      await agentService.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Expired testing convention from old framework',
+        confidence: 0.9,
+        ttl: PAST_TTL,
+      });
+
+      const defaultRecall = await service.recall({
+        agentId: testAgentId,
+        context: 'testing convention',
+        scope: 'agent',
+      });
+      expect(defaultRecall.agentMemories.join('\n')).not.toContain(
+        'Expired testing convention',
+      );
+
+      const auditRecall = await service.recall({
+        agentId: testAgentId,
+        context: 'testing convention',
+        scope: 'agent',
+        includeHidden: true,
+      });
+      expect(auditRecall.agentMemories.join('\n')).toContain(
+        'Expired testing convention',
+      );
+    });
   });
 });
