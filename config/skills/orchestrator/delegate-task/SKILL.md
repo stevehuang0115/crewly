@@ -46,6 +46,7 @@ The script auto-resolves `config/skills/...` references to absolute paths so del
 | `--team` / `-g` | `teamId` | No | Team ID for cross-team validation |
 | `--task-type` | `taskType` | No | Task type: `general`, `technical` (default: `general`) |
 | `--force-cross-team` | `forceCrossTeam` | No | Allow cross-team delegation |
+| `--request-id` / `-R` | `requestId` | No | Parent V3 Request ID; tags the resulting WorkItem so `Request.workItemIds[]` is populated by the SLA subscriber (Pipeline-#4 fix) |
 | `monitor` (JSON only) | `monitor` | No | Auto-monitoring config (see below) |
 
 ## Usage — CLI Flags (preferred)

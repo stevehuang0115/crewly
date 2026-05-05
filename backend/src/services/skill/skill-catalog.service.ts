@@ -92,6 +92,10 @@ interface SkillDefinition {
   tags?: string[];
   /** Semantic version string */
   version?: string;
+  /** Roles that may use this skill. Used by the orchestrator catalog to
+   *  cross-scan agent skills tagged with `orchestrator` (Pipeline-#4 fix,
+   *  spec 2026-05-05-request-decompose-pipeline-gap.md, Patch C). */
+  assignableRoles?: string[];
 }
 
 /**
@@ -451,14 +455,43 @@ export class SkillCatalogService {
   }
 
   /**
-   * Scan the orchestrator skills directory for valid skill subdirectories.
+   * Scan the orchestrator skills directory for valid skill subdirectories,
+   * plus agent skills whose `assignableRoles` includes `orchestrator`.
    *
-   * Delegates to scanSkillDirectoriesAt() with the orchestrator skills path.
+   * Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch C
+   * zero-LOC alternative): some materialisation skills (e.g.
+   * `agent/core/break-down-request`) are role-shared between agents and the
+   * orchestrator and live under `config/skills/agent/core/`. Without this
+   * cross-scan, the orchestrator's catalog would not surface them and the orc
+   * would have no discoverable path to materialise WorkItems for a Request,
+   * even though the prompt at prompt-builder.service.ts:374 instructs it to.
+   *
+   * Skills already present under `config/skills/orchestrator/` win on
+   * collisions (deduped by name), so adding an explicit orchestrator-side
+   * skill later transparently shadows the agent-side one.
    *
    * @returns Array of loaded skills with their definitions and instructions
    */
   private async scanSkillDirectories(): Promise<LoadedSkill[]> {
-    return this.scanSkillDirectoriesAt(ORCHESTRATOR_SKILLS_RELATIVE_PATH);
+    const orchestratorSkills = await this.scanSkillDirectoriesAt(ORCHESTRATOR_SKILLS_RELATIVE_PATH);
+    const agentCoreSkills = await this.scanSkillDirectoriesAt(`${AGENT_SKILLS_RELATIVE_PATH}/core`);
+
+    const orchestratorTagged = agentCoreSkills.filter((skill) =>
+      (skill.definition.assignableRoles ?? []).includes('orchestrator'),
+    );
+
+    // Dedup by skill name, with explicit orchestrator-side winning on collision.
+    const seenNames = new Set(orchestratorSkills.map((s) => s.definition.name));
+    const merged = [...orchestratorSkills];
+    for (const skill of orchestratorTagged) {
+      if (!seenNames.has(skill.definition.name)) {
+        merged.push(skill);
+        seenNames.add(skill.definition.name);
+      }
+    }
+
+    merged.sort((a, b) => a.definition.name.localeCompare(b.definition.name));
+    return merged;
   }
 
   /**
@@ -591,6 +624,7 @@ export class SkillCatalogService {
         execution: frontmatter.execution as SkillDefinition['execution'],
         tags: frontmatter.tags as string[],
         version: frontmatter.version as string,
+        assignableRoles: frontmatter.assignableRoles as string[] | undefined,
       };
 
       if (!definition.name || !definition.description || !definition.category) {

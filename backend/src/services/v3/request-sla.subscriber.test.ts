@@ -63,6 +63,10 @@ jest.mock('../core/logger.service.js', () => ({
 
 function buildRequest(overrides: Partial<Request> = {}): Request {
   const now = new Date().toISOString();
+  // Default `createdAt` is set 5 minutes in the past so legacy tests bypass
+  // the Patch E orc_reply grace window (60s post-creation). Tests that
+  // specifically exercise the grace window pass a fresh `createdAt` override.
+  const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
   return {
     id: 'req-1',
     sourceConversationItemId: 'slack-C123-1772899923.865659',
@@ -75,7 +79,7 @@ function buildRequest(overrides: Partial<Request> = {}): Request {
     intentLevel: 'L1',
     intentCategory: 'other',
     tags: ['slack'],
-    createdAt: now,
+    createdAt: fiveMinAgo,
     updatedAt: now,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -160,9 +164,11 @@ function buildFakeRequestService(initial: Request[] = []): {
   service: RequestService;
   registry: Map<string, Request>;
   updateCalls: Array<{ id: string; status?: RequestStatus; result?: string }>;
+  linkCalls: Array<{ requestId: string; workItemId: string }>;
 } {
   const registry = new Map<string, Request>(initial.map((r) => [r.id, r]));
   const updateCalls: Array<{ id: string; status?: RequestStatus; result?: string }> = [];
+  const linkCalls: Array<{ requestId: string; workItemId: string }> = [];
   const service = {
     getById: jest.fn(async (id: string) => registry.get(id) ?? null),
     update: jest.fn(async (id: string, updates: Partial<Request>) => {
@@ -178,8 +184,21 @@ function buildFakeRequestService(initial: Request[] = []): {
       });
       return r;
     }),
+    // Pipeline-#4 fix (Patch A): subscriber wires linkWorkItem from
+    // workitem:queued. The fake records every call so tests can assert
+    // bidirectional linking; idempotency is honoured by the includes() check.
+    linkWorkItem: jest.fn(async (requestId: string, workItemId: string) => {
+      const r = registry.get(requestId);
+      if (!r) return null;
+      if (!r.workItemIds.includes(workItemId)) {
+        r.workItemIds.push(workItemId);
+        r.updatedAt = new Date().toISOString();
+      }
+      linkCalls.push({ requestId, workItemId });
+      return r;
+    }),
   } as unknown as RequestService;
-  return { service, registry, updateCalls };
+  return { service, registry, updateCalls, linkCalls };
 }
 
 /**
@@ -986,6 +1005,120 @@ describe('RequestSlaSubscriber', () => {
       // …but Request still cascades to done.
       expect(svc.registry.get(r.id)?.status).toBe('done');
     });
+
+    // -------------------------------------------------------------------------
+    // Pipeline-#4 fix (Patch E) — orc_reply grace window
+    // -------------------------------------------------------------------------
+
+    describe('orc_reply grace window (Pipeline-#4 fix Patch E)', () => {
+      it('defers cascade close when Request is freshly created (<60s) and has no linked WIs', async () => {
+        // Fresh Request: createdAt = NOW so age << ORC_REPLY_GRACE_AGE_MS.
+        const r = buildRequest({
+          createdAt: new Date().toISOString(),
+        });
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        await sub.markResolvedByThread('1772899923.865659');
+
+        // The respond_to_user WI was still cancelled (markResolved ran).
+        expect(pool.transitionCalls).toHaveLength(1);
+        // …but Request cascade close was DEFERRED — status unchanged.
+        expect(svc.registry.get(r.id)?.status).toBe('open');
+        expect(
+          svc.updateCalls.some((c) => c.id === r.id && c.status === 'done'),
+        ).toBe(false);
+      });
+
+      it('closes the Request on the recheck pass when no siblings appeared during the grace window', async () => {
+        const r = buildRequest({
+          createdAt: new Date().toISOString(),
+        });
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        await sub.markResolvedByThread('1772899923.865659');
+
+        // Advance past the 30s grace window — the deferred recheck fires.
+        jest.advanceTimersByTime(31_000);
+        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+        // Recheck closes since no siblings linked.
+        expect(svc.registry.get(r.id)?.status).toBe('done');
+        expect(svc.registry.get(r.id)?.result).toContain('orc_reply_recheck');
+      });
+
+      it('keeps the Request open when siblings appear during the grace window', async () => {
+        const r = buildRequest({
+          createdAt: new Date().toISOString(),
+          status: 'running',
+        });
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        await sub.markResolvedByThread('1772899923.865659');
+
+        // Inside the grace window, link a sibling delegate WI (simulates
+        // break-down-request decomposing the Request between orc_reply and
+        // the recheck) AND mark the WI running so the otherActiveCount gate
+        // catches it on the second pass.
+        const sibling: WorkItem = {
+          id: 'wi-grace-sibling',
+          type: 'delegate',
+          owner: 'team_lead',
+          target: 'leo',
+          title: 'Grace-window sibling',
+          description: 'real work',
+          status: 'running',
+          createdAt: new Date().toISOString(),
+          requestId: r.id,
+          retryCount: 0,
+          maxRetries: 3,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+        };
+        await pool.taskPool.addToPool(sibling);
+        await svc.service.linkWorkItem(r.id, sibling.id);
+
+        jest.advanceTimersByTime(31_000);
+        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+        // sibling-count gate suppresses close on the recheck pass.
+        expect(svc.registry.get(r.id)?.status).toBe('running');
+      });
+
+      it('skips the grace and closes immediately when Request is older than the grace age', async () => {
+        // Stale Request — buildRequest's default is already 5 min back.
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        await sub.markResolvedByThread('1772899923.865659');
+
+        // Old Request: legacy behaviour — immediate cascade close.
+        expect(svc.registry.get(r.id)?.status).toBe('done');
+        expect(svc.registry.get(r.id)?.result).toContain('orc_reply');
+      });
+
+      it('does NOT defer when reason is workitem_decompose (only orc_reply triggers grace)', async () => {
+        const r = buildRequest({
+          createdAt: new Date().toISOString(),
+        });
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        // Resolve via workitem_decompose path — must close immediately.
+        await sub.markResolved(r.id, 'workitem_decompose');
+
+        expect(svc.registry.get(r.id)?.status).toBe('done');
+      });
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1475,6 +1608,101 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
       // Still only 1 transition (the path-a one) — path b is a clean no-op.
       expect(pool.transitionCalls).toHaveLength(1);
+    });
+
+    // -----------------------------------------------------------------------
+    // Pipeline-#4 fix (Patch A) — handleWorkItemQueued links WIs to Request
+    // -----------------------------------------------------------------------
+
+    describe('linkWorkItem wire (Pipeline-#4 fix Patch A)', () => {
+      it('calls linkWorkItem on workitem:queued for any non-self-recursion WI', async () => {
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        bus.publish(
+          buildQueuedEvent({
+            workItemId: 'wi-delegate-link-1',
+            requestId: r.id,
+            sessionName: 'pool-publisher',
+          }) as unknown as Parameters<EventBusService['publish']>[0],
+        );
+        await sub.flushPending();
+
+        // Bidirectional link populated.
+        expect(svc.linkCalls).toContainEqual({
+          requestId: r.id,
+          workItemId: 'wi-delegate-link-1',
+        });
+        expect(svc.registry.get(r.id)?.workItemIds).toContain('wi-delegate-link-1');
+      });
+
+      it('does NOT call linkWorkItem when the queued WI is the respond_to_user tracker itself', async () => {
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        // The respond_to_user WI's own enqueue must not link to its parent.
+        bus.publish(
+          buildQueuedEvent({
+            workItemId: respondToUserWorkItemId(r.id),
+            requestId: r.id,
+            sessionName: 'pool-publisher',
+          }) as unknown as Parameters<EventBusService['publish']>[0],
+        );
+        await sub.flushPending();
+
+        expect(svc.linkCalls).toEqual([]);
+        expect(svc.registry.get(r.id)?.workItemIds).toEqual([]);
+      });
+
+      it('links WIs even for untracked Requests (broader producer-side wiring)', async () => {
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        // Note: NOT seeding tracking via request:created — Request is untracked.
+
+        bus.publish(
+          buildQueuedEvent({
+            workItemId: 'wi-untracked-link',
+            requestId: r.id,
+            sessionName: 'pool-publisher',
+          }) as unknown as Parameters<EventBusService['publish']>[0],
+        );
+        await sub.flushPending();
+
+        // Patch A intentionally fires BEFORE the trackedByRequest gate so
+        // directly-POSTed (non-Slack) Requests also receive the link.
+        expect(svc.linkCalls).toContainEqual({
+          requestId: r.id,
+          workItemId: 'wi-untracked-link',
+        });
+      });
+
+      it('absorbs linkWorkItem failure without blocking the markResolved chain', async () => {
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        // Force the next link to throw — the SLA chain must continue.
+        (svc.service.linkWorkItem as jest.Mock).mockRejectedValueOnce(new Error('boom'));
+
+        bus.publish(
+          buildQueuedEvent({
+            workItemId: 'wi-delegate-link-fail',
+            requestId: r.id,
+            sessionName: 'pool-publisher',
+          }) as unknown as Parameters<EventBusService['publish']>[0],
+        );
+        await sub.flushPending();
+
+        // The SLA chain still resolved the respond_to_user WI.
+        expect(pool.transitionCalls).toEqual([
+          { id: respondToUserWorkItemId(r.id), status: 'cancelled', actor: 'system' },
+        ]);
+      });
     });
 
     it('no regression on path c (timer self-check still silences breach when WI is terminal)', async () => {
