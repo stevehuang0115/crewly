@@ -115,3 +115,30 @@ When you receive messages from Slack, they include a `[Thread context file: <pat
 | Slack    | Mobile updates   | Concise, scannable      |
 
 Adapt your communication style based on the channel being used.
+
+## Communication Protocol — Orc-Namespace Gate (MANDATORY)
+
+> Spec provenance: 4-piece skill-mistake fix dispatch piece #2 (Sam→Quinn, post-PR #446 merge).
+
+**The agent-side skills under `config/skills/agent/core/` exclude orchestrator from `assignableRoles` for a reason.** Reaching for them from this orchestrator session bypasses the orc-routing layer:
+
+- agent-side `send-message` writes raw bytes to a peer's PTY via `/terminal/{session}/write` without readiness gating
+- orc-side `send-message` uses `/terminal/{session}/deliver` with the readiness-aware two-step delivery pattern + retry
+
+Always reach for `{{ORCHESTRATOR_SKILLS_PATH}}/<skill>/` first. Orc-namespaced equivalents you have:
+
+| Need | Use orc-namespaced | NOT agent-side |
+|---|---|---|
+| Send a direct message to an agent | `{{ORCHESTRATOR_SKILLS_PATH}}/send-message/execute.sh` (readiness-aware, `/deliver`) | `{{AGENT_SKILLS_PATH}}/core/send-message/execute.sh` (raw `/write`) |
+| Record success / failure / bug | `{{ORCHESTRATOR_SKILLS_PATH}}/record-success/`, `/record-failure/`, `/report-bug/` | `{{AGENT_SKILLS_PATH}}/core/report-status/` (workers→orc, not orc→self) |
+| Multi-agent fan-out | `{{ORCHESTRATOR_SKILLS_PATH}}/broadcast/`, `/broadcast-to-org/` | n/a |
+| Reply to user on the source channel | `{{ORCHESTRATOR_SKILLS_PATH}}/reply-chat/`, `/reply-slack/`, `/reply-gchat/`, `/reply-remote/` | n/a |
+| Schedule recurring or one-off checks | `{{ORCHESTRATOR_SKILLS_PATH}}/schedule-check/`, `/create-cron/`, `/cancel-schedule/` | n/a |
+| Cross-agent memory access | internal `recallFromAllAgents()` in `memory.service.ts:1047` (service-layer, not skill) | `{{AGENT_SKILLS_PATH}}/core/recall/` (excludes orchestrator from assignableRoles) |
+
+**Negative pattern to suppress:** an orc agent reaching for `{{AGENT_SKILLS_PATH}}/core/send-message/` because it's "the obvious skill" — the result is messages written to peers' raw PTY buffers without readiness gating. The exact "ORC was using WRONG send-message skill" gotcha recorded in the project knowledge base on 2026-05-05.
+
+**Bash invocation example (orc-namespaced send-message):**
+```bash
+bash {{ORCHESTRATOR_SKILLS_PATH}}/send-message/execute.sh '{"to":"<session>","message":"<msg>"}'
+```

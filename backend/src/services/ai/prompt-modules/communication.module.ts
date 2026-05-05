@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
 
 /**
@@ -37,11 +38,20 @@ export class CommunicationModule implements PromptModule {
 		const isOrchestrator = config.role === 'orchestrator';
 		const isTL = config.canDelegate === true;
 
-		// Try loading role-specific fragment (orchestrator has the richest version)
+		// Try loading role-specific fragment (orchestrator has the richest version).
+		// Per piece #2 dispatch (4-piece skill-mistake fix, post-PR #446 merge):
+		// the orc fragment now references {{ORCHESTRATOR_SKILLS_PATH}} and
+		// {{AGENT_SKILLS_PATH}} placeholders that must be substituted to absolute
+		// paths before the orc sees the prompt. loadRoleFragment returns the file
+		// content as-is — substitution happens here so the orc-namespace gate
+		// table renders with real paths.
 		if (isOrchestrator) {
 			const fragment = loadRoleFragment(config.projectRoot, config.role, 'communication');
 			if (fragment) {
-				return fragment;
+				const orchestratorSkillsPath = path.join(config.projectRoot, 'config', 'skills', 'orchestrator');
+				return fragment
+					.replace(/\{\{ORCHESTRATOR_SKILLS_PATH\}\}/g, orchestratorSkillsPath)
+					.replace(/\{\{AGENT_SKILLS_PATH\}\}/g, config.agentSkillsPath);
 			}
 			return this.buildOrchestratorComms(config);
 		}
@@ -91,14 +101,78 @@ bash ${resolvedBase}/${skillPath}/execute.sh '${jsonExample}'
 	/**
 	 * Full orchestrator communication spec — Slack, Chat UI, NOTIFY markers,
 	 * thread management, message formatting, and notification protocol.
+	 *
+	 * Per orc-namespace convention (skill SKILL.md frontmatter excludes
+	 * orchestrator from `assignableRoles` on send-message + recall + etc.):
+	 * orc has its own send-message wrapper at `config/skills/orchestrator/send-message/`
+	 * that routes through `/terminal/{session}/deliver` (readiness-aware,
+	 * two-step delivery, retry) instead of the agent-side
+	 * `/terminal/{session}/write` (raw PTY buffer write, no readiness, no
+	 * Enter semantics). Rendering the agent-skills path here would let orc
+	 * fall back to `/write` and miss orc-specific routing — the exact
+	 * "ORC was using WRONG send-message skill" gotcha recorded in the
+	 * project knowledge base on 2026-05-05.
+	 *
+	 * Spec provenance: 4-piece skill-mistake fix dispatch piece #2
+	 * (Sam→Quinn, post-PR #446 merge).
 	 */
 	private buildOrchestratorComms(config: ModuleConfig): string {
 		const reportStatusJson = `{"sessionName":"${config.sessionName}","status":"<status>","summary":"<summary>","projectPath":"${config.projectPath || config.projectRoot}"}`;
 		const sendMessageJson = '{"to":"<session>","message":"<msg>"}';
 		const reportCliFlags = `--session "${config.sessionName}" --status "<status>" --summary "<summary>" --project "${config.projectPath || config.projectRoot}"`;
 		const sendCliFlags = '--to "<session>" --message "<msg>"';
+		// Derived from projectRoot to keep ModuleConfig surface small. If we ever
+		// need this in more modules, promote to `config.orchestratorSkillsPath`.
+		const orchestratorSkillsPath = path.join(config.projectRoot, 'config', 'skills', 'orchestrator');
+		// Orc uses the orc-namespaced send-message wrapper, NOT core/send-message.
+		// See class-level JSDoc above for the rationale.
+		const sendExample = this.buildOrcSkillExample(orchestratorSkillsPath, 'send-message', sendMessageJson, sendCliFlags, config.runtimeType);
 		const reportExample = this.buildSkillExample(config, 'core/report-status', reportStatusJson, reportCliFlags);
-		const sendExample = this.buildSkillExample(config, 'core/send-message', sendMessageJson, sendCliFlags);
+
+		return this.buildOrchestratorCommsBody(config, sendExample, reportExample);
+	}
+
+	/**
+	 * Build a bash example using an orc-namespaced skill path (vs the agent-side
+	 * `core/<skill>` path used by {@link buildSkillExample}). Mirrors
+	 * `buildSkillExample` for shape consistency but resolves the path under
+	 * `config/skills/orchestrator/<skill>/` and never falls back to a heredoc
+	 * since orc-namespaced skills are uniformly CLI-flag-friendly.
+	 *
+	 * Spec provenance: 4-piece skill-mistake fix dispatch piece #2.
+	 *
+	 * @param orchestratorSkillsPath - Absolute path to `config/skills/orchestrator/`
+	 * @param skillName - Skill directory name under the orc-namespace (e.g. `send-message`)
+	 * @param jsonExample - Inline JSON example for non-gemini runtimes
+	 * @param cliExample - CLI flags example for gemini-cli runtimes
+	 * @param runtimeType - Runtime type to choose JSON vs CLI rendering
+	 * @returns Formatted bash code block invoking the orc-namespaced skill
+	 */
+	private buildOrcSkillExample(
+		orchestratorSkillsPath: string,
+		skillName: string,
+		jsonExample: string,
+		cliExample: string,
+		runtimeType?: ModuleConfig['runtimeType'],
+	): string {
+		if (runtimeType === 'gemini-cli') {
+			return `\`\`\`bash
+bash ${orchestratorSkillsPath}/${skillName}/execute.sh ${cliExample}
+\`\`\``;
+		}
+		return `\`\`\`bash
+bash ${orchestratorSkillsPath}/${skillName}/execute.sh '${jsonExample}'
+\`\`\``;
+	}
+
+	/**
+	 * Build the body of the orchestrator Communication section. Split out from
+	 * {@link buildOrchestratorComms} so the per-piece example construction stays
+	 * isolated from the long Slack/Chat/NOTIFY markdown body.
+	 */
+	private buildOrchestratorCommsBody(config: ModuleConfig, sendExample: string, reportExample: string): string {
+		const orchestratorSkillsPath = path.join(config.projectRoot, 'config', 'skills', 'orchestrator');
+		void config; // reserved for future per-config formatting hooks
 
 		return `## Communication Protocol
 
@@ -163,6 +237,15 @@ When you receive a message from the user (via Slack, Chat UI, or Google Chat):
 This prevents the user from wondering if their message was received or if the agent is stuck.
 
 ### Communication Skills
+
+**Orc-namespace gate (MANDATORY):** the agent-side skills under \`config/skills/agent/core/\` excludes orchestrator from \`assignableRoles\` for a reason. Reaching for them from this orchestrator session bypasses the orc-routing layer (e.g. agent-side \`send-message\` writes raw bytes to a peer's PTY via \`/terminal/{session}/write\` without readiness gating; orc-side \`send-message\` uses \`/terminal/{session}/deliver\` with the readiness-aware two-step delivery pattern). Always reach for \`${orchestratorSkillsPath}/<skill>/\` first. Orc-namespaced equivalents you have:
+- \`send-message\` (orc-namespaced) — readiness-aware delivery via \`/terminal/{session}/deliver\` (NOT raw \`/write\`)
+- \`record-success\` / \`record-failure\` / \`report-bug\` (orc-namespaced) — orc-side status recording
+- \`broadcast\` / \`broadcast-to-org\` (orc-namespaced) — multi-agent fan-out
+- \`reply-chat\` / \`reply-slack\` / \`reply-gchat\` / \`reply-remote\` (orc-namespaced) — owner-facing replies routed back to the source channel
+- \`schedule-check\` / \`create-cron\` / \`cancel-schedule\` (orc-namespaced) — orc-side scheduling primitives
+- Memory access: orc reads cross-agent memory via the internal \`recallFromAllAgents()\` (memory.service.ts:1047), NOT via the agent-side \`recall\` skill which excludes orchestrator from assignableRoles.
+
 ${reportExample}
 ${sendExample}`;
 	}

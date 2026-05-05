@@ -2631,4 +2631,210 @@ describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
 			});
 		});
 	});
+
+	// =============================================================================
+	// 4-Piece Skill-Mistake Fix — Piece #2: Communication template orc-branch
+	//
+	// Per orc-namespace convention (skill SKILL.md frontmatter excludes orchestrator
+	// from assignableRoles on send-message + recall + report-status etc.), the
+	// rendered Communication section in composePromptWithMemory() now branches on
+	// `parts.role === 'orchestrator'` to surface orc-namespaced wrapper invocations
+	// instead of the agent-side paths. Without this branch, an orc agent renders
+	// generic agent-skill paths and falls back to /terminal/{session}/write — the
+	// exact "ORC was using WRONG send-message skill" gotcha recorded in project
+	// knowledge on 2026-05-05.
+	//
+	// Tests verify:
+	// 1. Orc-role rendering surfaces ORCHESTRATOR_SKILLS_PATH/send-message in the
+	//    Communication section (positive branch).
+	// 2. Non-orc rendering still surfaces AGENT_SKILLS_PATH/core/send-message
+	//    (negative branch — guards against accidentally flattening the branch).
+	// 3. Orc rendering names the rationale (readiness-aware /deliver vs raw /write)
+	//    so future maintainers see WHY the namespace differs.
+	// 4. Path-resolution smoke (per pattern bank from PR #446 v2 commit 6ad0d250).
+	// =============================================================================
+	describe('4-piece skill-mistake fix — Piece #2: Communication template orc-branch', () => {
+		// Helper: render the full prompt for a given role on the LEGACY composition
+		// path (CREWLY_USE_MODULAR_PROMPTS=false). The legacy `composePromptWithMemory`
+		// runs only when at least one context block is non-empty, so we feed a stub
+		// memory string to trigger it.
+		async function renderLegacyPromptForRole(role: string): Promise<string> {
+			const syntheticRolePrompt = `# Synthetic ${role} prompt for piece #2 test`;
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(syntheticRolePrompt);
+			// Trigger composePromptWithMemory by making memory non-empty.
+			mockGetFullContext.mockResolvedValueOnce('stub memory content for piece #2 test');
+
+			const config: TeamMemberSessionConfig = {
+				name: `${role}-test-session`,
+				role: role as any, // Cast: orchestrator and developer are both valid TeamMemberRole values
+				memberId: `mem-${role}`,
+				projectPath: '/test/project',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			// Legacy path is forced via beforeEach (CREWLY_USE_MODULAR_PROMPTS='false').
+			return service.buildSystemPromptWithMemory(config, {
+				includeMemory: true,
+				includeSOPs: false,
+			});
+		}
+
+		// Helper: render via the MODULAR path (CREWLY_USE_MODULAR_PROMPTS not set
+		// or 'true' — production default). Each test overrides the env var
+		// individually then restores via the suite's afterEach.
+		async function renderModularPromptForRole(role: string): Promise<string> {
+			process.env.CREWLY_USE_MODULAR_PROMPTS = 'true';
+			const syntheticRolePrompt = `# Synthetic ${role} prompt for piece #2 modular test`;
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(syntheticRolePrompt);
+
+			const config: TeamMemberSessionConfig = {
+				name: `${role}-modular-session`,
+				role: role as any,
+				memberId: `mem-${role}`,
+				projectPath: '/test/project',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			return service.buildSystemPromptWithMemory(config, {});
+		}
+
+		it('orc-role rendered Communication section uses ORCHESTRATOR_SKILLS_PATH/send-message (positive branch)', async () => {
+			const result = await renderLegacyPromptForRole('orchestrator');
+
+			// Positive branch markers
+			expect(result).toContain('## Communication (orchestrator-namespaced)');
+			// The orc-namespaced send-message wrapper is the canonical path for orc
+			expect(result).toMatch(/config\/skills\/orchestrator\/send-message/);
+			// Rationale must be present so the namespace boundary is legible to
+			// future maintainers (the "WHY does the branch exist" provenance).
+			expect(result).toContain('readiness-aware');
+			expect(result).toMatch(/\/terminal\/\{session\}\/deliver/);
+			expect(result).toMatch(/\/terminal\/\{session\}\/write/);
+		});
+
+		it('non-orc rendered Communication section uses AGENT_SKILLS_PATH/core/send-message (negative branch)', async () => {
+			const result = await renderLegacyPromptForRole('developer');
+
+			// Negative branch markers — guards against accidentally flattening the branch
+			expect(result).toContain('## Communication');
+			expect(result).not.toContain('## Communication (orchestrator-namespaced)');
+			// Generic agent-skills path is canonical for non-orc roles
+			expect(result).toMatch(/config\/skills\/agent\//);
+			// Should NOT mention the orc-namespaced wrapper for non-orc roles
+			expect(result).not.toMatch(/config\/skills\/orchestrator\/send-message/);
+		});
+
+		it('orc-branch names the agent-side fallback as deprecated to suppress future flattening', async () => {
+			const result = await renderLegacyPromptForRole('orchestrator');
+
+			// The orc Communication section must name the agent-side path explicitly
+			// AND mark it as the wrong choice for orc — so future maintainers see why
+			// merging the two branches into one would be a regression.
+			expect(result).toContain('config/skills/agent/core/send-message');
+			// Discipline language: agent-side excludes orc, reaching for it bypasses orc-routing.
+			// (Match all common conjugations: exclude/excludes/excluded.)
+			expect(result).toMatch(/exclud(e|es|ed) orchestrator/i);
+			expect(result).toMatch(/bypass(es)?\s+the\s+orc-routing/i);
+		});
+
+		it('orc Communication section names other orc-namespaced equivalents (record-success, broadcast, reply-*)', async () => {
+			const result = await renderLegacyPromptForRole('orchestrator');
+
+			// Per piece #2 dispatch: enumerate the orc-namespaced equivalents so
+			// the orc agent has the complete surface visible at first contact.
+			expect(result).toContain('record-success');
+			expect(result).toContain('record-failure');
+			expect(result).toContain('broadcast');
+			expect(result).toContain('reply-chat');
+			expect(result).toMatch(/recallFromAllAgents/);
+		});
+
+		// Path-resolution smoke per pattern bank entry from §3.0 in PR #446 v2 commit
+		// 6ad0d250: when a literal skill-path surface gets added to a rendered prompt,
+		// we add a smoke assertion that the path token resolves to the right namespace.
+		// For piece #2 this is a path-resolution smoke (no flag list to parse since
+		// the Communication section uses bullet-list references rather than full
+		// bash invocations); the assertion mirrors the ORC §3.1 create-request path
+		// resolution smoke from the same v2 commit.
+		it('orc-branch send-message path token resolves to orc-namespace, NOT agent-namespace (path-resolution smoke)', async () => {
+			const result = await renderLegacyPromptForRole('orchestrator');
+
+			// Find every line that names a send-message reference in the Communication
+			// section; the FIRST canonical reference must use the orc-namespaced path.
+			const communicationSection = result.split('## Communication (orchestrator-namespaced)')[1] ?? '';
+			const sendMessageLines = communicationSection
+				.split('\n')
+				.filter((l) => /send-message/.test(l));
+			expect(sendMessageLines.length).toBeGreaterThan(0);
+
+			// At least one explicit orc-namespaced path reference must appear
+			const orcNamespacedRefs = sendMessageLines.filter((l) =>
+				/config\/skills\/orchestrator\/send-message/.test(l)
+			);
+			expect(orcNamespacedRefs.length).toBeGreaterThan(0);
+
+			// The first send-message bullet line must mark itself as orc-namespaced
+			// (so the orc reads the correct path before the agent-side fallback callout).
+			const firstSendMessageLine = sendMessageLines[0] ?? '';
+			expect(firstSendMessageLine).toMatch(/orc-namespaced/);
+		});
+
+		// Modular path coverage — CRITICAL because CREWLY_USE_MODULAR_PROMPTS defaults
+		// to 'true' in production. The legacy path tests above exercise
+		// composePromptWithMemory; these tests exercise CommunicationModule which is
+		// the live default surface. Without these, an orc agent in production would
+		// still render core/send-message even with the legacy fix in place.
+		it('MODULAR path: orc-role rendered Communication uses orc-namespaced send-message via /deliver', async () => {
+			const result = await renderModularPromptForRole('orchestrator');
+
+			// Orc loads the fragment file at config/roles/orchestrator/fragments/communication.md
+			// which contains the "Orc-Namespace Gate (MANDATORY)" section appended by piece #2.
+			expect(result).toContain('Orc-Namespace Gate');
+
+			// Narrow to the orc-namespace gate section to assert substitution worked.
+			// (Other parts of the rendered prompt may carry unsubstituted
+			// {{ORCHESTRATOR_SKILLS_PATH}} tokens — those leak from other modules
+			// reading orchestrator/prompt.md without calling the agent-registration
+			// substitution path. That is a known pre-existing issue, out of scope
+			// for piece #2 — file separately if it bites.)
+			const gateSectionStart = result.indexOf('Orc-Namespace Gate');
+			expect(gateSectionStart).toBeGreaterThan(-1);
+			// End the slice at the next module-section boundary (--- separator on its
+			// own line) after the gate header, so we don't pick up unsubstituted
+			// tokens from neighbouring modules.
+			const afterGateStart = result.slice(gateSectionStart);
+			const nextSeparatorIdx = afterGateStart.indexOf('\n---\n');
+			const gateSection = nextSeparatorIdx > 0
+				? afterGateStart.slice(0, nextSeparatorIdx)
+				: afterGateStart;
+
+			// Orc-namespaced send-message bash invocation must appear with substituted path
+			expect(gateSection).toMatch(/config\/skills\/orchestrator\/send-message\/execute\.sh/);
+			// Inside the gate section, the placeholders MUST be substituted (piece #2
+			// adds the substitution in CommunicationModule.build() for the fragment).
+			expect(gateSection).not.toContain('{{ORCHESTRATOR_SKILLS_PATH}}');
+			expect(gateSection).not.toContain('{{AGENT_SKILLS_PATH}}');
+			// Rationale must be present so the namespace boundary is legible
+			expect(gateSection).toMatch(/\/terminal\/\{session\}\/deliver/);
+			expect(gateSection).toMatch(/\/terminal\/\{session\}\/write/);
+			expect(gateSection).toMatch(/readiness-aware/);
+			// Negative pattern callout names the canonical failure case
+			expect(gateSection).toMatch(/ORC was using WRONG send-message/);
+		});
+
+		it('MODULAR path: non-orc rendered Communication uses agent-side core/send-message (negative branch)', async () => {
+			const result = await renderModularPromptForRole('developer');
+
+			// Worker comms section header
+			expect(result).toContain('## Communication');
+			// Agent-side path must appear
+			expect(result).toMatch(/config\/skills\/agent\/core\/send-message\/execute\.sh/);
+			// Orc-namespaced wrapper must NOT appear for non-orc
+			expect(result).not.toMatch(/config\/skills\/orchestrator\/send-message/);
+		});
+	});
 });
