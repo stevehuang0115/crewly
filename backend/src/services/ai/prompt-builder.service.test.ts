@@ -2836,5 +2836,46 @@ describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
 			// Orc-namespaced wrapper must NOT appear for non-orc
 			expect(result).not.toMatch(/config\/skills\/orchestrator\/send-message/);
 		});
+
+		// =============================================================================
+		// Piece #3 — orc soul 1-line addition.
+		//
+		// Soul files are loaded directly by SoulModule via fs.readFileSync (no template
+		// substitution); the new bullet uses literal `config/skills/agent/core/` instead
+		// of {{AGENT_SKILLS_PATH}}. Reads the actual file from disk to assert the bullet
+		// is present at the top of the Communication Style section.
+		// =============================================================================
+		it('Piece #3: orc soul Communication Style section opens with the orc-namespace gate bullet', () => {
+			const orcSoulPath = path.join(repoRoot, 'config', 'souls', 'orchestrator.md');
+			const orcSoulContent = fs.readFileSync(orcSoulPath, 'utf8');
+
+			// Section must exist
+			expect(orcSoulContent).toContain('## Communication Style');
+			// New bullet must be present and reference the orc-namespace exclusion
+			expect(orcSoulContent).toMatch(
+				/I exclusively use orchestrator-namespaced skills for agent communication/i,
+			);
+			// Literal path (NOT {{AGENT_SKILLS_PATH}}, since soul files are not substituted).
+			// Narrow the placeholder-leak check to the bullet LINE only, since the
+			// HTML provenance comment legitimately mentions {{AGENT_SKILLS_PATH}} when
+			// explaining WHY the literal path is used instead.
+			expect(orcSoulContent).toContain('config/skills/agent/core/');
+			const bulletLine = orcSoulContent
+				.split('\n')
+				.find((l) => l.includes('I exclusively use orchestrator-namespaced skills'));
+			expect(bulletLine).toBeDefined();
+			expect(bulletLine!).not.toContain('{{AGENT_SKILLS_PATH}}');
+
+			// Placement gate: the new bullet must appear BEFORE the existing
+			// "Structured and organized" bullet so it sets the namespace discipline
+			// before any other style-shaping text.
+			const newBulletIdx = orcSoulContent.indexOf(
+				'I exclusively use orchestrator-namespaced skills',
+			);
+			const structuredBulletIdx = orcSoulContent.indexOf('Structured and organized');
+			expect(newBulletIdx).toBeGreaterThan(-1);
+			expect(structuredBulletIdx).toBeGreaterThan(-1);
+			expect(newBulletIdx).toBeLessThan(structuredBulletIdx);
+		});
 	});
 });
