@@ -9,7 +9,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as os from 'os';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 /**
  * Improvement phases
@@ -115,7 +115,16 @@ export interface ImprovementMarker {
 /**
  * Marker file paths
  */
-const MARKER_DIR = path.join(os.homedir(), '.crewly', 'self-improvement');
+/**
+ * Default marker directory.
+ *
+ * Resolved via {@link getCrewlyHomePath} so test profiles isolate their
+ * self-improvement marker state. Computed lazily so tests that mutate
+ * `process.env.CREWLY_HOME` after module load still pick up the override.
+ */
+function markerDir(): string {
+  return path.join(getCrewlyHomePath(), 'self-improvement');
+}
 const MARKER_FILE = 'pending.json';
 const HISTORY_DIR = 'history';
 const MAX_HISTORY = 20;
@@ -135,7 +144,7 @@ export class ImprovementMarkerService {
    * @param baseDir - Optional base directory for marker files
    */
   constructor(baseDir?: string) {
-    const base = baseDir || MARKER_DIR;
+    const base = baseDir || markerDir();
     this.markerPath = path.join(base, MARKER_FILE);
     this.historyPath = path.join(base, HISTORY_DIR);
   }

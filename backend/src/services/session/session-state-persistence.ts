@@ -7,19 +7,30 @@
  * @module session-state-persistence
  */
 
-import { homedir } from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import type { ISessionBackend, SessionOptions } from './session-backend.interface.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { RuntimeType, RUNTIME_TYPES } from '../../constants.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 /** Current version of the state file schema */
 const STATE_VERSION = 1;
 
-/** Default state file location */
-const DEFAULT_STATE_FILE = path.join(homedir(), '.crewly', 'session-state.json');
+/**
+ * Default state file location.
+ *
+ * Resolved via {@link getCrewlyHomePath} so test profiles (CREWLY_HOME=/tmp/...)
+ * read and write their own session-state.json instead of the user's real
+ * `~/.crewly/session-state.json`. Computed lazily inside the function so a
+ * test that sets `process.env.CREWLY_HOME` after module load still gets the
+ * override; the previous module-level constant captured `homedir()` at
+ * import time and silently leaked across profiles.
+ */
+function defaultStateFile(): string {
+  return path.join(getCrewlyHomePath(), 'session-state.json');
+}
 
 /**
  * Metadata about a persisted session.
@@ -98,7 +109,7 @@ export class SessionStatePersistence {
 	 * @param filePath - Optional custom path for the state file
 	 */
 	constructor(filePath?: string) {
-		this.filePath = filePath ?? DEFAULT_STATE_FILE;
+		this.filePath = filePath ?? defaultStateFile();
 		this.logger = LoggerService.getInstance().createComponentLogger('SessionPersistence');
 	}
 
