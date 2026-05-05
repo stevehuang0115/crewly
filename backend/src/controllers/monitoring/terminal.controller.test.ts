@@ -16,19 +16,33 @@ jest.mock('../../services/session/index.js', () => ({
 	getSessionBackend: jest.fn(),
 }));
 
-// Mock the logger service
-jest.mock('../../services/core/logger.service.js', () => ({
-	LoggerService: {
-		getInstance: jest.fn(() => ({
-			createComponentLogger: jest.fn(() => ({
-				info: jest.fn(),
-				debug: jest.fn(),
-				warn: jest.fn(),
-				error: jest.fn(),
+// Mock the logger service.
+// The factory creates a stable mockLogger inside its closure (avoids TDZ from
+// jest.mock hoisting) and exposes it via globalThis so tests can assert on
+// logger calls. This is the standard pattern when the controller captures the
+// logger at module load via `const logger = LoggerService.getInstance()...`.
+jest.mock('../../services/core/logger.service.js', () => {
+	const mockLogger = {
+		info: jest.fn(),
+		debug: jest.fn(),
+		warn: jest.fn(),
+		error: jest.fn(),
+	};
+	(globalThis as any).__terminalControllerMockLogger = mockLogger;
+	return {
+		LoggerService: {
+			getInstance: jest.fn(() => ({
+				createComponentLogger: jest.fn(() => mockLogger),
 			})),
-		})),
-	},
-}));
+		},
+	};
+});
+
+// Stable handles to the logger mocks (resolved after jest.mock factory runs).
+const mockLoggerWarn = (globalThis as any).__terminalControllerMockLogger?.warn as jest.Mock;
+const mockLoggerInfo = (globalThis as any).__terminalControllerMockLogger?.info as jest.Mock;
+const mockLoggerDebug = (globalThis as any).__terminalControllerMockLogger?.debug as jest.Mock;
+const mockLoggerError = (globalThis as any).__terminalControllerMockLogger?.error as jest.Mock;
 
 // Mock the constants
 jest.mock('../../constants.js', () => ({
@@ -570,6 +584,127 @@ describe('TerminalController', () => {
 			// Default mode should not trigger the agent status check
 			expect(mockFindMemberBySessionName).not.toHaveBeenCalled();
 			expect(mockSession.write).toHaveBeenCalledWith('shell command\r');
+		});
+
+		// ===================================================================
+		// 4-piece skill-mistake fix — Piece #4: orc-namespace gate telemetry
+		//
+		// When an orc-role caller writes via the agent-side /terminal/{session}/write
+		// path (instead of the orc-namespaced /terminal/{session}/deliver via
+		// config/skills/orchestrator/send-message), emit a warn-log naming the
+		// namespace mistake. Caller is identified via X-Agent-Session header
+		// (set canonically by every agent skill via api_call() — see
+		// config/skills/_common/lib.sh:103). Caller role is resolved via
+		// StorageService.findMemberBySessionName.
+		//
+		// 3 cases covered:
+		// 1. orc-role caller → warn-log fires (positive)
+		// 2. worker-role caller → no log (negative — no false positive on legitimate use)
+		// 3. unknown caller (registration race / ad-hoc curl) → no log (no false positive)
+		// ===================================================================
+		describe('orc-namespace gate telemetry (piece #4)', () => {
+			it('emits warn-log when orc-role caller writes via agent-side path', async () => {
+				mockFindMemberBySessionName.mockResolvedValue({
+					team: { id: 'team-x', members: [] },
+					member: { sessionName: 'crewly-orc', role: 'orchestrator', agentStatus: 'active' },
+				});
+				mockReq = {
+					params: { sessionName: 'developer-session' } as any,
+					headers: { 'x-agent-session': 'crewly-orc' } as any,
+					body: { data: 'hello from orc' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				// Lookup must be called with the CALLER session (from header), not the target
+				expect(mockFindMemberBySessionName).toHaveBeenCalledWith('crewly-orc');
+
+				// warn-log must fire with the namespace-gate message
+				expect(mockLoggerWarn).toHaveBeenCalledWith(
+					expect.stringContaining('orc-namespace-gate'),
+					expect.objectContaining({
+						callerSession: 'crewly-orc',
+						targetSession: 'developer-session',
+						skillPath: 'config/skills/agent/core/send-message',
+						canonicalAlternative: 'config/skills/orchestrator/send-message',
+					}),
+				);
+
+				// The actual write must still proceed — telemetry does not block
+				expect(mockSession.write).toHaveBeenCalledWith('hello from orc\r');
+			});
+
+			it('does NOT emit warn-log when worker-role caller writes via agent-side path', async () => {
+				mockFindMemberBySessionName.mockResolvedValue({
+					team: { id: 'team-x', members: [] },
+					member: { sessionName: 'dev-1', role: 'developer', agentStatus: 'active' },
+				});
+				mockReq = {
+					params: { sessionName: 'peer-dev-session' } as any,
+					headers: { 'x-agent-session': 'dev-1' } as any,
+					body: { data: 'peer message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				// Lookup is called (we resolve every caller) but role check excludes non-orc
+				expect(mockFindMemberBySessionName).toHaveBeenCalledWith('dev-1');
+
+				// No warn-log for worker — agent-side path is the canonical channel for them
+				const warnCalls = mockLoggerWarn.mock.calls.filter((args) =>
+					typeof args[0] === 'string' && args[0].includes('orc-namespace-gate'),
+				);
+				expect(warnCalls).toHaveLength(0);
+
+				// The actual write still succeeds
+				expect(mockSession.write).toHaveBeenCalledWith('peer message\r');
+			});
+
+			it('does NOT emit warn-log when caller session is unknown (registration race / ad-hoc curl)', async () => {
+				// findMemberBySessionName returns null when caller is not registered
+				mockFindMemberBySessionName.mockResolvedValue(null);
+				mockReq = {
+					params: { sessionName: 'some-session' } as any,
+					headers: { 'x-agent-session': 'unknown-caller' } as any,
+					body: { data: 'orphan write' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				// Lookup is called but returns null → no role check possible → no log
+				expect(mockFindMemberBySessionName).toHaveBeenCalledWith('unknown-caller');
+
+				// No warn-log fires (avoids false positives during registration race)
+				const warnCalls = mockLoggerWarn.mock.calls.filter((args) =>
+					typeof args[0] === 'string' && args[0].includes('orc-namespace-gate'),
+				);
+				expect(warnCalls).toHaveLength(0);
+
+				// Write still succeeds — telemetry is opt-in
+				expect(mockSession.write).toHaveBeenCalledWith('orphan write\r');
+			});
+
+			it('does NOT emit warn-log nor look up caller when X-Agent-Session header is absent', async () => {
+				mockReq = {
+					params: { sessionName: 'some-session' } as any,
+					headers: {} as any, // no X-Agent-Session
+					body: { data: 'no-header write' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				// Without the header, we don't even try to look up the caller (saves a storage hit)
+				expect(mockFindMemberBySessionName).not.toHaveBeenCalled();
+
+				// And no warn-log fires
+				const warnCalls = mockLoggerWarn.mock.calls.filter((args) =>
+					typeof args[0] === 'string' && args[0].includes('orc-namespace-gate'),
+				);
+				expect(warnCalls).toHaveLength(0);
+
+				// Write still succeeds
+				expect(mockSession.write).toHaveBeenCalledWith('no-header write\r');
+			});
 		});
 	});
 
