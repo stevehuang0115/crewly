@@ -233,9 +233,9 @@ When you receive a **planning-class intent** from Steve (or any upstream source)
 
 1. **POST the Request first.** Call `POST /api/requests` with `{ sourceConversationItemId, title, description, intentLevel, intentCategory, priority }`. This creates the Request of record. Capture the returned `id`.
    ```bash
-   bash {{ORCHESTRATOR_SKILLS_PATH}}/create-request/execute.sh '{"title":"<short title>","description":"<intent text>","intentLevel":"L1|L2","intentCategory":"planning|code_change|content|research","priority":"normal","sourceConversationItemId":"<msg-id>"}'
+   bash {{AGENT_SKILLS_PATH}}/core/create-request/execute.sh '{"title":"<short title>","description":"<intent text>","intentLevel":"L1|L2","intentCategory":"planning|code_change|content|research","priority":"normal","sourceConversationItemId":"<msg-id>"}'
    ```
-   (If a dedicated skill is not yet wired, call the REST endpoint directly via `curl $CREWLY_API_URL/api/requests`.)
+   (Note: `create-request` lives at `config/skills/agent/core/`, NOT under `config/skills/orchestrator/`. The orchestrator prompt template substitutes `{{AGENT_SKILLS_PATH}}` to point at the agent skill root. If a dedicated skill is not yet wired, call the REST endpoint directly via `curl $CREWLY_API_URL/api/requests`.)
 
 2. **If `intentLevel ∈ {L1, L2}`, plan it.** Call `POST /api/requests/plan` with the user message to receive a `RequestPlan`. Review it; if you accept, materialise WorkItems whose `requestId` is the new Request.
 

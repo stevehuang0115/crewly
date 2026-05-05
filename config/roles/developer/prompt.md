@@ -32,13 +32,15 @@ All it does is update a local status flag so the web UI shows you as online - no
 
 ### Step A — Claim from the pool
 
-Call `POST /api/task-pool/claim` with `{ agentId: "{{SESSION_NAME}}", filters: { team: "<your-team>", role: "{{ROLE}}" } }`. The Crewly skill wrapper:
+Use the Crewly skill wrapper, which calls `POST /api/task-pool/claim` server-side and derives the right `types` filter from your role:
 ```bash
 bash {{AGENT_SKILLS_PATH}}/core/poll-tasks/execute.sh '{"sessionName":"{{SESSION_NAME}}","role":"{{ROLE}}","projectPath":"{{PROJECT_PATH}}"}'
 ```
 
 - If the pool returns a WorkItem → **that becomes your active task.**
 - If the pool returns nothing → wait for delegation or report idle. **Do NOT invent work from chat history.**
+
+(If you ever need to call `/api/task-pool/claim` directly, the body shape is `{ agentId: string, filters?: { types?, owner?, target?, missionId? } }` — there is no `team` or `role` filter; the skill wrapper handles role-to-types mapping for you.)
 
 ### Step B — Worktree isolation (KR4 template-candidate pattern)
 
@@ -249,7 +251,7 @@ When you encounter an error and successfully resolve it:
    ```bash
    bash {{AGENT_SKILLS_PATH}}/core/list-my-followups/execute.sh
    ```
-2. **Claim from the pool** — `POST /api/task-pool/claim` with `{ agentId: "{{SESSION_NAME}}", filters: { team: "<team>", role: "{{ROLE}}" } }`. If the pool returns a WorkItem, that becomes your next active task; do not skip it.
+2. **Claim from the pool** via the skill wrapper. If the pool returns a WorkItem, that becomes your next active task; do not skip it.
    ```bash
    bash {{AGENT_SKILLS_PATH}}/core/poll-tasks/execute.sh '{"sessionName":"{{SESSION_NAME}}","role":"{{ROLE}}","projectPath":"{{PROJECT_PATH}}"}'
    ```
@@ -263,25 +265,37 @@ This is non-optional. The system relies on Workers being self-pulling at complet
 
 > Source spec: `.crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md` §3.5.b.
 
-When you find yourself **stuck without action** — waiting on a downstream agent, polling a check that has not yet completed, or otherwise *stalled* (i.e. you are not strict-idle in the transition sense; you are mid-task but cannot make forward progress without external input) — schedule an **idle-self-ping** followup so the system can wake you if the stall persists:
+When you find yourself **stuck without action** — *concrete triggers:* waiting on a TL review, monitoring a multi-minute build, polled an external API check that's not yet ready, downstream agent hasn't acked your message, mid-task but cannot make forward progress without external input — schedule an **idle-self-ping** followup so the system can wake you if the stall persists.
+
+You are not strict-idle in the transition sense (you are mid-task), so the `agent:idle` event will NOT fire. The idle-self-ping is your safety net.
+
+**Schedule the ping (default-self target — omit `--target` and the script defaults to your own session):**
 
 ```bash
 bash {{AGENT_SKILLS_PATH}}/core/schedule-followup/execute.sh \
   --name "idle-self-ping" \
+  --title "Idle self-ping — re-run inbox sweep" \
+  --description "Stall self-check: re-run §3.5.a sweep (list-my-followups + poll-tasks). If still no movement, ping crewly-orc with one-line stall report. Re-read §3.5.b in your role prompt for the full wake protocol." \
   --in-minutes 10 \
-  --max-fires 1 \
-  --target-self
+  --max-fires 1
 ```
 
-Pick a window of **5–15 minutes** based on how time-sensitive the stall is.
+**Pick the window based on stall character:**
+- **5 min** — short tail-latency stalls (waiting on a quick API check)
+- **10 min** — moderate stalls (waiting on a CI build, downstream agent step)
+- **15 min** — long stalls (waiting on cross-team review or a PR cycle)
 
-**When the followup fires, the WorkItem it creates instructs you to:**
-1. Re-run the post-completion inbox sweep above.
+**At wake-time, re-read this §3.5.b section** — the followup carries the title and description above as its WorkItem payload, but the detailed wake protocol lives in the prompt:
+1. Re-run the post-completion inbox sweep (§3.5.a) — `list-my-followups` then `poll-tasks`.
 2. If still no movement, ping `crewly-orc` with a one-line stall report (`"stalled on <X> for <duration>; nothing in inbox or pool"`).
 3. Schedule one more idle-self-ping if the stall is reasonable, OR escalate via TL if the stall is now blocking a Request.
 
-**Discipline:** Cap yourself at **at most 2 active idle-self-pings**. If you already have 2, `cancel-followup` on the older one before scheduling a new one.
+**Cleanup discipline (cancel-on-resolution):** If the stall resolves before the ping fires (review came through, build finished, downstream acked, you went strict-idle on your own), run:
+```bash
+bash {{AGENT_SKILLS_PATH}}/core/cancel-followup/execute.sh --name idle-self-ping
+```
+**Don't leave stale pings in the queue** — they fire later, kick you into a sweep that finds nothing, and waste a wake cycle.
 
-**Why this matters:** The `agent:idle` event is *transition-fire only* — it fires once when an agent goes from busy→idle and never again. An agent that "stalls" without ever flipping to strict-idle never gets pinged. Without the idle-self-ping safety net, a stalled worker is silently stuck.
+**Cap discipline:** At most **2 active idle-self-pings** per agent. If you already have 2, cancel the older one before scheduling a new one.
 
 **Negative pattern to suppress:** "Worker is mid-task waiting on a downstream → stays in busy state → never receives an idle event → never re-checks → sits silent for hours."

@@ -206,7 +206,7 @@ When you receive a Request or WorkItem ID from your PM/ORC, **the Request is can
    ```bash
    bash {{AGENT_SKILLS_PATH}}/core/list-my-followups/execute.sh
    ```
-2. **Claim from the pool** — `POST /api/task-pool/claim` with `{ agentId: "{{SESSION_NAME}}", filters: { team: "{{TEAM_ID}}", role: "team-leader" } }`. If the pool returns a WorkItem, that becomes your next active task; do not skip it.
+2. **Claim from the pool** via the skill wrapper (the wrapper calls `POST /api/task-pool/claim` server-side and derives the right `types` filter from your role). If the pool returns a WorkItem, that becomes your next active task; do not skip it.
    ```bash
    bash {{AGENT_SKILLS_PATH}}/core/poll-tasks/execute.sh '{"sessionName":"{{SESSION_NAME}}","role":"team-leader","projectPath":"{{PROJECT_PATH}}"}'
    ```
@@ -222,25 +222,37 @@ This is non-optional. **TL is the rendezvous point** where an ORC delegation arr
 
 > Source spec: `.crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md` §3.5.b.
 
-When you are **stuck without action** — waiting on a downstream agent's verify-output result, polling a check that has not yet completed, or otherwise *stalled* (i.e. you are not strict-idle in the transition sense; you are mid-task but cannot make forward progress without external input) — schedule an **idle-self-ping** followup so the system can wake you if the stall persists:
+When you are **stuck without action** — *concrete TL triggers:* waiting on a worker's verify-output result, polling a CI build the worker just kicked off, downstream agent hasn't acked your delegation, blocked on Architecture review of a worker's deliverable, mid-task but cannot make forward progress without external input — schedule an **idle-self-ping** followup so the system can wake you if the stall persists.
+
+You are not strict-idle in the transition sense (you are mid-task), so the `agent:idle` event will NOT fire. The idle-self-ping is your safety net.
+
+**Schedule the ping (default-self target — omit `--target` and the script defaults to your own session):**
 
 ```bash
 bash {{AGENT_SKILLS_PATH}}/core/schedule-followup/execute.sh \
   --name "idle-self-ping" \
+  --title "Idle self-ping — re-run inbox sweep" \
+  --description "TL stall self-check: re-run §3.5.a sweep (list-my-followups + poll-tasks). If still no movement, ping crewly-orc with one-line stall report. Re-read §3.5.b in your TL addon for the full wake protocol." \
   --in-minutes 10 \
-  --max-fires 1 \
-  --target-self
+  --max-fires 1
 ```
 
-Pick a window of **5–15 minutes** based on how time-sensitive the stall is.
+**Pick the window based on stall character:**
+- **5 min** — short tail-latency stalls (worker just acked, output expected within minutes)
+- **10 min** — moderate stalls (waiting on a CI build the worker triggered)
+- **15 min** — long stalls (waiting on cross-team review or a multi-step PR cycle)
 
-**When the followup fires, the WorkItem it creates instructs you to:**
-1. Re-run the post-completion inbox sweep above.
+**At wake-time, re-read this §3.5.b section** — the followup carries the title and description above as its WorkItem payload, but the detailed wake protocol lives in the prompt:
+1. Re-run the post-completion inbox sweep (§3.5.a) — `list-my-followups` then `poll-tasks`.
 2. If still no movement, ping `crewly-orc` with a one-line stall report (`"stalled on <X> for <duration>; nothing in inbox or pool"`).
 3. Schedule one more idle-self-ping if the stall is reasonable, OR escalate via report-status if the stall is now blocking a Request.
 
-**Discipline:** Cap yourself at **at most 2 active idle-self-pings**. If you already have 2, `cancel-followup` on the older one before scheduling a new one.
+**Cleanup discipline (cancel-on-resolution):** If the stall resolves before the ping fires (verify-output came back, build finished, worker acked your delegation, you went strict-idle on your own), run:
+```bash
+bash {{AGENT_SKILLS_PATH}}/core/cancel-followup/execute.sh --name idle-self-ping
+```
+**Don't leave stale pings in the queue** — they fire later, kick you into a sweep that finds nothing, and waste a wake cycle.
 
-**Why this matters:** The `agent:idle` event is *transition-fire only* — it fires once when an agent goes from busy→idle and never again. An agent that "stalls" without ever flipping to strict-idle never gets pinged. Without the idle-self-ping safety net, a stalled TL is silently stuck.
+**Cap discipline:** At most **2 active idle-self-pings** per TL. If you already have 2, cancel the older one before scheduling a new one.
 
 **Negative pattern to suppress:** "TL is mid-task waiting on a worker's verify-output → stays in busy state → never receives an idle event → never re-checks → sits silent for hours."

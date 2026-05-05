@@ -2206,12 +2206,13 @@ describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
 			const result = await service.buildSystemPrompt(config);
 
 			expect(result).toContain('idle-self-ping');
-			// Window guidance: 5–15 minutes (en-dash per spec). Accept both en-dash
-			// and ASCII hyphen for robustness against editor normalization.
-			expect(result).toMatch(/5[–-]15\s*minute/);
+			// Window guidance: per Arch verdict polish #3, broken into 5/10/15-min
+			// bullets with stall-character justification. Accept either the legacy
+			// "5–15 minute" form OR the new bulleted form.
+			expect(result).toMatch(/(?:5[–-]15\s*minute)|(?:5\s*min[\s\S]{0,120}10\s*min[\s\S]{0,120}15\s*min)/);
 		});
 
-		it('TL addon contains "idle-self-ping" and the 5–15 minute window', async () => {
+		it('TL addon contains "idle-self-ping" and the 5/10/15-minute window guidance', async () => {
 			const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
 			const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
 
@@ -2235,7 +2236,137 @@ describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
 			const result = await service.buildTeamLeadSection(config);
 
 			expect(result).toContain('idle-self-ping');
-			expect(result).toMatch(/5[–-]15\s*minute/);
+			expect(result).toMatch(/(?:5[–-]15\s*minute)|(?:5\s*min[\s\S]{0,120}10\s*min[\s\S]{0,120}15\s*min)/);
+		});
+	});
+
+	// =============================================================================
+	// Block #1 / Arch verdict follow-up (PR #446 re-review):
+	// Flag-parse smoke test convention. Per Arch's observation #5, every literal
+	// `bash` invocation embedded in a rendered prompt must be flag-validated so
+	// future regressions in skill-CLI surface (e.g. invented `--target-self`,
+	// missing required `--title`) are caught at unit-test time, not at the agent
+	// runtime where the safety net silently fails.
+	//
+	// Going forward this is the prompt-builder test convention: every literal
+	// schedule-followup invocation in a role prompt gets a flag-parse smoke
+	// assertion — required flags present, invalid flags absent.
+	// =============================================================================
+	describe('Bash invocation flag-parse smoke (idle-self-ping safety net)', () => {
+		/**
+		 * Extract the schedule-followup bash invocation from a rendered prompt
+		 * by finding the `idle-self-ping` --name flag and walking forward across
+		 * line continuations (`\`-terminated lines).
+		 */
+		function extractScheduleFollowupInvocation(rendered: string): string {
+			// Find the line containing the `--name "idle-self-ping"` token. The
+			// invocation begins on the preceding `bash …/schedule-followup/…` line
+			// and ends on the first non-continuation line after it.
+			const lines = rendered.split('\n');
+			const startIdx = lines.findIndex((l) => /schedule-followup\/execute\.sh/.test(l));
+			if (startIdx < 0) return '';
+			const collected: string[] = [];
+			for (let i = startIdx; i < lines.length; i++) {
+				collected.push(lines[i] ?? '');
+				// Continuation: line ends with backslash (allowing trailing whitespace)
+				if (!/\\\s*$/.test(lines[i] ?? '')) break;
+			}
+			return collected.join('\n');
+		}
+
+		/**
+		 * Assert flag-parse correctness for an idle-self-ping invocation: the
+		 * required `--title` flag is present AND the invalid `--target-self`
+		 * flag is absent (per schedule-followup/execute.sh argument grammar).
+		 */
+		function assertIdleSelfPingFlagsValid(invocation: string): void {
+			expect(invocation.length).toBeGreaterThan(0);
+			// Required: --title (schedule-followup/execute.sh:109 hard-fails without it)
+			expect(invocation).toMatch(/--title\s+/);
+			// Required: --name (used for cancel-on-resolution + dedup)
+			expect(invocation).toMatch(/--name\s+/);
+			// Required: --in-minutes OR --fire-at OR --cron (one-of, schedule-followup script enforces)
+			expect(invocation).toMatch(/--(in-minutes|fire-at|cron)\s+/);
+			// Required: --max-fires (idle-self-ping must be bounded — cap-of-2 discipline)
+			expect(invocation).toMatch(/--max-fires\s+/);
+			// Forbidden: --target-self is NOT a valid flag in schedule-followup/execute.sh.
+			// To target self, OMIT --target entirely (defaults to CREWLY_SESSION_NAME).
+			expect(invocation).not.toMatch(/--target-self\b/);
+		}
+
+		it('Worker (developer) §3.5.b idle-self-ping invocation parses cleanly (--title present, --target-self absent)', async () => {
+			const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+			const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(devContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'dev-session',
+				role: 'developer',
+				memberId: 'mem-dev',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+			const invocation = extractScheduleFollowupInvocation(result);
+			assertIdleSelfPingFlagsValid(invocation);
+		});
+
+		it('TL §3.5.b idle-self-ping invocation parses cleanly (--title present, --target-self absent)', async () => {
+			const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+			const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(tlAddonContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'tl-session',
+				role: 'developer',
+				canDelegate: true,
+				teamId: 'team-x',
+				memberId: 'mem-x',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+				subordinates: [
+					{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+				],
+			};
+
+			const result = await service.buildTeamLeadSection(config);
+			const invocation = extractScheduleFollowupInvocation(result);
+			assertIdleSelfPingFlagsValid(invocation);
+		});
+
+		it('ORC §3.1 create-request bash path uses {{AGENT_SKILLS_PATH}} (path resolution smoke)', () => {
+			// §3.1 amendment lives in buildOrchestratorPrompt (kickoff prompt) AND
+			// in config/roles/orchestrator/prompt.md. The kickoff function
+			// renders the §3.1 paragraph; verify it does NOT reference the wrong
+			// {{ORCHESTRATOR_SKILLS_PATH}}/create-request path that would resolve
+			// to a non-existent file at config/skills/orchestrator/create-request/.
+			//
+			// (kickoff prompt only describes the discipline, not the bash invocation.
+			// The bash-invocation path correctness lives in the orchestrator role
+			// prompt file. The smoke test below checks the file-on-disk for the
+			// right path token.)
+			const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+			const orcContent = fs.readFileSync(orcPromptPath, 'utf8');
+
+			// Find the create-request invocation block; it must use AGENT_SKILLS_PATH
+			// (which substitutes to config/skills/agent/) — NOT ORCHESTRATOR_SKILLS_PATH
+			// (which substitutes to config/skills/orchestrator/, where create-request
+			// does not exist).
+			const createRequestLines = orcContent
+				.split('\n')
+				.filter((l) => /create-request\/execute\.sh/.test(l));
+			expect(createRequestLines.length).toBeGreaterThan(0);
+			for (const line of createRequestLines) {
+				expect(line).toContain('{{AGENT_SKILLS_PATH}}/core/create-request/execute.sh');
+				expect(line).not.toContain('{{ORCHESTRATOR_SKILLS_PATH}}/create-request');
+			}
 		});
 	});
 });
