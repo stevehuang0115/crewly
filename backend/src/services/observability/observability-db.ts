@@ -15,11 +15,11 @@
  */
 
 import * as path from 'path';
-import * as os from 'os';
 import { existsSync, mkdirSync } from 'fs';
 import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 // ---------------------------------------------------------------------------
 // Lazy better-sqlite3 loader (same pattern as chat-db.ts)
@@ -118,7 +118,7 @@ CREATE INDEX IF NOT EXISTS ix_behavior_log_agent_event_ts
  * @returns Absolute path to `~/.crewly/observability.db`
  */
 export function defaultObservabilityDbPath(): string {
-  return path.join(os.homedir(), '.crewly', 'observability.db');
+  return path.join(getCrewlyHomePath(), 'observability.db');
 }
 
 // ---------------------------------------------------------------------------

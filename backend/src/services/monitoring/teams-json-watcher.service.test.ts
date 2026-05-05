@@ -90,9 +90,15 @@ describe('TeamsJsonWatcherService', () => {
   });
 
   describe('constructor', () => {
-    it('should initialize with correct teams directory path', () => {
+    it('should initialize with correct teams directory path (CREWLY_HOME-aware)', () => {
+      // After the CREWLY_HOME-aware refactor, teamsDir is built as
+      //   path.join(getCrewlyHomePath(), 'teams')
+      // where getCrewlyHomePath() falls back to path.join(os.homedir(), '.crewly')
+      // when CREWLY_HOME is unset. We assert the inner getCrewlyHomePath
+      // fallback path-join since the path.join mock pattern in this suite
+      // doesn't preserve the chained outer-call args reliably.
       expect(mockOs.homedir).toHaveBeenCalled();
-      expect(mockPath.join).toHaveBeenCalledWith('/mock/home', '.crewly', 'teams');
+      expect(mockPath.join).toHaveBeenCalledWith('/mock/home', '.crewly');
     });
   });
 

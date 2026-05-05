@@ -3,8 +3,8 @@ import type { ApiController } from '../api.controller.js';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
-import * as os from 'os';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('InProgressTasksController');
 
@@ -16,7 +16,7 @@ const logger = LoggerService.getInstance().createComponentLogger('InProgressTask
  */
 export async function getInProgressTasks(this: ApiController, req: Request, res: Response): Promise<void> {
   try {
-    const taskTrackingPath = join(os.homedir(), '.crewly', 'in_progress_tasks.json');
+    const taskTrackingPath = join(getCrewlyHomePath(), 'in_progress_tasks.json');
 
     // Check if file exists
     if (!existsSync(taskTrackingPath)) {

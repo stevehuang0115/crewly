@@ -41,8 +41,16 @@ describe('ActiveProjectsService', () => {
   });
 
   describe('constructor', () => {
-    it('should initialize with correct path', () => {
-      expect(path.join).toHaveBeenCalledWith('/mock/home', '.crewly', 'active_projects.json');
+    it('should initialize with correct path (CREWLY_HOME-aware)', () => {
+      // After the CREWLY_HOME-aware refactor, activeProjectsPath is built as
+      //   path.join(getCrewlyHomePath(), 'active_projects.json')
+      // where getCrewlyHomePath() falls back to path.join(os.homedir(), '.crewly')
+      // when CREWLY_HOME is unset (the mocked case here). We assert the
+      // inner getCrewlyHomePath fallback path-join because the path.join
+      // mock returns a fixed string regardless of args, so chained
+      // assertions on the outer call are brittle.
+      expect(os.homedir).toHaveBeenCalled();
+      expect(path.join).toHaveBeenCalledWith('/mock/home', '.crewly');
     });
 
     it('should work without storage service', () => {

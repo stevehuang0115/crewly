@@ -1,12 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { EventEmitter } from 'events';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { TeamActivityWebSocketService } from './team-activity-websocket.service.js';
 import { Team, TeamMember } from '../../types/index.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 /**
  * Service that watches the teams directory for changes and triggers
@@ -28,7 +28,7 @@ export class TeamsJsonWatcherService extends EventEmitter {
   constructor() {
     super();
     this.logger = LoggerService.getInstance().createComponentLogger('TeamsDirectoryWatcher');
-    this.teamsDir = path.join(os.homedir(), '.crewly', 'teams');
+    this.teamsDir = path.join(getCrewlyHomePath(), 'teams');
 
     // Cleanup on process exit
     process.on('SIGINT', () => this.cleanup());

@@ -16,7 +16,6 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
@@ -31,6 +30,7 @@ import {
 } from '../../services/orchestrator/onboarding/materialize-team.js';
 import type { TeamRecommendation } from '../../services/orchestrator/onboarding/recommend-team.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger(
   'OrchestratorOnboardingController',
@@ -50,19 +50,28 @@ const VALID_SCALES: ReadonlySet<BusinessScale> = new Set([
 
 /**
  * Default teams directory used when the request does not override it.
- * Mirrors the convention used by team config storage (`~/.crewly/teams`).
+ * Mirrors the convention used by team config storage (`<crewlyHome>/teams`).
+ *
+ * Honours the `CREWLY_HOME` environment variable via
+ * {@link getCrewlyHomePath} so test profiles (ESTestNode, KR3
+ * walkthroughs, dry-run kits) actually land under the override path
+ * instead of the developer's real `~/.crewly`.
  */
 function defaultTeamsDir(): string {
-  return path.join(os.homedir(), '.crewly', 'teams');
+  return path.join(getCrewlyHomePath(), 'teams');
 }
 
 /**
- * Default project flag path (Mon-EOD stub: a tiny JSON file under
- * `~/.crewly`). Wed–Fri this will move into the orchestrator state
+ * Default project flag path (Mon-EOD stub: a tiny JSON file under the
+ * Crewly home dir). Wed–Fri this will move into the orchestrator state
  * persistence file proper.
+ *
+ * Honours the `CREWLY_HOME` environment variable via
+ * {@link getCrewlyHomePath} for the same reason as
+ * {@link defaultTeamsDir}.
  */
 function defaultProjectFlagPath(): string {
-  return path.join(os.homedir(), '.crewly', 'onboarding-complete.json');
+  return path.join(getCrewlyHomePath(), 'onboarding-complete.json');
 }
 
 /**
