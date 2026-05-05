@@ -3,6 +3,10 @@
   "version": "1.6.4",
   "type": "module",
   "description": "Multi-agent orchestration platform for AI coding teams — coordinates Claude Code, Gemini CLI, and Codex agents with a real-time web dashboard",
+  "workspaces": [
+    "packages/*",
+    "frontend"
+  ],
   "main": "dist/cli/cli/src/index.js",
   "bin": {
     "crewly": "./dist/cli/cli/src/index.js"
