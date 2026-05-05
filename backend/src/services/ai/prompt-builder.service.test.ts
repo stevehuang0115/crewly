@@ -1975,3 +1975,267 @@ describe('buildModuleConfigFromTeamMember — WIRE-1 wiring', () => {
 		expect(config.projectRoot).toBe('/another/root');
 	});
 });
+
+// =============================================================================
+// Pipeline Dogfood Amendments — spec 2026-05-05-pipeline-dogfood-prompt-amendment
+// =============================================================================
+//
+// These tests cover the §5.1 "Prompt amendment landed" acceptance criteria.
+// Each amendment must surface in the rendered prompt; tests render via the
+// existing build* methods and assert that the §3 phrases appear.
+//
+// The prompt-builder service loads role files from disk; we mock fs/promises so
+// the tests are hermetic. For role-file-backed amendments (§3.2 TL, §3.3 PM,
+// §3.4 Worker session-start, §3.5 sweeps), the test reads the actual file from
+// the worktree using the unmocked Node fs and feeds the content through the
+// mock — this verifies BOTH that the prompt-builder pipeline renders the amendment
+// AND that the source role file contains the required phrases.
+// =============================================================================
+describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
+	let service: PromptBuilderService;
+	let mockReadFile: jest.Mock;
+	let mockAccess: jest.Mock;
+	const savedModularEnv = process.env.CREWLY_USE_MODULAR_PROMPTS;
+
+	// Resolve the actual repo root so we can read the real role files
+	// for assertion. __dirname under jest is something like
+	// `<repo>/backend/src/services/ai`; back up to repo root.
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const path = require('path') as typeof import('path');
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const fs = require('fs') as typeof import('fs');
+	const repoRoot = path.resolve(__dirname, '../../../../');
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
+		mockReadFile = jest.mocked(fsPromises.readFile);
+		mockAccess = jest.mocked(fsPromises.access);
+		service = new PromptBuilderService(repoRoot);
+	});
+
+	afterEach(() => {
+		if (savedModularEnv === undefined) {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+		} else {
+			process.env.CREWLY_USE_MODULAR_PROMPTS = savedModularEnv;
+		}
+	});
+
+	describe('§3.1 — buildOrchestratorPrompt includes pipeline-first planning', () => {
+		it('rendered prompt contains "POST /api/requests" and "intentLevel"', () => {
+			const projectData = {
+				projectName: 'Dogfood Test',
+				projectPath: '/test/path',
+				teamDetails: { name: 'Crew', members: [{ name: 'Sam', role: 'TL' }] },
+				requirements: 'ship pipeline-first',
+			};
+
+			const result = service.buildOrchestratorPrompt(projectData);
+
+			// §5.1 line 1: assert both phrases appear in the rendered prompt
+			expect(result).toContain('POST /api/requests');
+			expect(result).toContain('intentLevel');
+			// Spec citation must remain so the amendment is traceable
+			expect(result).toContain('2026-05-05-pipeline-dogfood-prompt-amendment.md');
+		});
+	});
+
+	describe('§3.2 — buildTeamLeadSection includes pipeline-first delegation', () => {
+		it('rendered TL addon contains "claim from the pool" and "Request ID"', async () => {
+			// Read the actual tl-addon.md from disk and feed through mock
+			const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+			const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(tlAddonContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'tl-session',
+				role: 'developer',
+				canDelegate: true,
+				teamId: 'team-x',
+				memberId: 'mem-x',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+				subordinates: [
+					{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+				],
+			};
+
+			const result = await service.buildTeamLeadSection(config);
+
+			// §5.1 line 2: assert pipeline-first delegation phrases
+			expect(result).toContain('claim from the pool');
+			expect(result).toContain('Request ID');
+			// And the §3.5 cross-cutting amendments
+			expect(result).toContain('list-my-followups');
+			expect(result).toContain('idle-self-ping');
+		});
+	});
+
+	describe('§3.3 — PM role prompt template includes pipeline-first authoring', () => {
+		it('rendered PM prompt contains "POST a Request" and clarify-only/delivery framing', async () => {
+			const pmPromptPath = path.join(repoRoot, 'config', 'roles', 'product-manager', 'prompt.md');
+			const pmContent = fs.readFileSync(pmPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(pmContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'pm-session',
+				role: 'product-manager',
+				memberId: 'mem-pm',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+
+			// §5.1 line 3: PM contains "POST a Request" and clarify-only framing
+			expect(result).toContain('POST a Request');
+			expect(result).toContain('Clarify-only is for interpretation, not for delivery');
+		});
+	});
+
+	describe('§3.4 — buildSystemPrompt (worker) includes session-start claim + decompose-on-claim', () => {
+		it('rendered developer prompt contains "POST /api/task-pool/claim" and "parentWorkItemId" near session-start', async () => {
+			const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+			const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(devContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'dev-session',
+				role: 'developer',
+				memberId: 'mem-dev',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+
+			// §5.1 line 4: claim endpoint and parentWorkItemId in session-start area
+			expect(result).toContain('POST /api/task-pool/claim');
+			expect(result).toContain('parentWorkItemId');
+
+			// "Near session-start protocol" — claim text should appear before
+			// the (later) post-completion sweep block to confirm placement.
+			const sessionStartIdx = result.indexOf('Session-Start Pipeline Claim');
+			const postCompletionIdx = result.indexOf('Post-Completion Inbox Sweep');
+			expect(sessionStartIdx).toBeGreaterThan(-1);
+			expect(postCompletionIdx).toBeGreaterThan(-1);
+			expect(sessionStartIdx).toBeLessThan(postCompletionIdx);
+		});
+	});
+
+	describe('§3.5.a — Post-completion inbox sweep present in Worker AND TL prompts', () => {
+		it('Worker (developer) prompt contains "list-my-followups" and "claim" in post-completion section', async () => {
+			const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+			const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(devContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'dev-session',
+				role: 'developer',
+				memberId: 'mem-dev',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+
+			expect(result).toContain('Post-Completion Inbox Sweep');
+			expect(result).toContain('list-my-followups');
+			expect(result).toContain('claim');
+		});
+
+		it('TL addon contains "list-my-followups" and "claim" in post-completion section', async () => {
+			const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+			const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(tlAddonContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'tl-session',
+				role: 'developer',
+				canDelegate: true,
+				teamId: 'team-x',
+				memberId: 'mem-x',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+				subordinates: [
+					{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+				],
+			};
+
+			const result = await service.buildTeamLeadSection(config);
+
+			expect(result).toContain('Post-Completion Inbox Sweep');
+			expect(result).toContain('list-my-followups');
+			expect(result).toContain('claim');
+		});
+	});
+
+	describe('§3.5.b — Idle-fallback schedule-followup present in Worker AND TL prompts', () => {
+		it('Worker (developer) prompt contains "idle-self-ping" and the 5–15 minute window', async () => {
+			const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+			const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(devContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'dev-session',
+				role: 'developer',
+				memberId: 'mem-dev',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+
+			expect(result).toContain('idle-self-ping');
+			// Window guidance: 5–15 minutes (en-dash per spec). Accept both en-dash
+			// and ASCII hyphen for robustness against editor normalization.
+			expect(result).toMatch(/5[–-]15\s*minute/);
+		});
+
+		it('TL addon contains "idle-self-ping" and the 5–15 minute window', async () => {
+			const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+			const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(tlAddonContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'tl-session',
+				role: 'developer',
+				canDelegate: true,
+				teamId: 'team-x',
+				memberId: 'mem-x',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+				subordinates: [
+					{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+				],
+			};
+
+			const result = await service.buildTeamLeadSection(config);
+
+			expect(result).toContain('idle-self-ping');
+			expect(result).toMatch(/5[–-]15\s*minute/);
+		});
+	});
+});

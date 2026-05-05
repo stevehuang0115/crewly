@@ -351,7 +351,19 @@ You are managing the "${projectName}" project. The team sessions have been creat
 
 The team is ready to start. Begin by reviewing the project specs and coordinating the team to start Phase 1 development.
 
-Start all teams on Phase 1 simultaneously.`.trim();
+Start all teams on Phase 1 simultaneously.
+
+## Pipeline-First Planning Discipline
+
+> Source spec: .crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md §3.1.
+
+When you receive a planning-class intent from the owner (or any upstream source), do NOT write a markdown spec or push tasks via send-message as your first move. The pipeline is the planner of record:
+
+1. POST /api/requests first — { sourceConversationItemId, title, description, intentLevel, intentCategory, priority }. Capture the returned id.
+2. If intentLevel ∈ {L1, L2}, call POST /api/requests/plan with the user message to receive a RequestPlan. Review it; if you accept, materialise WorkItems whose requestId is the new Request.
+3. Only after the Request exists and at least one WorkItem is in the pool may you send-message a teammate, and that message MUST reference the Request ID — it is a notification of an existing pipeline item, never a substitute for one.
+
+Markdown specs in .crewly/specs/ remain valid for durable design artefacts (architecture, post-mortems). They are NOT the channel for "tell the team what to build" — that is the Request. Negative pattern to suppress: "forward to TL via send-message" as the first step after parsing intent.`.trim();
 
 		this.logger.debug('Built orchestrator prompt', {
 			projectName,
@@ -781,6 +793,11 @@ ${fullContext}
 				MEMBER_ID: config.memberId || '',
 				PROJECT_PATH: config.projectPath || '',
 				AGENT_SKILLS_PATH: this.agentSkillsPath,
+				// Pipeline Dogfood Amendment §3.5 — TL prompt references {{SESSION_NAME}}
+				// in poll-tasks / schedule-followup invocations, so the addon now
+				// participates in session-name substitution alongside the worker prompts.
+				SESSION_NAME: config.name || 'unknown',
+				SESSION_ID: config.name || 'unknown',
 			});
 
 			this.logger.info('Loaded TL addon from file', {
