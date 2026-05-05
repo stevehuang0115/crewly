@@ -1975,3 +1975,660 @@ describe('buildModuleConfigFromTeamMember — WIRE-1 wiring', () => {
 		expect(config.projectRoot).toBe('/another/root');
 	});
 });
+
+// =============================================================================
+// Pipeline Dogfood Amendments — spec 2026-05-05-pipeline-dogfood-prompt-amendment
+// =============================================================================
+//
+// These tests cover the §5.1 "Prompt amendment landed" acceptance criteria.
+// Each amendment must surface in the rendered prompt; tests render via the
+// existing build* methods and assert that the §3 phrases appear.
+//
+// The prompt-builder service loads role files from disk; we mock fs/promises so
+// the tests are hermetic. For role-file-backed amendments (§3.2 TL, §3.3 PM,
+// §3.4 Worker session-start, §3.5 sweeps), the test reads the actual file from
+// the worktree using the unmocked Node fs and feeds the content through the
+// mock — this verifies BOTH that the prompt-builder pipeline renders the amendment
+// AND that the source role file contains the required phrases.
+// =============================================================================
+describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
+	let service: PromptBuilderService;
+	let mockReadFile: jest.Mock;
+	let mockAccess: jest.Mock;
+	const savedModularEnv = process.env.CREWLY_USE_MODULAR_PROMPTS;
+
+	// Resolve the actual repo root so we can read the real role files
+	// for assertion. __dirname under jest is something like
+	// `<repo>/backend/src/services/ai`; back up to repo root.
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const path = require('path') as typeof import('path');
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const fs = require('fs') as typeof import('fs');
+	const repoRoot = path.resolve(__dirname, '../../../../');
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
+		mockReadFile = jest.mocked(fsPromises.readFile);
+		mockAccess = jest.mocked(fsPromises.access);
+		service = new PromptBuilderService(repoRoot);
+	});
+
+	afterEach(() => {
+		if (savedModularEnv === undefined) {
+			delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+		} else {
+			process.env.CREWLY_USE_MODULAR_PROMPTS = savedModularEnv;
+		}
+	});
+
+	describe('§3.1 — buildOrchestratorPrompt includes pipeline-first planning', () => {
+		it('rendered prompt contains "POST /api/requests" and "intentLevel"', () => {
+			const projectData = {
+				projectName: 'Dogfood Test',
+				projectPath: '/test/path',
+				teamDetails: { name: 'Crew', members: [{ name: 'Sam', role: 'TL' }] },
+				requirements: 'ship pipeline-first',
+			};
+
+			const result = service.buildOrchestratorPrompt(projectData);
+
+			// §5.1 line 1: assert both phrases appear in the rendered prompt
+			expect(result).toContain('POST /api/requests');
+			expect(result).toContain('intentLevel');
+			// Spec citation must remain so the amendment is traceable
+			expect(result).toContain('2026-05-05-pipeline-dogfood-prompt-amendment.md');
+		});
+	});
+
+	describe('§3.2 — buildTeamLeadSection includes pipeline-first delegation', () => {
+		it('rendered TL addon contains "claim from the pool" and "Request ID"', async () => {
+			// Read the actual tl-addon.md from disk and feed through mock
+			const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+			const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(tlAddonContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'tl-session',
+				role: 'developer',
+				canDelegate: true,
+				teamId: 'team-x',
+				memberId: 'mem-x',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+				subordinates: [
+					{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+				],
+			};
+
+			const result = await service.buildTeamLeadSection(config);
+
+			// §5.1 line 2: assert pipeline-first delegation phrases
+			expect(result).toContain('claim from the pool');
+			expect(result).toContain('Request ID');
+			// And the §3.5 cross-cutting amendments
+			expect(result).toContain('list-my-followups');
+			expect(result).toContain('idle-self-ping');
+		});
+	});
+
+	describe('§3.3 — PM role prompt template includes pipeline-first authoring', () => {
+		it('rendered PM prompt contains "POST a Request" and clarify-only/delivery framing', async () => {
+			const pmPromptPath = path.join(repoRoot, 'config', 'roles', 'product-manager', 'prompt.md');
+			const pmContent = fs.readFileSync(pmPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(pmContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'pm-session',
+				role: 'product-manager',
+				memberId: 'mem-pm',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+
+			// §5.1 line 3: PM contains "POST a Request" and clarify-only framing
+			expect(result).toContain('POST a Request');
+			expect(result).toContain('Clarify-only is for interpretation, not for delivery');
+		});
+	});
+
+	describe('§3.4 — buildSystemPrompt (worker) includes session-start claim + decompose-on-claim', () => {
+		it('rendered developer prompt contains "POST /api/task-pool/claim" and "parentWorkItemId" near session-start', async () => {
+			const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+			const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(devContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'dev-session',
+				role: 'developer',
+				memberId: 'mem-dev',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+
+			// §5.1 line 4: claim endpoint and parentWorkItemId in session-start area
+			expect(result).toContain('POST /api/task-pool/claim');
+			expect(result).toContain('parentWorkItemId');
+
+			// "Near session-start protocol" — claim text should appear before
+			// the (later) post-completion sweep block to confirm placement.
+			const sessionStartIdx = result.indexOf('Session-Start Pipeline Claim');
+			const postCompletionIdx = result.indexOf('Post-Completion Inbox Sweep');
+			expect(sessionStartIdx).toBeGreaterThan(-1);
+			expect(postCompletionIdx).toBeGreaterThan(-1);
+			expect(sessionStartIdx).toBeLessThan(postCompletionIdx);
+		});
+	});
+
+	describe('§3.5.a — Post-completion inbox sweep present in Worker AND TL prompts', () => {
+		it('Worker (developer) prompt contains "list-my-followups" and "claim" in post-completion section', async () => {
+			const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+			const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(devContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'dev-session',
+				role: 'developer',
+				memberId: 'mem-dev',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+
+			expect(result).toContain('Post-Completion Inbox Sweep');
+			expect(result).toContain('list-my-followups');
+			expect(result).toContain('claim');
+		});
+
+		it('TL addon contains "list-my-followups" and "claim" in post-completion section', async () => {
+			const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+			const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(tlAddonContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'tl-session',
+				role: 'developer',
+				canDelegate: true,
+				teamId: 'team-x',
+				memberId: 'mem-x',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+				subordinates: [
+					{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+				],
+			};
+
+			const result = await service.buildTeamLeadSection(config);
+
+			expect(result).toContain('Post-Completion Inbox Sweep');
+			expect(result).toContain('list-my-followups');
+			expect(result).toContain('claim');
+		});
+	});
+
+	describe('§3.5.b — Idle-fallback schedule-followup present in Worker AND TL prompts', () => {
+		it('Worker (developer) prompt contains "idle-self-ping" and the 5–15 minute window', async () => {
+			const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+			const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(devContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'dev-session',
+				role: 'developer',
+				memberId: 'mem-dev',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+
+			expect(result).toContain('idle-self-ping');
+			// Window guidance: per Arch verdict polish #3, broken into 5/10/15-min
+			// bullets with stall-character justification. Accept either the legacy
+			// "5–15 minute" form OR the new bulleted form.
+			expect(result).toMatch(/(?:5[–-]15\s*minute)|(?:5\s*min[\s\S]{0,120}10\s*min[\s\S]{0,120}15\s*min)/);
+		});
+
+		it('TL addon contains "idle-self-ping" and the 5/10/15-minute window guidance', async () => {
+			const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+			const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(tlAddonContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'tl-session',
+				role: 'developer',
+				canDelegate: true,
+				teamId: 'team-x',
+				memberId: 'mem-x',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+				subordinates: [
+					{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+				],
+			};
+
+			const result = await service.buildTeamLeadSection(config);
+
+			expect(result).toContain('idle-self-ping');
+			expect(result).toMatch(/(?:5[–-]15\s*minute)|(?:5\s*min[\s\S]{0,120}10\s*min[\s\S]{0,120}15\s*min)/);
+		});
+	});
+
+	// =============================================================================
+	// Block #1 / Arch verdict follow-up (PR #446 re-review):
+	// Flag-parse smoke test convention. Per Arch's observation #5, every literal
+	// `bash` invocation embedded in a rendered prompt must be flag-validated so
+	// future regressions in skill-CLI surface (e.g. invented `--target-self`,
+	// missing required `--title`) are caught at unit-test time, not at the agent
+	// runtime where the safety net silently fails.
+	//
+	// Going forward this is the prompt-builder test convention: every literal
+	// schedule-followup invocation in a role prompt gets a flag-parse smoke
+	// assertion — required flags present, invalid flags absent.
+	// =============================================================================
+	describe('Bash invocation flag-parse smoke (idle-self-ping safety net)', () => {
+		/**
+		 * Extract the schedule-followup bash invocation from a rendered prompt
+		 * by finding the `idle-self-ping` --name flag and walking forward across
+		 * line continuations (`\`-terminated lines).
+		 */
+		function extractScheduleFollowupInvocation(rendered: string): string {
+			// Find the line containing the `--name "idle-self-ping"` token. The
+			// invocation begins on the preceding `bash …/schedule-followup/…` line
+			// and ends on the first non-continuation line after it.
+			const lines = rendered.split('\n');
+			const startIdx = lines.findIndex((l) => /schedule-followup\/execute\.sh/.test(l));
+			if (startIdx < 0) return '';
+			const collected: string[] = [];
+			for (let i = startIdx; i < lines.length; i++) {
+				collected.push(lines[i] ?? '');
+				// Continuation: line ends with backslash (allowing trailing whitespace)
+				if (!/\\\s*$/.test(lines[i] ?? '')) break;
+			}
+			return collected.join('\n');
+		}
+
+		/**
+		 * Assert flag-parse correctness for an idle-self-ping invocation: the
+		 * required `--title` flag is present AND the invalid `--target-self`
+		 * flag is absent (per schedule-followup/execute.sh argument grammar).
+		 */
+		function assertIdleSelfPingFlagsValid(invocation: string): void {
+			expect(invocation.length).toBeGreaterThan(0);
+			// Required: --title (schedule-followup/execute.sh:109 hard-fails without it)
+			expect(invocation).toMatch(/--title\s+/);
+			// Required: --name (used for cancel-on-resolution + dedup)
+			expect(invocation).toMatch(/--name\s+/);
+			// Required: --in-minutes OR --fire-at OR --cron (one-of, schedule-followup script enforces)
+			expect(invocation).toMatch(/--(in-minutes|fire-at|cron)\s+/);
+			// Required: --max-fires (idle-self-ping must be bounded — cap-of-2 discipline)
+			expect(invocation).toMatch(/--max-fires\s+/);
+			// Forbidden: --target-self is NOT a valid flag in schedule-followup/execute.sh.
+			// To target self, OMIT --target entirely (defaults to CREWLY_SESSION_NAME).
+			expect(invocation).not.toMatch(/--target-self\b/);
+		}
+
+		it('Worker (developer) §3.5.b idle-self-ping invocation parses cleanly (--title present, --target-self absent)', async () => {
+			const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+			const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(devContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'dev-session',
+				role: 'developer',
+				memberId: 'mem-dev',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+			};
+
+			const result = await service.buildSystemPrompt(config);
+			const invocation = extractScheduleFollowupInvocation(result);
+			assertIdleSelfPingFlagsValid(invocation);
+		});
+
+		it('TL §3.5.b idle-self-ping invocation parses cleanly (--title present, --target-self absent)', async () => {
+			const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+			const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+			mockAccess.mockResolvedValue(undefined);
+			mockReadFile.mockResolvedValue(tlAddonContent);
+
+			const config: TeamMemberSessionConfig = {
+				name: 'tl-session',
+				role: 'developer',
+				canDelegate: true,
+				teamId: 'team-x',
+				memberId: 'mem-x',
+				projectPath: '/proj',
+				systemPrompt: '',
+				runtimeType: 'claude-code' as any,
+				subordinates: [
+					{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+				],
+			};
+
+			const result = await service.buildTeamLeadSection(config);
+			const invocation = extractScheduleFollowupInvocation(result);
+			assertIdleSelfPingFlagsValid(invocation);
+		});
+
+		it('ORC §3.1 create-request bash path uses {{AGENT_SKILLS_PATH}} (path resolution smoke)', () => {
+			// §3.1 amendment lives in buildOrchestratorPrompt (kickoff prompt) AND
+			// in config/roles/orchestrator/prompt.md. The kickoff function
+			// renders the §3.1 paragraph; verify it does NOT reference the wrong
+			// {{ORCHESTRATOR_SKILLS_PATH}}/create-request path that would resolve
+			// to a non-existent file at config/skills/orchestrator/create-request/.
+			//
+			// (kickoff prompt only describes the discipline, not the bash invocation.
+			// The bash-invocation path correctness lives in the orchestrator role
+			// prompt file. The smoke test below checks the file-on-disk for the
+			// right path token.)
+			const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+			const orcContent = fs.readFileSync(orcPromptPath, 'utf8');
+
+			// Find the create-request invocation block; it must use AGENT_SKILLS_PATH
+			// (which substitutes to config/skills/agent/) — NOT ORCHESTRATOR_SKILLS_PATH
+			// (which substitutes to config/skills/orchestrator/, where create-request
+			// does not exist).
+			const createRequestLines = orcContent
+				.split('\n')
+				.filter((l) => /create-request\/execute\.sh/.test(l));
+			expect(createRequestLines.length).toBeGreaterThan(0);
+			for (const line of createRequestLines) {
+				expect(line).toContain('{{AGENT_SKILLS_PATH}}/core/create-request/execute.sh');
+				expect(line).not.toContain('{{ORCHESTRATOR_SKILLS_PATH}}/create-request');
+			}
+		});
+	});
+
+	// =============================================================================
+	// §3.0 Universal Delegator Closure (Mia spec patch fold-in):
+	//
+	// §3.0 is the dual of §3.5 — delegator-side closure (subscribe via
+	// watch-for-event + schedule-followup fallback at ~2x ETA + cancel-on-verify).
+	// It MUST land in ALL FOUR role souls (ORC/TL/PM/Worker) plus the kickoff
+	// prompt at buildOrchestratorPrompt, with role-specific ETA tuning per
+	// §3.1/§3.2/§3.3/§3.4 closure paragraphs.
+	//
+	// These tests verify:
+	// 1. Each role's rendered prompt names all three skill-paths (watch-for-event,
+	//    schedule-followup, cancel-followup) so agents can find them.
+	// 2. Each role's rendered prompt contains its role-specific ETA-tuning
+	//    numbers — proves the spec ETA framing actually made it through to the
+	//    runtime prompt, not just an abstract "schedule a fallback" mention.
+	// 3. The watch-for-event invocations parse cleanly (same flag-parse smoke
+	//    convention as the idle-self-ping tests above).
+	// =============================================================================
+	describe('§3.0 Universal Delegator Closure (Mia spec patch fold-in)', () => {
+		/**
+		 * Extract the watch-for-event bash invocation from a rendered prompt.
+		 * Mirrors `extractScheduleFollowupInvocation` above — finds the line
+		 * containing `watch-for-event/execute.sh` and walks forward across
+		 * line continuations.
+		 */
+		function extractWatchForEventInvocation(rendered: string): string {
+			const lines = rendered.split('\n');
+			const startIdx = lines.findIndex((l) => /watch-for-event\/execute\.sh/.test(l));
+			if (startIdx < 0) return '';
+			const collected: string[] = [];
+			for (let i = startIdx; i < lines.length; i++) {
+				collected.push(lines[i] ?? '');
+				if (!/\\\s*$/.test(lines[i] ?? '')) break;
+			}
+			return collected.join('\n');
+		}
+
+		/**
+		 * Assert flag-parse correctness for a watch-for-event invocation per
+		 * `config/skills/agent/core/watch-for-event/execute.sh` argument grammar.
+		 */
+		function assertWatchForEventFlagsValid(invocation: string): void {
+			expect(invocation.length).toBeGreaterThan(0);
+			// Required: --event-type <value>
+			expect(invocation).toMatch(/--event-type\s+/);
+			// Required: --title <value>
+			expect(invocation).toMatch(/--title\s+/);
+			// Best-practice: --filter-session (narrows to specific delegatee per §3.0)
+			expect(invocation).toMatch(/--filter-session\s+/);
+			// Best-practice: bound the watcher (--max-fires) so it can't flap forever
+			expect(invocation).toMatch(/--max-fires\s+/);
+			// Forbidden: --target-self is NOT a valid flag (same as schedule-followup)
+			expect(invocation).not.toMatch(/--target-self\b/);
+		}
+
+		describe('ORC §3.1 closure paragraph', () => {
+			it('ORC role prompt names all three §3.0 skills + ORC ETA tuning numbers', async () => {
+				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+				const orcContent = fs.readFileSync(orcPromptPath, 'utf8');
+				expect(orcContent).toContain('watch-for-event/execute.sh');
+				expect(orcContent).toContain('schedule-followup/execute.sh');
+				expect(orcContent).toContain('cancel-followup/execute.sh');
+				// ORC ETA tuning per §3.1 closure: TL milestone 30–90min → fallback 120,
+				// cross-team 2–8h → 12h (~720 min).
+				expect(orcContent).toMatch(/30[–-]90\s*min/);
+				expect(orcContent).toMatch(/120/); // 120-min fallback
+				expect(orcContent).toMatch(/12\s*h|720/); // 12h fallback
+			});
+
+			it('ORC role prompt watch-for-event invocation parses cleanly', async () => {
+				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+				const orcContent = fs.readFileSync(orcPromptPath, 'utf8');
+				const invocation = extractWatchForEventInvocation(orcContent);
+				assertWatchForEventFlagsValid(invocation);
+			});
+
+			it('buildOrchestratorPrompt kickoff names all three §3.0 skills', () => {
+				const projectData = {
+					projectName: 'Dogfood Test',
+					projectPath: '/test/path',
+					teamDetails: { name: 'Crew', members: [{ name: 'Sam', role: 'TL' }] },
+					requirements: 'ship pipeline-first',
+				};
+				const result = service.buildOrchestratorPrompt(projectData);
+				expect(result).toContain('watch-for-event');
+				expect(result).toContain('schedule-followup');
+				expect(result).toContain('cancel-followup');
+				// Recursion clause naming
+				expect(result).toContain('Recursion clause');
+			});
+		});
+
+		describe('TL §3.2 closure paragraph', () => {
+			it('TL addon names all three §3.0 skills + TL ETA tuning numbers + verified-complete nuance', async () => {
+				const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+				const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(tlAddonContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'tl-session',
+					role: 'developer',
+					canDelegate: true,
+					teamId: 'team-x',
+					memberId: 'mem-x',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+					subordinates: [
+						{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+					],
+				};
+
+				const result = await service.buildTeamLeadSection(config);
+				expect(result).toContain('watch-for-event');
+				expect(result).toContain('schedule-followup');
+				expect(result).toContain('cancel-followup');
+				// TL ETA tuning per §3.2 closure: tactical Worker 20–60min → 90min,
+				// multi-step chains 1–3h → 5h (~300 min).
+				expect(result).toMatch(/20[–-]60\s*min/);
+				expect(result).toMatch(/90/); // 90-min fallback
+				expect(result).toMatch(/5\s*h|300/); // 5h fallback
+				// Nuance Sam called out: cancel on verified-complete, NOT raw complete-task.
+				expect(result).toMatch(/verified[\s-]complete/);
+			});
+
+			it('TL addon watch-for-event invocation parses cleanly', async () => {
+				const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+				const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(tlAddonContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'tl-session',
+					role: 'developer',
+					canDelegate: true,
+					teamId: 'team-x',
+					memberId: 'mem-x',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+					subordinates: [
+						{ name: 'Worker1', sessionName: 'w1-session', role: 'developer', memberId: 'm-w1' },
+					],
+				};
+
+				const result = await service.buildTeamLeadSection(config);
+				const invocation = extractWatchForEventInvocation(result);
+				assertWatchForEventFlagsValid(invocation);
+			});
+		});
+
+		describe('PM §3.3 closure paragraph', () => {
+			it('PM prompt names all three §3.0 skills + PM ETA tuning numbers + upper-end discipline', async () => {
+				const pmPromptPath = path.join(repoRoot, 'config', 'roles', 'product-manager', 'prompt.md');
+				const pmContent = fs.readFileSync(pmPromptPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(pmContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'pm-session',
+					role: 'product-manager',
+					memberId: 'mem-pm',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+				};
+
+				const result = await service.buildSystemPrompt(config);
+				expect(result).toContain('watch-for-event');
+				expect(result).toContain('schedule-followup');
+				expect(result).toContain('cancel-followup');
+				// PM ETA tuning per §3.3 closure: PM→TL 1–4h → 6h (~360 min),
+				// PM→ORC 4–24h → 36h (~2160 min).
+				expect(result).toMatch(/1[–-]4\s*h/);
+				expect(result).toMatch(/6\s*h|360/);
+				expect(result).toMatch(/4[–-]24\s*h/);
+				expect(result).toMatch(/36\s*h|2160/);
+				// Sam-called-out discipline: err toward upper end of fallback window
+				expect(result).toMatch(/upper end/);
+			});
+
+			it('PM prompt watch-for-event invocation parses cleanly', async () => {
+				const pmPromptPath = path.join(repoRoot, 'config', 'roles', 'product-manager', 'prompt.md');
+				const pmContent = fs.readFileSync(pmPromptPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(pmContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'pm-session',
+					role: 'product-manager',
+					memberId: 'mem-pm',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+				};
+
+				const result = await service.buildSystemPrompt(config);
+				const invocation = extractWatchForEventInvocation(result);
+				assertWatchForEventFlagsValid(invocation);
+			});
+		});
+
+		describe('Worker §3.4 closure paragraph (recursion clause)', () => {
+			it('developer prompt names all three §3.0 skills + Worker ETA tuning + recursion-clause callout + canonical-failure-case naming', async () => {
+				const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+				const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(devContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'dev-session',
+					role: 'developer',
+					memberId: 'mem-dev',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+				};
+
+				const result = await service.buildSystemPrompt(config);
+				expect(result).toContain('watch-for-event');
+				expect(result).toContain('schedule-followup');
+				expect(result).toContain('cancel-followup');
+				// Worker ETA tuning per §3.4 closure: peer sub-WorkItems 10–30min → 45min,
+				// cross-role clarifications 15–60min → 90min.
+				expect(result).toMatch(/10[–-]30\s*min/);
+				expect(result).toMatch(/45/);
+				expect(result).toMatch(/15[–-]60\s*min/);
+				// Sam-called-out: name the canonical failure case explicitly
+				expect(result).toMatch(/Steve manually pinged/i);
+				// Recursion clause non-negotiable framing
+				expect(result).toMatch(/recursion clause.*non-negotiable/i);
+			});
+
+			it('developer prompt watch-for-event invocation parses cleanly', async () => {
+				const devPromptPath = path.join(repoRoot, 'config', 'roles', 'developer', 'prompt.md');
+				const devContent = fs.readFileSync(devPromptPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(devContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'dev-session',
+					role: 'developer',
+					memberId: 'mem-dev',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+				};
+
+				const result = await service.buildSystemPrompt(config);
+				const invocation = extractWatchForEventInvocation(result);
+				assertWatchForEventFlagsValid(invocation);
+			});
+		});
+	});
+});

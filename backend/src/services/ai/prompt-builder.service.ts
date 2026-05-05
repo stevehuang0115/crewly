@@ -351,7 +351,30 @@ You are managing the "${projectName}" project. The team sessions have been creat
 
 The team is ready to start. Begin by reviewing the project specs and coordinating the team to start Phase 1 development.
 
-Start all teams on Phase 1 simultaneously.`.trim();
+Start all teams on Phase 1 simultaneously.
+
+## Pipeline-First Planning Discipline
+
+> Source spec: .crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md §3.1.
+
+When you receive a planning-class intent from the owner (or any upstream source), do NOT write a markdown spec or push tasks via send-message as your first move. The pipeline is the planner of record:
+
+1. POST /api/requests first — { sourceConversationItemId, title, description, intentLevel, intentCategory, priority }. Capture the returned id.
+2. If intentLevel ∈ {L1, L2}, call POST /api/requests/plan with the user message to receive a RequestPlan. Review it; if you accept, materialise WorkItems whose requestId is the new Request.
+3. Only after the Request exists and at least one WorkItem is in the pool may you send-message a teammate, and that message MUST reference the Request ID — it is a notification of an existing pipeline item, never a substitute for one.
+
+Markdown specs in .crewly/specs/ remain valid for durable design artefacts (architecture, post-mortems). They are NOT the channel for "tell the team what to build" — that is the Request. Negative pattern to suppress: "forward to TL via send-message" as the first step after parsing intent.
+
+## Universal Delegator Closure (§3.0 — MANDATORY for every dispatch)
+
+> Source spec: .crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md §3.0. Dual of §3.5.
+
+Every dispatch (delegate-task, send-message-with-action, materialise WorkItem with target, POST Request handed off to a TL) MUST close the loop with BOTH:
+1. watch-for-event subscribed to the delegatee (--filter-session, --max-fires N, --max-idle-fires 3)
+2. schedule-followup fallback at ~2x expected ETA (TL milestone 30-90min → 120min; cross-team 2-8h → 12h)
+3. cancel-followup BOTH on verified completion (PR merged / Request done / acceptance met).
+
+Recursion clause: every delegator hop carries this rule — ORC→TL, TL→Worker, PM→TL, AND Worker→Worker. The pipeline does not exempt any hop. Failure mode it prevents: dispatcher forgets the work it dispatched and only checks status manually hours later because no event ever woke them.`.trim();
 
 		this.logger.debug('Built orchestrator prompt', {
 			projectName,
@@ -781,6 +804,11 @@ ${fullContext}
 				MEMBER_ID: config.memberId || '',
 				PROJECT_PATH: config.projectPath || '',
 				AGENT_SKILLS_PATH: this.agentSkillsPath,
+				// Pipeline Dogfood Amendment §3.5 — TL prompt references {{SESSION_NAME}}
+				// in poll-tasks / schedule-followup invocations, so the addon now
+				// participates in session-name substitution alongside the worker prompts.
+				SESSION_NAME: config.name || 'unknown',
+				SESSION_ID: config.name || 'unknown',
 			});
 
 			this.logger.info('Loaded TL addon from file', {
