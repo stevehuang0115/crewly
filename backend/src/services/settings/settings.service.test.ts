@@ -239,11 +239,14 @@ describe('SettingsService', () => {
       const settings = await service.getSettings();
 
       expect(settings.general.enableProactiveCompact).toBe(false);
-      // The marker is stored on the loaded JSON, not on the typed defaults shape;
-      // re-read the raw file to confirm the migration is durable.
-      // The first call already mutated the in-memory `loaded`, so the cached
-      // settings reflect the flip. Saving it back is a separate concern; this
-      // test asserts the user-observable runtime value, which is `false`.
+      // Direct marker assertion (per Arch review observation 1 on PR #447):
+      // The `_proactiveCompactMigrated` marker is set in the cached general
+      // object after a successful flip. The marker is not part of the typed
+      // GeneralSettings shape (it's a private migration field), so we cast
+      // through Record<string, unknown> to read it.
+      expect(
+        (settings.general as unknown as Record<string, unknown>)._proactiveCompactMigrated
+      ).toBe(true);
     });
 
     it('should NOT re-flip enableProactiveCompact when the migration marker is already set (idempotent re-enable preserved)', async () => {

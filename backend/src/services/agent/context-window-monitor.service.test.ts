@@ -1963,6 +1963,53 @@ describe('ContextWindowMonitorService', () => {
 
 			spy.mockRestore();
 		});
+
+		// -------------------------------------------------------------------
+		// Proactive-path gating (negative case) — per Arch review obs 3
+		// -------------------------------------------------------------------
+
+		it('proactive compact is BLOCKED when proactiveCompactEnabled=false even if cumulative output exceeds threshold', () => {
+			// Mirror of `should trigger proactive compact when cumulative output
+			// exceeds threshold` (in `proactive compact` describe), but with the
+			// gate explicitly closed. Confirms the L1091 single-boolean gate
+			// covers the path end-to-end so resetCumulativeOutput is NOT called.
+			const service = ContextWindowMonitorService.getInstance();
+			(service as unknown as { proactiveCompactEnabled: boolean }).proactiveCompactEnabled = false;
+			// The outer beforeEach also re-opened threshold; close it too so
+			// nothing else fires for this test.
+			(service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled = false;
+
+			const mockSession = createMockSession();
+			const sessions = new Map([['test-agent', mockSession.session]]);
+			const mockGetCumulativeOutputBytes = jest.fn().mockReturnValue(
+				CONTEXT_WINDOW_MONITOR_CONSTANTS.PROACTIVE_COMPACT_THRESHOLD_BYTES + 1
+			);
+			const mockResetCumulativeOutput = jest.fn();
+			const backend = {
+				...createMockSessionBackend(sessions as any),
+				getCumulativeOutputBytes: mockGetCumulativeOutputBytes,
+				resetCumulativeOutput: mockResetCumulativeOutput,
+			};
+
+			service.setDependencies(
+				backend as any,
+				createMockAgentRegistrationService() as any,
+				{} as any,
+				createMockTaskTrackingService() as any,
+				createMockEventBus() as any
+			);
+			service.startSessionMonitoring('test-agent', 'member-1', 'team-1', 'developer');
+
+			service.start();
+			jest.advanceTimersByTime(CONTEXT_WINDOW_MONITOR_CONSTANTS.CHECK_INTERVAL_MS);
+
+			// Gate closed → proactive path short-circuits at L1091 → reset NOT called
+			expect(mockResetCumulativeOutput).not.toHaveBeenCalled();
+
+			const state = service.getContextState('test-agent');
+			expect(state!.compactInProgress).toBe(false);
+			expect(state!.compactAttempts).toBe(0);
+		});
 	});
 
 	// =========================================================================

@@ -319,6 +319,18 @@ export class SettingsService {
     // idempotent — a user who deliberately re-enables via Settings UI will not
     // be re-flipped on subsequent loads.
     //
+    // **Marker persistence note** (per Arch review observation 2 on PR #447):
+    // This migration mutates the in-memory `loaded` object only. The marker
+    // is not separately written to disk here — it lands on disk via the
+    // standard `saveSettings()` flow (e.g. when the user later updates ANY
+    // setting through the UI, or via `mergeSettings`/`updateSettings`).
+    // Until that next save, the marker exists transiently in memory; if the
+    // process restarts before any save, the migration runs again and is
+    // still safe (the same `true → false` flip happens, idempotent in
+    // user-visible outcome). Future maintainers: a missing-on-disk marker
+    // is NOT a bug — it just means the user has not saved settings since
+    // first load post-upgrade.
+    //
     // Per spec 2026-05-05-compact-fix-AB-followup §A.1
     if (
       typeof general['enableProactiveCompact'] === 'boolean' &&
