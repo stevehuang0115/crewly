@@ -171,6 +171,18 @@ describe('ContextWindowMonitorService', () => {
 		jest.clearAllMocks();
 		jest.useFakeTimers();
 		ContextWindowMonitorService.resetInstance();
+
+		// Per spec 2026-05-05-compact-fix-AB-followup §A.2 + §B the production
+		// defaults for both compact gates flipped to `false` (fail-safe CLOSED).
+		// Existing behavior-tests in this suite were written when the gates were
+		// effectively `true` and they assert that compact fires at the threshold.
+		// Re-open both gates here so those behavior assertions still hold without
+		// rewriting every test. The new `compact gating (Option A+B)` describe
+		// block intentionally OVERRIDES these to `false` to verify the gating
+		// contract (defaults closed, RED/CRITICAL paths blocked when off, etc).
+		const service = ContextWindowMonitorService.getInstance();
+		(service as unknown as { proactiveCompactEnabled: boolean; thresholdCompactEnabled: boolean }).proactiveCompactEnabled = true;
+		(service as unknown as { proactiveCompactEnabled: boolean; thresholdCompactEnabled: boolean }).thresholdCompactEnabled = true;
 	});
 
 	afterEach(() => {
@@ -1737,6 +1749,219 @@ describe('ContextWindowMonitorService', () => {
 
 			// Verify state is fully cleaned up
 			expect(service.getContextState('test-agent')).toBeUndefined();
+		});
+	});
+
+	// =========================================================================
+	// Compact gating (Option A+B per spec 2026-05-05-compact-fix-AB-followup)
+	//
+	// Verifies the fail-safe-CLOSED contract for both compact gates:
+	//   - `proactiveCompactEnabled` defaults to `false` (initial cached value)
+	//   - `thresholdCompactEnabled` defaults to `false` (initial cached value)
+	//   - When `thresholdCompactEnabled === false`:
+	//       * RED-level (≥85%) /compact emission is blocked
+	//       * CRITICAL-level (≥95%) /compact emission is blocked
+	//       * CRITICAL auto-recovery still runs (when AUTO_RECOVERY_ENABLED)
+	//   - Refresh paths fail-safe to `false` on undefined settings
+	// =========================================================================
+
+	describe('compact gating (Option A+B)', () => {
+		/**
+		 * Build a service WITHOUT touching the gate fields, so the production
+		 * fail-safe defaults are preserved for the assertion. The outer
+		 * describe's `beforeEach` re-opens both gates by default; we override
+		 * back to `false` here to verify the closed-by-default contract.
+		 */
+		function setupWithGatesClosed() {
+			const service = ContextWindowMonitorService.getInstance();
+			(service as unknown as { proactiveCompactEnabled: boolean; thresholdCompactEnabled: boolean }).proactiveCompactEnabled = false;
+			(service as unknown as { proactiveCompactEnabled: boolean; thresholdCompactEnabled: boolean }).thresholdCompactEnabled = false;
+
+			const mockSession = createMockSession();
+			const sessions = new Map([['test-agent', mockSession.session]]);
+			const backend = createMockSessionBackend(sessions as any);
+			const eventBus = createMockEventBus();
+			const regService = createMockAgentRegistrationService();
+
+			service.setDependencies(
+				backend as any,
+				regService as any,
+				{} as any,
+				createMockTaskTrackingService() as any,
+				eventBus as any
+			);
+			service.startSessionMonitoring('test-agent', 'member-1', 'team-1', 'developer');
+			return { service, mockSession, eventBus, regService };
+		}
+
+		// -------------------------------------------------------------------
+		// Initial state — fail-safe CLOSED defaults
+		// -------------------------------------------------------------------
+
+		it('initial cached proactiveCompactEnabled defaults to false (fail-safe CLOSED)', () => {
+			ContextWindowMonitorService.resetInstance();
+			const service = ContextWindowMonitorService.getInstance();
+
+			// Read the private field via cast — verifying the production default.
+			const value = (service as unknown as { proactiveCompactEnabled: boolean }).proactiveCompactEnabled;
+			expect(value).toBe(false);
+		});
+
+		it('initial cached thresholdCompactEnabled defaults to false (fail-safe CLOSED)', () => {
+			ContextWindowMonitorService.resetInstance();
+			const service = ContextWindowMonitorService.getInstance();
+
+			const value = (service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled;
+			expect(value).toBe(false);
+		});
+
+		// -------------------------------------------------------------------
+		// Threshold-compact gating — RED level
+		// -------------------------------------------------------------------
+
+		it('RED-level compact is BLOCKED when thresholdCompactEnabled=false', async () => {
+			const { service, mockSession } = setupWithGatesClosed();
+
+			service.updateContextUsage('test-agent', 86); // red
+			await jest.advanceTimersByTimeAsync(300);
+
+			const writeCalls = mockSession.session.write.mock.calls.map((c: string[]) => c[0]);
+			expect(writeCalls).not.toContain('/compact\r');
+
+			const state = service.getContextState('test-agent');
+			expect(state!.compactInProgress).toBe(false);
+			expect(state!.compactAttempts).toBe(0);
+		});
+
+		it('RED-level compact FIRES when thresholdCompactEnabled=true', async () => {
+			const { service, mockSession } = setupWithGatesClosed();
+			(service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled = true;
+
+			service.updateContextUsage('test-agent', 86); // red
+			await jest.advanceTimersByTimeAsync(300);
+
+			const writeCalls = mockSession.session.write.mock.calls.map((c: string[]) => c[0]);
+			expect(writeCalls).toContain('/compact\r');
+		});
+
+		// -------------------------------------------------------------------
+		// Threshold-compact gating — CRITICAL level
+		// -------------------------------------------------------------------
+
+		it('CRITICAL-level compact attempt is BLOCKED when thresholdCompactEnabled=false', async () => {
+			const { service, mockSession } = setupWithGatesClosed();
+
+			// Go straight to critical
+			service.updateContextUsage('test-agent', 96);
+			await jest.advanceTimersByTimeAsync(300);
+
+			const writeCalls = mockSession.session.write.mock.calls.map((c: string[]) => c[0]);
+			expect(writeCalls).not.toContain('/compact\r');
+
+			const state = service.getContextState('test-agent');
+			expect(state!.compactInProgress).toBe(false);
+		});
+
+		it('CRITICAL still publishes agent:context_critical event regardless of gate (informational)', () => {
+			const { service, eventBus } = setupWithGatesClosed();
+
+			service.updateContextUsage('test-agent', 96);
+
+			// The critical event publish happens before the gated compact attempt,
+			// so it must fire even when the wrapper-driven compact is suppressed.
+			expect(eventBus.publish).toHaveBeenCalledWith(
+				expect.objectContaining({ type: 'agent:context_critical' })
+			);
+		});
+
+		// -------------------------------------------------------------------
+		// Refresh paths — settings hydration fail-safe semantics
+		// -------------------------------------------------------------------
+
+		it('refreshProactiveCompactSetting falls back to false when getSettings returns undefined.general', async () => {
+			const service = ContextWindowMonitorService.getInstance();
+			(service as unknown as { proactiveCompactEnabled: boolean }).proactiveCompactEnabled = true; // pre-existing value
+
+			const settingsService = require('../settings/settings.service.js');
+			const spy = jest.spyOn(settingsService, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue({}), // no `general`
+			} as any);
+
+			await (service as unknown as { refreshProactiveCompactSetting: () => Promise<void> }).refreshProactiveCompactSetting();
+
+			const value = (service as unknown as { proactiveCompactEnabled: boolean }).proactiveCompactEnabled;
+			expect(value).toBe(false);
+
+			spy.mockRestore();
+		});
+
+		it('refreshThresholdCompactSetting falls back to false when getSettings returns undefined.general', async () => {
+			const service = ContextWindowMonitorService.getInstance();
+			(service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled = true; // pre-existing value
+
+			const settingsService = require('../settings/settings.service.js');
+			const spy = jest.spyOn(settingsService, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue({}), // no `general`
+			} as any);
+
+			await (service as unknown as { refreshThresholdCompactSetting: () => Promise<void> }).refreshThresholdCompactSetting();
+
+			const value = (service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled;
+			expect(value).toBe(false);
+
+			spy.mockRestore();
+		});
+
+		it('refreshProactiveCompactSetting reads enableProactiveCompact=true when persisted', async () => {
+			const service = ContextWindowMonitorService.getInstance();
+			(service as unknown as { proactiveCompactEnabled: boolean }).proactiveCompactEnabled = false;
+
+			const settingsService = require('../settings/settings.service.js');
+			const spy = jest.spyOn(settingsService, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue({ general: { enableProactiveCompact: true } }),
+			} as any);
+
+			await (service as unknown as { refreshProactiveCompactSetting: () => Promise<void> }).refreshProactiveCompactSetting();
+
+			const value = (service as unknown as { proactiveCompactEnabled: boolean }).proactiveCompactEnabled;
+			expect(value).toBe(true);
+
+			spy.mockRestore();
+		});
+
+		it('refreshThresholdCompactSetting reads enableThresholdCompact=true when persisted', async () => {
+			const service = ContextWindowMonitorService.getInstance();
+			(service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled = false;
+
+			const settingsService = require('../settings/settings.service.js');
+			const spy = jest.spyOn(settingsService, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue({ general: { enableThresholdCompact: true } }),
+			} as any);
+
+			await (service as unknown as { refreshThresholdCompactSetting: () => Promise<void> }).refreshThresholdCompactSetting();
+
+			const value = (service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled;
+			expect(value).toBe(true);
+
+			spy.mockRestore();
+		});
+
+		it('refreshThresholdCompactSetting keeps last-known value on read failure (non-fatal)', async () => {
+			const service = ContextWindowMonitorService.getInstance();
+			(service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled = true; // last known
+
+			const settingsService = require('../settings/settings.service.js');
+			const spy = jest.spyOn(settingsService, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockRejectedValue(new Error('disk error')),
+			} as any);
+
+			await (service as unknown as { refreshThresholdCompactSetting: () => Promise<void> }).refreshThresholdCompactSetting();
+
+			// Last known value preserved on transient read failure.
+			const value = (service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled;
+			expect(value).toBe(true);
+
+			spy.mockRestore();
 		});
 	});
 

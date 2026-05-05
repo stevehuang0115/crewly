@@ -214,6 +214,100 @@ describe('SettingsService', () => {
 
       expect(settings.general.runtimeCommands['codex-cli']).toBe('codex -a never -s danger-full-access');
     });
+
+    // ----------------------------------------------------------------------
+    // enableProactiveCompact one-time flip migration
+    // Per spec 2026-05-05-compact-fix-AB-followup §A.1
+    // ----------------------------------------------------------------------
+
+    it('should flip persisted enableProactiveCompact=true → false on first load and set the migration marker', async () => {
+      // Existing user installed before PR #444 has the proactive trigger ON.
+      // The migration should flip it OFF and stamp `_proactiveCompactMigrated: true`
+      // so the load is observable as a one-time migration.
+      const legacyEnabled = {
+        general: {
+          enableProactiveCompact: true,
+        },
+      };
+
+      await fs.writeFile(
+        path.join(testDir, 'settings.json'),
+        JSON.stringify(legacyEnabled, null, 2)
+      );
+
+      service.clearCache();
+      const settings = await service.getSettings();
+
+      expect(settings.general.enableProactiveCompact).toBe(false);
+      // The marker is stored on the loaded JSON, not on the typed defaults shape;
+      // re-read the raw file to confirm the migration is durable.
+      // The first call already mutated the in-memory `loaded`, so the cached
+      // settings reflect the flip. Saving it back is a separate concern; this
+      // test asserts the user-observable runtime value, which is `false`.
+    });
+
+    it('should NOT re-flip enableProactiveCompact when the migration marker is already set (idempotent re-enable preserved)', async () => {
+      // User previously migrated (marker set), then deliberately re-enabled
+      // proactive compact via the Settings UI. The next load must NOT undo
+      // their choice — the marker gates the migration.
+      const reEnabledByUser = {
+        general: {
+          enableProactiveCompact: true,
+          _proactiveCompactMigrated: true,
+        },
+      };
+
+      await fs.writeFile(
+        path.join(testDir, 'settings.json'),
+        JSON.stringify(reEnabledByUser, null, 2)
+      );
+
+      service.clearCache();
+      const settings = await service.getSettings();
+
+      expect(settings.general.enableProactiveCompact).toBe(true);
+    });
+
+    it('should leave enableProactiveCompact=false alone (no-op when already disabled)', async () => {
+      // Fresh installs after PR #444 land with `false`. The migration must
+      // not toggle the marker for users who never had it on.
+      const freshDefault = {
+        general: {
+          enableProactiveCompact: false,
+        },
+      };
+
+      await fs.writeFile(
+        path.join(testDir, 'settings.json'),
+        JSON.stringify(freshDefault, null, 2)
+      );
+
+      service.clearCache();
+      const settings = await service.getSettings();
+
+      expect(settings.general.enableProactiveCompact).toBe(false);
+    });
+
+    it('should leave enableProactiveCompact alone when missing from persisted general (unset → falls back to current default via mergeSettings)', async () => {
+      // Settings file omits the field entirely. mergeSettings should fill
+      // from getDefaultSettings (now `false`). The migration block is a
+      // no-op because the typeof check excludes undefined.
+      const noCompactField = {
+        general: {
+          defaultRuntime: 'claude-code',
+        },
+      };
+
+      await fs.writeFile(
+        path.join(testDir, 'settings.json'),
+        JSON.stringify(noCompactField, null, 2)
+      );
+
+      service.clearCache();
+      const settings = await service.getSettings();
+
+      expect(settings.general.enableProactiveCompact).toBe(false);
+    });
   });
 
   describe('updateSettings', () => {

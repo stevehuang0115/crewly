@@ -313,6 +313,22 @@ export class SettingsService {
       runtimeCommands['codex-cli'] = 'codex -a never -s danger-full-access';
     }
 
+    // One-time flip: existing users with proactive compact enabled get switched
+    // off per Steve user-position decision (2026-05-04). The Settings UI still
+    // allows users to opt back in. The `_proactiveCompactMigrated` marker is
+    // idempotent — a user who deliberately re-enables via Settings UI will not
+    // be re-flipped on subsequent loads.
+    //
+    // Per spec 2026-05-05-compact-fix-AB-followup §A.1
+    if (
+      typeof general['enableProactiveCompact'] === 'boolean' &&
+      general['enableProactiveCompact'] === true &&
+      !general['_proactiveCompactMigrated']
+    ) {
+      general['enableProactiveCompact'] = false;
+      general['_proactiveCompactMigrated'] = true;
+    }
+
     // Clean up legacy fields
     delete general['claudeCodeCommand'];
     delete general['claudeCodeInitScript'];
