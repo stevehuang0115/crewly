@@ -273,6 +273,16 @@ export class PromptBuilderService {
 	private readonly agentSkillsPath: string;
 	/** Absolute path to team-leader skill scripts (used in TL addon template variables) */
 	private readonly tlSkillsPath: string;
+	/**
+	 * Absolute path to orchestrator-namespaced skill scripts. Per orc-namespace
+	 * convention (see {@link composePromptWithMemory} role-branched Communication
+	 * section): orc has its own send-message wrapper that routes through
+	 * `/terminal/{session}/deliver` (readiness-aware, two-step delivery, retry)
+	 * instead of the agent-side `/terminal/{session}/write` (raw PTY buffer write,
+	 * no readiness, no Enter semantics). Spec provenance: 4-piece skill-mistake
+	 * fix dispatch piece #2 (Sam→Quinn, post-PR #446 merge).
+	 */
+	private readonly orchestratorSkillsPath: string;
 	private memoryService: MemoryService | null = null;
 	private sopService: SOPService | null = null;
 
@@ -282,6 +292,7 @@ export class PromptBuilderService {
 		this.rolesDirectory = path.join(projectRoot, 'config', 'roles');
 		this.agentSkillsPath = path.join(projectRoot, 'config', 'skills', 'agent');
 		this.tlSkillsPath = path.join(projectRoot, 'config', 'skills', 'team-leader');
+		this.orchestratorSkillsPath = path.join(projectRoot, 'config', 'skills', 'orchestrator');
 	}
 
 	/**
@@ -1050,9 +1061,40 @@ When you learn something worth remembering, store it in the **right place**:
 		sections.push('\n---\n');
 		sections.push(this.buildMemoryRoutingSection());
 
-		// Add communication instructions
+		// Add communication instructions — role-branched per orc-namespace convention.
+		// Per orc-namespace convention (skill SKILL.md frontmatter excludes orchestrator
+		// from assignableRoles on send-message + recall + report-status etc.): orc has
+		// its own send-message wrapper at config/skills/orchestrator/send-message/ that
+		// routes through /terminal/{session}/deliver (readiness-aware, two-step delivery,
+		// retry) instead of the agent-side /terminal/{session}/write (raw PTY buffer
+		// write, no readiness, no Enter semantics). Rendering the agent-skills path
+		// for orc would let orc fall back to /write and miss orc-specific routing —
+		// the exact "ORC was using WRONG send-message skill" gotcha recorded in the
+		// project knowledge base on 2026-05-05.
+		// See config/skills/agent/core/send-message/SKILL.md for the per-skill rationale.
+		// Spec provenance: 4-piece skill-mistake fix dispatch piece #2 (Sam→Quinn,
+		// post-PR #446 merge).
 		sections.push('\n---\n');
-		sections.push(`## Communication
+		if (parts.role === 'orchestrator') {
+			sections.push(`## Communication (orchestrator-namespaced)
+
+You are the orchestrator. Use **orchestrator-namespaced** bash skills at \`${this.orchestratorSkillsPath}/\` for all team communication — they route through the orc-specific message-routing layer (readiness-aware delivery via \`/terminal/{session}/deliver\`, jargon-hygiene gate, owner-vs-agent audience distinction). Read \`~/.crewly/skills/SKILLS_CATALOG.md\` for the full orc-namespaced reference (NOT \`AGENT_SKILLS_CATALOG.md\` — that lists worker-only skills).
+
+- \`send-message\` (orc-namespaced wrapper at \`${this.orchestratorSkillsPath}/send-message/execute.sh\`) — readiness-aware delivery to a teammate's terminal session; preferred over the agent-side \`send-message\` at \`${this.agentSkillsPath}/core/send-message/\` which uses raw PTY \`/write\` and lacks orc-specific routing
+- \`record-success\` / \`record-failure\` / \`report-bug\` (orc-namespaced) — orc-side status recording; do NOT use the agent-side \`report-status\` (that is for workers→orc, not orc→self)
+- \`broadcast\` / \`broadcast-to-org\` (orc-namespaced) — multi-agent fan-out
+- \`reply-chat\` / \`reply-slack\` / \`reply-gchat\` / \`reply-remote\` (orc-namespaced) — owner-facing replies on the channel the user wrote on
+- \`schedule-check\` / \`create-cron\` / \`cancel-schedule\` (orc-namespaced) — orc-side scheduling primitives
+- Memory access: orc reads cross-agent memory via the internal service-layer \`recallFromAllAgents()\` rather than the agent-side \`recall\` skill (which is gated to worker roles). Use \`query-knowledge\` (orc-namespaced) for SOP/runbook lookups.
+
+**IMPORTANT — namespace gate:** the agent-side skills under \`${this.agentSkillsPath}/core/\` exclude orchestrator from \`assignableRoles\` for a reason. Reaching for them from this orchestrator session bypasses the orc-routing layer:
+
+- agent-side \`send-message\` writes raw bytes to a peer's PTY via \`/terminal/{session}/write\` without readiness gating
+- orc-side \`send-message\` uses \`/terminal/{session}/deliver\` with the readiness-aware two-step delivery pattern + retry
+
+Always reach for \`${this.orchestratorSkillsPath}/<skill>/\` first.`);
+		} else {
+			sections.push(`## Communication
 
 Use bash skills at \`${this.agentSkillsPath}/\` for all team communication. Read \`~/.crewly/skills/AGENT_SKILLS_CATALOG.md\` for a full reference.
 - \`send-message\` to communicate with other agents
@@ -1068,6 +1110,7 @@ Use bash skills at \`${this.agentSkillsPath}/\` for all team communication. Read
 This ensures your knowledge is stored under your identity and in the correct project.
 
 **IMPORTANT for recall:** Before answering questions about the project, deployment, architecture, or past decisions, ALWAYS call \`recall\` first to check your stored knowledge.`);
+		}
 
 		// Add anti-deliberation instructions for Gemini CLI agents
 		if (parts.runtimeType === 'gemini-cli') {

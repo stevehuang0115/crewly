@@ -282,6 +282,52 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			return;
 		}
 
+		// =====================================================================
+		// Orc-namespace gate telemetry (4-piece skill-mistake fix piece #4).
+		// =====================================================================
+		// When an orc-role caller hits this raw /terminal/{session}/write path,
+		// emit a warn-log naming the namespace mistake. This is observability —
+		// the request still succeeds — so we can catch backsliding from the
+		// prompt-builder (piece #2) + soul (piece #3) + skill-frontmatter
+		// (piece #1) discipline.
+		//
+		// Caller is identified via X-Agent-Session header (set canonically by
+		// every agent skill that calls api_call() — see config/skills/_common/lib.sh:103).
+		// Caller role is resolved via StorageService.findMemberBySessionName.
+		// We deliberately skip the log when caller is unknown (registration
+		// race, ad-hoc curl) to avoid false positives.
+		//
+		// Spec provenance: 4-piece skill-mistake fix dispatch piece #4
+		// (Sam→Quinn, post-PR #446 merge). PR #449.
+		const callerSessionName = req.headers?.['x-agent-session'] as string | undefined;
+		if (callerSessionName) {
+			try {
+				const callerMember = await StorageService.getInstance().findMemberBySessionName(callerSessionName);
+				if (callerMember && callerMember.member.role === 'orchestrator') {
+					logger.warn(
+						'[orc-namespace-gate] orc-role caller wrote to terminal via agent-side /write — should use orc-namespaced wrapper',
+						{
+							callerSession: callerSessionName,
+							targetSession: sessionName,
+							skillPath: 'config/skills/agent/core/send-message',
+							canonicalAlternative: 'config/skills/orchestrator/send-message',
+							endpointHit: '/terminal/{session}/write',
+							canonicalEndpoint: '/terminal/{session}/deliver',
+							specProvenance: '4-piece skill-mistake fix piece #4 (PR #449)',
+						},
+					);
+				}
+			} catch (err) {
+				// Lookup failure is non-fatal — telemetry is best-effort, the actual
+				// write must proceed. Log at debug so noisy lookup errors don't
+				// pollute the warn channel.
+				logger.debug('orc-namespace-gate caller lookup failed (non-fatal)', {
+					callerSessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
 		if (data === undefined || data === null) {
 			res.status(400).json({
 				success: false,

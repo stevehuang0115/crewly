@@ -4,6 +4,13 @@ description: Retrieve stored memories relevant to a given context or query.
 version: 1.0.0
 category: memory
 skillType: claude-skill
+# Per orchestrator-namespace convention: orc accesses memory via a different
+# mechanism (internal `recallFromAllAgents()` in backend/src/services/memory/memory.service.ts:1047,
+# not surfaced as a skill — orc reads the cross-agent view directly through the
+# service layer when assembling team context). If a future PR adds an
+# orc-namespaced recall wrapper, update this comment to cross-ref. Until then,
+# keep orchestrator EXCLUDED here.
+# Spec provenance: 4-piece skill-mistake fix dispatch (Sam→Quinn, post-PR #446 merge).
 assignableRoles:
   - developer
   - qa
