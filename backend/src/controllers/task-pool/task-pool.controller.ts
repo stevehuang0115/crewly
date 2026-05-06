@@ -679,6 +679,35 @@ export async function revokeAndRelease(req: Request, res: Response): Promise<voi
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/task-pool/items — enumerate ALL items regardless of status
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns every WorkItem currently in the pool — including cancelled,
+ * done_by_worker, failed, etc. — so admin / cleanup tooling can audit the
+ * full state without filtering by claimability.
+ *
+ * Distinct from `/api/task-pool` (and its `/all` alias) which return ONLY
+ * the available subset (queued + unclaimed). The existing alias was
+ * naming-confusing for cleanup workflows; rather than rename and break
+ * downstream consumers, this endpoint adds the audit-shaped surface that
+ * the bulk-DELETE script needs.
+ *
+ * Response: `{ success: true, data: WorkItem[], count }`.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ */
+export async function listAllItems(req: Request, res: Response): Promise<void> {
+  try {
+    const items = await getService().getAllItems();
+    res.json({ success: true, data: items, count: items.length });
+  } catch (error) {
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // DELETE /api/task-pool/:workItemId — bulk-DELETE entry point
 // (P1 1ffffb84 component a, Steve directive 2026-05-06)
 // ---------------------------------------------------------------------------
