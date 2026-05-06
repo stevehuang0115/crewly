@@ -33,7 +33,6 @@ import { getSessionStatePersistence } from '../session/session-state-persistence
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
-import { TaskTrackingService } from '../project/task-tracking.service.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import {
@@ -180,7 +179,6 @@ export class ContextWindowMonitorService {
 	private sessionBackend: ISessionBackend | null = null;
 	private agentRegistrationService: AgentRegistrationService | null = null;
 	private storageService: StorageService | null = null;
-	private taskTrackingService: TaskTrackingService | null = null;
 	private eventBusService: EventBusService | null = null;
 
 	private constructor() {
@@ -213,23 +211,24 @@ export class ContextWindowMonitorService {
 	/**
 	 * Inject required dependencies.
 	 *
+	 * V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+	 * The legacy `taskTrackingService` parameter has been removed; task
+	 * re-delivery now reads directly from TaskPoolService.
+	 *
 	 * @param sessionBackend - Session backend for PTY access
 	 * @param agentRegistrationService - For recreating agent sessions on recovery
 	 * @param storageService - For querying agent status
-	 * @param taskTrackingService - For querying in-progress tasks for re-delivery
 	 * @param eventBusService - For publishing context warning/critical events
 	 */
 	setDependencies(
 		sessionBackend: ISessionBackend,
 		agentRegistrationService: AgentRegistrationService,
 		storageService: StorageService,
-		taskTrackingService: TaskTrackingService,
 		eventBusService: EventBusService
 	): void {
 		this.sessionBackend = sessionBackend;
 		this.agentRegistrationService = agentRegistrationService;
 		this.storageService = storageService;
-		this.taskTrackingService = taskTrackingService;
 		this.eventBusService = eventBusService;
 	}
 
@@ -1004,10 +1003,6 @@ This is automated — do not ask questions, just save and respond NO_REPLY.`;
 	 * @param state - Context window state for the recovered session
 	 */
 	private async redeliverTasks(state: ContextWindowState): Promise<void> {
-		if (!this.taskTrackingService) {
-			return;
-		}
-
 		const backend = this.sessionBackend || getSessionBackendSync();
 		if (!backend) {
 			return;
@@ -1028,8 +1023,16 @@ This is automated — do not ask questions, just save and respond NO_REPLY.`;
 			return;
 		}
 
-		const tasks = await this.taskTrackingService.getTasksForTeamMember(state.memberId);
-		const activeTasks = tasks.filter(t => t.status === 'assigned' || t.status === 'active');
+		// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+		// Replaces TaskTrackingService.getTasksForTeamMember with a direct V3
+		// pool read filtered by `target` (session name). Includes the brief
+		// markdown stored on the WI itself, removing the prior
+		// `fs.readFile(task.taskFilePath)` step.
+		const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+		const items = await TaskPoolService.getInstance().getAllItems();
+		const activeTasks = items.filter(
+			(wi) => wi.target === state.sessionName && (wi.status === 'queued' || wi.status === 'accepted' || wi.status === 'running'),
+		);
 
 		if (activeTasks.length === 0) {
 			this.logger.debug('No active tasks to re-deliver after context recovery', {
@@ -1043,22 +1046,17 @@ This is automated — do not ask questions, just save and respond NO_REPLY.`;
 			taskCount: activeTasks.length,
 		});
 
-		for (const task of activeTasks) {
-			let taskContent = '';
-			try {
-				taskContent = await fs.readFile(task.taskFilePath, 'utf-8');
-				if (taskContent.length > 2000) {
-					taskContent = taskContent.slice(0, 2000) + '\n... (truncated)';
-				}
-			} catch {
-				taskContent = '(task file not found)';
+		for (const wi of activeTasks) {
+			let taskContent = wi.briefMarkdown ?? '(no brief recorded)';
+			if (taskContent.length > 2000) {
+				taskContent = taskContent.slice(0, 2000) + '\n... (truncated)';
 			}
 
 			const message = [
 				'[TASK RE-DELIVERY] Your previous session ran out of context window.',
 				'You were working on this task before your session was recovered:',
-				`Task: ${task.taskName}`,
-				`File: ${task.taskFilePath}`,
+				`Task: ${wi.title}`,
+				`WorkItem: ${wi.id}`,
 				'---',
 				taskContent,
 				'---',

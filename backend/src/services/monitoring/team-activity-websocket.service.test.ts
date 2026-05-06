@@ -2,14 +2,22 @@ import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals
 import { TeamActivityWebSocketService, TeamActivityData } from './team-activity-websocket.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { TmuxService } from '../agent/tmux.service.js';
-import { TaskTrackingService } from '../project/task-tracking.service.js';
 import { TerminalGateway } from '../../websocket/terminal.gateway.js';
 
 // Mock all dependencies
 jest.mock('../core/storage.service.js');
 jest.mock('../agent/tmux.service.js');
-jest.mock('../project/task-tracking.service.js');
 jest.mock('../../websocket/terminal.gateway.js');
+
+// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+// TaskTrackingService is gone; team-activity reads from TaskPoolService now.
+jest.mock('../task-pool/task-pool.service.js', () => {
+  const getAllItems: any = jest.fn();
+  getAllItems.mockResolvedValue([]);
+  return {
+    TaskPoolService: { getInstance: jest.fn(() => ({ getAllItems })) },
+  };
+});
 
 /**
  * Test suite for TeamActivityWebSocketService
@@ -19,7 +27,6 @@ describe('TeamActivityWebSocketService', () => {
   let service: TeamActivityWebSocketService;
   let mockStorageService: jest.Mocked<StorageService>;
   let mockTmuxService: jest.Mocked<TmuxService>;
-  let mockTaskTrackingService: any;
   let mockTerminalGateway: any;
 
   beforeEach(() => {
@@ -36,25 +43,16 @@ describe('TeamActivityWebSocketService', () => {
       listSessions: jest.fn(),
     } as any;
 
-    mockTaskTrackingService = {
-      getAllInProgressTasks: jest.fn<() => Promise<any[]>>().mockResolvedValue([]),
-      getTaskStatus: jest.fn(),
-      on: jest.fn(),
-      emit: jest.fn(),
-      removeListener: jest.fn(),
-    };
-
     mockTerminalGateway = {
       broadcastTeamActivity: jest.fn(),
       broadcastOrchestratorStatus: jest.fn(),
       broadcastTeamMemberStatus: jest.fn(),
     };
 
-    // Create service instance
+    // Create service instance — V3-only, no TaskTrackingService param.
     service = new TeamActivityWebSocketService(
       mockStorageService,
       mockTmuxService,
-      mockTaskTrackingService
     );
   });
 

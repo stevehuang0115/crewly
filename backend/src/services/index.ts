@@ -15,7 +15,6 @@ export { ContextWindowMonitorService } from './agent/context-window-monitor.serv
 export { ActiveProjectsService } from './project/active-projects.service.js';
 export { TaskService } from './project/task.service.js';
 export { TaskFolderService } from './project/task-folder.service.js';
-export { TaskTrackingService } from './project/task-tracking.service.js';
 export { TicketEditorService } from './project/ticket-editor.service.js';
 
 // Monitoring Services

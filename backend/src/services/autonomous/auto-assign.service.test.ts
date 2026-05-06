@@ -6,7 +6,6 @@
 
 import { AutoAssignService, AgentWorkload } from './auto-assign.service.js';
 import { TaskService, Task } from '../project/task.service.js';
-import { TaskTrackingService } from '../project/task-tracking.service.js';
 import {
   AssignmentStrategy,
   QueuedTask,
@@ -15,6 +14,32 @@ import {
   AUTO_ASSIGN_CONSTANTS,
   DEFAULT_ASSIGNMENT_STRATEGY,
 } from '../../types/auto-assign.types.js';
+import type { WorkItem } from '../../types/v2/work-item.types.js';
+
+// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+// Mock TaskPoolService.getInstance() — the production code now reads
+// active tasks from there via dynamic import. The legacy
+// TaskTrackingService dependency has been deleted.
+jest.mock('../task-pool/task-pool.service.js', () => ({
+  TaskPoolService: { getInstance: jest.fn() },
+}));
+import { TaskPoolService } from '../task-pool/task-pool.service.js';
+
+function makeWi(over: Partial<WorkItem>): WorkItem {
+  return {
+    id: 'wi-1',
+    type: 'delegate',
+    owner: 'system',
+    title: 'Test',
+    status: 'running',
+    target: 'test-developer-1',
+    createdAt: new Date().toISOString(),
+    retryCount: 0,
+    maxRetries: 3,
+    metadata: {},
+    ...over,
+  } as WorkItem;
+}
 
 // Mock dependencies
 jest.mock('../core/logger.service.js', () => ({
@@ -44,7 +69,7 @@ jest.mock('fs', () => ({
 describe('AutoAssignService', () => {
   let service: AutoAssignService;
   let mockTaskService: jest.Mocked<TaskService>;
-  let mockTrackingService: jest.Mocked<TaskTrackingService>;
+  let mockPool: { getAllItems: jest.Mock; findWorkItem: jest.Mock };
 
   const testProjectPath = '/test/project';
   const testSessionName = 'test-developer-1';
@@ -62,17 +87,14 @@ describe('AutoAssignService', () => {
       getTasksByMilestone: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<TaskService>;
 
-    mockTrackingService = {
-      getAllInProgressTasks: jest.fn().mockResolvedValue([]),
-      assignTask: jest.fn(),
-      updateTaskStatus: jest.fn(),
-      on: jest.fn(),
-      emit: jest.fn(),
-    } as unknown as jest.Mocked<TaskTrackingService>;
+    mockPool = {
+      getAllItems: jest.fn().mockResolvedValue([] as WorkItem[]),
+      findWorkItem: jest.fn(),
+    };
+    (TaskPoolService.getInstance as jest.Mock).mockReturnValue(mockPool);
 
-    // Inject mocks
+    // Inject mock TaskService
     service.setTaskService(mockTaskService);
-    service.setTaskTrackingService(mockTrackingService);
 
     // Register test agent
     service.registerAgent(testSessionName, testProjectPath);
@@ -252,7 +274,7 @@ describe('AutoAssignService', () => {
 
     beforeEach(() => {
       mockTaskService.getAllTasks.mockResolvedValue(mockOpenTasks);
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
     });
 
     it('should find next task based on priority', async () => {
@@ -380,7 +402,7 @@ describe('AutoAssignService', () => {
 
     beforeEach(() => {
       mockTaskService.getAllTasks.mockResolvedValue(mockTasks);
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
     });
 
     it('should assign a specific task to an agent', async () => {
@@ -443,7 +465,7 @@ describe('AutoAssignService', () => {
 
     beforeEach(async () => {
       mockTaskService.getAllTasks.mockResolvedValue(mockTasks);
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
       await service.initialize(testProjectPath);
     });
 
@@ -466,19 +488,8 @@ describe('AutoAssignService', () => {
       await service.assignNextTask(testSessionName);
 
       // Mock agent already has a task
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([
-        {
-          id: 'existing-task',
-          assignedSessionName: testSessionName,
-          status: 'active',
-          assignedTeamMemberId: 'member-1',
-          projectId: 'proj-1',
-          teamId: 'team-1',
-          taskFilePath: '/tasks/existing.md',
-          taskName: 'Existing Task',
-          targetRole: 'developer',
-          assignedAt: new Date().toISOString(),
-        },
+      mockPool.getAllItems.mockResolvedValue([
+        makeWi({ id: 'existing-task', title: 'Existing Task', target: testSessionName, status: 'running' }),
       ]);
 
       const result = await service.assignNextTask(testSessionName);
@@ -516,7 +527,7 @@ describe('AutoAssignService', () => {
   describe('Pause/Resume', () => {
     beforeEach(async () => {
       mockTaskService.getAllTasks.mockResolvedValue([]);
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
       await service.initialize(testProjectPath);
     });
 
@@ -538,7 +549,7 @@ describe('AutoAssignService', () => {
 
   describe('Agent Workload', () => {
     it('should return empty workload for new agent', async () => {
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
 
       const workload = await service.getAgentWorkload(testSessionName);
 
@@ -548,19 +559,8 @@ describe('AutoAssignService', () => {
     });
 
     it('should track current tasks', async () => {
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([
-        {
-          id: 'task-1',
-          assignedSessionName: testSessionName,
-          status: 'active',
-          assignedTeamMemberId: 'member-1',
-          projectId: 'proj-1',
-          teamId: 'team-1',
-          taskFilePath: '/tasks/task-1.md',
-          taskName: 'Task 1',
-          targetRole: 'developer',
-          assignedAt: new Date().toISOString(),
-        },
+      mockPool.getAllItems.mockResolvedValue([
+        makeWi({ id: 'task-1', title: 'Task 1', target: testSessionName, status: 'running' }),
       ]);
 
       const workload = await service.getAgentWorkload(testSessionName);
@@ -569,7 +569,7 @@ describe('AutoAssignService', () => {
     });
 
     it('should infer role from session name', async () => {
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
       service.registerAgent('project-qa-1', testProjectPath);
 
       const workload = await service.getAgentWorkload('project-qa-1');
@@ -628,7 +628,7 @@ describe('AutoAssignService', () => {
           updatedAt: '2026-01-01T00:00:00Z',
         },
       ]);
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
       await service.initialize(testProjectPath);
     });
 
@@ -681,7 +681,7 @@ describe('AutoAssignService', () => {
           updatedAt: '2026-01-02T00:00:00Z',
         },
       ]);
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
       await service.initialize(testProjectPath);
     });
 
@@ -745,7 +745,7 @@ describe('AutoAssignService', () => {
       ];
 
       mockTaskService.getAllTasks.mockResolvedValue(tasks);
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
     });
 
     it('should return critical priority task first', async () => {
@@ -796,7 +796,7 @@ describe('AutoAssignService', () => {
       ];
 
       mockTaskService.getAllTasks.mockResolvedValue(tasks);
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
       await service.initialize(testProjectPath);
       await service.setConfig(testProjectPath, { prioritization: 'fifo' });
     });
@@ -847,7 +847,7 @@ describe('AutoAssignService', () => {
       ];
 
       mockTaskService.getAllTasks.mockResolvedValue(tasks);
-      mockTrackingService.getAllInProgressTasks.mockResolvedValue([]);
+      mockPool.getAllItems.mockResolvedValue([]);
     });
 
     it('should prefer specified task types', async () => {

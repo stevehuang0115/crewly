@@ -14,7 +14,7 @@ import { EventEmitter } from 'events';
 import { parse as parseYAML } from 'yaml';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { TaskService, Task } from '../project/task.service.js';
-import { TaskTrackingService } from '../project/task-tracking.service.js';
+import type { EventBusService, InProcessUnsubscribe } from '../event-bus/event-bus.service.js';
 import {
   AssignmentStrategy,
   AssignmentEvent,
@@ -182,7 +182,8 @@ export class AutoAssignService extends EventEmitter implements IAutoAssignServic
 
   private readonly logger: ComponentLogger;
   private taskService: TaskService | null = null;
-  private taskTrackingService: TaskTrackingService | null = null;
+  private eventBus: EventBusService | null = null;
+  private eventUnsubscribe: InProcessUnsubscribe | null = null;
 
   /** Configuration cache per project */
   private configs: Map<string, AutoAssignConfig> = new Map();
@@ -236,12 +237,30 @@ export class AutoAssignService extends EventEmitter implements IAutoAssignServic
   }
 
   /**
-   * Set the task tracking service (for dependency injection/testing)
+   * Backwards-compatible no-op. Kept so existing wiring in `index.ts`
+   * compiles during the TaskTrackingService deletion window. In-progress
+   * task data and completion events now come from TaskPoolService and
+   * EventBusService — see {@link setEventBus}.
    *
-   * @param service - Task tracking service instance
+   * @deprecated Will be removed in a follow-up. Do not call from new code.
    */
-  public setTaskTrackingService(service: TaskTrackingService): void {
-    this.taskTrackingService = service;
+  public setTaskTrackingService(_service: unknown): void {
+    // intentionally empty
+  }
+
+  /**
+   * Wire the EventBus so this service can react to V3 WorkItem
+   * completion events. Replaces the legacy TaskTrackingService
+   * `task_completed` emitter event used by {@link subscribeToEvents}.
+   *
+   * @param bus - The shared EventBusService
+   */
+  public setEventBus(bus: EventBusService): void {
+    if (this.eventUnsubscribe) {
+      this.eventUnsubscribe();
+      this.eventUnsubscribe = null;
+    }
+    this.eventBus = bus;
   }
 
   /**
@@ -255,18 +274,6 @@ export class AutoAssignService extends EventEmitter implements IAutoAssignServic
       this.taskService = new TaskService(projectPath);
     }
     return this.taskService;
-  }
-
-  /**
-   * Get the task tracking service, creating one if needed
-   *
-   * @returns Task tracking service
-   */
-  private getTaskTrackingService(): TaskTrackingService {
-    if (!this.taskTrackingService) {
-      this.taskTrackingService = new TaskTrackingService();
-    }
-    return this.taskTrackingService;
   }
 
   /**
@@ -887,14 +894,15 @@ export class AutoAssignService extends EventEmitter implements IAutoAssignServic
    * @returns Agent workload information
    */
   public async getAgentWorkload(sessionName: string): Promise<AgentWorkload> {
-    const trackingService = this.getTaskTrackingService();
-    const tasks = await trackingService.getAllInProgressTasks() || [];
-
-    // Filter tasks for this agent
-    const agentTasks = tasks.filter(
-      (t) =>
-        t.assignedSessionName === sessionName &&
-        (t.status === 'assigned' || t.status === 'active')
+    // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+    // Replaces TaskTrackingService.getAllInProgressTasks with V3 pool query
+    // filtered by `target` (session name).
+    const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+    const items = await TaskPoolService.getInstance().getAllItems();
+    const agentTasks = items.filter(
+      (wi) =>
+        wi.target === sessionName &&
+        (wi.status === 'queued' || wi.status === 'accepted' || wi.status === 'running'),
     );
 
     // Calculate completed today
@@ -904,7 +912,7 @@ export class AutoAssignService extends EventEmitter implements IAutoAssignServic
 
     return {
       sessionName,
-      agentId: agentTasks[0]?.assignedTeamMemberId || sessionName,
+      agentId: sessionName,
       role: this.getAgentRole(sessionName),
       currentTasks: agentTasks.map((t) => t.id),
       completedToday,
@@ -997,15 +1005,39 @@ export class AutoAssignService extends EventEmitter implements IAutoAssignServic
   }
 
   /**
-   * Subscribe to task tracking events for a project
+   * Subscribe to task completion events for a project.
+   *
+   * V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+   * Replaces the legacy TaskTrackingService `task_completed` emitter
+   * subscription with an EventBus `task:done_by_worker` subscription.
    *
    * @param projectPath - Project path
    */
   private subscribeToEvents(projectPath: string): void {
-    const trackingService = this.getTaskTrackingService();
+    if (!this.eventBus) {
+      this.logger.warn('EventBus not wired; auto-assign cannot react to completion events', {
+        projectPath,
+      });
+      return;
+    }
 
-    // Listen for task completions
-    trackingService.on('task_completed', async (task) => {
+    // Listen for V3 task completion events. AgentEvent carries the
+    // optional `workItemId` (BRIDGE-1 autonomy correlation field) and
+    // falls back to `taskId`; we read the WI from the pool to recover
+    // the target session name.
+    this.eventUnsubscribe = this.eventBus.onInProcess('task:done_by_worker', async (event) => {
+      const eventAny = event as { workItemId?: string; taskId?: string };
+      const workItemId = eventAny.workItemId ?? eventAny.taskId ?? '';
+      if (!workItemId) return;
+      const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+      const wi = await TaskPoolService.getInstance().findWorkItem(workItemId);
+      if (!wi) return;
+
+      // Adapter: synthesize the legacy task shape the rest of this method expects.
+      const task = {
+        id: wi.id,
+        assignedSessionName: wi.target ?? '',
+      };
       const sessionName = task.assignedSessionName;
       const agentProjectPath = this.agentProjects.get(sessionName);
 
@@ -1020,10 +1052,13 @@ export class AutoAssignService extends EventEmitter implements IAutoAssignServic
           assignment.completedAt = new Date().toISOString();
         }
 
-        // Emit completion event
+        // Emit completion event. V3 doesn't carry team-member-id on the
+        // WorkItem so we use the session name as the agentId; downstream
+        // consumers that previously needed the member-id can resolve it
+        // from the team registry if necessary.
         this.emitEvent({
           type: 'task_completed',
-          agentId: task.assignedTeamMemberId,
+          agentId: sessionName,
           sessionName,
           taskId: task.id,
           timestamp: new Date().toISOString(),

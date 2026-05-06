@@ -9,13 +9,11 @@ import {
 import { ActiveProjectsService } from '../services/index.js';
 import { PromptTemplateService } from '../services/index.js';
 import { TaskAssignmentMonitorService } from '../services/index.js';
-import { TaskTrackingService } from '../services/index.js';
 
 export class ApiController {
   public activeProjectsService: ActiveProjectsService;
   public promptTemplateService: PromptTemplateService;
   public taskAssignmentMonitor: TaskAssignmentMonitorService;
-  public taskTrackingService: TaskTrackingService;
   public agentRegistrationService: AgentRegistrationService;
 
   constructor(
@@ -27,7 +25,6 @@ export class ApiController {
     this.activeProjectsService = new ActiveProjectsService(this.storageService);
     this.promptTemplateService = new PromptTemplateService();
     this.taskAssignmentMonitor = new TaskAssignmentMonitorService(this.tmuxService);
-    this.taskTrackingService = new TaskTrackingService();
 
     // Create AgentRegistrationService using the public accessor method from TmuxService
     const tmuxCommand = this.tmuxService.getTmuxCommandService();

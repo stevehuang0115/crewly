@@ -24,10 +24,10 @@ import {
 	SchedulerService,
 	MessageSchedulerService,
 	ActivityMonitorService,
-	TaskTrackingService,
 	TeamActivityWebSocketService,
 	TeamsJsonWatcherService,
 } from './services/index.js';
+import { AutoAssignService } from './services/autonomous/auto-assign.service.js';
 import {
 	getSessionBackend,
 	getSessionBackendSync,
@@ -179,7 +179,6 @@ export class CrewlyServer {
 	private schedulerService!: SchedulerService;
 	private messageSchedulerService!: MessageSchedulerService;
 	private activityMonitorService!: ActivityMonitorService;
-	private taskTrackingService!: TaskTrackingService;
 	private teamActivityWebSocketService!: TeamActivityWebSocketService;
 	private teamsJsonWatcherService!: TeamsJsonWatcherService;
 	private apiController!: ApiController;
@@ -281,11 +280,12 @@ export class CrewlyServer {
 			this.storageService
 		);
 		this.activityMonitorService = ActivityMonitorService.getInstance();
-		this.taskTrackingService = new TaskTrackingService();
+		// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+		// TaskTrackingService is deleted; in-progress task data and lifecycle
+		// events come from TaskPoolService + EventBusService respectively.
 		this.teamActivityWebSocketService = new TeamActivityWebSocketService(
 			this.storageService,
 			this.tmuxService,
-			this.taskTrackingService
 		);
 		this.teamsJsonWatcherService = new TeamsJsonWatcherService();
 		this.apiController = new ApiController(
@@ -303,7 +303,6 @@ export class CrewlyServer {
 		this.schedulerService.setAgentRegistrationService(
 			this.apiController.agentRegistrationService
 		);
-		this.schedulerService.setTaskTrackingService(this.taskTrackingService);
 		// Initialize message queue services (with disk persistence)
 		// NOTE: Must be created before services that depend on them (scheduler, thread status queue)
 		this.messageQueueService = new MessageQueueService(this.config.crewlyHome);
@@ -410,23 +409,13 @@ export class CrewlyServer {
 		setEventBusControllerService(this.eventBusService);
 		setTeamControllerEventBusService(this.eventBusService);
 
-		// Architecture Upgrade Phase 6: Bridge task workflow events to EventBus
-		this.taskTrackingService.on('task_workflow_event', (payload: { type: string; taskId?: string; teamId?: string; [key: string]: unknown }) => {
-			this.eventBusService.publish({
-				id: `task-workflow-${payload.taskId || 'team'}-${Date.now()}`,
-				type: payload.type as any,
-				timestamp: new Date().toISOString(),
-				teamId: (payload.teamId as string) || '',
-				teamName: '',
-				memberId: (payload.ownerMemberId as string) || '',
-				memberName: '',
-				sessionName: (payload.assignedSessionName as string) || '',
-				previousValue: '',
-				newValue: (payload.taskStatus as string) || payload.type,
-				changedField: 'taskStatus',
-				taskId: payload.taskId,
-			});
-		});
+		// Wire team-activity-websocket to EventBus so it reacts to V3
+		// WorkItem lifecycle events (replaces the legacy
+		// TaskTrackingService.on('task_workflow_event') bridge that was
+		// deleted with the v1 task-management subsystem).
+		this.teamActivityWebSocketService.setEventBus(this.eventBusService);
+		// Wire auto-assign to EventBus so it can react to task:done_by_worker.
+		AutoAssignService.getInstance().setEventBus(this.eventBusService);
 
 		// BRIDGE-1: subscribe to autonomy events (task:done_by_worker,
 		// task:rejected, task:blocked, team:all_tasks_done, mission:*) and
@@ -1153,7 +1142,6 @@ export class CrewlyServer {
 						ctxSessionBackend,
 						this.apiController.agentRegistrationService,
 						this.storageService,
-						this.taskTrackingService,
 						this.eventBusService
 					);
 					contextWindowMonitor.start();
@@ -1178,7 +1166,6 @@ export class CrewlyServer {
 			try {
 				const runtimeExitMonitor = RuntimeExitMonitorService.getInstance();
 				runtimeExitMonitor.setAgentRegistrationService(this.apiController.agentRegistrationService);
-				runtimeExitMonitor.setTaskTrackingService(this.taskTrackingService);
 				runtimeExitMonitor.setEventBusService(this.eventBusService);
 			} catch (error) {
 				this.logger.warn('Failed to wire RuntimeExitMonitorService dependencies (non-critical)', {
@@ -1802,8 +1789,9 @@ export class CrewlyServer {
 				// Silently ignore — version check is non-critical
 			});
 
-			// Start periodic task file system sync (#137) — cleans up stale tracking entries
-			this.taskTrackingService.startAutoSync();
+			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+			// The legacy `TaskTrackingService.startAutoSync()` is gone — V3
+			// task-pool reconciler owns lifecycle cleanup now.
 
 			// Initialize token usage tracking: load persisted data and start periodic flush
 			try {
@@ -1891,20 +1879,25 @@ export class CrewlyServer {
 			// Auto-restore agent sessions that were running before the last shutdown
 			await this.autoRestoreAgentSessionsIfEnabled();
 
-			// #166: Auto-recover in-progress tasks after restart
-			// #196: Skip tasks older than 1 hour to avoid re-sending stale work
+			// #166: Auto-recover in-progress tasks after restart.
+			// #196: Skip tasks older than 1 hour to avoid re-sending stale work.
+			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md —
+			// reads WorkItems from TaskPoolService (replaces the prior
+			// `TaskTrackingService.getAllInProgressTasks()` call).
 			try {
 				const TASK_RECOVERY_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
-				const inProgressTasks = await this.taskTrackingService.getAllInProgressTasks();
+				const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+				const allItems = await TaskPoolService.getInstance().getAllItems();
 				const now = Date.now();
-				const activeTasks = inProgressTasks.filter(t => {
-					if (t.status !== 'assigned' && t.status !== 'active' && t.status !== 'working') return false;
-					// Skip stale tasks — assignedAt older than threshold
-					const taskTime = new Date(t.assignedAt || 0).getTime();
+				const activeTasks = allItems.filter(wi => {
+					if (wi.status !== 'queued' && wi.status !== 'accepted' && wi.status !== 'running') return false;
+					if (!wi.target) return false;
+					// Skip stale tasks — startedAt/createdAt older than threshold
+					const taskTime = new Date(wi.startedAt || wi.createdAt || 0).getTime();
 					if (now - taskTime > TASK_RECOVERY_MAX_AGE_MS) {
 						this.logger.info('Skipping stale task recovery (older than 1 hour)', {
-							taskId: t.id,
-							taskName: t.taskName,
+							workItemId: wi.id,
+							taskName: wi.title,
 							age: `${Math.round((now - taskTime) / 60000)} minutes`,
 						});
 						return false;
@@ -1912,27 +1905,27 @@ export class CrewlyServer {
 					return true;
 				});
 				if (activeTasks.length > 0) {
-					this.logger.info('Found in-progress tasks to recover after restart', {
+					this.logger.info('Found in-progress WorkItems to recover after restart', {
 						count: activeTasks.length,
 					});
-					for (const task of activeTasks) {
+					for (const wi of activeTasks) {
 						try {
-							const recoveryMessage = `[SYSTEM — TASK RECOVERY] You were working on this task before the server restarted. Please continue:\n\nTask: ${task.taskName}\nPriority: ${task.priority || 'normal'}\nFile: ${task.taskFilePath}\n\nPlease check the current state and continue working.`;
+							const recoveryMessage = `[SYSTEM — TASK RECOVERY] You were working on this task before the server restarted. Please continue:\n\nTask: ${wi.title}\nWorkItem: ${wi.id}\n\nFetch full brief: bash config/skills/agent/core/read-task/execute.sh '{"workItemId":"${wi.id}"}'\n\nPlease check the current state and continue working.`;
 							await this.apiController.agentRegistrationService.sendMessageToAgent(
-								task.assignedSessionName,
+								wi.target!,
 								recoveryMessage,
 								undefined as unknown as RuntimeType
 							);
 							this.logger.info('Task recovery message sent', {
-								taskId: task.id,
-								sessionName: task.assignedSessionName,
-								taskName: task.taskName,
+								workItemId: wi.id,
+								sessionName: wi.target,
+								taskName: wi.title,
 							});
 						} catch (err) {
 							// Agent might not be online yet — DLQ in scheduler will handle it
 							this.logger.warn('Task recovery delivery deferred (agent may not be online yet)', {
-								taskId: task.id,
-								sessionName: task.assignedSessionName,
+								workItemId: wi.id,
+								sessionName: wi.target,
 								error: err instanceof Error ? err.message : String(err),
 							});
 						}
