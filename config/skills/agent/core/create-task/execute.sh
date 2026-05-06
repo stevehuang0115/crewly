@@ -1,6 +1,10 @@
 #!/bin/bash
-# Create a new task via the task-management API.
-# Allows TLs and agents to autonomously decompose work into sub-tasks.
+# Create a new task as a V3 WorkItem in the task-pool.
+#
+# V3-only as of spec 2026-05-06-task-management-v1-deprecation.md. Replaces
+# the v1 `POST /task-management/create` endpoint, which wrote a `.md` file
+# to the project's `.crewly/tasks/` filesystem. The V3 task-pool's
+# `POST /task-pool/add` endpoint is now the sole way to create new tasks.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
@@ -116,19 +120,43 @@ MILESTONE="${MILESTONE:-delegated}"
 require_param "projectPath (--project-path)" "$PROJECT_PATH"
 require_param "task (--task)" "$TASK"
 
-# Build the request body
-BODY=$(jq -n \
-  --arg projectPath "$PROJECT_PATH" \
-  --arg task "$TASK" \
-  --arg priority "$PRIORITY" \
-  --arg milestone "$MILESTONE" \
-  --arg sessionName "$SESSION_NAME" \
-  '{projectPath: $projectPath, task: $task, priority: $priority, milestone: $milestone} +
-   (if $sessionName != "" then {sessionName: $sessionName} else {} end)')
+# Build a V3 WorkItem for the task-pool.
+# `addToPool` accepts the WorkItem directly (id auto-generated server-side
+# when omitted). `priority` is mapped to V3's numeric priority scale where
+# critical=1, high=2, medium=3, low=4 — lower number = higher priority.
+case "$PRIORITY" in
+  critical) PRIORITY_NUM=1 ;;
+  high)     PRIORITY_NUM=2 ;;
+  medium)   PRIORITY_NUM=3 ;;
+  low)      PRIORITY_NUM=4 ;;
+  *)        PRIORITY_NUM=3 ;;
+esac
 
-# Attach outputSchema if provided
+WI_ID="task-$(date +%s%N | cut -c1-13)-$$"
+
+WORK_ITEM=$(jq -n \
+  --arg id "$WI_ID" \
+  --arg title "$TASK" \
+  --arg target "$SESSION_NAME" \
+  --arg owner "${SESSION_NAME:-system}" \
+  --arg projectPath "$PROJECT_PATH" \
+  --arg milestone "$MILESTONE" \
+  --argjson priority "$PRIORITY_NUM" \
+  '{
+    id: $id,
+    title: $title,
+    type: "delegate",
+    owner: $owner,
+    priority: $priority,
+    status: "queued",
+    target: (if $target == "" then null else $target end),
+    metadata: { projectPath: $projectPath, milestone: $milestone }
+  } | with_entries(select(.value != null))')
+
 if [ -n "$OUTPUT_SCHEMA" ] && [ "$OUTPUT_SCHEMA" != "" ]; then
-  BODY=$(printf '%s' "$BODY" | jq --argjson schema "$OUTPUT_SCHEMA" '. + {outputSchema: $schema}')
+  WORK_ITEM=$(printf '%s' "$WORK_ITEM" | jq --argjson schema "$OUTPUT_SCHEMA" '.metadata += {outputSchema: $schema}')
 fi
 
-api_call POST "/task-management/create" "$BODY"
+BODY=$(jq -n --argjson workItem "$WORK_ITEM" '{workItem: $workItem}')
+
+api_call POST "/task-pool/add" "$BODY"

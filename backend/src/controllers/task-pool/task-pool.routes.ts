@@ -22,6 +22,10 @@ import {
   scanExpired,
   revokeAndRelease,
   deleteItem,
+  getItem,
+  setItemOutput,
+  handoffItem,
+  appendItemNote,
 } from './task-pool.controller.js';
 
 /**
@@ -80,6 +84,13 @@ export function createTaskPoolRouter(): Router {
   // 409 with structured payload when the WI is claimed and `?force=1` is
   // not supplied.
   router.delete('/:workItemId', deleteItem);
+
+  // V3 single-item surface (replaces v1 task-management read/output/handoff/sync).
+  // See spec/2026-05-06-task-management-v1-deprecation.md.
+  router.get('/items/:workItemId', getItem);
+  router.post('/items/:workItemId/output', setItemOutput);
+  router.post('/items/:workItemId/handoff', handoffItem);
+  router.post('/items/:workItemId/notes', appendItemNote);
 
   return router;
 }

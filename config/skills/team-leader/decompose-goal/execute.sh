@@ -1,6 +1,10 @@
 #!/bin/bash
-# Decompose a high-level objective into worker-level sub-tasks.
-# Creates task files in the project's .crewly/tasks/ directory via task-management API.
+# Decompose a high-level objective into worker-level WorkItems.
+#
+# V3-only as of spec 2026-05-06-task-management-v1-deprecation.md. Each
+# sub-task becomes a V3 WorkItem in the task-pool via `POST /task-pool/add`.
+# The legacy v1 `/task-management/create` endpoint that wrote `.md` files
+# is gone.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
@@ -37,33 +41,60 @@ for i in $(seq 0 $((TASK_COUNT - 1))); do
     continue
   fi
 
-  # Build task description with acceptance criteria
-  FULL_DESC="${TASK_DESC}"
-  [ -n "$TASK_CRITERIA" ] && FULL_DESC="${FULL_DESC}\n\n## Acceptance Criteria\n${TASK_CRITERIA}"
-  FULL_DESC="${FULL_DESC}\n\n## Context\nParent objective: ${OBJECTIVE}\nRequired role: ${TASK_ROLE}"
+  # Compose the brief markdown for the WorkItem.
+  BRIEF="${TASK_DESC}"
+  [ -n "$TASK_CRITERIA" ] && BRIEF="${BRIEF}
 
-  CREATE_BODY=$(jq -n \
-    --arg projectPath "${PROJECT_PATH}" \
-    --arg task "$FULL_DESC" \
-    --arg priority "$TASK_PRIORITY" \
-    --arg milestone "$MILESTONE" \
+## Acceptance Criteria
+${TASK_CRITERIA}"
+  BRIEF="${BRIEF}
+
+## Context
+Parent objective: ${OBJECTIVE}
+Required role: ${TASK_ROLE}"
+
+  case "$TASK_PRIORITY" in
+    critical) PRIORITY_NUM=1 ;;
+    high)     PRIORITY_NUM=2 ;;
+    normal|medium) PRIORITY_NUM=3 ;;
+    low)      PRIORITY_NUM=4 ;;
+    *)        PRIORITY_NUM=3 ;;
+  esac
+
+  WI_ID="task-$(date +%s%N | cut -c1-13)-${i}-$$"
+
+  WORK_ITEM=$(jq -n \
+    --arg id "$WI_ID" \
     --arg title "$TASK_TITLE" \
-    '{projectPath: $projectPath, task: $task, priority: $priority, milestone: $milestone, title: $title}')
+    --arg brief "$BRIEF" \
+    --arg projectPath "$PROJECT_PATH" \
+    --arg milestone "$MILESTONE" \
+    --arg role "$TASK_ROLE" \
+    --argjson priority "$PRIORITY_NUM" \
+    '{
+      id: $id,
+      title: $title,
+      type: "delegate",
+      owner: "system",
+      priority: $priority,
+      status: "queued",
+      briefMarkdown: $brief,
+      metadata: { projectPath: $projectPath, milestone: $milestone, requiredRole: $role }
+    }')
 
-  CREATE_RESULT=$(api_call POST "/task-management/create" "$CREATE_BODY" 2>/dev/null || echo '{"error":"Failed to create task"}')
-  TASK_PATH=$(echo "$CREATE_RESULT" | jq -r '.taskPath // empty' 2>/dev/null || true)
-  TASK_ID=$(echo "$CREATE_RESULT" | jq -r '.taskId // empty' 2>/dev/null || true)
+  CREATE_BODY=$(jq -n --argjson workItem "$WORK_ITEM" '{workItem: $workItem}')
+  CREATE_RESULT=$(api_call POST "/task-pool/add" "$CREATE_BODY" 2>/dev/null || echo '{"error":"Failed to create WorkItem"}')
+  CREATED_ID=$(echo "$CREATE_RESULT" | jq -r '.data.id // .workItem.id // empty' 2>/dev/null || true)
 
-  if [ -n "$TASK_PATH" ]; then
+  if [ -n "$CREATED_ID" ]; then
     CREATED_TASKS=$(echo "$CREATED_TASKS" | jq \
       --arg title "$TASK_TITLE" \
       --arg role "$TASK_ROLE" \
-      --arg path "$TASK_PATH" \
-      --arg id "$TASK_ID" \
+      --arg id "$CREATED_ID" \
       --arg priority "$TASK_PRIORITY" \
-      '. + [{title: $title, requiredRole: $role, taskPath: $path, taskId: $id, priority: $priority}]')
+      '. + [{title: $title, requiredRole: $role, workItemId: $id, priority: $priority}]')
   else
-    ERRORS=$(echo "$ERRORS" | jq --arg msg "Failed to create task: ${TASK_TITLE}" '. + [$msg]')
+    ERRORS=$(echo "$ERRORS" | jq --arg msg "Failed to create WorkItem: ${TASK_TITLE}" '. + [$msg]')
   fi
 done
 

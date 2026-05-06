@@ -46,10 +46,12 @@ fi
 PLANNED_JSON="[]"
 BLOCKERS_JSON="[]"
 if [ "$INCLUDE_TASKS" = "true" ]; then
-  TASKS_RESPONSE=$(api_call GET "/task-management/tasks" 2>/dev/null || echo "")
+  # V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+  # Replaces `GET /task-management/tasks` with the V3 task-pool list.
+  TASKS_RESPONSE=$(api_call GET "/task-pool/items" 2>/dev/null || echo "")
   if [ -n "$TASKS_RESPONSE" ]; then
-    PLANNED_JSON=$(echo "$TASKS_RESPONSE" | jq '[.tasks[]? | select(.status == "active" or .status == "in_progress") | "Task: \(.title // .subject // "Untitled") (\(.status))"] // []' 2>/dev/null || echo "[]")
-    BLOCKERS_JSON=$(echo "$TASKS_RESPONSE" | jq '[.tasks[]? | select(.status == "blocked") | "Task: \(.title // .subject // "Untitled") (blocked)"] // []' 2>/dev/null || echo "[]")
+    PLANNED_JSON=$(echo "$TASKS_RESPONSE" | jq '[(.data // .workItems // [])[] | select(.status == "running" or .status == "queued") | "Task: \(.title // "Untitled") (\(.status))"] // []' 2>/dev/null || echo "[]")
+    BLOCKERS_JSON=$(echo "$TASKS_RESPONSE" | jq '[(.data // .workItems // [])[] | select(.status == "blocked") | "Task: \(.title // "Untitled") (blocked)"] // []' 2>/dev/null || echo "[]")
   fi
 fi
 

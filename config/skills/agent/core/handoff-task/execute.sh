@@ -30,12 +30,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
 INPUT=$(read_json_input "${1:-}")
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"from-agent\",\"to\":\"target-session\",\"reason\":\"...\",\"progress\":\"...\"}'"
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"from-agent\",\"to\":\"target-session\",\"workItemId\":\"abc-123\",\"reason\":\"...\",\"progress\":\"...\"}'"
 
 # --- Parse parameters ---
 SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
 TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')
-TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.taskPath // .absoluteTaskPath // empty')
+WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
 REASON=$(printf '%s' "$INPUT" | jq -r '.reason // "Task handoff"')
 PROGRESS=$(printf '%s' "$INPUT" | jq -r '.progress // empty')
 FINDINGS=$(printf '%s' "$INPUT" | jq -r '.findings // empty')
@@ -53,10 +53,17 @@ require_param "reason" "$REASON"
 CREWLY_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# --- Step 0: Fission guard check (rate limit before handoff) ---
+# --- Step 0: Resolve target WorkItem if not supplied ---
+# Resolve order: explicit workItemId > the agent's currently-running claim.
+if [ -z "$WORK_ITEM_ID" ]; then
+  POOL_RESP=$(api_call GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
+  WORK_ITEM_ID=$(echo "$POOL_RESP" | jq -r '.workItems[0].id // .data[0].id // empty' 2>/dev/null || true)
+fi
+
+# --- Step 1: Fission guard check (rate limit before handoff) ---
 # Non-blocking: if the fission API is unavailable, proceed with handoff.
 FISSION_BODY=$(jq -n \
-  --arg parentWorkItemId "${TASK_PATH:-handoff-stub}" \
+  --arg parentWorkItemId "${WORK_ITEM_ID:-handoff-stub}" \
   --arg agentId "$SESSION_NAME" \
   '{parentWorkItemId: $parentWorkItemId, agentId: $agentId}')
 
@@ -69,40 +76,23 @@ if [ "$fission_allowed" = "false" ]; then
   exit 1
 fi
 
-# --- Step 1: Record handoff in backend (reassigns task on the task board) ---
-HANDOFF_BODY=$(jq -n \
-  --arg from "$SESSION_NAME" \
-  --arg to "$TO" \
-  --arg taskPath "${TASK_PATH:-}" \
-  --arg reason "$REASON" \
-  --arg progress "${PROGRESS:-}" \
-  --arg projectPath "${PROJECT_PATH:-}" \
-  '{from: $from, to: $to, taskPath: $taskPath, reason: $reason, progress: $progress, projectPath: $projectPath}')
+# --- Step 2: Record handoff via V3 (reassigns target on the WorkItem) ---
+# Spec 2026-05-06-task-management-v1-deprecation.md: handoff is now a
+# `target` field flip on the WorkItem plus an audit-trail note. The legacy
+# `/task-management/handoff` endpoint (which moved a `.md` file between
+# agent task directories) is gone.
+if [ -n "$WORK_ITEM_ID" ]; then
+  HANDOFF_BODY=$(jq -n \
+    --arg fromAgent "$SESSION_NAME" \
+    --arg newTarget "$TO" \
+    --arg reason "$REASON" \
+    '{newTarget: $newTarget, fromAgent: $fromAgent, reason: $reason}')
 
-echo "Recording handoff ${SESSION_NAME} → ${TO}..." >&2
-handoff_result=$(api_call POST "/task-management/handoff" "$HANDOFF_BODY" 2>/dev/null) || handoff_result='{"tracked":false,"error":"handoff API unavailable"}'
-
-# --- Step 2: Append handoff metadata to task file (if provided and exists) ---
-if [ -n "$TASK_PATH" ] && [ -f "$TASK_PATH" ]; then
-  cat >> "$TASK_PATH" << HANDOFF_EOF
-
-## Handoff Record
-- **Handed off to**: ${TO}
-- **Handed off from**: ${SESSION_NAME}
-- **Reason**: ${REASON}
-- **Timestamp**: ${TIMESTAMP}
-HANDOFF_EOF
-
-  # Append progress/findings/blockers if provided
-  if [ -n "$PROGRESS" ]; then
-    printf '\n### Progress at Handoff\n%s\n' "$PROGRESS" >> "$TASK_PATH"
-  fi
-  if [ -n "$FINDINGS" ]; then
-    printf '\n### Key Findings\n%s\n' "$FINDINGS" >> "$TASK_PATH"
-  fi
-  if [ -n "$BLOCKERS" ]; then
-    printf '\n### Blockers\n%s\n' "$BLOCKERS" >> "$TASK_PATH"
-  fi
+  echo "Recording handoff ${SESSION_NAME} → ${TO} on WI ${WORK_ITEM_ID}..." >&2
+  handoff_result=$(api_call POST "/task-pool/items/${WORK_ITEM_ID}/handoff" "$HANDOFF_BODY" 2>/dev/null) \
+    || handoff_result='{"tracked":false,"error":"handoff API unavailable"}'
+else
+  handoff_result='{"tracked":false,"warning":"no active WorkItem for handing-off agent"}'
 fi
 
 # --- Step 3: Build and deliver context message to target agent ---
@@ -129,14 +119,10 @@ if [ -n "$BLOCKERS" ]; then
   printf '\n## Blockers / Notes\n%s\n' "$BLOCKERS" >> "$HANDOFF_MSG_FILE"
 fi
 
-if [ -n "$TASK_PATH" ]; then
-  printf '\n## Task File\n%s\n' "$TASK_PATH" >> "$HANDOFF_MSG_FILE"
-  # Include task content if file exists (first 100 lines)
-  if [ -f "$TASK_PATH" ]; then
-    printf '\n## Original Task Content\n```\n' >> "$HANDOFF_MSG_FILE"
-    head -100 "$TASK_PATH" >> "$HANDOFF_MSG_FILE" 2>/dev/null || true
-    printf '\n```\n' >> "$HANDOFF_MSG_FILE"
-  fi
+if [ -n "$WORK_ITEM_ID" ]; then
+  printf '\n## WorkItem\n%s\n' "$WORK_ITEM_ID" >> "$HANDOFF_MSG_FILE"
+  printf '\nFetch full brief: bash %s/config/skills/agent/core/read-task/execute.sh '"'"'{"workItemId":"%s"}'"'"'\n' \
+    "$CREWLY_ROOT" "$WORK_ITEM_ID" >> "$HANDOFF_MSG_FILE"
 fi
 
 cat >> "$HANDOFF_MSG_FILE" << FOOTER_EOF
@@ -173,7 +159,7 @@ jq -n \
   --arg from "$SESSION_NAME" \
   --arg to "$TO" \
   --arg reason "$REASON" \
-  --arg taskPath "${TASK_PATH:-}" \
+  --arg workItemId "${WORK_ITEM_ID:-}" \
   --arg timestamp "$TIMESTAMP" \
   --argjson delivery "$(echo "$deliver_result" | jq '.' 2>/dev/null || echo '{"raw":"'"${deliver_result//\"/\\\"}"'"}')" \
   --argjson tracking "$(echo "$handoff_result" | jq '.' 2>/dev/null || echo '{"raw":"'"${handoff_result//\"/\\\"}"'"}')" \
@@ -183,7 +169,7 @@ jq -n \
       from: $from,
       to: $to,
       reason: $reason,
-      taskPath: (if $taskPath == "" then null else $taskPath end),
+      workItemId: (if $workItemId == "" then null else $workItemId end),
       timestamp: $timestamp
     },
     delivery: $delivery,

@@ -38,41 +38,10 @@ export class ApiController {
     );
   }
 
-  // Task Management Methods
-  public async assignTask(req: Request, res: Response): Promise<void> {
-    const { assignTask } = await import('./task-management/task-management.controller.js');
-    return assignTask.call(this, req, res);
-  }
-
-  public async completeTask(req: Request, res: Response): Promise<void> {
-    const { completeTask } = await import('./task-management/task-management.controller.js');
-    return completeTask.call(this, req, res);
-  }
-
-  public async blockTask(req: Request, res: Response): Promise<void> {
-    const { blockTask } = await import('./task-management/task-management.controller.js');
-    return blockTask.call(this, req, res);
-  }
-
-  public async takeNextTask(req: Request, res: Response): Promise<void> {
-    const { takeNextTask } = await import('./task-management/task-management.controller.js');
-    return takeNextTask.call(this, req, res);
-  }
-
-  public async syncTaskStatus(req: Request, res: Response): Promise<void> {
-    const { syncTaskStatus } = await import('./task-management/task-management.controller.js');
-    return syncTaskStatus.call(this, req, res);
-  }
-
-  public async getTeamProgress(req: Request, res: Response): Promise<void> {
-    const { getTeamProgress } = await import('./task-management/task-management.controller.js');
-    return getTeamProgress.call(this, req, res);
-  }
-
-  public async createTasksFromConfig(req: Request, res: Response): Promise<void> {
-    const { createTasksFromConfig } = await import('./task-management/task-management.controller.js');
-    return createTasksFromConfig.call(this, req, res);
-  }
+  // V1 Task Management methods removed per spec
+  // 2026-05-06-task-management-v1-deprecation.md. All task lifecycle
+  // operations now go through the V3 task-pool controller — see
+  // backend/src/controllers/task-pool/task-pool.controller.ts.
 
   // Teams Methods
   public async createTeam(req: Request, res: Response): Promise<void> {

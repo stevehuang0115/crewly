@@ -778,18 +778,33 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
           }
         }
 
-        // Create task tracking entry
+        // Create task tracking entry as a V3 WorkItem.
+        // Migrated from v1 `/task-management/create` per spec
+        // 2026-05-06-task-management-v1-deprecation.md.
         let taskId: string | undefined;
         if (projectPath) {
-          const createResult = await client.post('/task-management/create', {
-            projectPath,
-            task,
-            priority,
-            sessionName: to,
-            milestone: 'delegated',
+          const priorityNum =
+            priority === 'critical' ? 1 :
+            priority === 'high'     ? 2 :
+            priority === 'low'      ? 4 :
+            3;
+          const wiId = `task-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+          const createResult = await client.post('/task-pool/add', {
+            workItem: {
+              id: wiId,
+              title: typeof task === 'string' ? task.slice(0, 200) : 'Delegated task',
+              type: 'delegate',
+              owner: typeof to === 'string' ? to : 'system',
+              priority: priorityNum,
+              status: 'queued',
+              target: to,
+              briefMarkdown: typeof task === 'string' ? task : undefined,
+              metadata: { projectPath, milestone: 'delegated' },
+            },
           });
           if (createResult.success && createResult.data) {
-            taskId = (createResult.data as Record<string, string>).taskId;
+            const data = createResult.data as Record<string, unknown>;
+            taskId = (data.id as string | undefined) ?? wiId;
           }
         }
 
@@ -1181,25 +1196,31 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         projectPath: z.string().describe('Project path'),
         status: z.string().optional().describe('Filter by status (e.g., "in_progress", "done")'),
       }),
-      execute: async ({ projectPath, status }) => {
-        let endpoint = `/task-management/tasks?projectPath=${encodeURIComponent(projectPath as string)}`;
-        if (status) endpoint += `&status=${encodeURIComponent(status as string)}`;
+      execute: async ({ projectPath: _projectPath, status }) => {
+        // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+        // The V3 task-pool is a single global file; `projectPath` is no
+        // longer a filter. Status filter still applies.
+        let endpoint = '/task-pool/items';
+        if (status) endpoint += `?status=${encodeURIComponent(status as string)}`;
         const result = await client.get(endpoint);
         return result.success ? result.data : { error: result.error };
       },
     },
 
     complete_task: {
-      description: 'Mark a task as complete. Also cancels any scheduled checks targeting the completing agent session.',
+      description: 'Mark a WorkItem as complete. Also cancels any scheduled checks targeting the completing agent session.',
       inputSchema: z.object({
-        absoluteTaskPath: z.string().describe('Absolute path to the task file'),
+        workItemId: z.string().describe('WorkItem id to complete'),
         sessionName: z.string().describe('Agent session that completed it'),
         summary: z.string().describe('Completion summary'),
       }),
-      execute: async ({ absoluteTaskPath, sessionName: agent, summary }) => {
-        const result = await client.post('/task-management/complete', {
-          absoluteTaskPath,
-          sessionName: agent,
+      execute: async ({ workItemId, sessionName: agent, summary }) => {
+        // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+        // Replaces v1 `/task-management/complete`. Note: the legacy
+        // `absoluteTaskPath` parameter is removed; callers must now pass
+        // `workItemId` (returned from `start_agent_with_task` /
+        // `delegate_task`).
+        const result = await client.post(`/task-pool/complete/${workItemId}`, {
           summary,
         });
 
@@ -1622,9 +1643,28 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         }
         const result = await client.post('/chat/agent-response', chatBody);
 
-        // Auto-complete tracked tasks when status is done
+        // Auto-complete the agent's currently-running WorkItem when done.
+        // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md:
+        // resolve the running claim from the pool, then call
+        // `/task-pool/complete/:id`. Replaces v1 `/task-management/complete-by-session`.
         if (status === 'done') {
-          await client.post('/task-management/complete-by-session', { sessionName }).catch(() => {});
+          try {
+            const poolResp = await client.get(
+              `/task-pool/items?status=running&target=${encodeURIComponent(sessionName)}`,
+            );
+            const items = (poolResp.data as Record<string, unknown> | undefined);
+            const list = (
+              (items?.workItems as Array<{ id: string }> | undefined) ??
+              (items?.data as Array<{ id: string }> | undefined) ??
+              (Array.isArray(items) ? items as Array<{ id: string }> : [])
+            );
+            const wiId = list[0]?.id;
+            if (wiId) {
+              await client.post(`/task-pool/complete/${wiId}`, { summary }).catch(() => {});
+            }
+          } catch {
+            // Non-fatal: status report still succeeded.
+          }
         }
 
         // Auto-persist key findings as project knowledge when done (#127)
@@ -1899,10 +1939,10 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         progress: z.string().optional().describe('Current progress summary (what is done so far)'),
         findings: z.string().optional().describe('Key findings and decisions made'),
         blockers: z.string().optional().describe('Current blockers or notes for the receiving agent'),
-        taskPath: z.string().optional().describe('Path to the task markdown file'),
+        workItemId: z.string().optional().describe('WorkItem id being handed off (resolved from running claim if omitted)'),
       }),
       sensitivity: 'sensitive' as ToolSensitivity,
-      execute: async ({ to, reason, progress, findings, blockers, taskPath }) => {
+      execute: async ({ to, reason, progress, findings, blockers, workItemId }) => {
         const target = to as string;
         const handoffReason = reason as string;
 
@@ -1911,7 +1951,6 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         if (progress) message += `\n## Progress\n${progress}\n`;
         if (findings) message += `\n## Key Findings\n${findings}\n`;
         if (blockers) message += `\n## Blockers / Notes\n${blockers}\n`;
-        if (taskPath) message += `\n## Task File\n${taskPath}\n`;
 
         if (projectPath) {
           message += `\n---\nWhen done, report back using: bash config/skills/agent/core/report-status/execute.sh '{"sessionName":"${target}","status":"done","summary":"<brief summary>","projectPath":"${projectPath}"}'`;
@@ -1927,15 +1966,34 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
           return client.post(`/terminal/${target}/deliver`, { message, force: true });
         });
 
-        // Record handoff via task management
-        const handoffRecord = await client.post('/task-management/handoff', {
-          from: sessionName,
-          to: target,
-          taskPath: taskPath || '',
-          reason: handoffReason,
-          progress: progress || '',
-          projectPath: projectPath || '',
-        }).catch(() => ({ success: false, error: 'handoff tracking not available' }));
+        // Record handoff via V3 task-pool (spec
+        // 2026-05-06-task-management-v1-deprecation.md). Replaces
+        // v1 `/task-management/handoff`. Resolves the source WI from
+        // the running claim if `workItemId` was not supplied.
+        let resolvedWiId = workItemId as string | undefined;
+        if (!resolvedWiId) {
+          try {
+            const poolResp = await client.get(
+              `/task-pool/items?status=running&target=${encodeURIComponent(sessionName)}`,
+            );
+            const data = poolResp.data as Record<string, unknown> | undefined;
+            const list = (
+              (data?.workItems as Array<{ id: string }> | undefined) ??
+              (data?.data as Array<{ id: string }> | undefined) ??
+              []
+            );
+            resolvedWiId = list[0]?.id;
+          } catch {
+            // fall through — handoff tracking will be marked unavailable
+          }
+        }
+        const handoffRecord = resolvedWiId
+          ? await client.post(`/task-pool/items/${resolvedWiId}/handoff`, {
+              newTarget: target,
+              fromAgent: sessionName,
+              reason: handoffReason,
+            }).catch(() => ({ success: false, error: 'handoff API unavailable' }))
+          : { success: false, error: 'no active WorkItem to hand off' };
 
         return {
           success: deliverResult?.success ?? false,

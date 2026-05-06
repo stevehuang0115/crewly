@@ -91,7 +91,8 @@ describe('Auditor Tools', () => {
     it('should fetch tasks with project path', async () => {
       mockClient.get.mockResolvedValue({ success: true, status: 200, data: [{ id: 'task1' }] });
       await tools.get_tasks.execute({ projectPath: '/proj', status: 'in_progress' });
-      expect(mockClient.get).toHaveBeenCalledWith(expect.stringContaining('/task-management/tasks'));
+      // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+      expect(mockClient.get).toHaveBeenCalledWith(expect.stringContaining('/task-pool/items'));
       expect(mockClient.get).toHaveBeenCalledWith(expect.stringContaining('status=in_progress'));
     });
 

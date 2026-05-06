@@ -247,15 +247,9 @@ if [ "$MONITOR_FALLBACK_MINUTES" != "0" ] && [ -n "$MONITOR_FALLBACK_MINUTES" ] 
   fi
 fi
 
-# Store monitoring IDs for auto-cleanup
-HAS_SCHEDULE_IDS=$(echo "$COLLECTED_SCHEDULE_IDS" | jq 'length > 0')
-HAS_SUBSCRIPTION_IDS=$(echo "$COLLECTED_SUBSCRIPTION_IDS" | jq 'length > 0')
-
-if [ "$HAS_SCHEDULE_IDS" = "true" ] || [ "$HAS_SUBSCRIPTION_IDS" = "true" ]; then
-  MONITOR_BODY=$(jq -n \
-    --arg sessionName "$TO" \
-    --argjson scheduleIds "$COLLECTED_SCHEDULE_IDS" \
-    --argjson subscriptionIds "$COLLECTED_SUBSCRIPTION_IDS" \
-    '{sessionName: $sessionName, scheduleIds: $scheduleIds, subscriptionIds: $subscriptionIds}')
-  api_call POST "/task-management/add-monitoring" "$MONITOR_BODY" 2>/dev/null || true
-fi
+# Monitoring-id bookkeeping (cron/subscription cleanup) used to flow through
+# `/task-management/add-monitoring`, which is gone as of spec
+# 2026-05-06-task-management-v1-deprecation.md. Cron and subscription
+# lifecycles are owned by `/cron/*` and `/subscriptions/*` respectively;
+# the WI itself carries no association beyond `target`. No-op here.
+:

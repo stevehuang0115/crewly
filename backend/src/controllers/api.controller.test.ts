@@ -16,7 +16,6 @@ jest.mock('./project/git.controller.js');
 jest.mock('./orchestrator/orchestrator.controller.js');
 jest.mock('./monitoring/terminal.controller.js');
 jest.mock('./system/scheduler.controller.js');
-jest.mock('./task-management/task-management.controller.js');
 
 describe('ApiController', () => {
   let controller: ApiController;
@@ -376,13 +375,9 @@ describe('ApiController', () => {
       expect(typeof controller.runScheduledMessage).toBe('function');
     });
 
-    it('should have all task management methods available', () => {
-      expect(typeof controller.assignTask).toBe('function');
-      expect(typeof controller.completeTask).toBe('function');
-      expect(typeof controller.blockTask).toBe('function');
-      expect(typeof controller.takeNextTask).toBe('function');
-      expect(typeof controller.syncTaskStatus).toBe('function');
-    });
+    // Task management methods removed per spec
+    // 2026-05-06-task-management-v1-deprecation.md — task lifecycle now
+    // lives entirely on the V3 task-pool controller.
   });
 
   describe('Context binding', () => {
