@@ -1279,11 +1279,18 @@ export class TaskPoolService {
 
     await this.storage.updateWorkItem(workItemId, (wi) => {
       wi.status = newStatus;
-      // Use startedAt for running, completedAt for done/failed
+      // P1 1ffffb84 component (b): mirror the transitionStatus
+      // atomic-timestamp contract so the older updateItemStatus path
+      // never produces a status↔completedAt mismatch either. See
+      // transitionStatus below for the full root-cause writeup
+      // (b7840fe8 partial-write bug).
       if (newStatus === 'running') {
         wi.startedAt = new Date().toISOString();
+        wi.completedAt = undefined;
       } else if (newStatus === 'done' || newStatus === 'failed') {
         wi.completedAt = new Date().toISOString();
+      } else {
+        wi.completedAt = undefined;
       }
     });
 
@@ -1363,10 +1370,28 @@ export class TaskPoolService {
 
     const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
       wi.status = newStatus;
-      // Standard timestamp side-effects mirror updateItemStatus so callers
-      // get consistent metadata regardless of which API they used.
+      // Atomic timestamp side-effects enforce the invariant
+      // `completedAt is set IFF status ∈ {done, failed, verified,
+      // done_by_worker, rejected}`.
+      //
+      // P1 1ffffb84 component (b): the prior code only SET completedAt
+      // on terminal transitions; non-terminal landings (queued, running,
+      // blocked, scheduled, proposed, accepted, escalated, cancelled)
+      // inherited a stale completedAt from a prior terminal trip via
+      //   - `rejected → queued` (TL re-queue)
+      //   - `failed → queued`  (BRIDGE-1 retry)
+      //   - `running → queued` (releaseBack abandon path)
+      // WorkItem b7840fe8 reproduced the bug — status=queued AND
+      // completedAt=2026-05-06T00:47:59Z AND retryCount=1 AND no
+      // startedAt/target, which is the exact fingerprint of a
+      // `failed → queued` retry leaving stale completedAt. The else
+      // branch below closes the gap atomically with the status flip.
       if (newStatus === 'running') {
         wi.startedAt = new Date().toISOString();
+        // Resuming work — clear stale completedAt from a prior failed/
+        // rejected attempt so a re-claim never carries forward a
+        // completion timestamp from an earlier terminal trip.
+        wi.completedAt = undefined;
       } else if (
         newStatus === 'done' ||
         newStatus === 'failed' ||
@@ -1375,6 +1400,13 @@ export class TaskPoolService {
         newStatus === 'rejected'
       ) {
         wi.completedAt = new Date().toISOString();
+      } else {
+        // Non-terminal-with-result landings: clear completedAt so the
+        // invariant holds. (`cancelled` is technically terminal but
+        // historically never carried completedAt — preserving that
+        // shape here to keep the change minimal; the `cancelled`
+        // semantics are out of scope.)
+        wi.completedAt = undefined;
       }
       if (mutator) mutator(wi);
     });

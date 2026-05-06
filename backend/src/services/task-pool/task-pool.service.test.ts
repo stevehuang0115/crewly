@@ -4,7 +4,7 @@
  * @module services/task-pool/task-pool.service.test
  */
 
-import { TaskPoolService } from './task-pool.service.js';
+import { TaskPoolService, WorkItemClaimedError } from './task-pool.service.js';
 import { PoolStorage } from './pool-storage.js';
 import { createWorkItem } from '../../types/v2/work-item.types.js';
 import * as fs from 'fs/promises';
@@ -1164,6 +1164,103 @@ describe('TaskPoolService', () => {
       const b = TaskPoolService.getInstance();
       expect(a).not.toBe(b);
       TaskPoolService.resetInstance();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // P1 1ffffb84(a) — removeFromPool (bulk-DELETE entry)
+  // -----------------------------------------------------------------------
+
+  describe('removeFromPool (P1 1ffffb84 component a)', () => {
+    it('removes an unclaimed WorkItem from the pool', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+
+      const result = await service.removeFromPool(wi.id);
+      expect(result.removed).toBe(true);
+      expect(result.workItem?.id).toBe(wi.id);
+      expect(result.hadActiveClaim).toBe(false);
+
+      // Item is gone from disk + memory.
+      const after = await service.findWorkItem(wi.id);
+      expect(after).toBeNull();
+    });
+
+    it('is idempotent on a missing id (returns reason=not_found)', async () => {
+      const result = await service.removeFromPool('does-not-exist');
+      expect(result.removed).toBe(false);
+      expect(result.reason).toBe('not_found');
+      expect(result.workItem).toBeUndefined();
+    });
+
+    it('is idempotent on second call after a successful delete', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+
+      const first = await service.removeFromPool(wi.id);
+      expect(first.removed).toBe(true);
+
+      const second = await service.removeFromPool(wi.id);
+      expect(second.removed).toBe(false);
+      expect(second.reason).toBe('not_found');
+    });
+
+    it('refuses to delete a claimed WorkItem without force (throws WorkItemClaimedError)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      const claim = await service.claimFromPool('agent-leo');
+      expect(claim).not.toBeNull();
+
+      let caught: unknown;
+      try {
+        await service.removeFromPool(wi.id);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(WorkItemClaimedError);
+      const e = caught as WorkItemClaimedError;
+      expect(e.workItemId).toBe(wi.id);
+      expect(e.claimedBy).toBe('agent-leo');
+      expect(e.claimId).toBe(claim!.claim.id);
+
+      // No mutation: WI still exists with active claim.
+      const stillThere = await service.findWorkItem(wi.id);
+      expect(stillThere).not.toBeNull();
+      const claims = await service.getActiveClaims();
+      expect(claims).toHaveLength(1);
+    });
+
+    it('deletes a claimed WorkItem when force=true (revokes claim)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      const claim = await service.claimFromPool('agent-leo');
+      expect(claim).not.toBeNull();
+
+      const result = await service.removeFromPool(wi.id, { force: true });
+      expect(result.removed).toBe(true);
+      expect(result.hadActiveClaim).toBe(true);
+
+      // WI gone, active claims drained.
+      expect(await service.findWorkItem(wi.id)).toBeNull();
+      const activeClaims = await service.getActiveClaims();
+      expect(activeClaims).toHaveLength(0);
+    });
+
+    it('exposes structured fields on WorkItemClaimedError', () => {
+      const err = new WorkItemClaimedError({
+        workItemId: 'wi-1',
+        claimId: 'claim-1',
+        claimedBy: 'agent-x',
+      });
+      expect(err.workItemId).toBe('wi-1');
+      expect(err.claimId).toBe('claim-1');
+      expect(err.claimedBy).toBe('agent-x');
+      expect(err.name).toBe('WorkItemClaimedError');
+      expect(err).toBeInstanceOf(Error);
+      expect(err).toBeInstanceOf(WorkItemClaimedError);
+      expect(err.message).toContain('wi-1');
+      expect(err.message).toContain('claim-1');
+      expect(err.message).toContain('agent-x');
     });
   });
 
