@@ -220,6 +220,32 @@ describe('Action verbs (EN + ZH)', () => {
     expect(ACTION_VERB_ZH.test('搞错了')).toBe(false);
     expect(ACTION_VERB_ZH.test('搞不定')).toBe(false);
   });
+
+  it('Issue #472 fix: 做错 / 做坏 / 做废 do NOT fire as actionable verbs', () => {
+    // Symmetry fix on the bare-做 negative-lookahead. Pre-fix the bare 做
+    // token matched these mistake-suffix forms because the lookahead only
+    // excluded completed/denial suffixes (了|过|得|的|出|不到|不了|...).
+    // 搞's lookahead already had the parallel exclusion (砸|错|乱|糊涂);
+    // 做 was the asymmetric case. This test pins the new symmetric
+    // behavior so a future tweak can't regress.
+    expect(ACTION_VERB_ZH.test('做错')).toBe(false);
+    expect(ACTION_VERB_ZH.test('做错了')).toBe(false);
+    expect(ACTION_VERB_ZH.test('做坏')).toBe(false);
+    expect(ACTION_VERB_ZH.test('做坏了')).toBe(false);
+    expect(ACTION_VERB_ZH.test('做废')).toBe(false);
+    expect(ACTION_VERB_ZH.test('做废了')).toBe(false);
+  });
+
+  it('Issue #472 fix: NON_ACTIONABLE_PATTERNS_ZH row-c covers 做错|做坏|做废', () => {
+    // Parallel coverage for sentence-shape forms: even a longer message
+    // ending in 做错了 / 做坏了 / 做废了 should be filtered as non-actionable.
+    expect(NON_ACTIONABLE_PATTERNS_ZH.some((p) => p.test('做错了'))).toBe(true);
+    expect(NON_ACTIONABLE_PATTERNS_ZH.some((p) => p.test('做坏了'))).toBe(true);
+    expect(NON_ACTIONABLE_PATTERNS_ZH.some((p) => p.test('做废了'))).toBe(true);
+    // Pre-existing parallel forms still covered.
+    expect(NON_ACTIONABLE_PATTERNS_ZH.some((p) => p.test('搞砸了'))).toBe(true);
+    expect(NON_ACTIONABLE_PATTERNS_ZH.some((p) => p.test('搞错了'))).toBe(true);
+  });
 });
 
 describe('Non-actionable ZH patterns (Mia stricter-default)', () => {

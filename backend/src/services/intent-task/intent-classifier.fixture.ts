@@ -205,6 +205,12 @@ export const NON_ACTIONABLE_FIXTURES: { input: string; rationale: string; source
   { input: '搞砸了', rationale: 'Mia stricter 2026-05-06: ZH botched', source: 'Mia inline 2026-05-06' },
   // Completed action
   { input: '做完了', rationale: 'Mia stricter 2026-05-06: ZH completed (no imperative prefix)', source: 'Mia inline 2026-05-06' },
+  // Issue #472 — symmetry fix: 做 mistake-form coverage parallel to 搞 砸|错|乱|糊涂.
+  // Pre-fix the bare 做 token reached the L2 promoter on these forms because
+  // the negative lookahead omitted 错|坏|废.
+  { input: '做错了', rationale: 'Issue #472: ZH bare-做 mistake-form (做错) — parallel to 搞错', source: 'Arch nit on PR #471' },
+  { input: '做坏了', rationale: 'Issue #472: ZH bare-做 mistake-form (做坏) — parallel to 搞错', source: 'Arch nit on PR #471' },
+  { input: '做废了', rationale: 'Issue #472: ZH bare-做 mistake-form (做废) — parallel to 搞错', source: 'Arch nit on PR #471' },
 ];
 
 // ---------------------------------------------------------------------------
