@@ -93,7 +93,15 @@ describe('detectStuckWorkItems', () => {
 
   it('should detect timed-out WorkItems even with active agents', () => {
     const oldStart = new Date(Date.now() - 700_000).toISOString(); // 11+ min ago
-    const wi = makeWorkItem({ status: 'running', target: 'agent-1', startedAt: oldStart });
+    // type='project_task' falls back to the default 600_000ms timeout;
+    // 'delegate' / 'review' / 'confirm' have per-type overrides that would
+    // skip this case (see DEFAULT_PER_TYPE_TIMEOUT_MS).
+    const wi = makeWorkItem({
+      type: 'project_task',
+      status: 'running',
+      target: 'agent-1',
+      startedAt: oldStart,
+    });
     const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
 
     const { stuckIds } = detectStuckWorkItems([wi], agentMap, 600_000);
@@ -137,6 +145,83 @@ describe('detectStuckWorkItems', () => {
 
     const { stuckIds } = detectStuckWorkItems([wi], agentMap);
     expect(stuckIds).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Per-type timeout (2026-05-06 dogfood regression — see DEFAULT_PER_TYPE_TIMEOUT_MS)
+  // -------------------------------------------------------------------------
+  it('should NOT timeout delegate-type WIs at the default 10min threshold', () => {
+    // 11 minutes of running — past the legacy 10min default but well within
+    // the 4h delegate-type override. A TL umbrella WI must not flip to failed
+    // here, otherwise the cascade-cancel rules will wipe its children.
+    const oldStart = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    const wi = makeWorkItem({
+      type: 'delegate',
+      status: 'running',
+      target: 'agent-1',
+      startedAt: oldStart,
+    });
+    const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
+
+    const { stuckIds } = detectStuckWorkItems([wi], agentMap, 600_000);
+    expect(stuckIds).toHaveLength(0);
+  });
+
+  it('should NOT timeout review-type WIs at the default 10min threshold', () => {
+    const oldStart = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const wi = makeWorkItem({
+      type: 'review',
+      status: 'running',
+      target: 'agent-1',
+      startedAt: oldStart,
+    });
+    const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
+
+    const { stuckIds } = detectStuckWorkItems([wi], agentMap, 600_000);
+    expect(stuckIds).toHaveLength(0);
+  });
+
+  it('should still timeout delegate WIs once the 4h ceiling is exceeded', () => {
+    const oldStart = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(); // 5h
+    const wi = makeWorkItem({
+      type: 'delegate',
+      status: 'running',
+      target: 'agent-1',
+      startedAt: oldStart,
+    });
+    const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
+
+    const { stuckIds } = detectStuckWorkItems([wi], agentMap, 600_000);
+    expect(stuckIds).toContain(wi.id);
+  });
+
+  it('should NEVER timeout confirm-type WIs (waiting on user)', () => {
+    const ancientStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // 24h
+    const wi = makeWorkItem({
+      type: 'confirm',
+      status: 'running',
+      target: 'agent-1',
+      startedAt: ancientStart,
+    });
+    const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
+
+    const { stuckIds } = detectStuckWorkItems([wi], agentMap, 600_000);
+    expect(stuckIds).toHaveLength(0);
+  });
+
+  it('should honor caller-provided per-type timeout overrides', () => {
+    const oldStart = new Date(Date.now() - 30_000).toISOString(); // 30s
+    const wi = makeWorkItem({
+      type: 'project_task',
+      status: 'running',
+      target: 'agent-1',
+      startedAt: oldStart,
+    });
+    const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
+
+    // Override default 10min → 10s for project_task; the 30s-old WI should now timeout.
+    const { stuckIds } = detectStuckWorkItems([wi], agentMap, 600_000, { project_task: 10_000 });
+    expect(stuckIds).toContain(wi.id);
   });
 });
 
@@ -283,13 +368,37 @@ describe('detectOrphanWorkItems', () => {
     expect(orphanIds).toContain('child-1');
   });
 
-  it('should detect children of failed parents', () => {
-    const parent = makeWorkItem({ id: 'parent-1', status: 'failed' });
+  it('should detect children of permanently-failed parents (retries exhausted)', () => {
+    const parent = makeWorkItem({
+      id: 'parent-1',
+      status: 'failed',
+      retryCount: 3,
+      maxRetries: 3,
+    });
     const child = makeWorkItem({ id: 'child-1', status: 'queued', parentWorkItemId: 'parent-1' });
     const workItemMap = new Map([[parent.id, parent], [child.id, child]]);
 
     const { orphanIds } = detectOrphanWorkItems([child], workItemMap);
     expect(orphanIds).toContain('child-1');
+  });
+
+  it('should NOT cascade-cancel when parent is failed but retries remain', () => {
+    // Regression: 2026-05-06 dogfood — umbrella WI hit a 10min timeout, was
+    // marked failed, all 6 children got cancelled, then auto-retry resurrected
+    // the parent leaving it childless. The cascade must skip retry-eligible
+    // parents so the auto-retry pass can revive the whole subtree.
+    const parent = makeWorkItem({
+      id: 'parent-retryable',
+      status: 'failed',
+      retryCount: 0,
+      maxRetries: 3,
+    });
+    const child = makeWorkItem({ id: 'child-1', status: 'queued', parentWorkItemId: 'parent-retryable' });
+    const workItemMap = new Map([[parent.id, parent], [child.id, child]]);
+
+    const { orphanIds, corrections } = detectOrphanWorkItems([child], workItemMap);
+    expect(orphanIds).toHaveLength(0);
+    expect(corrections).toHaveLength(0);
   });
 
   it('should skip children with active parents', () => {
@@ -517,6 +626,45 @@ describe('runPruningPass', () => {
   it('should handle empty WorkItems array', () => {
     const result = runPruningPass([]);
     expect(result.totalCorrections).toHaveLength(0);
+  });
+
+  it('REGRESSION 2026-05-06: failed-but-retryable parent must NOT cascade-cancel its children', () => {
+    // Reproduces the dogfood data-loss: umbrella WI hits running-timeout →
+    // status='failed' (retryCount=0/max=3). Same reconciler pass runs the
+    // pruning loop; before the fix this cancelled all 6 P0 children. After
+    // the fix, the children stay queued so the auto-retry can revive the
+    // whole subtree.
+    const parent = makeWorkItem({
+      id: 'umbrella',
+      status: 'failed',
+      retryCount: 0,
+      maxRetries: 3,
+    });
+    const children = [
+      makeWorkItem({ id: 'p0-1', status: 'queued', parentWorkItemId: 'umbrella' }),
+      makeWorkItem({ id: 'p0-2', status: 'queued', parentWorkItemId: 'umbrella' }),
+      makeWorkItem({ id: 'p0-3', status: 'queued', parentWorkItemId: 'umbrella' }),
+      makeWorkItem({ id: 'p0-4', status: 'queued', parentWorkItemId: 'umbrella' }),
+      makeWorkItem({ id: 'p0-5', status: 'queued', parentWorkItemId: 'umbrella' }),
+      makeWorkItem({ id: 'p0-6', status: 'queued', parentWorkItemId: 'umbrella' }),
+    ];
+
+    const result = runPruningPass([parent, ...children]);
+    expect(result.orphanCancelledCount).toBe(0);
+    expect(result.cascadeCancelledCount).toBe(0);
+  });
+
+  it('should still cascade-cancel children when parent has exhausted retries', () => {
+    const parent = makeWorkItem({
+      id: 'umbrella-dead',
+      status: 'failed',
+      retryCount: 3,
+      maxRetries: 3,
+    });
+    const child = makeWorkItem({ id: 'c1', status: 'queued', parentWorkItemId: 'umbrella-dead' });
+
+    const result = runPruningPass([parent, child]);
+    expect(result.orphanCancelledCount).toBe(1);
   });
 });
 
