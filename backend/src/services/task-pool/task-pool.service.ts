@@ -54,6 +54,45 @@ export interface IRequestWorkItemLinker {
 }
 
 // ---------------------------------------------------------------------------
+// Bulk-DELETE types (P1 1ffffb84 component a)
+// ---------------------------------------------------------------------------
+
+/** Result of {@link TaskPoolService.removeFromPool}. */
+export interface RemoveFromPoolResult {
+  /** `true` when the WorkItem existed and was removed. */
+  removed: boolean;
+  /** The deleted WorkItem (only when removed === true). */
+  workItem?: WorkItem;
+  /** `true` when an active claim was found at delete time. */
+  hadActiveClaim?: boolean;
+  /** Cause when removed === false. */
+  reason?: 'not_found';
+}
+
+/**
+ * Structured error thrown by {@link TaskPoolService.removeFromPool}
+ * when an active claim exists and `force: true` was not passed.
+ */
+export class WorkItemClaimedError extends Error {
+  public readonly workItemId: string;
+  public readonly claimId: string;
+  public readonly claimedBy: string;
+
+  constructor(args: { workItemId: string; claimId: string; claimedBy: string }) {
+    super(
+      `WorkItem '${args.workItemId}' has an active claim ` +
+      `(claimId='${args.claimId}', claimedBy='${args.claimedBy}'). ` +
+      `Pass { force: true } to delete anyway (will revoke the claim).`,
+    );
+    this.name = 'WorkItemClaimedError';
+    this.workItemId = args.workItemId;
+    this.claimId = args.claimId;
+    this.claimedBy = args.claimedBy;
+    Object.setPrototypeOf(this, WorkItemClaimedError.prototype);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Filter / Snapshot Types
 // ---------------------------------------------------------------------------
 
@@ -1215,6 +1254,74 @@ export class TaskPoolService {
    */
   async removeItem(workItemId: string): Promise<void> {
     await this.storage.removeWorkItem(workItemId);
+  }
+
+  // -------------------------------------------------------------------------
+  // P1 1ffffb84(a) — Bulk-DELETE stale WorkItems
+  // -------------------------------------------------------------------------
+
+  /**
+   * Public delete API used by the bulk-cleanup script and the new
+   * `DELETE /api/task-pool/:id` HTTP endpoint (P1 umbrella WI 1ffffb84
+   * component a, Steve directive 2026-05-06: just-DELETE-not-backfill).
+   *
+   * Three guarantees over {@link removeItem}:
+   *   1. Idempotent — `not_found` is a no-op return, not a throw.
+   *   2. Claim-safety — refuses claimed delete unless `opts.force`.
+   *   3. Audit log — single info-level log per removal.
+   *
+   * Force path also revokes the orphaned claim (status='revoked',
+   * endedAt, endReason).
+   */
+  async removeFromPool(
+    workItemId: string,
+    opts: { force?: boolean } = {},
+  ): Promise<RemoveFromPoolResult> {
+    const wi = await this.storage.findWorkItem(workItemId);
+    if (!wi) {
+      this.logger.debug('removeFromPool: item not found (idempotent)', { workItemId });
+      return { removed: false, reason: 'not_found' };
+    }
+
+    const activeClaim = await this.storage.findActiveClaimByWorkItem(workItemId);
+    const hadActiveClaim = !!activeClaim;
+
+    if (hadActiveClaim && activeClaim && !opts.force) {
+      this.logger.warn('removeFromPool refused: active claim exists', {
+        workItemId,
+        claimId: activeClaim.id,
+        claimedBy: activeClaim.agentId,
+      });
+      throw new WorkItemClaimedError({
+        workItemId,
+        claimId: activeClaim.id,
+        claimedBy: activeClaim.agentId,
+      });
+    }
+
+    const removed = await this.storage.removeWorkItem(workItemId);
+
+    if (hadActiveClaim && activeClaim) {
+      await this.storage.updateClaim(activeClaim.id, (c) => {
+        c.status = 'revoked';
+        c.endedAt = new Date().toISOString();
+        c.endReason = `WorkItem deleted via removeFromPool (force=${opts.force === true})`;
+      });
+    }
+
+    this.logger.info('removeFromPool: WorkItem removed', {
+      workItemId,
+      status: wi.status,
+      target: wi.target,
+      force: opts.force === true,
+      hadActiveClaim,
+    });
+
+    return {
+      removed: removed === true,
+      workItem: wi,
+      hadActiveClaim,
+    };
   }
 
   /**
