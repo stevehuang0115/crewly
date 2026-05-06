@@ -412,15 +412,38 @@ export async function querySOPs(
       teamId: typeof teamId === 'string' && teamId ? teamId : undefined,
     });
 
+    // F8: surface graceful-fallback telemetry to callers so they can
+    // distinguish "no SOPs matched" from "index unavailable, served
+    // empty fallback". Always 200 — the service layer no longer throws
+    // on missing/unparseable index.
+    const fallbackReason = sopService.getLastFallbackReason();
+    const data: { sopContext: string; reason?: string } = { sopContext };
+    if (fallbackReason) {
+      data.reason = fallbackReason;
+    }
+
     res.json({
       success: true,
-      data: { sopContext },
+      data,
     } as ApiResponse);
   } catch (error) {
-    logger.error('Error querying SOPs', { error: error instanceof Error ? error.message : String(error) });
-    res.status(500).json({
-      success: false,
-      error: 'Failed to query SOPs',
+    // F8: SOPService.generateSOPContext should not throw for
+    // missing-index conditions any more (graceful fallback). Reaching
+    // this catch indicates a genuinely unexpected failure (e.g. invalid
+    // request body shape, OOM). Degrade to a 200 + empty SOPs envelope
+    // with a degraded-mode reason rather than a 500, since this endpoint
+    // is on the agent session-startup hot path and a 500 hard-fails
+    // every recovery flow.
+    logger.warn(
+      'querySOPs hit unexpected error — serving empty fallback to avoid blocking session startup',
+      { error: error instanceof Error ? error.message : String(error) }
+    );
+    res.json({
+      success: true,
+      data: {
+        sopContext: '',
+        reason: 'unexpected-error-graceful-fallback',
+      },
     } as ApiResponse);
   }
 }

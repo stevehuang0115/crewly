@@ -508,6 +508,143 @@ Content here.
     });
   });
 
+  // ---------------------------------------------------------------------
+  // F8: graceful fallback when ~/.crewly/sops/index.json is missing.
+  //
+  // These tests pin the Pool-WorkItem 6465e00f acceptance criteria:
+  //  (1) service does NOT throw when index.json is missing
+  //  (2) rebuild regenerates from on-disk SOP files when present
+  //  (3) `getLastFallbackReason()` exposes telemetry for the controller
+  //  (4) the basePath dir is created (mkdir -p) before saving the index,
+  //      preventing the fresh-install ENOENT crash that produced the 500.
+  // ---------------------------------------------------------------------
+  describe('graceful fallback (F8)', () => {
+    it('returns empty index without throwing when index.json is missing and no SOP files exist', async () => {
+      // index.json read fails (ENOENT)
+      mockFs.readFile.mockRejectedValue(new Error('ENOENT: no such file or directory'));
+      // No SOP files on disk in either system/ or custom/
+      mockFs.readdir.mockResolvedValue([]);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      const index = await service.getIndex();
+
+      expect(index).toBeDefined();
+      expect(index.sops).toEqual([]);
+      // Fallback reason is stamped so the controller can advertise the
+      // degraded mode to the get-sops skill caller.
+      expect(service.getLastFallbackReason()).toBe(
+        'index-missing-graceful-fallback'
+      );
+    });
+
+    it('regenerates index from on-disk SOP files when index.json is missing', async () => {
+      const { existsSync } = jest.requireMock('fs') as { existsSync: jest.Mock };
+      // basePath / systemPath / customPath all exist
+      existsSync.mockReturnValue(true);
+
+      // index.json read fails, then any subsequent file reads return the
+      // sample SOP markdown (parsed for entries below).
+      mockFs.readFile
+        .mockRejectedValueOnce(new Error('ENOENT'))
+        .mockResolvedValue(sampleSOPContent);
+
+      // First readdir = systemPath (one .md file), second = customPath (empty)
+      mockFs.readdir
+        .mockResolvedValueOnce([
+          { name: 'test-sop.md', isDirectory: () => false, isFile: () => true } as never,
+        ])
+        .mockResolvedValueOnce([]);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      const index = await service.getIndex();
+
+      expect(index).toBeDefined();
+      expect(index.sops.length).toBe(1);
+      expect(index.sops[0].id).toBe('test-sop-001');
+      // Persisted to disk
+      expect(mockFs.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining('index.json'),
+        expect.any(String),
+        'utf-8'
+      );
+      // Reason still stamped — index was missing on initial read even
+      // though regeneration from filesystem succeeded. Callers can opt
+      // to log the back-fill but treat the data as authoritative.
+      expect(service.getLastFallbackReason()).toBe(
+        'index-missing-graceful-fallback'
+      );
+    });
+
+    it('does not throw when basePath does not exist (creates it via mkdir -p before saveIndex)', async () => {
+      // index.json read fails because the entire ~/.crewly/sops dir is missing
+      mockFs.readFile.mockRejectedValue(new Error('ENOENT'));
+      // readdir won't be called (existsSync returns false) — but if it is,
+      // it should also fail to mirror real ENOENT behaviour.
+      mockFs.readdir.mockRejectedValue(new Error('ENOENT'));
+      mockFs.writeFile.mockResolvedValue(undefined);
+      const { existsSync } = jest.requireMock('fs') as { existsSync: jest.Mock };
+      existsSync.mockReturnValue(false);
+      // mkdir is allowed — that's exactly the fix
+      mockFs.mkdir.mockResolvedValue(undefined);
+
+      await expect(service.getIndex()).resolves.toBeDefined();
+
+      // mkdir was called with basePath + recursive true to materialise
+      // the missing directory before saveIndex writes index.json.
+      expect(mockFs.mkdir).toHaveBeenCalledWith(
+        testBasePath,
+        { recursive: true }
+      );
+    });
+
+    it('does not throw when saveIndex itself fails (e.g. read-only FS)', async () => {
+      mockFs.readFile.mockRejectedValue(new Error('ENOENT'));
+      mockFs.readdir.mockResolvedValue([]);
+      // Disk write fails — we keep the in-memory index instead of bubbling
+      mockFs.writeFile.mockRejectedValue(new Error('EROFS: read-only file system'));
+      mockFs.mkdir.mockResolvedValue(undefined);
+
+      await expect(service.getIndex()).resolves.toBeDefined();
+
+      const index = await service.getIndex();
+      expect(index.sops).toEqual([]);
+      expect(service.getLastFallbackReason()).toBe(
+        'index-missing-graceful-fallback'
+      );
+    });
+
+    it('clears lastFallbackReason after a healthy index read', async () => {
+      // First call: trigger fallback
+      mockFs.readFile.mockRejectedValueOnce(new Error('ENOENT'));
+      mockFs.readdir.mockResolvedValue([]);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      await service.getIndex();
+      expect(service.getLastFallbackReason()).toBe(
+        'index-missing-graceful-fallback'
+      );
+
+      // Second call after clearing in-memory cache: healthy read
+      // (forcing ensureIndex to run again by clearing the instance state
+      // would normally require clearInstance + re-create; instead we
+      // verify the symmetric behaviour by re-creating the service)
+      SOPService.clearInstance();
+      const fresh = SOPService.createWithPath(testBasePath);
+      mockFs.readFile.mockResolvedValueOnce(JSON.stringify(sampleIndex));
+
+      await fresh.getIndex();
+      expect(fresh.getLastFallbackReason()).toBeNull();
+    });
+
+    it('exposes FALLBACK_REASON_INDEX_MISSING as a public sentinel', () => {
+      // Pinning the string contract — controller and any external consumer
+      // (skill, telemetry pipeline) compare against this constant.
+      expect(SOPService.FALLBACK_REASON_INDEX_MISSING).toBe(
+        'index-missing-graceful-fallback'
+      );
+    });
+  });
+
   describe('clearCache', () => {
     it('should clear the SOP cache', async () => {
       mockFs.readFile

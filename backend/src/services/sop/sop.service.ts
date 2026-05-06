@@ -118,6 +118,19 @@ export interface ISOPService {
    * @returns Matching index entries
    */
   searchSOPs(query: string): Promise<SOPIndexEntry[]>;
+
+  /**
+   * Get the reason for the last graceful fallback, if any.
+   *
+   * Used by the API layer to surface degraded-mode telemetry to callers
+   * (e.g. when the index file is missing and an empty in-memory fallback
+   * was substituted). Returns null after any operation that successfully
+   * read the index from disk.
+   *
+   * @returns Fallback reason string, or null if last operation served
+   *   from real data on disk.
+   */
+  getLastFallbackReason(): string | null;
 }
 
 /**
@@ -146,6 +159,18 @@ export class SOPService implements ISOPService {
   private index: SOPIndex | null = null;
   private sopCache: Map<string, SOP> = new Map();
   private initialized: boolean = false;
+  private lastFallbackReason: string | null = null;
+
+  /**
+   * Sentinel reason emitted when the canonical index is missing/unparseable
+   * and we synthesise an empty in-memory index so callers can degrade
+   * cleanly instead of receiving a 500.
+   *
+   * Surfaced via `getLastFallbackReason()` and propagated by the API
+   * controller to clients in the response envelope.
+   */
+  public static readonly FALLBACK_REASON_INDEX_MISSING =
+    'index-missing-graceful-fallback';
 
   /**
    * Private constructor for singleton pattern
@@ -218,7 +243,22 @@ export class SOPService implements ISOPService {
   }
 
   /**
-   * Rebuild the SOP index from filesystem
+   * Rebuild the SOP index from filesystem.
+   *
+   * Resilience contract (F8 — get-sops graceful fallback):
+   *  - Walks `systemPath` and `customPath` to collect entries (each walker
+   *    silently no-ops when its directory is absent).
+   *  - Populates `this.index` with the collected entries (possibly empty)
+   *    BEFORE attempting any disk write, so callers reading the index
+   *    in-memory always see a valid object even if persistence fails.
+   *  - Persists by ensuring `basePath` exists (`mkdir -p`) and then
+   *    writing the index file. Persistence failure is logged-warn and
+   *    swallowed — the in-memory index remains canonical for this process.
+   *
+   * Should not throw under normal failure modes (missing dir, ENOSPC,
+   * permission to write index). Pathological errors in helpers are
+   * logged inside them; this method returns successfully with an
+   * in-memory index regardless.
    */
   public async rebuildIndex(): Promise<void> {
     const entries: SOPIndexEntry[] = [];
@@ -229,15 +269,38 @@ export class SOPService implements ISOPService {
     // Index custom SOPs
     await this.indexDirectory(this.customPath, entries, false);
 
+    // Always populate in-memory index FIRST so callers can read even if
+    // persistence below fails (e.g. read-only FS, ENOSPC).
     this.index = {
       version: SOP_CONSTANTS.INDEX_VERSION,
       lastUpdated: new Date().toISOString(),
       sops: entries,
     };
 
-    await this.saveIndex();
+    // Persist — failures are logged but never thrown to the caller.
+    try {
+      await this.ensureBasePathExists();
+      await this.saveIndex();
+    } catch (error) {
+      this.logger.warn('SOP index regenerated in memory but persistence failed', {
+        indexPath: this.indexPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     this.sopCache.clear();
     this.logger.info('SOP index rebuilt', { count: entries.length });
+  }
+
+  /**
+   * Ensure the SOP base directory exists before writing the index.
+   *
+   * Idempotent. Created with `recursive: true` so any missing parent
+   * (e.g. a fresh `~/.crewly` install where `sops/` was never created)
+   * is materialised in one call.
+   */
+  private async ensureBasePathExists(): Promise<void> {
+    await fs.mkdir(this.basePath, { recursive: true });
   }
 
   /**
@@ -780,15 +843,62 @@ export class SOPService implements ISOPService {
   }
 
   /**
-   * Ensure the index exists (load or rebuild)
+   * Ensure the index exists (load from disk or rebuild from filesystem).
+   *
+   * Graceful-fallback contract (F8):
+   *  - Happy path: read `index.json`, JSON.parse it, set `this.index`.
+   *    `lastFallbackReason` is cleared.
+   *  - Index missing/unparseable: invoke `rebuildIndex()`. If rebuild
+   *    succeeded with N>=0 entries, mark fallback reason iff the index
+   *    was rebuilt due to missing-on-disk (so the controller can surface
+   *    `index-missing-graceful-fallback` to clients).
+   *  - Catastrophic rebuild failure (extremely unlikely — rebuild itself
+   *    swallows persistence errors): synthesise an empty in-memory index
+   *    and stamp `lastFallbackReason`. The endpoint returns 200 with an
+   *    empty payload rather than 500.
    */
   private async ensureIndex(): Promise<void> {
     try {
       const content = await fs.readFile(this.indexPath, 'utf-8');
       this.index = JSON.parse(content);
+      this.lastFallbackReason = null;
+      return;
     } catch {
-      await this.rebuildIndex();
+      // fall through to rebuild
     }
+
+    try {
+      await this.rebuildIndex();
+      // Index was missing/unparseable on disk; even after a successful
+      // rebuild we stamp the reason so the controller can advertise the
+      // degraded path to callers (telemetry / client-side back-off).
+      this.lastFallbackReason = SOPService.FALLBACK_REASON_INDEX_MISSING;
+    } catch (error) {
+      this.logger.warn(
+        'SOP index rebuild failed catastrophically — serving empty fallback',
+        { error: error instanceof Error ? error.message : String(error) }
+      );
+      this.index = {
+        version: SOP_CONSTANTS.INDEX_VERSION,
+        lastUpdated: new Date().toISOString(),
+        sops: [],
+      };
+      this.lastFallbackReason = SOPService.FALLBACK_REASON_INDEX_MISSING;
+    }
+  }
+
+  /**
+   * Get the reason for the last graceful fallback, if any.
+   *
+   * Returns the `FALLBACK_REASON_INDEX_MISSING` sentinel when the most
+   * recent index load fell back to a regenerated/synthesised in-memory
+   * index. Returns null when the cached index was loaded directly from
+   * a healthy `index.json` on disk.
+   *
+   * @returns Fallback reason string, or null.
+   */
+  public getLastFallbackReason(): string | null {
+    return this.lastFallbackReason;
   }
 
   /**

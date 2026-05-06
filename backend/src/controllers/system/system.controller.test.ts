@@ -14,12 +14,20 @@ jest.mock('fs/promises', () => ({
   readdir: jest.fn<any>().mockResolvedValue([]),
 }));
 
-// Mock SOP service
+// Mock SOP service.
+// querySOPs (F8 graceful-fallback) consumes generateSOPContext +
+// getLastFallbackReason; both are stubbed here so per-test overrides
+// can drive the controller through happy / fallback / throw paths.
+const mockGenerateSOPContext = jest.fn<(...args: unknown[]) => Promise<string>>().mockResolvedValue('');
+const mockGetLastFallbackReason = jest.fn<() => string | null>().mockReturnValue(null);
 jest.mock('../../services/sop/sop.service.js', () => ({
   SOPService: {
     getInstance: jest.fn().mockReturnValue({
       getAvailableSOPs: jest.fn(),
+      generateSOPContext: (...args: unknown[]) => mockGenerateSOPContext(...args),
+      getLastFallbackReason: () => mockGetLastFallbackReason(),
     }),
+    FALLBACK_REASON_INDEX_MISSING: 'index-missing-graceful-fallback',
   },
 }));
 
@@ -1082,6 +1090,119 @@ describe('System Handlers', () => {
         data: expect.objectContaining({
           ip: '192.168.0.1',
         }),
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------
+  // F8: querySOPs graceful-fallback contract
+  //
+  // The get-sops skill sits on every agent's session-startup hot path.
+  // A 500 here breaks every recovery flow + the onboarding KR3 5-min
+  // path, so we pin the contract that:
+  //   (a) happy path returns 200 + sopContext (no `reason`)
+  //   (b) missing-index fallback returns 200 + sopContext + reason
+  //       === 'index-missing-graceful-fallback'
+  //   (c) unexpected service throw still returns 200 + empty fallback
+  //       === 'unexpected-error-graceful-fallback' (no 500)
+  //   (d) missing `context` parameter still returns 400 (validation)
+  // -----------------------------------------------------------------
+  describe('querySOPs (F8 graceful fallback)', () => {
+    beforeEach(() => {
+      mockGenerateSOPContext.mockReset();
+      mockGetLastFallbackReason.mockReset();
+      mockGenerateSOPContext.mockResolvedValue('');
+      mockGetLastFallbackReason.mockReturnValue(null);
+    });
+
+    it('returns 200 + sopContext (no reason) on happy path', async () => {
+      mockGenerateSOPContext.mockResolvedValue('## Relevant SOPs\n\nSome content');
+      mockGetLastFallbackReason.mockReturnValue(null);
+      mockRequest = {
+        body: { context: 'commit changes', role: 'developer' },
+      };
+
+      await systemHandlers.querySOPs.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: { sopContext: '## Relevant SOPs\n\nSome content' },
+      });
+      // No reason field on healthy path — additive only when degraded
+      const callArg = (mockResponse.json as jest.Mock).mock.calls[0]?.[0] as {
+        data: { reason?: string };
+      };
+      expect(callArg.data.reason).toBeUndefined();
+    });
+
+    it('returns 200 + reason when SOP index is missing/regenerated', async () => {
+      mockGenerateSOPContext.mockResolvedValue('');
+      mockGetLastFallbackReason.mockReturnValue(
+        'index-missing-graceful-fallback'
+      );
+      mockRequest = {
+        body: { context: 'session startup', role: 'developer' },
+      };
+
+      await systemHandlers.querySOPs.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // CRITICAL: HTTP 200 (no .status() call), reason surfaced
+      expect(mockResponse.status).not.toHaveBeenCalled();
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          sopContext: '',
+          reason: 'index-missing-graceful-fallback',
+        },
+      });
+    });
+
+    it('returns 400 when context parameter is missing (validation)', async () => {
+      mockRequest = { body: { role: 'developer' } };
+
+      await systemHandlers.querySOPs.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: false,
+        error: expect.stringContaining('context'),
+      });
+    });
+
+    it('returns 200 + empty fallback on unexpected service error (NEVER 500)', async () => {
+      mockGenerateSOPContext.mockRejectedValue(
+        new Error('totally unexpected oops')
+      );
+      mockRequest = {
+        body: { context: 'whatever', role: 'developer' },
+      };
+
+      await systemHandlers.querySOPs.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      // No 500 — agent session-startup path stays unblocked
+      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          sopContext: '',
+          reason: 'unexpected-error-graceful-fallback',
+        },
       });
     });
   });
