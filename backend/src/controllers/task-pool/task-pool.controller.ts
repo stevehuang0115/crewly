@@ -13,6 +13,7 @@
 import type { Request, Response } from 'express';
 import {
   TaskPoolService,
+  WorkItemClaimedError,
   type PoolFilters,
 } from '../../services/task-pool/task-pool.service.js';
 import { TaskProjectionService } from '../../services/v3/task-projection.service.js';
@@ -674,6 +675,87 @@ export async function revokeAndRelease(req: Request, res: Response): Promise<voi
     } else {
       res.status(500).json({ success: false, error: message });
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/task-pool/items — enumerate ALL items regardless of status
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns every WorkItem currently in the pool — including cancelled,
+ * done_by_worker, failed, etc. — so admin / cleanup tooling can audit the
+ * full state without filtering by claimability.
+ *
+ * Distinct from `/api/task-pool` (and its `/all` alias) which return ONLY
+ * the available subset (queued + unclaimed). The existing alias was
+ * naming-confusing for cleanup workflows; rather than rename and break
+ * downstream consumers, this endpoint adds the audit-shaped surface that
+ * the bulk-DELETE script needs.
+ *
+ * Response: `{ success: true, data: WorkItem[], count }`.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ */
+export async function listAllItems(req: Request, res: Response): Promise<void> {
+  try {
+    const items = await getService().getAllItems();
+    res.json({ success: true, data: items, count: items.length });
+  } catch (error) {
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/task-pool/:workItemId — bulk-DELETE entry point
+// (P1 1ffffb84 component a, Steve directive 2026-05-06)
+// ---------------------------------------------------------------------------
+
+/**
+ * Removes a WorkItem from the pool entirely. Powers the bulk-cleanup
+ * script and any future operator workflow that needs to drop stale or
+ * misplanned items.
+ *
+ * Request:
+ *   DELETE /api/task-pool/:workItemId[?force=1]
+ *
+ * Response shapes:
+ *   - 200 `{ success: true, removed: true,  workItem: WorkItem,  hadActiveClaim }`
+ *   - 200 `{ success: true, removed: false, reason: 'not_found' }`
+ *     (idempotent — repeated calls on a missing id do not error)
+ *   - 409 `{ success: false, error: '...', code: 'work_item_claimed',
+ *           workItemId, claimId, claimedBy }`
+ *     (active claim + no force; pass `?force=1` to override)
+ *   - 400 `{ success: false, error: 'workItemId param is required' }`
+ *
+ * @param req - Express request with `workItemId` route param and
+ *   optional `?force=1` query flag.
+ * @param res - Express response
+ */
+export async function deleteItem(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'workItemId param is required' });
+      return;
+    }
+    const force = req.query.force === '1' || req.query.force === 'true';
+    const result = await getService().removeFromPool(workItemId, { force });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    if (error instanceof WorkItemClaimedError) {
+      res.status(409).json({
+        success: false,
+        error: error.message,
+        code: 'work_item_claimed',
+        workItemId: error.workItemId,
+        claimId: error.claimId,
+        claimedBy: error.claimedBy,
+      });
+      return;
+    }
+    res.status(500).json({ success: false, error: formatError(error) });
   }
 }
 

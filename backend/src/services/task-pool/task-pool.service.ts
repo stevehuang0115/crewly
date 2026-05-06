@@ -54,6 +54,45 @@ export interface IRequestWorkItemLinker {
 }
 
 // ---------------------------------------------------------------------------
+// Bulk-DELETE types (P1 1ffffb84 component a)
+// ---------------------------------------------------------------------------
+
+/** Result of {@link TaskPoolService.removeFromPool}. */
+export interface RemoveFromPoolResult {
+  /** `true` when the WorkItem existed and was removed. */
+  removed: boolean;
+  /** The deleted WorkItem (only when removed === true). */
+  workItem?: WorkItem;
+  /** `true` when an active claim was found at delete time. */
+  hadActiveClaim?: boolean;
+  /** Cause when removed === false. */
+  reason?: 'not_found';
+}
+
+/**
+ * Structured error thrown by {@link TaskPoolService.removeFromPool}
+ * when an active claim exists and `force: true` was not passed.
+ */
+export class WorkItemClaimedError extends Error {
+  public readonly workItemId: string;
+  public readonly claimId: string;
+  public readonly claimedBy: string;
+
+  constructor(args: { workItemId: string; claimId: string; claimedBy: string }) {
+    super(
+      `WorkItem '${args.workItemId}' has an active claim ` +
+      `(claimId='${args.claimId}', claimedBy='${args.claimedBy}'). ` +
+      `Pass { force: true } to delete anyway (will revoke the claim).`,
+    );
+    this.name = 'WorkItemClaimedError';
+    this.workItemId = args.workItemId;
+    this.claimId = args.claimId;
+    this.claimedBy = args.claimedBy;
+    Object.setPrototypeOf(this, WorkItemClaimedError.prototype);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Filter / Snapshot Types
 // ---------------------------------------------------------------------------
 
@@ -1217,6 +1256,74 @@ export class TaskPoolService {
     await this.storage.removeWorkItem(workItemId);
   }
 
+  // -------------------------------------------------------------------------
+  // P1 1ffffb84(a) — Bulk-DELETE stale WorkItems
+  // -------------------------------------------------------------------------
+
+  /**
+   * Public delete API used by the bulk-cleanup script and the new
+   * `DELETE /api/task-pool/:id` HTTP endpoint (P1 umbrella WI 1ffffb84
+   * component a, Steve directive 2026-05-06: just-DELETE-not-backfill).
+   *
+   * Three guarantees over {@link removeItem}:
+   *   1. Idempotent — `not_found` is a no-op return, not a throw.
+   *   2. Claim-safety — refuses claimed delete unless `opts.force`.
+   *   3. Audit log — single info-level log per removal.
+   *
+   * Force path also revokes the orphaned claim (status='revoked',
+   * endedAt, endReason).
+   */
+  async removeFromPool(
+    workItemId: string,
+    opts: { force?: boolean } = {},
+  ): Promise<RemoveFromPoolResult> {
+    const wi = await this.storage.findWorkItem(workItemId);
+    if (!wi) {
+      this.logger.debug('removeFromPool: item not found (idempotent)', { workItemId });
+      return { removed: false, reason: 'not_found' };
+    }
+
+    const activeClaim = await this.storage.findActiveClaimByWorkItem(workItemId);
+    const hadActiveClaim = !!activeClaim;
+
+    if (hadActiveClaim && activeClaim && !opts.force) {
+      this.logger.warn('removeFromPool refused: active claim exists', {
+        workItemId,
+        claimId: activeClaim.id,
+        claimedBy: activeClaim.agentId,
+      });
+      throw new WorkItemClaimedError({
+        workItemId,
+        claimId: activeClaim.id,
+        claimedBy: activeClaim.agentId,
+      });
+    }
+
+    const removed = await this.storage.removeWorkItem(workItemId);
+
+    if (hadActiveClaim && activeClaim) {
+      await this.storage.updateClaim(activeClaim.id, (c) => {
+        c.status = 'revoked';
+        c.endedAt = new Date().toISOString();
+        c.endReason = `WorkItem deleted via removeFromPool (force=${opts.force === true})`;
+      });
+    }
+
+    this.logger.info('removeFromPool: WorkItem removed', {
+      workItemId,
+      status: wi.status,
+      target: wi.target,
+      force: opts.force === true,
+      hadActiveClaim,
+    });
+
+    return {
+      removed: removed === true,
+      workItem: wi,
+      hadActiveClaim,
+    };
+  }
+
   /**
    * Forces an immediate flush of pool data to disk.
    * Called during graceful shutdown to prevent data loss.
@@ -1279,11 +1386,18 @@ export class TaskPoolService {
 
     await this.storage.updateWorkItem(workItemId, (wi) => {
       wi.status = newStatus;
-      // Use startedAt for running, completedAt for done/failed
+      // P1 1ffffb84 component (b): mirror the transitionStatus
+      // atomic-timestamp contract so the older updateItemStatus path
+      // never produces a status↔completedAt mismatch either. See
+      // transitionStatus below for the full root-cause writeup
+      // (b7840fe8 partial-write bug).
       if (newStatus === 'running') {
         wi.startedAt = new Date().toISOString();
+        wi.completedAt = undefined;
       } else if (newStatus === 'done' || newStatus === 'failed') {
         wi.completedAt = new Date().toISOString();
+      } else {
+        wi.completedAt = undefined;
       }
     });
 
@@ -1363,10 +1477,28 @@ export class TaskPoolService {
 
     const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
       wi.status = newStatus;
-      // Standard timestamp side-effects mirror updateItemStatus so callers
-      // get consistent metadata regardless of which API they used.
+      // Atomic timestamp side-effects enforce the invariant
+      // `completedAt is set IFF status ∈ {done, failed, verified,
+      // done_by_worker, rejected}`.
+      //
+      // P1 1ffffb84 component (b): the prior code only SET completedAt
+      // on terminal transitions; non-terminal landings (queued, running,
+      // blocked, scheduled, proposed, accepted, escalated, cancelled)
+      // inherited a stale completedAt from a prior terminal trip via
+      //   - `rejected → queued` (TL re-queue)
+      //   - `failed → queued`  (BRIDGE-1 retry)
+      //   - `running → queued` (releaseBack abandon path)
+      // WorkItem b7840fe8 reproduced the bug — status=queued AND
+      // completedAt=2026-05-06T00:47:59Z AND retryCount=1 AND no
+      // startedAt/target, which is the exact fingerprint of a
+      // `failed → queued` retry leaving stale completedAt. The else
+      // branch below closes the gap atomically with the status flip.
       if (newStatus === 'running') {
         wi.startedAt = new Date().toISOString();
+        // Resuming work — clear stale completedAt from a prior failed/
+        // rejected attempt so a re-claim never carries forward a
+        // completion timestamp from an earlier terminal trip.
+        wi.completedAt = undefined;
       } else if (
         newStatus === 'done' ||
         newStatus === 'failed' ||
@@ -1375,6 +1507,13 @@ export class TaskPoolService {
         newStatus === 'rejected'
       ) {
         wi.completedAt = new Date().toISOString();
+      } else {
+        // Non-terminal-with-result landings: clear completedAt so the
+        // invariant holds. (`cancelled` is technically terminal but
+        // historically never carried completedAt — preserving that
+        // shape here to keep the change minimal; the `cancelled`
+        // semantics are out of scope.)
+        wi.completedAt = undefined;
       }
       if (mutator) mutator(wi);
     });

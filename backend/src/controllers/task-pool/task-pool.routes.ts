@@ -10,6 +10,7 @@ import { Router } from 'express';
 import {
   addItem,
   listAvailable,
+  listAllItems,
   claimItem,
   releaseItem,
   completeItem,
@@ -20,6 +21,7 @@ import {
   extendLease,
   scanExpired,
   revokeAndRelease,
+  deleteItem,
 } from './task-pool.controller.js';
 
 /**
@@ -41,6 +43,11 @@ export function createTaskPoolRouter(): Router {
 
   // Alias: /all returns the same list (used by frontend Execution Logs page)
   router.get('/all', listAvailable);
+
+  // P1 1ffffb84(a) — admin/cleanup audit surface. Returns ALL items
+  // regardless of status (cancelled, done_by_worker, failed, etc.).
+  // Distinct from `/all` which returns only the available subset.
+  router.get('/items', listAllItems);
 
   // Add a work item to the pool
   router.post('/add', addItem);
@@ -68,6 +75,11 @@ export function createTaskPoolRouter(): Router {
 
   // Revoke a claim and release work item
   router.post('/revoke/:claimId', revokeAndRelease);
+
+  // P1 1ffffb84(a) — bulk-DELETE entry. Idempotent on missing id; returns
+  // 409 with structured payload when the WI is claimed and `?force=1` is
+  // not supplied.
+  router.delete('/:workItemId', deleteItem);
 
   return router;
 }
