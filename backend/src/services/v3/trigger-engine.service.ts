@@ -14,9 +14,14 @@
  * @module services/v3/trigger-engine.service
  */
 
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { ensureDir, atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
+import { ensureDir } from '../../utils/file-io.utils.js';
+import {
+  atomicWriteJsonWithGuard,
+  IntegrityViolationError,
+} from '../../utils/integrity-guarded-write.utils.js';
 import {
   type Trigger,
   type TriggerStatus,
@@ -120,6 +125,22 @@ export class TriggerEngine {
 
   /** Whether the engine is currently running. */
   private running = false;
+
+  /**
+   * Last persisted active-trigger count, used as the prior reference for
+   * the active-count-collapse warn-log in {@link persistTriggers}. Updated
+   * inside persistTriggers **only after a successful write** (i.e. inside the
+   * try block, post-`atomicWriteJsonWithGuard`); resets on `loadTriggers()`
+   * boot to whatever was on disk so post-restart writes are correctly
+   * baselined against the persisted state.
+   *
+   * Update-after-success ordering is load-bearing for the active-collapse
+   * warn-log: if the guard rejects a write, the baseline must remain at the
+   * pre-regression value so a subsequent persist call (still seeing the same
+   * regression) re-emits the warn-log. Updating before the write would
+   * silently suppress the signal after the very first guard rejection.
+   */
+  private lastKnownActiveCount = 0;
 
   /**
    * Creates a new TriggerEngine.
@@ -762,11 +783,19 @@ export class TriggerEngine {
    */
   private async loadTriggers(): Promise<void> {
     await ensureDir(this.triggersDir);
-    const data = await safeReadJson<Trigger[]>(this.triggersFile, []);
+    const data = await this.readTriggersFromDisk();
     this.triggers.clear();
     for (const trigger of data) {
       this.triggers.set(trigger.id, trigger);
     }
+
+    // Baseline the active-collapse signal against the just-loaded disk
+    // state. Without this, the FIRST persistTriggers() call after boot
+    // would see lastKnownActiveCount=0 and incorrectly suppress its warn,
+    // even when the loaded state had legitimate active triggers.
+    this.lastKnownActiveCount = Array.from(this.triggers.values()).filter(
+      (t) => t.status === 'active',
+    ).length;
 
     const cancelledDuplicates = this.dedupeDuplicateTriggers();
     if (cancelledDuplicates > 0) {
@@ -775,8 +804,70 @@ export class TriggerEngine {
 
     this.logger.info('Loaded triggers from disk', {
       count: this.triggers.size,
+      activeCount: this.lastKnownActiveCount,
       cancelledDuplicates,
     });
+  }
+
+  /**
+   * Reads the persisted triggers JSON from disk with corruption-aware
+   * fallback semantics.
+   *
+   * Behavior:
+   * - **ENOENT** (no prior file): silently return `[]`. Normal first-boot
+   *   or post-clean-install state.
+   * - **Parse failure or non-array shape**: back up the corrupt file as
+   *   `<path>.corrupt.<ts>`, emit a `system:trigger_persistence_corrupt`
+   *   warn-log (per B1 spec — uses logger.warn, NOT a new event-bus type),
+   *   and return `[]` so the engine boots clean. The next persistTriggers()
+   *   call will overwrite the corrupt file with valid JSON (the
+   *   integrity-guarded write tolerates an unreadable prior file per
+   *   PR #420 design contract).
+   *
+   * Why this is custom (not safeReadJson): we need to distinguish
+   * "missing file" (silent) from "corrupt file" (loud warn-log) for the
+   * B1 acceptance criteria. The shared helper collapses both cases to
+   * "return default + back up", which is the right *behavior* but doesn't
+   * give us the corruption signal.
+   *
+   * @returns Parsed Trigger array, or empty array on missing/corrupt file
+   */
+  private async readTriggersFromDisk(): Promise<Trigger[]> {
+    let raw: string;
+    try {
+      raw = await fs.readFile(this.triggersFile, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw error;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) {
+        throw new Error(
+          `triggers file is not a JSON array (got ${typeof parsed})`,
+        );
+      }
+      return parsed as Trigger[];
+    } catch (parseError) {
+      // Corrupt file detected — back up + warn-log, then fall back to empty.
+      const backupPath = `${this.triggersFile}.corrupt.${Date.now()}`;
+      try {
+        await fs.copyFile(this.triggersFile, backupPath);
+      } catch {
+        // Best-effort backup. Continue regardless.
+      }
+      // B1 spec: emit `system:trigger_persistence_corrupt` warn-log via logger.
+      // Do NOT add a new event-bus type without separate TL approval.
+      this.logger.warn('system:trigger_persistence_corrupt', {
+        filePath: this.triggersFile,
+        backupPath,
+        error: parseError instanceof Error ? parseError.message : String(parseError),
+      });
+      return [];
+    }
   }
 
   /**
@@ -826,12 +917,83 @@ export class TriggerEngine {
   }
 
   /**
-   * Persists all triggers to disk.
+   * Persists all triggers to disk via the integrity-guarded atomic write.
+   *
+   * **Integrity guard (B1):** Uses
+   * {@link atomicWriteJsonWithGuard} so a regression that accidentally
+   * empties or aggressively shrinks the trigger registry between two
+   * persist calls is **rejected at write time** rather than silently
+   * propagating to disk and surviving a subsequent boot-replay.
+   *
+   * Guard configuration:
+   * - `countOf` = `data.length` (total trigger count, including
+   *   `cancelled`/`exhausted` triggers — entries are kept after status
+   *   change for audit trail, so length only drops on actual deletion).
+   * - `maxDecreasePct` = 50 (PR #420 default). Catches catastrophic
+   *   length wipes (e.g. `rm -rf .crewly/triggers/`, `Map.clear()` bug,
+   *   accidental empty-array assignment).
+   * - `allowExplicitDelete` = false. The CRUD operations that legitimately
+   *   shrink the file (delete a single trigger) drop length by at most 1
+   *   per call, well under the 50% threshold for any non-trivial registry.
+   *
+   * **Failure mode:** {@link IntegrityViolationError} surfaces to the
+   * caller (CRUD method or fire path). The in-memory map is preserved
+   * unchanged — the next legitimate persist call has a chance to re-sync
+   * disk to memory once the regression is corrected.
+   *
+   * **Active-count signal:** A separate warn-log fires if the active
+   * count collapses to zero from a known-positive value (status-flip
+   * failure mode that the length guard cannot catch — entries stay,
+   * statuses all flip to terminal). This is observational only (no
+   * throw) because legitimate bulk-cancel paths exist and we do not
+   * want to block them; ops can investigate the warn-log.
    */
   private async persistTriggers(): Promise<void> {
     await ensureDir(this.triggersDir);
     const data = Array.from(this.triggers.values());
-    await atomicWriteJson(this.triggersFile, data);
+
+    // Defense-in-depth: catch active-count-collapse separately from the
+    // length-based guard. The length guard catches removals; this catches
+    // mass-status-flip-to-cancelled regressions that leave length intact.
+    const activeCount = data.filter((t) => t.status === 'active').length;
+    if (activeCount === 0 && this.lastKnownActiveCount > 0) {
+      this.logger.warn('system:trigger_persistence_active_collapse', {
+        filePath: this.triggersFile,
+        lastKnownActive: this.lastKnownActiveCount,
+        nextActive: 0,
+        totalLength: data.length,
+      });
+    }
+
+    try {
+      await atomicWriteJsonWithGuard(this.triggersFile, data, {
+        // Default: countOf = data.length for arrays. Explicit for clarity.
+        countOf: (d: Trigger[]) => d.length,
+        maxDecreasePct: 50,
+        // allowExplicitDelete intentionally NOT passed — we want the guard
+        // to fire on suspicious shrinkage. Single-trigger delete()s are
+        // <50% drop on any registry with ≥3 entries.
+      });
+      // Arch finding #3 (B1 review): only update the in-memory baseline AFTER
+      // a successful write. If the guard rejects the write, lastKnownActiveCount
+      // must stay at the pre-regression value so the next persist call (which
+      // sees the same regression) still emits the active-collapse warn-log.
+      // Updating before the write would suppress the very signal this baseline
+      // exists to emit on a subsequent retry.
+      this.lastKnownActiveCount = activeCount;
+    } catch (error) {
+      if (error instanceof IntegrityViolationError) {
+        // Loud failure per PR #420 design contract — surface to caller so
+        // the regression is investigated, not swallowed.
+        this.logger.error('system:trigger_persistence_guard_rejected', {
+          filePath: this.triggersFile,
+          prevCount: error.prevCount,
+          nextCount: error.nextCount,
+          reason: error.reason,
+        });
+      }
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------------------
