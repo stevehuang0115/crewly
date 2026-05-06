@@ -69,6 +69,10 @@ import {
 	RequestSlaSubscriber,
 	setRequestSlaSubscriber,
 } from './services/v3/request-sla.subscriber.js';
+import {
+	RequestDecomposeSubscriber,
+	setRequestDecomposeSubscriber,
+} from './services/v3/request-decompose.subscriber.js';
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
@@ -191,6 +195,8 @@ export class CrewlyServer {
 	private autoLearningSubscriber: AutoLearningSubscriber | null = null;
 	/** INBOUND-1: subscribes to request:created and tracks 5/10 min SLA on respond_to_user WIs. */
 	private requestSlaSubscriber: RequestSlaSubscriber | null = null;
+	/** Pipeline-#4 follow-up: subscribes to request:created and auto-decomposes actionable L2 Requests via plan() → addToPool. */
+	private requestDecomposeSubscriber: RequestDecomposeSubscriber | null = null;
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
 	private reconcilerService: ReconcilerService | null = null;
@@ -445,6 +451,21 @@ export class CrewlyServer {
 		);
 		this.requestSlaSubscriber.start();
 		setRequestSlaSubscriber(this.requestSlaSubscriber);
+
+		// Pipeline-#4 follow-up: auto-decompose actionable L2 Requests on
+		// request:created. Sequenced AFTER the SLA subscriber so the
+		// respond_to_user WI seeding still runs first when both fire on the
+		// same event (deterministic listener-attach order; both run via the
+		// same in-process bus). Side note: order is semantically irrelevant —
+		// the linkWorkItem path keys on workitem:queued, not on relative
+		// listener position — but predictable startup ordering helps debug.
+		this.requestDecomposeSubscriber = RequestDecomposeSubscriber.boot(
+			this.eventBusService,
+			RequestService.getInstance(),
+			TaskPoolService.getInstance(),
+		);
+		this.requestDecomposeSubscriber.start();
+		setRequestDecomposeSubscriber(this.requestDecomposeSubscriber);
 
 		// Initialize Slack thread store for persistent thread conversations
 		const slackThreadStore = new SlackThreadStoreService(this.config.crewlyHome);
@@ -2847,6 +2868,15 @@ export class CrewlyServer {
 				this.requestSlaSubscriber = null;
 			}
 			setRequestSlaSubscriber(null);
+
+			// Pipeline-#4 follow-up: stop the decompose subscriber and clear
+			// its module-level reference on the same shutdown window as SLA.
+			if (this.requestDecomposeSubscriber) {
+				this.requestDecomposeSubscriber.stop();
+				this.requestDecomposeSubscriber = null;
+			}
+			setRequestDecomposeSubscriber(null);
+
 			setRequestServiceEventBus(null);
 
 			// Clean up event bus service
