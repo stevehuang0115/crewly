@@ -258,18 +258,27 @@ describe('MemoryController', () => {
 
     // F4 fix (2026-05-06): controller surfaces alias hints for common
     // mistakes. Sam (TL) hit `category=workflow` earlier in the audit cycle.
+    // Arch nit (PR #468): 'best-practice' is produced by BOTH 'fact'
+    // (agent-only) and 'decision' (project-only) in the service-layer
+    // mapper, so the hint must be scope-aware to avoid sending project
+    // callers down a dead-end (fact rejects on project scope).
     it.each([
-      ['workflow', 'pattern'],
-      ['best-practice', 'fact'],
-      ['anti-pattern', 'gotcha'],
-    ])('should hint public-API alias when caller uses internal name %s', async (badCategory, expectedHint) => {
+      // [badCategory, scope, expectedHint]
+      ['workflow', 'agent', 'pattern'],
+      ['workflow', 'project', 'pattern'],
+      ['best-practice', 'agent', 'fact'],
+      ['best-practice', 'project', 'decision'], // <-- Arch nit fix
+      ['anti-pattern', 'agent', 'gotcha'],
+      ['anti-pattern', 'project', 'gotcha'],
+    ])('should hint public-API alias when caller uses internal name %s with scope=%s', async (badCategory, scope, expectedHint) => {
       await remember(
         {
           body: {
             agentId: 'dev-001',
             content: 'test',
             category: badCategory,
-            scope: 'agent',
+            scope,
+            ...(scope === 'project' ? { projectPath: '/tmp/test' } : {}),
           },
         } as any,
         mockRes as any,
