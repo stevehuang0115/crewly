@@ -22,7 +22,17 @@ import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/
 // Mocks
 // ---------------------------------------------------------------------------
 
-jest.mock('../../services/task-pool/task-pool.service.js');
+// Auto-mock the service module BUT preserve the real WorkItemClaimedError
+// class so `instanceof` checks across the test/import and controller/import
+// boundary still match (auto-mocked classes are distinct constructors per
+// import site).
+jest.mock('../../services/task-pool/task-pool.service.js', () => {
+  const actual = jest.requireActual('../../services/task-pool/task-pool.service.js');
+  return {
+    ...actual,
+    TaskPoolService: { getInstance: jest.fn() },
+  };
+});
 
 const mockService = {
   getAvailableItems: jest.fn(),
