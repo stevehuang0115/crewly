@@ -428,44 +428,80 @@ export class CrewlyServer {
 		this.autoLearningSubscriber = AutoLearningSubscriber.boot(this.eventBusService);
 		this.autoLearningSubscriber.start();
 
-		// INBOUND-1: wire RequestService → bus, then subscribe SLA tracker.
-		// Order matters: setRequestServiceEventBus must run BEFORE any code
-		// path can call RequestService.create() — the slack listener at
-		// line ~370 is the first hot caller, but the slack service hasn't
-		// been initialised yet at this point in boot, so we're safe.
-		setRequestServiceEventBus(this.eventBusService);
-		this.requestSlaSubscriber = RequestSlaSubscriber.boot(
-			this.eventBusService,
-			RequestService.getInstance(),
-			TaskPoolService.getInstance(),
-			async ({ channelId, threadTs, messageText }) => {
-				// Production wiring of the 10-min escalation hook: nudge the user
-				// in the same Slack thread so they're never blind to the miss.
-				const slack = getSlackService();
-				await slack.sendMessage({
-					channelId,
-					threadTs,
-					text: messageText,
-				});
-			},
-		);
-		this.requestSlaSubscriber.start();
-		setRequestSlaSubscriber(this.requestSlaSubscriber);
+		// INBOUND-1 + Pipeline-#4 follow-up: wire RequestService → bus, then
+		// boot both v3 subscribers (SLA tracker + auto-decompose). Order
+		// matters within the block: setRequestServiceEventBus must run
+		// BEFORE any code path can call RequestService.create() — the slack
+		// listener at line ~370 is the first hot caller, but the slack
+		// service hasn't been initialised yet at this point in boot, so
+		// we're safe.
+		//
+		// Failure-isolated (issue #465): the entire v3 subscriber boot is
+		// wrapped in try/catch so a wiring failure logs + continues rather
+		// than crashing the whole backend. Neither subscriber is essential
+		// to API liveness — degrading them is preferable to losing the
+		// process. A single catch block treats both as a unit because the
+		// failure mode is "wiring is broken, fix the deploy" not
+		// "intermittently flaky"; partial recovery would be unnecessary
+		// complexity for v1. B0 broadcast (line ~2336) and TriggerEngine
+		// boot (line ~1464) already have equivalent isolation; this brings
+		// the v3 subscriber block in line with that pattern.
+		try {
+			setRequestServiceEventBus(this.eventBusService);
+			this.requestSlaSubscriber = RequestSlaSubscriber.boot(
+				this.eventBusService,
+				RequestService.getInstance(),
+				TaskPoolService.getInstance(),
+				async ({ channelId, threadTs, messageText }) => {
+					// Production wiring of the 10-min escalation hook: nudge the user
+					// in the same Slack thread so they're never blind to the miss.
+					const slack = getSlackService();
+					await slack.sendMessage({
+						channelId,
+						threadTs,
+						text: messageText,
+					});
+				},
+			);
+			this.requestSlaSubscriber.start();
+			setRequestSlaSubscriber(this.requestSlaSubscriber);
 
-		// Pipeline-#4 follow-up: auto-decompose actionable L2 Requests on
-		// request:created. Sequenced AFTER the SLA subscriber so the
-		// respond_to_user WI seeding still runs first when both fire on the
-		// same event (deterministic listener-attach order; both run via the
-		// same in-process bus). Side note: order is semantically irrelevant —
-		// the linkWorkItem path keys on workitem:queued, not on relative
-		// listener position — but predictable startup ordering helps debug.
-		this.requestDecomposeSubscriber = RequestDecomposeSubscriber.boot(
-			this.eventBusService,
-			RequestService.getInstance(),
-			TaskPoolService.getInstance(),
-		);
-		this.requestDecomposeSubscriber.start();
-		setRequestDecomposeSubscriber(this.requestDecomposeSubscriber);
+			// Pipeline-#4 follow-up: auto-decompose actionable L2 Requests on
+			// request:created. Sequenced AFTER the SLA subscriber so the
+			// respond_to_user WI seeding still runs first when both fire on
+			// the same event (deterministic listener-attach order; both run
+			// via the same in-process bus). Side note: order is semantically
+			// irrelevant — the linkWorkItem path keys on workitem:queued, not
+			// on relative listener position — but predictable startup ordering
+			// helps debug.
+			this.requestDecomposeSubscriber = RequestDecomposeSubscriber.boot(
+				this.eventBusService,
+				RequestService.getInstance(),
+				TaskPoolService.getInstance(),
+			);
+			this.requestDecomposeSubscriber.start();
+			setRequestDecomposeSubscriber(this.requestDecomposeSubscriber);
+		} catch (subscriberBootErr) {
+			// Degraded mode: SLA tracking + auto-decompose are off, but the
+			// API surface and rest of the backend continue to serve. Ops can
+			// grep for `v3 subscriber boot failed` in logs to triage.
+			this.logger.error(
+				'v3 subscriber boot failed — degrading SLA + auto-decompose paths, continuing backend startup',
+				{
+					error:
+						subscriberBootErr instanceof Error
+							? subscriberBootErr.message
+							: String(subscriberBootErr),
+				},
+			);
+			// Best-effort cleanup of any partial wiring so a later restart
+			// doesn't see stale singletons. The setters are idempotent.
+			setRequestSlaSubscriber(null);
+			setRequestDecomposeSubscriber(null);
+			setRequestServiceEventBus(null);
+			this.requestSlaSubscriber = null;
+			this.requestDecomposeSubscriber = null;
+		}
 
 		// Initialize Slack thread store for persistent thread conversations
 		const slackThreadStore = new SlackThreadStoreService(this.config.crewlyHome);
