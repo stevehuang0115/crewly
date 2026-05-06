@@ -291,8 +291,8 @@ describe('Request → done lifecycle gate (P1 Bug C, integration)', () => {
     // production transition path so the state-machine guard fires.
     for (const wiId of decomposed!.workItemIds) {
       // queued → running → done is the simplest legal path.
-      await fx.taskPool.transitionStatus(wiId, 'running', { actor: 'system' });
-      await fx.taskPool.transitionStatus(wiId, 'done', { actor: 'system' });
+      await fx.taskPool.transitionStatus(wiId, 'running', 'system');
+      await fx.taskPool.transitionStatus(wiId, 'done', 'system');
     }
 
     // Close should now succeed.
