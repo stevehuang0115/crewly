@@ -28,9 +28,47 @@ vi.mock('../core/logger.service.js', () => ({
 
 vi.mock('../../utils/file-io.utils.js', () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
+  // atomicWriteJson / safeReadJson no longer used by trigger-engine after B1,
+  // but kept here for any indirect imports.
   atomicWriteJson: vi.fn().mockResolvedValue(undefined),
   safeReadJson: vi.fn().mockResolvedValue([]),
 }));
+
+// B1: trigger-engine now uses atomicWriteJsonWithGuard for persistTriggers
+// and reads via fs/promises directly in readTriggersFromDisk. Both are mocked
+// here so unit tests remain pure (real-fs coverage is in
+// trigger-engine-persistence.integration.test.ts).
+vi.mock('../../utils/integrity-guarded-write.utils.js', async () => {
+  return {
+    atomicWriteJsonWithGuard: vi.fn().mockResolvedValue(undefined),
+    IntegrityViolationError: class IntegrityViolationError extends Error {
+      readonly path: string;
+      readonly prevCount: number;
+      readonly nextCount: number;
+      readonly reason: 'collapse-to-empty' | 'decrease-exceeds-threshold';
+      constructor(message: string, details: { path: string; prevCount: number; nextCount: number; reason: 'collapse-to-empty' | 'decrease-exceeds-threshold' }) {
+        super(message);
+        this.name = 'IntegrityViolationError';
+        this.path = details.path;
+        this.prevCount = details.prevCount;
+        this.nextCount = details.nextCount;
+        this.reason = details.reason;
+      }
+    },
+  };
+});
+
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return {
+    ...actual,
+    // Default: ENOENT (no prior triggers file) so loadTriggers returns []
+    // exactly like the prior safeReadJson([]) default. Tests that need the
+    // file to exist override this via vi.mocked(fs.readFile).mockResolvedValue.
+    readFile: vi.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
+    copyFile: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock('../workflow/cron-task.service.js', () => ({
   getNextRunTime: vi.fn().mockReturnValue(new Date(Date.now() + 60_000).toISOString()),
@@ -75,6 +113,16 @@ function makeMockEventBus() {
     on: vi.fn((event: string, handler: Function) => {
       if (!listeners.has(event)) listeners.set(event, []);
       listeners.get(event)!.push(handler);
+    }),
+    // Pre-existing bug: original mock missed `off`, which TriggerEngine.stop()
+    // calls during teardownSignalListeners(). Without it, every test that
+    // set an EventBus and then ran the afterEach resetInstance() would
+    // throw on stop. Added here as part of B1 cleanup.
+    off: vi.fn((event: string, handler: Function) => {
+      const handlers = listeners.get(event);
+      if (!handlers) return;
+      const idx = handlers.indexOf(handler);
+      if (idx >= 0) handlers.splice(idx, 1);
     }),
     emit: (event: string, data: unknown) => {
       const handlers = listeners.get(event) || [];
