@@ -563,7 +563,18 @@ describe('V3DataService', () => {
       expect(savedMission.activeProjectTaskIds.length).toBeGreaterThan(0);
     });
 
-    it('should write task files to delegated/open when goal:set fires', async () => {
+    /**
+     * Returns the WorkItem objects passed to TaskPoolService.addToPool by
+     * decomposeMissionToTasks during the most recent goal:set handler.
+     */
+    function decomposedWorkItems(): Array<{ title: string; briefMarkdown?: string }> {
+      // mockAddToPool is called with one WorkItem-shaped object per task
+      return mockAddToPool.mock.calls
+        .map((c: any[]) => c[0])
+        .filter((wi: any) => wi && wi.type === 'project_task' && wi.missionId);
+    }
+
+    it('should add task WorkItems to the pool when goal:set fires (V3-only path)', async () => {
       const event: GoalSetEvent = {
         goal: 'Build a new login feature and then integrate with SSO provider and add 2FA support',
         projectPath: '/tmp/test',
@@ -575,20 +586,23 @@ describe('V3DataService', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // Complex "Build" objective (multiple actions) → 3 tasks (design, implement, test)
-      expect(mockWriteFile).toHaveBeenCalledTimes(3);
+      const items = decomposedWorkItems();
+      expect(items.length).toBe(3);
 
-      // Verify task files are written to correct directory
-      const firstCallPath = mockWriteFile.mock.calls[0][0];
-      expect(firstCallPath).toContain('.crewly/tasks/delegated/open/');
-      expect(firstCallPath).toContain('.md');
+      // Each WI carries the full long-form brief in `briefMarkdown` (replaces
+      // the legacy .md filesystem body — see PR #482/#484).
+      expect(items[0].briefMarkdown).toBeDefined();
+      expect(items[0].briefMarkdown).toContain('Parent mission:');
+      expect(items[0].briefMarkdown).toContain('Build a new login feature');
 
-      // Verify content includes mission reference
-      const firstCallContent = mockWriteFile.mock.calls[0][1];
-      expect(firstCallContent).toContain('Parent mission:');
-      expect(firstCallContent).toContain('Build a new login feature');
+      // No .md files written under .crewly/tasks/delegated/open/ anymore.
+      const taskMdWrites = mockWriteFile.mock.calls.filter((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('.crewly/tasks/delegated'),
+      );
+      expect(taskMdWrites).toEqual([]);
     });
 
-    it('should create single task for simple objectives (P0-1 intelligent decomposition)', async () => {
+    it('should create single task WorkItem for simple objectives (P0-1 intelligent decomposition)', async () => {
       const event: GoalSetEvent = {
         goal: 'Fix the login button',
         projectPath: '/tmp/test',
@@ -599,13 +613,12 @@ describe('V3DataService', () => {
       eventBus.emit('v3:goal_set', event);
       await new Promise((r) => setTimeout(r, 50));
 
-      // Simple "Fix" objective → 1 task only
-      expect(mockWriteFile).toHaveBeenCalledTimes(1);
-      const content = mockWriteFile.mock.calls[0][1];
-      expect(content).toContain('Fix the login button');
+      const items = decomposedWorkItems();
+      expect(items.length).toBe(1);
+      expect(items[0].briefMarkdown).toContain('Fix the login button');
     });
 
-    it('should create fix-category tasks for complex bug-related objectives', async () => {
+    it('should create fix-category WorkItems for complex bug-related objectives', async () => {
       const event: GoalSetEvent = {
         goal: 'Fix the memory leak in queue processor and then refactor the connection pooling to prevent recurrence',
         projectPath: '/tmp/test',
@@ -617,12 +630,12 @@ describe('V3DataService', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // Complex "Fix" keyword → 3 tasks (investigate, fix, verify)
-      expect(mockWriteFile).toHaveBeenCalledTimes(3);
-      const firstContent = mockWriteFile.mock.calls[0][1];
-      expect(firstContent).toContain('Investigate');
+      const items = decomposedWorkItems();
+      expect(items.length).toBe(3);
+      expect(items[0].title.toLowerCase()).toContain('investigate');
     });
 
-    it('should create default tasks for generic complex objectives', async () => {
+    it('should create default-category WorkItems for generic complex objectives', async () => {
       const event: GoalSetEvent = {
         goal: 'Improve team velocity by 20% and then implement automated performance dashboards with weekly reporting and alerting on regressions',
         projectPath: '/tmp/test',
@@ -634,9 +647,9 @@ describe('V3DataService', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // Complex build → 3 tasks (design, implement, test) — "implement" keyword triggers build category
-      expect(mockWriteFile).toHaveBeenCalledTimes(3);
-      const firstContent = mockWriteFile.mock.calls[0][1];
-      expect(firstContent).toContain('Design approach');
+      const items = decomposedWorkItems();
+      expect(items.length).toBe(3);
+      expect(items[0].briefMarkdown).toContain('Design approach');
     });
 
     it('should resolve ownerId from event.setBy when StorageService finds the member', async () => {

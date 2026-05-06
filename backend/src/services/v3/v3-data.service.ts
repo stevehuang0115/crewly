@@ -745,41 +745,39 @@ export class V3DataService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Decomposes a mission objective into initial ProjectTask files.
+   * Decomposes a mission objective into V3 WorkItems.
    *
-   * Uses keyword-based planning to break the objective into 2-4 actionable
-   * sub-tasks, writes them as markdown files under `.crewly/tasks/delegated/open/`,
-   * and returns the task IDs (filenames without extension).
+   * Per `specs/2026-05-06-task-management-v1-deprecation.md`, the legacy
+   * `.crewly/tasks/delegated/open/*.md` filesystem write has been removed —
+   * V3 task-pool is the sole source of truth for delegated work. Each
+   * planned sub-task lands as a queued WorkItem with the long-form brief
+   * carried in `briefMarkdown` (the same content that previously lived in
+   * the .md body).
    *
-   * @param missionId - The parent mission ID
+   * @param missionId - The parent mission ID (stored on each WI and in the
+   *                    brief's Context section)
    * @param objective - The mission objective text
-   * @param projectPath - Absolute path to the project root
-   * @returns Array of created task IDs (file basenames without .md)
+   * @param projectPath - Reserved for future use (e.g. resolving relative
+   *                     skill paths in the brief). Currently unused but
+   *                     kept in the signature so existing callers don't
+   *                     have to be updated in lockstep.
+   * @returns Array of created WorkItem IDs in plan order
    */
   public static async decomposeMissionToTasks(
     missionId: string,
     objective: string,
-    projectPath: string,
+    _projectPath: string,
   ): Promise<string[]> {
-    const tasksDir = path.join(projectPath, '.crewly', 'tasks', 'delegated', 'open');
-    await ensureDir(tasksDir);
-
     const planned = planTasksFromObjective(objective);
-    const taskIds: string[] = [];
+    const workItemIds: string[] = [];
     const now = new Date().toISOString();
-    const timestamp = Date.now();
 
-    for (let i = 0; i < planned.length; i++) {
-      const task = planned[i];
-      const sanitizedTitle = task.title
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '_')
-        .replace(/^_|_$/g, '')
-        .slice(0, 80);
-      const taskId = `${sanitizedTitle}_${timestamp + i}`;
-      const fileName = `${taskId}.md`;
+    // Lazy-import to avoid a static cycle through TaskPoolService.
+    const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+    const taskPool = TaskPoolService.getInstance();
 
-      const content = [
+    for (const task of planned) {
+      const briefMarkdown = [
         `# ${task.title}`,
         '',
         task.description,
@@ -794,23 +792,31 @@ export class V3DataService {
         '',
         '## Task Information',
         `- **Priority**: ${task.priority}`,
-        '- **Milestone**: delegated',
         `- **Created at**: ${now}`,
-        '- **Status**: Open',
         `- **Mission ID**: ${missionId}`,
       ].join('\n');
 
-      await fs.writeFile(path.join(tasksDir, fileName), content, 'utf-8');
-      taskIds.push(taskId);
+      const workItem = createWorkItem({
+        type: 'project_task',
+        owner: 'orchestrator',
+        title: task.title,
+        description: task.description.substring(0, 500),
+        briefMarkdown,
+        missionId,
+        maxRetries: 2,
+      });
+
+      await taskPool.addToPool(workItem);
+      workItemIds.push(workItem.id);
     }
 
-    LoggerService.getInstance().createComponentLogger('V3DataService').debug('Decomposed mission into tasks', {
+    LoggerService.getInstance().createComponentLogger('V3DataService').debug('Decomposed mission into WorkItems', {
       missionId,
-      taskCount: taskIds.length,
-      taskIds,
+      taskCount: workItemIds.length,
+      workItemIds,
     });
 
-    return taskIds;
+    return workItemIds;
   }
 
   // ---------------------------------------------------------------------------

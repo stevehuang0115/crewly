@@ -162,8 +162,17 @@ export interface WorkItem {
   target?: string;
   /** Human-readable title */
   title: string;
-  /** Detailed instructions or description */
+  /** Short summary / instructions (legacy; capped at 500 chars by callers) */
   description?: string;
+  /**
+   * Long-form task brief in markdown. Replaces the legacy
+   * `.crewly/tasks/delegated/*.md` body that v1 task-management used to
+   * write to disk. Carries the full instruction set the worker reads
+   * before starting. Length is capped to {@link MAX_BRIEF_MARKDOWN_BYTES}
+   * by {@link validateCreateWorkItemInput} to keep `pool.json` readable
+   * and within `atomicWriteJson`'s practical size budget.
+   */
+  briefMarkdown?: string;
   /** Lifecycle status */
   status: WorkItemStatus;
   /** When this item should execute (null = immediately) */
@@ -218,6 +227,11 @@ export interface CreateWorkItemInput {
   target?: string;
   title: string;
   description?: string;
+  /**
+   * Long-form task brief in markdown. See {@link WorkItem.briefMarkdown}
+   * for rationale. Validated against {@link MAX_BRIEF_MARKDOWN_BYTES}.
+   */
+  briefMarkdown?: string;
   scheduledAt?: string;
   maxRetries?: number;
   triggerId?: string;
@@ -447,8 +461,29 @@ export function validateCreateWorkItemInput(input: CreateWorkItemInput): string[
   if (input.maxRetries !== undefined && (input.maxRetries < 0 || !Number.isInteger(input.maxRetries))) {
     errors.push('maxRetries must be a non-negative integer');
   }
+  if (input.briefMarkdown !== undefined) {
+    if (typeof input.briefMarkdown !== 'string') {
+      errors.push('briefMarkdown must be a string');
+    } else if (Buffer.byteLength(input.briefMarkdown, 'utf8') > MAX_BRIEF_MARKDOWN_BYTES) {
+      errors.push(
+        `briefMarkdown exceeds ${MAX_BRIEF_MARKDOWN_BYTES} bytes; trim or attach via metadata reference`,
+      );
+    }
+  }
   return errors;
 }
+
+/**
+ * Maximum size of {@link WorkItem.briefMarkdown} in UTF-8 bytes.
+ *
+ * Replaces the legacy `.crewly/tasks/delegated/*.md` files which had no
+ * size cap. 16 KB is enough to carry a typical TL-to-worker dispatch
+ * brief (~ 3000 words) plus a small spec excerpt; longer briefs should
+ * reference an attached file via `metadata` rather than inlining the
+ * full body so `pool.json` stays human-readable and `atomicWriteJson`
+ * stays fast.
+ */
+export const MAX_BRIEF_MARKDOWN_BYTES = 16 * 1024;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -494,6 +529,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     target: input.target,
     title: input.title,
     description: input.description,
+    briefMarkdown: input.briefMarkdown,
     status: initialStatus,
     scheduledAt: input.scheduledAt,
     createdAt: now,

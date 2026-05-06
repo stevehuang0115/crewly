@@ -169,22 +169,39 @@ if [ "$DELIVER_OK" = "false" ]; then
   }
 fi
 
-# Track the task file path and task ID from create response
-TASK_FILE_PATH=""
+# V3-only producer (spec 2026-05-06-task-management-v1-deprecation.md):
+# We no longer write a `.crewly/tasks/delegated/*.md` file via the legacy
+# `/task-management/create` endpoint. Instead the long-form brief travels
+# on the WorkItem itself (`briefMarkdown` field) and the WI is the sole
+# durable record of this delegation.
 TASK_ID=""
 
-# Create task file in project's .crewly/tasks/ directory
-if [ -n "$PROJECT_PATH" ]; then
-  CREATE_BODY=$(jq -n \
-    --arg projectPath "$PROJECT_PATH" \
-    --arg task "$TASK" \
-    --arg priority "$PRIORITY" \
-    --arg sessionName "$TO" \
-    --arg milestone "delegated" \
-    '{projectPath: $projectPath, task: $task, priority: $priority, sessionName: $sessionName, milestone: $milestone}')
-  CREATE_RESULT=$(api_call POST "/task-management/create" "$CREATE_BODY" 2>/dev/null || true)
-  TASK_FILE_PATH=$(echo "$CREATE_RESULT" | jq -r '.taskPath // empty' 2>/dev/null || true)
-  TASK_ID=$(echo "$CREATE_RESULT" | jq -r '.taskId // empty' 2>/dev/null || true)
+case "$PRIORITY" in
+  critical|urgent) WI_PRIORITY="critical" ;;
+  high)            WI_PRIORITY="high" ;;
+  low)             WI_PRIORITY="low" ;;
+  *)               WI_PRIORITY="medium" ;;
+esac
+
+WI_TITLE="$(echo "$TASK" | head -c 200)"
+
+POOL_BODY=$(jq -n \
+  --arg type "delegate" \
+  --arg owner "team_lead" \
+  --arg target "$TO" \
+  --arg title "$WI_TITLE" \
+  --arg description "$TASK_MESSAGE" \
+  --arg briefMarkdown "$TASK" \
+  --arg priority "$WI_PRIORITY" \
+  --arg projectPath "${PROJECT_PATH:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end)')
+
+POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
+POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)
+TASK_ID=$(echo "$POOL_RESULT" | jq -r '.data.id // .workItemId // empty' 2>/dev/null || true)
+
+if [ "$POOL_OK" != "true" ]; then
+  echo "{\"warning\":\"Failed to create WorkItem in TaskPool — task delivered to terminal but no durable record\",\"details\":$(echo "$POOL_RESULT" | jq -c . 2>/dev/null || echo '{}')}" >&2
 fi
 
 # Set up idle event subscription for TL monitoring

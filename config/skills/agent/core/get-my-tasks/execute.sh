@@ -81,10 +81,12 @@ if [ -n "$INPUT_JSON" ]; then
 fi
 
 require_param "sessionName (--session)" "$SESSION_NAME"
-require_param "projectPath (--project)" "$PROJECT_PATH"
+# `projectPath` is no longer required for V3 — kept in the input shape
+# for backwards compat with callers who pass it.
 
-# URL-encode the session name and project path for query parameters
+# Per spec 2026-05-06-task-management-v1-deprecation.md, this skill now
+# queries the V3 task-pool. Returns all WorkItems targeted at this agent
+# session that are still in a non-terminal status. Callers wanting only
+# the running one can filter on `.workItems[] | select(.status=="running")`.
 ENCODED_SESSION=$(printf '%s' "$SESSION_NAME" | jq -sRr @uri)
-ENCODED_PROJECT=$(printf '%s' "$PROJECT_PATH" | jq -sRr @uri)
-
-api_call GET "/task-management/tasks?sessionName=${ENCODED_SESSION}&projectPath=${ENCODED_PROJECT}"
+api_call GET "/task-pool/items?target=${ENCODED_SESSION}"
