@@ -55,7 +55,7 @@ import {
   DEFAULT_KEEP_PARENT_REQUEST_IDS,
   type CleanupClassification,
   type MinimalWorkItem,
-} from './cleanup-stale-pool.lib.js';
+} from '../backend/src/scripts/cleanup-stale-pool.lib.js';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8787';
 const STALE_CUTOFF = process.env.STALE_CUTOFF || '2026-05-06T00:00:00Z';
