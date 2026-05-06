@@ -1686,4 +1686,186 @@ describe('TaskPoolService', () => {
       }
     });
   });
+
+  // -----------------------------------------------------------------------
+  // P1 1ffffb84 component (b): atomic-transition invariant
+  //
+  // The b7840fe8 partial-write bug: WorkItem b7840fe8 was observed in
+  // pool.json with status='queued' AND completedAt='2026-05-06T00:47:59Z'
+  // AND retryCount=1 AND no startedAt/target — fingerprint of the
+  // `failed -> queued` retry path leaving a stale completedAt from the
+  // prior terminal trip.
+  //
+  // Root cause: transitionStatus + updateItemStatus only SET completedAt
+  // on terminal landings; non-terminal landings (queued, blocked, ...)
+  // had no else branch to CLEAR it. So `rejected -> queued`,
+  // `failed -> queued`, and `running -> queued` (releaseBack) all left
+  // disagreeing fields.
+  //
+  // Fix invariant: completedAt is set IFF status in {done, failed,
+  // verified, done_by_worker, rejected}. Pinned by these tests.
+  // -----------------------------------------------------------------------
+  describe('atomic transition invariant (P1 1ffffb84 component b)', () => {
+    async function makeFailedWi() {
+      const wi = makeWorkItem({ requestId: 'req-bug-fix' });
+      await service.addToPool(wi);
+      await service.transitionStatus(wi.id, 'running', 'system');
+      await service.transitionStatus(wi.id, 'failed', 'system', (m) => {
+        m.error = 'simulated upstream failure';
+      });
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.status).toBe('failed');
+      expect(after?.completedAt).toBeDefined();
+      return wi;
+    }
+
+    it('transitionStatus(failed -> queued) atomically clears completedAt (BRIDGE-1 retry path)', async () => {
+      const wi = await makeFailedWi();
+      await service.transitionStatus(wi.id, 'queued', 'system');
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.status).toBe('queued');
+      // CRITICAL: pre-fix this would have been the failed-state timestamp,
+      // post-fix the explicit else branch clears it atomically.
+      expect(after?.completedAt).toBeUndefined();
+    });
+
+    it('transitionStatus(rejected -> queued) atomically clears completedAt (TL re-queue path)', async () => {
+      const wi = makeWorkItem({ requestId: 'req-rejected' });
+      await service.addToPool(wi);
+      await service.transitionStatus(wi.id, 'running', 'system');
+      await service.transitionStatus(wi.id, 'done_by_worker', 'agent', (m) => {
+        m.result = { ok: true };
+      });
+      await service.transitionStatus(wi.id, 'rejected', 'team_lead', (m) => {
+        m.error = 'TL did not accept';
+      });
+      const rejected = await service.findWorkItem(wi.id);
+      expect(rejected?.status).toBe('rejected');
+      expect(rejected?.completedAt).toBeDefined();
+
+      await service.transitionStatus(wi.id, 'queued', 'team_lead');
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.status).toBe('queued');
+      expect(after?.completedAt).toBeUndefined();
+    });
+
+    it('transitionStatus(queued -> running) clears stale completedAt on re-claim', async () => {
+      const wi = await makeFailedWi();
+      await service.transitionStatus(wi.id, 'queued', 'system');
+      const beforeClaim = await service.findWorkItem(wi.id);
+      expect(beforeClaim?.completedAt).toBeUndefined();
+
+      await service.transitionStatus(wi.id, 'running', 'system');
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.status).toBe('running');
+      expect(after?.startedAt).toBeDefined();
+      expect(after?.completedAt).toBeUndefined();
+    });
+
+    it('atomicity: invalid transition throws and BOTH status + completedAt remain unchanged', async () => {
+      const wi = await makeFailedWi();
+      const before = await service.findWorkItem(wi.id);
+      const beforeStatus = before!.status;
+      const beforeCompletedAt = before!.completedAt;
+
+      await expect(
+        service.transitionStatus(wi.id, 'done', 'system'),
+      ).rejects.toThrow(/Invalid status transition/);
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.status).toBe(beforeStatus);
+      expect(after?.completedAt).toBe(beforeCompletedAt);
+    });
+
+    it('integration repro (b7840fe8 timeline): running -> failed -> queued ends with completedAt cleared', async () => {
+      const wi = makeWorkItem({ requestId: 'req-b7840fe8-repro' });
+      await service.addToPool(wi);
+
+      await service.transitionStatus(wi.id, 'running', 'system');
+      const running = await service.findWorkItem(wi.id);
+      expect(running?.startedAt).toBeDefined();
+      expect(running?.completedAt).toBeUndefined();
+
+      await service.transitionStatus(wi.id, 'failed', 'system', (m) => {
+        m.error = 'simulated';
+      });
+      const failed = await service.findWorkItem(wi.id);
+      expect(failed?.status).toBe('failed');
+      expect(failed?.completedAt).toBeDefined();
+
+      await service.transitionStatus(wi.id, 'queued', 'system');
+
+      const after = await service.findWorkItem(wi.id);
+      // POST-FIX assertion — pre-fix this would carry the failed-state
+      // timestamp, matching b7840fe8's exact shape.
+      expect(after?.status).toBe('queued');
+      expect(after?.completedAt).toBeUndefined();
+    });
+
+    it('updateItemStatus path also enforces the invariant on non-terminal landings', async () => {
+      const wi = makeWorkItem({ requestId: 'req-update-item' });
+      await service.addToPool(wi);
+      await service.updateItemStatus(wi.id, 'running');
+      await service.updateItemStatus(wi.id, 'failed');
+      const failed = await service.findWorkItem(wi.id);
+      expect(failed?.completedAt).toBeDefined();
+
+      await service.updateItemStatus(wi.id, 'queued');
+      const requeued = await service.findWorkItem(wi.id);
+      expect(requeued?.status).toBe('queued');
+      expect(requeued?.completedAt).toBeUndefined();
+    });
+
+    it('coverage: every retry/re-queue source clears completedAt when reaching queued', async () => {
+      const sources: Array<{
+        name: string;
+        actor: 'system' | 'team_lead';
+        build: () => Promise<{ id: string }>;
+      }> = [
+        {
+          name: 'failed -> queued',
+          actor: 'system',
+          build: async () => {
+            const w = makeWorkItem({ requestId: 'cov-failed' });
+            await service.addToPool(w);
+            await service.transitionStatus(w.id, 'running', 'system');
+            await service.transitionStatus(w.id, 'failed', 'system');
+            return w;
+          },
+        },
+        {
+          name: 'rejected -> queued',
+          actor: 'team_lead',
+          build: async () => {
+            const w = makeWorkItem({ requestId: 'cov-rejected' });
+            await service.addToPool(w);
+            await service.transitionStatus(w.id, 'running', 'system');
+            await service.transitionStatus(w.id, 'done_by_worker', 'agent');
+            await service.transitionStatus(w.id, 'rejected', 'team_lead');
+            return w;
+          },
+        },
+        {
+          name: 'running -> queued (releaseBack-equivalent)',
+          actor: 'system',
+          build: async () => {
+            const w = makeWorkItem({ requestId: 'cov-running' });
+            await service.addToPool(w);
+            await service.transitionStatus(w.id, 'running', 'system');
+            return w;
+          },
+        },
+      ];
+
+      for (const s of sources) {
+        const w = await s.build();
+        await service.transitionStatus(w.id, 'queued', s.actor);
+        const after = await service.findWorkItem(w.id);
+        expect(after?.status).toBe('queued');
+        expect(after?.completedAt).toBeUndefined();
+      }
+    });
+  });
 });
