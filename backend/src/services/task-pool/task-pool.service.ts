@@ -1247,6 +1247,107 @@ export class TaskPoolService {
   }
 
   /**
+   * Stores worker-supplied structured output on a WorkItem.
+   *
+   * Replaces the v1 `<taskId>.output.json` filesystem store with an
+   * in-pool field (see {@link WorkItem.output}). Used by the worker
+   * `complete-task` flow and read back by the TL `verify-output` skill.
+   *
+   * @param workItemId - WorkItem id to attach output to
+   * @param output - Arbitrary task-specific output object
+   * @returns The updated WorkItem, or null if not found
+   */
+  async setOutput(
+    workItemId: string,
+    output: Record<string, unknown>,
+  ): Promise<WorkItem | null> {
+    const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
+      wi.output = output;
+    });
+    if (!ok) return null;
+    return (await this.storage.findWorkItem(workItemId)) ?? null;
+  }
+
+  /**
+   * Reassigns a WorkItem to a different target agent.
+   *
+   * Replaces the v1 `/task-management/handoff` filesystem reassign with a
+   * direct `target` field update on the WorkItem.
+   *
+   * Allowed transitions:
+   *   - `target` must be a non-empty string
+   *   - WI must not be in a terminal state (done/cancelled/failed-final)
+   *
+   * @param workItemId - WorkItem to reassign
+   * @param newTarget  - Session name of the new target agent
+   * @param fromAgent  - Session name of the agent handing off (for audit)
+   * @param reason     - Human-readable reason recorded as a working-note
+   * @returns The updated WorkItem, or null if not found
+   */
+  async handoff(
+    workItemId: string,
+    newTarget: string,
+    fromAgent: string,
+    reason: string,
+  ): Promise<WorkItem | null> {
+    if (!newTarget || newTarget.trim() === '') {
+      throw new Error('handoff: newTarget is required');
+    }
+    const wi = await this.storage.findWorkItem(workItemId);
+    if (!wi) return null;
+    if (wi.status === 'done' || wi.status === 'cancelled') {
+      throw new Error(`handoff refused: WorkItem ${workItemId} is in terminal state '${wi.status}'`);
+    }
+
+    const handoffNote = `[HANDOFF] ${fromAgent} → ${newTarget}: ${reason || '(no reason)'}`;
+    await this.storage.updateWorkItem(workItemId, (item) => {
+      item.target = newTarget;
+      const existing = (item.metadata && typeof item.metadata === 'object' ? item.metadata : {}) as Record<
+        string,
+        unknown
+      >;
+      const notes = Array.isArray(existing.notes) ? (existing.notes as string[]) : [];
+      notes.push(`${new Date().toISOString()} ${handoffNote}`);
+      item.metadata = { ...existing, notes };
+    });
+    this.logger.info('WorkItem handoff', { workItemId, fromAgent, newTarget });
+    return (await this.storage.findWorkItem(workItemId)) ?? null;
+  }
+
+  /**
+   * Appends a working-state note to a WorkItem's metadata.notes array.
+   *
+   * Replaces v1 `/task-management/sync` and `/task-management/save-working-notes`,
+   * both of which appended progress notes to the `.md` task body. With v1
+   * retired, notes live on the WorkItem itself under `metadata.notes[]`.
+   *
+   * @param workItemId - WorkItem id
+   * @param author - Session name of note author
+   * @param note - Note content (free-form)
+   * @returns The updated WorkItem, or null if not found
+   */
+  async appendNote(
+    workItemId: string,
+    author: string,
+    note: string,
+  ): Promise<WorkItem | null> {
+    if (!note || note.trim() === '') {
+      throw new Error('appendNote: note is required');
+    }
+    const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
+      const existing = (wi.metadata && typeof wi.metadata === 'object' ? wi.metadata : {}) as Record<
+        string,
+        unknown
+      >;
+      const notes = Array.isArray(existing.notes) ? (existing.notes as string[]) : [];
+      notes.push(`${new Date().toISOString()} [${author}] ${note}`);
+      wi.metadata = { ...existing, notes };
+    });
+    if (!ok) return null;
+    return (await this.storage.findWorkItem(workItemId)) ?? null;
+  }
+
+  /**
    * Removes a WorkItem from the pool entirely.
    * Used for purging old completed/cancelled items.
    *

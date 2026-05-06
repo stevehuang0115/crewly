@@ -68,7 +68,10 @@ describe('Tool Registry', () => {
   describe('delegate_task', () => {
     it('should deliver task message and create tracking entry', async () => {
       mockClient.post.mockResolvedValueOnce({ success: true, data: {}, status: 200 }); // deliver
-      mockClient.post.mockResolvedValueOnce({ success: true, data: { taskId: 'task-1' }, status: 201 }); // task create
+      // V3 task-pool/add response shape: `{ data: { id, ... } }`. The
+      // legacy v1 `taskId` field is gone — see spec
+      // 2026-05-06-task-management-v1-deprecation.md.
+      mockClient.post.mockResolvedValueOnce({ success: true, data: { id: 'task-1' }, status: 201 }); // task create
       mockClient.post.mockResolvedValueOnce({ success: true, data: { id: 'sub-1' }, status: 201 }); // subscribe
 
       const result = await (tools.delegate_task as any).execute({
@@ -716,9 +719,9 @@ describe('Tool Registry', () => {
         status: 'in_progress',
       });
 
-      expect(mockClient.get).toHaveBeenCalledWith(
-        '/task-management/tasks?projectPath=%2Fpath%2Fto%2Fproject&status=in_progress',
-      );
+      // V3-only: pool is global, projectPath is no longer a filter. See
+      // spec/2026-05-06-task-management-v1-deprecation.md.
+      expect(mockClient.get).toHaveBeenCalledWith('/task-pool/items?status=in_progress');
     });
   });
 
@@ -1319,10 +1322,14 @@ describe('Tool Registry', () => {
       });
     });
 
-    it('should auto-complete tasks when status is done', async () => {
-      mockClient.post.mockResolvedValue({
+    // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+    // Auto-complete now resolves the agent's running WI from the pool and
+    // calls `/task-pool/complete/:id`. Replaces v1 `/task-management/complete-by-session`.
+    it('should auto-complete the running WorkItem when status is done', async () => {
+      mockClient.post.mockResolvedValue({ success: true, data: { acknowledged: true }, status: 200 });
+      mockClient.get.mockResolvedValueOnce({
         success: true,
-        data: { acknowledged: true },
+        data: { workItems: [{ id: 'wi-running-1' }] },
         status: 200,
       });
 
@@ -1331,18 +1338,17 @@ describe('Tool Registry', () => {
         summary: 'Feature implemented',
       });
 
+      expect(mockClient.get).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/task-pool\/items\?status=running&target=/),
+      );
       expect(mockClient.post).toHaveBeenCalledWith(
-        '/task-management/complete-by-session',
-        { sessionName: 'crewly-orc' },
+        '/task-pool/complete/wi-running-1',
+        { summary: 'Feature implemented' },
       );
     });
 
     it('should not auto-complete tasks when status is in_progress', async () => {
-      mockClient.post.mockResolvedValue({
-        success: true,
-        data: { acknowledged: true },
-        status: 200,
-      });
+      mockClient.post.mockResolvedValue({ success: true, data: { acknowledged: true }, status: 200 });
 
       await (tools.report_status as any).execute({
         status: 'in_progress',
@@ -1350,7 +1356,7 @@ describe('Tool Registry', () => {
       });
 
       expect(mockClient.post).not.toHaveBeenCalledWith(
-        '/task-management/complete-by-session',
+        expect.stringMatching(/^\/task-pool\/complete\//),
         expect.anything(),
       );
     });

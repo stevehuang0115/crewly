@@ -80,7 +80,6 @@ import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/me
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
 import { NotifyReconciliationService } from './services/slack/notify-reconciliation.service.js';
 import { setEventBusService as setEventBusControllerService } from './controllers/event-bus/event-bus.controller.js';
-import { setEventBusServiceForTaskCleanup } from './controllers/task-management/task-management.controller.js';
 import { setTeamControllerEventBusService } from './controllers/team/team.controller.js';
 import { SkillCatalogService } from './services/skill/skill-catalog.service.js';
 import { createEventBusRouter } from './controllers/event-bus/event-bus.routes.js';
@@ -410,7 +409,6 @@ export class CrewlyServer {
 		this.activityMonitorService.setEventBusService(this.eventBusService);
 		setEventBusControllerService(this.eventBusService);
 		setTeamControllerEventBusService(this.eventBusService);
-		setEventBusServiceForTaskCleanup(this.eventBusService);
 
 		// Architecture Upgrade Phase 6: Bridge task workflow events to EventBus
 		this.taskTrackingService.on('task_workflow_event', (payload: { type: string; taskId?: string; teamId?: string; [key: string]: unknown }) => {

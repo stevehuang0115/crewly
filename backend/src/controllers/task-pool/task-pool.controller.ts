@@ -760,6 +760,154 @@ export async function deleteItem(req: Request, res: Response): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// V3-only single-item endpoints (replaces v1 task-management surface)
+// (spec/2026-05-06-task-management-v1-deprecation.md — Phase B)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetches a single WorkItem by id.
+ *
+ * Replaces `POST /task-management/read-task` and `POST /task-management/get-output`.
+ * Both v1 endpoints walked the project's `.crewly/tasks/` filesystem to load
+ * the `.md` body and `<id>.output.json`. With v1 retired, the entire
+ * task body, brief, and worker output live on the WorkItem itself —
+ * one fetch returns everything.
+ *
+ * @param req - Express request, `:workItemId` route param
+ * @param res - 200 `{ success, data: WorkItem }` | 404 if not found
+ */
+export async function getItem(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'workItemId param is required' });
+      return;
+    }
+    const wi = await getService().findWorkItem(workItemId);
+    if (!wi) {
+      res.status(404).json({ success: false, error: `WorkItem not found: ${workItemId}` });
+      return;
+    }
+    res.json({ success: true, data: wi });
+  } catch (error) {
+    res.status(500).json({ success: false, error: formatError(error) });
+  }
+}
+
+/**
+ * Stores worker-supplied structured output on a WorkItem.
+ *
+ * Replaces v1's `<taskId>.output.json` filesystem write. The TL
+ * `verify-output` skill reads this back via `GET /api/task-pool/items/:id`.
+ *
+ * Body: `{ output: Record<string, unknown> }` — output may be any JSON shape;
+ * the schema is task-specific.
+ *
+ * @param req - Express request, `:workItemId` route param + body.output
+ * @param res - 200 `{ success, data: WorkItem }` | 404 | 400
+ */
+export async function setItemOutput(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'workItemId param is required' });
+      return;
+    }
+    const output = (req.body?.output ?? req.body) as Record<string, unknown> | undefined;
+    if (!output || typeof output !== 'object') {
+      res.status(400).json({ success: false, error: 'body.output (object) is required' });
+      return;
+    }
+    const updated = await getService().setOutput(workItemId, output);
+    if (!updated) {
+      res.status(404).json({ success: false, error: `WorkItem not found: ${workItemId}` });
+      return;
+    }
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, error: formatError(error) });
+  }
+}
+
+/**
+ * Reassigns a WorkItem to a different agent.
+ *
+ * Replaces `POST /task-management/handoff` (which moved the `.md` file
+ * between agent task directories). With v1 retired, handoff is a single
+ * `target` field flip on the WorkItem plus an audit-trail note.
+ *
+ * Body: `{ newTarget: string, fromAgent?: string, reason?: string }`.
+ *
+ * @param req - Express request
+ * @param res - 200 `{ success, data: WorkItem }` | 404 | 400 | 409 (terminal)
+ */
+export async function handoffItem(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'workItemId param is required' });
+      return;
+    }
+    const newTarget = String(req.body?.newTarget ?? req.body?.toAgent ?? '').trim();
+    const fromAgent = String(req.body?.fromAgent ?? req.body?.from ?? 'unknown').trim();
+    const reason = String(req.body?.reason ?? '').trim();
+    if (!newTarget) {
+      res.status(400).json({ success: false, error: 'body.newTarget is required' });
+      return;
+    }
+    const updated = await getService().handoff(workItemId, newTarget, fromAgent, reason);
+    if (!updated) {
+      res.status(404).json({ success: false, error: `WorkItem not found: ${workItemId}` });
+      return;
+    }
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    const message = formatError(error);
+    if (message.includes('terminal state')) {
+      res.status(409).json({ success: false, error: message });
+      return;
+    }
+    res.status(500).json({ success: false, error: message });
+  }
+}
+
+/**
+ * Appends a working-state note to a WorkItem.
+ *
+ * Replaces `POST /task-management/sync` and `POST /task-management/save-working-notes`,
+ * both of which appended progress lines to the `.md` task body. With v1
+ * retired, notes accumulate under `WorkItem.metadata.notes[]`.
+ *
+ * Body: `{ author: string, note: string }`.
+ *
+ * @param req - Express request
+ * @param res - 200 `{ success, data: WorkItem }` | 404 | 400
+ */
+export async function appendItemNote(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'workItemId param is required' });
+      return;
+    }
+    const author = String(req.body?.author ?? req.body?.sessionName ?? 'unknown').trim();
+    const note = String(req.body?.note ?? req.body?.notes ?? '').trim();
+    if (!note) {
+      res.status(400).json({ success: false, error: 'body.note is required' });
+      return;
+    }
+    const updated = await getService().appendNote(workItemId, author, note);
+    if (!updated) {
+      res.status(404).json({ success: false, error: `WorkItem not found: ${workItemId}` });
+      return;
+    }
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, error: formatError(error) });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

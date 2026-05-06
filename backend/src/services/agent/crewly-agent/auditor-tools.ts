@@ -65,9 +65,11 @@ export function createAuditorTools(
         status: z.string().optional().describe('Filter by status (open, in_progress, done, failed)'),
       }),
       execute: async (args) => {
-        const { projectPath: pp, status } = args as { projectPath: string; status?: string };
-        const query = status ? `?projectPath=${encodeURIComponent(pp)}&status=${status}` : `?projectPath=${encodeURIComponent(pp)}`;
-        const result = await client.get(`/task-management/tasks${query}`);
+        // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+        // The V3 task-pool is global; `projectPath` is no longer a filter.
+        const { status } = args as { projectPath: string; status?: string };
+        const query = status ? `?status=${encodeURIComponent(status)}` : '';
+        const result = await client.get(`/task-pool/items${query}`);
         return result.success ? result.data : { error: result.error };
       },
     },

@@ -448,15 +448,16 @@ export const ProjectDetail: React.FC = () => {
     try {
       setTaskUnblockLoading(task.id);
 
-      // Call unblock API
-      const unblockResponse = await fetch(`/api/task-management/unblock`, {
+      // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+      // Replaces v1 `/task-management/unblock` (which moved a `.md` file
+      // back to delegated/) with V3's release-back-to-pool flow.
+      const unblockResponse = await fetch(`/api/task-pool/release/${encodeURIComponent(task.id)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          taskPath: task.path,
-          unblockNote: 'Unblocked via UI for reassignment'
+          reason: 'Unblocked via UI for reassignment',
         }),
       });
 

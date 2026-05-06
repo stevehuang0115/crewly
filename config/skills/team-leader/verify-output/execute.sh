@@ -13,10 +13,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
 INPUT=$(read_json_input "${1:-}")
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"taskId\":\"...\",\"taskPath\":\"...\",\"workerId\":\"...\",\"teamId\":\"...\",\"projectPath\":\"...\",\"templateId\":\"dev-fullstack\",\"checks\":[...]}'"
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"workItemId\":\"...\",\"workerId\":\"...\",\"teamId\":\"...\",\"projectPath\":\"...\",\"templateId\":\"dev-fullstack\",\"checks\":[...]}'"
 
-TASK_ID=$(printf '%s' "$INPUT" | jq -r '.taskId // empty')
-TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.taskPath // empty')
+# `taskId` is accepted as a backwards-compat alias for `workItemId`. The
+# v1 filesystem-based `taskPath` input is no longer accepted — fetch the
+# WorkItem via `GET /api/task-pool/items/:id` instead. See spec
+# 2026-05-06-task-management-v1-deprecation.md.
+WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // .taskId // empty')
+TASK_ID="$WORK_ITEM_ID"
 WORKER_ID=$(printf '%s' "$INPUT" | jq -r '.workerId // empty')
 TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
 PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
@@ -24,25 +28,20 @@ TEMPLATE_ID=$(printf '%s' "$INPUT" | jq -r '.templateId // empty')
 CHECKLIST_PATH=$(printf '%s' "$INPUT" | jq -r '.checklistPath // empty')
 CHECKS=$(printf '%s' "$INPUT" | jq -c '.checks // []')
 
-# At least taskPath or taskId is needed
-if [ -z "$TASK_PATH" ] && [ -z "$TASK_ID" ]; then
-  error_exit "Either taskPath or taskId is required"
-fi
+require_param "workItemId (or taskId)" "$WORK_ITEM_ID"
 
-# Read task output if taskPath is provided
+# Fetch the WorkItem (brief, output) in a single call.
 TASK_OUTPUT=""
-if [ -n "$TASK_PATH" ]; then
-  TASK_READ_BODY=$(jq -n --arg taskPath "$TASK_PATH" '{taskPath: $taskPath}')
-  TASK_DATA=$(api_call POST "/task-management/read-task" "$TASK_READ_BODY" 2>/dev/null || echo '{}')
-  TASK_OUTPUT=$(echo "$TASK_DATA" | jq -r '.data.content // empty' 2>/dev/null || true)
-fi
+WI_DATA=$(api_call GET "/task-pool/items/${WORK_ITEM_ID}" 2>/dev/null || echo '{}')
+WI_BRIEF=$(echo "$WI_DATA" | jq -r '.data.briefMarkdown // empty' 2>/dev/null || true)
+WI_OUTPUT_RAW=$(echo "$WI_DATA" | jq -c '.data.output // empty' 2>/dev/null || true)
 
-# If taskId is provided, try to get output from task tracking
-if [ -n "$TASK_ID" ]; then
-  OUTPUT_BODY=$(jq -n --arg taskId "$TASK_ID" '{taskId: $taskId}')
-  OUTPUT_DATA=$(api_call POST "/task-management/get-output" "$OUTPUT_BODY" 2>/dev/null || echo '{}')
-  TASK_OUTPUT_FROM_ID=$(echo "$OUTPUT_DATA" | jq -r '.data.output // empty' 2>/dev/null || true)
-  [ -z "$TASK_OUTPUT" ] && TASK_OUTPUT="$TASK_OUTPUT_FROM_ID"
+# Compose `TASK_OUTPUT` for content-scan checks. Prefer worker-supplied
+# structured output, falling back to the brief if no output was set.
+if [ -n "$WI_OUTPUT_RAW" ] && [ "$WI_OUTPUT_RAW" != "null" ] && [ "$WI_OUTPUT_RAW" != "" ]; then
+  TASK_OUTPUT="$WI_OUTPUT_RAW"
+elif [ -n "$WI_BRIEF" ]; then
+  TASK_OUTPUT="$WI_BRIEF"
 fi
 
 # =============================================================================
@@ -70,7 +69,7 @@ if [ -n "$CHECKLIST_PATH" ] && [ -f "$CHECKLIST_PATH" ]; then
 
     PASS_POLICY=$(echo "$CHECKLIST_DATA" | jq -r '.passPolicy // "critical_only"' 2>/dev/null || echo "critical_only")
   else
-    echo '{"error":"Checklist exists but is not approved (status: '"$CHECKLIST_STATUS"'). Approve first via POST /api/task-management/'$TASK_ID'/checklist/approve"}' >&2
+    echo '{"error":"Checklist exists but is not approved (status: '"$CHECKLIST_STATUS"'). Approve first via POST /api/checklists/'$TASK_ID'/approve"}' >&2
     # Fall through to template/inline checks
   fi
 

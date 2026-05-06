@@ -175,6 +175,18 @@ export interface WorkItem {
   briefMarkdown?: string;
   /** Lifecycle status */
   status: WorkItemStatus;
+  /**
+   * Worker-supplied structured output produced during execution.
+   *
+   * Used for the v1→V3 deprecation handoff: previously workers wrote
+   * `<taskId>.output.json` files alongside the `.md` task body and the TL
+   * `verify-output` skill read them. With v1 retired, this output now lives
+   * on the WorkItem itself and is read via `GET /api/task-pool/items/:id`.
+   *
+   * Shape is intentionally `Record<string, unknown>` — the schema is
+   * task-specific (an audit run, a code-gen artifact, etc.).
+   */
+  output?: Record<string, unknown>;
   /** When this item should execute (null = immediately) */
   scheduledAt?: string;
   /** ISO8601 timestamps */
@@ -249,6 +261,8 @@ export interface UpdateWorkItemInput {
   status?: WorkItemStatus;
   target?: string;
   result?: Record<string, unknown>;
+  /** Worker-supplied structured output — see {@link WorkItem.output}. */
+  output?: Record<string, unknown>;
   error?: string;
   inputTokens?: number;
   outputTokens?: number;
