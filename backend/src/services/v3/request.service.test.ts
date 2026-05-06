@@ -4,9 +4,16 @@
  * @module services/v3/request.service.test
  */
 
-import { RequestService, setRequestServiceEventBus, type RequestPlan } from './request.service.js';
+import {
+  RequestService,
+  setRequestServiceEventBus,
+  RequestStillHasOpenChildrenError,
+  type RequestPlan,
+  type IWorkItemQueryable,
+} from './request.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
+import { createWorkItem, type WorkItem, type WorkItemStatus } from '../../types/v2/work-item.types.js';
 
 // Mock file I/O
 const mockFiles = new Map<string, string>();
@@ -290,6 +297,324 @@ describe('RequestService', () => {
       await expect(
         service.update('nonexistent-id', { title: 'nope' }),
       ).rejects.toThrow('Request not found');
+    });
+  });
+
+  // ===========================================================================
+  // P1 Bug C — Request → done lifecycle gate (Pool umbrella WI 72ca743a)
+  // ===========================================================================
+
+  describe('update — Request → done lifecycle gate (P1 Bug C)', () => {
+    /**
+     * Build a fake IWorkItemQueryable backed by an in-memory map. Mirrors
+     * the production TaskPoolService.findWorkItem null-fallthrough idiom.
+     */
+    function buildFakePool(items: WorkItem[]): IWorkItemQueryable {
+      const byId = new Map(items.map((wi) => [wi.id, wi]));
+      return {
+        findWorkItem: jest.fn(async (id: string) => byId.get(id) ?? null),
+      };
+    }
+
+    /** Build a child WI with a specific status, linked to a Request. */
+    function makeChild(requestId: string, status: WorkItemStatus): WorkItem {
+      const wi = createWorkItem({
+        type: 'delegate',
+        owner: 'agent',
+        target: 'agent-test',
+        title: 'child WI',
+        requestId,
+      });
+      // createWorkItem chooses initial status from inputs; force the test
+      // status directly. Bypasses the production transition validator —
+      // intentional for unit-level setup so we can stage every state.
+      (wi as { status: WorkItemStatus }).status = status;
+      return wi;
+    }
+
+    /**
+     * Walk a Request from its initial `open` to `running`. Done lives only
+     * directly off `running` per isValidRequestTransition.
+     */
+    async function walkToRunning(service: RequestService, requestId: string): Promise<void> {
+      await service.update(requestId, { status: 'ready' });
+      await service.update(requestId, { status: 'running' });
+    }
+
+    // -----------------------------------------------------------------------
+    // AC1 — empty workItemIds: backward-compatible historical case
+    // -----------------------------------------------------------------------
+    it('AC1: should allow Request → done when workItemIds=[] (no children)', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      service.setTaskPoolService(buildFakePool([]));
+
+      const created = await service.create({
+        sourceConversationItemId: 'conv-ac1',
+        title: 'AC1 — no children',
+        description: 'Closing a Request with no children',
+      });
+
+      await walkToRunning(service, created.id);
+      const done = await service.update(created.id, { status: 'done' });
+      expect(done.status).toBe('done');
+      expect(done.completedAt).toBeDefined();
+    });
+
+    // -----------------------------------------------------------------------
+    // AC2 — all children terminal: should succeed
+    // -----------------------------------------------------------------------
+    it.each([
+      ['done'],
+      ['verified'],
+      ['cancelled'],
+    ])('AC2: should allow Request → done when all children are %s (terminal)', async (status) => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const created = await service.create({
+        sourceConversationItemId: `conv-ac2-${status}`,
+        title: `AC2 — ${status}`,
+        description: 'Closing with all-terminal children',
+      });
+
+      const child1 = makeChild(created.id, status as WorkItemStatus);
+      const child2 = makeChild(created.id, status as WorkItemStatus);
+      await service.linkWorkItem(created.id, child1.id);
+      await service.linkWorkItem(created.id, child2.id);
+      service.setTaskPoolService(buildFakePool([child1, child2]));
+
+      await walkToRunning(service, created.id);
+      const done = await service.update(created.id, { status: 'done' });
+      expect(done.status).toBe('done');
+    });
+
+    // -----------------------------------------------------------------------
+    // AC3 — non-terminal child blocks closure
+    // -----------------------------------------------------------------------
+    it.each([
+      ['queued'],
+      ['running'],
+      ['blocked'],
+      ['proposed'],
+      ['accepted'],
+      ['done_by_worker'],
+      ['escalated'],
+      ['scheduled'],
+      ['failed'],     // recoverable per WORK_ITEM_TRANSITIONS — must block
+      ['rejected'],   // recoverable per WORK_ITEM_TRANSITIONS — must block
+    ])('AC3: should refuse Request → done when child is %s (non-terminal)', async (status) => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const created = await service.create({
+        sourceConversationItemId: `conv-ac3-${status}`,
+        title: `AC3 — ${status}`,
+        description: 'Closing with non-terminal child',
+      });
+
+      const openChild = makeChild(created.id, status as WorkItemStatus);
+      await service.linkWorkItem(created.id, openChild.id);
+      service.setTaskPoolService(buildFakePool([openChild]));
+
+      await walkToRunning(service, created.id);
+
+      let caught: unknown;
+      try {
+        await service.update(created.id, { status: 'done' });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(RequestStillHasOpenChildrenError);
+      const err = caught as RequestStillHasOpenChildrenError;
+      expect(err.requestId).toBe(created.id);
+      expect(err.openChildIds).toEqual([openChild.id]);
+      expect(err.openChildCount).toBe(1);
+      expect(err.message).toContain(created.id);
+      expect(err.message).toContain(openChild.id);
+    });
+
+    // -----------------------------------------------------------------------
+    // AC4 — mixed terminal + non-terminal children: still blocks
+    // -----------------------------------------------------------------------
+    it('AC4: should refuse Request → done with mixed terminal/non-terminal children', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const created = await service.create({
+        sourceConversationItemId: 'conv-ac4',
+        title: 'AC4 — mixed',
+        description: 'Mixed-state children',
+      });
+
+      const doneChild = makeChild(created.id, 'done');
+      const verifiedChild = makeChild(created.id, 'verified');
+      const queuedChild = makeChild(created.id, 'queued');
+      const runningChild = makeChild(created.id, 'running');
+      for (const c of [doneChild, verifiedChild, queuedChild, runningChild]) {
+        await service.linkWorkItem(created.id, c.id);
+      }
+      service.setTaskPoolService(
+        buildFakePool([doneChild, verifiedChild, queuedChild, runningChild]),
+      );
+
+      await walkToRunning(service, created.id);
+
+      let caught: unknown;
+      try {
+        await service.update(created.id, { status: 'done' });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(RequestStillHasOpenChildrenError);
+      const e = caught as RequestStillHasOpenChildrenError;
+      expect(new Set(e.openChildIds)).toEqual(
+        new Set([queuedChild.id, runningChild.id]),
+      );
+      expect(e.openChildCount).toBe(2);
+    });
+
+    // -----------------------------------------------------------------------
+    // Edge: Request was NOT mutated when the gate refused
+    // -----------------------------------------------------------------------
+    it('should NOT mutate Request status when the gate refuses', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const created = await service.create({
+        sourceConversationItemId: 'conv-no-mutate',
+        title: 'No-mutation guarantee',
+        description: 'Verifying the gate is fail-fast pre-mutation',
+      });
+
+      const queuedChild = makeChild(created.id, 'queued');
+      await service.linkWorkItem(created.id, queuedChild.id);
+      service.setTaskPoolService(buildFakePool([queuedChild]));
+      await walkToRunning(service, created.id);
+
+      await expect(
+        service.update(created.id, { status: 'done' }),
+      ).rejects.toBeInstanceOf(RequestStillHasOpenChildrenError);
+
+      // Re-read from disk to confirm no partial mutation slipped through.
+      const reloaded = await service.getById(created.id);
+      expect(reloaded?.status).toBe('running');
+      expect(reloaded?.completedAt).toBeUndefined();
+    });
+
+    // -----------------------------------------------------------------------
+    // Edge: gate is `done`-only — `cancelled` may proceed with open children
+    // -----------------------------------------------------------------------
+    it('should NOT gate Request → cancelled (only done is gated)', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const created = await service.create({
+        sourceConversationItemId: 'conv-cancel',
+        title: 'Cancel with open child',
+        description: 'Cancellation may happen mid-flight',
+      });
+
+      const queuedChild = makeChild(created.id, 'queued');
+      await service.linkWorkItem(created.id, queuedChild.id);
+      service.setTaskPoolService(buildFakePool([queuedChild]));
+
+      const cancelled = await service.update(created.id, { status: 'cancelled' });
+      expect(cancelled.status).toBe('cancelled');
+      expect(cancelled.completedAt).toBeDefined();
+    });
+
+    // -----------------------------------------------------------------------
+    // Edge: deleted/orphaned children (findWorkItem returns null) treated
+    // as harmless — option-a graceful degrade ORC took on historical orphans.
+    // -----------------------------------------------------------------------
+    it('should treat findWorkItem→null (orphaned/purged child) as terminal', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const created = await service.create({
+        sourceConversationItemId: 'conv-orphan',
+        title: 'Orphan-handling',
+        description: 'Children purged from pool should not deadlock close',
+      });
+
+      // Link two ids; pool returns null for both (purged).
+      await service.linkWorkItem(created.id, 'orphan-1');
+      await service.linkWorkItem(created.id, 'orphan-2');
+      service.setTaskPoolService(buildFakePool([]));
+
+      await walkToRunning(service, created.id);
+      const done = await service.update(created.id, { status: 'done' });
+      expect(done.status).toBe('done');
+    });
+
+    // -----------------------------------------------------------------------
+    // Edge: graceful degrade when taskPoolService is not wired
+    // -----------------------------------------------------------------------
+    it('should degrade gracefully (close anyway, log warning) when pool not wired', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      // intentionally NOT calling setTaskPoolService — emulate a code path
+      // that runs before boot wiring (or a test scaffold).
+      const created = await service.create({
+        sourceConversationItemId: 'conv-unwired',
+        title: 'Unwired gate',
+        description: 'Pre-fix behavior preserved when pool unavailable',
+      });
+
+      const queuedChild = makeChild(created.id, 'queued');
+      await service.linkWorkItem(created.id, queuedChild.id);
+
+      await walkToRunning(service, created.id);
+      const done = await service.update(created.id, { status: 'done' });
+      // Pre-fix behavior: close succeeds even with non-terminal child,
+      // because the gate has no pool to query.
+      expect(done.status).toBe('done');
+    });
+
+    // -----------------------------------------------------------------------
+    // Edge: setTaskPoolService(null) clears the wiring (test isolation)
+    // -----------------------------------------------------------------------
+    it('should allow setTaskPoolService(null) to clear the wiring', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const created = await service.create({
+        sourceConversationItemId: 'conv-clear',
+        title: 'Clear-wire test',
+        description: 'null setter clears prior wiring',
+      });
+
+      const queuedChild = makeChild(created.id, 'queued');
+      await service.linkWorkItem(created.id, queuedChild.id);
+
+      // Wire then clear — should fall back to graceful-degrade path.
+      service.setTaskPoolService(buildFakePool([queuedChild]));
+      service.setTaskPoolService(null);
+
+      await walkToRunning(service, created.id);
+      const done = await service.update(created.id, { status: 'done' });
+      expect(done.status).toBe('done');
+    });
+  });
+
+  // ===========================================================================
+  // RequestStillHasOpenChildrenError — error class shape
+  // ===========================================================================
+
+  describe('RequestStillHasOpenChildrenError', () => {
+    it('should expose structured fields on the error instance', () => {
+      const err = new RequestStillHasOpenChildrenError({
+        requestId: 'req-1',
+        openChildIds: ['wi-1', 'wi-2', 'wi-3'],
+      });
+      expect(err.requestId).toBe('req-1');
+      expect(err.openChildIds).toEqual(['wi-1', 'wi-2', 'wi-3']);
+      expect(err.openChildCount).toBe(3);
+      expect(err.name).toBe('RequestStillHasOpenChildrenError');
+      expect(err).toBeInstanceOf(Error);
+      expect(err).toBeInstanceOf(RequestStillHasOpenChildrenError);
+    });
+
+    it('should singularize message when only one child is open', () => {
+      const err = new RequestStillHasOpenChildrenError({
+        requestId: 'req-1',
+        openChildIds: ['wi-1'],
+      });
+      expect(err.message).toContain('1 child WorkItem still in non-terminal');
+      expect(err.message).not.toContain('child WorkItems still');
+    });
+
+    it('should pluralize message when multiple children are open', () => {
+      const err = new RequestStillHasOpenChildrenError({
+        requestId: 'req-1',
+        openChildIds: ['wi-1', 'wi-2'],
+      });
+      expect(err.message).toContain('2 child WorkItems still in non-terminal');
     });
   });
 

@@ -370,6 +370,15 @@ export class CrewlyServer {
 		// so subscriber-driven linking stays as belt-and-suspenders.
 		TaskPoolService.getInstance().setRequestService(RequestService.getInstance());
 
+		// P1 Bug C (Pool umbrella WI 72ca743a, sub-WI Bug C): Wire the inverse
+		// dependency — RequestService → TaskPool — so RequestService.update
+		// can refuse `Request → done` when any child WorkItem is still in a
+		// non-terminal state. Bug B (above) makes Request.workItemIds[]
+		// authoritative on every addToPool; Bug C makes the closure honor
+		// that data. The setter is duck-typed on IWorkItemQueryable so
+		// neither side needs a static import of the other.
+		RequestService.getInstance().setTaskPoolService(TaskPoolService.getInstance());
+
 		// Wire Task Pool router so [TASK]-prefixed messages route through the pool
 		this.queueProcessorService.setTaskPoolRouter(async (messageContent: string, targetSession: string) => {
 			const { createWorkItem } = await import('./types/v2/work-item.types.js');
