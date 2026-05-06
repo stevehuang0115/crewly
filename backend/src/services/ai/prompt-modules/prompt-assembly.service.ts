@@ -21,6 +21,7 @@ import { CommunicationModule } from './communication.module.js';
 import { RecoveryModule } from './recovery.module.js';
 import { LifecycleModule } from './lifecycle.module.js';
 import { RoleBoundaryModule } from './role-boundary.module.js';
+import { DecisionRightsModule } from './decision-rights.module.js';
 import { CapabilityOverlayModule } from './capability-overlay.module.js';
 import { DomainSOPModule } from './domain-sop.module.js';
 import { RiskPolicyModule } from './risk-policy.module.js';
@@ -54,6 +55,7 @@ const EVAL_MODE_CORE_MODULES: ReadonlySet<string> = new Set([
 	'soul',
 	'role-boundary',
 	'recovery',
+	'decision-rights',
 ]);
 
 /**
@@ -113,6 +115,10 @@ export class PromptAssemblyService {
 			new ExpertProfileModule(),
 			new RecoveryModule(),
 			new RoleBoundaryModule(),
+			// Decision Rights + Escalation Chain (P0-4) sits at priority 3.5,
+			// inside the authority cluster: identity → soul → recovery →
+			// role-boundary → decision-rights. Authority text is non-compactable.
+			new DecisionRightsModule(),
 			new MemoryReferenceModule(),
 			new SkillsReferenceModule(),
 			new TeamReferenceModule(),

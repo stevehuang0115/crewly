@@ -76,7 +76,9 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('team-norms');
 			// Mission/OKR card (fix #415 — replaces dead PromptGenerator hook)
 			expect(names).toContain('mission_context');
-			expect(names.length).toBe(18);
+			// Decision Rights + Escalation Chain (P0-4 — authority text, priority 3.5)
+			expect(names).toContain('decision-rights');
+			expect(names.length).toBe(19);
 		});
 
 		it('should use default token budget of 28000', () => {
@@ -485,12 +487,22 @@ describe('PromptAssemblyService', () => {
 			const evalConfig: ModuleConfig = { ...baseConfig, evalMode: true };
 			const { report } = await service.assemble(evalConfig);
 
-			// Core modules: identity, soul, role-boundary, recovery
+			// Core modules: identity, soul, role-boundary, recovery, decision-rights
 			const moduleNames = report.moduleBreakdown.map((m) => m.name);
-			const allowedCoreNames = new Set(['identity', 'soul', 'role-boundary', 'recovery']);
+			const allowedCoreNames = new Set(['identity', 'soul', 'role-boundary', 'recovery', 'decision-rights']);
 			for (const name of moduleNames) {
 				expect(allowedCoreNames.has(name)).toBe(true);
 			}
+		});
+
+		it('should include decision-rights authority text in evalMode', async () => {
+			const service = new PromptAssemblyService();
+			const evalConfig: ModuleConfig = { ...baseConfig, evalMode: true };
+			const { prompt, report } = await service.assemble(evalConfig);
+			const moduleNames = report.moduleBreakdown.map((m) => m.name);
+			expect(moduleNames).toContain('decision-rights');
+			expect(prompt).toContain('## Decision Rights');
+			expect(prompt).toContain('## Escalation Chain');
 		});
 
 		it('should include all modules when evalMode is false', async () => {

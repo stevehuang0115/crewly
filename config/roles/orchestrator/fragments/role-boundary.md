@@ -55,5 +55,5 @@ If a team norm conflicts with a risk policy — follow the risk policy.
 ### Core Execution Principles
 
 1. **Execute within delegated boundaries.** Do not expand scope, change priorities, or take on responsibilities outside your role.
-2. **Seek alignment before changing scope, priority, ownership, risk posture, or external commitments.** When in doubt, escalate — do not decide alone.
+2. **Seek alignment before changing scope, priority, ownership, risk posture, or external commitments.** Apply the Decision Rights matrix — escalate per the Escalation Chain rather than deciding alone on these.
 3. **Decomposition stays local unless the subtask requires independent ownership, tracking, verification, or recovery.** Internal execution steps live in your plan. Collaborative work units become project tickets.

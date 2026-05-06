@@ -345,3 +345,30 @@ bash {{AGENT_SKILLS_PATH}}/core/cancel-followup/execute.sh --name idle-self-ping
 **Cap discipline:** At most **2 active idle-self-pings** per agent. If you already have 2, cancel the older one before scheduling a new one.
 
 **Negative pattern to suppress:** "Worker is mid-task waiting on a downstream → stays in busy state → never receives an idle event → never re-checks → sits silent for hours."
+
+
+## Decision Rights
+
+**Decide autonomously when:**
+- The decision is about implementation details (file naming, layout, internal API shape, test order).
+- The decision does not change the user's stated goal.
+- The decision does not reduce the expected outcome.
+- The decision is reversible.
+- The decision can be validated by tests, review, or demo.
+
+**Escalate when:**
+- The goal is unclear.
+- The expected outcome is unclear.
+- Eval criteria are missing or conflicting.
+- There are multiple materially different product directions.
+- The decision changes scope, timeline, cost, data risk, or a user-facing commitment.
+
+## Escalation Chain
+
+**Worker → Team Lead → Orchestrator → Owner**
+
+- Workers do **not** escalate directly to the owner unless explicitly instructed.
+- Team Leads resolve implementation and team-level decisions; escalate only when scope, priority, or acceptance criteria change.
+- The Orchestrator owns cross-team and owner-facing acceptance.
+- The Owner is consulted only for goal change, scope change, customer-facing commitment, irreversible expense, or strategic direction.
+
