@@ -58,18 +58,68 @@ export interface AgentHealth {
 // ---------------------------------------------------------------------------
 
 /**
+ * Per-WorkItemType timeout overrides for the stuck detector.
+ *
+ * **Why per-type:** the original single-value timeout (10 min) treated every
+ * WI the same — including `delegate`/`review` WIs that, by design, supervise
+ * multi-actor work spanning hours. A 10-min ceiling on a TL umbrella will
+ * always fire while the TL is still actively orchestrating, falsely marking
+ * it `failed` and (via cascade rules) cancelling its children. Workshop
+ * dogfood on 2026-05-06 lost 6 P0 child WIs to exactly this race.
+ *
+ * Defaults:
+ *   - `delegate`, `review` — 4h (these supervise long-running coordination)
+ *   - `confirm`            — Number.POSITIVE_INFINITY (waits for user; never timeout)
+ *   - everything else      — falls back to the caller-provided default
+ *
+ * Callers may pass a partial override map to tighten or loosen any entry.
+ */
+export const DEFAULT_PER_TYPE_TIMEOUT_MS: Partial<Record<WorkItem['type'], number>> = {
+  delegate: 4 * 60 * 60 * 1000,
+  review: 4 * 60 * 60 * 1000,
+  confirm: Number.POSITIVE_INFINITY,
+};
+
+/**
+ * Resolves the timeout for a given WorkItem type.
+ *
+ * @param type        - WorkItem.type value
+ * @param defaultMs   - Fallback when no per-type override exists
+ * @param overrides   - Optional caller-supplied per-type overrides (merged on top of defaults)
+ * @returns Timeout in ms, or Number.POSITIVE_INFINITY for "never timeout"
+ */
+function resolveTimeoutForType(
+  type: WorkItem['type'],
+  defaultMs: number,
+  overrides?: Partial<Record<WorkItem['type'], number>>,
+): number {
+  if (overrides && type in overrides) {
+    const v = overrides[type];
+    if (typeof v === 'number') return v;
+  }
+  if (type in DEFAULT_PER_TYPE_TIMEOUT_MS) {
+    const v = DEFAULT_PER_TYPE_TIMEOUT_MS[type];
+    if (typeof v === 'number') return v;
+  }
+  return defaultMs;
+}
+
+/**
  * Detects WorkItems that are 'running' but whose assigned agent is not alive.
  * Returns corrections to transition them to 'blocked' or 'failed'.
  *
  * @param workItems - All running WorkItems
  * @param agentHealthMap - Map of agent session → health info
- * @param timeoutMs - Max duration a WorkItem can be running (default: 10 min)
+ * @param timeoutMs - Default running timeout (default: 10 min); per-type overrides
+ *                   in {@link DEFAULT_PER_TYPE_TIMEOUT_MS} apply on top of this
+ * @param timeoutOverrides - Optional caller-supplied per-type overrides
  * @returns Array of corrections and affected WorkItem IDs
  */
 export function detectStuckWorkItems(
   workItems: WorkItem[],
   agentHealthMap: Map<string, AgentHealth>,
   timeoutMs: number = 600_000,
+  timeoutOverrides?: Partial<Record<WorkItem['type'], number>>,
 ): { corrections: ReconcileCorrection[]; stuckIds: string[] } {
   const corrections: ReconcileCorrection[] = [];
   const stuckIds: string[] = [];
@@ -82,7 +132,8 @@ export function detectStuckWorkItems(
     const agent = agentHealthMap.get(wi.target);
     const isAgentDead = !agent || agent.status === 'inactive' || agent.status === 'unknown';
     const startedAt = wi.startedAt ? new Date(wi.startedAt).getTime() : new Date(wi.createdAt).getTime();
-    const isTimedOut = (now - startedAt) > timeoutMs;
+    const effectiveTimeoutMs = resolveTimeoutForType(wi.type, timeoutMs, timeoutOverrides);
+    const isTimedOut = Number.isFinite(effectiveTimeoutMs) && (now - startedAt) > effectiveTimeoutMs;
 
     if (isAgentDead) {
       const newStatus: WorkItemStatus = wi.retryCount < wi.maxRetries ? 'blocked' : 'failed';
@@ -101,8 +152,8 @@ export function detectStuckWorkItems(
         entityId: wi.id,
         previousState: 'running',
         newState: 'failed',
-        reason: `WorkItem exceeded timeout of ${timeoutMs}ms`,
-        evidence: `Started at ${wi.startedAt ?? wi.createdAt}, running for ${now - startedAt}ms`,
+        reason: `WorkItem (type=${wi.type}) exceeded timeout of ${effectiveTimeoutMs}ms`,
+        evidence: `Started at ${wi.startedAt ?? wi.createdAt}, running for ${now - startedAt}ms (limit ${effectiveTimeoutMs}ms)`,
       }));
       stuckIds.push(wi.id);
     }
@@ -242,8 +293,35 @@ export function reconcileRequestStatus(
 // ---------------------------------------------------------------------------
 
 /**
- * Detects WorkItems whose parent has been cancelled/failed but are still active.
- * These should be cascade-cancelled.
+ * A parent WorkItem is treated as **permanently** terminal — and therefore
+ * eligible to cascade-cancel its children — only when:
+ *
+ *   - status === 'cancelled' (terminal by definition), OR
+ *   - status === 'failed' AND retryCount >= maxRetries (no more retries)
+ *
+ * A `failed` parent that still has retries left is **not** terminal: the
+ * Reconciler's auto-retry rule ({@link detectRetryableFailedWorkItems}) will
+ * re-queue it on the same pass. If we cascade-cancel the children at that
+ * moment, the parent gets revived but its children are already in the
+ * irreversible `cancelled` state — which is exactly the data-loss bug
+ * observed in the 2026-05-06 dogfood (umbrella WI 5bccc08d timed out, all 6
+ * P0 child WIs were cancelled, parent then auto-retried but was childless).
+ *
+ * @param parent - Parent WorkItem
+ * @returns True if cascade should fire on this parent
+ */
+function isParentPermanentlyTerminal(parent: WorkItem): boolean {
+  if (parent.status === 'cancelled') return true;
+  if (parent.status === 'failed' && parent.retryCount >= parent.maxRetries) return true;
+  return false;
+}
+
+/**
+ * Detects WorkItems whose parent has been permanently cancelled/failed but
+ * are still active. These should be cascade-cancelled.
+ *
+ * Children of `failed`-but-retryable parents are intentionally **skipped** —
+ * see {@link isParentPermanentlyTerminal} for the rationale.
  *
  * @param workItems - All WorkItems to check
  * @param workItemMap - Map of WorkItem ID → WorkItem for parent lookup
@@ -263,14 +341,14 @@ export function detectOrphanWorkItems(
     const parent = workItemMap.get(wi.parentWorkItemId);
     if (!parent) continue;
 
-    if (parent.status === 'cancelled' || parent.status === 'failed') {
+    if (isParentPermanentlyTerminal(parent)) {
       corrections.push(createCorrection({
         entityType: 'work_item',
         entityId: wi.id,
         previousState: wi.status,
         newState: 'cancelled',
-        reason: `Parent WorkItem ${parent.id} is ${parent.status}`,
-        evidence: `Cascade cancel: parent.status=${parent.status}, child.status=${wi.status}`,
+        reason: `Parent WorkItem ${parent.id} is ${parent.status} (permanent: retries ${parent.retryCount}/${parent.maxRetries})`,
+        evidence: `Cascade cancel: parent.status=${parent.status}, parent.retryCount=${parent.retryCount}/${parent.maxRetries}, child.status=${wi.status}`,
       }));
       orphanIds.push(wi.id);
     }
@@ -495,10 +573,12 @@ export function runPruningPass(
   // 2. Orphan detection
   const orphans = detectOrphanWorkItems(allWorkItems, workItemMap);
 
-  // 3. Build cancelled set for cascade
+  // 3. Build cancelled set for cascade — only include parents that are
+  //    *permanently* terminal. A `failed` parent with retries remaining is
+  //    excluded so its children are not cancelled mid-retry-window.
   const cancelledIds = new Set<string>();
   for (const wi of allWorkItems) {
-    if (wi.status === 'cancelled' || wi.status === 'failed') {
+    if (isParentPermanentlyTerminal(wi)) {
       cancelledIds.add(wi.id);
     }
   }
