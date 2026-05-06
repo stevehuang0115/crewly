@@ -61,18 +61,34 @@ if echo "$ABSOLUTE_TASK_PATH" | grep -q '/in_progress/'; then
   fi
 fi
 
+# V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+# Resolve which V3 WorkItem to complete:
+#   1. Explicit `workItemId` from input (preferred)
+#   2. Fall back: query the pool for the agent's currently-running WI
+#
+# The legacy `absoluteTaskPath` input is still accepted but no longer
+# drives the API call — it's only used for logging context. Callers
+# should switch to passing `workItemId`.
+WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
+if [ -z "$WORK_ITEM_ID" ]; then
+  POOL_RESP=$(api_call GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
+  WORK_ITEM_ID=$(echo "$POOL_RESP" | jq -r '.workItems[0].id // .data[0].id // empty' 2>/dev/null || true)
+fi
+
+if [ -z "$WORK_ITEM_ID" ]; then
+  echo '{"error":"Could not resolve a running WorkItem for this session — pass `workItemId` explicitly."}' >&2
+  exit 1
+fi
+
 BODY=$(jq -n \
-  --arg absoluteTaskPath "$ABSOLUTE_TASK_PATH" \
-  --arg taskPath "$ABSOLUTE_TASK_PATH" \
-  --arg sessionName "$SESSION_NAME" \
   --arg summary "$SUMMARY" \
   --arg skipGates "$SKIP_GATES" \
   --argjson output "${OUTPUT_JSON:-null}" \
-  '{absoluteTaskPath: $absoluteTaskPath, taskPath: $taskPath, sessionName: $sessionName, summary: $summary} +
+  '{summary: $summary} +
    (if $skipGates == "true" then {skipGates: true} else {} end) +
-   (if $output != null then {output: $output} else {} end)')
+   (if $output != null then {result: $output} else {} end)')
 
-api_call POST "/task-management/complete" "$BODY"
+api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$BODY"
 
 # Auto-persist the task summary as project knowledge (#127, #219).
 # Use [COMPLETED] prefix so recall can distinguish completed tasks from other patterns.

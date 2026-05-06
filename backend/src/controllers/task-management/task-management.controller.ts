@@ -1,3 +1,22 @@
+/**
+ * @deprecated v1 task-management subsystem.
+ *
+ * Per `specs/2026-05-06-task-management-v1-deprecation.md`, this controller
+ * and the `.md`-based worker workflow it implements are on the deprecation
+ * path. New work is created exclusively via V3 task-pool
+ * (`backend/src/controllers/task-pool/`) and the V3-native producer/consumer
+ * skills (`config/skills/{orchestrator,team-leader,agent}/...`).
+ *
+ * Endpoints in this file remain mounted only to avoid breaking any agent
+ * skill that has not yet been migrated. They no longer receive new tasks
+ * (since all producers now go through V3) and the `.md` files they
+ * read/write are inert artifacts.
+ *
+ * Removal target: a follow-up PR after Layer 2 Phase C in the spec.
+ *
+ * @module controllers/task-management/task-management.controller
+ */
+
 import { Request, Response } from 'express';
 import type { ApiController } from '../api.controller.js';
 import type { ApiContext } from '../types.js';

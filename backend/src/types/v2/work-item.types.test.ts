@@ -381,6 +381,39 @@ describe('WorkItem Types', () => {
       });
       expect(errors).toEqual([]);
     });
+
+    // briefMarkdown — replaces .md task body in the V3 unification (PR #482).
+    it('accepts briefMarkdown within the size cap', () => {
+      const errors = validateCreateWorkItemInput({
+        type: 'delegate',
+        owner: 'agent',
+        title: 'with brief',
+        briefMarkdown: '# Step 1\nDo the thing.\n# Step 2\nReport back.',
+      });
+      expect(errors).toEqual([]);
+    });
+
+    it('rejects briefMarkdown that is not a string', () => {
+      const errors = validateCreateWorkItemInput({
+        type: 'delegate',
+        owner: 'agent',
+        title: 'bad type',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        briefMarkdown: 123 as any,
+      });
+      expect(errors.some((e) => e.includes('briefMarkdown'))).toBe(true);
+    });
+
+    it('rejects briefMarkdown exceeding the byte cap', () => {
+      const oversize = 'a'.repeat(16 * 1024 + 1); // one byte over 16 KiB
+      const errors = validateCreateWorkItemInput({
+        type: 'delegate',
+        owner: 'agent',
+        title: 'too big',
+        briefMarkdown: oversize,
+      });
+      expect(errors.some((e) => e.includes('briefMarkdown') && e.includes('exceeds'))).toBe(true);
+    });
   });
 
   // -----------------------------------------------------------------------

@@ -186,16 +186,22 @@ esac
 
 WI_TITLE="${TITLE:-$(echo "$TASK" | head -c 200)}"
 
+# Per spec 2026-05-06-task-management-v1-deprecation.md, the long-form task
+# body now travels with the WorkItem (`briefMarkdown` field) instead of being
+# written to a `.crewly/tasks/delegated/*.md` file. `description` keeps the
+# legacy short-summary semantics (callers truncate to 500 chars); the full
+# brief lives in `briefMarkdown`.
 POOL_BODY=$(jq -n \
   --arg type "delegate" \
   --arg owner "orchestrator" \
   --arg target "$TO" \
   --arg title "$WI_TITLE" \
   --arg description "$TASK_MESSAGE" \
+  --arg briefMarkdown "$TASK" \
   --arg priority "$WI_PRIORITY" \
   --arg projectPath "${PROJECT_PATH:-}" \
   --arg requestId "${REQUEST_ID:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $requestId != "" then {requestId: $requestId} else {} end)')
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $requestId != "" then {requestId: $requestId} else {} end)')
 
 # Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch B):
 # Route is /api/task-pool/add (not /api/pool/add — that endpoint does not exist

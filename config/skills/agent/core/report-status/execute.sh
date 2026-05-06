@@ -42,6 +42,7 @@ SUMMARY=""
 PROJECT_PATH=""
 TASK_PATH=""
 TASK_ID=""
+WORK_ITEM_ID=""
 PROGRESS=""
 STRUCTURED="false"
 
@@ -79,6 +80,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --task-id)
       TASK_ID="$2"
+      shift 2
+      ;;
+    --work-item-id|--wi-id)
+      WORK_ITEM_ID="$2"
       shift 2
       ;;
     --progress)
@@ -130,6 +135,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$SUMMARY" ] && SUMMARY=$(printf '%s' "$INPUT" | jq -r '.summary // empty')
   [ -z "$TASK_PATH" ] && TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.taskPath // empty')
   [ -z "$TASK_ID" ] && TASK_ID=$(printf '%s' "$INPUT" | jq -r '.taskId // empty')
+  [ -z "$WORK_ITEM_ID" ] && WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
   [ -z "$PROGRESS" ] && PROGRESS=$(printf '%s' "$INPUT" | jq -r '.progress // empty')
   [ -z "$PROJECT_PATH" ] && PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
   ARTIFACTS=$(printf '%s' "$INPUT" | jq -c '.artifacts // empty')
@@ -201,19 +207,29 @@ BODY=$(jq -n --arg content "$MESSAGE" --arg senderName "$SESSION_NAME" \
 
 api_call POST "/chat/agent-response" "$BODY"
 
-# If task is done and taskPath provided, move task file to done folder
-if [ "$STATUS" = "done" ] && [ -n "$TASK_PATH" ]; then
-  COMPLETE_BODY=$(jq -n \
-    --arg taskPath "$TASK_PATH" \
-    --arg sessionName "$SESSION_NAME" \
-    '{taskPath: $taskPath, sessionName: $sessionName}')
-  api_call POST "/task-management/complete" "$COMPLETE_BODY" || true
-fi
-
-# Auto-complete tracked tasks when status is done
+# Mark V3 WorkItem(s) for this session as complete when status=done.
+# Per spec/2026-05-06-task-management-v1-deprecation.md, V3 task-pool is now
+# the source of truth — we no longer move .md files via the v1
+# `/task-management/complete{-by-session}` endpoints.
+#
+# Resolution order for which WorkItem to complete:
+#   1. `workItemId` in input (preferred — explicit reference)
+#   2. The agent's currently-running WI fetched from the pool
+#
+# The legacy `taskPath` input is still accepted for backwards compatibility
+# but no longer drives the API call.
 if [ "$STATUS" = "done" ]; then
-  SESSION_BODY=$(jq -n --arg sessionName "$SESSION_NAME" '{sessionName: $sessionName}')
-  api_call POST "/task-management/complete-by-session" "$SESSION_BODY" || true
+  TARGET_WI_ID="${WORK_ITEM_ID:-}"
+  if [ -z "$TARGET_WI_ID" ]; then
+    # Fall back: query pool for this session's running WIs and complete the first match.
+    POOL_RESP=$(api_call GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
+    TARGET_WI_ID=$(echo "$POOL_RESP" | jq -r '.workItems[0].id // .data[0].id // empty' 2>/dev/null || true)
+  fi
+
+  if [ -n "$TARGET_WI_ID" ]; then
+    COMPLETE_BODY=$(jq -n --arg summary "$SUMMARY" '{summary: $summary}')
+    api_call POST "/task-pool/complete/${TARGET_WI_ID}" "$COMPLETE_BODY" || true
+  fi
 fi
 
 # Auto-persist key findings as project knowledge when task is done (#127, #219).
