@@ -2,11 +2,20 @@
  * ProjectTaskWatcherService — Watches `.crewly/tasks/` for new ProjectTask files
  * and automatically creates WorkItems in the TaskPool.
  *
- * This service ensures that every ProjectTask file with status 'open' or 'in_progress'
- * results in a corresponding WorkItem. It handles two scenarios:
+ * This service is on the deprecation path per
+ * `specs/2026-05-06-projecttask-md-deprecation.md` (PR #482). The medium-term
+ * goal is to retire the `.md` based ProjectTask system entirely so that V3
+ * WorkItem is the sole source of truth for delegated work.
  *
- * 1. **Initial sync**: Scans existing task files on startup and creates missing WorkItems
- * 2. **Live watch**: Monitors the tasks directory for new `.md` files via chokidar
+ * **Phase 2 Workstream C — startup-backfill removed (this commit):**
+ *
+ * Live watch only. The legacy startup pass that scanned every existing
+ * `.md` file under `delegated/{open,in_progress}/` and re-created
+ * WorkItems for them was the root cause of "pool refuses to stay empty
+ * after cleanup": clearing pool.json then restarting backend re-fired a
+ * WI for every stale `.md` left behind. Removing the startup pass cures
+ * that bug. New `.md` files written by skills (delegate-task etc.) still
+ * bridge into V3 via the live chokidar handler — that path is unchanged.
  *
  * Design principle: Fire-and-forget. Errors are logged but never block normal operations.
  *
@@ -30,14 +39,6 @@ const WATCHER_DEBOUNCE_MS = 500;
 
 /** Subdirectories within a milestone folder that indicate actionable tasks. */
 const ACTIONABLE_STATUS_FOLDERS = ['open', 'in_progress'] as const;
-
-/**
- * Maximum age (ms) for a task file to be considered during initial startup sync.
- * Tasks older than this are assumed stale and skipped during initial scan.
- * Live watcher still processes new files regardless of age.
- * Default: 48 hours.
- */
-const STARTUP_SYNC_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -99,11 +100,13 @@ export class ProjectTaskWatcherService {
   }
 
   /**
-   * Starts watching for new ProjectTask files and performs an initial sync.
+   * Starts the live file watcher.
    *
-   * 1. Ensures the tasks directory exists
-   * 2. Scans all existing open/in_progress tasks and creates missing WorkItems
-   * 3. Starts a chokidar watcher for live file creation events
+   * The historical startup-backfill pass (scan every existing `.md` under
+   * `delegated/{open,in_progress}/` and re-create WIs for them) has been
+   * removed — see this module's header docstring and PR #482 for the
+   * deprecation rationale. New `.md` files written by skills after start
+   * are still bridged into V3 via the chokidar live handler below.
    */
   async start(): Promise<void> {
     try {
@@ -115,60 +118,11 @@ export class ProjectTaskWatcherService {
       return;
     }
 
-    // Step 1: Initial sync — scan existing task files
-    await this.syncExistingTasks();
-
-    // Step 2: Start live watcher
     this.startWatcher();
 
-    this.logger.info('ProjectTaskWatcherService started', {
+    this.logger.info('ProjectTaskWatcherService started (live-watch only — startup backfill removed per PR #482)', {
       tasksBaseDir: this.tasksBaseDir,
     });
-  }
-
-  /**
-   * Scans all milestone directories for open/in_progress task files
-   * and creates WorkItems for any that don't already exist in the TaskPool.
-   */
-  async syncExistingTasks(): Promise<void> {
-    try {
-      const entries = await fs.readdir(this.tasksBaseDir, { withFileTypes: true });
-      const milestones = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-
-      let synced = 0;
-
-      for (const milestone of milestones) {
-        for (const statusFolder of ACTIONABLE_STATUS_FOLDERS) {
-          const dir = path.join(this.tasksBaseDir, milestone, statusFolder);
-
-          let files: string[];
-          try {
-            files = await fs.readdir(dir);
-          } catch {
-            // Directory doesn't exist — skip
-            continue;
-          }
-
-          for (const file of files) {
-            if (!file.endsWith('.md')) continue;
-
-            const filePath = path.join(dir, file);
-            const created = await this.ensureWorkItemForTask(filePath, milestone, statusFolder);
-            if (created) synced++;
-          }
-        }
-      }
-
-      if (synced > 0) {
-        this.logger.info('Initial sync created WorkItems for existing tasks', {
-          count: synced,
-        });
-      }
-    } catch (err) {
-      this.logger.warn('Initial task sync failed (non-fatal)', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   /**
@@ -239,7 +193,7 @@ export class ProjectTaskWatcherService {
           const milestone = parts[0];
           const statusFolder = parts[parts.length - 2];
 
-          await this.ensureWorkItemForTask(filePath, milestone, statusFolder, { skipStalenessCheck: true });
+          await this.ensureWorkItemForTask(filePath, milestone, statusFolder);
         } catch (err) {
           this.logger.warn('Failed to process new task file (non-fatal)', {
             filePath,
@@ -254,6 +208,11 @@ export class ProjectTaskWatcherService {
    * Ensures a WorkItem exists in the TaskPool for the given ProjectTask file.
    * If one already exists (matched by projectTaskId), this is a no-op.
    *
+   * Called only from the chokidar live-watch path now that startup backfill
+   * has been removed (PR #482). The previous staleness gate is no longer
+   * needed because live events fire on actual file creation, not on
+   * restart-time directory scans.
+   *
    * @param filePath - Absolute path to the task .md file
    * @param milestone - The milestone directory name
    * @param statusFolder - The status folder name ('open' or 'in_progress')
@@ -263,26 +222,10 @@ export class ProjectTaskWatcherService {
     filePath: string,
     milestone: string,
     statusFolder: string,
-    options?: { skipStalenessCheck?: boolean },
   ): Promise<boolean> {
     try {
       const parsed = await parseProjectTaskFile(filePath, milestone, statusFolder);
       if (!parsed) return false;
-
-      // Staleness check: skip old files during initial sync to prevent
-      // re-creating WorkItems for long-abandoned tasks on every restart
-      if (!options?.skipStalenessCheck) {
-        try {
-          const stat = await fs.stat(filePath);
-          const ageMs = Date.now() - stat.mtimeMs;
-          if (ageMs > STARTUP_SYNC_MAX_AGE_MS) {
-            return false;
-          }
-        } catch {
-          // If we can't stat the file, skip it
-          return false;
-        }
-      }
 
       const taskPool = TaskPoolService.getInstance();
       const existing = await taskPool.getAllItems();
