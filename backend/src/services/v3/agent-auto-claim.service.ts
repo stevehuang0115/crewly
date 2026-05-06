@@ -323,12 +323,21 @@ export class AgentAutoClaimService {
 
     const agentsToWake = new Set<string>();
     const orphanedItems: typeof targetedItems = [];
+    const activeTargetedItems: typeof targetedItems = [];
 
     for (const wi of targetedItems) {
       if (!wi.target) continue;
 
       if (activeSessions.has(wi.target)) {
-        // Agent is active — it should claim the task normally
+        // Agent is active — historically we skipped here on the assumption
+        // that "an active agent will claim the task on its own". Empirically
+        // (2026-05-06 dogfood) that assumption is broken: an agent that
+        // returned from a session-history reload, or that is mid-thought
+        // when the WI lands, never emits `agent:idle` and therefore never
+        // triggers AutoClaim's pull path. Hand off to the dispatch
+        // subscriber instead — it pushes a [CREWLY-DISPATCH] prompt to the
+        // target session telling them to run poll-tasks.
+        activeTargetedItems.push(wi);
         continue;
       }
 
@@ -338,6 +347,29 @@ export class AgentAutoClaimService {
       } else {
         // Agent doesn't exist in any team → orphaned task
         orphanedItems.push(wi);
+      }
+    }
+
+    // Dispatch to active targets. Best-effort, non-fatal — the
+    // WorkItemDispatchSubscriber will also rerun via its own startup
+    // backfill ~10s after this returns, so a transient failure here
+    // doesn't strand the WI.
+    if (activeTargetedItems.length > 0) {
+      try {
+        const { WorkItemDispatchSubscriber } = await import('./workitem-dispatch.subscriber.js');
+        const dispatcher = WorkItemDispatchSubscriber.getInstance();
+        let dispatched = 0;
+        for (const wi of activeTargetedItems) {
+          if (await dispatcher.dispatchTo(wi)) dispatched += 1;
+        }
+        this.logger.info('Dispatched queued WIs to active target sessions', {
+          attempted: activeTargetedItems.length,
+          dispatched,
+        });
+      } catch (err) {
+        this.logger.warn('Active-target dispatch failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
@@ -435,10 +467,11 @@ export class AgentAutoClaimService {
       }
     }
 
-    if (agentsToWake.size > 0 || orphanedItems.length > 0) {
+    if (agentsToWake.size > 0 || orphanedItems.length > 0 || activeTargetedItems.length > 0) {
       this.logger.info('Startup task recovery complete', {
         agentsWoken: agentsToWake.size,
         orphanedEscalated: orphanedItems.length,
+        activeTargetsDispatched: activeTargetedItems.length,
         totalTargetedQueued: targetedItems.length,
       });
     }

@@ -1699,6 +1699,21 @@ export class CrewlyServer {
 				});
 			}
 
+			// Start WorkItemDispatchSubscriber FIRST — AgentAutoClaim's recovery
+			// path delegates to its dispatchTo() for the "active target session"
+			// branch, so the singleton must be reachable when recovery fires.
+			try {
+				const { WorkItemDispatchSubscriber } = await import('./services/v3/workitem-dispatch.subscriber.js');
+				const dispatchSubscriber = WorkItemDispatchSubscriber.getInstance();
+				dispatchSubscriber.initialize(this.eventBusService);
+				dispatchSubscriber.start();
+				this.logger.info('WorkItemDispatchSubscriber started — workitem:queued events push to target sessions');
+			} catch (dispatchErr) {
+				this.logger.warn('WorkItemDispatchSubscriber initialization failed (non-critical)', {
+					error: dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr),
+				});
+			}
+
 			// Start AgentAutoClaimService — auto-assign work to idle agents
 			try {
 				const { AgentAutoClaimService } = await import('./services/v3/agent-auto-claim.service.js');
