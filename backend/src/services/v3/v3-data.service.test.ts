@@ -1078,9 +1078,14 @@ describe('classifyIntent', () => {
 
   it('should set correct intent levels', () => {
     expect(classifyIntent('Fix a bug').intentLevel).toBe('L1');           // debugging → L1
-    expect(classifyIntent('Deploy to prod').intentLevel).toBe('L2');      // deployment → L2
-    expect(classifyIntent('Build a feature').intentLevel).toBe('L2');     // code_change → L2
-    expect(classifyIntent('Tell the team').intentLevel).toBe('L0');       // communication → L0
+    expect(classifyIntent('Deploy to prod').intentLevel).toBe('L2');      // deployment → L2 (deploy/env trigger)
+    expect(classifyIntent('Build a feature').intentLevel).toBe('L2');     // code_change → L2 (build+system noun)
+    // Bug A v0 (Mia §3 row 5): a single bounded communication directive
+    // ("tell …") is L1, NOT L0. L0 is reserved for read-only / status /
+    // lookup with no state change. Pre-Bug-A v3-data.service.classifyIntent
+    // hard-coded communication → L0 — that's been corrected to align with
+    // Mia's canonical product brief.
+    expect(classifyIntent('Tell the team').intentLevel).toBe('L1');       // communication → L1
     expect(classifyIntent('Research options').intentLevel).toBe('L1');    // research → L1
   });
 });
@@ -1200,8 +1205,18 @@ describe('classifyIntent — Chinese keywords', () => {
   });
 
   it('should classify Chinese query keywords (查一下)', () => {
+    // Bug A v0 (canonical classifier from intent-task.types): "查一下 …
+    // 多少 团队" is structurally a lookup/status question, which Mia §1.2
+    // Q1 defines as L0/query. The pre-Bug-A v3-data.service heuristic
+    // bucketed it as 'research' via a Chinese-specific fallback that
+    // didn't distinguish lookup from investigation. The canonical
+    // classifier consolidates to 'query' which better fits Mia's
+    // category semantics (research = "investigate/explore/analyze";
+    // query = "what/where/count/lookup"). Both still result in the
+    // same SLA/decomposition behaviour because L1/query and L1/research
+    // route identically.
     const result = classifyIntent('帮我查一下现在有多少团队');
-    expect(result.intentCategory).toBe('research');
+    expect(result.intentCategory).toBe('query');
   });
 
   it('should classify Chinese debugging keywords (修复)', () => {

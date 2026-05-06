@@ -27,6 +27,14 @@ import { RequestTracker } from './request-tracker.service.js';
 import { createWorkItem, type WorkItem } from '../../types/v2/work-item.types.js';
 import { createMission, CONSERVATIVE_POLICY, type CreateMissionInput } from '../../types/v2/mission.types.js';
 import { isValidRequestTransition, type IntentCategory, type IntentLevel, type RequestStatus } from '../../types/v2/request.types.js';
+// Bug A v0 (2026-05-06): canonical intent classification — both
+// classifyIntentLevel + classifyIntentCategory consume the shared rule-set
+// at `services/intent-task/intent-classifier.rules.ts`, so this delegation
+// keeps the Request- and Mission-side classifiers in lock-step.
+import {
+  classifyIntentLevel,
+  classifyIntentCategory,
+} from '../../types/intent-task.types.js';
 import { ensureDir, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { ProjectTaskWatcherService } from './project-task-watcher.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
@@ -928,52 +936,43 @@ export function isNonActionableMessage(content: string): boolean {
  * Auto-classify request intent from message content.
  * Runs synchronously — no AI call, just keyword matching.
  *
+ * Bug A v0 (2026-05-06): delegates to the canonical
+ * `classifyIntentLevel` + `classifyIntentCategory` from
+ * `backend/src/types/intent-task.types.ts` (which read from the
+ * code-of-record rules at
+ * `backend/src/services/intent-task/intent-classifier.rules.ts`).
+ *
+ * Why delegation rather than maintaining a parallel rule-set: prior to
+ * this PR, the two classifyIntent paths drifted. The Mission-side classifier
+ * had ~40 patterns + length floor; the Request-side classifier had ~7 patterns
+ * with no length floor. This caused classification skew across surfaces.
+ *
+ * The local pre-filter `isNonActionableMessage` is preserved because it's
+ * scoped to v3-data.service callers (Request creation flow) and short-
+ * circuits L0 for chit-chat without invoking the heavier classifier.
+ *
  * @param content - The user message text
  * @returns Object with intentCategory and intentLevel
  */
 export function classifyIntent(content: string): { intentCategory: IntentCategory; intentLevel: IntentLevel } {
-  const lower = content.toLowerCase();
-
-  // Non-actionable messages: acknowledgements, chit-chat, greetings
+  // Non-actionable messages: acknowledgements, chit-chat, greetings.
+  // Pre-filter at the Request boundary — short-circuit before invoking
+  // the canonical classifier so non-actionable input never lands as a
+  // Request-shaped row.
   if (isNonActionableMessage(content)) {
     return { intentCategory: 'other', intentLevel: 'L0' };
   }
 
-  // Debugging — English + Chinese keywords
-  if (/\b(fix|bug|error|crash|broken|issue)\b/.test(lower) || /修复|修|bug|报错|崩溃|出错|故障|异常/.test(content)) {
-    return { intentCategory: 'debugging', intentLevel: 'L1' };
-  }
-  // Deployment
-  if (/\b(deploy|release|publish|ship)\b/.test(lower) || /部署|发布|上线|发版/.test(content)) {
-    return { intentCategory: 'deployment', intentLevel: 'L2' };
-  }
-  // Review
-  if (/\b(review|pr|pull request|code review)\b/.test(lower) || /审查|评审|review|代码审查/.test(content)) {
-    return { intentCategory: 'review', intentLevel: 'L1' };
-  }
-  // Planning
-  if (/\b(plan|design|architect|spec)\b/.test(lower) || /规划|设计|架构|方案|计划/.test(content)) {
-    return { intentCategory: 'planning', intentLevel: 'L2' };
-  }
-  // Research / analysis
-  if (/\b(research|investigate|analyze|look into|evaluate|assess|audit)\b/.test(lower) || /研究|调查|分析|评估|排查|审计|检查/.test(content)) {
-    return { intentCategory: 'research', intentLevel: 'L1' };
-  }
-  // Communication
-  if (/\b(tell|ask|message|notify|send)\b/.test(lower) || /告诉|问|通知|发消息|转告/.test(content)) {
-    return { intentCategory: 'communication', intentLevel: 'L0' };
-  }
-  // Code change
-  if (/\b(add|implement|create|build|feature|write)\b/.test(lower) || /添加|实现|创建|开发|编写|搭建|新增/.test(content)) {
-    return { intentCategory: 'code_change', intentLevel: 'L2' };
-  }
-  // Query / lookup (Chinese-specific, lightweight tasks)
-  if (/查一下|查看|查询|看看|有多少|列出|统计/.test(content)) {
-    return { intentCategory: 'research', intentLevel: 'L1' };
-  }
-
-  return { intentCategory: 'other', intentLevel: 'L1' };
+  // Delegate to the canonical L0/L1/L2/L3 classifier + ZH-parity category
+  // matcher. Both functions read from the shared rule-set at
+  // `intent-classifier.rules.ts`, so any future tuning lands in exactly
+  // one place.
+  return {
+    intentLevel: classifyIntentLevel(content),
+    intentCategory: classifyIntentCategory(content),
+  };
 }
+
 
 // ---------------------------------------------------------------------------
 // Mission → Task Planning (keyword-based, no AI)
