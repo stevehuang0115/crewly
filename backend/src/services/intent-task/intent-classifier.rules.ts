@@ -305,7 +305,14 @@ export const ACTION_VERB_EN = /\b(fix|build|create|deploy|implement|add|update|d
  * the lookahead alone cannot catch — both layers together produce the
  * stricter behaviour Mia asked for.
  */
-export const ACTION_VERB_ZH = /(做(?!了|过|得|的|出|不到|不了|不下|不来|不出)|写(?!不出|不来)|搞(?!砸|错|不定|不动|不了|乱|糊涂)|搞定|做完|完成|重启|启动|停止|关闭|检查|查看|查询|修复|修\b|改|改写|编写|起草|添加|删除|移除|部署|上线|发布|创建|实现|构建|搭建|设计|分析|审查|评审|编排|调研|规划|计划|制定|优化|重构|拆分|分发|分派|协调|分配|统筹|集成|配置|安装|更新|升级|迁移|回填|监控|跟踪|追踪|调试|跑|执行|处理|准备|提交|合并|推送|拉取|发版|交付|落地|拿下|测试|审计|评估|排查|审核|审定)/;
+// Issue #472 (Arch nit on PR #471): symmetry fix on the bare-做
+// negative-lookahead list. 搞 already excluded its mistake/botched
+// suffixes (砸|错|乱|糊涂); 做 only excluded completed/denial suffixes
+// (了|过|得|的|出|不到|不了|不下|不来|不出) and missed the parallel
+// mistake suffixes (错|坏|废). Operational risk: a user typing
+// "做错了" / "做坏了" / "做废了" matched the bare 做 token and reached
+// the L2 promoter. Symmetric coverage closes the gap.
+export const ACTION_VERB_ZH = /(做(?!了|过|得|的|出|错|坏|废|不到|不了|不下|不来|不出)|写(?!不出|不来)|搞(?!砸|错|不定|不动|不了|乱|糊涂)|搞定|做完|完成|重启|启动|停止|关闭|检查|查看|查询|修复|修\b|改|改写|编写|起草|添加|删除|移除|部署|上线|发布|创建|实现|构建|搭建|设计|分析|审查|评审|编排|调研|规划|计划|制定|优化|重构|拆分|分发|分派|协调|分配|统筹|集成|配置|安装|更新|升级|迁移|回填|监控|跟踪|追踪|调试|跑|执行|处理|准备|提交|合并|推送|拉取|发版|交付|落地|拿下|测试|审计|评估|排查|审核|审定)/;
 
 // ---------------------------------------------------------------------------
 // Non-actionable patterns — ZH parity additions
@@ -344,7 +351,10 @@ export const NON_ACTIONABLE_PATTERNS_ZH: RegExp[] = [
   // (b) "(I) can't do X" — capability denial, not a directive.
   /^.{0,20}?(做不到|做不了|做不下来|做不出来|搞不定|搞不动|搞不了|完不成|弄不了|没做完|没搞定)/,
   // (c) Short message ending in a botched/error verb (搞砸/搞错).
-  /^.{0,30}?(搞砸|搞错|搞乱|搞糊涂)(?:了|过)?\s*[。！？!?]?$/,
+  // Issue #472: parallel mistake-form coverage. 搞 had 砸|错|乱|糊涂;
+  // 做 needs the parallel 错|坏|废 forms so a user message like "做错了" /
+  // "做坏了" / "做废了" is filtered before the L2 promoter sees it.
+  /^.{0,30}?(搞砸|搞错|搞乱|搞糊涂|做错|做坏|做废|做糟)(?:了|过)?\s*[。！？!?]?$/,
 ];
 
 // ---------------------------------------------------------------------------
@@ -428,7 +438,9 @@ export const CATEGORY_KEYWORDS = {
     // exclude their non-imperative suffixes rather than relying on \b.
     // Mia stricter-default: 做(?!了|过|得|的|出) excludes 做了/做过/做得/
     // 做的/做出 — the conversational/completed forms.
-    zh: /(实现|添加|创建|开发|编写|搭建|新增|修改|更新|更改|重构|删除|移除|优化|增强|扩展|抽取|内联|合并|拆分|转换|生成|脚手架|配置|安装|集成|连接|启用|禁用|改成|改名|改完|改造|改一下|改个|做(?!了|过|得|的|出|不到|不了)|写(?!不出|不来)|搞(?!砸|错|不定|不动|不了|乱|糊涂)|去掉|去除|加上|加入|加进|重启|启动)/,
+    // Issue #472: parallel symmetry fix — 做(?!...|错|坏|废|...) so the
+    // codeChange category doesn't fire on "做错" / "做坏" / "做废" forms.
+    zh: /(实现|添加|创建|开发|编写|搭建|新增|修改|更新|更改|重构|删除|移除|优化|增强|扩展|抽取|内联|合并|拆分|转换|生成|脚手架|配置|安装|集成|连接|启用|禁用|改成|改名|改完|改造|改一下|改个|做(?!了|过|得|的|出|错|坏|废|不到|不了)|写(?!不出|不来)|搞(?!砸|错|不定|不动|不了|乱|糊涂)|去掉|去除|加上|加入|加进|重启|启动)/,
   },
   query: {
     en: /\b(what|where|when|who|which|how|show|list|get|status|check|find|search|look\s*up|count|describe|explain)\b/i,
