@@ -13,8 +13,9 @@ import {
   extendLease,
   scanExpired,
   revokeAndRelease,
+  deleteItem,
 } from './task-pool.controller.js';
-import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
+import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,7 @@ const mockService = {
   extendLease: jest.fn(),
   scanExpiredClaims: jest.fn(),
   revokeAndRelease: jest.fn(),
+  removeFromPool: jest.fn(),
 };
 
 (TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
@@ -451,6 +453,132 @@ describe('TaskPoolController', () => {
       await revokeAndRelease(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // P1 1ffffb84(a) — DELETE /api/task-pool/:workItemId
+  // -------------------------------------------------------------------------
+
+  describe('deleteItem (P1 1ffffb84 component a)', () => {
+    it('returns 200 + removed:true on a successful delete', async () => {
+      mockService.removeFromPool.mockResolvedValue({
+        removed: true,
+        workItem: { id: 'wi-1', status: 'queued' },
+        hadActiveClaim: false,
+      });
+
+      const req = mockReq({ params: { workItemId: 'wi-1' } });
+      const res = mockRes();
+      await deleteItem(req, res);
+
+      expect(mockService.removeFromPool).toHaveBeenCalledWith('wi-1', { force: false });
+      expect(res.status).not.toHaveBeenCalled(); // default 200 from res.json
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          removed: true,
+          workItem: { id: 'wi-1', status: 'queued' },
+          hadActiveClaim: false,
+        }),
+      );
+    });
+
+    it('returns 200 + removed:false + reason=not_found (idempotent on missing id)', async () => {
+      mockService.removeFromPool.mockResolvedValue({
+        removed: false,
+        reason: 'not_found',
+      });
+
+      const req = mockReq({ params: { workItemId: 'ghost' } });
+      const res = mockRes();
+      await deleteItem(req, res);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          removed: false,
+          reason: 'not_found',
+        }),
+      );
+    });
+
+    it('returns 409 with structured payload when WI is claimed (no force)', async () => {
+      mockService.removeFromPool.mockRejectedValue(
+        new WorkItemClaimedError({
+          workItemId: 'wi-2',
+          claimId: 'claim-99',
+          claimedBy: 'agent-leo',
+        }),
+      );
+
+      const req = mockReq({ params: { workItemId: 'wi-2' } });
+      const res = mockRes();
+      await deleteItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          code: 'work_item_claimed',
+          workItemId: 'wi-2',
+          claimId: 'claim-99',
+          claimedBy: 'agent-leo',
+        }),
+      );
+    });
+
+    it('passes force=true through when ?force=1 query is supplied', async () => {
+      mockService.removeFromPool.mockResolvedValue({
+        removed: true,
+        workItem: { id: 'wi-3' },
+        hadActiveClaim: true,
+      });
+
+      const req = mockReq({
+        params: { workItemId: 'wi-3' },
+        query: { force: '1' },
+      });
+      const res = mockRes();
+      await deleteItem(req, res);
+
+      expect(mockService.removeFromPool).toHaveBeenCalledWith('wi-3', { force: true });
+    });
+
+    it('also accepts ?force=true (string-flag fallback)', async () => {
+      mockService.removeFromPool.mockResolvedValue({
+        removed: true,
+        workItem: { id: 'wi-4' },
+        hadActiveClaim: true,
+      });
+
+      const req = mockReq({
+        params: { workItemId: 'wi-4' },
+        query: { force: 'true' },
+      });
+      const res = mockRes();
+      await deleteItem(req, res);
+
+      expect(mockService.removeFromPool).toHaveBeenCalledWith('wi-4', { force: true });
+    });
+
+    it('returns 400 when workItemId param is missing', async () => {
+      const req = mockReq({ params: {} });
+      const res = mockRes();
+      await deleteItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockService.removeFromPool).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 on a generic service error', async () => {
+      mockService.removeFromPool.mockRejectedValue(new Error('disk on fire'));
+
+      const req = mockReq({ params: { workItemId: 'wi-5' } });
+      const res = mockRes();
+      await deleteItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
     });
   });
 });

@@ -20,6 +20,7 @@ import {
   extendLease,
   scanExpired,
   revokeAndRelease,
+  deleteItem,
 } from './task-pool.controller.js';
 
 /**
@@ -68,6 +69,11 @@ export function createTaskPoolRouter(): Router {
 
   // Revoke a claim and release work item
   router.post('/revoke/:claimId', revokeAndRelease);
+
+  // P1 1ffffb84(a) — bulk-DELETE entry. Idempotent on missing id; returns
+  // 409 with structured payload when the WI is claimed and `?force=1` is
+  // not supplied.
+  router.delete('/:workItemId', deleteItem);
 
   return router;
 }
