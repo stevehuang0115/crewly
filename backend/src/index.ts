@@ -360,6 +360,16 @@ export class CrewlyServer {
 		// depend on this for the auto-close path b chain. Idempotent.
 		TaskPoolService.getInstance().setEventBusService(this.eventBusService);
 
+		// P1 Bug B (Pool umbrella WI 72ca743a): Wire RequestService into the
+		// TaskPool singleton so addToPool intrinsically links new WIs into
+		// their parent Request.workItemIds[] — independent of the
+		// subscriber-driven path (request-sla.subscriber, V3DataService).
+		// Pre-fix, manual / programmatic / cron callers that bypassed the
+		// event chain left Requests with empty workItemIds[]. The linker is
+		// idempotent (request.service.ts:328 short-circuits on duplicate id)
+		// so subscriber-driven linking stays as belt-and-suspenders.
+		TaskPoolService.getInstance().setRequestService(RequestService.getInstance());
+
 		// Wire Task Pool router so [TASK]-prefixed messages route through the pool
 		this.queueProcessorService.setTaskPoolRouter(async (messageContent: string, targetSession: string) => {
 			const { createWorkItem } = await import('./types/v2/work-item.types.js');

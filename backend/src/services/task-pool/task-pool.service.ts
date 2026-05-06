@@ -27,6 +27,32 @@ import {
 } from '../../types/v2/claim.types.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 
+/**
+ * Narrow Request-link contract consumed by {@link TaskPoolService.addToPool}.
+ *
+ * Defined as a duck-typed interface (rather than importing the full
+ * `RequestService` class) so tests can supply fakes without depending on
+ * the RequestService transitive imports, and to keep the dependency
+ * direction one-way: TaskPool → Request, never the reverse.
+ *
+ * P1 Bug B (Pool umbrella WI 72ca743a-3a66-4d0e-a6cf-1a861f849dbd):
+ * the production `linkWorkItem` is idempotent — it short-circuits when
+ * `workItemId` is already in `request.workItemIds[]` — so the
+ * intrinsic-link path here is safe to coexist with downstream
+ * subscriber-driven linking (request-sla.subscriber, V3DataService).
+ */
+export interface IRequestWorkItemLinker {
+  /**
+   * Idempotently link a WorkItem id to a Request's workItemIds[].
+   *
+   * @param requestId - The parent Request id (already on the WI).
+   * @param workItemId - The WorkItem id to link.
+   * @returns The updated Request, or null if the Request was not found.
+   *   `addToPool` ignores the return value — link failure is best-effort.
+   */
+  linkWorkItem(requestId: string, workItemId: string): Promise<unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // Filter / Snapshot Types
 // ---------------------------------------------------------------------------
@@ -118,6 +144,27 @@ export class TaskPoolService {
   private eventBus: EventBusService | null = null;
 
   /**
+   * Optional Request-linker reference — wired via {@link setRequestService}
+   * from the boot path. When set, {@link addToPool} pushes the new WI's id
+   * into the parent `Request.workItemIds[]` immediately after the storage
+   * flush, independent of any downstream subscriber.
+   *
+   * P1 Bug B (Pool umbrella WI 72ca743a) intrinsic-link contract:
+   *  - The pre-fix path relied on `workitem:queued` / `task:delegated`
+   *    subscribers (request-sla.subscriber, V3DataService) to backfill
+   *    `Request.workItemIds[]`. Manual / programmatic / cron callers that
+   *    bypass the standard event chain left Requests with
+   *    `workItemIds=[]` even though their WIs were in the pool.
+   *  - The intrinsic path here is the source-of-truth link and runs on
+   *    every `addToPool`. Subscriber-driven linking remains as
+   *    belt-and-suspenders (idempotent — see request.service.ts:328
+   *    short-circuit on duplicate id).
+   *  - Optional because singleton callers (tests, CLI) bring up the pool
+   *    before RequestService exists; missing linker is a no-op debug log.
+   */
+  private requestService: IRequestWorkItemLinker | null = null;
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -142,6 +189,23 @@ export class TaskPoolService {
    */
   setEventBusService(bus: EventBusService | null): void {
     this.eventBus = bus;
+  }
+
+  /**
+   * Wire the Request-linker reference used by {@link addToPool} to
+   * intrinsically link the new WI into its parent `Request.workItemIds[]`
+   * (P1 Bug B — Pool umbrella WI 72ca743a).
+   *
+   * Called from the backend boot path after both services exist.
+   * Idempotent and may be called with `null` to disable intrinsic
+   * linking (testing). Mirrors the {@link setEventBusService} setter
+   * pattern so the dependency wiring stays uniform and grep-able.
+   *
+   * @param svc - The RequestService instance (or any object satisfying
+   *   {@link IRequestWorkItemLinker}), or null to clear.
+   */
+  setRequestService(svc: IRequestWorkItemLinker | null): void {
+    this.requestService = svc;
   }
 
   /**
@@ -216,12 +280,72 @@ export class TaskPoolService {
       title: workItem.title,
     });
 
+    // P1 Bug B (Pool umbrella WI 72ca743a): intrinsically link the new
+    // WI into its parent `Request.workItemIds[]` if a linker is wired
+    // and the WI carries a requestId. This is the SOURCE-OF-TRUTH link
+    // and runs unconditionally on every successful addToPool, fixing
+    // the bug where manual / programmatic / cron / orchestrator-script
+    // callers that bypass the standard event chain left Requests with
+    // empty `workItemIds[]`.
+    //
+    // Subscriber-driven linking (request-sla.subscriber.ts on
+    // workitem:queued, V3DataService.onTaskDelegated on task:delegated)
+    // continues to run as belt-and-suspenders — `linkWorkItem` is
+    // idempotent (request.service.ts:328 short-circuits on duplicate id),
+    // so double-link is safe.
+    //
+    // Failure isolation: pool mutation is the source of truth. Link
+    // failures are warn-logged and swallowed; subscriber path remains
+    // as a backup, and a future addToPool of the same WI is a no-op
+    // (storage dedup) so retry comes via natural traffic.
+    await this.linkWorkItemToRequest(workItem);
+
     // INBOUND-1.f1: announce the queue mutation so subscribers (notably the
     // RequestSlaSubscriber) can react. We publish AFTER the storage flush
     // so any subscriber that re-reads via taskPool.findWorkItem sees the
     // committed item. Publish failures are logged-but-isolated — the pool
     // mutation is the source of truth, the event is informational.
     this.publishWorkItemQueued(workItem);
+  }
+
+  /**
+   * P1 Bug B helper: intrinsically link a freshly-added WI into its
+   * parent `Request.workItemIds[]`.
+   *
+   * Stays a separate method (vs inlining) so:
+   *   1. The dependency on RequestService stays explicit and grep-able,
+   *      mirroring {@link publishWorkItemQueued}.
+   *   2. Future enqueue paths (e.g. a batch addAll) can route through
+   *      the same linker for consistent behaviour.
+   *   3. Error handling stays in one place — a thrown linker must NOT
+   *      back out the pool mutation (the storage write already committed).
+   *
+   * @param workItem - The WI just persisted into the pool.
+   */
+  private async linkWorkItemToRequest(workItem: WorkItem): Promise<void> {
+    if (!workItem.requestId) {
+      // No parent Request — nothing to link.
+      return;
+    }
+    if (!this.requestService) {
+      this.logger.debug(
+        'No RequestService wired — skipping intrinsic Request link',
+        { workItemId: workItem.id, requestId: workItem.requestId },
+      );
+      return;
+    }
+    try {
+      await this.requestService.linkWorkItem(workItem.requestId, workItem.id);
+    } catch (linkError) {
+      this.logger.warn(
+        'Bug B intrinsic link failed (subscriber path remains as fallback)',
+        {
+          requestId: workItem.requestId,
+          workItemId: workItem.id,
+          error: formatError(linkError),
+        },
+      );
+    }
   }
 
   /**

@@ -190,6 +190,189 @@ describe('TaskPoolService', () => {
         expect(items[0].id).toBe(wi.id);
       });
     });
+
+    // ---------------------------------------------------------------------
+    // P1 Bug B: intrinsic Request.workItemIds[] backfill
+    //
+    // Pool umbrella WorkItem 72ca743a-3a66-4d0e-a6cf-1a861f849dbd.
+    //
+    // Pre-fix, addToPool stored requestId on the WI but did NOT push the
+    // WI id into Request.workItemIds[] — that link only happened via
+    // downstream subscribers (request-sla.subscriber on workitem:queued,
+    // V3DataService on task:delegated), both of which require the caller
+    // to have gone through the standard event chain. Manual / programmatic
+    // / cron / orchestrator-script callers bypassed those subscribers and
+    // left Requests with empty workItemIds[].
+    //
+    // The fix: addToPool now invokes a wired `linkWorkItem` on every
+    // successful enqueue. linkWorkItem is idempotent (short-circuits on
+    // duplicate id) so subscriber-driven linking remains as
+    // belt-and-suspenders. These tests pin the contract.
+    // ---------------------------------------------------------------------
+    describe('intrinsic Request link (P1 Bug B)', () => {
+      function makeFakeLinker() {
+        const calls: Array<{ requestId: string; workItemId: string }> = [];
+        const linker = {
+          linkWorkItem: jest.fn(async (requestId: string, workItemId: string) => {
+            calls.push({ requestId, workItemId });
+            return null;
+          }),
+        };
+        return { linker, calls };
+      }
+
+      it('calls linkWorkItem(requestId, workItemId) once when wi.requestId is set', async () => {
+        const { linker, calls } = makeFakeLinker();
+        service.setRequestService(linker as any);
+
+        const wi = makeWorkItem({ requestId: 'req-bug-b-1' });
+        await service.addToPool(wi);
+
+        expect(linker.linkWorkItem).toHaveBeenCalledTimes(1);
+        expect(calls[0]).toEqual({ requestId: 'req-bug-b-1', workItemId: wi.id });
+      });
+
+      it('does NOT call linkWorkItem when wi.requestId is NOT set', async () => {
+        const { linker } = makeFakeLinker();
+        service.setRequestService(linker as any);
+
+        const wi = makeWorkItem(); // no requestId
+        await service.addToPool(wi);
+
+        expect(linker.linkWorkItem).not.toHaveBeenCalled();
+      });
+
+      it('isolates linkWorkItem failures (addToPool still succeeds, warn-logged)', async () => {
+        const linker = {
+          linkWorkItem: jest.fn(async () => {
+            throw new Error('linker blew up — db down');
+          }),
+        };
+        service.setRequestService(linker as any);
+
+        const wi = makeWorkItem({ requestId: 'req-fail' });
+
+        // CRITICAL: addToPool must NOT re-throw — pool mutation is the
+        // source of truth, link is best-effort.
+        await expect(service.addToPool(wi)).resolves.toBeUndefined();
+
+        // Pool mutation committed even though link threw.
+        const items = await service.getAllItems();
+        expect(items).toHaveLength(1);
+        expect(items[0].id).toBe(wi.id);
+        expect(linker.linkWorkItem).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not double-link on duplicate addToPool calls (storage dedup short-circuits)', async () => {
+        const { linker } = makeFakeLinker();
+        service.setRequestService(linker as any);
+
+        const wi = makeWorkItem({ requestId: 'req-dup-link' });
+        await service.addToPool(wi);
+        await service.addToPool(wi); // duplicate id — storage short-circuits at line 206
+
+        // The duplicate addToPool returns early BEFORE the link call,
+        // so linkWorkItem is invoked exactly once. Even if it were called
+        // twice, the production linkWorkItem itself short-circuits on
+        // duplicate workItemId (request.service.ts:328) — pinned in a
+        // belt-and-suspenders test below.
+        expect(linker.linkWorkItem).toHaveBeenCalledTimes(1);
+      });
+
+      it('does NOT call linkWorkItem when no RequestService is wired (legacy/test path)', async () => {
+        // No setRequestService — requestService stays null, addToPool
+        // must not throw and the linker call must be skipped silently.
+        const wi = makeWorkItem({ requestId: 'req-no-linker' });
+        await expect(service.addToPool(wi)).resolves.toBeUndefined();
+
+        const items = await service.getAllItems();
+        expect(items).toHaveLength(1);
+      });
+
+      it('coexists with EventBus publish (both linker and bus invoked, in order)', async () => {
+        // Pin the belt-and-suspenders contract: a caller that goes
+        // through the request:created event chain still triggers BOTH
+        // the intrinsic link (this fix) AND the subscriber-driven link
+        // (downstream of workitem:queued). The downstream link is
+        // exercised in production via request-sla.subscriber.ts:1153,
+        // not invoked here, but we pin the publish ordering.
+        const publishCalls: any[] = [];
+        const fakeBus = {
+          publish: jest.fn((event: any) => publishCalls.push(event)),
+        } as any;
+        const { linker } = makeFakeLinker();
+
+        service.setEventBusService(fakeBus);
+        service.setRequestService(linker as any);
+
+        const wi = makeWorkItem({ requestId: 'req-coexist' });
+        await service.addToPool(wi);
+
+        // Both fired
+        expect(linker.linkWorkItem).toHaveBeenCalledTimes(1);
+        expect(publishCalls).toHaveLength(1);
+        expect(publishCalls[0].requestId).toBe('req-coexist');
+
+        // Ordering: linker BEFORE publish, so a subscriber that loads the
+        // Request synchronously after seeing workitem:queued will already
+        // observe the intrinsic link. (Subscribers re-link idempotently
+        // anyway, but ordering is documented.)
+        const linkOrder = (linker.linkWorkItem as jest.Mock).mock.invocationCallOrder[0];
+        const publishOrder = fakeBus.publish.mock.invocationCallOrder[0];
+        expect(linkOrder).toBeLessThan(publishOrder);
+      });
+
+      it('integration repro: ORC 322e7fd3 case — direct addToPool populates Request.workItemIds[]', async () => {
+        // Mimic the exact failure mode from ORC's bug report: a Request
+        // exists, then a caller directly invokes taskPool.addToPool
+        // outside the request:created event chain (no SLA subscriber, no
+        // V3DataService). PRE-FIX: workItemIds stays empty. POST-FIX:
+        // the intrinsic link populates it.
+        //
+        // We use a FAKE Request store keyed on requestId — simpler than
+        // standing up the full RequestService / persistence stack and
+        // pins the wire contract that matters: linkWorkItem produces the
+        // observed mutation on the Request side.
+        const fakeRequestStore = new Map<string, { id: string; workItemIds: string[] }>();
+        fakeRequestStore.set('req-322e7fd3', {
+          id: 'req-322e7fd3',
+          workItemIds: [], // empty — the bug condition
+        });
+
+        const linker = {
+          linkWorkItem: jest.fn(async (requestId: string, workItemId: string) => {
+            const req = fakeRequestStore.get(requestId);
+            if (!req) return null;
+            // Idempotency: short-circuit on duplicate id (mirrors
+            // request.service.ts:328).
+            if (!req.workItemIds.includes(workItemId)) {
+              req.workItemIds.push(workItemId);
+            }
+            return req;
+          }),
+        };
+        service.setRequestService(linker as any);
+
+        // PRE-FIX assertion baseline
+        expect(fakeRequestStore.get('req-322e7fd3')!.workItemIds).toEqual([]);
+
+        // Direct addToPool — bypasses any event subscribers
+        const wi = makeWorkItem({ requestId: 'req-322e7fd3' });
+        await service.addToPool(wi);
+
+        // POST-FIX: intrinsic link populated workItemIds
+        const after = fakeRequestStore.get('req-322e7fd3')!;
+        expect(after.workItemIds).toHaveLength(1);
+        expect(after.workItemIds).toContain(wi.id);
+
+        // Subscriber-driven re-link (simulated): calling linkWorkItem
+        // again with the same ids is a no-op due to the includes() guard.
+        // This pins the belt-and-suspenders idempotency contract.
+        await linker.linkWorkItem('req-322e7fd3', wi.id);
+        const afterSecondLink = fakeRequestStore.get('req-322e7fd3')!;
+        expect(afterSecondLink.workItemIds).toHaveLength(1); // still 1
+      });
+    });
   });
 
   // -----------------------------------------------------------------------
