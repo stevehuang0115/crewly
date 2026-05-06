@@ -21,11 +21,89 @@ import {
   validateCreateRequestInput,
   createRequest,
 } from '../../types/v2/index.js';
+import {
+  type WorkItem,
+  TERMINAL_WORK_ITEM_STATUSES,
+} from '../../types/v2/work-item.types.js';
 import { planTasksFromObjective, type PlannedTask } from './v3-data.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 
 /** Directory name under .crewly for request storage. */
 const REQUESTS_DIR = 'requests';
+
+// ---------------------------------------------------------------------------
+// P1 Bug C — Request → done lifecycle gate (Pool umbrella WI 72ca743a)
+// ---------------------------------------------------------------------------
+
+/**
+ * Duck-typed interface RequestService uses to query child WorkItem
+ * states for the {@link RequestService.update} → done gate.
+ *
+ * Defined as an interface (not a TaskPoolService import) so request.service
+ * does NOT acquire a static dependency on task-pool.service. The dependency
+ * direction stays one-way: TaskPool → Request (via Bug B's
+ * `IRequestWorkItemLinker`), Request → TaskPool only via this duck-typed
+ * setter (Bug C). This breaks the otherwise-circular type graph that would
+ * form if either side imported the other concretely.
+ *
+ * Tests pass a fake; production wires the real TaskPoolService instance via
+ * {@link RequestService.setTaskPoolService}.
+ *
+ * P1 Bug C (Pool umbrella WI 72ca743a-3a66-4d0e-a6cf-1a861f849dbd, sub-WI
+ *           72ca743a Bug C): the F9 fixture closed a Request to status=done
+ * with a non-terminal child WI in the pool. The gate fetches each child by
+ * id and refuses the transition if any child is in a non-terminal state.
+ */
+export interface IWorkItemQueryable {
+  /**
+   * Look up a WorkItem by id. Returns `null` if no item has that id —
+   * mirrors {@link TaskPoolService.findWorkItem}'s null-fallthrough idiom.
+   *
+   * @param workItemId - WorkItem id to look up
+   * @returns The WorkItem, or `null` if no item has that id
+   */
+  findWorkItem(workItemId: string): Promise<WorkItem | null>;
+}
+
+/**
+ * Structured error thrown when {@link RequestService.update} refuses to
+ * transition a Request to `done` because at least one of its child
+ * WorkItems is still in a non-terminal state.
+ *
+ * Distinct error class (not a generic `Error`) so callers can branch on
+ * `instanceof RequestStillHasOpenChildrenError` and surface a meaningful
+ * message — Slack bridge, REST consumers, audit, all want to differentiate
+ * "still has open children" from generic transition-validation errors.
+ *
+ * The structured payload exposes `requestId`, `openChildIds`, and
+ * `openChildCount` so consumers can render actionable messages without
+ * re-querying the pool.
+ */
+export class RequestStillHasOpenChildrenError extends Error {
+  /** The Request id that was refused. */
+  public readonly requestId: string;
+  /** WorkItem ids of children that are still in non-terminal status. */
+  public readonly openChildIds: readonly string[];
+  /** Convenience: openChildIds.length, included for log/format symmetry. */
+  public readonly openChildCount: number;
+
+  constructor(args: { requestId: string; openChildIds: readonly string[] }) {
+    const count = args.openChildIds.length;
+    super(
+      `Request '${args.requestId}' cannot transition to 'done': ` +
+      `${count} child WorkItem${count === 1 ? '' : 's'} still in non-terminal ` +
+      `state (${args.openChildIds.join(', ')}). Terminal WI statuses are: ` +
+      `${[...TERMINAL_WORK_ITEM_STATUSES].join(', ')}.`,
+    );
+    this.name = 'RequestStillHasOpenChildrenError';
+    this.requestId = args.requestId;
+    this.openChildIds = args.openChildIds;
+    this.openChildCount = count;
+    // Restore prototype chain — required when extending Error in TS targets
+    // older than ES2015 to keep `instanceof` working through transpilation.
+    Object.setPrototypeOf(this, RequestStillHasOpenChildrenError.prototype);
+  }
+}
 
 /**
  * Module-level event bus reference, wired from `backend/src/index.ts` via
@@ -67,6 +145,20 @@ export class RequestService {
   private readonly requestsDir: string;
 
   /**
+   * Optional TaskPool reference used by the {@link update} → done gate
+   * to verify that all child WorkItems are in terminal state before the
+   * Request itself can close. Wired via {@link setTaskPoolService} from
+   * the backend boot path (P1 Bug C — Pool umbrella WI 72ca743a).
+   *
+   * When `null`, the gate degrades gracefully — closure proceeds with a
+   * warning log. This preserves backward compatibility for tests and
+   * boot orderings that happen to call `update` before the wiring step.
+   * Production paths always wire the dependency before any user-facing
+   * Request close request can land.
+   */
+  private taskPoolService: IWorkItemQueryable | null = null;
+
+  /**
    * Creates a new RequestService.
    *
    * @param projectPath - Absolute path to the project root
@@ -94,6 +186,23 @@ export class RequestService {
    */
   public static resetInstance(): void {
     RequestService.instance = null;
+  }
+
+  /**
+   * Wire the TaskPool-queryable used by the Request → done gate
+   * (P1 Bug C — Pool umbrella WI 72ca743a).
+   *
+   * Called from the backend boot path after both services exist. Mirrors
+   * Bug B's {@link TaskPoolService.setRequestService} — same setter shape,
+   * idempotent, accepts `null` to clear in tests. Keeps the dependency
+   * direction Request → TaskPool one-way and duck-typed, so neither
+   * service needs a static import of the other.
+   *
+   * @param svc - The TaskPoolService instance (or any object satisfying
+   *   {@link IWorkItemQueryable}), or null to clear.
+   */
+  public setTaskPoolService(svc: IWorkItemQueryable | null): void {
+    this.taskPoolService = svc;
   }
 
   // ---------------------------------------------------------------------------
@@ -272,6 +381,27 @@ export class RequestService {
           `Invalid status transition: ${request.status} -> ${updates.status}`,
         );
       }
+
+      // P1 Bug C (Pool umbrella WI 72ca743a) — child WorkItem terminal-state
+      // gate. Refuse Request → done if any child WI in workItemIds[] is in a
+      // non-terminal state. F9 fixture symptom: Request closed to done with a
+      // queued child WI still in the pool. Bug B (#467, merged 8bf58a11) made
+      // workItemIds[] authoritative on every addToPool, so the gate operates
+      // on reliable data.
+      //
+      // Only `done` is gated. `cancelled` is intentionally NOT gated — a
+      // user / TL may cancel a Request while children are mid-flight; the
+      // cancellation cascade (orphaned children) is a separate concern owned
+      // by a future work item.
+      //
+      // The gate degrades gracefully when `taskPoolService` is null (test or
+      // unwired boot order): a warning is logged and the transition proceeds
+      // with the original (pre-fix) behavior. Production wiring runs before
+      // any user-facing close path.
+      if (updates.status === 'done' && request.workItemIds.length > 0) {
+        await this.assertAllChildrenTerminal(request);
+      }
+
       request.status = updates.status;
       if (updates.status === 'done' || updates.status === 'cancelled') {
         request.completedAt = new Date().toISOString();
@@ -297,6 +427,67 @@ export class RequestService {
     await this.save(request);
     this.logger.debug('Request updated', { id, status: request.status });
     return request;
+  }
+
+  /**
+   * P1 Bug C gate helper — verify that every WorkItem id in
+   * `request.workItemIds[]` resolves to a WorkItem in terminal state.
+   *
+   * Throws {@link RequestStillHasOpenChildrenError} when at least one child
+   * is non-terminal. Missing children (returned `null` by
+   * {@link IWorkItemQueryable.findWorkItem}) are treated as **terminal /
+   * harmless** — a deleted-or-purged WI does not block its parent's
+   * closure. This matches the option-a "graceful degrade" stance ORC took
+   * on historical orphan WIs and avoids a deadlock between data-cleanup
+   * jobs and lifecycle gates.
+   *
+   * Semantics: non-terminal = anything not in
+   * {@link TERMINAL_WORK_ITEM_STATUSES} (`done`, `verified`, `cancelled`).
+   * `failed` and `rejected` are treated as non-terminal because the WI
+   * state-machine in {@link WORK_ITEM_TRANSITIONS} explicitly allows them
+   * to re-enter `queued` — work the user requested is not actually
+   * complete.
+   *
+   * @param request - The Request whose children to verify
+   * @throws {@link RequestStillHasOpenChildrenError} when any child is
+   *   non-terminal.
+   */
+  private async assertAllChildrenTerminal(request: Request): Promise<void> {
+    if (!this.taskPoolService) {
+      // Graceful degrade — preserve pre-fix behavior when the gate hasn't
+      // been wired yet (test scaffold, unusual boot order). Production
+      // boot wires the dependency before any user-facing close path.
+      this.logger.warn(
+        'Request → done lifecycle gate skipped: taskPoolService not wired',
+        { requestId: request.id, childCount: request.workItemIds.length },
+      );
+      return;
+    }
+
+    const queryable = this.taskPoolService;
+    const children = await Promise.all(
+      request.workItemIds.map((id) => queryable.findWorkItem(id)),
+    );
+
+    const openChildIds: string[] = [];
+    for (let i = 0; i < children.length; i++) {
+      const wi = children[i];
+      if (wi !== null && !TERMINAL_WORK_ITEM_STATUSES.has(wi.status)) {
+        openChildIds.push(wi.id);
+      }
+    }
+
+    if (openChildIds.length > 0) {
+      this.logger.info('Request → done refused: open child WorkItems', {
+        requestId: request.id,
+        openChildCount: openChildIds.length,
+        openChildIds,
+      });
+      throw new RequestStillHasOpenChildrenError({
+        requestId: request.id,
+        openChildIds,
+      });
+    }
   }
 
   /**
