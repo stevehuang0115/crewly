@@ -36,7 +36,6 @@ import {
   classifyIntentCategory,
 } from '../../types/intent-task.types.js';
 import { ensureDir, atomicWriteJson } from '../../utils/file-io.utils.js';
-import { ProjectTaskWatcherService } from './project-task-watcher.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -144,13 +143,13 @@ export class V3DataService {
   private readonly storageService = StorageService.getInstance();
   private readonly projectPath: string;
   private readonly missionsDir: string;
-  private taskWatcher: ProjectTaskWatcherService | null = null;
 
   /**
    * Creates and initializes the V3DataService.
    *
-   * Subscribes to EventBus domain events and starts the ProjectTask file watcher
-   * to ensure every ProjectTask has a corresponding WorkItem.
+   * Subscribes to EventBus domain events. (Legacy ProjectTask file watcher
+   * was retired with the V3↔.md bridge deprecation per
+   * `specs/2026-05-06-projecttask-md-deprecation.md`.)
    *
    * @param eventBus - The EventEmitter that publishes domain events
    * @param projectPath - Absolute path to the project root
@@ -170,30 +169,7 @@ export class V3DataService {
     this.eventBus.on('v3:goal_set', this.onGoalSet.bind(this));
     this.eventBus.on('v3:user_work_message', this.onUserWorkMessage.bind(this));
 
-    // Start ProjectTask file watcher (fire-and-forget)
-    this.startTaskWatcher();
-
     this.logger.info('V3DataService initialized — listening for domain events');
-  }
-
-  /**
-   * Starts the ProjectTask file watcher that monitors `.crewly/tasks/` for
-   * new task files and auto-creates WorkItems. Fire-and-forget — errors
-   * are logged but never block initialization.
-   */
-  private startTaskWatcher(): void {
-    try {
-      this.taskWatcher = new ProjectTaskWatcherService(this.projectPath);
-      this.taskWatcher.start().catch((err) => {
-        this.logger.warn('ProjectTaskWatcher start failed (non-fatal)', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-    } catch (err) {
-      this.logger.warn('ProjectTaskWatcher initialization failed (non-fatal)', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -882,11 +858,6 @@ export class V3DataService {
     this.eventBus.removeAllListeners('v3:task_blocked');
     this.eventBus.removeAllListeners('v3:goal_set');
     this.eventBus.removeAllListeners('v3:user_work_message');
-
-    if (this.taskWatcher) {
-      this.taskWatcher.dispose();
-      this.taskWatcher = null;
-    }
 
     this.logger.info('V3DataService disposed');
   }

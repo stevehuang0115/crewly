@@ -700,151 +700,133 @@ describe('SessionHandoffService', () => {
     });
   });
 
-  describe('parseTaskFile', () => {
-    it('should extract title, assignee, priority, and status from task file', async () => {
-      const taskContent = [
-        '# [TASK] Implement login feature',
-        '',
-        'Priority: high',
-        'Assignee: sam-dev-001',
-        '',
-        '## Task Information',
-        '- **Priority**: high',
-        '- **Status**: In Progress',
-        '',
-        '## Assignment Information',
-        '- **Assigned to**: crewly-product-sam-217bfbbf',
-        '- **Assigned at**: 2026-03-16T12:00:00.000Z',
-      ].join('\n');
+  // (parseTaskFile removed in Phase 2 Workstream C — V3 task-pool is now SoT,
+  // no longer parses .md filesystem fixtures.
+  // See specs/2026-05-06-projecttask-md-deprecation.md.)
 
-      const filePath = path.join(testDir, 'task-login.md');
-      await fs.writeFile(filePath, taskContent);
+  describe('scanPendingTasks (V3 task-pool source)', () => {
+    /**
+     * Replaces the TaskPoolService singleton's `getAllItems` for the duration
+     * of one test.
+     *
+     * @param items - Stub WorkItem-shaped objects to be returned
+     */
+    async function stubTaskPool(
+      items: Array<{
+        id: string;
+        title: string;
+        target?: string;
+        status: string;
+        priority?: string;
+      }>,
+    ): Promise<jest.SpyInstance> {
+      const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+      const pool = TaskPoolService.getInstance();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return jest.spyOn(pool, 'getAllItems').mockResolvedValue(items as any);
+    }
 
-      const result = await service.parseTaskFile(filePath, 'in_progress');
-
-      expect(result).not.toBeNull();
-      expect(result!.title).toBe('Implement login feature');
-      expect(result!.assignedTo).toBe('crewly-product-sam-217bfbbf');
-      expect(result!.priority).toBe('high');
-      expect(result!.status).toBe('in_progress');
+    afterEach(() => {
+      jest.restoreAllMocks();
     });
 
-    it('should truncate long titles to 100 characters', async () => {
-      const longTitle = 'A'.repeat(150);
-      const taskContent = `# ${longTitle}\n\nPriority: low\n`;
-      const filePath = path.join(testDir, 'task-long.md');
-      await fs.writeFile(filePath, taskContent);
+    it('returns non-terminal WorkItems mapped to PendingTaskInfo', async () => {
+      await stubTaskPool([
+        { id: 'wi-1', title: 'Build API', target: 'sam-001', status: 'queued', priority: 'high' },
+        { id: 'wi-2', title: 'Fix bug', target: 'leo-002', status: 'running', priority: 'low' },
+        { id: 'wi-3', title: 'Done thing', target: 'max-003', status: 'done', priority: 'high' },
+        { id: 'wi-4', title: 'Cancelled thing', status: 'cancelled' },
+      ]);
 
-      const result = await service.parseTaskFile(filePath, 'open');
-
-      expect(result).not.toBeNull();
-      expect(result!.title.length).toBe(100);
-      expect(result!.title).toMatch(/\.\.\.$/);
-    });
-
-    it('should use defaults when fields are missing', async () => {
-      const taskContent = '# Simple task\n\nNo metadata here.\n';
-      const filePath = path.join(testDir, 'task-simple.md');
-      await fs.writeFile(filePath, taskContent);
-
-      const result = await service.parseTaskFile(filePath, 'open');
-
-      expect(result).not.toBeNull();
-      expect(result!.title).toBe('Simple task');
-      expect(result!.assignedTo).toBe('unassigned');
-      expect(result!.priority).toBe('medium');
-      expect(result!.status).toBe('open');
-    });
-
-    it('should return null for non-existent file', async () => {
-      const result = await service.parseTaskFile('/non/existent/task.md', 'open');
-      expect(result).toBeNull();
-    });
-
-    it('should strip [TASK] prefix from title', async () => {
-      const taskContent = '# [TASK] Fix the bug\n';
-      const filePath = path.join(testDir, 'task-prefix.md');
-      await fs.writeFile(filePath, taskContent);
-
-      const result = await service.parseTaskFile(filePath, 'in_progress');
-      expect(result!.title).toBe('Fix the bug');
-    });
-  });
-
-  describe('scanPendingTasks', () => {
-    let tasksBaseDir: string;
-
-    beforeEach(async () => {
-      tasksBaseDir = path.join(testDir, 'tasks-delegated');
-      await fs.mkdir(path.join(tasksBaseDir, 'in_progress'), { recursive: true });
-      await fs.mkdir(path.join(tasksBaseDir, 'open'), { recursive: true });
-      await fs.mkdir(path.join(tasksBaseDir, 'done'), { recursive: true });
-    });
-
-    it('should find tasks in in_progress and open directories', async () => {
-      await fs.writeFile(
-        path.join(tasksBaseDir, 'in_progress', 'task1.md'),
-        '# Build API\n\n## Assignment Information\n- **Assigned to**: sam-001\n- **Priority**: high\n',
-      );
-      await fs.writeFile(
-        path.join(tasksBaseDir, 'open', 'task2.md'),
-        '# Fix bug\n\n## Assignment Information\n- **Assigned to**: leo-002\n- **Priority**: low\n',
-      );
-      // done should be ignored
-      await fs.writeFile(
-        path.join(tasksBaseDir, 'done', 'task3.md'),
-        '# Done task\n\nAssignee: max-003\nPriority: high\n',
-      );
-
-      const result = await service.scanPendingTasks(tasksBaseDir);
-
+      const result = await service.scanPendingTasks();
       expect(result).toHaveLength(2);
-      expect(result[0].title).toBe('Build API');
-      expect(result[0].status).toBe('in_progress');
-      expect(result[1].title).toBe('Fix bug');
-      expect(result[1].status).toBe('open');
+      // running first per the new sort key
+      expect(result[0].title).toBe('Fix bug');
+      expect(result[0].status).toBe('running');
+      expect(result[1].title).toBe('Build API');
+      expect(result[1].status).toBe('queued');
     });
 
-    it('should sort in_progress before open, then by priority', async () => {
-      await fs.writeFile(
-        path.join(tasksBaseDir, 'open', 'task-high.md'),
-        '# High priority open\n\n- **Priority**: high\n- **Assigned to**: agent-1\n',
-      );
-      await fs.writeFile(
-        path.join(tasksBaseDir, 'in_progress', 'task-low.md'),
-        '# Low priority active\n\n- **Priority**: low\n- **Assigned to**: agent-2\n',
-      );
+    it('orders running before queued, then by priority within tier', async () => {
+      await stubTaskPool([
+        { id: 'wi-q-hi', title: 'Q high', target: 'a-1', status: 'queued', priority: 'high' },
+        { id: 'wi-r-lo', title: 'R low', target: 'a-2', status: 'running', priority: 'low' },
+        { id: 'wi-q-lo', title: 'Q low', target: 'a-3', status: 'queued', priority: 'low' },
+      ]);
 
-      const result = await service.scanPendingTasks(tasksBaseDir);
-
-      expect(result).toHaveLength(2);
-      expect(result[0].status).toBe('in_progress');
-      expect(result[1].status).toBe('open');
+      const result = await service.scanPendingTasks();
+      expect(result.map((t) => t.title)).toEqual(['R low', 'Q high', 'Q low']);
     });
 
-    it('should skip non-.md files', async () => {
-      await fs.writeFile(path.join(tasksBaseDir, 'in_progress', 'notes.txt'), 'not a task');
-      await fs.writeFile(path.join(tasksBaseDir, 'in_progress', 'data.json'), '{}');
+    it('treats `proposed`, `accepted`, `blocked`, `done_by_worker` as still-pending', async () => {
+      await stubTaskPool([
+        { id: 'wi-prop', title: 'Proposed', target: 'a-1', status: 'proposed' },
+        { id: 'wi-acc', title: 'Accepted', target: 'a-2', status: 'accepted' },
+        { id: 'wi-blk', title: 'Blocked', target: 'a-3', status: 'blocked' },
+        { id: 'wi-dbw', title: 'Awaiting verify', target: 'a-4', status: 'done_by_worker' },
+        { id: 'wi-done', title: 'Done', target: 'a-5', status: 'done' },
+        { id: 'wi-ver', title: 'Verified', target: 'a-6', status: 'verified' },
+      ]);
 
-      const result = await service.scanPendingTasks(tasksBaseDir);
-      expect(result).toHaveLength(0);
+      const result = await service.scanPendingTasks();
+      const ids = result.map((t) => t.filePath);
+      expect(ids).toEqual(expect.arrayContaining(['wi-prop', 'wi-acc', 'wi-blk', 'wi-dbw']));
+      expect(ids).not.toEqual(expect.arrayContaining(['wi-done', 'wi-ver']));
     });
 
-    it('should return empty array for non-existent directory', async () => {
-      const result = await service.scanPendingTasks('/non/existent/tasks');
-      expect(result).toHaveLength(0);
+    it('uses WorkItem id as the stable filePath identifier', async () => {
+      await stubTaskPool([
+        { id: 'abc-123', title: 't', target: 'a', status: 'queued' },
+      ]);
+      const result = await service.scanPendingTasks();
+      expect(result[0].filePath).toBe('abc-123');
     });
 
-    it('should limit to MAX_PENDING_TASKS', async () => {
-      for (let i = 0; i < 15; i++) {
-        await fs.writeFile(
-          path.join(tasksBaseDir, 'open', `task-${i}.md`),
-          `# Task ${i}\n\n- **Assigned to**: agent-${i}\n- **Priority**: medium\n`,
-        );
-      }
+    it('falls back to "unassigned" when target is empty', async () => {
+      await stubTaskPool([
+        { id: 'wi-orphan', title: 'No-target task', status: 'queued' },
+      ]);
+      const result = await service.scanPendingTasks();
+      expect(result[0].assignedTo).toBe('unassigned');
+    });
 
-      const result = await service.scanPendingTasks(tasksBaseDir);
+    it('truncates titles longer than 100 chars', async () => {
+      const longTitle = 'A'.repeat(200);
+      await stubTaskPool([
+        { id: 'wi-long', title: longTitle, target: 'a', status: 'queued' },
+      ]);
+      const result = await service.scanPendingTasks();
+      expect(result[0].title.length).toBe(100);
+      expect(result[0].title.endsWith('...')).toBe(true);
+    });
+
+    it('caps at MAX_PENDING_TASKS', async () => {
+      const many = Array.from({ length: 25 }, (_, i) => ({
+        id: `wi-${i}`,
+        title: `Task ${i}`,
+        target: `a-${i}`,
+        status: 'queued',
+      }));
+      await stubTaskPool(many);
+      const result = await service.scanPendingTasks();
       expect(result.length).toBeLessThanOrEqual(10);
+    });
+
+    it('returns empty array when the task-pool throws', async () => {
+      const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+      const pool = TaskPoolService.getInstance();
+      jest.spyOn(pool, 'getAllItems').mockRejectedValue(new Error('boom'));
+
+      const result = await service.scanPendingTasks();
+      expect(result).toEqual([]);
+    });
+
+    it('ignores the legacy tasksBaseDir parameter (kept for caller compat)', async () => {
+      await stubTaskPool([
+        { id: 'wi-1', title: 't', target: 'a', status: 'queued' },
+      ]);
+      const result = await service.scanPendingTasks('/some/legacy/path/that/does/not/matter');
+      expect(result).toHaveLength(1);
     });
   });
 
@@ -898,33 +880,37 @@ describe('SessionHandoffService', () => {
   });
 
   describe('generateSummary with pending tasks', () => {
-    it('should include pending tasks in generated summary', async () => {
+    it('should include pending tasks (sourced from V3 task-pool) in generated summary', async () => {
       const summariesDir = path.join(testDir, 'session-summaries');
       jest.spyOn(service, 'getSummariesDir').mockReturnValue(summariesDir);
       jest.spyOn(service, 'getLatestSummaryPath').mockReturnValue(path.join(summariesDir, 'latest.md'));
       jest.spyOn(service, 'scanThreadDirectory').mockResolvedValue([]);
       jest.spyOn(service, 'scanChatUiConversations').mockResolvedValue([]);
 
-      // Create task files
-      const tasksDir = path.join(testDir, 'tasks-gen');
-      await fs.mkdir(path.join(tasksDir, 'in_progress'), { recursive: true });
-      await fs.mkdir(path.join(tasksDir, 'open'), { recursive: true });
-      await fs.writeFile(
-        path.join(tasksDir, 'in_progress', 'active-task.md'),
-        '# Deploy v2.0\n\n- **Assigned to**: sam-001\n- **Priority**: high\n',
-      );
+      // V3 task-pool is the source of truth post-deprecation. Stub its
+      // singleton to return one running task; everything else (cancelled,
+      // done) must be filtered out by the consumer.
+      const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+      const pool = TaskPoolService.getInstance();
+      jest.spyOn(pool, 'getAllItems').mockResolvedValue([
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'wi-deploy', title: 'Deploy v2.0', target: 'sam-001', status: 'running', priority: 'high' } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'wi-finished', title: 'Old', target: 'a', status: 'done' } as any,
+      ]);
 
       const mockReader: TeamDataReader = {
         getTeams: async () => [{ members: [] }],
       };
 
-      const result = await service.generateSummary(mockReader, tasksDir);
+      // tasksBaseDir is now a no-op (kept for caller compat); the service
+      // routes through TaskPoolService regardless.
+      const result = await service.generateSummary(mockReader, '/ignored');
 
       expect(result.pendingTasks).toHaveLength(1);
       expect(result.pendingTasks[0].title).toBe('Deploy v2.0');
-      expect(result.pendingTasks[0].status).toBe('in_progress');
+      expect(result.pendingTasks[0].status).toBe('running');
 
-      // Verify the saved file contains pending tasks
       const content = await fs.readFile(path.join(summariesDir, 'latest.md'), 'utf-8');
       expect(content).toContain('Pending Tasks');
       expect(content).toContain('Deploy v2.0');
