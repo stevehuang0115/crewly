@@ -87,8 +87,12 @@ export const INTENT_CATEGORIES: readonly IntentCategory[] = [
  * - L0: trivial, no WorkItem needed (direct response)
  * - L1: single WorkItem sufficient
  * - L2: multiple WorkItems, potentially parallel
+ * - L3: OKR/sprint-scoped initiative — multi-day, multi-PR, ORC owns the
+ *   plan personally and recursively decomposes into L2 over time.
+ *   v0 routes L3 the same as L2 internally; the *label* is preserved so
+ *   future routing-split lands without retro-classifying.
  */
-export type IntentLevel = 'L0' | 'L1' | 'L2';
+export type IntentLevel = 'L0' | 'L1' | 'L2' | 'L3';
 
 // ---------------------------------------------------------------------------
 // Core Interface
@@ -291,8 +295,8 @@ export function validateCreateRequestInput(input: CreateRequestInput): string[] 
   if (input.intentCategory && !isValidIntentCategory(input.intentCategory)) {
     errors.push(`intentCategory must be one of: ${INTENT_CATEGORIES.join(', ')}`);
   }
-  if (input.intentLevel && !['L0', 'L1', 'L2'].includes(input.intentLevel)) {
-    errors.push('intentLevel must be one of: L0, L1, L2');
+  if (input.intentLevel && !['L0', 'L1', 'L2', 'L3'].includes(input.intentLevel)) {
+    errors.push('intentLevel must be one of: L0, L1, L2, L3');
   }
   return errors;
 }

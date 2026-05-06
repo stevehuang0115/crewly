@@ -141,7 +141,12 @@ describe('classifyIntentLevel', () => {
     expect(classifyIntentLevel('Implement a new authentication feature for the web service')).toBe('L2');
     expect(classifyIntentLevel('Build the user registration system with email verification')).toBe('L2');
     expect(classifyIntentLevel('Deploy the app to staging environment')).toBe('L2');
-    expect(classifyIntentLevel('Coordinate the team to deliver the sprint tasks')).toBe('L2');
+    // Bug A v0 (Mia §1.3 + §2.6): the sprint-marker + coordinate +
+    // deliver-verb combination promotes to L3 in the new framework.
+    // Pre-Bug-A this returned L2 because L3 didn't exist as a tier; v0
+    // routes L3 = L2 internally (Mia §5 Q1 default) so behavioural
+    // routing is unchanged — only the label moves up.
+    expect(classifyIntentLevel('Coordinate the team to deliver the sprint tasks')).toBe('L3');
     expect(classifyIntentLevel('Migrate the database from MySQL to PostgreSQL')).toBe('L2');
     expect(classifyIntentLevel('Design the API architecture for the new pipeline')).toBe('L2');
   });

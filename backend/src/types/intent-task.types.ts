@@ -23,8 +23,12 @@
  * - L0: Simple query — single agent, no tool calls (e.g., "what time is it?")
  * - L1: Standard task — single agent, may use tools (e.g., "fix this bug")
  * - L2: Complex task — multi-agent, multi-step orchestration (e.g., "build a feature")
+ * - L3: OKR/sprint-scoped initiative — multi-day, multi-PR, multi-team. ORC owns
+ *   the plan personally; success measured against KR/sprint gate, not artifact.
+ *   Routed identically to L2 in v0 (Mia §5 Q1 default); the label is preserved so
+ *   the L3-specific routing-split can land without retro-classifying.
  */
-export type IntentLevel = 'L0' | 'L1' | 'L2';
+export type IntentLevel = 'L0' | 'L1' | 'L2' | 'L3';
 
 /**
  * Intent classification labels for categorizing user requests
@@ -403,9 +407,44 @@ export interface ProjectTaskStatus {
 // Actionability Detection
 // =============================================================================
 
+// Bug A v0 (2026-05-06): classifier rule-set externalised to
+// `backend/src/services/intent-task/intent-classifier.rules.ts` per Mia §5
+// Q4 (code-of-record). Re-importing the EN action-verb pattern + the new
+// ZH counterpart + the ZH non-actionable pre-filters keeps this file's
+// historical EN rules in place while extending coverage symmetrically.
+import {
+  ACTION_VERB_EN,
+  ACTION_VERB_ZH,
+  NON_ACTIONABLE_PATTERNS_ZH,
+  L2_QUANTIFIER_TRIGRAM,
+  L2_TRIGRAM_STATE_CHANGE_VERB,
+  L2_TRIGRAM_DELIVERABLE,
+  L2_DOC_CREATION_TRIGGER,
+  L2_FILE_EXTENSION_TRIGGER,
+  L2_PR_ARTIFACT_TRIGGER,
+  L2_MIGRATION_TRIGGER,
+  L2_BUILD_SYSTEM_NOUN,
+  L2_DEPLOY_ENV_NOUN,
+  L2_E2E_SCOPE,
+  L2_COORDINATE,
+  L2_SEQUENCED_VERBS,
+  L2_NUMBERED_LIST,
+  L2_CROSS_SYSTEM_PIVOT,
+  L3_SPRINT_OKR_MARKERS,
+  L3_TIMEBOX_MARKERS,
+  L3_DELIVER_SHIP_VERBS,
+  L0_READ_VERB_PATTERN,
+  L2_LENGTH_FLOORS,
+  CATEGORY_KEYWORDS,
+} from '../services/intent-task/intent-classifier.rules.js';
+
 /**
  * Patterns that indicate a message is NOT actionable (should not become a task).
  * These cover greetings, acknowledgments, questions, feedback, opinions, and filler.
+ *
+ * Bug A v0 (2026-05-06): the ZH-specific patterns live in
+ * {@link NON_ACTIONABLE_PATTERNS_ZH} (imported above) so the rule list is
+ * grouped by language. Both arrays are checked in `isActionableIntent`.
  */
 const NON_ACTIONABLE_PATTERNS: RegExp[] = [
   // Greetings / pleasantries
@@ -423,10 +462,16 @@ const NON_ACTIONABLE_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Action verbs that indicate a message contains an actionable intent.
- * Used as a positive signal when non-actionable patterns don't match.
+ * Combined action-verb pattern (EN + ZH). A message must match ONE of
+ * these to be considered actionable when no non-actionable pattern fires.
+ *
+ * Note: a regex test against this composite is implemented as two checks
+ * in `isActionableIntent` rather than a single `|` union because the EN
+ * pattern uses `\b` word boundaries (which behave incorrectly across CJK
+ * codepoints) and the ZH pattern relies on negative lookaheads (kept
+ * separate so each is type-clean).
  */
-const ACTION_VERB_PATTERN = /\b(fix|build|create|deploy|implement|add|update|delete|remove|write|read|check|test|run|make|send|set\s+up|configure|install|download|upload|convert|transform|generate|export|import|refactor|migrate|upgrade|optimize|search|find|move|copy|rename|clean\s*up|set|start|stop|restart|enable|disable|schedule|assign|delegate|review|audit|analyze|investigate|research|explore|design|plan|document|monitor|track|debug|trace|patch|revert|rollback|merge|push|pull|commit|release|publish|integrate|connect|disconnect|setup|tear\s*down|provision|scale|backup|restore)\b/i;
+const ACTION_VERB_PATTERN = ACTION_VERB_EN;
 
 /**
  * Minimum character count for a segment to be a meaningful intent.
@@ -447,13 +492,22 @@ export function isActionableIntent(text: string): boolean {
   // Too short to be meaningful
   if (trimmed.length < MIN_ACTIONABLE_CHARS) return false;
 
-  // Check non-actionable patterns first (fast reject)
+  // Check EN non-actionable patterns first (fast reject).
   for (const pattern of NON_ACTIONABLE_PATTERNS) {
     if (pattern.test(trimmed)) return false;
   }
+  // Bug A v0 (Mia spec §3 + stricter-default 2026-05-06): ZH non-actionable
+  // patterns including conversational-filler forms of dual-use verbs
+  // (做了 / 搞砸 / 做不到) so the L2 promoter never sees a "completed" or
+  // "denial" sentence.
+  for (const pattern of NON_ACTIONABLE_PATTERNS_ZH) {
+    if (pattern.test(trimmed)) return false;
+  }
 
-  // Must contain at least one action verb to be considered a task
-  return ACTION_VERB_PATTERN.test(trimmed);
+  // Must contain at least one action verb to be considered a task. EN
+  // pattern uses \b word-boundaries (only meaningful in Latin); ZH pattern
+  // is checked separately because \b does not interpret CJK boundaries.
+  return ACTION_VERB_PATTERN.test(trimmed) || ACTION_VERB_ZH.test(trimmed);
 }
 
 // =============================================================================
@@ -461,51 +515,194 @@ export function isActionableIntent(text: string): boolean {
 // =============================================================================
 
 /**
- * Heuristic rules for auto-classifying intent level.
- * Returns L0 for simple queries/lookups, L1 for standard tasks, L2 for complex multi-step.
+ * Heuristic rules for auto-classifying intent level into L0/L1/L2/L3.
+ *
+ * Decision order (highest precision first):
+ *   1. **L0** — read-only / status / lookup; quantified read still L0.
+ *   2. **L3** — sprint/OKR markers + system-level scope (§2.6 + §2.3).
+ *   3. **L2** — quantifier-trigram (§2.1), doc/file/PR/migration triggers
+ *      (§2.2), build/system + deploy/env + e2e + coordinate (§2.3),
+ *      sequenced verbs / numbered list (§2.4), cross-system pivot (§2.5),
+ *      sprint markers alone (§2.6), or length floor (§2.7 — wordCount > 35
+ *      OR charCount > 80 for ZH parity).
+ *   4. **L1** — fallback (single bounded directive).
+ *
+ * Spec: `specs/2026-05-06-intent-classifier-rules.md` §1.2 + §2.
  *
  * @param intent - User intent text
  * @returns Classified intent level
  */
 export function classifyIntentLevel(intent: string): IntentLevel {
   const lower = intent.toLowerCase();
-  const wordCount = intent.split(/\s+/).length;
+  const wordCount = intent.split(/\s+/).filter(Boolean).length;
+  const charCount = intent.length;
 
-  // L0: Simple lookups, status checks, single-tool operations
-  const l0Patterns = [
+  // ---------------------------------------------------------------------
+  // L0 — read-only / status / lookup (no state change).
+  //
+  // Anti-promotion guard for §2.1 + §3 last paragraph: if the verb axis
+  // is read-only AND the message is short AND no §2.2-§2.6 promoter
+  // fires below, classify L0. We defer the L0 decision until AFTER §2
+  // promoter checks so a quantified state-change ("做这两份 md 文档")
+  // doesn't get squashed by the read-verb pattern when the read verb
+  // happens to also appear (e.g. "look at and fix").
+  // ---------------------------------------------------------------------
+  const isShortMessage = wordCount <= 12 && charCount <= 60;
+  const l0LegacyPatterns = [
     /^(what|where|when|who|how|is|are|can|does|do|show|list|get|check|find)\b/i,
     /\?$/,
     /\b(status|version|health|uptime|count|list)\b/i,
   ];
-  if (wordCount <= 12 && l0Patterns.some((p) => p.test(lower))) {
-    return 'L0';
+
+  // ---------------------------------------------------------------------
+  // L3 — sprint/OKR initiative.
+  //
+  // §2.6 + §2.3: when sprint/OKR markers AND a system-level verb-noun
+  // both fire, the message is a multi-day initiative. Routed identically
+  // to L2 in v0; the label preserves intent for future routing-split.
+  // ---------------------------------------------------------------------
+  const sprintMarkerFires =
+    L3_SPRINT_OKR_MARKERS.en.test(lower) ||
+    L3_SPRINT_OKR_MARKERS.zh.test(intent) ||
+    L3_TIMEBOX_MARKERS.en.test(lower) ||
+    L3_TIMEBOX_MARKERS.zh.test(intent);
+  // §2.3 — broad system-level verb-noun signal (build OR deploy OR e2e
+  // OR coordinate). Matches Mia's spec: "If 2.6 + 2.3 both fire → L3."
+  const l2_2_3_fires =
+    L2_BUILD_SYSTEM_NOUN.en.test(lower) ||
+    L2_BUILD_SYSTEM_NOUN.zh.test(intent) ||
+    L2_DEPLOY_ENV_NOUN.en.test(lower) ||
+    L2_DEPLOY_ENV_NOUN.zh.test(intent) ||
+    L2_E2E_SCOPE.en.test(lower) ||
+    L2_E2E_SCOPE.zh.test(intent) ||
+    L2_COORDINATE.en.test(lower) ||
+    L2_COORDINATE.zh.test(intent);
+  const deliverShipFires =
+    L3_DELIVER_SHIP_VERBS.en.test(lower) || L3_DELIVER_SHIP_VERBS.zh.test(intent);
+
+  if (sprintMarkerFires && (l2_2_3_fires || deliverShipFires)) {
+    return 'L3';
   }
 
-  // L2: Complex multi-agent, multi-step, or cross-system tasks
-  const l2Patterns = [
-    // Verb + complex noun = feature-level work
-    /\b(implement|build|create|develop|design|architect|refactor)\b.*\b(feature|system|service|module|component|pipeline|workflow|framework|infrastructure)\b/i,
-    // Deployment / migration / upgrade (multi-step by nature)
-    /\b(deploy|migrate|upgrade|provision)\b.*\b(to|from|environment|server|cluster|staging|production)\b/i,
-    // Explicit multi-step language
-    /\bmulti[- ]?(agent|step|phase|stage)\b/i,
-    /\b(coordinate|orchestrate|delegate|parallelize)\b/i,
-    // End-to-end or full-stack scope
-    /\b(end[- ]to[- ]end|full[- ]stack|e2e|integration)\b.*\b(test|setup|implementation)\b/i,
-    // Sprint / project level work
-    /\b(sprint|milestone|epic|project)\b.*\b(deliver|complete|implement|execute)\b/i,
-  ];
-  if (l2Patterns.some((p) => p.test(lower)) || wordCount > 35) {
+  // ---------------------------------------------------------------------
+  // L2 — multi-step / multi-artifact / multi-agent / cross-system / plural.
+  //
+  // Order within L2: highest-precision triggers first (§2.1 trigram), then
+  // structural cues (§2.2/§2.3/§2.4/§2.5), then sprint-marker-alone
+  // (§2.6), then the length floor.
+  // ---------------------------------------------------------------------
+
+  // §2.1 — quantifier + state-change verb + plural deliverable.
+  // Three-axis check (order-agnostic) so VERB-QUANT-NOUN, QUANT-VERB-NOUN,
+  // and QUANT-NOUN-VERB all promote. The §3 anti-pattern guard
+  // ("quantifier alone is not L2") is preserved by requiring the verb
+  // axis explicitly — a quantified read query like "show me all 3
+  // statuses" fails the verb-axis check and stays L0.
+  const quantifierFires =
+    L2_QUANTIFIER_TRIGRAM.en.test(intent) || L2_QUANTIFIER_TRIGRAM.zh.test(intent);
+  const stateChangeVerbFires =
+    L2_TRIGRAM_STATE_CHANGE_VERB.en.test(lower) ||
+    L2_TRIGRAM_STATE_CHANGE_VERB.zh.test(intent);
+  const deliverableFires =
+    L2_TRIGRAM_DELIVERABLE.en.test(lower) || L2_TRIGRAM_DELIVERABLE.zh.test(intent);
+  if (quantifierFires && stateChangeVerbFires && deliverableFires) {
     return 'L2';
   }
 
-  // L1: Standard single-agent tasks
+  // §2.2 — doc/spec creation, file-with-extension, PR/commit artifact,
+  // migration/schema. Each is a structural multi-artifact promoter.
+  // (file-extension respects the read-only verb guard: a request that
+  // ONLY references a file path with a read verb stays L0/L1.)
+  const fileExtensionFires = L2_FILE_EXTENSION_TRIGGER.test(intent);
+  const docCreationFires =
+    L2_DOC_CREATION_TRIGGER.en.test(lower) || L2_DOC_CREATION_TRIGGER.zh.test(intent);
+  const prArtifactFires =
+    L2_PR_ARTIFACT_TRIGGER.en.test(lower) || L2_PR_ARTIFACT_TRIGGER.zh.test(intent);
+  const migrationFires =
+    L2_MIGRATION_TRIGGER.en.test(lower) || L2_MIGRATION_TRIGGER.zh.test(intent);
+
+  if (docCreationFires || prArtifactFires || migrationFires) {
+    return 'L2';
+  }
+
+  // File-extension triggers only when paired with non-read verb. This is
+  // the §2.2 row 2 caveat: "any path with extension is L2 unless the verb
+  // is read-only".
+  if (fileExtensionFires) {
+    const readOnly =
+      L0_READ_VERB_PATTERN.en.test(lower) || L0_READ_VERB_PATTERN.zh.test(intent);
+    if (!readOnly) return 'L2';
+  }
+
+  // §2.3 — build/system, deploy/env, e2e, coordinate.
+  if (
+    L2_BUILD_SYSTEM_NOUN.en.test(lower) ||
+    L2_BUILD_SYSTEM_NOUN.zh.test(intent) ||
+    L2_DEPLOY_ENV_NOUN.en.test(lower) ||
+    L2_DEPLOY_ENV_NOUN.zh.test(intent) ||
+    L2_E2E_SCOPE.en.test(lower) ||
+    L2_E2E_SCOPE.zh.test(intent) ||
+    L2_COORDINATE.en.test(lower) ||
+    L2_COORDINATE.zh.test(intent) ||
+    /\bmulti[- ]?(agent|step|phase|stage)\b/i.test(intent) ||
+    /多.{0,4}(步|阶段|环节|轮)/.test(intent)
+  ) {
+    return 'L2';
+  }
+
+  // §2.4 — sequenced verbs / numbered list. Two distinct steps in a
+  // single sentence is structurally L2.
+  if (
+    L2_SEQUENCED_VERBS.en.test(lower) ||
+    L2_SEQUENCED_VERBS.zh.test(intent) ||
+    L2_NUMBERED_LIST.test(intent)
+  ) {
+    return 'L2';
+  }
+
+  // §2.5 — cross-system pivot ("oss重启了 你现在再做这个").
+  if (L2_CROSS_SYSTEM_PIVOT.en.test(lower) || L2_CROSS_SYSTEM_PIVOT.zh.test(intent)) {
+    return 'L2';
+  }
+
+  // §2.6 alone — sprint marker without system noun. Still L2 (multi-step
+  // by sprint definition); only combined with §2.3 does it become L3.
+  if (sprintMarkerFires) {
+    return 'L2';
+  }
+
+  // §2.7 — length floor. EN word-count OR ZH char-count.
+  if (wordCount > L2_LENGTH_FLOORS.wordCount || charCount > L2_LENGTH_FLOORS.charCount) {
+    return 'L2';
+  }
+
+  // ---------------------------------------------------------------------
+  // L0 fallback — short read-shaped message that did not promote.
+  // ---------------------------------------------------------------------
+  if (isShortMessage && l0LegacyPatterns.some((p) => p.test(lower))) {
+    return 'L0';
+  }
+
+  // ZH read-shaped: short query starting with what/which/how/where in ZH.
+  if (
+    isShortMessage &&
+    (/^(什么|哪|多少|怎么|怎样|是否|有没有)/.test(intent) ||
+      L0_READ_VERB_PATTERN.zh.test(intent))
+  ) {
+    return 'L0';
+  }
+
+  // L1 — standard single-agent task fallback.
   return 'L1';
 }
 
 /**
  * Heuristic rules for auto-classifying intent category.
  * Uses prioritized pattern matching — first match wins.
+ *
+ * Bug A v0 (2026-05-06): each category fires on EITHER the EN pattern OR
+ * the ZH parity pattern from {@link CATEGORY_KEYWORDS}. Order is preserved
+ * from the pre-existing EN classifier so historical EN cases stay green.
  *
  * @param intent - User intent text
  * @returns Classified intent category
@@ -514,30 +711,80 @@ export function classifyIntentCategory(intent: string): IntentCategory {
   const lower = intent.toLowerCase();
 
   // Debugging: bug fixes, error investigation, tracing
-  if (/\b(fix|bug|error|crash|broken|issue|debug|trace|stack\s*trace|exception|segfault|panic|hang|leak|regression|flaky)\b/.test(lower)) return 'debugging';
+  if (
+    CATEGORY_KEYWORDS.debugging.en.test(lower) ||
+    CATEGORY_KEYWORDS.debugging.zh.test(intent)
+  ) {
+    return 'debugging';
+  }
 
   // Deployment: releases, CI/CD, infrastructure (require deployment-specific context)
-  if (/\b(deploy|staging|production|docker|kubernetes|k8s|helm|terraform|ansible|nginx|container|image|rollback|rollout)\b/.test(lower)) return 'deployment';
-  if (/\b(release)\b/.test(lower) && !/\b(announce|notify|tell|inform|message|communicate)\b/.test(lower)) return 'deployment';
-  if (/\b(ci|cd)\b/.test(lower) && /\b(pipeline|build|run|trigger|fix)\b/.test(lower)) return 'deployment';
+  if (
+    CATEGORY_KEYWORDS.deployment.en.test(lower) ||
+    CATEGORY_KEYWORDS.deployment.zh.test(intent)
+  ) {
+    return 'deployment';
+  }
+  if (
+    (CATEGORY_KEYWORDS.release.en.test(lower) || CATEGORY_KEYWORDS.release.zh.test(intent)) &&
+    !(CATEGORY_KEYWORDS.communication.en.test(lower) || CATEGORY_KEYWORDS.communication.zh.test(intent))
+  ) {
+    return 'deployment';
+  }
+  if (
+    (CATEGORY_KEYWORDS.ciCdContext.en.test(lower) || CATEGORY_KEYWORDS.ciCdContext.zh.test(intent)) &&
+    (CATEGORY_KEYWORDS.ciCdAction.en.test(lower) || CATEGORY_KEYWORDS.ciCdAction.zh.test(intent))
+  ) {
+    return 'deployment';
+  }
 
   // Review: code review, PR, audit
-  if (/\b(review|pr\b|pull\s+request|code\s+review|audit|approve|reject|lgtm)\b/.test(lower)) return 'review';
+  if (
+    CATEGORY_KEYWORDS.review.en.test(lower) ||
+    CATEGORY_KEYWORDS.review.zh.test(intent)
+  ) {
+    return 'review';
+  }
 
   // Research: investigation, exploration, analysis, comparison
-  if (/\b(research|investigate|explore|analyze|compare|evaluate|benchmark|measure|profile|survey|study)\b/.test(lower)) return 'research';
+  if (
+    CATEGORY_KEYWORDS.research.en.test(lower) ||
+    CATEGORY_KEYWORDS.research.zh.test(intent)
+  ) {
+    return 'research';
+  }
 
   // Planning: strategy, design, architecture, roadmap
-  if (/\b(plan|roadmap|strategy|design|architect|spec|specification|rfc|proposal|estimate|prioritize|schedule|timeline|milestone)\b/.test(lower)) return 'planning';
+  if (
+    CATEGORY_KEYWORDS.planning.en.test(lower) ||
+    CATEGORY_KEYWORDS.planning.zh.test(intent)
+  ) {
+    return 'planning';
+  }
 
   // Communication: messaging, notifications, announcements
-  if (/\b(message|notify|slack|email|communicate|tell\s|announce|broadcast|ping|alert|report\s+to|inform|update\s+the\s+team)\b/.test(lower)) return 'communication';
+  if (
+    CATEGORY_KEYWORDS.communication.en.test(lower) ||
+    CATEGORY_KEYWORDS.communication.zh.test(intent)
+  ) {
+    return 'communication';
+  }
 
-  // Code change: implementation, modification, creation (broad — checked after more specific categories)
-  if (/\b(implement|code|write|add|update|modify|refactor|create|build|develop|rename|move|copy|delete|remove|clean\s*up|optimize|improve|enhance|extend|extract|inline|merge|split|convert|transform|generate|scaffold|bootstrap|set\s*up|configure|install|integrate|connect|wire|hook\s*up|enable|disable)\b/.test(lower)) return 'code_change';
+  // Code change: implementation, modification, creation (broad — last among actionables)
+  if (
+    CATEGORY_KEYWORDS.codeChange.en.test(lower) ||
+    CATEGORY_KEYWORDS.codeChange.zh.test(intent)
+  ) {
+    return 'code_change';
+  }
 
   // Query: information retrieval, status checks, lookups
-  if (/\b(what|where|when|who|which|how|show|list|get|status|check|find|search|look\s*up|count|describe|explain)\b/.test(lower)) return 'query';
+  if (
+    CATEGORY_KEYWORDS.query.en.test(lower) ||
+    CATEGORY_KEYWORDS.query.zh.test(intent)
+  ) {
+    return 'query';
+  }
 
   return 'other';
 }
