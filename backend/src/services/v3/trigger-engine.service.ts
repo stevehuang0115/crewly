@@ -129,9 +129,16 @@ export class TriggerEngine {
   /**
    * Last persisted active-trigger count, used as the prior reference for
    * the active-count-collapse warn-log in {@link persistTriggers}. Updated
-   * inside persistTriggers after every write; resets on `loadTriggers()`
+   * inside persistTriggers **only after a successful write** (i.e. inside the
+   * try block, post-`atomicWriteJsonWithGuard`); resets on `loadTriggers()`
    * boot to whatever was on disk so post-restart writes are correctly
    * baselined against the persisted state.
+   *
+   * Update-after-success ordering is load-bearing for the active-collapse
+   * warn-log: if the guard rejects a write, the baseline must remain at the
+   * pre-regression value so a subsequent persist call (still seeing the same
+   * regression) re-emits the warn-log. Updating before the write would
+   * silently suppress the signal after the very first guard rejection.
    */
   private lastKnownActiveCount = 0;
 
@@ -957,7 +964,6 @@ export class TriggerEngine {
         totalLength: data.length,
       });
     }
-    this.lastKnownActiveCount = activeCount;
 
     try {
       await atomicWriteJsonWithGuard(this.triggersFile, data, {
@@ -968,6 +974,13 @@ export class TriggerEngine {
         // to fire on suspicious shrinkage. Single-trigger delete()s are
         // <50% drop on any registry with ≥3 entries.
       });
+      // Arch finding #3 (B1 review): only update the in-memory baseline AFTER
+      // a successful write. If the guard rejects the write, lastKnownActiveCount
+      // must stay at the pre-regression value so the next persist call (which
+      // sees the same regression) still emits the active-collapse warn-log.
+      // Updating before the write would suppress the very signal this baseline
+      // exists to emit on a subsequent retry.
+      this.lastKnownActiveCount = activeCount;
     } catch (error) {
       if (error instanceof IntegrityViolationError) {
         // Loud failure per PR #420 design contract — surface to caller so

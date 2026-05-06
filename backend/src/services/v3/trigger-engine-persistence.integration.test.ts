@@ -309,6 +309,74 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
       const after = JSON.parse(afterRaw) as Trigger[];
       expect(after).toHaveLength(50);
     });
+
+    it("Arch finding #3: lastKnownActiveCount baseline survives a guard rejection, so subsequent persist still emits active-collapse warn", async () => {
+      // Regression scenario: persist1 attempts 5→0 active wipe (rejected by
+      // guard). The previous implementation updated lastKnownActiveCount=0
+      // BEFORE the write attempt, so persist2 (still 5→0) would observe
+      // `activeCount === 0 && lastKnownActiveCount === 0` and SUPPRESS the
+      // warn-log — silencing the very signal the baseline exists to emit.
+      //
+      // Fix moved the baseline assignment INSIDE the try block, after the
+      // successful atomicWriteJsonWithGuard call. This test pins the new
+      // ordering by counting warn-log emissions across two failed persists.
+      const engine = TriggerEngine.getInstance(projectPath);
+
+      // Seed 5 active triggers (distinct configs to avoid dedupe).
+      for (let i = 0; i < 5; i++) {
+        await engine.create({
+          type: 'signal',
+          config: { type: 'signal', eventType: `arch3-evt-${i}` },
+          action: { sendMessage: { target: `s-${i}`, message: 'x' } },
+          createdBy: 'system',
+        });
+      }
+
+      // Spy on the logger's warn channel to count active-collapse emissions.
+      const internalLogger = (engine as unknown as {
+        logger: { warn: (msg: string, meta?: unknown) => void };
+      }).logger;
+      const warnSpy = vi.spyOn(internalLogger, 'warn');
+
+      // Stage the regression: clear the in-memory map (5 → 0). The guard
+      // will reject on collapse-to-empty.
+      const internalEngine = engine as unknown as { triggers: Map<string, Trigger> };
+      const internalPersist = (engine as unknown as {
+        persistTriggers: () => Promise<void>;
+      }).persistTriggers.bind(engine);
+      internalEngine.triggers.clear();
+
+      // persist1: warn fires (5→0 collapse), guard rejects.
+      await expect(internalPersist()).rejects.toThrow(
+        /Refusing to write empty collection|collapse-to-empty/i,
+      );
+
+      // persist2: same regression still in memory. With the fix, baseline
+      // remained at 5, so the warn-log fires AGAIN. Without the fix
+      // (regression), baseline would be 0 and warn would be silenced.
+      await expect(internalPersist()).rejects.toThrow(
+        /Refusing to write empty collection|collapse-to-empty/i,
+      );
+
+      const collapseCalls = warnSpy.mock.calls.filter(
+        ([msg]) => msg === 'system:trigger_persistence_active_collapse',
+      );
+      // Two persist attempts saw the same regression; both should have
+      // emitted the warn — pinning the post-success-only baseline update.
+      expect(collapseCalls).toHaveLength(2);
+      // First emission baselines against the seeded count of 5.
+      expect(collapseCalls[0][1]).toMatchObject({
+        lastKnownActive: 5,
+        nextActive: 0,
+      });
+      // Critical: second emission ALSO baselines against 5, NOT 0.
+      // A regression here (baseline updated pre-write) would yield 0 here
+      // and the warn would never fire (calls.length would be 1, not 2).
+      expect(collapseCalls[1][1]).toMatchObject({
+        lastKnownActive: 5,
+        nextActive: 0,
+      });
+    });
   });
 
   // -------------------------------------------------------------------------
