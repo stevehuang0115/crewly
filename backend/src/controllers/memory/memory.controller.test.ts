@@ -256,6 +256,36 @@ describe('MemoryController', () => {
       expect(mockRemember).not.toHaveBeenCalled();
     });
 
+    // F4 fix (2026-05-06): controller surfaces alias hints for common
+    // mistakes. Sam (TL) hit `category=workflow` earlier in the audit cycle.
+    it.each([
+      ['workflow', 'pattern'],
+      ['best-practice', 'fact'],
+      ['anti-pattern', 'gotcha'],
+    ])('should hint public-API alias when caller uses internal name %s', async (badCategory, expectedHint) => {
+      await remember(
+        {
+          body: {
+            agentId: 'dev-001',
+            content: 'test',
+            category: badCategory,
+            scope: 'agent',
+          },
+        } as any,
+        mockRes as any,
+        mockNext
+      );
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: expect.stringContaining(`did you mean '${expectedHint}'`),
+        })
+      );
+      expect(mockRemember).not.toHaveBeenCalled();
+    });
+
     it('should return 400 for invalid scope', async () => {
       await remember(
         {

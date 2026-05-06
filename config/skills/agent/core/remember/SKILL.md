@@ -46,9 +46,25 @@ Store a memory entry for future recall. Use this to persist important context, d
 | `--agent` / `-a` | `agentId` | Yes | Your agent ID / session name |
 | `--content` / `-c` | `content` | Yes | Content to remember (or pipe via stdin) |
 | `--content-file` | — | No | Read content from a file path |
-| `--category` / `-C` | `category` | Yes | Category: `pattern`, `decision`, `gotcha`, `fact`, `preference`, `relationship`, `user_preference` |
+| `--category` / `-C` | `category` | Yes | See category × scope matrix below |
 | `--scope` / `-s` | `scope` | Yes | Scope: `agent` or `project` |
 | `--project` / `-p` | `projectPath` | No | Project path (required for `project` scope) |
+
+### Valid `category` × `scope` matrix
+
+| Category          | `scope=agent` | `scope=project` | Notes |
+|-------------------|:-------------:|:---------------:|-------|
+| `fact`            | ✅            | —               | Personal best-practice / "always do X". |
+| `pattern`         | ✅            | ✅              | Reusable workflow or code pattern. |
+| `gotcha`          | ✅ (F4 fix)   | ✅              | Things to avoid; agent-scope = personal, project-scope = team-wide. |
+| `preference`      | ✅            | —               | Updates your `AgentPreferences` (verbosity, breakdown size, etc.). |
+| `decision`        | —             | ✅              | Architectural / design decision (project-only). |
+| `relationship`    | —             | ✅              | Component-to-component edge in the codebase (project-only). |
+| `user_preference` | —             | ✅              | Project-scoped user preference (project-only). |
+
+> **Aliases / common mistakes:**
+> - `workflow` is **not** a public category — use `pattern` (it maps to internal `workflow` automatically).
+> - For "this approach failed for me last time" → use `category=gotcha scope=agent` (don't pollute project memory).
 
 ## Examples — CLI Flags (preferred)
 
