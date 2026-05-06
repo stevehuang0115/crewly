@@ -2,55 +2,58 @@ import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals
 import { Request, Response } from 'express';
 import * as tasksHandlers from './tasks.controller.js';
 import type { ApiContext } from '../types.js';
+import type { WorkItem } from '../../types/v2/work-item.types.js';
 
-jest.mock('../../services/index.js', () => ({
-  TaskService: jest.fn().mockImplementation(() => ({
-    getAllTasks: jest.fn(),
-    getMilestones: jest.fn(),
-    getTasksByStatus: jest.fn(),
-    getTasksByMilestone: jest.fn()
-  }))
+// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+// The handlers now read from TaskPoolService and project to the legacy
+// InProgressTask shape. Tests mock TaskPoolService.getInstance().
+jest.mock('../../services/task-pool/task-pool.service.js', () => ({
+  TaskPoolService: { getInstance: jest.fn() },
 }));
 
-describe('Tasks Handlers', () => {
+import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
+
+function makeWorkItem(over: Partial<WorkItem> = {}): WorkItem {
+  return {
+    id: 'wi-1',
+    type: 'delegate',
+    owner: 'system',
+    title: 'Test Task',
+    status: 'queued',
+    createdAt: new Date('2026-05-06T00:00:00.000Z').toISOString(),
+    retryCount: 0,
+    maxRetries: 3,
+    metadata: { projectId: 'project-1', projectPath: '/test/path', milestone: 'sprint-1' },
+    ...over,
+  } as WorkItem;
+}
+
+describe('Tasks Handlers (V3 task-pool projection)', () => {
   let mockApiContext: Partial<ApiContext>;
   let mockRequest: Partial<Request>;
   let mockResponse: any;
   let mockStorageService: any;
-  let mockTaskService: any;
+  let mockPool: { getAllItems: jest.Mock<() => Promise<WorkItem[]>> };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockTaskService = {
-      getAllTasks: jest.fn(),
-      getMilestones: jest.fn(),
-      getTasksByStatus: jest.fn(),
-      getTasksByMilestone: jest.fn()
-    };
-    const { TaskService } = require('../../services/index.js');
-    (TaskService as jest.Mock).mockImplementation(() => mockTaskService);
+    mockPool = { getAllItems: jest.fn<() => Promise<WorkItem[]>>() };
+    (TaskPoolService.getInstance as jest.Mock<() => unknown>).mockReturnValue(mockPool);
 
     mockStorageService = {
-      getProjects: jest.fn<any>()
+      getProjects: jest.fn<() => Promise<Array<{ id: string; path: string }>>>(),
     };
-
-    mockApiContext = {
-      storageService: mockStorageService
-    } as any;
+    mockApiContext = { storageService: mockStorageService } as any;
 
     mockRequest = {
-      params: {
-        projectId: 'project-1',
-        status: 'in-progress',
-        milestoneId: 'milestone-1'
-      },
+      params: { projectId: 'project-1', status: 'pending_assignment', milestoneId: 'sprint-1' },
       body: {},
-      query: {}
+      query: {},
     };
 
     mockResponse = {
       json: jest.fn<any>(),
-      status: jest.fn<any>().mockReturnThis()
+      status: jest.fn<any>().mockReturnThis(),
     };
   });
 
@@ -59,637 +62,137 @@ describe('Tasks Handlers', () => {
   });
 
   describe('getAllTasks', () => {
-    it('should get all tasks successfully', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      const mockTasks = [
-        { id: 'task-1', title: 'Task 1', status: 'todo' },
-        { id: 'task-2', title: 'Task 2', status: 'in-progress' }
-      ];
-
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getAllTasks.mockResolvedValue(mockTasks);
-
-      await tasksHandlers.getAllTasks.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockStorageService.getProjects).toHaveBeenCalled();
-      expect(mockTaskService.getAllTasks).toHaveBeenCalled();
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: mockTasks
-      });
-    });
-
-    it('should return 400 when project ID is missing', async () => {
-      mockRequest.params = {};
-
-      await tasksHandlers.getAllTasks.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project ID is required'
-      });
-    });
-
-    it('should return 404 when project not found', async () => {
-      mockStorageService.getProjects.mockResolvedValue([]);
-
-      await tasksHandlers.getAllTasks.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(404);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project not found'
-      });
-    });
-
-    it('should gracefully degrade to 200 + warning when TaskService.getAllTasks throws', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getAllTasks.mockRejectedValue(new Error('Filesystem permission denied'));
-
-      await tasksHandlers.getAllTasks.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: [],
-        warning: expect.stringContaining('Filesystem permission denied')
-      });
-    });
-
-    it('should still return 500 when storage layer (projects.json) fails', async () => {
-      mockStorageService.getProjects.mockRejectedValue(new Error('projects.json corrupt'));
-
-      await tasksHandlers.getAllTasks.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(500);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Failed to fetch tasks'
-      });
-    });
-  });
-
-  describe('getMilestones', () => {
-    it('should get milestones successfully', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      const mockMilestones = [
-        { id: 'milestone-1', title: 'Milestone 1', dueDate: '2024-12-31' },
-        { id: 'milestone-2', title: 'Milestone 2', dueDate: '2025-06-30' }
-      ];
-
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getMilestones.mockResolvedValue(mockMilestones);
-
-      await tasksHandlers.getMilestones.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockTaskService.getMilestones).toHaveBeenCalled();
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: mockMilestones
-      });
-    });
-
-    it('should return 400 when project ID is missing', async () => {
-      mockRequest.params = {};
-
-      await tasksHandlers.getMilestones.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project ID is required'
-      });
-    });
-
-    it('should return 404 when project not found', async () => {
-      mockStorageService.getProjects.mockResolvedValue([]);
-
-      await tasksHandlers.getMilestones.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(404);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project not found'
-      });
-    });
-
-    it('should gracefully degrade to 200 + warning when TaskService.getMilestones throws', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getMilestones.mockRejectedValue(new Error('milestone read failed'));
-
-      await tasksHandlers.getMilestones.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: [],
-        warning: expect.stringContaining('milestone read failed')
-      });
-    });
-  });
-
-  describe('getTasksByStatus', () => {
-    it('should get tasks by status successfully', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      const mockTasks = [
-        { id: 'task-1', title: 'Task 1', status: 'in-progress' },
-        { id: 'task-2', title: 'Task 2', status: 'in-progress' }
-      ];
-
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getTasksByStatus.mockResolvedValue(mockTasks);
-
-      await tasksHandlers.getTasksByStatus.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockTaskService.getTasksByStatus).toHaveBeenCalledWith('in-progress');
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: mockTasks
-      });
-    });
-
-    it('should return 400 when project ID is missing', async () => {
-      mockRequest.params = { status: 'in-progress' };
-
-      await tasksHandlers.getTasksByStatus.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project ID is required'
-      });
-    });
-
-    it('should return 404 when project not found', async () => {
-      mockStorageService.getProjects.mockResolvedValue([]);
-
-      await tasksHandlers.getTasksByStatus.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(404);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project not found'
-      });
-    });
-
-    it('should gracefully degrade to 200 + warning when TaskService.getTasksByStatus throws', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getTasksByStatus.mockRejectedValue(new Error('Service error'));
-
-      await tasksHandlers.getTasksByStatus.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: [],
-        warning: expect.stringContaining('Service error')
-      });
-    });
-  });
-
-  describe('getTasksByMilestone', () => {
-    it('should get tasks by milestone successfully', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      const mockTasks = [
-        { id: 'task-1', title: 'Task 1', milestoneId: 'milestone-1' },
-        { id: 'task-2', title: 'Task 2', milestoneId: 'milestone-1' }
-      ];
-
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getTasksByMilestone.mockResolvedValue(mockTasks);
-
-      await tasksHandlers.getTasksByMilestone.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockTaskService.getTasksByMilestone).toHaveBeenCalledWith('milestone-1');
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: mockTasks
-      });
-    });
-
-    it('should return 400 when project ID is missing', async () => {
-      mockRequest.params = { milestoneId: 'milestone-1' };
-
-      await tasksHandlers.getTasksByMilestone.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project ID is required'
-      });
-    });
-
-    it('should return 404 when project not found', async () => {
-      mockStorageService.getProjects.mockResolvedValue([]);
-
-      await tasksHandlers.getTasksByMilestone.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(404);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project not found'
-      });
-    });
-
-    it('should gracefully degrade to 200 + warning when TaskService.getTasksByMilestone throws', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getTasksByMilestone.mockRejectedValue(new Error('Service error'));
-
-      await tasksHandlers.getTasksByMilestone.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: [],
-        warning: expect.stringContaining('Service error')
-      });
-    });
-  });
-
-  describe('getProjectTasksStatus', () => {
-    it('should get project task status summary successfully', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      const mockTasks = [
-        { id: 'task-1', title: 'Task 1', status: 'todo' },
-        { id: 'task-2', title: 'Task 2', status: 'in-progress' },
-        { id: 'task-3', title: 'Task 3', status: 'done' },
-        { id: 'task-4', title: 'Task 4', status: 'done' }
-      ];
-      const mockMilestones = [
-        { id: 'milestone-1', title: 'Milestone 1' }
-      ];
-
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getAllTasks.mockResolvedValue(mockTasks);
-      mockTaskService.getMilestones.mockResolvedValue(mockMilestones);
-
-      await tasksHandlers.getProjectTasksStatus.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockTaskService.getAllTasks).toHaveBeenCalled();
-      expect(mockTaskService.getMilestones).toHaveBeenCalled();
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: {
-          totals: {
-            all: 4,
-            todo: 1,
-            'in-progress': 1,
-            done: 2
-          },
-          milestones: mockMilestones
-        }
-      });
-    });
-
-    it('should return 400 when project ID is missing', async () => {
-      mockRequest.params = {};
-
-      await tasksHandlers.getProjectTasksStatus.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project ID is required'
-      });
-    });
-
-    it('should return 404 when project not found', async () => {
-      mockStorageService.getProjects.mockResolvedValue([]);
-
-      await tasksHandlers.getProjectTasksStatus.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(404);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project not found'
-      });
-    });
-
-    it('should handle empty task lists', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getAllTasks.mockResolvedValue([]);
-      mockTaskService.getMilestones.mockResolvedValue([]);
-
-      await tasksHandlers.getProjectTasksStatus.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: {
-          totals: { all: 0 },
-          milestones: []
-        }
-      });
-    });
-
-    it('should gracefully degrade to 200 + warning when TaskService throws (status-summary shape)', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getAllTasks.mockRejectedValue(new Error('Service error'));
-
-      await tasksHandlers.getProjectTasksStatus.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: { totals: { all: 0 }, milestones: [] },
-        warning: expect.stringContaining('Service error')
-      });
-    });
-  });
-
-  describe('Error handling', () => {
-    it('should still 500 when storage layer throws synchronously (catastrophic projects.json failure)', async () => {
-      mockStorageService.getProjects.mockImplementation(() => {
-        throw new Error('Unexpected error');
-      });
-
-      await tasksHandlers.getAllTasks.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(500);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Failed to fetch tasks'
-      });
-    });
-
-    it('should gracefully degrade when TaskService constructor throws', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-
-      const { TaskService } = require('../../services/index.js');
-      TaskService.mockImplementation(() => {
-        throw new Error('Service initialization error');
-      });
-
-      await tasksHandlers.getAllTasks.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      // Constructor failures are part of the TaskService boundary — they
-      // should also be treated as graceful degradation, not 500.
-      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: [],
-        warning: expect.stringContaining('Service initialization error')
-      });
-    });
-  });
-
-  describe('Context preservation', () => {
-    it('should preserve context when handling tasks', async () => {
-      const contextAwareController = {
-        storageService: {
-          getProjects: jest.fn<any>().mockResolvedValue([{ id: 'project-1', path: '/test/path' }])
-        }
-      } as any;
-
-      mockTaskService.getAllTasks.mockResolvedValue([]);
-
-      await tasksHandlers.getAllTasks.call(
-        contextAwareController,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(contextAwareController.storageService.getProjects).toHaveBeenCalled();
-    });
-  });
-
-  describe('All handlers availability', () => {
-    it('should have all expected handler functions', () => {
-      expect(typeof tasksHandlers.getAllTasks).toBe('function');
-      expect(typeof tasksHandlers.getMilestones).toBe('function');
-      expect(typeof tasksHandlers.getTasksByStatus).toBe('function');
-      expect(typeof tasksHandlers.getTasksByMilestone).toBe('function');
-      expect(typeof tasksHandlers.getProjectTasksStatus).toBe('function');
-    });
-
-    it('should handle async operations properly', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getAllTasks.mockResolvedValue([]);
-
-      const result = await tasksHandlers.getAllTasks.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(result).toBeUndefined();
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: []
-      });
-    });
-  });
-
-  describe('Parameter validation', () => {
-    it('should handle null or undefined project ID consistently', async () => {
-      for (const projectId of [null, undefined, '']) {
-        jest.clearAllMocks();
-        mockRequest.params = { projectId: projectId as any };
-
-        await tasksHandlers.getAllTasks.call(
-          mockApiContext as ApiContext,
-          mockRequest as Request,
-          mockResponse as Response
-        );
-
-        expect(mockResponse.status).toHaveBeenCalledWith(400);
-        expect(mockResponse.json).toHaveBeenCalledWith({
-          success: false,
-          error: 'Project ID is required'
-        });
-      }
-    });
-
-    it('should handle valid project IDs that do not exist', async () => {
-      mockStorageService.getProjects.mockResolvedValue([
-        { id: 'other-project', path: '/other/path' }
+    it('returns projected WorkItems for the project', async () => {
+      mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/test/path' }]);
+      mockPool.getAllItems.mockResolvedValue([
+        makeWorkItem({ id: 'a', title: 'A' }),
+        makeWorkItem({ id: 'b', title: 'B', metadata: { projectId: 'project-2' } }),
+        makeWorkItem({ id: 'c', title: 'C' }),
       ]);
 
       await tasksHandlers.getAllTasks.call(
         mockApiContext as ApiContext,
         mockRequest as Request,
-        mockResponse as Response
+        mockResponse as Response,
       );
 
+      expect(mockPool.getAllItems).toHaveBeenCalled();
+      expect(mockResponse.json).toHaveBeenCalled();
+      const arg = mockResponse.json.mock.calls[0][0];
+      expect(arg.success).toBe(true);
+      // Only the two items with projectId === 'project-1' survive the filter.
+      expect(arg.data.map((t: any) => t.id)).toEqual(['a', 'c']);
+      // Projected to legacy shape — taskName field is set from WorkItem.title.
+      expect(arg.data[0].taskName).toBe('A');
+    });
+
+    it('returns 400 when projectId is missing', async () => {
+      mockRequest.params = {};
+      await tasksHandlers.getAllTasks.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+    });
+
+    it('returns 404 when project not found', async () => {
+      mockStorageService.getProjects.mockResolvedValue([]);
+      await tasksHandlers.getAllTasks.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
       expect(mockResponse.status).toHaveBeenCalledWith(404);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Project not found'
-      });
+    });
+
+    it('gracefully degrades when the pool throws', async () => {
+      mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/test/path' }]);
+      mockPool.getAllItems.mockRejectedValue(new Error('pool unavailable'));
+      await tasksHandlers.getAllTasks.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+      const arg = mockResponse.json.mock.calls[0][0];
+      expect(arg.success).toBe(true);
+      expect(arg.data).toEqual([]);
+      expect(typeof arg.warning).toBe('string');
     });
   });
 
-  describe('Failure-mode coverage (P0 fix)', () => {
-    it('warning message includes the project ID for log correlation', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      mockTaskService.getAllTasks.mockRejectedValue(new Error('ENOENT: no such file'));
-
-      await tasksHandlers.getAllTasks.call(
+  describe('getMilestones', () => {
+    it('returns distinct milestones derived from metadata.milestone', async () => {
+      mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/test/path' }]);
+      mockPool.getAllItems.mockResolvedValue([
+        makeWorkItem({ id: 'a', metadata: { projectId: 'project-1', milestone: 'sprint-1' } }),
+        makeWorkItem({ id: 'b', metadata: { projectId: 'project-1', milestone: 'sprint-2' } }),
+        makeWorkItem({ id: 'c', metadata: { projectId: 'project-1', milestone: 'sprint-1' } }),
+      ]);
+      await tasksHandlers.getMilestones.call(
         mockApiContext as ApiContext,
         mockRequest as Request,
-        mockResponse as Response
+        mockResponse as Response,
       );
-
-      const callArg = mockResponse.json.mock.calls[0][0];
-      expect(callArg.warning).toContain('project-1');
-      expect(callArg.warning).toContain('ENOENT');
+      const arg = mockResponse.json.mock.calls[0][0];
+      expect(arg.success).toBe(true);
+      expect(new Set(arg.data.map((m: any) => m.id))).toEqual(new Set(['sprint-1', 'sprint-2']));
     });
+  });
 
-    it('graceful degradation handles a non-Error thrown value (string) without crashing', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
-      mockStorageService.getProjects.mockResolvedValue([mockProject]);
-      // simulate a non-Error rejection
-      mockTaskService.getAllTasks.mockRejectedValue('not-an-error-instance');
-
-      await tasksHandlers.getAllTasks.call(
+  describe('getTasksByStatus', () => {
+    it('filters projected items by mapped legacy status', async () => {
+      mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/test/path' }]);
+      mockPool.getAllItems.mockResolvedValue([
+        makeWorkItem({ id: 'a', status: 'queued' }),  // → pending_assignment
+        makeWorkItem({ id: 'b', status: 'running' }), // → active
+      ]);
+      mockRequest.params = { projectId: 'project-1', status: 'pending_assignment' };
+      await tasksHandlers.getTasksByStatus.call(
         mockApiContext as ApiContext,
         mockRequest as Request,
-        mockResponse as Response
+        mockResponse as Response,
       );
-
-      expect(mockResponse.status).not.toHaveBeenCalledWith(500);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: [],
-        warning: expect.stringContaining('not-an-error-instance')
-      });
+      const arg = mockResponse.json.mock.calls[0][0];
+      expect(arg.data.map((t: any) => t.id)).toEqual(['a']);
     });
+  });
 
-    it('all five handlers route to graceful degradation on TaskService failure', async () => {
-      const mockProject = { id: 'project-1', path: '/test/path' };
+  describe('getTasksByMilestone', () => {
+    it('filters by metadata.milestone', async () => {
+      mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/test/path' }]);
+      mockPool.getAllItems.mockResolvedValue([
+        makeWorkItem({ id: 'a', metadata: { projectId: 'project-1', milestone: 'sprint-1' } }),
+        makeWorkItem({ id: 'b', metadata: { projectId: 'project-1', milestone: 'sprint-2' } }),
+      ]);
+      mockRequest.params = { projectId: 'project-1', milestoneId: 'sprint-1' };
+      await tasksHandlers.getTasksByMilestone.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+      const arg = mockResponse.json.mock.calls[0][0];
+      expect(arg.data.map((t: any) => t.id)).toEqual(['a']);
+    });
+  });
 
-      const failingHandlers: Array<[string, (req: Request, res: Response) => Promise<void>]> = [
-        ['getAllTasks', tasksHandlers.getAllTasks as any],
-        ['getMilestones', tasksHandlers.getMilestones as any],
-        ['getTasksByStatus', tasksHandlers.getTasksByStatus as any],
-        ['getTasksByMilestone', tasksHandlers.getTasksByMilestone as any],
-        ['getProjectTasksStatus', tasksHandlers.getProjectTasksStatus as any],
-      ];
-
-      for (const [name, handler] of failingHandlers) {
-        jest.clearAllMocks();
-        mockStorageService.getProjects.mockResolvedValue([mockProject]);
-        mockTaskService.getAllTasks.mockRejectedValue(new Error(`${name} boom`));
-        mockTaskService.getMilestones.mockRejectedValue(new Error(`${name} boom`));
-        mockTaskService.getTasksByStatus.mockRejectedValue(new Error(`${name} boom`));
-        mockTaskService.getTasksByMilestone.mockRejectedValue(new Error(`${name} boom`));
-
-        await handler.call(mockApiContext, mockRequest as Request, mockResponse as Response);
-
-        // All five must NOT 500
-        expect(mockResponse.status).not.toHaveBeenCalledWith(500);
-        // All five must respond success: true with a warning string
-        const lastCall = mockResponse.json.mock.calls[mockResponse.json.mock.calls.length - 1][0];
-        expect(lastCall.success).toBe(true);
-        expect(typeof lastCall.warning).toBe('string');
-        expect(lastCall.warning).toContain(`${name} boom`);
-      }
+  describe('getProjectTasksStatus', () => {
+    it('aggregates totals + milestones', async () => {
+      mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/test/path' }]);
+      mockPool.getAllItems.mockResolvedValue([
+        makeWorkItem({ id: 'a', status: 'queued' }),
+        makeWorkItem({ id: 'b', status: 'running' }),
+        makeWorkItem({ id: 'c', status: 'done' }),
+      ]);
+      await tasksHandlers.getProjectTasksStatus.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+      const arg = mockResponse.json.mock.calls[0][0];
+      expect(arg.success).toBe(true);
+      expect(arg.data.totals.all).toBe(3);
+      expect(arg.data.milestones.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

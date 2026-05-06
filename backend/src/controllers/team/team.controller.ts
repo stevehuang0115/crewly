@@ -2079,18 +2079,40 @@ export async function getTeamActivityStatus(this: ApiContext, req: Request, res:
     const memberStatuses: MemberActivityStatus[] = [];
     const teamsToUpdate: Team[] = [];
 
-    // Get current task assignments
-    const inProgressTasks = await this.taskTrackingService.getAllInProgressTasks();
+    // Get current task assignments from the V3 task-pool (single source of
+    // truth as of spec 2026-05-06-task-management-v1-deprecation.md). We
+    // join V3 WorkItem.target (session name) back to the team member id by
+    // walking each team's members — the controller already has `teams`
+    // loaded above so this is just an in-memory map build.
+    const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+    const { projectWorkItemToInProgressTask } = await import(
+      '../../services/v3/work-item-projection.js'
+    );
+    const pool = TaskPoolService.getInstance();
+    const allItems = await pool.getAllItems();
+    const activeItems = allItems.filter(
+      (wi) => wi.status !== 'cancelled' && wi.status !== 'done',
+    );
+    const sessionToMemberId = new Map<string, string>();
+    for (const t of teams) {
+      for (const m of t.members ?? []) {
+        if (m.sessionName) sessionToMemberId.set(m.sessionName, m.id);
+      }
+    }
     const tasksByMember = new Map<string, CurrentTaskInfo>();
-    inProgressTasks.forEach((task) => {
-      tasksByMember.set(task.assignedTeamMemberId, {
-        id: task.id,
-        taskName: task.taskName,
-        taskFilePath: task.taskFilePath,
-        assignedAt: task.assignedAt,
-        status: task.status
+    for (const wi of activeItems) {
+      if (!wi.target) continue;
+      const memberId = sessionToMemberId.get(wi.target);
+      if (!memberId) continue;
+      const projected = projectWorkItemToInProgressTask(wi);
+      tasksByMember.set(memberId, {
+        id: projected.id,
+        taskName: projected.taskName,
+        taskFilePath: projected.taskFilePath,
+        assignedAt: projected.assignedAt,
+        status: projected.status,
       });
-    });
+    }
 
     // Process all teams with concurrency limit to prevent overwhelming the system
     const CONCURRENCY_LIMIT = 2; // Reduced to be more conservative

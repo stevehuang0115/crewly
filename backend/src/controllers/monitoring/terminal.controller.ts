@@ -1104,10 +1104,20 @@ export async function getPendingWork(this: ApiContext, req: Request, res: Respon
 			return;
 		}
 
-		// 1. Get pending tasks from TaskTrackingService
-		const tasks = await this.taskTrackingService.getTasksBySessionName(sessionName);
-		const pendingTasks = tasks
-			.filter(t => t.status === 'assigned' || t.status === 'pending_assignment' || t.status === 'submitted')
+		// 1. Get pending tasks from the V3 task-pool (spec
+		// 2026-05-06-task-management-v1-deprecation.md). Replaces the v1
+		// TaskTrackingService read so the agent activation path doesn't
+		// hit two stores — V3 WorkItems queued/accepted for this session.
+		const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+		const { projectWorkItemToInProgressTask } = await import(
+			'../../services/v3/work-item-projection.js'
+		);
+		const pool = TaskPoolService.getInstance();
+		const allItems = await pool.getAllItems();
+		const pendingTasks = allItems
+			.filter(wi => wi.target === sessionName)
+			.filter(wi => wi.status === 'queued' || wi.status === 'accepted')
+			.map(wi => projectWorkItemToInProgressTask(wi))
 			.map(t => ({
 				id: t.id,
 				taskName: t.taskName,
