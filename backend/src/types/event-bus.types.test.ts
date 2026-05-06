@@ -64,6 +64,8 @@ describe('Event Bus Types', () => {
         'hierarchy:escalation',
         'hierarchy:delegation',
         'hierarchy:report_up',
+        // B0 (interim) trigger-persistence-bug freshness signal
+        'system:backend_restarted',
       ]);
     });
   });
@@ -181,6 +183,16 @@ describe('Event Bus Types', () => {
       // workitem:queued drives the auto-close path b — every decomposition
       // must dispatch exactly once or the SLA chain keeps ticking.
       expect(CRITICAL_EVENT_TYPES.has('workitem:queued')).toBe(true);
+    });
+
+    it('should classify B0 system:backend_restarted as critical (trigger-persistence freshness signal)', () => {
+      // The boot broadcast is the only signal subscribers (e.g. self-watch-scribe)
+      // get that in-memory `schedule-followup` / `watch-for-event` triggers were
+      // wiped. If debounced, the coverage gap stays open until the next cron tick
+      // — defeats the entire purpose per
+      // `.crewly/specs/2026-05-05-trigger-persistence-bug.md`.
+      expect(CRITICAL_EVENT_TYPES.has('system:backend_restarted')).toBe(true);
+      expect(INFO_EVENT_TYPES.has('system:backend_restarted' as EventType)).toBe(false);
     });
   });
 
