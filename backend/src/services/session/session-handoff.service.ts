@@ -71,18 +71,25 @@ export interface ActiveAgentInfo {
 }
 
 /**
- * Information about a pending (non-completed) task from .crewly/tasks/.
+ * Information about a pending (non-completed) task. Sourced from the V3
+ * task-pool (`pool.json`) — see {@link SessionHandoffService.scanPendingTasks}.
+ *
+ * Historically this was scraped from `.crewly/tasks/delegated/*.md`, but
+ * that path was retired with the V3↔.md bridge deprecation
+ * (`specs/2026-05-06-projecttask-md-deprecation.md`). The shape is preserved
+ * for downstream callers; `filePath` now points at the task-pool JSON file
+ * (a stable per-process location) rather than a per-task .md file.
  */
 export interface PendingTaskInfo {
-  /** Task title (first heading line from the MD file) */
+  /** Task title (WorkItem.title) */
   title: string;
-  /** Agent session name the task is assigned to */
+  /** Agent session name the task is assigned to (WorkItem.target) */
   assignedTo: string;
-  /** Current task status (e.g., 'In Progress', 'open') */
+  /** Current WorkItem status — passed through verbatim (e.g. 'queued', 'running') */
   status: string;
-  /** Task priority if specified */
+  /** Priority if available; empty string when WorkItem doesn't carry one */
   priority: string;
-  /** Absolute path to the task file */
+  /** Stable identifier for the task — currently the WorkItem id */
   filePath: string;
 }
 
@@ -423,105 +430,95 @@ export class SessionHandoffService {
   }
 
   /**
-   * Scans .crewly/tasks/delegated/ for non-completed tasks (open + in_progress).
-   * Parses each task MD file to extract title, assignee, status, and priority.
+   * Returns pending (non-terminal) tasks from the V3 task-pool. Replaces the
+   * legacy `.crewly/tasks/delegated/{open,in_progress}/*.md` filesystem scan
+   * (retired per `specs/2026-05-06-projecttask-md-deprecation.md` —
+   * V3 WorkItem is the sole source of truth for delegated work).
    *
-   * @param tasksBaseDir - Override for the tasks base directory (for testing)
-   * @returns Array of PendingTaskInfo sorted by priority (high first)
+   * Selection: any WorkItem in a non-terminal status (`queued`, `scheduled`,
+   * `proposed`, `accepted`, `running`, `blocked`, `escalated`,
+   * `done_by_worker`, `rejected`) — i.e. anything that still demands
+   * attention on a session resume.
+   *
+   * Sort: running-first (workers actively engaged), then high-priority first.
+   *
+   * The legacy `tasksBaseDir` parameter is accepted for backwards compat
+   * with existing test fixtures but is unused — the source is now the
+   * task-pool singleton.
+   *
+   * @param _tasksBaseDir - Ignored. Kept so callers (e.g. session.controller)
+   *                        don't need to be updated in lockstep.
+   * @returns Array of PendingTaskInfo sorted, capped at {@link MAX_PENDING_TASKS}
    */
-  async scanPendingTasks(tasksBaseDir?: string): Promise<PendingTaskInfo[]> {
-    const baseDir = tasksBaseDir || path.join(
-      os.homedir(),
-      CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
-      'tasks',
-      'delegated',
-    );
-    const pendingTasks: PendingTaskInfo[] = [];
+  async scanPendingTasks(_tasksBaseDir?: string): Promise<PendingTaskInfo[]> {
+    let workItems: Array<{
+      id: string;
+      title: string;
+      target?: string;
+      status: string;
+      priority?: string;
+    }>;
 
-    const statusDirs = ['in_progress', 'open'];
-
-    for (const statusDir of statusDirs) {
-      const dirPath = path.join(baseDir, statusDir);
-      try {
-        const files = await fs.readdir(dirPath).catch(() => [] as string[]);
-        for (const file of files) {
-          if (!file.endsWith('.md')) continue;
-          const filePath = path.join(dirPath, file);
-          const task = await this.parseTaskFile(filePath, statusDir);
-          if (task) {
-            pendingTasks.push(task);
-          }
-        }
-      } catch (error) {
-        this.logger.debug('Failed to scan tasks directory', {
-          dirPath,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    try {
+      // Lazy-import to avoid a hard load-order dependency between session-
+      // handoff and the V3 task-pool boot. Both are singletons; this dynamic
+      // import resolves once and is cached by the module loader.
+      const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+      workItems = await TaskPoolService.getInstance().getAllItems();
+    } catch (error) {
+      this.logger.debug('Failed to read V3 task-pool for pending tasks', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
     }
 
-    // Sort: in_progress first, then high priority first
+    const NON_TERMINAL = new Set([
+      'queued',
+      'scheduled',
+      'proposed',
+      'accepted',
+      'running',
+      'blocked',
+      'escalated',
+      'done_by_worker',
+      'rejected',
+    ]);
+
+    const pending: PendingTaskInfo[] = workItems
+      .filter((wi) => NON_TERMINAL.has(wi.status))
+      .map((wi) => {
+        // Truncate long titles to keep the handoff summary readable.
+        let title = wi.title || wi.id;
+        if (title.length > 100) title = title.slice(0, 97) + '...';
+        return {
+          title,
+          assignedTo: wi.target ?? 'unassigned',
+          status: wi.status,
+          priority: (wi.priority ?? '').toLowerCase(),
+          filePath: wi.id,
+        };
+      });
+
+    // Sort: running-first (workers actively engaged), then high-priority.
     const priorityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
-    const statusOrder: Record<string, number> = { in_progress: 0, open: 1 };
-    pendingTasks.sort((a, b) => {
-      const statusDiff = (statusOrder[a.status] ?? 1) - (statusOrder[b.status] ?? 1);
+    const statusOrder: Record<string, number> = {
+      running: 0,
+      proposed: 1,
+      accepted: 1,
+      queued: 2,
+      scheduled: 2,
+      done_by_worker: 3,
+      blocked: 4,
+      escalated: 4,
+      rejected: 5,
+    };
+    pending.sort((a, b) => {
+      const statusDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
       if (statusDiff !== 0) return statusDiff;
       return (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1);
     });
 
-    return pendingTasks.slice(0, MAX_PENDING_TASKS);
-  }
-
-  /**
-   * Parses a single task MD file to extract structured info.
-   *
-   * @param filePath - Absolute path to the task .md file
-   * @param statusDir - Directory name indicating status ('open', 'in_progress')
-   * @returns PendingTaskInfo or null if parsing fails
-   */
-  async parseTaskFile(filePath: string, statusDir: string): Promise<PendingTaskInfo | null> {
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      const lines = content.split('\n');
-
-      // Extract title from first heading
-      let title = path.basename(filePath, '.md');
-      for (const line of lines) {
-        if (line.startsWith('# ')) {
-          title = line.replace(/^#\s+/, '').trim();
-          // Strip [TASK] prefix if present
-          title = title.replace(/^\[TASK\]\s*/i, '');
-          break;
-        }
-      }
-      // Truncate long titles
-      if (title.length > 100) {
-        title = title.slice(0, 97) + '...';
-      }
-
-      // Extract assigned agent
-      let assignedTo = 'unassigned';
-      const assignedMatch = content.match(/\*\*Assigned to\*\*:\s*(.+)/i)
-        || content.match(/Assignee:\s*(.+)/i);
-      if (assignedMatch) {
-        assignedTo = assignedMatch[1].trim();
-      }
-
-      // Extract priority
-      let priority = 'medium';
-      const priorityMatch = content.match(/\*\*Priority\*\*:\s*(.+)/i)
-        || content.match(/Priority:\s*(.+)/i);
-      if (priorityMatch) {
-        priority = priorityMatch[1].trim().toLowerCase();
-      }
-
-      // Status from directory name
-      const status = statusDir === 'in_progress' ? 'in_progress' : 'open';
-
-      return { title, assignedTo, status, priority, filePath };
-    } catch {
-      return null;
-    }
+    return pending.slice(0, MAX_PENDING_TASKS);
   }
 
   /**

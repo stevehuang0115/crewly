@@ -72,12 +72,7 @@ jest.mock('fs/promises', () => ({
   readdir: jest.fn().mockResolvedValue([]),
 }));
 
-jest.mock('./project-task-watcher.service.js', () => ({
-  ProjectTaskWatcherService: jest.fn().mockImplementation(() => ({
-    start: jest.fn().mockResolvedValue(undefined),
-    dispose: jest.fn(),
-  })),
-}));
+// (ProjectTaskWatcher was retired per specs/2026-05-06-projecttask-md-deprecation.md)
 
 // Import after mocks are set up
 import {
