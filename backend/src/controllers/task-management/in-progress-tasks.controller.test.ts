@@ -2,141 +2,103 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { Request, Response } from 'express';
 import * as inProgressController from './in-progress-tasks.controller.js';
 import { ApiController } from '../api.controller.js';
+import type { WorkItem } from '../../types/v2/work-item.types.js';
 
-// Mock fs/promises
-const mockReadFile = jest.fn<any>();
-jest.mock('fs/promises', () => ({
-  readFile: (...args: any[]) => mockReadFile(...args)
+// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+// The controller now reads from TaskPoolService and projects WorkItems
+// to the legacy InProgressTask shape so frontend dashboard widgets
+// continue to work.
+jest.mock('../../services/task-pool/task-pool.service.js', () => ({
+  TaskPoolService: { getInstance: jest.fn() },
 }));
 
-// Mock fs existsSync
-jest.mock('fs', () => ({
-  existsSync: jest.fn<any>()
-}));
-import { existsSync } from 'fs';
-const mockExistsSync = existsSync as jest.Mock<any>;
+import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 
-// Mock os
-jest.mock('os', () => ({
-  homedir: () => '/mock/home'
-}));
+function makeWorkItem(over: Partial<WorkItem> = {}): WorkItem {
+  return {
+    id: 'wi-1',
+    type: 'delegate',
+    owner: 'system',
+    title: 'Test Task',
+    status: 'queued',
+    createdAt: new Date('2026-05-06T00:00:00.000Z').toISOString(),
+    retryCount: 0,
+    maxRetries: 3,
+    metadata: { projectId: 'project-1', projectPath: '/test/path' },
+    ...over,
+  } as WorkItem;
+}
 
-describe('InProgressTasksController', () => {
+describe('InProgressTasksController (V3 task-pool projection)', () => {
   let mockReq: Partial<Request>;
   let mockRes: Partial<Response>;
   let jsonSpy: jest.Mock<any>;
   let statusSpy: jest.Mock<any>;
   let apiController: ApiController;
+  let mockPool: { getAllItems: jest.Mock<() => Promise<WorkItem[]>> };
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPool = { getAllItems: jest.fn<() => Promise<WorkItem[]>>() };
+    (TaskPoolService.getInstance as jest.Mock<() => unknown>).mockReturnValue(mockPool);
 
     jsonSpy = jest.fn<any>();
     statusSpy = jest.fn<any>(() => ({ json: jsonSpy }));
 
     mockReq = {};
-    mockRes = {
-      json: jsonSpy,
-      status: statusSpy
-    } as any;
-
-    // Mock ApiController (we don't need actual implementation for this test)
+    mockRes = { json: jsonSpy, status: statusSpy } as any;
     apiController = {} as ApiController;
   });
 
   describe('getInProgressTasks', () => {
-    it('should return in-progress tasks when file exists', async () => {
-      const mockTasksData = {
-        tasks: [
-          {
-            id: 'task-1',
-            taskPath: '/project/.crewly/tasks/m1/in_progress/01_setup.md',
-            taskName: '01_setup',
-            assignedSessionName: 'dev-1',
-            assignedMemberId: 'member-123',
-            assignedAt: '2025-01-15T10:00:00Z',
-            status: 'in_progress',
-            originalPath: '/project/.crewly/tasks/m1/open/01_setup.md'
-          }
-        ],
-        lastUpdated: '2025-01-15T12:00:00Z',
-        version: '1.0.0'
-      };
-
-      mockExistsSync.mockReturnValue(true);
-      mockReadFile.mockResolvedValue(JSON.stringify(mockTasksData));
+    it('returns active WorkItems projected to legacy shape', async () => {
+      mockPool.getAllItems.mockResolvedValue([
+        makeWorkItem({ id: 'a', status: 'queued' }),
+        makeWorkItem({ id: 'b', status: 'running' }),
+        makeWorkItem({ id: 'c', status: 'cancelled' }),  // excluded
+        makeWorkItem({ id: 'd', status: 'done' }),       // excluded
+      ]);
 
       await inProgressController.getInProgressTasks.call(
         apiController,
         mockReq as Request,
-        mockRes as Response
+        mockRes as Response,
       );
 
-      expect(mockExistsSync).toHaveBeenCalledWith('/mock/home/.crewly/in_progress_tasks.json');
-      expect(mockReadFile).toHaveBeenCalledWith('/mock/home/.crewly/in_progress_tasks.json', 'utf-8');
-      expect(jsonSpy).toHaveBeenCalledWith({
-        success: true,
-        ...mockTasksData
-      });
+      expect(jsonSpy).toHaveBeenCalled();
+      const arg = jsonSpy.mock.calls[0][0] as any;
+      expect(arg.success).toBe(true);
+      expect(arg.version).toBe('3.0.0');
+      expect(arg.tasks.map((t: any) => t.id)).toEqual(['a', 'b']);
     });
 
-    it('should return empty tasks array when file does not exist', async () => {
-      mockExistsSync.mockReturnValue(false);
+    it('returns empty tasks array when pool is empty', async () => {
+      mockPool.getAllItems.mockResolvedValue([]);
 
       await inProgressController.getInProgressTasks.call(
         apiController,
         mockReq as Request,
-        mockRes as Response
+        mockRes as Response,
       );
 
-      expect(mockExistsSync).toHaveBeenCalledWith('/mock/home/.crewly/in_progress_tasks.json');
-      expect(mockReadFile).not.toHaveBeenCalled();
-      expect(jsonSpy).toHaveBeenCalledWith({
-        success: true,
-        tasks: [],
-        lastUpdated: expect.any(String),
-        version: '1.0.0'
-      });
+      const arg = jsonSpy.mock.calls[0][0] as any;
+      expect(arg.success).toBe(true);
+      expect(arg.tasks).toEqual([]);
     });
 
-    it('should handle file read errors gracefully', async () => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFile.mockRejectedValue(new Error('Permission denied'));
+    it('handles pool read errors gracefully', async () => {
+      mockPool.getAllItems.mockRejectedValue(new Error('pool unavailable'));
 
       await inProgressController.getInProgressTasks.call(
         apiController,
         mockReq as Request,
-        mockRes as Response
+        mockRes as Response,
       );
 
       expect(statusSpy).toHaveBeenCalledWith(500);
-      expect(jsonSpy).toHaveBeenCalledWith({
-        success: false,
-        error: 'Failed to read in-progress tasks data',
-        tasks: [],
-        lastUpdated: expect.any(String),
-        version: '1.0.0'
-      });
-    });
-
-    it('should handle invalid JSON gracefully', async () => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFile.mockResolvedValue('invalid json');
-
-      await inProgressController.getInProgressTasks.call(
-        apiController,
-        mockReq as Request,
-        mockRes as Response
-      );
-
-      expect(statusSpy).toHaveBeenCalledWith(500);
-      expect(jsonSpy).toHaveBeenCalledWith({
-        success: false,
-        error: 'Failed to read in-progress tasks data',
-        tasks: [],
-        lastUpdated: expect.any(String),
-        version: '1.0.0'
-      });
+      const arg = jsonSpy.mock.calls[0][0] as any;
+      expect(arg.success).toBe(false);
+      expect(arg.tasks).toEqual([]);
     });
   });
 });

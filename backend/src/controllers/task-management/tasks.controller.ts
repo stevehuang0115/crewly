@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import type { ApiContext } from '../types.js';
-import { TaskService } from '../../services/index.js';
+import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
+import { projectWorkItems } from '../../services/v3/work-item-projection.js';
 import { ApiResponse } from '../../types/index.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
@@ -109,8 +110,18 @@ export async function getAllTasks(this: ApiContext, req: Request, res: Response)
   }
   const { project } = lookup;
   try {
-    const svc = new TaskService(project.path);
-    const tasks = await svc.getAllTasks();
+    // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+    // Reads from TaskPoolService and projects to the legacy InProgressTask
+    // shape so the frontend Tasks tab + dashboard cards work unchanged.
+    // The legacy `.crewly/tasks/*.md` filesystem reads via TaskService have
+    // been retired; that store is empty post-archival.
+    const pool = TaskPoolService.getInstance();
+    const allItems = await pool.getAllItems();
+    const projectItems = allItems.filter((wi) => {
+      const meta = (wi.metadata ?? {}) as Record<string, unknown>;
+      return meta.projectId === project.id || meta.projectPath === project.path;
+    });
+    const tasks = projectWorkItems(projectItems);
     res.json({ success: true, data: tasks } as ApiResponse);
   } catch (error) {
     respondWithDegradation(res, [], projectId, project.path, error, 'tasks');
@@ -143,8 +154,22 @@ export async function getMilestones(this: ApiContext, req: Request, res: Respons
   }
   const { project } = lookup;
   try {
-    const svc = new TaskService(project.path);
-    const milestones = await svc.getMilestones();
+    // Milestones are derived from `metadata.milestone` on V3 WorkItems.
+    // V1 used filesystem directories under `.crewly/tasks/<milestone>/`;
+    // post-deprecation we just enumerate the distinct milestone names.
+    const pool = TaskPoolService.getInstance();
+    const allItems = await pool.getAllItems();
+    const projectItems = allItems.filter((wi) => {
+      const meta = (wi.metadata ?? {}) as Record<string, unknown>;
+      return meta.projectId === project.id || meta.projectPath === project.path;
+    });
+    const milestoneSet = new Set<string>();
+    for (const wi of projectItems) {
+      const meta = (wi.metadata ?? {}) as Record<string, unknown>;
+      const m = (meta.milestone as string) ?? 'delegated';
+      milestoneSet.add(m);
+    }
+    const milestones = Array.from(milestoneSet).map((id) => ({ id, name: id }));
     res.json({ success: true, data: milestones } as ApiResponse);
   } catch (error) {
     respondWithDegradation(res, [], projectId, project.path, error, 'milestones');
@@ -177,8 +202,15 @@ export async function getTasksByStatus(this: ApiContext, req: Request, res: Resp
   }
   const { project } = lookup;
   try {
-    const svc = new TaskService(project.path);
-    const tasks = await svc.getTasksByStatus(status);
+    const pool = TaskPoolService.getInstance();
+    const allItems = await pool.getAllItems();
+    const projected = projectWorkItems(
+      allItems.filter((wi) => {
+        const meta = (wi.metadata ?? {}) as Record<string, unknown>;
+        return meta.projectId === project.id || meta.projectPath === project.path;
+      }),
+    );
+    const tasks = projected.filter((t) => t.status === status);
     res.json({ success: true, data: tasks } as ApiResponse);
   } catch (error) {
     respondWithDegradation(res, [], projectId, project.path, error, 'tasks by status');
@@ -211,8 +243,15 @@ export async function getTasksByMilestone(this: ApiContext, req: Request, res: R
   }
   const { project } = lookup;
   try {
-    const svc = new TaskService(project.path);
-    const tasks = await svc.getTasksByMilestone(milestoneId);
+    const pool = TaskPoolService.getInstance();
+    const allItems = await pool.getAllItems();
+    const projectItems = allItems.filter((wi) => {
+      const meta = (wi.metadata ?? {}) as Record<string, unknown>;
+      const matchesProject = meta.projectId === project.id || meta.projectPath === project.path;
+      const matchesMilestone = ((meta.milestone as string) ?? 'delegated') === milestoneId;
+      return matchesProject && matchesMilestone;
+    });
+    const tasks = projectWorkItems(projectItems);
     res.json({ success: true, data: tasks } as ApiResponse);
   } catch (error) {
     respondWithDegradation(res, [], projectId, project.path, error, 'tasks by milestone');
@@ -248,15 +287,26 @@ export async function getProjectTasksStatus(this: ApiContext, req: Request, res:
   }
   const { project } = lookup;
   try {
-    const svc = new TaskService(project.path);
-    const [all, milestones] = await Promise.all([svc.getAllTasks(), svc.getMilestones()]);
-    const byStatus = all.reduce<Record<string, number>>((acc, t) => {
+    const pool = TaskPoolService.getInstance();
+    const allItems = await pool.getAllItems();
+    const projectItems = allItems.filter((wi) => {
+      const meta = (wi.metadata ?? {}) as Record<string, unknown>;
+      return meta.projectId === project.id || meta.projectPath === project.path;
+    });
+    const projected = projectWorkItems(projectItems);
+    const byStatus = projected.reduce<Record<string, number>>((acc, t) => {
       acc[t.status] = (acc[t.status] || 0) + 1;
       return acc;
     }, {});
+    const milestoneSet = new Set<string>();
+    for (const wi of projectItems) {
+      const meta = (wi.metadata ?? {}) as Record<string, unknown>;
+      milestoneSet.add((meta.milestone as string) ?? 'delegated');
+    }
+    const milestones = Array.from(milestoneSet).map((id) => ({ id, name: id }));
     res.json({
       success: true,
-      data: { totals: { all: all.length, ...byStatus }, milestones },
+      data: { totals: { all: projected.length, ...byStatus }, milestones },
     } as ApiResponse);
   } catch (error) {
     respondWithDegradation(
