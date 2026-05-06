@@ -139,13 +139,23 @@ describe('ProjectTaskWatcherService', () => {
   // -----------------------------------------------------------------------
 
   describe('start()', () => {
-    it('should scan existing tasks and start chokidar watcher', async () => {
-      // No milestones — empty readdir
-      mockReaddir.mockResolvedValueOnce([]);
+    it('should start chokidar live-watch only — no startup backfill', async () => {
+      // Simulate the disk having existing actionable .md files. Pre-deprecation
+      // the service would have read them all and created WorkItems on start;
+      // post-deprecation (PR #482 / Phase 2 Workstream C) it must NOT.
+      mockReaddir
+        .mockResolvedValueOnce([
+          { name: 'delegated', isDirectory: () => true },
+        ]) // milestones
+        .mockResolvedValueOnce(['stale_task.md']); // pretend in_progress/ has a stale file
+      mockReadFile.mockResolvedValueOnce(
+        makeTaskMarkdown({ title: 'Stale Task' }),
+      );
+      mockGetAllItems.mockResolvedValue([]);
 
       await service.start();
 
-      // chokidar.watch should be called
+      // chokidar.watch IS called (live path is preserved)
       expect(mockChokidarWatch).toHaveBeenCalledWith(
         expect.stringContaining('.crewly/tasks'),
         expect.objectContaining({
@@ -153,82 +163,10 @@ describe('ProjectTaskWatcherService', () => {
           persistent: true,
         }),
       );
-    });
-  });
 
-  // -----------------------------------------------------------------------
-  // Initial sync
-  // -----------------------------------------------------------------------
-
-  describe('syncExistingTasks()', () => {
-    it('should create WorkItems for open tasks without existing WorkItems', async () => {
-      // Simulate: one milestone "delegated" with one open task
-      mockReaddir
-        .mockResolvedValueOnce([
-          { name: 'delegated', isDirectory: () => true },
-        ]) // milestones
-        .mockResolvedValueOnce(['task_001.md']) // open/ files
-        .mockRejectedValueOnce(new Error('ENOENT')); // in_progress/ doesn't exist
-
-      mockReadFile.mockResolvedValueOnce(
-        makeTaskMarkdown({ title: 'Fix login bug', priority: 'high' }),
-      );
-
-      // No existing WorkItems in pool
-      mockGetAllItems.mockResolvedValue([]);
-
-      await service.syncExistingTasks();
-
-      expect(mockAddToPool).toHaveBeenCalledTimes(1);
-      expect(mockAddToPool).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'project_task',
-          title: 'Fix login bug',
-          projectTaskId: 'task_001',
-          status: 'queued',
-        }),
-      );
-    });
-
-    it('should skip tasks that already have a WorkItem', async () => {
-      mockReaddir
-        .mockResolvedValueOnce([
-          { name: 'delegated', isDirectory: () => true },
-        ])
-        .mockResolvedValueOnce(['existing_task.md'])
-        .mockRejectedValueOnce(new Error('ENOENT'));
-
-      mockReadFile.mockResolvedValueOnce(makeTaskMarkdown({ title: 'Existing' }));
-
-      // WorkItem already exists for this task
-      mockGetAllItems.mockResolvedValue([
-        { projectTaskId: 'existing_task', status: 'queued' },
-      ]);
-
-      await service.syncExistingTasks();
-
-      expect(mockAddToPool).not.toHaveBeenCalled();
-    });
-
-    it('should handle empty tasks directory gracefully', async () => {
-      mockReaddir.mockResolvedValueOnce([]);
-
-      await service.syncExistingTasks();
-
-      expect(mockAddToPool).not.toHaveBeenCalled();
-    });
-
-    it('should skip non-.md files', async () => {
-      mockReaddir
-        .mockResolvedValueOnce([
-          { name: 'delegated', isDirectory: () => true },
-        ])
-        .mockResolvedValueOnce(['readme.txt', 'notes.json'])
-        .mockRejectedValueOnce(new Error('ENOENT'));
-
-      await service.syncExistingTasks();
-
-      expect(mockReadFile).not.toHaveBeenCalled();
+      // Critical regression assertion: backend startup must NOT add any
+      // WorkItem from existing .md files. New files written by skills after
+      // start are still bridged via the chokidar 'add' handler tested below.
       expect(mockAddToPool).not.toHaveBeenCalled();
     });
   });
