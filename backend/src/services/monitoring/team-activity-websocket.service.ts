@@ -2,7 +2,10 @@ import { EventEmitter } from 'events';
 import { StorageService } from '../core/storage.service.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { TmuxService } from '../agent/tmux.service.js';
-import { TaskTrackingService } from '../project/task-tracking.service.js';
+import { TaskPoolService } from '../task-pool/task-pool.service.js';
+import { projectWorkItemToInProgressTask } from '../v3/work-item-projection.js';
+import type { EventBusService } from '../event-bus/event-bus.service.js';
+import type { InProcessUnsubscribe } from '../event-bus/event-bus.service.js';
 import { TerminalGateway } from '../../websocket/terminal.gateway.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { getSessionBackendSync } from '../session/index.js';
@@ -37,27 +40,60 @@ export interface TeamActivityData {
 export class TeamActivityWebSocketService extends EventEmitter {
   private storageService: StorageService;
   private _legacyTmuxService: TmuxService; // DORMANT: kept for backward compatibility, using PTY backend
-  private taskTrackingService: TaskTrackingService;
   private terminalGateway: TerminalGateway | null = null;
   private backgroundTimer: NodeJS.Timeout | null = null;
   private cachedActivityData: TeamActivityData | null = null;
+  private eventBus: EventBusService | null = null;
+  private eventUnsubscribe: InProcessUnsubscribe | null = null;
   private logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('TeamActivityWebSocketService');
   private readonly BACKGROUND_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
   private readonly MAX_OUTPUT_SIZE = 1024; // 1KB max per output
   private readonly SESSION_CHECK_TIMEOUT = 8000; // 8 second timeout (increased for reliability)
 
+  /**
+   * V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+   * The legacy `taskTrackingService` constructor parameter has been removed.
+   * In-progress task data is read from TaskPoolService; activity-trigger
+   * events are subscribed via EventBusService when {@link setEventBus} is
+   * called during boot.
+   *
+   * @param storageService - Provides team membership data
+   * @param tmuxService - Legacy backward-compat (kept dormant)
+   */
   constructor(
     storageService: StorageService,
     tmuxService: TmuxService,
-    taskTrackingService: TaskTrackingService
   ) {
     super();
     this.storageService = storageService;
-    this._legacyTmuxService = tmuxService; // DORMANT: kept for backward compatibility
-    this.taskTrackingService = taskTrackingService;
+    this._legacyTmuxService = tmuxService;
+  }
 
-    // Listen for events that should trigger activity updates
-    this.setupEventListeners();
+  /**
+   * Wire the EventBus so this service can react to V3 WorkItem
+   * lifecycle events (`workitem:queued` / `task:done_by_worker`) the
+   * same way it used to react to TaskTrackingService's `task_assigned`
+   * / `task_completed` emitter events.
+   *
+   * Call once during application boot, after the EventBus is created
+   * but before {@link start}. Idempotent — calling again replaces the
+   * subscription.
+   *
+   * @param bus - The shared EventBusService
+   */
+  setEventBus(bus: EventBusService): void {
+    if (this.eventUnsubscribe) {
+      this.eventUnsubscribe();
+      this.eventUnsubscribe = null;
+    }
+    this.eventBus = bus;
+    this.eventUnsubscribe = bus.onInProcess(
+      ['workitem:queued', 'task:done_by_worker'],
+      async (event) => {
+        this.logger.info('V3 task event triggered activity check', { type: event.type });
+        await this.performActivityCheck();
+      },
+    );
   }
 
   /**
@@ -91,26 +127,11 @@ export class TeamActivityWebSocketService extends EventEmitter {
       clearInterval(this.backgroundTimer);
       this.backgroundTimer = null;
     }
+    if (this.eventUnsubscribe) {
+      this.eventUnsubscribe();
+      this.eventUnsubscribe = null;
+    }
     this.logger.info('Team activity monitoring stopped');
-  }
-
-  /**
-   * Set up event listeners for activity triggers
-   */
-  private setupEventListeners(): void {
-    // DORMANT: tmux session lifecycle events removed - using PTY backend polling instead
-    // PTY session events could be added here in the future if needed
-
-    // Listen for task tracking events
-    this.taskTrackingService.on('task_assigned', () => {
-      this.logger.info('Task assigned - triggering activity check');
-      this.performActivityCheck();
-    });
-
-    this.taskTrackingService.on('task_completed', () => {
-      this.logger.info('Task completed - triggering activity check');
-      this.performActivityCheck();
-    });
   }
 
   /**
@@ -152,13 +173,27 @@ export class TeamActivityWebSocketService extends EventEmitter {
   private async gatherActivityData(): Promise<TeamActivityData> {
     const now = new Date().toISOString();
     
-    // Get teams and tasks
+    // Get teams and tasks. V3-only as of spec
+    // 2026-05-06-task-management-v1-deprecation.md — reads WorkItems from
+    // TaskPoolService and projects to the legacy InProgressTask shape, then
+    // joins WorkItem.target (session name) back to memberId by walking
+    // the loaded teams.
     const teams = await this.storageService.getTeams();
-    const inProgressTasks = await this.taskTrackingService.getAllInProgressTasks();
-    const tasksByMember = new Map();
-    inProgressTasks.forEach((task: any) => {
-      tasksByMember.set(task.assignedTeamMemberId, task);
-    });
+    const allItems = await TaskPoolService.getInstance().getAllItems();
+    const sessionToMemberId = new Map<string, string>();
+    for (const t of teams) {
+      for (const m of t.members ?? []) {
+        if (m.sessionName) sessionToMemberId.set(m.sessionName, m.id);
+      }
+    }
+    const tasksByMember = new Map<string, ReturnType<typeof projectWorkItemToInProgressTask>>();
+    for (const wi of allItems) {
+      if (!wi.target) continue;
+      if (wi.status === 'cancelled' || wi.status === 'done') continue;
+      const memberId = sessionToMemberId.get(wi.target);
+      if (!memberId) continue;
+      tasksByMember.set(memberId, projectWorkItemToInProgressTask(wi));
+    }
 
     // Collect all session names for bulk checking (including orchestrator)
     const allSessionNames: string[] = [CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME];

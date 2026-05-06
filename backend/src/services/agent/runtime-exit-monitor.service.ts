@@ -14,7 +14,6 @@ import { SessionMemoryService } from '../memory/session-memory.service.js';
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import { SHELL_PROMPT_PATTERNS } from '../continuation/patterns/idle-patterns.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
-import type { TaskTrackingService } from '../project/task-tracking.service.js';
 import { OrchestratorRestartService } from '../orchestrator/orchestrator-restart.service.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
 import type { InProgressTask } from '../../types/task-tracking.types.js';
@@ -104,7 +103,6 @@ export class RuntimeExitMonitorService {
 	private sessions = new Map<string, MonitoredSession>();
 	private onExitDetectedCallback?: (sessionName: string) => void;
 	private agentRegistrationService: AgentRegistrationService | null = null;
-	private taskTrackingService: TaskTrackingService | null = null;
 	private eventBusService: EventBusService | null = null;
 
 	/**
@@ -159,12 +157,14 @@ export class RuntimeExitMonitorService {
 	}
 
 	/**
-	 * Set the TaskTrackingService dependency for in-progress task queries.
+	 * Backwards-compatible no-op. Kept so `index.ts` compiles during the
+	 * TaskTrackingService deletion window. In-progress task queries now
+	 * read directly from TaskPoolService.
 	 *
-	 * @param service - The TaskTrackingService instance
+	 * @deprecated Will be removed in a follow-up. Do not call from new code.
 	 */
-	setTaskTrackingService(service: TaskTrackingService): void {
-		this.taskTrackingService = service;
+	setTaskTrackingService(_service: unknown): void {
+		// intentionally empty
 	}
 
 	/**
@@ -476,8 +476,10 @@ export class RuntimeExitMonitorService {
 			// Fire the exit-detected callback (used to cancel pending registrations)
 			this.fireExitDetectedCallback(sessionName);
 
-			// Try agent restart if it has in-progress tasks (non-orchestrator only)
-			if (monitored.role !== ORCHESTRATOR_ROLE && this.agentRegistrationService && this.taskTrackingService) {
+			// Try agent restart if it has in-progress tasks (non-orchestrator only).
+			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md:
+			// active tasks are read from TaskPoolService inside `tryAgentRestartWithTasks`.
+			if (monitored.role !== ORCHESTRATOR_ROLE && this.agentRegistrationService) {
 				const restarted = await this.tryAgentRestartWithTasks(sessionName, monitored);
 				if (restarted) return;
 			}
@@ -612,7 +614,18 @@ export class RuntimeExitMonitorService {
 		monitored: MonitoredSession
 	): Promise<boolean> {
 		try {
-			const tasks = await this.taskTrackingService!.getTasksForTeamMember(monitored.memberId || '');
+			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+			// Replaces TaskTrackingService.getTasksForTeamMember with V3 pool
+			// query filtered by `target` (session name) and projected to
+			// the legacy InProgressTask shape so the rest of this method
+			// (notifyOrchestratorOfFailure, restartAgentWithTasks) works
+			// unchanged.
+			const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+			const { projectWorkItemToInProgressTask } = await import('../v3/work-item-projection.js');
+			const items = await TaskPoolService.getInstance().getAllItems();
+			const tasks = items
+				.filter((wi) => wi.target === sessionName)
+				.map(projectWorkItemToInProgressTask);
 			const activeTasks = tasks.filter(
 				t => t.status === 'assigned' || t.status === 'active' || t.status === 'pending_assignment'
 			);

@@ -98,12 +98,13 @@ jest.mock('./pty-activity-tracker.service.js', () => ({
 	},
 }));
 
-const mockGetTasksForTeamMember = jest.fn().mockResolvedValue([]);
-jest.mock('../project/task-tracking.service.js', () => ({
-	TaskTrackingService: {
-		getInstance: () => ({
-			getTasksForTeamMember: mockGetTasksForTeamMember,
-		}),
+// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+// TaskTrackingService deleted; runtime-exit-monitor now reads active
+// WorkItems from TaskPoolService for restart-with-tasks decisions.
+const mockGetAllItems = jest.fn().mockResolvedValue([]);
+jest.mock('../task-pool/task-pool.service.js', () => ({
+	TaskPoolService: {
+		getInstance: () => ({ getAllItems: mockGetAllItems }),
 	},
 }));
 
@@ -583,27 +584,24 @@ describe('RuntimeExitMonitorService', () => {
 		const mockAgentRegistrationService = {
 			createAgentSession: mockCreateAgentSession,
 		};
-		const mockTaskTrackingServiceInstance = {
-			getTasksForTeamMember: mockGetTasksForTeamMember,
-		};
+		// V3: TaskTrackingService deleted; pool mocked via top-level jest.mock above.
 
 		beforeEach(() => {
 			mockCreateAgentSession.mockClear();
-			mockGetTasksForTeamMember.mockReset();
+			mockGetAllItems.mockReset();
 			mockClearSession.mockClear();
 			mockKillSession.mockClear();
 			mockWrite.mockClear();
 			mockSessionExists.mockReturnValue(true);
 			// Inject both dependencies so the restart path activates
 			service.setAgentRegistrationService(mockAgentRegistrationService as any);
-			service.setTaskTrackingService(mockTaskTrackingServiceInstance as any);
 		});
 
 		it('should restart agent when exit detected with in-progress tasks', async () => {
 			jest.useFakeTimers();
 
-			mockGetTasksForTeamMember.mockResolvedValue([
-				{ id: 'task-1', taskName: 'Fix bug', taskFilePath: '/tmp/task.md', status: 'assigned', assignedTeamMemberId: 'member-1' },
+			mockGetAllItems.mockResolvedValue([
+				{ id: 'task-1', title: 'Fix bug', target: 'test-agent', status: 'queued', type: 'delegate', owner: 'system', createdAt: new Date().toISOString(), retryCount: 0, maxRetries: 3 },
 			]);
 
 			service.startMonitoring('test-agent', RUNTIME_TYPES.GEMINI_CLI, 'developer', 'team-1', 'member-1');
@@ -632,7 +630,7 @@ describe('RuntimeExitMonitorService', () => {
 		it('should set inactive when exit detected with no in-progress tasks', async () => {
 			jest.useFakeTimers();
 
-			mockGetTasksForTeamMember.mockResolvedValue([]);
+			mockGetAllItems.mockResolvedValue([]);
 
 			service.startMonitoring('test-agent', RUNTIME_TYPES.GEMINI_CLI, 'developer', 'team-1', 'member-1');
 			const onDataCallback = mockOnData.mock.calls[0][0];
@@ -707,8 +705,8 @@ describe('RuntimeExitMonitorService', () => {
 			jest.useFakeTimers();
 
 			mockCreateAgentSession.mockResolvedValueOnce({ success: false, error: 'Session creation failed' });
-			mockGetTasksForTeamMember.mockResolvedValue([
-				{ id: 'task-1', taskName: 'Fix bug', taskFilePath: '/tmp/task.md', status: 'active', assignedTeamMemberId: 'member-1' },
+			mockGetAllItems.mockResolvedValue([
+				{ id: 'task-1', title: 'Fix bug', target: 'test-agent', status: 'running', type: 'delegate', owner: 'system', createdAt: new Date().toISOString(), retryCount: 0, maxRetries: 3 },
 			]);
 
 			service.startMonitoring('test-agent', RUNTIME_TYPES.GEMINI_CLI, 'developer', 'team-1', 'member-1');
@@ -736,23 +734,23 @@ describe('RuntimeExitMonitorService', () => {
 		const mockAgentRegistrationService = {
 			createAgentSession: mockCreateAgentSession,
 		};
-		const mockTaskTrackingServiceInstance = {
-			getTasksForTeamMember: mockGetTasksForTeamMember,
-		};
-		const activeTasks = [
-			{ id: 'task-1', taskName: 'Fix bug', taskFilePath: '/tmp/task.md', status: 'assigned', assignedTeamMemberId: 'member-1' },
+		// V3: TaskTrackingService deleted; pool mocked via top-level jest.mock above.
+		// V3-only: each test sets `target` to the session it's exercising so
+		// the production-side filter (`wi.target === sessionName`) hits.
+		const wiFor = (target: string) => [
+			{ id: 'task-1', title: 'Fix bug', target, status: 'queued', type: 'delegate', owner: 'system', createdAt: new Date().toISOString(), retryCount: 0, maxRetries: 3 },
 		];
+		const activeTasks = wiFor('test-agent');
 
 		beforeEach(() => {
 			mockCreateAgentSession.mockClear().mockResolvedValue({ success: true, sessionName: 'test-agent' });
-			mockGetTasksForTeamMember.mockReset().mockResolvedValue(activeTasks);
+			mockGetAllItems.mockReset().mockResolvedValue(activeTasks);
 			mockClearSession.mockClear();
 			mockKillSession.mockClear();
 			mockWrite.mockClear();
 			mockUpdateAgentStatus.mockClear();
 			mockSessionExists.mockReturnValue(true);
 			service.setAgentRegistrationService(mockAgentRegistrationService as any);
-			service.setTaskTrackingService(mockTaskTrackingServiceInstance as any);
 		});
 
 		/**
@@ -839,7 +837,7 @@ describe('RuntimeExitMonitorService', () => {
 
 			// Exhaust restarts for agent-a
 			for (let i = 0; i < maxRestarts; i++) {
-				mockGetTasksForTeamMember.mockResolvedValue(activeTasks);
+				mockGetAllItems.mockResolvedValue(wiFor('agent-a'));
 				if (!service.isMonitoring('agent-a')) {
 					service.startMonitoring('agent-a', RUNTIME_TYPES.GEMINI_CLI, 'developer', 'team-1', 'member-a');
 				}
@@ -852,7 +850,7 @@ describe('RuntimeExitMonitorService', () => {
 
 			// agent-b should still be able to restart
 			mockCreateAgentSession.mockClear();
-			mockGetTasksForTeamMember.mockResolvedValue(activeTasks);
+			mockGetAllItems.mockResolvedValue(wiFor('agent-b'));
 			service.startMonitoring('agent-b', RUNTIME_TYPES.GEMINI_CLI, 'developer', 'team-1', 'member-b');
 			const cbIdx = mockOnData.mock.calls.length - 1;
 			const cbB = mockOnData.mock.calls[cbIdx][0];

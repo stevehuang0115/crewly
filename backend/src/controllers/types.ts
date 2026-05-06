@@ -1,13 +1,12 @@
-import type { 
-  StorageService, 
-  TmuxService, 
-  SchedulerService, 
+import type {
+  StorageService,
+  TmuxService,
+  SchedulerService,
   MessageSchedulerService,
   ActiveProjectsService,
   PromptTemplateService,
   TaskAssignmentMonitorService,
-  TaskTrackingService,
-  AgentRegistrationService
+  AgentRegistrationService,
 } from '../services/index.js';
 
 export interface ApiContext {
@@ -19,7 +18,6 @@ export interface ApiContext {
   activeProjectsService: ActiveProjectsService;
   promptTemplateService: PromptTemplateService;
   taskAssignmentMonitor: TaskAssignmentMonitorService;
-  taskTrackingService: TaskTrackingService;
   cleanupProjectScheduledMessages?: (projectId: string) => Promise<{
     found: number;
     cancelled: number;

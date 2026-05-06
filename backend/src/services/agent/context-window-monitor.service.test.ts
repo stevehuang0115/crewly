@@ -10,6 +10,15 @@
 import { ContextWindowMonitorService, type ContextLevel, type ContextWindowState } from './context-window-monitor.service.js';
 import { CONTEXT_WINDOW_MONITOR_CONSTANTS, RUNTIME_COMPACT_COMMANDS } from '../../constants.js';
 
+// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+// `redeliverTasks` reads from TaskPoolService via dynamic import.
+jest.mock('../task-pool/task-pool.service.js', () => ({
+	TaskPoolService: {
+		getInstance: jest.fn(() => ({ getAllItems: jest.fn().mockResolvedValue([] as any[]) })),
+	},
+}));
+import { TaskPoolService } from '../task-pool/task-pool.service.js';
+
 // =============================================================================
 // Mocks
 // =============================================================================
@@ -153,14 +162,6 @@ function createMockAgentRegistrationService(success = true) {
 	};
 }
 
-/**
- * Create a mock TaskTrackingService.
- */
-function createMockTaskTrackingService(tasks: Array<{ taskName: string; taskFilePath: string; status: string }> = []) {
-	return {
-		getTasksForTeamMember: jest.fn().mockResolvedValue(tasks),
-	};
-}
 
 // =============================================================================
 // Tests
@@ -257,7 +258,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -281,7 +282,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -301,7 +302,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -322,7 +323,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -343,7 +344,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -370,7 +371,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -400,7 +401,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -538,7 +539,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -654,7 +655,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -711,7 +712,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				regService as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -844,7 +845,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				regService as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -885,7 +886,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				regService as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -917,7 +918,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				regService as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -942,7 +943,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -978,7 +979,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				regService as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -1009,7 +1010,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				regService as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -1045,7 +1046,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1074,7 +1075,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1102,7 +1103,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1148,7 +1149,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1186,7 +1187,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1216,7 +1217,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1244,7 +1245,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1275,7 +1276,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1313,7 +1314,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1372,7 +1373,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				mockAgentReg as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1407,7 +1408,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1438,7 +1439,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				mockAgentReg as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1462,16 +1463,20 @@ describe('ContextWindowMonitorService', () => {
 			const sessions = new Map([['test-agent', mockSession.session]]);
 			const backend = createMockSessionBackend(sessions as any);
 			const mockAgentReg = createMockAgentRegistrationService(true);
-			const activeTasks = [
-				{ taskName: 'task-1', taskFilePath: '/tmp/task-1.md', status: 'assigned' },
-			];
-			const mockTaskTracking = createMockTaskTrackingService(activeTasks);
+
+			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+			// `redeliverTasks` reads from TaskPoolService directly via dynamic
+			// import; mock the pool to return one queued WI for `test-agent`.
+			(TaskPoolService.getInstance as jest.Mock).mockReturnValue({
+				getAllItems: jest.fn().mockResolvedValue([
+					{ id: 'task-1', title: 'task-1', target: 'test-agent', status: 'queued', briefMarkdown: 'work', type: 'delegate', owner: 'system', createdAt: new Date().toISOString(), retryCount: 0, maxRetries: 3 },
+				]),
+			});
 
 			service.setDependencies(
 				backend as any,
 				mockAgentReg as any,
 				{} as any,
-				mockTaskTracking as any,
 				createMockEventBus() as any
 			);
 
@@ -1488,21 +1493,26 @@ describe('ContextWindowMonitorService', () => {
 
 			expect(state.recoveryTriggered).toBe(true);
 			expect(state.recoveryCount).toBe(1);
-			expect(mockTaskTracking.getTasksForTeamMember).toHaveBeenCalledWith('member-1');
+			// V3: redeliverTasks reads from TaskPoolService.getAllItems and
+			// filters by `target === sessionName` (not member-id anymore).
+			expect(TaskPoolService.getInstance).toHaveBeenCalled();
 		});
 
-		it('should skip re-delivery when no taskTrackingService', async () => {
+		it('should skip re-delivery when pool returns no items', async () => {
 			const service = ContextWindowMonitorService.getInstance();
 			const mockSession = createMockSession();
 			const sessions = new Map([['test-agent', mockSession.session]]);
 			const backend = createMockSessionBackend(sessions as any);
 			const mockAgentReg = createMockAgentRegistrationService(true);
 
+			(TaskPoolService.getInstance as jest.Mock).mockReturnValue({
+				getAllItems: jest.fn().mockResolvedValue([] as any[]),
+			});
+
 			service.setDependencies(
 				backend as any,
 				mockAgentReg as any,
 				{} as any,
-				null as any, // no task tracking
 				createMockEventBus() as any
 			);
 
@@ -1531,7 +1541,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				mockAgentReg as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1568,7 +1578,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				mockAgentReg as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1608,7 +1618,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -1722,7 +1732,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -1787,7 +1797,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				regService as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 			service.startSessionMonitoring('test-agent', 'member-1', 'team-1', 'developer');
@@ -1995,7 +2005,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 			service.startSessionMonitoring('test-agent', 'member-1', 'team-1', 'developer');
@@ -2028,7 +2038,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -2135,7 +2145,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -2196,7 +2206,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -2225,7 +2235,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				createMockAgentRegistrationService() as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				createMockEventBus() as any
 			);
 
@@ -2264,7 +2274,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				mockAgentReg as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 
@@ -2293,7 +2303,7 @@ describe('ContextWindowMonitorService', () => {
 				backend as any,
 				mockAgentReg as any,
 				{} as any,
-				createMockTaskTrackingService() as any,
+
 				eventBus as any
 			);
 

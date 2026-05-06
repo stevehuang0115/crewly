@@ -26,7 +26,6 @@ import type {
   AgentPreferences,
   ProjectAgentsIndex,
 } from '../../types/memory.types.js';
-import type { TaskTrackingService } from '../project/task-tracking.service.js';
 
 /**
  * Categories for the unified remember operation
@@ -213,8 +212,6 @@ export class MemoryService implements IMemoryService {
 
   private readonly agentMemory: AgentMemoryService;
   private readonly projectMemory: ProjectMemoryService;
-  /** Shared or lazily-cached TaskTrackingService instance for operational context enrichment */
-  private taskTrackingServiceRef: TaskTrackingService | null = null;
   private readonly logger = LoggerService.getInstance().createComponentLogger('MemoryService');
   private embeddingProvider: EmbeddingProvider | null = null;
   private embeddingProviderInitialized = false;
@@ -228,29 +225,15 @@ export class MemoryService implements IMemoryService {
   }
 
   /**
-   * Set the shared TaskTrackingService instance to avoid creating
-   * disposable instances on every recall. Call during app startup.
+   * Backwards-compatible no-op. Kept so existing call sites in `index.ts`
+   * compile during the TaskTrackingService deletion window. Operational
+   * context enrichment now reads from the V3 task-pool directly (see
+   * {@link enrichWithOperational}).
    *
-   * @param service - The application's shared TaskTrackingService
+   * @deprecated Will be removed in a follow-up. Do not call from new code.
    */
-  public setTaskTrackingService(service: TaskTrackingService): void {
-    this.taskTrackingServiceRef = service;
-  }
-
-  /**
-   * Get or lazily create a TaskTrackingService.
-   * Prefers the shared instance set via setTaskTrackingService().
-   *
-   * @returns TaskTrackingService instance
-   */
-  private async getTaskTrackingService(): Promise<TaskTrackingService> {
-    if (this.taskTrackingServiceRef) {
-      return this.taskTrackingServiceRef;
-    }
-    // Lazy fallback: create and cache one instance
-    const { TaskTrackingService: TTS } = await import('../project/task-tracking.service.js');
-    this.taskTrackingServiceRef = new TTS();
-    return this.taskTrackingServiceRef;
+  public setTaskTrackingService(_service: unknown): void {
+    // intentionally empty
   }
 
   /**
@@ -903,16 +886,24 @@ export class MemoryService implements IMemoryService {
       opPromises.push(
         (async () => {
           try {
-            const tts = await this.getTaskTrackingService();
-            const tasks = await tts.getTasksBySessionName(params.agentId);
-            const terminalStatuses = ['completed', 'verified', 'cancelled'];
+            // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
+            // Replaces TaskTrackingService.getTasksBySessionName with a
+            // direct V3 pool read + projection.
+            const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+            const { projectWorkItemToInProgressTask } = await import('../v3/work-item-projection.js');
+            const items = await TaskPoolService.getInstance().getAllItems();
+            const tasks = items
+              .filter((wi) => wi.target === params.agentId)
+              .map(projectWorkItemToInProgressTask);
+            const terminalStatuses = ['completed', 'verified', 'cancelled', 'done'];
             const active = tasks.filter((t) => !terminalStatuses.includes(t.status));
             if (active.length) {
               result.activeTasks = active.map((t) => ({
                 id: t.id,
                 name: t.taskName,
                 status: t.status,
-                hasWorkingNotes: !!t.workingNotes,
+                // `workingNotes` doesn't exist on V3 — keep undefined for shape parity.
+                hasWorkingNotes: false,
               }));
             }
           } catch { /* non-fatal */ }
