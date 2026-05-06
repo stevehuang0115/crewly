@@ -295,9 +295,15 @@ export class TaskPoolService {
     // so double-link is safe.
     //
     // Failure isolation: pool mutation is the source of truth. Link
-    // failures are warn-logged and swallowed; subscriber path remains
-    // as a backup, and a future addToPool of the same WI is a no-op
-    // (storage dedup) so retry comes via natural traffic.
+    // failures are warn-logged and swallowed. The recovery path is the
+    // immediately-following publishWorkItemQueued — it fires
+    // unconditionally even when the intrinsic link threw, so any wired
+    // subscriber (request-sla.subscriber on workitem:queued,
+    // V3DataService.onTaskDelegated downstream) re-links idempotently
+    // inside this same addToPool call. Storage dedup on a future
+    // re-enqueue is NOT the recovery mechanism — that path is only
+    // hit if the original publish also fails, which is independently
+    // isolated.
     await this.linkWorkItemToRequest(workItem);
 
     // INBOUND-1.f1: announce the queue mutation so subscribers (notably the

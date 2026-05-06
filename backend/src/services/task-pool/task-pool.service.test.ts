@@ -4,7 +4,10 @@
  * @module services/task-pool/task-pool.service.test
  */
 
-import { TaskPoolService } from './task-pool.service.js';
+import {
+  TaskPoolService,
+  type IRequestWorkItemLinker,
+} from './task-pool.service.js';
 import { PoolStorage } from './pool-storage.js';
 import { createWorkItem } from '../../types/v2/work-item.types.js';
 import * as fs from 'fs/promises';
@@ -210,7 +213,12 @@ describe('TaskPoolService', () => {
     // belt-and-suspenders. These tests pin the contract.
     // ---------------------------------------------------------------------
     describe('intrinsic Request link (P1 Bug B)', () => {
-      function makeFakeLinker() {
+      function makeFakeLinker(): {
+        linker: IRequestWorkItemLinker & {
+          linkWorkItem: jest.Mock<Promise<unknown>, [string, string]>;
+        };
+        calls: Array<{ requestId: string; workItemId: string }>;
+      } {
         const calls: Array<{ requestId: string; workItemId: string }> = [];
         const linker = {
           linkWorkItem: jest.fn(async (requestId: string, workItemId: string) => {
@@ -223,7 +231,7 @@ describe('TaskPoolService', () => {
 
       it('calls linkWorkItem(requestId, workItemId) once when wi.requestId is set', async () => {
         const { linker, calls } = makeFakeLinker();
-        service.setRequestService(linker as any);
+        service.setRequestService(linker);
 
         const wi = makeWorkItem({ requestId: 'req-bug-b-1' });
         await service.addToPool(wi);
@@ -234,7 +242,7 @@ describe('TaskPoolService', () => {
 
       it('does NOT call linkWorkItem when wi.requestId is NOT set', async () => {
         const { linker } = makeFakeLinker();
-        service.setRequestService(linker as any);
+        service.setRequestService(linker);
 
         const wi = makeWorkItem(); // no requestId
         await service.addToPool(wi);
@@ -243,12 +251,12 @@ describe('TaskPoolService', () => {
       });
 
       it('isolates linkWorkItem failures (addToPool still succeeds, warn-logged)', async () => {
-        const linker = {
+        const linker: IRequestWorkItemLinker = {
           linkWorkItem: jest.fn(async () => {
             throw new Error('linker blew up — db down');
           }),
         };
-        service.setRequestService(linker as any);
+        service.setRequestService(linker);
 
         const wi = makeWorkItem({ requestId: 'req-fail' });
 
@@ -265,7 +273,7 @@ describe('TaskPoolService', () => {
 
       it('does not double-link on duplicate addToPool calls (storage dedup short-circuits)', async () => {
         const { linker } = makeFakeLinker();
-        service.setRequestService(linker as any);
+        service.setRequestService(linker);
 
         const wi = makeWorkItem({ requestId: 'req-dup-link' });
         await service.addToPool(wi);
@@ -303,7 +311,7 @@ describe('TaskPoolService', () => {
         const { linker } = makeFakeLinker();
 
         service.setEventBusService(fakeBus);
-        service.setRequestService(linker as any);
+        service.setRequestService(linker);
 
         const wi = makeWorkItem({ requestId: 'req-coexist' });
         await service.addToPool(wi);
@@ -339,7 +347,7 @@ describe('TaskPoolService', () => {
           workItemIds: [], // empty — the bug condition
         });
 
-        const linker = {
+        const linker: IRequestWorkItemLinker = {
           linkWorkItem: jest.fn(async (requestId: string, workItemId: string) => {
             const req = fakeRequestStore.get(requestId);
             if (!req) return null;
@@ -351,7 +359,7 @@ describe('TaskPoolService', () => {
             return req;
           }),
         };
-        service.setRequestService(linker as any);
+        service.setRequestService(linker);
 
         // PRE-FIX assertion baseline
         expect(fakeRequestStore.get('req-322e7fd3')!.workItemIds).toEqual([]);
