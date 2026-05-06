@@ -319,16 +319,27 @@ export class MemoryService implements IMemoryService {
   }
 
   /**
-   * Maps RememberCategory to RoleKnowledgeCategory for agent memory
+   * Maps RememberCategory to RoleKnowledgeCategory for agent memory.
+   *
+   * Public-API categories that map cleanly to internal storage:
+   * - `fact` / `decision` → `best-practice` (positive learnings the agent should follow)
+   * - `pattern` / `preference` → `workflow` (how-to / process knowledge)
+   * - `gotcha` → `anti-pattern` (things to avoid; F4 fix 2026-05-06)
+   *
+   * Categories that do NOT reach this mapper because `rememberForAgent`
+   * routes them differently or rejects them: `relationship` and
+   * `user_preference` are project-only by design.
    */
   private mapToKnowledgeCategory(category: RememberCategory): RoleKnowledgeCategory {
     switch (category) {
       case 'fact':
+      case 'decision':
         return 'best-practice';
       case 'pattern':
-        return 'workflow';
       case 'preference':
         return 'workflow';
+      case 'gotcha':
+        return 'anti-pattern';
       default:
         return 'best-practice';
     }
@@ -634,12 +645,24 @@ export class MemoryService implements IMemoryService {
   }
 
   /**
-   * Stores memory at agent level
+   * Stores memory at agent level.
+   *
+   * Valid public-API categories for agent scope:
+   * - `fact`, `pattern` → role knowledge (existing behavior)
+   * - `gotcha` → role knowledge with internal `anti-pattern` category
+   *   (F4 fix 2026-05-06: agents can now record personal gotchas without
+   *    polluting project memory).
+   * - `preference` → updates AgentPreferences struct
+   *
+   * Categories `relationship` and `user_preference` remain project-only
+   * by design (relationship describes codebase component edges;
+   * user_preference is scoped to a specific project's user).
    */
   private async rememberForAgent(params: RememberParams): Promise<string> {
     switch (params.category) {
       case 'fact':
       case 'pattern':
+      case 'gotcha':
         return this.agentMemory.addRoleKnowledge(params.agentId, {
           category: this.mapToKnowledgeCategory(params.category),
           content: params.content,
@@ -660,7 +683,11 @@ export class MemoryService implements IMemoryService {
         return 'preference-updated';
 
       default:
-        throw new Error(`Category '${params.category}' is not valid for agent scope. Use 'fact', 'pattern', or 'preference'.`);
+        throw new Error(
+          `Category '${params.category}' is not valid for agent scope. ` +
+          `Use 'fact', 'pattern', 'gotcha', or 'preference'. ` +
+          `('decision', 'relationship', and 'user_preference' are project-scope only.)`
+        );
     }
   }
 

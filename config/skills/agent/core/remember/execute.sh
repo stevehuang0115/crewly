@@ -24,7 +24,11 @@ Options:
   --agent    | -a   Agent ID / session name (required)
   --content  | -c   Memory content text (required unless piped via stdin)
   --content-file    Read content from file path
-  --category | -C   Category: pattern, decision, gotcha, fact, preference (required)
+  --category | -C   Category (required) — valid values depend on scope:
+                      scope=agent   : fact, pattern, gotcha, preference
+                      scope=project : pattern, decision, gotcha, relationship, user_preference
+                    Aliases / common mistakes:
+                      'workflow' is NOT a public category — use 'pattern' instead.
   --scope    | -s   Scope: project or agent (required)
   --project  | -p   Project path (required for project scope)
   --json     | -j   Raw JSON payload

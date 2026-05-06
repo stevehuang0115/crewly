@@ -136,6 +136,88 @@ describe('MemoryService', () => {
         scope: 'agent',
       })).rejects.toThrow('not valid for agent scope');
     });
+
+    // ===== F4 fix (2026-05-06): gotcha is now valid for agent scope =====
+    // ORC Audit Cycle 3 finding F4. Previously rejected with "not valid for
+    // agent scope" because rememberForAgent only accepted fact/pattern/preference,
+    // forcing callers to pollute project memory with personal gotchas.
+
+    it('should store gotcha in agent memory (F4 fix)', async () => {
+      const id = await service.remember({
+        agentId: testAgentId,
+        content: 'My grep -A audit pattern produced false positives — use yq instead',
+        category: 'gotcha',
+        scope: 'agent',
+      });
+
+      expect(id).toBeDefined();
+      expect(id).not.toBe('preference-updated');
+
+      const agentService = service.getAgentMemoryService();
+      const knowledge = await agentService.getRoleKnowledge(testAgentId);
+      const stored = knowledge.find(k => k.content.includes('grep -A audit'));
+      expect(stored).toBeDefined();
+      expect(stored?.category).toBe('anti-pattern');
+    });
+
+    it('should keep gotcha valid for project scope (no regression)', async () => {
+      const id = await service.remember({
+        agentId: testAgentId,
+        projectPath: testProjectPath,
+        content: 'Database connections leak without explicit cleanup',
+        category: 'gotcha',
+        scope: 'project',
+        metadata: {
+          title: 'Connection Pool Leak',
+          solution: 'Use try/finally with client.release()',
+          severity: 'high',
+        },
+      });
+
+      expect(id).toBeDefined();
+
+      const projectService = service.getProjectMemoryService();
+      const gotchas = await projectService.getGotchas(testProjectPath);
+      expect(gotchas.some(g => g.title === 'Connection Pool Leak')).toBe(true);
+    });
+
+    it('should make agent-scope gotcha recallable (F4 fix)', async () => {
+      await service.remember({
+        agentId: testAgentId,
+        content: 'Never run git checkout -- . without stashing first — destructive',
+        category: 'gotcha',
+        scope: 'agent',
+      });
+
+      const result = await service.recall({
+        agentId: testAgentId,
+        context: 'git checkout destructive stash',
+        scope: 'agent',
+      });
+
+      expect(result.agentMemories.length).toBeGreaterThan(0);
+      expect(
+        result.agentMemories.some(m => m.includes('git checkout'))
+      ).toBe(true);
+    });
+
+    it('should reject relationship for agent scope (project-only by design)', async () => {
+      await expect(service.remember({
+        agentId: testAgentId,
+        content: 'UserController',
+        category: 'relationship',
+        scope: 'agent',
+      })).rejects.toThrow('not valid for agent scope');
+    });
+
+    it('should reject user_preference for agent scope (project-only by design)', async () => {
+      await expect(service.remember({
+        agentId: testAgentId,
+        content: 'User prefers concise replies',
+        category: 'user_preference',
+        scope: 'agent',
+      })).rejects.toThrow('not valid for agent scope');
+    });
   });
 
   describe('remember - project scope', () => {

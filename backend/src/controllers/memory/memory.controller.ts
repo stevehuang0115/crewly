@@ -69,9 +69,22 @@ export async function remember(req: Request, res: Response, next: NextFunction):
     }
 
     if (!VALID_REMEMBER_CATEGORIES.has(category)) {
+      // F4 fix (2026-05-06): if caller used a known internal alias
+      // (e.g. 'workflow') hint the public-API equivalent.
+      // Arch nit (PR #468): the 'best-practice' internal name is produced
+      // by both 'fact' (agent-only) and 'decision' (project-only) in the
+      // service-layer mapper, so the hint must be scope-aware to avoid
+      // sending project-scope callers down a dead-end.
+      const aliasHint =
+        category === 'workflow' ? " — did you mean 'pattern'?" :
+        category === 'best-practice'
+          ? (scope === 'project' ? " — did you mean 'decision'?" : " — did you mean 'fact'?")
+          :
+        category === 'anti-pattern' ? " — did you mean 'gotcha'?" :
+        '';
       res.status(400).json({
         success: false,
-        error: `Invalid category '${category}'. Must be one of: ${[...VALID_REMEMBER_CATEGORIES].join(', ')}`,
+        error: `Invalid category '${category}'. Must be one of: ${[...VALID_REMEMBER_CATEGORIES].join(', ')}${aliasHint}`,
       });
       return;
     }
