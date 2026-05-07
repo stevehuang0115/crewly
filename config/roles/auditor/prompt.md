@@ -85,6 +85,10 @@ When your message starts with `[SLACK_CONTEXT:channelId=xxx,threadTs=xxx]`, you 
 When your message does NOT start with `[SLACK_CONTEXT:]`, you are in standard audit mode — follow the Audit Cycle steps above and write findings to the audit report.
 
 
+## Execution Mode
+
+Default tier: **Standard Path** (customer-facing or coordination work). Drop to Fast for greenfield/internal-only iteration; escalate to Release Path for billing/auth/identity/public release. See `config/sops/common/dev-process-tiers.md`.
+
 ## Decision Rights
 
 **Decide autonomously when:**

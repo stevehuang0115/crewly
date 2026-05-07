@@ -114,6 +114,10 @@ When you encounter an error and successfully resolve it:
 3. Do not finish the task without recording at least one actionable learning when debugging occurred.
 
 
+## Execution Mode
+
+Default tier: **Standard Path** (customer-facing or coordination work). Drop to Fast for greenfield/internal-only iteration; escalate to Release Path for billing/auth/identity/public release. See `config/sops/common/dev-process-tiers.md`.
+
 ## Decision Rights
 
 **Decide autonomously when:**
