@@ -2877,5 +2877,201 @@ describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
 			expect(structuredBulletIdx).toBeGreaterThan(-1);
 			expect(newBulletIdx).toBeLessThan(structuredBulletIdx);
 		});
+
+		// =============================================================================
+		// Agent Improvement P0-1 + P0-2 — TL Soul + Self-Implementation Exception Rule
+		// (spec: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md)
+		//
+		// Regression: TL prompt corpus must NOT carry soft percentage-target hints
+		// ("delegate 70-80%", "delegate 90%", etc.). Those hints were the documented
+		// failure mode that produced the IC-default behavior P0-1+P0-2 fixes.
+		//
+		// Positive: the team-leader soul MUST carry the full Self-Implementation
+		// Exception Rule with all 4 AND-of-N criteria. Soul is the single source of
+		// truth; tl-addon and team-leader/prompt.md reference it instead of
+		// duplicating.
+		// =============================================================================
+		describe('P0-1+P0-2: TL soul + Self-Implementation Exception Rule', () => {
+			it('regression: TL prompt corpus carries no soft "delegate X%" percentage-target hints', () => {
+				const filesToCheck = [
+					path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md'),
+					path.join(repoRoot, 'config', 'roles', 'team-leader', 'prompt.md'),
+					path.join(repoRoot, 'config', 'souls', 'team-leader.md'),
+				];
+				const banned = /delegate\s+\d{1,3}\s*[%–\-to]+\s*\d{0,3}\s*%?/i;
+				const offenders: string[] = [];
+				for (const f of filesToCheck) {
+					const content = fs.readFileSync(f, 'utf8');
+					if (banned.test(content)) {
+						const line = content.split('\n').find((l) => banned.test(l));
+						offenders.push(`${f}: "${line}"`);
+					}
+				}
+				expect(offenders).toEqual([]);
+			});
+
+			it('team-leader soul contains the full Self-Implementation Exception Rule with 4 AND-of-N criteria', () => {
+				const soulPath = path.join(repoRoot, 'config', 'souls', 'team-leader.md');
+				const soul = fs.readFileSync(soulPath, 'utf8');
+				expect(soul).toContain('Self-Implementation Exception Rule');
+				expect(soul).toContain('default action is to delegate execution');
+				// All 4 AND-of-N criteria must appear (numbered list 1./2./3./4. inside the rule section)
+				expect(soul).toMatch(/1\.\s+No suitable worker is currently available/);
+				expect(soul).toMatch(/2\.\s+The task is small enough to complete faster than delegating/);
+				expect(soul).toMatch(/3\.\s+The task is not primarily a coordination, decomposition, review, or decision task/);
+				expect(soul).toMatch(/4\.\s+You log why you chose self-implementation/);
+				// Mandatory-on-availability assertion must remain
+				expect(soul).toMatch(/If a suitable worker is available, assigning the task is mandatory/);
+			});
+
+			it('TL prompt + tl-addon reference the soul rule rather than duplicating percentage-targets', () => {
+				const tlAddon = fs.readFileSync(
+					path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md'),
+					'utf8',
+				);
+				const tlPrompt = fs.readFileSync(
+					path.join(repoRoot, 'config', 'roles', 'team-leader', 'prompt.md'),
+					'utf8',
+				);
+				expect(tlAddon).toContain('Self-Implementation Exception Rule');
+				expect(tlPrompt).toContain('Self-Implementation Exception Rule');
+				// And do NOT carry the AND-of-N enumeration redundantly
+				// (DRY: keep the canonical rule in the soul; references elsewhere)
+				expect(tlAddon.match(/1\.\s+No suitable worker is currently available/g) ?? []).toHaveLength(0);
+				expect(tlPrompt.match(/1\.\s+No suitable worker is currently available/g) ?? []).toHaveLength(0);
+			});
+
+			it('canDelegate=true assembled TL section preserves Self-Implementation Exception Rule reference', async () => {
+				// Read real on-disk tl-addon.md and feed through the mocked fs path.
+				// This proves the post-edit file content still surfaces in the rendered
+				// TL section that ships to live agents (not just a stale snapshot).
+				const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+				const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(tlAddonContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'sam-session',
+					role: 'team-leader',
+					canDelegate: true,
+					teamId: 'team-x',
+					memberId: 'mem-x',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+					subordinates: [
+						{ name: 'Leo', sessionName: 'leo-s', role: 'developer', memberId: 'm-leo' },
+					],
+				};
+
+				const result = await service.buildTeamLeadSection(config);
+				expect(result).toContain('Self-Implementation Exception Rule');
+				// Negative: rendered section must not regress to soft percentage targets
+				expect(result).not.toMatch(/delegate\s+(70|80|90)\s*%/i);
+				expect(result).not.toMatch(/Target:\s*delegate\s+\d/i);
+			});
+		});
+
+		// =============================================================================
+		// Agent Improvement P0-6 — Owner-Facing Communication Standard integration
+		// (spec: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md)
+		//
+		// The Owner-Facing Communication Standard is canonical at
+		// `config/sops/common/owner-facing-communication.md`. The orchestrator
+		// prompt MUST integrate it as a binding section near the top (so live orc
+		// sessions see the rule before any other guidance), and TL prompts MUST
+		// reference the same SOP (since TL output frequently relays through ORC
+		// to the owner). Net-zero offset: the integration must NOT inflate the
+		// orchestrator prompt — redundant inline boilerplate is consolidated into
+		// the SOP-pointer section.
+		// =============================================================================
+		describe('P0-6: Owner-Facing Communication Standard integration', () => {
+			it('orchestrator prompt template contains "## Owner-Facing Communication Standard" near top (≤ line 200)', () => {
+				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+				const orcPrompt = fs.readFileSync(orcPromptPath, 'utf8');
+				const lines = orcPrompt.split('\n');
+				const headerIdx = lines.findIndex((l) => /^##\s+Owner-Facing Communication Standard\b/.test(l));
+				expect(headerIdx).toBeGreaterThanOrEqual(0);
+				// Must appear near the top — before deep operational sections.
+				// The eval criterion is "low line number"; 200 is the soft ceiling.
+				expect(headerIdx).toBeLessThan(200);
+			});
+
+			it('orchestrator prompt template references the canonical SOP file path', () => {
+				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+				const orcPrompt = fs.readFileSync(orcPromptPath, 'utf8');
+				// Reference the SOP markdown file by path so the orc can locate it.
+				expect(orcPrompt).toContain('config/sops/common/owner-facing-communication.md');
+				// Reference the SOP id so the SOP-loader can resolve it via id, not just path.
+				expect(orcPrompt).toContain('common-owner-facing-communication');
+			});
+
+			it('orchestrator prompt template carries the three principles + decision-request shape', () => {
+				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+				const orcPrompt = fs.readFileSync(orcPromptPath, 'utf8');
+				// Three principles (binding summary in-prompt; full content in SOP)
+				expect(orcPrompt).toMatch(/Plain language/i);
+				expect(orcPrompt).toMatch(/Sufficient context/i);
+				expect(orcPrompt).toMatch(/Decide-first defaults/i);
+				// Decision-request shape skeleton
+				expect(orcPrompt).toMatch(/My recommendation:/);
+				expect(orcPrompt).toMatch(/Your options:/);
+			});
+
+			it('canDelegate=true assembled TL section references the Owner-Facing Communication Standard', async () => {
+				// TLs frequently relay output via ORC to the owner — the
+				// canDelegate=true rendered TL section must surface the SOP
+				// reference so live TL agents inherit the standard.
+				const tlAddonPath = path.join(repoRoot, 'config', 'roles', 'team-leader', 'tl-addon.md');
+				const tlAddonContent = fs.readFileSync(tlAddonPath, 'utf8');
+
+				mockAccess.mockResolvedValue(undefined);
+				mockReadFile.mockResolvedValue(tlAddonContent);
+
+				const config: TeamMemberSessionConfig = {
+					name: 'sam-session',
+					role: 'team-leader',
+					canDelegate: true,
+					teamId: 'team-x',
+					memberId: 'mem-x',
+					projectPath: '/proj',
+					systemPrompt: '',
+					runtimeType: 'claude-code' as any,
+					subordinates: [
+						{ name: 'Leo', sessionName: 'leo-s', role: 'developer', memberId: 'm-leo' },
+					],
+				};
+
+				const result = await service.buildTeamLeadSection(config);
+				expect(result).toContain('Owner-Facing Communication Standard');
+				// Anchor the SOP id so a future drift would surface here.
+				expect(result).toContain('common-owner-facing-communication');
+			});
+
+			it('orchestrator prompt template wc -l does not exceed prior baseline (net-zero offset)', () => {
+				// The P0-6 integration must NOT inflate the orchestrator prompt.
+				// Baseline 1740 is a conservative upper bound that reflects the
+				// pre-P0-6 file size (1733 lines on origin/main as of merge of
+				// #492). The actual post-edit size is ~1687 — well under. This
+				// guards against future drift that would re-add deleted
+				// boilerplate alongside the SOP pointer.
+				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
+				const orcPrompt = fs.readFileSync(orcPromptPath, 'utf8');
+				const lineCount = orcPrompt.split('\n').length;
+				expect(lineCount).toBeLessThanOrEqual(1740);
+			});
+
+			it('owner-facing SOP file exists at the canonical path with the expected id and title', () => {
+				// Sanity guard: if the SOP file is renamed/deleted, the orc
+				// prompt's pointer becomes a broken reference. Pin the file's
+				// existence and stable identifiers here.
+				const sopPath = path.join(repoRoot, 'config', 'sops', 'common', 'owner-facing-communication.md');
+				expect(fs.existsSync(sopPath)).toBe(true);
+				const sop = fs.readFileSync(sopPath, 'utf8');
+				expect(sop).toMatch(/id:\s*common-owner-facing-communication/);
+				expect(sop).toMatch(/title:\s*Owner-Facing Communication Standard/);
+			});
+		});
 	});
 });
