@@ -387,8 +387,15 @@ export class V3DataService {
       // Cascade: update parent Request status
       await this.cascadeRequestStatus(match.requestId);
 
-      // Unlock dependent WorkItems (task dependency resolution)
-      await this.unlockDependentWorkItems(match.id);
+      // Dependency unlock now lives in the V3 task-pool itself —
+      // `TaskPoolService.resolveBlockedDependents` runs inside the
+      // `completeItem` / `transitionStatus` lifecycle and reads the
+      // canonical `WorkItem.dependsOn` field. The previous
+      // `unlockDependentWorkItems` helper here read a parallel
+      // `metadata._blockedBy` key that mission-executor wrote — that
+      // mismatch was the silent freeze for mission decomposition with
+      // dependencies. Removed in spec/2026-05-06-task-management-v1-deprecation.md
+      // follow-up.
     } catch (err) {
       this.logger.warn('V3DataService.onTaskCompleted failed (non-fatal)', {
         sessionName: event.sessionName,
@@ -610,56 +617,6 @@ export class V3DataService {
     } catch (err) {
       this.logger.warn('V3DataService.onTaskBlocked failed (non-fatal)', {
         sessionName: event.sessionName,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  /**
-   * Unlocks WorkItems that were blocked by the completed WorkItem.
-   * Scans all blocked items in the pool for `metadata._blockedBy` arrays
-   * containing the completed item's ID. Removes it and transitions
-   * `blocked → queued` when no blockers remain.
-   *
-   * @param completedWorkItemId - The ID of the just-completed WorkItem
-   */
-  private async unlockDependentWorkItems(completedWorkItemId: string): Promise<void> {
-    try {
-      const taskPool = TaskPoolService.getInstance();
-      const allItems = await taskPool.getAllItems();
-
-      for (const wi of allItems) {
-        if (wi.status !== 'blocked') continue;
-
-        const blockedBy = (wi.metadata as Record<string, unknown> | undefined)?._blockedBy;
-        if (!Array.isArray(blockedBy)) continue;
-        if (!blockedBy.includes(completedWorkItemId)) continue;
-
-        const remaining = blockedBy.filter((id: unknown) => id !== completedWorkItemId);
-
-        // Update metadata and potentially unblock
-        if (remaining.length === 0) {
-          await taskPool.updateItemStatus(wi.id, 'queued');
-          this.logger.info('Dependency resolved — WorkItem unblocked', {
-            workItemId: wi.id,
-            resolvedBy: completedWorkItemId,
-          });
-        } else {
-          this.logger.debug('Dependency partially resolved', {
-            workItemId: wi.id,
-            resolvedBy: completedWorkItemId,
-            remainingBlockers: remaining.length,
-          });
-        }
-
-        // Update the _blockedBy metadata
-        if (wi.metadata) {
-          (wi.metadata as Record<string, unknown>)._blockedBy = remaining;
-        }
-      }
-    } catch (err) {
-      this.logger.debug('unlockDependentWorkItems failed (non-fatal)', {
-        completedWorkItemId,
         error: err instanceof Error ? err.message : String(err),
       });
     }
