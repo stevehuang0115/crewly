@@ -16,6 +16,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { toFts5Phrase } from './fts5-query-sanitizer.js';
 
 // ---------------------------------------------------------------------------
 // Lazy module loading
@@ -229,8 +230,16 @@ export class Fts5IndexService {
     const db = this.getDb();
     const limit = options?.limit ?? 10;
 
-    // Sanitize query: remove characters that break FTS5 MATCH syntax
-    const sanitized = query.replace(/['"*(){}[\]^~\\]/g, ' ').trim();
+    // Sanitize query via phrase-quote tokenization. See
+    // {@link toFts5Phrase} for the full design rationale — short version:
+    // the previous regex-strip sanitizer left commas, hyphens, colons, and
+    // FTS5 keywords intact, causing 44 silent agent-recall failures per day
+    // (F-FTS5 / WI-E triage). Phrase-quoting neutralizes ALL operator
+    // characters because FTS5 does not parse operators inside `"..."`
+    // phrases. Each token round-trips through unicode61 at index AND
+    // query time, so recall is preserved for hyphenated identifiers like
+    // `team-leader`.
+    const sanitized = toFts5Phrase(query);
     if (sanitized.length === 0) {
       return [];
     }
