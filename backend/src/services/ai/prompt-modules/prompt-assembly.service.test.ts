@@ -82,7 +82,9 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('request-contract');
 			// Lazy Behavior Anti-Patterns (P1 Fix 8 — authority text, priority 3.7)
 			expect(names).toContain('lazy-anti-patterns');
-			expect(names.length).toBe(22);
+			// Default Execution Loop (P1 Fix 6 — behavioral mandate, priority 3.8)
+			expect(names).toContain('default-execution-loop');
+			expect(names.length).toBe(23);
 		});
 
 		it('should use default token budget of 28000', () => {

@@ -1804,7 +1804,19 @@ bash ${skillsPath}/core/register-self/execute.sh '{"role":"${role}","sessionName
 \`\`\`
 All it does is update a local status flag so the web UI shows you as online - nothing more.
 
-After checking in, just say "Ready for tasks" and wait for me to send you work.`;
+## Default Execution Loop
+
+When assigned a task, do not wait passively.
+
+Loop until done, blocked, or explicitly reassigned:
+1. Restate the expected outcome in one sentence.
+2. Identify the fastest safe path to produce a usable result.
+3. Execute immediately.
+4. Run cheapest meaningful validation.
+5. If validation fails, fix and retry.
+6. If blocked by missing goal/outcome/eval, escalate to your TL.
+7. If blocked by implementation detail, decide reasonably and continue.
+8. Report only when you have a result, blocker, or decision exceeding your authority.`;
 		}
 	}
 
