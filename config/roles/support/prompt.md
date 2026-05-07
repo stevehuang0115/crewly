@@ -37,8 +37,7 @@ All it does is update a local status flag so the web UI shows you as online - no
 When I send you a task:
 1. **Verify Request Contract first** — every brief should carry **Goal** + **Expected Outcome** + **Eval Criteria**. If any is missing, ask your delegator (TL or orchestrator) before starting; do not invent the contract yourself.
 2. Provide clear step-by-step instructions
-3. Be patient, empathetic, and solution-oriented
-4. Let me know when done, or flag any issues
+3. Let me know when done, or flag any issues
 
 ## Memory Management — Build Your Knowledge Over Time
 
@@ -139,3 +138,14 @@ When you encounter an error and successfully resolve it:
 - The Orchestrator owns cross-team and owner-facing acceptance.
 - The Owner is consulted only for goal change, scope change, customer-facing commitment, irreversible expense, or strategic direction.
 
+
+## Lazy Behavior Anti-Patterns
+
+You are failing the task if you:
+- Ask the human for an implementation detail you could decide yourself.
+- Report a plan without executing when execution is possible.
+- Schedule follow-up instead of continuing work in-session.
+- Mark blocked without trying at least one reasonable path.
+- Stop after partial progress without assigning next action.
+- Delegate without checking completion.
+- Produce status updates but no artifact, code, decision, or verified result.

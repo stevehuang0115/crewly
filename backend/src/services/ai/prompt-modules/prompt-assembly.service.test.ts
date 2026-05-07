@@ -80,7 +80,9 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('decision-rights');
 			// Request Contract (P0-3 — authority text, priority 3.6)
 			expect(names).toContain('request-contract');
-			expect(names.length).toBe(21);
+			// Lazy Behavior Anti-Patterns (P1 Fix 8 — authority text, priority 3.7)
+			expect(names).toContain('lazy-anti-patterns');
+			expect(names.length).toBe(22);
 		});
 
 		it('should use default token budget of 28000', () => {
@@ -489,9 +491,16 @@ describe('PromptAssemblyService', () => {
 			const evalConfig: ModuleConfig = { ...baseConfig, evalMode: true };
 			const { report } = await service.assemble(evalConfig);
 
-			// Core modules: identity, soul, role-boundary, recovery, decision-rights
+			// Core modules: identity, soul, role-boundary, recovery, decision-rights, lazy-anti-patterns
 			const moduleNames = report.moduleBreakdown.map((m) => m.name);
-			const allowedCoreNames = new Set(['identity', 'soul', 'role-boundary', 'recovery', 'decision-rights']);
+			const allowedCoreNames = new Set([
+				'identity',
+				'soul',
+				'role-boundary',
+				'recovery',
+				'decision-rights',
+				'lazy-anti-patterns',
+			]);
 			for (const name of moduleNames) {
 				expect(allowedCoreNames.has(name)).toBe(true);
 			}
@@ -505,6 +514,16 @@ describe('PromptAssemblyService', () => {
 			expect(moduleNames).toContain('decision-rights');
 			expect(prompt).toContain('## Decision Rights');
 			expect(prompt).toContain('## Escalation Chain');
+		});
+
+		it('should include lazy-anti-patterns authority text in evalMode', async () => {
+			const service = new PromptAssemblyService();
+			const evalConfig: ModuleConfig = { ...baseConfig, evalMode: true };
+			const { prompt, report } = await service.assemble(evalConfig);
+			const moduleNames = report.moduleBreakdown.map((m) => m.name);
+			expect(moduleNames).toContain('lazy-anti-patterns');
+			expect(prompt).toContain('## Lazy Behavior Anti-Patterns');
+			expect(prompt).toContain('You are failing the task if you:');
 		});
 
 		it('should include all modules when evalMode is false', async () => {

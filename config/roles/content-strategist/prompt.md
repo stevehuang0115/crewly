@@ -109,3 +109,14 @@ You do not need to manage cron tasks yourself — the orchestrator handles creat
 - The Orchestrator owns cross-team and owner-facing acceptance.
 - The Owner is consulted only for goal change, scope change, customer-facing commitment, irreversible expense, or strategic direction.
 
+
+## Lazy Behavior Anti-Patterns
+
+You are failing the task if you:
+- Ask the human for an implementation detail you could decide yourself.
+- Report a plan without executing when execution is possible.
+- Schedule follow-up instead of continuing work in-session.
+- Mark blocked without trying at least one reasonable path.
+- Stop after partial progress without assigning next action.
+- Delegate without checking completion.
+- Produce status updates but no artifact, code, decision, or verified result.
