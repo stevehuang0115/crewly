@@ -27,8 +27,6 @@
  * @module services/agent/active-work-briefing.service
  */
 
-import { createRequire } from 'module';
-import { pathToFileURL } from 'url';
 import { LoggerService } from '../core/logger.service.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import { ORCHESTRATOR_ROLE, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
@@ -41,34 +39,8 @@ import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js
 // `v3/v3-data.service.ts` and `v3/project-task-watcher.service.ts`
 // (which loads `chokidar`, which fails to parse as ESM under ts-jest's
 // CommonJS transform). The runtime singletons are loaded LAZILY through
-// `nodeRequire` (defined just below) inside
+// ESM dynamic `import()` inside
 // {@link ActiveWorkBriefingService.getInstance}.
-
-/**
- * CJS-style `require` for the lazy load inside `getInstance`. This file
- * compiles to ESM (root package has `"type": "module"`) where the bare
- * `require` global is undefined — which is exactly the bug fixed here:
- * the previous bare `require(...)` calls threw `require is not defined`
- * for every agent registration that flowed through
- * `ActiveWorkBriefingService.getInstance()` (the active-work-briefing
- * controller and `AgentRegistrationService.activeWorkBriefing` path),
- * breaking the get-my-active-work skill at session startup.
- *
- * Pattern matches the canonical fix established by commit 070cd3e5
- * (`fix(esm): anchor createRequire to process.argv[1]`):
- * - Under ts-jest's CJS transpile, the global `require` is real, so we
- *   reuse it (cheaper, plays well with jest module mocking).
- * - Under ESM (production), we `createRequire` anchored to the entry
- *   script via `pathToFileURL(process.argv[1])` so Node's resolver walks
- *   up to find `node_modules`. We do NOT use
- *   `new Function('return import.meta.url')()` because that body
- *   evaluates in non-module scope and fails at runtime
- *   (`Cannot use 'import.meta' outside a module`).
- */
-const nodeRequire: NodeRequire =
-  typeof require === 'function'
-    ? require
-    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
 
 /**
  * Narrow projection of `RequestService` used by the briefing — only
@@ -315,6 +287,21 @@ export type MemoryHints = ReadonlyMap<string, string>;
  */
 export class ActiveWorkBriefingService {
   private static instance: ActiveWorkBriefingService | null = null;
+  /**
+   * Memoised promise of the in-flight async `getInstance()` resolution.
+   *
+   * We cache the *promise* (not the resolved value) so that concurrent
+   * callers awaiting `getInstance()` during the cold-start window all
+   * land on the same async resolution — only ONE pair of dynamic
+   * `import()` calls runs, even under heavy parallelism. Once resolved,
+   * subsequent `await getInstance()` calls are microtask-only overhead
+   * (the promise is already settled, so `await` resolves on the next
+   * microtask without re-entering the import pipeline).
+   *
+   * Cleared by {@link resetInstance} for tests so each test can
+   * independently re-load the dynamic imports.
+   */
+  private static instancePromise: Promise<ActiveWorkBriefingService> | null = null;
 
   private readonly logger: ComponentLogger;
 
@@ -333,32 +320,60 @@ export class ActiveWorkBriefingService {
   /**
    * Returns the singleton instance.
    *
-   * The `RequestService` and `TaskPoolService` modules are loaded LAZILY here
-   * (CommonJS `require` rather than top-of-file `import`) so that consumers
-   * of this module do not pay the import cost — and more importantly, do not
+   * **Async** — the `RequestService` and `TaskPoolService` modules are
+   * loaded LAZILY via ESM dynamic `import()` so that consumers of this
+   * module do not pay the import cost — and more importantly, do not
    * transitively load `chokidar` via `v3-data.service.ts` — until they
-   * actually call `getInstance()`. This keeps the agent-registration test
-   * suite mockable without forcing every caller to mock the v3 pipeline.
+   * actually call `getInstance()`. This keeps the agent-registration
+   * test suite mockable without forcing every caller to mock the v3
+   * pipeline.
+   *
+   * The async contract was introduced by the build-fix that succeeded
+   * PR #494 (`fa05720e`). PR #494 used CJS `require` via a
+   * `createRequire` shim anchored to `process.argv[1]`; that anchor
+   * worked for bare module names (Node walks up to `node_modules/`)
+   * but BROKE relative-path resolution — symptom: this method threw
+   * `Cannot find module '../v3/request.service.js'` for every
+   * agent registration that flowed through here. The fix replaces
+   * `require('<relative-path>')` with `await import('<relative-path>')`
+   * which resolves correctly from this file under both ESM (production)
+   * and ts-jest's CJS transpile (jest treats dynamic `import()` like a
+   * resolvable function).
+   *
+   * **Promise memoization**: the resolved promise is cached so concurrent
+   * cold-start callers all land on the same async resolution — only ONE
+   * pair of dynamic imports runs even under heavy parallelism. Once
+   * resolved, repeat `await getInstance()` calls are microtask-only
+   * overhead.
+   *
+   * @returns Promise resolving to the singleton instance
    */
-  public static getInstance(): ActiveWorkBriefingService {
-    if (!ActiveWorkBriefingService.instance) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-      const { RequestService } = nodeRequire('../v3/request.service.js');
-      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-      const { TaskPoolService } = nodeRequire('../task-pool/task-pool.service.js');
-      ActiveWorkBriefingService.instance = new ActiveWorkBriefingService(
-        () => RequestService.getInstance(),
-        () => TaskPoolService.getInstance(),
-      );
+  public static async getInstance(): Promise<ActiveWorkBriefingService> {
+    if (!ActiveWorkBriefingService.instancePromise) {
+      ActiveWorkBriefingService.instancePromise = (async () => {
+        const { RequestService } = await import('../v3/request.service.js');
+        const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+        const built = new ActiveWorkBriefingService(
+          () => RequestService.getInstance(),
+          () => TaskPoolService.getInstance(),
+        );
+        ActiveWorkBriefingService.instance = built;
+        return built;
+      })();
     }
-    return ActiveWorkBriefingService.instance;
+    return ActiveWorkBriefingService.instancePromise;
   }
 
   /**
    * Resets the singleton — for tests only.
+   *
+   * Clears BOTH the resolved instance AND the memoised in-flight
+   * promise so the next `await getInstance()` re-runs the dynamic
+   * imports cleanly (e.g. picks up freshly-mocked modules).
    */
   public static resetInstance(): void {
     ActiveWorkBriefingService.instance = null;
+    ActiveWorkBriefingService.instancePromise = null;
   }
 
   /**

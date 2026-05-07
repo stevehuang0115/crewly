@@ -77,47 +77,74 @@ describe('module load (ESM require bridge)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ESM require bridge — static-analysis regression guard for ALL bridged files
+// ESM require bridge — static-analysis regression guard for native-module files
 // ---------------------------------------------------------------------------
 //
-// PR #323 (cb135ead) introduced `createRequire(new Function('return import.meta.url')() as string)`
-// across multiple ESM modules. The trick parsed clean under both ts-jest CJS
-// and tsc ESM but FAILED at runtime: `new Function(...)` evaluates its body
-// in non-module scope, where `import.meta` is a SyntaxError. Production
-// servers crashed at startup. The fix anchors createRequire to
-// `pathToFileURL(process.argv[1] || process.cwd()).href` instead.
+// History of this guard:
+//   PR #323 (cb135ead) introduced `createRequire(new Function('return import.meta.url')())`
+//     — failed at runtime because `new Function()` body is non-module scope.
+//   PR #494 (fa05720e) anchored to `pathToFileURL(process.argv[1])` — fixed
+//     `require is not defined` but BROKE relative-path resolution because
+//     `process.argv[1]` is the entry script, not the calling file.
+//   Build-fix (current state):
+//     * 5 native-module callsites (better-sqlite3, sqlite-vec) — extracted
+//       to a shared helper `backend/src/utils/node-require.utils.ts`
+//       (`createBareModuleRequire`). Bare-module names resolve correctly
+//       through the entry-script-anchored createRequire (PR #494's anchor)
+//       because Node's resolver walks up to find `node_modules/`. The
+//       helper just centralises the bridge so the 5 files stay DRY.
+//     * 4 relative-path callsites — switched to ESM dynamic `import()`
+//       (or static import where the sync method signature must be
+//       preserved). Tracked separately by the per-file regression
+//       guards (active-work-briefing.service.test.ts pins the dynamic
+//       import; static imports are validated by tsc + jest).
 //
-// This test scans every file known to use the bridge and asserts:
-//   1. NONE contain the broken `new Function('return import.meta.url')` pattern
-//   2. ALL contain the fixed `pathToFileURL(process.argv[1]` pattern
-// If a future contributor reverts to the broken trick OR adds a new module
-// without using the fixed pattern, this test fails and points at the file.
-describe('ESM require pattern (cross-file regression guard)', () => {
-  const ESM_BRIDGED_FILES = [
+// This test scans the 5 native-module files and asserts:
+//   1. NONE contain the PR #323 `createRequire(new Function(...` pattern.
+//   2. NONE contain the PR #494 `createRequire(pathToFileURL(process.argv[1]`
+//      pattern (the inline form — they should now use the helper).
+//   3. ALL import `createBareModuleRequire` from the shared helper AND
+//      call it with the canonical caller-require ternary.
+// If a future contributor reverts to either broken pattern OR adds a new
+// native-module file without using the helper, this test fails and points
+// at the file.
+//
+// Lessons banked here (DO NOT re-try):
+//   - `createRequire(import.meta.url)` direct: ts-jest TS1470.
+//   - `createRequire(new Function('return import.meta.url')())` (PR #323):
+//     runtime SyntaxError in non-module scope.
+//   - `createRequire(eval('import.meta.url'))`: ts-jest passes but
+//     Node ESM SyntaxErrors at runtime — eval is Script-parsed where
+//     `import.meta` is invalid.
+describe('createBareModuleRequire (cross-file regression guard for native-module files)', () => {
+  const NATIVE_MODULE_FILES = [
     'backend/src/services/memory/vector-store.service.ts',
     'backend/src/services/knowledge/vector-store.service.ts',
     'backend/src/services/knowledge/fts5-index.service.ts',
     'backend/src/services/chat-v2/sqlite/chat-db.ts',
-    'backend/src/services/browser/browser-bridge.service.ts',
-    'backend/src/services/slack/cross-machine-message.service.ts',
-    'backend/src/controllers/agent-stream/agent-stream.controller.ts',
-    // Added 2026-05-07 (auditor cycle 1, F-NEW-1): the bare `require()` calls
-    // inside ActiveWorkBriefingService.getInstance() threw `require is not
-    // defined` for every agent registration that touched the active-work
-    // briefing path (skill `get-my-active-work` and AgentRegistrationService),
-    // breaking session startup. Now bridged via the canonical createRequire
-    // pattern; this guard locks the bridge in.
-    'backend/src/services/agent/active-work-briefing.service.ts',
+    'backend/src/services/observability/observability-db.ts',
   ];
 
-  // The broken pattern's distinguishing feature: `createRequire(new Function(`
-  // (the `new Function('return import.meta.url')` arg). Comments may legally
-  // mention the historical pattern, so we anchor on the actual call form.
-  const BROKEN_CALL = /createRequire\s*\(\s*new\s+Function\s*\(/;
-  const FIXED_CALL = /createRequire\s*\(\s*pathToFileURL\s*\(\s*process\.argv\[1\]/;
+  // PR #323 broken: `createRequire(new Function('return import.meta.url')...)`.
+  // Comments may legally mention the historical pattern, so we anchor on
+  // the actual call form.
+  const BROKEN_NEW_FUNCTION = /createRequire\s*\(\s*new\s+Function\s*\(/;
+  // PR #494 broken inline pattern (now hidden inside the helper, must not
+  // re-appear at the callsite).
+  const BROKEN_INLINE_ARGV1 =
+    /createRequire\s*\(\s*pathToFileURL\s*\(\s*process\.argv\[1\]/;
+  // eval-trick (ts-jest passes, ESM runtime fails — must never reappear).
+  const BROKEN_EVAL_IMPORT_META =
+    /createRequire\s*\(\s*eval\s*\(\s*['"]import\.meta\.url['"]\s*\)/;
+  // Canonical callsite: imports the helper AND calls it with the standard
+  // caller-require ternary.
+  const FIXED_HELPER_IMPORT =
+    /import\s*\{\s*createBareModuleRequire\s*\}\s*from\s*['"][^'"]*\/utils\/node-require\.utils\.js['"];/;
+  const FIXED_HELPER_CALL =
+    /createBareModuleRequire\s*\(\s*typeof\s+require\s*===\s*['"]function['"]\s*\?\s*require\s*:\s*null\s*,?\s*\)/;
 
-  it.each(ESM_BRIDGED_FILES)(
-    '%s does NOT use new Function trick and DOES use process.argv[1] anchor',
+  it.each(NATIVE_MODULE_FILES)(
+    '%s uses createBareModuleRequire (no PR #323 / PR #494 / eval-trick patterns)',
     (relPath) => {
       // Project root: this test file lives at backend/src/services/memory/,
       // walk up four levels to repo root, then resolve the file under test.
@@ -126,7 +153,7 @@ describe('ESM require pattern (cross-file regression guard)', () => {
       const src = fs.readFileSync(absPath, 'utf8');
 
       // Strip line/block comments so historical references in JSDoc don't
-      // false-positive against the broken pattern.
+      // false-positive against the broken patterns.
       const stripComments = (s: string): string =>
         s
           .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -135,8 +162,11 @@ describe('ESM require pattern (cross-file regression guard)', () => {
           .join('\n');
       const code = stripComments(src);
 
-      expect(code).not.toMatch(BROKEN_CALL);
-      expect(code).toMatch(FIXED_CALL);
+      expect(code).not.toMatch(BROKEN_NEW_FUNCTION);
+      expect(code).not.toMatch(BROKEN_INLINE_ARGV1);
+      expect(code).not.toMatch(BROKEN_EVAL_IMPORT_META);
+      expect(code).toMatch(FIXED_HELPER_IMPORT);
+      expect(code).toMatch(FIXED_HELPER_CALL);
     }
   );
 });

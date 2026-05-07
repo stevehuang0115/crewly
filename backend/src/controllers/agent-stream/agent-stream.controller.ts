@@ -9,26 +9,15 @@
  */
 
 import type { Request, Response } from 'express';
-import { createRequire } from 'module';
-import { pathToFileURL } from 'url';
 import { AgentStreamService, type AgentStreamEvent } from '../../services/agent/crewly-agent/agent-stream.service.js';
 
-/**
- * CJS-style `require` for the inline circular-dependency workaround in
- * `getStreamableSessions`. This file compiles to ESM where the bare
- * `require` global is undefined. Top-level ESM `import` would re-introduce
- * the circular dependency, so we keep the lazy load via createRequire.
- *
- * Anchor `createRequire` to `process.argv[1]` (entry script) instead of
- * `import.meta.url`. The previous `new Function('return import.meta.url')()`
- * trick parsed clean under ts-jest's CJS but failed at runtime because
- * `new Function(...)` runs in non-module scope where `import.meta` is a
- * SyntaxError.
- */
-const nodeRequire: NodeRequire =
-  typeof require === 'function'
-    ? require
-    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
+// NOTE: The lazy load of `InProcessLogBuffer` inside
+// `getStreamableSessions` (below) avoids a top-level circular import.
+// The relative-path resolution requires the calling file's URL as
+// anchor, so we use ESM dynamic `import()` rather than CJS `require`.
+// See `backend/src/utils/node-require.utils.ts` JSDoc for why the
+// previous `createRequire(...)` paths (PR #323 `new Function`,
+// PR #494 `process.argv[1]`, eval-trick) all fail.
 
 /** SSE heartbeat interval in milliseconds to keep the connection alive */
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -108,17 +97,32 @@ export function streamAgentEvents(req: Request, res: Response): void {
 /**
  * Get a list of session names that currently have active streams.
  *
+ * **Async** — the `InProcessLogBuffer` module is loaded LAZILY via ESM
+ * dynamic `import()` to avoid a top-level circular import. The
+ * dynamic-import migration replaced the previous `nodeRequire(...)`
+ * (entry-script-anchored CJS `createRequire`) which broke relative-path
+ * resolution at runtime. See `backend/src/utils/node-require.utils.ts`
+ * JSDoc for the full lessons-banked context.
+ *
  * @param _req - Express request
  * @param res - Express response
  */
-export function getStreamableSessions(_req: Request, res: Response): void {
-  // Import inline to avoid circular dependency
-  const { InProcessLogBuffer } = nodeRequire('../../services/agent/crewly-agent/in-process-log-buffer.js');
-  const buffer = InProcessLogBuffer.getInstance();
-  const sessions = buffer.getSessionNames();
+export async function getStreamableSessions(_req: Request, res: Response): Promise<void> {
+  try {
+    // Lazy-load relative-path module via ESM dynamic import — see file
+    // header NOTE for why this is async.
+    const { InProcessLogBuffer } = await import(
+      '../../services/agent/crewly-agent/in-process-log-buffer.js'
+    );
+    const buffer = InProcessLogBuffer.getInstance();
+    const sessions = buffer.getSessionNames();
 
-  res.json({
-    success: true,
-    data: sessions,
-  });
+    res.json({
+      success: true,
+      data: sessions,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ success: false, error: message });
+  }
 }

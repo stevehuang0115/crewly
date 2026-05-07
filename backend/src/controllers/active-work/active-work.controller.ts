@@ -64,7 +64,10 @@ export async function getActiveWorkBriefing(
   const windowMs = typeof windowMsRaw === 'string' ? Number.parseInt(windowMsRaw, 10) : NaN;
 
   try {
-    const service = ActiveWorkBriefingService.getInstance();
+    // ActiveWorkBriefingService.getInstance() is async — see service JSDoc.
+    // The dynamic-import migration was the build-fix for PR #494's broken
+    // relative-path resolution under entry-script-anchored createRequire.
+    const service = await ActiveWorkBriefingService.getInstance();
     const briefing = await service.generateActiveWorkBriefing(sessionName, role, {
       recentlyResolvedWindowMs: Number.isFinite(windowMs) && windowMs > 0 ? windowMs : undefined,
     });

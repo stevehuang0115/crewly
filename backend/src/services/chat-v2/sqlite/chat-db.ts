@@ -13,8 +13,7 @@
 
 import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import { createRequire } from 'module';
-import { pathToFileURL } from 'url';
+import { createBareModuleRequire } from '../../../utils/node-require.utils.js';
 import { LoggerService, type ComponentLogger } from '../../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
@@ -26,18 +25,15 @@ import { LoggerService, type ComponentLogger } from '../../core/logger.service.j
  * addon and must be loaded via CJS `require`, but this module compiles to
  * ESM where the bare `require` global is undefined.
  *
- * Anchor `createRequire` to `process.argv[1]` (entry script) instead of
- * `import.meta.url`. We previously used `new Function('return import.meta.url')()`
- * to dodge ts-jest's TS1343 (CJS test compile rejects literal `import.meta`),
- * but that trick fails at RUNTIME under ESM because `new Function(...)`
- * evaluates in non-module scope where `import.meta` is a SyntaxError.
- * `process.argv[1]` is always inside the project tree and lets Node's
- * resolver walk up to find `node_modules`.
+ * Anchor: see `backend/src/utils/node-require.utils.ts` — the helper
+ * hides `import.meta.url` behind direct `eval` so ts-jest's CommonJS
+ * transpile does not see the meta-property token. The createRequire
+ * anchor is THIS file's URL, so Node's resolver walks up from here
+ * to find `node_modules` (and to resolve any future relative paths).
  */
-const nodeRequire: NodeRequire =
-  typeof require === 'function'
-    ? require
-    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
+const nodeRequire = createBareModuleRequire(
+  typeof require === 'function' ? require : null,
+);
 
 /** Cached reference to the better-sqlite3 module after first successful load. */
 let _BetterSqlite3: typeof import('better-sqlite3') | null = null;

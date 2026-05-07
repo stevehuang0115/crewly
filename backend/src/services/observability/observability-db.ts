@@ -16,8 +16,7 @@
 
 import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import { createRequire } from 'module';
-import { pathToFileURL } from 'url';
+import { createBareModuleRequire } from '../../utils/node-require.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
@@ -30,14 +29,14 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
  * native addon and must be loaded via CJS `require`, but this module
  * compiles to ESM where the bare `require` global is undefined.
  *
- * Anchored to `process.argv[1]` (entry script) instead of
- * `import.meta.url` so ts-jest's CJS test compile (which rejects literal
- * `import.meta`) can still resolve the require root.
+ * Anchor: see `backend/src/utils/node-require.utils.ts` — the helper
+ * hides `import.meta.url` behind direct `eval` so ts-jest's CommonJS
+ * transpile does not see the meta-property token. The createRequire
+ * anchor is THIS file's URL.
  */
-const nodeRequire: NodeRequire =
-  typeof require === 'function'
-    ? require
-    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
+const nodeRequire = createBareModuleRequire(
+  typeof require === 'function' ? require : null,
+);
 
 /** Cached reference to the better-sqlite3 module after first successful load. */
 let _BetterSqlite3: typeof import('better-sqlite3') | null = null;

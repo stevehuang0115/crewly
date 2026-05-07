@@ -119,16 +119,26 @@ describe('ActiveWorkBriefingService', () => {
   });
 
   describe('getInstance / resetInstance', () => {
-    it('returns the same instance on repeated calls', () => {
-      const a = ActiveWorkBriefingService.getInstance();
-      const b = ActiveWorkBriefingService.getInstance();
+    it('returns the same instance on repeated awaits', async () => {
+      const a = await ActiveWorkBriefingService.getInstance();
+      const b = await ActiveWorkBriefingService.getInstance();
       expect(a).toBe(b);
     });
 
-    it('resetInstance clears the singleton', () => {
-      const a = ActiveWorkBriefingService.getInstance();
+    it('memoises the in-flight promise across concurrent callers', async () => {
+      // Cold-start parallelism: two concurrent awaits must land on the
+      // same async resolution (only one pair of dynamic imports runs).
+      const [a, b] = await Promise.all([
+        ActiveWorkBriefingService.getInstance(),
+        ActiveWorkBriefingService.getInstance(),
+      ]);
+      expect(a).toBe(b);
+    });
+
+    it('resetInstance clears the singleton AND the memoised promise', async () => {
+      const a = await ActiveWorkBriefingService.getInstance();
       ActiveWorkBriefingService.resetInstance();
-      const b = ActiveWorkBriefingService.getInstance();
+      const b = await ActiveWorkBriefingService.getInstance();
       expect(a).not.toBe(b);
     });
   });
@@ -572,26 +582,34 @@ describe('ActiveWorkBriefingService', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // ESM require bridge — local regression guard (F-NEW-1, auditor cycle 1)
+  // ESM lazy-load — local regression guard (F-NEW-1 + relative-path build-fix)
   // ---------------------------------------------------------------------------
   //
-  // The lazy load inside `getInstance()` was originally written as bare
-  // `require('../v3/request.service.js')`, which crashes under ESM (production)
-  // with `require is not defined`. The skill `get-my-active-work` and
-  // `AgentRegistrationService.activeWorkBriefing` both flow through that
-  // factory at session startup, so EVERY session was hitting the error
-  // (auditor cycle 1 reported 25 occurrences in a single day).
+  // History of this guard:
+  //   F-NEW-1 (PR #494, fa05720e): the lazy load inside `getInstance()` was
+  //     originally bare `require('../v3/request.service.js')`, which threw
+  //     `require is not defined` under ESM. PR #494 introduced a `nodeRequire`
+  //     bridge anchored to `pathToFileURL(process.argv[1])`. That fix
+  //     unblocked bare module names but BROKE relative-path resolution
+  //     (entry-script anchor resolves `../v3/...` from the entry script,
+  //     not from this file). Symptom: `Cannot find module '../v3/request.service.js'`
+  //     for every agent registration.
+  //   Build-fix (current state): `getInstance()` is now async and uses ESM
+  //     dynamic `import()` instead of `nodeRequire`. ESM `import()` resolves
+  //     relative paths from the calling module — correct anchor, no
+  //     workaround needed.
   //
-  // The fix replaces bare `require(` with `nodeRequire(` (a CJS↔ESM bridge
-  // anchored to `pathToFileURL(process.argv[1])`). This guard scans the
-  // service source directly so a future contributor cannot silently revert
-  // the bridge or add a fresh bare `require(` in the same file.
+  // This guard scans the service source directly so a future contributor
+  // cannot silently revert to either broken pattern.
   //
-  // Static-only because under ts-jest's CJS transpile `typeof require ===
-  // 'function'` is true, so the runtime path picks the global `require`
-  // and never hits the createRequire branch — the runtime bug is invisible
-  // here. Source-scanning is the correct shape.
-  describe('ESM require bridge regression (F-NEW-1)', () => {
+  // Lessons banked here (DO NOT re-try):
+  //   - `createRequire(import.meta.url)` direct: ts-jest TS1470.
+  //   - `createRequire(new Function('return import.meta.url')())`
+  //     (PR #323): runtime SyntaxError in non-module scope.
+  //   - `createRequire(eval('import.meta.url'))`: ts-jest passes but
+  //     Node ESM SyntaxErrors at runtime — eval is Script-parsed where
+  //     `import.meta` is invalid.
+  describe('ESM lazy-load regression (F-NEW-1 + relative-path build-fix)', () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
     const fs = require('fs') as typeof import('fs');
     // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
@@ -613,25 +631,45 @@ describe('ActiveWorkBriefingService', () => {
 
     it('source contains no bare `require(` calls outside of comments', () => {
       const code = stripComments(fs.readFileSync(SERVICE_PATH, 'utf8'));
-      // Match `require(` or `require ` followed by `(` — but NOT `nodeRequire(`,
-      // `createRequire(`, or property-style `.require(`. Word-boundary lookbehind
-      // anchors the bare global form.
+      // Match `require(` or `require ` followed by `(` — but NOT
+      // `createRequire(` or property-style `.require(`. Word-boundary
+      // lookbehind anchors the bare global form.
       const BARE_REQUIRE = /(?<![A-Za-z0-9_$.])require\s*\(/g;
       const matches = code.match(BARE_REQUIRE) ?? [];
       expect(matches).toEqual([]);
     });
 
-    it('source uses the canonical `nodeRequire` bridge', () => {
+    it('source uses ESM dynamic `import()` for the relative-path lazy loads', () => {
       const code = stripComments(fs.readFileSync(SERVICE_PATH, 'utf8'));
-      // The lazy loads inside getInstance() must go through `nodeRequire`.
-      expect(code).toMatch(/nodeRequire\s*\(\s*['"]\.\.\/v3\/request\.service\.js['"]\s*\)/);
+      // The lazy loads inside getInstance() must go through `await import(...)`.
       expect(code).toMatch(
-        /nodeRequire\s*\(\s*['"]\.\.\/task-pool\/task-pool\.service\.js['"]\s*\)/,
+        /await\s+import\s*\(\s*['"]\.\.\/v3\/request\.service\.js['"]\s*\)/,
       );
-      // And the bridge itself must be defined the canonical way (anchored
-      // to process.argv[1] via pathToFileURL — see commit 070cd3e5).
       expect(code).toMatch(
+        /await\s+import\s*\(\s*['"]\.\.\/task-pool\/task-pool\.service\.js['"]\s*\)/,
+      );
+      // Negative cases: the broken patterns must NOT reappear here.
+      // (a) F-NEW-1's bare require — would crash on ESM startup.
+      expect(code).not.toMatch(
+        /(?<![A-Za-z0-9_$.])require\s*\(\s*['"]\.\.\/v3\/request\.service\.js['"]/,
+      );
+      // (b) PR #494's process.argv[1] anchor — would resolve from entry
+      // script and break relative paths (the original symptom).
+      expect(code).not.toMatch(
         /createRequire\s*\(\s*pathToFileURL\s*\(\s*process\.argv\[1\]/,
+      );
+    });
+
+    it('getInstance is async (Promise-returning) for the dynamic-import contract', () => {
+      const code = stripComments(fs.readFileSync(SERVICE_PATH, 'utf8'));
+      // Pin the async signature — async + Promise<...> + memoised promise
+      // field. If a future contributor un-asyncs this, callers stop awaiting
+      // and the dynamic imports lose their settled-promise reuse.
+      expect(code).toMatch(
+        /public\s+static\s+async\s+getInstance\s*\(\s*\)\s*:\s*Promise<\s*ActiveWorkBriefingService\s*>/,
+      );
+      expect(code).toMatch(
+        /private\s+static\s+instancePromise\s*:\s*Promise<\s*ActiveWorkBriefingService\s*>\s*\|\s*null/,
       );
     });
   });

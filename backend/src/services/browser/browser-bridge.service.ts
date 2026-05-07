@@ -15,28 +15,19 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server as HttpServer } from 'http';
-import { createRequire } from 'module';
-import { pathToFileURL } from 'url';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
-
-/**
- * CJS-style `require` for synchronous lookups of the
- * `BrowserRelayAdapter` (see `getStatus` / `isConnected` below). A
- * top-level ESM import would force the relay adapter to load eagerly
- * at module init time even when the relay isn't available; keeping
- * the lazy access avoids that.
- *
- * Anchor `createRequire` to `process.argv[1]` (entry script) instead of
- * `import.meta.url`. The previous `new Function('return import.meta.url')()`
- * trick parsed clean under ts-jest's CJS but failed at runtime because
- * `new Function(...)` runs in non-module scope where `import.meta` is a
- * SyntaxError.
- */
-const nodeRequire: NodeRequire =
-  typeof require === 'function'
-    ? require
-    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
+// Static import of the relay adapter — this module is always shipped
+// alongside browser-bridge in dist/, and its TypeScript-only back-import
+// of `BrowserCommand` / `BrowserCommandResponse` from this file is
+// erased at runtime, so the cycle is type-only and safe under ESM.
+//
+// Previously this was a lazy `nodeRequire` (entry-script-anchored CJS
+// createRequire) so `getStatus` / `isConnected` could stay synchronous.
+// That anchor broke relative-path resolution at runtime — see
+// `backend/src/utils/node-require.utils.ts` JSDoc for the lessons.
+// Static import keeps sync method signatures AND fixes the resolution.
+import { BrowserRelayAdapter } from './browser-relay-adapter.service.js';
 
 /** Represents a connected Chrome Extension client */
 export interface BrowserClient {
@@ -801,9 +792,11 @@ export class BrowserBridgeService {
 		let relayDeviceId: string | null = null;
 
 		try {
-			// Dynamic import avoided — use synchronous check
-			const { BrowserRelayAdapter } = nodeRequire('./browser-relay-adapter.service.js');
-			const adapter = BrowserRelayAdapter.getInstance() as {
+			// Static-imported BrowserRelayAdapter (see file header NOTE).
+			// The try/catch handles "adapter exists but not yet initialised"
+			// gracefully — getInstance returning a partially-built adapter,
+			// or isAvailable/getExtensionDeviceId throwing during boot.
+			const adapter = BrowserRelayAdapter.getInstance() as unknown as {
 				isAvailable: () => boolean;
 				getExtensionDeviceId: () => string | null;
 			};
@@ -833,10 +826,9 @@ export class BrowserBridgeService {
 		// because stale clients with readyState !== OPEN can linger briefly.
 		if (this.getActiveClient() !== null) return true;
 
-		// Check relay fallback
+		// Check relay fallback (static-imported — see file header NOTE).
 		try {
-			const { BrowserRelayAdapter } = nodeRequire('./browser-relay-adapter.service.js');
-			const adapter = BrowserRelayAdapter.getInstance() as {
+			const adapter = BrowserRelayAdapter.getInstance() as unknown as {
 				isAvailable: () => boolean;
 			};
 			return adapter.isAvailable();

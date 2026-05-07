@@ -23,8 +23,7 @@
 
 import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import { createRequire } from 'module';
-import { pathToFileURL } from 'url';
+import { createBareModuleRequire } from '../../utils/node-require.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 
@@ -38,21 +37,19 @@ import { CREWLY_CONSTANTS } from '../../constants.js';
  * compiles to ESM (root package has `"type": "module"`) where the bare
  * `require` global is undefined. `createRequire(<base URL>)` bridges the two.
  *
- * The `typeof require === 'function'` guard means tests transpiled to
- * CommonJS (ts-jest) reuse the CJS `require` directly. For the ESM branch
- * we cannot reference `import.meta.url` literally because ts-jest
- * transpiles to CJS where TS1343 forbids it. We also cannot use
- * `new Function('return import.meta.url')()` — a previous workaround —
- * because `new Function(...)` evaluates in non-module scope at runtime,
- * so `import.meta` is a SyntaxError. Instead we anchor `createRequire`
- * to `process.argv[1]` (the entry script), which is always inside the
- * project tree at runtime and lets Node's resolver walk up to find
- * `node_modules`. This expression is parse-clean under both ESM and CJS.
+ * The `typeof require === 'function'` guard inside the helper means
+ * tests transpiled to CommonJS (ts-jest) reuse the CJS `require`
+ * directly. For the ESM branch the helper anchors `createRequire` to
+ * THIS file's URL via `import.meta.url`, hidden behind direct `eval`
+ * so ts-jest's parser does not see the meta-property token (TS1343).
+ * The eval branch never executes under CJS — the `require`-typeof
+ * short-circuit fires first.
+ *
+ * @see backend/src/utils/node-require.utils.ts
  */
-const nodeRequire: NodeRequire =
-  typeof require === 'function'
-    ? require
-    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
+const nodeRequire = createBareModuleRequire(
+  typeof require === 'function' ? require : null,
+);
 
 /**
  * Lazy-loaded better-sqlite3 module reference.

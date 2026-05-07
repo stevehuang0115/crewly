@@ -8,6 +8,7 @@
  */
 
 import { CrossMachineMessageService } from './cross-machine-message.service.js';
+import { CloudSyncService } from '../cloud/cloud-sync.service.js';
 import {
   CROSS_MACHINE_PREFIX,
   serializeCrossMachineMessage,
@@ -145,18 +146,30 @@ describe('CrossMachineMessageService', () => {
     });
 
     it('should return true when enabled without channelId but CloudSync is started', async () => {
-      // Mock CloudSyncService.isStarted() to return true
-      jest.mock('../cloud/cloud-sync.service.js', () => ({
-        CloudSyncService: {
-          getInstance: () => ({
-            isStarted: () => true,
-          }),
-        },
-      }));
-
-      await service.initialize();
-      await service.configure({ channelId: '', enabled: true });
-      expect(service.isEnabled()).toBe(true);
+      // Mock CloudSyncService.getInstance().isStarted() to return true.
+      //
+      // NOTE: Under the prior `nodeRequire` lazy-load, an in-`it`
+      // `jest.mock(...)` worked because the require call inside
+      // `isEnabled()` resolved at test runtime. The build-fix that
+      // succeeded PR #494 switched to a static import (the lazy
+      // entry-script-anchored createRequire was breaking relative
+      // paths in the 4 sibling files; static import keeps `isEnabled`
+      // sync without that anchor mismatch). With a static binding
+      // captured at module load, an in-`it` jest.mock is too late.
+      // We use `jest.spyOn` instead so the override is scoped to this
+      // single test and restored automatically.
+      const spy = jest
+        .spyOn(CloudSyncService, 'getInstance')
+        .mockReturnValue({
+          isStarted: () => true,
+        } as unknown as ReturnType<typeof CloudSyncService.getInstance>);
+      try {
+        await service.initialize();
+        await service.configure({ channelId: '', enabled: true });
+        expect(service.isEnabled()).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 
