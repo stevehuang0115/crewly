@@ -27,6 +27,8 @@
  * @module services/agent/active-work-briefing.service
  */
 
+import { createRequire } from 'module';
+import { pathToFileURL } from 'url';
 import { LoggerService } from '../core/logger.service.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import { ORCHESTRATOR_ROLE, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
@@ -38,8 +40,35 @@ import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js
 // AgentRegistrationService test suite — do not transitively pull in
 // `v3/v3-data.service.ts` and `v3/project-task-watcher.service.ts`
 // (which loads `chokidar`, which fails to parse as ESM under ts-jest's
-// CommonJS transform). The runtime singletons are require()'d lazily
-// inside {@link ActiveWorkBriefingService.getInstance} below.
+// CommonJS transform). The runtime singletons are loaded LAZILY through
+// `nodeRequire` (defined just below) inside
+// {@link ActiveWorkBriefingService.getInstance}.
+
+/**
+ * CJS-style `require` for the lazy load inside `getInstance`. This file
+ * compiles to ESM (root package has `"type": "module"`) where the bare
+ * `require` global is undefined — which is exactly the bug fixed here:
+ * the previous bare `require(...)` calls threw `require is not defined`
+ * for every agent registration that flowed through
+ * `ActiveWorkBriefingService.getInstance()` (the active-work-briefing
+ * controller and `AgentRegistrationService.activeWorkBriefing` path),
+ * breaking the get-my-active-work skill at session startup.
+ *
+ * Pattern matches the canonical fix established by commit 070cd3e5
+ * (`fix(esm): anchor createRequire to process.argv[1]`):
+ * - Under ts-jest's CJS transpile, the global `require` is real, so we
+ *   reuse it (cheaper, plays well with jest module mocking).
+ * - Under ESM (production), we `createRequire` anchored to the entry
+ *   script via `pathToFileURL(process.argv[1])` so Node's resolver walks
+ *   up to find `node_modules`. We do NOT use
+ *   `new Function('return import.meta.url')()` because that body
+ *   evaluates in non-module scope and fails at runtime
+ *   (`Cannot use 'import.meta' outside a module`).
+ */
+const nodeRequire: NodeRequire =
+  typeof require === 'function'
+    ? require
+    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
 
 /**
  * Narrow projection of `RequestService` used by the briefing — only
@@ -314,9 +343,9 @@ export class ActiveWorkBriefingService {
   public static getInstance(): ActiveWorkBriefingService {
     if (!ActiveWorkBriefingService.instance) {
       // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-      const { RequestService } = require('../v3/request.service.js');
+      const { RequestService } = nodeRequire('../v3/request.service.js');
       // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-      const { TaskPoolService } = require('../task-pool/task-pool.service.js');
+      const { TaskPoolService } = nodeRequire('../task-pool/task-pool.service.js');
       ActiveWorkBriefingService.instance = new ActiveWorkBriefingService(
         () => RequestService.getInstance(),
         () => TaskPoolService.getInstance(),
