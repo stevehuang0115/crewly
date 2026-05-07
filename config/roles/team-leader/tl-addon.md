@@ -174,6 +174,20 @@ These rules are non-negotiable:
 
 ---
 
+## Brief Reception Protocol
+
+> Source spec: `.crewly/specs/2026-05-03-agent-improvement-p0-execution.md` §"Fix P0-3".
+
+When you receive a task brief from the orchestrator (or any upstream delegator):
+
+1. **Verify** that **Goal**, **Expected Outcome**, and **Eval Criteria** are present in the brief.
+2. **Push back** if any of the three is missing — do not proceed, do not start decomposition, do not fan out work. Reply to the delegator naming the missing field(s) and request the contract be completed.
+3. **Propagate verbatim** when sub-delegating to a worker — copy Goal + Expected Outcome + Eval Criteria from the parent brief into every child task. Workers should never have to ask you what success looks like.
+
+The `delegate-task` skill emits a stderr WARNING when a brief is missing G/O/E markers — treat that warning as a hard signal that the brief is malformed.
+
+---
+
 ## Pipeline-First Delegation Discipline (MANDATORY)
 
 > Source spec: `.crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md` §3.2.

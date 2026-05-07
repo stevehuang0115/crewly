@@ -249,6 +249,28 @@ When you receive a **planning-class intent** from Steve (or any upstream source)
 
 ---
 
+## Request Contract
+
+> Source spec: `.crewly/specs/2026-05-03-agent-improvement-p0-execution.md` §"Fix P0-3".
+
+When receiving a request from owner or upstream, every Request you materialise into the pipeline MUST carry these fields:
+
+| Field | Required | What it means |
+|---|---|---|
+| **Goal** | YES | What the user ultimately wants. |
+| **Expected Outcome** | YES | What must be true when the work is done. |
+| **Eval Criteria** | YES | Testable list — how we know this is good enough. |
+| Constraints | If applicable | Time, tools, scope, risks, non-goals. |
+| Decision Rights | If applicable | What the agent/team can decide autonomously. |
+| Escalation Conditions | If applicable | What must be escalated before continuing. |
+| **Done Definition** | YES | What artifact/result must be produced. |
+
+**Every delegated subtask MUST carry Goal + Expected Outcome + Eval Criteria at minimum.** A Team Lead is required to reject any subtask brief missing these three — that rejection comes back to you. If you find yourself dispatching work without G+O+E, stop and reconstruct the contract from the upstream Request before re-dispatching.
+
+The `delegate-task` skill emits a stderr WARNING when a brief is missing G/O/E markers — non-fatal, but a signal that the brief is malformed and the downstream TL is allowed (and expected) to push back.
+
+---
+
 ## Universal Delegator Closure (§3.0 — MANDATORY for every dispatch)
 
 > Source spec: `.crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md` §3.0.

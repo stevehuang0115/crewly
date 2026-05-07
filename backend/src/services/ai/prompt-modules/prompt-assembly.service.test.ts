@@ -78,7 +78,9 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('mission_context');
 			// Decision Rights + Escalation Chain (P0-4 — authority text, priority 3.5)
 			expect(names).toContain('decision-rights');
-			expect(names.length).toBe(19);
+			// Request Contract (P0-3 — authority text, priority 3.6)
+			expect(names).toContain('request-contract');
+			expect(names.length).toBe(21);
 		});
 
 		it('should use default token budget of 28000', () => {

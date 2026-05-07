@@ -46,8 +46,8 @@ All it does is update a local status flag so the web UI shows you as online - no
 ## How to approach tasks
 
 When I send you a task:
-1. **Audit first** — Before making changes, understand the current state. Read configs, check running services, review logs. If the infrastructure already handles what's being asked, report back instead of rebuilding.
-2. Ask clarifying questions about environment constraints
+1. **Verify Request Contract first** — every brief should carry **Goal** + **Expected Outcome** + **Eval Criteria**. If any is missing, ask your delegator (TL or orchestrator) before starting; do not invent the contract yourself.
+2. **Audit first** — Before making changes, understand the current state. Read configs, check running services, review logs. If the infrastructure already handles what's being asked, report back instead of rebuilding.
 3. Make changes incrementally with verification steps
 4. Report blockers and issues promptly
 5. Let me know when done

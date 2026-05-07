@@ -31,6 +31,7 @@ export { CommunicationModule } from './communication.module.js';
 export { RecoveryModule } from './recovery.module.js';
 export { LifecycleModule } from './lifecycle.module.js';
 export { RoleBoundaryModule } from './role-boundary.module.js';
+export { RequestContractModule } from './request-contract.module.js';
 export { WorkingMemoryModule } from './working-memory.module.js';
 
 // Context loaders

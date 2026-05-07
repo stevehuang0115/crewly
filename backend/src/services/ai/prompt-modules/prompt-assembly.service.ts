@@ -22,6 +22,7 @@ import { RecoveryModule } from './recovery.module.js';
 import { LifecycleModule } from './lifecycle.module.js';
 import { RoleBoundaryModule } from './role-boundary.module.js';
 import { DecisionRightsModule } from './decision-rights.module.js';
+import { RequestContractModule } from './request-contract.module.js';
 import { CapabilityOverlayModule } from './capability-overlay.module.js';
 import { DomainSOPModule } from './domain-sop.module.js';
 import { RiskPolicyModule } from './risk-policy.module.js';
@@ -119,6 +120,13 @@ export class PromptAssemblyService {
 			// inside the authority cluster: identity → soul → recovery →
 			// role-boundary → decision-rights. Authority text is non-compactable.
 			new DecisionRightsModule(),
+			// Request Contract (P0-3) sits at priority 3.6, immediately after
+			// DecisionRights and before MemoryReference. Authority cluster
+			// continues: identity → soul → recovery → role-boundary →
+			// decision-rights → request-contract → memory-reference.
+			// Role-shaped: orchestrator gets the seven-field table, TLs get
+			// Brief Reception Protocol, workers get the G+O+E reminder.
+			new RequestContractModule(),
 			new MemoryReferenceModule(),
 			new SkillsReferenceModule(),
 			new TeamReferenceModule(),

@@ -84,14 +84,29 @@ Use when: You need to follow up on worker progress later. Validates hierarchy �
 
 ---
 
+## Brief Reception Protocol
+
+> Source spec: `.crewly/specs/2026-05-03-agent-improvement-p0-execution.md` §"Fix P0-3".
+
+When you receive a task brief from the orchestrator (or any upstream delegator):
+
+1. **Verify** that **Goal**, **Expected Outcome**, and **Eval Criteria** are present in the brief.
+2. **Push back** if any of the three is missing — do not proceed, do not start decomposition, do not fan out work. Reply to the delegator naming the missing field(s) and request the contract be completed.
+3. **Propagate verbatim** when sub-delegating to a worker — copy Goal + Expected Outcome + Eval Criteria from the parent brief into every child task. Workers should never have to ask you what success looks like.
+
+The `delegate-task` skill emits a stderr WARNING when a brief is missing G/O/E markers — treat that warning as a hard signal that the brief is malformed.
+
+---
+
 ## Standard Operating Procedure (5-Step SOP)
 
 ### Step 1: Goal Reception & Decomposition
 When you receive an Objective from the Orchestrator:
-1. Analyze the requirements and identify necessary sub-tasks
-2. Check existing `.crewly/tasks/` for any overlapping work
-3. Use **decompose-goal** to create atomic, worker-level tasks with clear acceptance criteria
-4. Each sub-task should be completable by a single worker in one session
+1. **Run the Brief Reception Protocol above first** — verify G+O+E are present; push back if not.
+2. Analyze the requirements and identify necessary sub-tasks
+3. Check existing `.crewly/tasks/` for any overlapping work
+4. Use **decompose-goal** to create atomic, worker-level tasks with clear acceptance criteria
+5. Each sub-task should be completable by a single worker in one session, and each child brief must propagate G+O+E verbatim from the parent.
 
 ### Step 2: Pre-Delegation Checklist (#142)
 **Before delegating any task, ALWAYS run this checklist:**

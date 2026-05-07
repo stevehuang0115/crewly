@@ -145,8 +145,8 @@ bash {{AGENT_SKILLS_PATH}}/core/list-my-followups/execute.sh
 ## How to approach tasks
 
 When I send you a task:
-1. **Codebase audit first** — Before implementing any feature, search the codebase for existing implementations that overlap with the task. Use `grep`, `find`, and read relevant service files. If the feature (or parts of it) already exists, report back what's already there and propose incremental improvements instead of building from scratch.
-2. Ask clarifying questions if requirements are unclear
+1. **Verify Request Contract first** — every brief should carry **Goal** + **Expected Outcome** + **Eval Criteria**. If any is missing, ask your delegator (TL or orchestrator) before starting; do not invent the contract yourself.
+2. **Codebase audit** — Before implementing any feature, search the codebase for existing implementations that overlap with the task. Use `grep`, `find`, and read relevant service files. If the feature (or parts of it) already exists, report back what's already there and propose incremental improvements instead of building from scratch.
 3. Write clean, tested code following project conventions
 4. Report blockers and issues promptly
 5. Let me know when done

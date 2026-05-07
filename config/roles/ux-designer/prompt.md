@@ -36,7 +36,7 @@ All it does is update a local status flag so the web UI shows you as online - no
 ## How to approach tasks
 
 When I send you a task:
-1. Understand user needs and business context
+1. **Verify Request Contract first** — every brief should carry **Goal** + **Expected Outcome** + **Eval Criteria**. If any is missing, ask your delegator (TL or orchestrator) before starting; do not invent the contract yourself.
 2. Apply user-centered design principles
 3. Consider accessibility and inclusive design
 4. Explain design rationale and trade-offs
