@@ -97,6 +97,71 @@ describe('PoolStorage', () => {
       const d2 = await storage.load();
       expect(d1).toBe(d2);
     });
+
+    // F-CYCLE7-3 (2026-05-07) — defensive normalization. A partial /
+    // pre-migration on-disk shape (missing one or both arrays) caused
+    // ".filter() on undefined" downstream in ReconcilerDataProvider.
+    // load() now coerces missing arrays to [] once, so every consumer
+    // can rely on the PoolData invariant.
+    describe('F-CYCLE7-3: partial on-disk shape normalization', () => {
+      it('normalizes missing workItems field to []', async () => {
+        const filePath = path.join(tempDir, 'pool.json');
+        await fs.writeFile(
+          filePath,
+          JSON.stringify({ claims: [], lastUpdatedAt: new Date().toISOString() }),
+        );
+
+        const fresh = new PoolStorage({ dataDir: tempDir });
+        const data = await fresh.load();
+
+        expect(data.workItems).toEqual([]);
+        expect(Array.isArray(data.workItems)).toBe(true);
+        await fresh.destroy();
+      });
+
+      it('normalizes missing claims field to []', async () => {
+        const filePath = path.join(tempDir, 'pool.json');
+        await fs.writeFile(
+          filePath,
+          JSON.stringify({ workItems: [], lastUpdatedAt: new Date().toISOString() }),
+        );
+
+        const fresh = new PoolStorage({ dataDir: tempDir });
+        const data = await fresh.load();
+
+        expect(data.claims).toEqual([]);
+        expect(Array.isArray(data.claims)).toBe(true);
+        await fresh.destroy();
+      });
+
+      it('normalizes both fields when on-disk shape is just `{}`', async () => {
+        const filePath = path.join(tempDir, 'pool.json');
+        await fs.writeFile(filePath, JSON.stringify({}));
+
+        const fresh = new PoolStorage({ dataDir: tempDir });
+        const data = await fresh.load();
+
+        expect(data.workItems).toEqual([]);
+        expect(data.claims).toEqual([]);
+        await fresh.destroy();
+      });
+
+      it('getWorkItems() / getClaims() never return undefined even on partial shape', async () => {
+        const filePath = path.join(tempDir, 'pool.json');
+        await fs.writeFile(filePath, JSON.stringify({ lastUpdatedAt: 'x' }));
+
+        const fresh = new PoolStorage({ dataDir: tempDir });
+        // The downstream regression: .filter() on whatever this returns.
+        const items = await fresh.getWorkItems();
+        const claims = await fresh.getClaims();
+
+        expect(() => items.filter(() => true)).not.toThrow();
+        expect(() => claims.filter(() => true)).not.toThrow();
+        expect(items).toEqual([]);
+        expect(claims).toEqual([]);
+        await fresh.destroy();
+      });
+    });
   });
 
   // -----------------------------------------------------------------------

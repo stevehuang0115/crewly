@@ -37,6 +37,41 @@ import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.uti
 /** How long an agent can be unseen before we consider it stale (5 min). */
 const AGENT_STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
+/**
+ * Heuristic: detect "storage not yet hydrated" errors so the data
+ * provider can demote them from `error` to `debug` log level.
+ *
+ * Symptom in production (F-CYCLE7-3, 2026-05-07 11:19→11:21Z): when
+ * the Reconciler's 10s fast-loop runs before the Task Pool's
+ * `pool.json` finishes loading after a SQLite-related restart, an
+ * inner method calls `.filter()` on a still-undefined array slot. The
+ * thrown TypeError carries the canonical V8 message
+ * "Cannot read properties of undefined (reading 'filter')". The catch
+ * already returns `[]`, but it logs at `error` — every 10s for ~110s
+ * — flooding logs and hiding real errors.
+ *
+ * This helper recognizes that specific TypeError shape so we can
+ * silence it (debug log + empty array) without accidentally silencing
+ * unrelated errors. Any error not matched here is still logged as
+ * `error`.
+ */
+function isStorageNotReadyError(message: string): boolean {
+  // V8 / Node throws this exact message on `undefined.filter()` /
+  // `undefined.find()` etc. Match defensively on the readonly bits
+  // ("Cannot read prop" + "of undefined") to be tolerant of small
+  // engine-version wording variations.
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('cannot read') &&
+    lower.includes('of undefined') &&
+    (lower.includes("'filter'") ||
+      lower.includes("'find'") ||
+      lower.includes("'map'") ||
+      lower.includes("'foreach'") ||
+      lower.includes("'length'"))
+  );
+}
+
 // ---------------------------------------------------------------------------
 // LiveReconcilerDataProvider
 // ---------------------------------------------------------------------------
@@ -133,16 +168,38 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   /**
    * Returns all active/expiring TaskClaims.
    *
-   * @returns Active claims
+   * **F-CYCLE7-3 (2026-05-07):** Returns `[]` defensively if the pool
+   * returns a non-array (e.g. partial post-restart hydration where
+   * `pool.json` is missing the `claims` field). Storage-not-ready is
+   * logged at `debug`, not `error`, to avoid the post-restart error
+   * storm seen at 11:19→11:21Z. Genuine failures (thrown errors) keep
+   * their `error`-level log.
+   *
+   * @returns Active claims (always an array)
    */
   async getActiveClaims(): Promise<TaskClaim[]> {
     try {
       const pool = TaskPoolService.getInstance();
-      return await pool.getActiveClaims();
+      const claims = await pool.getActiveClaims();
+      if (!Array.isArray(claims)) {
+        this.logger.debug('Active claims unavailable (storage not yet hydrated)', {
+          received: typeof claims,
+        });
+        return [];
+      }
+      return claims;
     } catch (error) {
-      this.logger.error('Failed to get active claims', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      const msg = error instanceof Error ? error.message : String(error);
+      // Storage-not-ready manifests as ".filter() on undefined" during
+      // the post-restart hydration window. Demote to debug so it
+      // doesn't drown out real errors in the log stream.
+      if (isStorageNotReadyError(msg)) {
+        this.logger.debug('Active claims unavailable (storage not yet hydrated)', {
+          error: msg,
+        });
+        return [];
+      }
+      this.logger.error('Failed to get active claims', { error: msg });
       return [];
     }
   }
@@ -324,16 +381,34 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * Returns all available (queued, unclaimed) WorkItems from the Task Pool.
    * Used by Hybrid Wake to find items that need agents.
    *
-   * @returns Available pool items
+   * **F-CYCLE7-3 (2026-05-07):** Returns `[]` defensively if the pool
+   * returns a non-array (e.g. partial post-restart hydration where
+   * `pool.json` is missing the `workItems` field). Storage-not-ready is
+   * logged at `debug`, not `error`, to avoid the post-restart error
+   * storm seen at 11:19→11:21Z.
+   *
+   * @returns Available pool items (always an array)
    */
   async getAvailablePoolItems(): Promise<WorkItem[]> {
     try {
       const pool = TaskPoolService.getInstance();
-      return await pool.getAvailableItems();
+      const items = await pool.getAvailableItems();
+      if (!Array.isArray(items)) {
+        this.logger.debug('Available pool items unavailable (storage not yet hydrated)', {
+          received: typeof items,
+        });
+        return [];
+      }
+      return items;
     } catch (error) {
-      this.logger.error('Failed to get available pool items', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      const msg = error instanceof Error ? error.message : String(error);
+      if (isStorageNotReadyError(msg)) {
+        this.logger.debug('Available pool items unavailable (storage not yet hydrated)', {
+          error: msg,
+        });
+        return [];
+      }
+      this.logger.error('Failed to get available pool items', { error: msg });
       return [];
     }
   }

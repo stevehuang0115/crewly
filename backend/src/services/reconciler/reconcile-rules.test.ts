@@ -24,6 +24,7 @@ import {
 import type { AgentHealth } from './reconcile-rules.js';
 import { createWorkItem, createRequest, createTaskClaim } from '../../types/v2/index.js';
 import type { WorkItem, Request, TaskClaim } from '../../types/v2/index.js';
+import { WORK_ITEM_TRANSITIONS } from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -581,6 +582,55 @@ describe('detectStaleQueuedWorkItems', () => {
     });
     const { staleIds } = detectStaleQueuedWorkItems([running], 60 * 60 * 1000);
     expect(staleIds).toHaveLength(0);
+  });
+
+  // F-CYCLE7-3 (2026-05-07) — regression: emitted correction MUST be a
+  // canonical valid transition. Prior behavior emitted queued→queued
+  // which StorageService rejected with "Invalid status transition:
+  // queued → queued", generating reconciler-error noise that hid real
+  // signal. Per WORK_ITEM_TRANSITIONS in work-item.types.ts, queued can
+  // legally transition to: running, proposed, scheduled, cancelled.
+  // 'expired' is not a valid WorkItemStatus.
+  describe('F-CYCLE7-3: queued→queued correction fix', () => {
+    it('emits queued→cancelled (NOT queued→queued) for stale-queued WorkItems', () => {
+      const stale = makeWorkItem({
+        status: 'queued',
+        createdAt: new Date(Date.now() - 16 * 3600 * 1000).toISOString(), // 16h ago, like the 945min real-world case
+      });
+
+      const { corrections } = detectStaleQueuedWorkItems([stale], 60 * 60 * 1000);
+
+      expect(corrections).toHaveLength(1);
+      expect(corrections[0].previousState).toBe('queued');
+      expect(corrections[0].newState).toBe('cancelled');
+      expect(corrections[0].newState).not.toBe('queued');
+    });
+
+    it('emitted newState is a valid transition target per canonical WORK_ITEM_TRANSITIONS', () => {
+      const stale = makeWorkItem({
+        status: 'queued',
+        createdAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+      });
+
+      const { corrections } = detectStaleQueuedWorkItems([stale], 60 * 60 * 1000);
+
+      expect(corrections).toHaveLength(1);
+      const validNextStates = WORK_ITEM_TRANSITIONS['queued'];
+      expect(validNextStates.has(corrections[0].newState as any)).toBe(true);
+      // Specifically NOT a same-state self-loop.
+      expect(corrections[0].newState).not.toBe(corrections[0].previousState);
+    });
+
+    it('reason field still preserves the queue-wait audit info', () => {
+      const stale = makeWorkItem({
+        status: 'queued',
+        createdAt: new Date(Date.now() - 945 * 60 * 1000).toISOString(), // 945min — exact prod scenario
+      });
+
+      const { corrections } = detectStaleQueuedWorkItems([stale], 60 * 60 * 1000);
+
+      expect(corrections[0].reason).toMatch(/queued for \d+ minutes without pickup/);
+    });
   });
 });
 
