@@ -76,6 +76,7 @@ describe('Settings Types', () => {
         enableSelfEvolution: false,
         tokenTracking: false,
         enableAuditor: false,
+        autonomyTickIntervalMinutes: 5,
       };
 
       expect(settings.defaultRuntime).toBe('claude-code');
@@ -108,6 +109,7 @@ describe('Settings Types', () => {
         enableSelfEvolution: false,
         tokenTracking: false,
         enableAuditor: false,
+        autonomyTickIntervalMinutes: 5,
       };
 
       expect(settings.runtimeCommands['claude-code']).toContain('/custom/path');
@@ -172,6 +174,7 @@ describe('Settings Types', () => {
           enableSelfEvolution: false,
           tokenTracking: false,
           enableAuditor: false,
+          autonomyTickIntervalMinutes: 5,
         },
         chat: {
           showRawTerminalOutput: false,

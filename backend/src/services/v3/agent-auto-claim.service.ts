@@ -26,8 +26,15 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Polling interval for scanning idle agents (ms) */
-const POLLING_INTERVAL_MS = 60_000;
+/**
+ * Default polling interval (minutes) when no setting is configured.
+ *
+ * Mirrors `getDefaultSettings().general.autonomyTickIntervalMinutes` so a
+ * settings load failure or a fresh boot before disk read still yields the
+ * documented default behavior. Spec
+ * 2026-05-06-task-management-v1-deprecation.md.
+ */
+const DEFAULT_POLLING_INTERVAL_MINUTES = 5;
 
 /** Minimum score threshold — don't auto-claim poor matches */
 const MIN_SCORE_THRESHOLD = 15;
@@ -86,8 +93,14 @@ export class AgentAutoClaimService {
 
   /**
    * Start listening for events and polling.
+   *
+   * The polling cadence is read from
+   * `settings.general.autonomyTickIntervalMinutes` (default 5 minutes).
+   * A value of `0` disables polling entirely — autonomy then runs purely
+   * on the `agent:idle` / `task:done` event path. The settings read is
+   * non-blocking and failure-soft: any error falls back to the default.
    */
-  start(): void {
+  async start(): Promise<void> {
     if (!this.eventBusService) {
       this.logger.warn('Cannot start — EventBusService not initialized');
       return;
@@ -103,14 +116,19 @@ export class AgentAutoClaimService {
       }
     });
 
-    // Polling backup
-    this.pollingTimer = setInterval(() => {
-      this.pollIdleAgents().catch((err) => {
-        this.logger.debug('Polling failed (non-fatal)', {
-          error: err instanceof Error ? err.message : String(err),
+    // Resolve polling cadence from user settings.
+    const pollingIntervalMinutes = await this.resolvePollingIntervalMinutes();
+    const pollingIntervalMs = pollingIntervalMinutes * 60_000;
+
+    if (pollingIntervalMs > 0) {
+      this.pollingTimer = setInterval(() => {
+        this.pollIdleAgents().catch((err) => {
+          this.logger.debug('Polling failed (non-fatal)', {
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
-      });
-    }, POLLING_INTERVAL_MS);
+      }, pollingIntervalMs);
+    }
 
     // Startup recovery: check for queued tasks with offline target agents
     setTimeout(() => {
@@ -122,9 +140,30 @@ export class AgentAutoClaimService {
     }, 15_000); // Wait 15s for agents to register after startup
 
     this.logger.info('AgentAutoClaimService started', {
-      pollingIntervalMs: POLLING_INTERVAL_MS,
+      pollingIntervalMinutes,
+      pollingDisabled: pollingIntervalMs === 0,
       minScoreThreshold: MIN_SCORE_THRESHOLD,
     });
+  }
+
+  /**
+   * Read `general.autonomyTickIntervalMinutes` from settings, falling back
+   * to the default on any failure (file missing, parse error, validation
+   * failure). Kept as a separate helper so `start()` stays simple and the
+   * settings dependency can be swapped in tests.
+   */
+  private async resolvePollingIntervalMinutes(): Promise<number> {
+    try {
+      const { getSettingsService } = await import('../settings/settings.service.js');
+      const settings = await getSettingsService().getSettings();
+      const raw = settings.general?.autonomyTickIntervalMinutes;
+      if (typeof raw === 'number' && raw >= 0) return raw;
+    } catch (err) {
+      this.logger.debug('Settings read failed — using autonomy tick default', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return DEFAULT_POLLING_INTERVAL_MINUTES;
   }
 
   /**

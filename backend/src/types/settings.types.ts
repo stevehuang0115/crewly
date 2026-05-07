@@ -76,6 +76,22 @@ export interface GeneralSettings {
   /** Enable the auditor agent (quality observer that monitors agents and writes audit reports).
    *  When disabled, the auditor PTY session is not started and all audit scheduling is skipped. */
   enableAuditor: boolean;
+
+  /**
+   * Cadence (in minutes) at which idle agents are scanned and auto-claimed
+   * to the next available WorkItem.
+   *
+   * Spec 2026-05-06-task-management-v1-deprecation.md: V3 task-pool is
+   * the operational backbone, and `AgentAutoClaimService` is the single
+   * autonomy loop. The polling tick is a safety net on top of the
+   * event-driven `agent:idle` trigger.
+   *
+   * - `0` disables polling entirely (events-only — instant on idle).
+   * - `> 0` runs a periodic scan every N minutes.
+   * - Default `5` (a reasonable balance between responsiveness and
+   *   token spend; the event path still fires immediately on idle).
+   */
+  autonomyTickIntervalMinutes: number;
 }
 
 /**
@@ -326,6 +342,7 @@ export function getDefaultSettings(): CrewlySettings {
       enableSelfEvolution: false,
       tokenTracking: false,
       enableAuditor: false,
+      autonomyTickIntervalMinutes: 5,
     },
     chat: {
       showRawTerminalOutput: false,
@@ -394,6 +411,10 @@ export function validateSettings(settings: CrewlySettings): SettingsValidationRe
 
   if (typeof settings.general.agentIdleTimeoutMinutes === 'number' && settings.general.agentIdleTimeoutMinutes < 0) {
     errors.push('agentIdleTimeoutMinutes must be >= 0 (0 disables idle suspension)');
+  }
+
+  if (typeof settings.general.autonomyTickIntervalMinutes !== 'number' || settings.general.autonomyTickIntervalMinutes < 0) {
+    errors.push('autonomyTickIntervalMinutes must be a number >= 0 (0 disables the polling tick — events still fire)');
   }
 
   if (typeof settings.general.enableProactiveCompact !== 'boolean') {

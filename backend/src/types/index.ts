@@ -429,9 +429,6 @@ export * from './quality-gate.types.js';
 // Re-export SOP types
 export * from './sop.types.js';
 
-// Re-export auto-assignment types
-export * from './auto-assign.types.js';
-
 // Re-export budget types
 export * from './budget.types.js';
 

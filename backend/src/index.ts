@@ -27,7 +27,6 @@ import {
 	TeamActivityWebSocketService,
 	TeamsJsonWatcherService,
 } from './services/index.js';
-import { AutoAssignService } from './services/autonomous/auto-assign.service.js';
 import {
 	getSessionBackend,
 	getSessionBackendSync,
@@ -414,8 +413,9 @@ export class CrewlyServer {
 		// TaskTrackingService.on('task_workflow_event') bridge that was
 		// deleted with the v1 task-management subsystem).
 		this.teamActivityWebSocketService.setEventBus(this.eventBusService);
-		// Wire auto-assign to EventBus so it can react to task:done_by_worker.
-		AutoAssignService.getInstance().setEventBus(this.eventBusService);
+		// V3-only autonomy: AgentAutoClaimService (started later in boot)
+		// is the single autonomy loop. The legacy AutoAssignService has
+		// been retired — see spec 2026-05-06-task-management-v1-deprecation.md.
 
 		// BRIDGE-1: subscribe to autonomy events (task:done_by_worker,
 		// task:rejected, task:blocked, team:all_tasks_done, mission:*) and
@@ -1704,7 +1704,7 @@ export class CrewlyServer {
 				const { AgentAutoClaimService } = await import('./services/v3/agent-auto-claim.service.js');
 				const autoClaimService = AgentAutoClaimService.getInstance();
 				autoClaimService.initialize(this.eventBusService);
-				autoClaimService.start();
+				await autoClaimService.start();
 				this.logger.info('AgentAutoClaimService started — idle agents will auto-claim work');
 			} catch (autoClaimErr) {
 				this.logger.warn('AgentAutoClaimService initialization failed (non-critical)', {
