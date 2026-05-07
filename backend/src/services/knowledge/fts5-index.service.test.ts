@@ -233,6 +233,76 @@ describeIfNative('Fts5IndexService', () => {
       // Should not throw despite special chars
       expect(() => service.search('"quoted" AND (nested)')).not.toThrow();
     });
+
+    // ---------------------------------------------------------------------
+    // F-FTS5 hotfix regression guards (Kai WI-E triage, 2026-05-07)
+    //
+    // Before the toFts5Phrase sanitizer, these inputs raised
+    //   - `fts5: syntax error near ","`     (comma case, 22/44 daily fails)
+    //   - `no such column: leader`          (hyphen case, 22/44 daily fails)
+    // and were silently swallowed by the search() catch-block, returning
+    // empty results. These tests pin: (a) no throw, AND (b) results actually
+    // come back from a seeded index that genuinely matches the query.
+    // ---------------------------------------------------------------------
+    it('F-FTS5 regression: comma-delimited query no longer raises "syntax error near \',\'" and surfaces matches', () => {
+      // Pre-fix: the comma was parsed by FTS5 as a column-list separator,
+      // raising `fts5: syntax error near ","` which the catch-block
+      // silently swallowed (returning []).
+      // Post-fix: phrase-quote tokenization splits on whitespace+comma,
+      // each token is wrapped, and implicit-AND surfaces matches.
+      //
+      // Query terms here all appear in the seeded `deploy-guide` doc
+      // ("Step by step deployment instructions for production.") so the
+      // implicit-AND match must succeed — proving (a) no throw AND
+      // (b) the comma path is now functionally complete, not just
+      // silently empty as before.
+      let results: ReturnType<typeof service.search> = [];
+      expect(() => {
+        results = service.search('deployment, instructions, production');
+      }).not.toThrow();
+      expect(results.some((r) => r.id === 'deploy-guide')).toBe(true);
+    });
+
+    it('F-FTS5 regression: hyphenated role names like "team-leader" do not raise "no such column" and match indexed phrases', () => {
+      // Pre-fix: `team-leader` parsed as `team` followed by column filter
+      // `-leader`, raising `no such column: leader` which the catch-block
+      // silently swallowed.
+      // Post-fix: `"team-leader"` is wrapped as a literal phrase. FTS5's
+      // unicode61 tokenizer splits the phrase content into adjacent
+      // tokens `team`+`leader` at query time — which matches the same
+      // tokens FTS5 stored at index time when the document was
+      // tokenized. Adjacent-tokens phrase match precisely against
+      // documents containing `team-leader`.
+      service.upsertDocument(
+        createDoc({
+          id: 'tl-handbook',
+          title: 'Team Leader Handbook',
+          tags: 'team-leader management',
+          content:
+            'Guidance for the team-leader role: decompose, delegate, verify, report.',
+          category: 'Roles',
+        }),
+      );
+      let results: ReturnType<typeof service.search> = [];
+      expect(() => {
+        // Use only tokens present in tl-handbook so the implicit-AND
+        // match is satisfied. The KEY regression guard is the
+        // hyphenated `team-leader` phrase NOT triggering a column-filter
+        // parser error — proven by both `not.toThrow()` AND the
+        // non-empty match (silent-swallow pre-fix would also have given
+        // `not.toThrow()`, so the match assertion is the real proof).
+        results = service.search('team-leader, decompose, delegate');
+      }).not.toThrow();
+      expect(results.some((r) => r.id === 'tl-handbook')).toBe(true);
+    });
+
+    it('F-FTS5 regression: colon-bearing tokens (column-filter trap) do not throw', () => {
+      // Without phrase-wrapping, `task:review` parsed as column filter
+      // against a `task` column → `no such column: task`. Now it is a
+      // literal phrase that the index tokenizer strips back to
+      // `task`+`review` — no parser error.
+      expect(() => service.search('task:review prompt:builder')).not.toThrow();
+    });
   });
 
   // -------------------------------------------------------------------------
