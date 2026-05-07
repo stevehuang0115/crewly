@@ -1,6 +1,6 @@
 /**
  * Coverage test for Fix 13 (P2) — Crewly Operating Principles header
- * across all role prompts under `config/roles/*/prompt.md`.
+ * across all role prompts under `config/roles/{role}/prompt.md`.
  *
  * Spec: `.crewly/specs/2026-05-03-agent-improvement-plan.md` lines 466-481
  * (Fix 13 — Crewly Operating Principles header).
@@ -72,22 +72,36 @@ describe('Fix 13 — Crewly Operating Principles role coverage', () => {
 
     it('places principles header BEFORE the role identity (top of file)', () => {
       const principlesIdx = content.indexOf('## Crewly Operating Principles');
-      // Identity sections come in many forms across roles — match common headings
+      // Identity sections come in many forms across roles. The marker list
+      // covers all 20 prompts in the current corpus:
+      //   - "Hey! I need your help with"  → 16 prompts (developer, backend,
+      //       frontend, fullstack, generalist, qa, qa-engineer, ops, sales,
+      //       support, product-manager, researcher, designer, ux-designer,
+      //       architect, tpm)
+      //   - "## Your Role"                → team-leader (`## Your Role: Team Leader`)
+      //   - "## Role focus"               → content-strategist (`## Role focus: Content Strategist`)
+      //   - "# Crewly Orchestrator"       → orchestrator (top-level title)
+      //   - "# Crewly Auditor"            → auditor (top-level title)
+      // `## Identity` / `## Primary Identity` kept as defensive fallbacks for
+      // any future role that adopts the standardized identity heading.
       const identityMarkers = [
+        'Hey! I need your help with',
         '## Your Role',
+        '## Role focus',
         '## Identity',
         '## Primary Identity',
         '# Crewly Orchestrator',
+        '# Crewly Auditor',
       ];
       const identityIdx = identityMarkers
         .map((m) => content.indexOf(m))
         .filter((i) => i !== -1)
         .reduce((min, i) => (min === -1 || i < min ? i : min), -1);
-      // If we found an identity marker, principles must precede it.
-      // (Some prompts don't follow the heading template — skip the assertion there.)
-      if (identityIdx !== -1) {
-        expect(principlesIdx).toBeLessThan(identityIdx);
-      }
+      // After expanding the marker list to cover every role's identity
+      // heading variant, every prompt matches at least one marker.
+      // The assertion is now strict for all 20 roles (no silent skip).
+      expect(identityIdx).toBeGreaterThan(-1);
+      expect(principlesIdx).toBeLessThan(identityIdx);
     });
   });
 });
