@@ -1,6 +1,20 @@
 ---
 name: list-schedules
-description: List all active scheduled checks. Optionally filter by session name.
+description: List all active scheduled checks (one-time and recurring), optionally filtered by session name.
+version: 1.0.0
+category: scheduling
+skillType: claude-skill
+assignableRoles:
+  - orchestrator
+tags:
+  - schedule
+  - audit
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
 ---
 
 # list-schedules

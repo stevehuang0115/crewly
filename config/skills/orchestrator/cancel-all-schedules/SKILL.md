@@ -1,6 +1,20 @@
 ---
 name: cancel-all-schedules
-description: Cancel all active scheduled checks. Optionally filter by session or age.
+description: Cancel all active scheduled checks, optionally filtered by session or age (nuclear cleanup).
+version: 1.0.0
+category: scheduling
+skillType: claude-skill
+assignableRoles:
+  - orchestrator
+tags:
+  - schedule
+  - cleanup
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
 ---
 
 # cancel-all-schedules

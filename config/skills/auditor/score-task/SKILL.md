@@ -1,10 +1,25 @@
 ---
 name: Score Task
 description: "Score a completed task's quality (0-100) for tracking per-agent quality metrics."
+version: 1.0.0
+category: quality
+skillType: claude-skill
+assignableRoles:
+  - auditor
 triggers:
   - score task
   - quality score
   - rate task
+tags:
+  - quality
+  - audit
+  - metrics
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
 ---
 
 # Score Task

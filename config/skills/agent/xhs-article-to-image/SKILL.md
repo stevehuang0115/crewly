@@ -1,3 +1,23 @@
+---
+name: xhs-article-to-image
+description: Convert markdown articles into XiaoHongShu (小红书) style portrait image cards (1080×1440 PNGs) for social distribution.
+version: 1.0.0
+category: content
+skillType: claude-skill
+tags:
+  - content
+  - image
+  - xhs
+  - marketing
+  - playwright
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 60000
+---
+
 # xhs-article-to-image
 
 Convert markdown articles into XiaoHongShu (小红书) style image cards.

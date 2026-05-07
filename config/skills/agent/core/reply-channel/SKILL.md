@@ -1,3 +1,22 @@
+---
+name: reply-channel
+description: Send an agent-authored message back to a chat channel — used by the chat MVP dispatch loop after processing a `[CHAT:<channelId>]` prompt.
+version: 1.0.0
+category: comm
+skillType: claude-skill
+tags:
+  - chat
+  - comm
+  - channel
+  - reply
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
+---
+
 # reply-channel
 
 Send an agent-authored message back to a chat channel. Used by the chat MVP
