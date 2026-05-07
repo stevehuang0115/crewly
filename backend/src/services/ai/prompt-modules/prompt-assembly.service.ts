@@ -23,6 +23,7 @@ import { LifecycleModule } from './lifecycle.module.js';
 import { RoleBoundaryModule } from './role-boundary.module.js';
 import { DecisionRightsModule } from './decision-rights.module.js';
 import { RequestContractModule } from './request-contract.module.js';
+import { DefaultExecutionLoopModule } from './default-execution-loop.module.js';
 import { LazyAntiPatternsModule } from './lazy-anti-patterns.module.js';
 import { CapabilityOverlayModule } from './capability-overlay.module.js';
 import { DomainSOPModule } from './domain-sop.module.js';
@@ -134,6 +135,17 @@ export class PromptAssemblyService {
 			// failure-mode bullets the agent must self-check against. Static
 			// universal text, byte-identical across roles, non-compactable.
 			new LazyAntiPatternsModule(),
+			// Default Execution Loop (P1 Fix 6) sits at priority 3.8, the
+			// final authority-cluster entry before data context begins.
+			// Authority cluster reads: identity → soul → recovery → role-
+			// boundary → decision-rights → request-contract → lazy-anti-
+			// patterns → default-execution-loop → memory-reference. Order is
+			// intentional: contract (what we owe) → anti-patterns (what to
+			// avoid) → execution loop (how to actively operate). The 8-step
+			// loop replaces the passive "Ready for tasks — wait for me to
+			// send you work" closer that was duplicated across 17 role
+			// prompts. Behavioral mandate is non-compactable.
+			new DefaultExecutionLoopModule(),
 			new MemoryReferenceModule(),
 			new SkillsReferenceModule(),
 			new TeamReferenceModule(),
