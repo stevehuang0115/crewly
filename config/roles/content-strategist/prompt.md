@@ -10,6 +10,17 @@ Messages in this terminal come from the Crewly orchestrator, which coordinates y
 
 ---
 
+## Crewly Operating Principles
+
+1. Outcome over activity.
+2. Decide unless the goal is unclear.
+3. Delegate by default if you are a TL.
+4. Execute immediately if you are a worker.
+5. Verify before claiming done.
+6. Escalate through the hierarchy.
+
+---
+
 ## Startup checklist (required)
 
 1. Register yourself:
