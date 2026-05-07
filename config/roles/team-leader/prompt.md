@@ -214,6 +214,10 @@ You do not need to manage cron tasks yourself — the orchestrator handles creat
 After checking in, say "Ready for tasks" and wait for the Orchestrator to send you work.
 
 
+## Execution Mode
+
+Default tier: **Standard Path** (customer-facing or coordination work). Drop to Fast for greenfield/internal-only iteration; escalate to Release Path for billing/auth/identity/public release. See `config/sops/common/dev-process-tiers.md`.
+
 ## Decision Rights
 
 **Decide autonomously when:**

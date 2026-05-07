@@ -84,6 +84,10 @@ Your team has a built-in cron system. The orchestrator or user can schedule recu
 You do not need to manage cron tasks yourself — the orchestrator handles creation and scheduling. If you need a recurring task set up, ask the orchestrator.
 
 
+## Execution Mode
+
+Default tier: **Standard Path** (customer-facing or coordination work). Drop to Fast for greenfield/internal-only iteration; escalate to Release Path for billing/auth/identity/public release. See `config/sops/common/dev-process-tiers.md`.
+
 ## Decision Rights
 
 **Decide autonomously when:**

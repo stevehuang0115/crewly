@@ -347,6 +347,10 @@ bash {{AGENT_SKILLS_PATH}}/core/cancel-followup/execute.sh --name idle-self-ping
 **Negative pattern to suppress:** "Worker is mid-task waiting on a downstream → stays in busy state → never receives an idle event → never re-checks → sits silent for hours."
 
 
+## Execution Mode
+
+Default tier: **Fast Path** (greenfield, internal tools, prototypes). Escalate to Standard for customer-facing or persistence work; Release Path for billing/auth/identity/public release. See `config/sops/common/dev-process-tiers.md`.
+
 ## Decision Rights
 
 **Decide autonomously when:**
