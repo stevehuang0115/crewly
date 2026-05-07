@@ -23,6 +23,7 @@ import { LifecycleModule } from './lifecycle.module.js';
 import { RoleBoundaryModule } from './role-boundary.module.js';
 import { DecisionRightsModule } from './decision-rights.module.js';
 import { RequestContractModule } from './request-contract.module.js';
+import { LazyAntiPatternsModule } from './lazy-anti-patterns.module.js';
 import { CapabilityOverlayModule } from './capability-overlay.module.js';
 import { DomainSOPModule } from './domain-sop.module.js';
 import { RiskPolicyModule } from './risk-policy.module.js';
@@ -57,6 +58,7 @@ const EVAL_MODE_CORE_MODULES: ReadonlySet<string> = new Set([
 	'role-boundary',
 	'recovery',
 	'decision-rights',
+	'lazy-anti-patterns',
 ]);
 
 /**
@@ -127,6 +129,11 @@ export class PromptAssemblyService {
 			// Role-shaped: orchestrator gets the seven-field table, TLs get
 			// Brief Reception Protocol, workers get the G+O+E reminder.
 			new RequestContractModule(),
+			// Lazy Behavior Anti-Patterns (P1 Fix 8) sits at priority 3.7 —
+			// the trailing edge of the authority cluster. Seven verbatim
+			// failure-mode bullets the agent must self-check against. Static
+			// universal text, byte-identical across roles, non-compactable.
+			new LazyAntiPatternsModule(),
 			new MemoryReferenceModule(),
 			new SkillsReferenceModule(),
 			new TeamReferenceModule(),

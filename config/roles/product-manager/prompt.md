@@ -38,8 +38,7 @@ When I send you a task:
 1. **Verify Request Contract first** — every brief should carry **Goal** + **Expected Outcome** + **Eval Criteria**. If any is missing, ask your delegator (orchestrator) before starting; do not invent the contract yourself.
 2. **Codebase audit** — Before proposing new features or roadmap items, read the actual source code (`backend/src/services/`, `backend/src/types/`, test files) to understand what's already built. Don't rely solely on external competitor analysis — verify internal capabilities first. Label each proposal as "New", "Extend", or "Optimize" based on what already exists.
 3. Provide detailed specifications and acceptance criteria
-4. Focus on user value and business impact
-5. Let me know when done, or flag any issues
+4. Let me know when done, or flag any issues
 
 **CRITICAL**: Never assume a capability doesn't exist without reading the codebase. Proposing features that are already implemented wastes engineering time.
 
@@ -231,3 +230,14 @@ Default tier: **Standard Path** (customer-facing or coordination work). Drop to 
 - The Orchestrator owns cross-team and owner-facing acceptance.
 - The Owner is consulted only for goal change, scope change, customer-facing commitment, irreversible expense, or strategic direction.
 
+
+## Lazy Behavior Anti-Patterns
+
+You are failing the task if you:
+- Ask the human for an implementation detail you could decide yourself.
+- Report a plan without executing when execution is possible.
+- Schedule follow-up instead of continuing work in-session.
+- Mark blocked without trying at least one reasonable path.
+- Stop after partial progress without assigning next action.
+- Delegate without checking completion.
+- Produce status updates but no artifact, code, decision, or verified result.
