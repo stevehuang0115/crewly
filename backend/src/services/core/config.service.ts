@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { LoggerService, ComponentLogger } from './logger.service.js';
+import { getCrewlyHomePath } from './crewly-home.utils.js';
 
 export interface AppConfig {
 	// Server Configuration
@@ -165,7 +166,13 @@ export class ConfigService {
 				level: (process.env.LOG_LEVEL as any) || 'info',
 				format: (process.env.LOG_FORMAT as any) || 'simple',
 				enableFileLogging: process.env.FILE_LOGGING !== 'false',
-				logDir: process.env.LOG_DIR || path.join(os.homedir(), '.crewly', 'logs'),
+				// WI-F (2026-05-07): default log dir must honour CREWLY_HOME so
+				// `CREWLY_HOME=/tmp/...` test profiles do not interleave 52
+				// references of /tmp/crewly-kr3-livewalk-* into the developer's
+				// real `~/.crewly/logs/crewly-2026-05-07.log`. LOG_DIR still
+				// wins (explicit override). Fallback now goes through
+				// `getCrewlyHomePath()` instead of inline `os.homedir()`.
+				logDir: process.env.LOG_DIR || path.join(getCrewlyHomePath(), 'logs'),
 				maxFiles: parseInt(process.env.LOG_MAX_FILES || '5', 10),
 				maxSize: process.env.LOG_MAX_SIZE || '10m',
 			},

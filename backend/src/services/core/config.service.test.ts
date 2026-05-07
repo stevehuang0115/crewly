@@ -252,6 +252,68 @@ describe('ConfigService', () => {
 			expect(typeof loggingConfig.enableFileLogging).toBe('boolean');
 			expect(typeof loggingConfig.logDir).toBe('string');
 		});
+
+		// =====================================================================
+		// WI-F (2026-05-07) — CREWLY_HOME isolation regression for logDir
+		//
+		// Mia's KR3 livewalk on 2026-05-07 02:37Z found the test backend
+		// interleaving 52 references of /tmp/crewly-kr3-livewalk-* into
+		// Steve's user-prod `~/.crewly/logs/crewly-2026-05-07.log` because
+		// the default `logDir` ignored CREWLY_HOME and went straight to
+		// `os.homedir()`. Same shape as the PR #452 9-site sweep but on a
+		// missed vector. These guards lock the resolution semantics in.
+		// =====================================================================
+		describe('logDir CREWLY_HOME isolation (WI-F)', () => {
+			test('honours CREWLY_HOME when set (no LOG_DIR override)', () => {
+				mockExistsSync.mockReturnValue(false);
+				process.env.CREWLY_HOME = '/tmp/crewly-test-profile-xyz';
+				delete process.env.LOG_DIR;
+
+				const config = ConfigService.getInstance();
+				const { logDir } = config.get('logging');
+
+				expect(logDir).toBe('/tmp/crewly-test-profile-xyz/logs');
+				// Negative: must NOT have leaked into the developer's home dir.
+				expect(logDir.startsWith(require('os').homedir())).toBe(false);
+			});
+
+			test('falls back to ~/.crewly/logs when CREWLY_HOME is unset', () => {
+				mockExistsSync.mockReturnValue(false);
+				delete process.env.CREWLY_HOME;
+				delete process.env.LOG_DIR;
+
+				const config = ConfigService.getInstance();
+				const { logDir } = config.get('logging');
+
+				const path = require('path');
+				const os = require('os');
+				expect(logDir).toBe(path.join(os.homedir(), '.crewly', 'logs'));
+			});
+
+			test('treats empty-string CREWLY_HOME as unset', () => {
+				mockExistsSync.mockReturnValue(false);
+				process.env.CREWLY_HOME = '';
+				delete process.env.LOG_DIR;
+
+				const config = ConfigService.getInstance();
+				const { logDir } = config.get('logging');
+
+				const path = require('path');
+				const os = require('os');
+				expect(logDir).toBe(path.join(os.homedir(), '.crewly', 'logs'));
+			});
+
+			test('LOG_DIR explicit override still wins over CREWLY_HOME', () => {
+				mockExistsSync.mockReturnValue(false);
+				process.env.CREWLY_HOME = '/tmp/crewly-test-profile-xyz';
+				process.env.LOG_DIR = '/var/log/crewly-explicit';
+
+				const config = ConfigService.getInstance();
+				const { logDir } = config.get('logging');
+
+				expect(logDir).toBe('/var/log/crewly-explicit');
+			});
+		});
 	});
 
 	describe('Security Configuration', () => {

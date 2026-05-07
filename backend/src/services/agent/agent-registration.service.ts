@@ -18,6 +18,7 @@ import {
 	unregisterInProcessRuntime,
 } from './crewly-agent/in-process-runtime-registry.js';
 import { StorageService } from '../core/storage.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import {
 	CREWLY_CONSTANTS,
 	ENV_CONSTANTS,
@@ -1859,11 +1860,19 @@ After checking in, just say "Ready for tasks" and wait for me to send you work.`
 
 	/**
 	 * Build the unified init prompt path used by non-Claude-Code runtimes.
+	 *
+	 * Anchored on {@link getCrewlyHomePath} so test profiles, KR3 livewalk
+	 * dry-runs, and ESTestNode acceptance harnesses that export
+	 * `CREWLY_HOME=/tmp/...` write into the test profile, not the
+	 * developer's real `~/.crewly/prompts`. WI-F (2026-05-07): the
+	 * previous `path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+	 * ...)` form ignored the env var and let Mia's KR3 livewalk overwrite
+	 * 27 occurrences of `~/.crewly/prompts/crewly-orc-init.md` and 26 of
+	 * `crewly-auditor-init.md` in Steve's user-prod tree at 02:37Z.
 	 */
 	private getInitPromptFilePath(sessionName: string): string {
 		return path.join(
-			os.homedir(),
-			CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
+			getCrewlyHomePath(),
 			'prompts',
 			`${sessionName}-init.md`
 		);
