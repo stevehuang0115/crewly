@@ -25,7 +25,7 @@ import {
   type WorkItem,
   TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
-import { planTasksFromObjective, type PlannedTask } from './v3-data.service.js';
+import { classifyIntent, planTasksFromObjective, type PlannedTask } from './v3-data.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 
 /** Directory name under .crewly for request storage. */
@@ -263,7 +263,24 @@ export class RequestService {
       throw new Error(`Invalid CreateRequestInput: ${errors.join('; ')}`);
     }
 
-    const request = createRequest(input);
+    // Auto-classify intent when caller didn't pass explicit values.
+    // Without this fallback, every Request from a non-classifying caller
+    // landed as L1+other and was silently skipped by the auto-decompose
+    // subscriber — Slack/chat ingress paths hit this, and the entire
+    // Request → WorkItem pipeline became a no-op for inbound user
+    // messages. Explicit caller values still win (an agent that
+    // computed L2+code_change at the source keeps that classification).
+    const needsClassify = input.intentLevel === undefined || input.intentCategory === undefined;
+    const classified = needsClassify ? classifyIntent(input.description) : null;
+    const enriched: CreateRequestInput = classified
+      ? {
+          ...input,
+          intentLevel: input.intentLevel ?? classified.intentLevel,
+          intentCategory: input.intentCategory ?? classified.intentCategory,
+        }
+      : input;
+
+    const request = createRequest(enriched);
     await this.save(request);
     this.logger.debug('Request created', { id: request.id, title: request.title });
 

@@ -72,6 +72,10 @@ describe('RequestService', () => {
         sourceConversationItemId: 'conv-123',
         title: 'Deploy to staging',
         description: 'Deploy the current build to the staging environment',
+        // Pin classification so the test asserts CRUD semantics, not the
+        // auto-classify fallback (covered by its own test below).
+        intentLevel: 'L1',
+        intentCategory: 'other',
       });
 
       expect(request.id).toBeDefined();
@@ -80,6 +84,40 @@ describe('RequestService', () => {
       expect(request.priority).toBe('normal');
       expect(request.intentLevel).toBe('L1');
       expect(request.workItemIds).toEqual([]);
+    });
+
+    it('auto-classifies intent when caller omits intentLevel/intentCategory', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+
+      // "Deploy ... staging environment" matches the L2 deploy/env trigger
+      // and the deployment category. Without the auto-classify backstop,
+      // this would default to L1+other and request-decompose.subscriber
+      // would silently skip auto-decomposition — the original Slack→0WIs bug.
+      const request = await service.create({
+        sourceConversationItemId: 'conv-auto-classify',
+        title: 'Deploy to staging',
+        description: 'Deploy the current build to the staging environment',
+      });
+
+      expect(request.intentLevel).toBe('L2');
+      expect(request.intentCategory).toBe('deployment');
+    });
+
+    it('preserves explicit intent values when caller provides them', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+
+      // Caller knows better — e.g. an agent pre-classified upstream.
+      // The service must NOT overwrite explicit values with the heuristic.
+      const request = await service.create({
+        sourceConversationItemId: 'conv-explicit',
+        title: 'something',
+        description: 'Deploy the current build to the staging environment',
+        intentLevel: 'L1',
+        intentCategory: 'communication',
+      });
+
+      expect(request.intentLevel).toBe('L1');
+      expect(request.intentCategory).toBe('communication');
     });
 
     it('should throw on invalid input', async () => {
