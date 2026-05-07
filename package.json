@@ -54,7 +54,7 @@
     "test": "jest",
     "test:backend": "jest tests/unit tests/integration",
     "test:unit": "jest --testPathPattern='backend/src|cli/src|config/' --testPathIgnorePatterns='node_modules|integration'",
-    "test:integration": "jest tests/integration",
+    "test:integration": "jest tests/integration 'backend/src/.*\\.integration\\.test\\.ts'",
     "test:orchestrator": "jest tests/unit/tmux.service.test.ts tests/integration/orchestrator-initialization.test.ts --testNamePattern=\"Orchestrator|orchestrator\"",
     "test:pty": "jest --testPathPattern=\"backend/src/services/session/pty\" --testTimeout=60000",
     "test:reliability": "jest --testPathPattern=\"pty-input-reliability\" --testTimeout=60000",
