@@ -124,7 +124,11 @@ describe('MissionExecutorService', () => {
 
       const secondCall = mockAddToPool.mock.calls[1][0];
       expect(secondCall.status).toBe('blocked');
-      expect(secondCall.metadata._dependsOnTitles).toContain('Design schema');
+      // V3 canonical: deps live on `WorkItem.dependsOn` (resolved IDs),
+      // not the dead `metadata._dependsOnTitles` key. The first call's
+      // id is what the second item depends on.
+      const firstCall = mockAddToPool.mock.calls[0][0];
+      expect(secondCall.dependsOn).toContain(firstCall.id);
     });
 
     it('should reject if policy disallows task creation', async () => {

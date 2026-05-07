@@ -126,7 +126,6 @@ export class MissionExecutorService {
           suggestedRole: task.suggestedRole,
           estimatedMinutes: task.estimatedMinutes,
           priority: task.priority,
-          _dependsOnTitles: task.dependsOn ?? [],
           krId: task.krId,
           krContribution: task.krContribution,
         },
@@ -134,6 +133,10 @@ export class MissionExecutorService {
 
       if (hasDeps) {
         workItem.status = 'blocked';
+        // `dependsOn` IDs are resolved in the second pass below — here we
+        // only know dep titles. The status flip to `blocked` is enough for
+        // `addToPool` validation; the canonical `dependsOn` field is set
+        // before pool insertion.
       }
 
       titleToId.set(task.title, workItem.id);
@@ -141,7 +144,16 @@ export class MissionExecutorService {
       createdIds.push(workItem.id);
     }
 
-    // Second pass: resolve title-based dependencies to WorkItem IDs
+    // Second pass: resolve title-based dependencies to WorkItem IDs and
+    // populate the canonical `WorkItem.dependsOn` field.
+    //
+    // History: this used to write `metadata._blockedBy` instead, but that
+    // key was only read by a v3-data.service.ts listener whose backing
+    // `v3:task_completed` event was retired in the v1-cleanup campaign
+    // (specs/2026-05-06-task-management-v1-deprecation.md). The pool's
+    // own `resolveBlockedDependents` reads the canonical top-level
+    // `dependsOn` field — which is the one that fires inside the V3
+    // completion lifecycle. So writing here closes the unblock path.
     for (const task of result.tasks) {
       if (!task.dependsOn || task.dependsOn.length === 0) continue;
 
@@ -154,8 +166,8 @@ export class MissionExecutorService {
 
       if (blockedByIds.length > 0) {
         const wi = createdItems.get(workItemId);
-        if (wi?.metadata) {
-          (wi.metadata as Record<string, unknown>)._blockedBy = blockedByIds;
+        if (wi) {
+          wi.dependsOn = blockedByIds;
         }
       }
     }
