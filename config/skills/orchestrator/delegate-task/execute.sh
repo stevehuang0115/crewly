@@ -79,6 +79,32 @@ fi
 require_param "to (--to)" "$TO"
 require_param "task (--task)" "$TASK"
 
+# Request Contract check (P0-3): non-fatal warning when the delegated brief
+# is missing Goal / Expected Outcome / Eval Criteria markers. TLs and workers
+# downstream are entitled to push back per the Brief Reception Protocol when
+# these are absent. Spec:
+# .crewly/specs/2026-05-03-agent-improvement-p0-execution.md §"Fix P0-3".
+warn_missing_request_contract() {
+  local task="$1"
+  local missing=()
+  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(goal|objective)(:|s?\b)'; then
+    missing+=("Goal")
+  fi
+  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(expected )?outcome(:|s?\b)'; then
+    missing+=("Outcome")
+  fi
+  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(eval|evaluation criteria|acceptance criteria)(:|s?\b)'; then
+    missing+=("Eval")
+  fi
+  if [ ${#missing[@]} -gt 0 ]; then
+    local list
+    list=$(IFS=, ; echo "${missing[*]}")
+    echo "{\"warning\":\"Request Contract incomplete: brief is missing markers for: ${list}. Per P0-3 spec, every delegated subtask MUST include Goal + Expected Outcome + Eval Criteria. TLs and workers may push back via the Brief Reception Protocol. Source: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md §Fix P0-3.\"}" >&2
+  fi
+}
+
+warn_missing_request_contract "$TASK"
+
 # #180: Validate target agent belongs to the specified team
 if [ -n "$TEAM_ID" ] && [ "$FORCE_CROSS_TEAM" != "true" ]; then
   TEAM_DATA=$(api_call GET "/teams/${TEAM_ID}" 2>/dev/null || echo '{}')

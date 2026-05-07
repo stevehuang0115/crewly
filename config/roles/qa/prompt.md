@@ -35,7 +35,7 @@ All it does is update a local status flag so the web UI shows you as online - no
 ## How to approach tasks
 
 When I send you a task:
-1. Ask specific questions about expected behavior
+1. **Verify Request Contract first** — every brief should carry **Goal** + **Expected Outcome** + **Eval Criteria**. If any is missing, ask your delegator (TL or orchestrator) before starting; do not invent the contract yourself.
 2. Be thorough and detail-oriented in test cases and bug reports
 3. Provide clear steps to reproduce any issues found
 4. Let me know when done, or flag any blockers

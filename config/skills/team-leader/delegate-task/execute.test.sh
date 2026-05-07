@@ -74,6 +74,28 @@ shift
 # Load the real shared lib first
 source "${REAL_SKILL_DIR}/../_common/lib.sh"
 
+# Request Contract warning helper (mirror of the real script's
+# warn_missing_request_contract — must stay byte-equivalent so the test
+# exercises actual production logic, not a stub).
+warn_missing_request_contract() {
+  local task="$1"
+  local missing=()
+  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(goal|objective)(:|s?\b)'; then
+    missing+=("Goal")
+  fi
+  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(expected )?outcome(:|s?\b)'; then
+    missing+=("Outcome")
+  fi
+  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(eval|evaluation criteria|acceptance criteria)(:|s?\b)'; then
+    missing+=("Eval")
+  fi
+  if [ ${#missing[@]} -gt 0 ]; then
+    local list
+    list=$(IFS=, ; echo "${missing[*]}")
+    echo "{\"warning\":\"Request Contract incomplete: brief is missing markers for: ${list}. Per P0-3 spec, every delegated subtask MUST include Goal + Expected Outcome + Eval Criteria. Workers may push back via the Brief Reception Protocol. Source: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md §Fix P0-3.\"}" >&2
+  fi
+}
+
 # Track API calls for verification
 API_CALLS_LOG=$(mktemp)
 
@@ -135,6 +157,10 @@ TL_MEMBER_ID=$(echo "$INPUT" | jq -r '.tlMemberId // empty')
 FROM_SESSION=$(echo "$INPUT" | jq -r '.fromSession // empty')
 require_param "to" "$TO"
 require_param "task" "$TASK"
+
+# Request Contract warning (P0-3): emit non-fatal warning when brief is
+# missing Goal / Expected Outcome / Eval markers. Mirror of the real script.
+warn_missing_request_contract "$TASK"
 
 # Validate hierarchy
 if [ -n "$TEAM_ID" ] && [ -n "$TL_MEMBER_ID" ]; then
@@ -392,6 +418,97 @@ assert_fails "fails without 'task'" \
 
 assert_fails "fails without any input" \
   env -u CREWLY_SESSION_NAME bash "$MOCK_SCRIPT" "$SKILL_DIR" ''
+
+# -----------------------------------------------------------------------
+# Scenario 9 (P0-3): Request Contract warning — emitted when G/O/E missing
+# -----------------------------------------------------------------------
+echo "Scenario 9: Request Contract warning — bare task triggers G+O+E warning"
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  '{"to":"crewly-product-leo-dev","task":"do something useful"}' 2>&1)
+if echo "$RAW_OUTPUT" | grep -q "Request Contract incomplete"; then
+  echo "  PASS: warning emitted for bare task missing G+O+E"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expected 'Request Contract incomplete' warning, got: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenario 10 (P0-3): Warning lists all three missing fields
+# -----------------------------------------------------------------------
+echo "Scenario 10: Warning lists Goal, Outcome, Eval when all three are missing"
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  '{"to":"crewly-product-leo-dev","task":"refactor things"}' 2>&1)
+if echo "$RAW_OUTPUT" | grep -q "Goal" && \
+   echo "$RAW_OUTPUT" | grep -q "Outcome" && \
+   echo "$RAW_OUTPUT" | grep -q "Eval"; then
+  echo "  PASS: warning enumerates all three missing fields"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expected warning to list Goal+Outcome+Eval, got: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenario 11 (P0-3): Warning suppressed when full Request Contract present
+# -----------------------------------------------------------------------
+echo "Scenario 11: No warning when Goal + Expected Outcome + Eval Criteria are all present"
+TASK_WITH_RC="**Goal:** Implement feature X. **Expected Outcome:** Feature works in prod. **Eval Criteria:** All tests pass and demo passes UAT."
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  "{\"to\":\"crewly-product-leo-dev\",\"task\":\"$TASK_WITH_RC\"}" 2>&1)
+if echo "$RAW_OUTPUT" | grep -q "Request Contract incomplete"; then
+  echo "  FAIL: did not expect warning when G+O+E all present, got: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+else
+  echo "  PASS: no warning emitted when contract is complete"
+  PASS=$((PASS + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenario 12 (P0-3): Partial contract — only Goal present, warns about Outcome+Eval
+# -----------------------------------------------------------------------
+echo "Scenario 12: Partial contract — names only the missing field(s)"
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  '{"to":"crewly-product-leo-dev","task":"**Goal:** ship X. Just do it."}' 2>&1)
+if echo "$RAW_OUTPUT" | grep -q "Request Contract incomplete" && \
+   echo "$RAW_OUTPUT" | grep -q "Outcome" && \
+   echo "$RAW_OUTPUT" | grep -q "Eval"; then
+  echo "  PASS: warning emitted, names Outcome+Eval as missing"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expected partial-contract warning, got: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenario 13 (P0-3): Warning is non-fatal — delegation still succeeds
+# -----------------------------------------------------------------------
+echo "Scenario 13: Warning is non-fatal — delegation completes despite missing G+O+E"
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  '{"to":"crewly-product-leo-dev","task":"unstructured task"}' 2>&1)
+OUTPUT=$(echo "$RAW_OUTPUT" | grep '"monitoring"' | head -1)
+if echo "$OUTPUT" | jq -e '.success' > /dev/null 2>&1; then
+  echo "  PASS: delegation succeeds despite missing contract markers"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: warning should be non-fatal, but delegation appears to have failed: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenario 14 (P0-3): Acceptance Criteria synonym recognized as Eval marker
+# -----------------------------------------------------------------------
+echo "Scenario 14: 'Acceptance Criteria' counts as the Eval marker"
+TASK_AC="**Goal:** ship Y. **Expected Outcome:** Y in prod. **Acceptance Criteria:** UAT pass."
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  "{\"to\":\"crewly-product-leo-dev\",\"task\":\"$TASK_AC\"}" 2>&1)
+if echo "$RAW_OUTPUT" | grep -q "Request Contract incomplete"; then
+  echo "  FAIL: did not expect warning when Acceptance Criteria stands in for Eval, got: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+else
+  echo "  PASS: Acceptance Criteria recognized as valid Eval marker"
+  PASS=$((PASS + 1))
+fi
 
 # Cleanup
 rm -rf "$MOCK_DIR"

@@ -33,11 +33,12 @@ Priorities:
 
 ## Task execution rules
 
-1. Confirm objective, output format, and acceptance criteria.
-2. Execute tasks directly (no interactive planning mode).
-3. Use absolute skill paths when sharing runnable commands in deliverables.
-4. For UI automation tasks, verify each major step with an observable artifact (screenshot/log).
-5. If blocked, immediately report blocker + next-best fallback.
+1. **Verify Request Contract first** — every brief should carry **Goal** + **Expected Outcome** + **Eval Criteria**. If any is missing, ask your delegator (TL or orchestrator) before starting; do not invent the contract yourself.
+2. Confirm output format and acceptance criteria match the contract.
+3. Execute tasks directly (no interactive planning mode).
+4. Use absolute skill paths when sharing runnable commands in deliverables.
+5. For UI automation tasks, verify each major step with an observable artifact (screenshot/log).
+6. If blocked, immediately report blocker + next-best fallback.
 
 ## Communication and reporting
 

@@ -57,6 +57,7 @@ Each report entry should include:
 4. **Prioritize correctly** — critical issues first
 5. **Be concise** — reports should be actionable, not verbose
 6. **Respect privacy** — don't log sensitive data (API keys, credentials)
+7. **Verify Request Contract on incoming tasks** — when the orchestrator hands you an audit brief, it should carry **Goal** + **Expected Outcome** + **Eval Criteria**. If any is missing, ask the orchestrator before starting; do not invent the contract yourself.
 
 ## Audit Cycle
 

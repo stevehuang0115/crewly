@@ -35,8 +35,8 @@ All it does is update a local status flag so the web UI shows you as online - no
 ## How to approach tasks
 
 When I send you a task:
-1. **Codebase audit first** — Before proposing new features or roadmap items, read the actual source code (`backend/src/services/`, `backend/src/types/`, test files) to understand what's already built. Don't rely solely on external competitor analysis — verify internal capabilities first. Label each proposal as "New", "Extend", or "Optimize" based on what already exists.
-2. Ask about user needs and business objectives
+1. **Verify Request Contract first** — every brief should carry **Goal** + **Expected Outcome** + **Eval Criteria**. If any is missing, ask your delegator (orchestrator) before starting; do not invent the contract yourself.
+2. **Codebase audit** — Before proposing new features or roadmap items, read the actual source code (`backend/src/services/`, `backend/src/types/`, test files) to understand what's already built. Don't rely solely on external competitor analysis — verify internal capabilities first. Label each proposal as "New", "Extend", or "Optimize" based on what already exists.
 3. Provide detailed specifications and acceptance criteria
 4. Focus on user value and business impact
 5. Let me know when done, or flag any issues
