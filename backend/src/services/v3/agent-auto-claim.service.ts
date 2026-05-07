@@ -265,6 +265,33 @@ export class AgentAutoClaimService {
       title: best.workItem.title,
     });
 
+    // Notify the worker. Without this, an auto-claimed WI sits in
+    // `running` with the agent's session as `target` but the agent never
+    // hears about it — manifesting as "Request created → WIs claimed →
+    // nothing executes". Hand off to WorkItemDispatchSubscriber so the
+    // [CREWLY-DISPATCH] write goes through the same idempotent path
+    // queued-WIs already use.
+    //
+    // `result.workItem` carries the claim-time WI snapshot with `target`
+    // already set, which is what `dispatchTo` expects.
+    //
+    // If dispatch fails here (transient HTTP error, agent restarting),
+    // the WI is in `running` state — the dispatch subscriber's recovery
+    // scan only re-checks `queued` items, so this path doesn't auto-recover.
+    // The agent will pick it up the next time it polls (`get-my-tasks`)
+    // or on its next idle tick (which retriggers AutoClaim, which sees
+    // the existing claim and skips). Acceptable tradeoff for now.
+    try {
+      const { WorkItemDispatchSubscriber } = await import('./workitem-dispatch.subscriber.js');
+      await WorkItemDispatchSubscriber.getInstance().dispatchTo(result.workItem);
+    } catch (dispatchErr) {
+      this.logger.warn('Post-claim dispatch failed — agent may not be notified', {
+        workItemId: best.workItem.id,
+        agentSessionName,
+        error: dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr),
+      });
+    }
+
     return { workItemId: best.workItem.id, score: best.score };
   }
 
