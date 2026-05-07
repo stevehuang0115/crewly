@@ -3383,6 +3383,94 @@ describe('AgentRegistrationService', () => {
 			// (verified by checking the file path indicates agent mode was used)
 			expect(result).toBe('/project/.claude/agents/sam-session.md');
 		});
+
+		// =====================================================================
+		// WI-F (2026-05-07) — CREWLY_HOME isolation regression for prompts dir
+		//
+		// Mia's KR3 livewalk on 2026-05-07 02:37Z found the test backend
+		// overwriting Steve's user-prod prompt files (27× crewly-orc-init.md,
+		// 26× crewly-auditor-init.md) at `~/.crewly/prompts/` because
+		// `getInitPromptFilePath` was inlining `os.homedir() + .crewly` and
+		// silently ignoring CREWLY_HOME. Same shape as the PR #452 9-site
+		// sweep but on a missed vector. These guards prove the prompt path
+		// now flows through the canonical `getCrewlyHomePath()` resolver.
+		// =====================================================================
+		describe('CREWLY_HOME isolation for getInitPromptFilePath (WI-F)', () => {
+			let originalCrewlyHome: string | undefined;
+
+			beforeEach(() => {
+				originalCrewlyHome = process.env.CREWLY_HOME;
+			});
+
+			afterEach(() => {
+				if (originalCrewlyHome === undefined) {
+					delete process.env.CREWLY_HOME;
+				} else {
+					process.env.CREWLY_HOME = originalCrewlyHome;
+				}
+			});
+
+			it('writes to ${CREWLY_HOME}/prompts when CREWLY_HOME is set (no developer-home leak)', async () => {
+				process.env.CREWLY_HOME = '/tmp/crewly-test-profile-wi-f';
+
+				const result = await (service as any).writePromptFile(
+					'crewly-orc',
+					'orc init prompt',
+					{ projectPath: '/test/project', runtimeType: 'gemini-cli', role: 'orchestrator' }
+				);
+
+				expect(result).toBe('/tmp/crewly-test-profile-wi-f/prompts/crewly-orc-init.md');
+				// Negative: must NOT leak into developer's real home dir.
+				const realHome = require('os').homedir();
+				expect(result).not.toContain(`${realHome}/.crewly/prompts`);
+			});
+
+			it('falls back to ~/.crewly/prompts when CREWLY_HOME is unset', async () => {
+				delete process.env.CREWLY_HOME;
+
+				const result = await (service as any).writePromptFile(
+					'test-agent',
+					'init prompt',
+					{ runtimeType: 'gemini-cli', role: 'developer' }
+				);
+
+				const path = require('path');
+				const os = require('os');
+				expect(result).toBe(
+					path.join(os.homedir(), '.crewly', 'prompts', 'test-agent-init.md'),
+				);
+			});
+
+			it('treats empty-string CREWLY_HOME as unset', async () => {
+				process.env.CREWLY_HOME = '';
+
+				const result = await (service as any).writePromptFile(
+					'test-agent',
+					'init prompt',
+					{ runtimeType: 'gemini-cli', role: 'developer' }
+				);
+
+				const path = require('path');
+				const os = require('os');
+				expect(result).toBe(
+					path.join(os.homedir(), '.crewly', 'prompts', 'test-agent-init.md'),
+				);
+			});
+
+			it('claude-code agent path is unaffected by CREWLY_HOME (writes under projectPath/.claude/agents)', async () => {
+				process.env.CREWLY_HOME = '/tmp/crewly-test-profile-wi-f';
+
+				const result = await (service as any).writePromptFile(
+					'sam-session',
+					'prompt',
+					{ projectPath: '/proj', runtimeType: RUNTIME_TYPES.CLAUDE_CODE, role: 'developer' }
+				);
+
+				// Claude-code mode short-circuits before hitting getInitPromptFilePath,
+				// so the projectPath-anchored output stays intact regardless of CREWLY_HOME.
+				expect(result).toBe('/proj/.claude/agents/sam-session.md');
+			});
+		});
 	});
 
 	describe('registerMemberActive', () => {
