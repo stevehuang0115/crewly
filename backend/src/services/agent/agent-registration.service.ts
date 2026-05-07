@@ -1599,7 +1599,10 @@ export class AgentRegistrationService {
 			// NOW" before the supplementary memory context. Soft-fail with WARN
 			// — TaskPool/Request hiccups must not block agent boot.
 			try {
-				const activeWorkService = ActiveWorkBriefingService.getInstance();
+				// ActiveWorkBriefingService.getInstance() is async — see service
+				// JSDoc. Dynamic-import migration was the build-fix for PR #494's
+				// broken relative-path resolution under entry-script anchoring.
+				const activeWorkService = await ActiveWorkBriefingService.getInstance();
 				const activeWorkBriefing = await activeWorkService.generateActiveWorkBriefing(
 					sessionName,
 					role,

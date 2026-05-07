@@ -59,13 +59,24 @@ function installFakeService(
   });
   ActiveWorkBriefingService.resetInstance();
   // Reach in and replace the singleton with the test-configured instance so
-  // the controller's `getInstance()` returns the fake.
+  // the controller's `await getInstance()` returns the fake.
+  //
+  // NOTE: `getInstance()` is async (see service JSDoc — build-fix that
+  // succeeded PR #494). It returns a memoised `instancePromise`, so we
+  // MUST stamp BOTH slots: `instance` for diagnostics / sync inspection,
+  // AND `instancePromise` as a pre-resolved promise so `await
+  // getInstance()` short-circuits without re-running the dynamic
+  // imports. Resetting only `instance` would let the next
+  // `await getInstance()` rebuild from the live RequestService /
+  // TaskPoolService factories and skip the fakes.
   const inst = ActiveWorkBriefingService.createForTest(
     requestServiceFactory as never,
     taskPoolFactory as never,
   );
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (ActiveWorkBriefingService as any).instance = inst;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (ActiveWorkBriefingService as any).instancePromise = Promise.resolve(inst);
   const generateSpy = jest.spyOn(inst, 'generateActiveWorkBriefing');
   const formatSpy = jest.spyOn(inst, 'formatBriefingAsMarkdown');
   return { generateSpy, formatSpy };

@@ -13,28 +13,19 @@
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { createRequire } from 'module';
-import { pathToFileURL } from 'url';
-
-/**
- * CJS-style `require` for the lazy CloudSync lookup below. Keeps the
- * load deferred (CloudSync may not be available in all builds) without
- * tripping `ReferenceError: require is not defined` under ESM.
- *
- * Anchor `createRequire` to `process.argv[1]` (entry script) instead of
- * `import.meta.url`. The previous `new Function('return import.meta.url')()`
- * trick parsed clean under ts-jest's CJS but failed at runtime because
- * `new Function(...)` runs in non-module scope where `import.meta` is a
- * SyntaxError.
- */
-const nodeRequire: NodeRequire =
-  typeof require === 'function'
-    ? require
-    : createRequire(pathToFileURL(process.argv[1] || process.cwd()).href);
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { DeviceIdentityService, type DeviceIdentity } from '../cloud/device-identity.service.js';
+// Static import of CloudSyncService — keeps `isEnabled()` synchronous so
+// the controllers and slack-orchestrator-bridge that depend on it stay
+// non-async. Previously this was a lazy `nodeRequire` (entry-script-
+// anchored CJS createRequire) so the load was deferred — but the anchor
+// broke relative-path resolution at runtime. CloudSyncService is always
+// shipped in dist/ alongside this module, so eager static import has no
+// availability cost. See `backend/src/utils/node-require.utils.ts`
+// JSDoc for the lessons-banked context.
+import { CloudSyncService } from '../cloud/cloud-sync.service.js';
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
 import {
   type CrossMachineMessage,
@@ -154,9 +145,11 @@ export class CrossMachineMessageService extends EventEmitter {
       return true;
     }
 
-    // Cloud transport path: CloudSync is running
+    // Cloud transport path: CloudSync is running. Static import (see
+    // file header) — try/catch still guards against `getInstance()`
+    // throwing during boot, or `isStarted()` raising on a partially-
+    // initialised CloudSyncService.
     try {
-      const { CloudSyncService } = nodeRequire('../cloud/cloud-sync.service.js');
       return CloudSyncService.getInstance().isStarted();
     } catch {
       return false;
