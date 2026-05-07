@@ -34,7 +34,11 @@
  * @module services/v3/trigger-engine-persistence.integration.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// Jest globals (describe/it/expect/beforeEach/afterEach) are auto-injected.
+// Migrated from vitest in PR #504 (test:integration discovery hygiene
+// surfaced this file's vitest-style imports). `jest.*` calls below are
+// renamed to `jest.*` equivalents (fn / useFakeTimers / setSystemTime /
+// advanceTimersByTimeAsync / spyOn / useRealTimers).
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -127,7 +131,7 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
 
   afterEach(async () => {
     TriggerEngine.resetInstance();
-    vi.useRealTimers();
+    jest.useRealTimers();
     // Cleanup the temp dir — best-effort; do not fail tests on cleanup race.
     try {
       await fs.rm(projectPath, { recursive: true, force: true });
@@ -161,13 +165,13 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
       const engine2 = simulateRestart(projectPath);
 
       // Wire up an action handler so we can observe the fire
-      const handlerSpy = vi.fn().mockResolvedValue(undefined);
+      const handlerSpy = jest.fn().mockResolvedValue(undefined);
       engine2.setActionHandler(handlerSpy);
 
       // Phase 3: advance fake time by 31 minutes BEFORE start() so that the
       // one-shot scheduling computes delayMs <= 0 → fires immediately.
-      vi.useFakeTimers();
-      vi.setSystemTime(
+      jest.useFakeTimers();
+      jest.setSystemTime(
         new Date(new Date(created.createdAt).getTime() + 31 * 60_000),
       );
 
@@ -187,7 +191,7 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
       // Allow real fs writes (writeFile + sync + rename) to complete via
       // a small real-time delay. Fake timers don't fake setImmediate's
       // I/O semantics.
-      vi.useRealTimers();
+      jest.useRealTimers();
       await new Promise<void>((resolve) => setTimeout(resolve, 50));
 
       // Assert: handler was called for our trigger
@@ -208,17 +212,17 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
       const created = await engine1.create(makeFireAtTriggerInput(fireAt));
 
       const engine2 = simulateRestart(projectPath);
-      const handlerSpy = vi.fn().mockResolvedValue(undefined);
+      const handlerSpy = jest.fn().mockResolvedValue(undefined);
       engine2.setActionHandler(handlerSpy);
 
-      vi.useFakeTimers();
+      jest.useFakeTimers();
       // Stay BEFORE fireAt — should NOT fire on start
       await engine2.start();
       expect(handlerSpy).not.toHaveBeenCalled();
 
       // Advance to just past fireAt → setTimeout fires
-      vi.setSystemTime(new Date(new Date(fireAt).getTime() + 1000));
-      await vi.advanceTimersByTimeAsync(31 * 60_000);
+      jest.setSystemTime(new Date(new Date(fireAt).getTime() + 1000));
+      await jest.advanceTimersByTimeAsync(31 * 60_000);
 
       expect(handlerSpy).toHaveBeenCalledTimes(1);
       expect(handlerSpy.mock.calls[0][0].id).toBe(created.id);
@@ -336,7 +340,7 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
       const internalLogger = (engine as unknown as {
         logger: { warn: (msg: string, meta?: unknown) => void };
       }).logger;
-      const warnSpy = vi.spyOn(internalLogger, 'warn');
+      const warnSpy = jest.spyOn(internalLogger, 'warn');
 
       // Stage the regression: clear the in-memory map (5 → 0). The guard
       // will reject on collapse-to-empty.

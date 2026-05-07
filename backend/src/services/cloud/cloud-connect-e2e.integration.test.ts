@@ -201,7 +201,8 @@ describe('Cloud Connect E2E — Endpoint Path Consistency', () => {
     // Ensures all endpoints use the /api/ prefix (not bare /v1/ which is legacy)
     const endpoints = CLOUD_SYNC_CONSTANTS.ENDPOINTS;
     for (const [key, path] of Object.entries(endpoints)) {
-      expect(path, `ENDPOINTS.${key} should start with /api/`).toMatch(/^\/api\//);
+      // ENDPOINTS.${key} should start with /api/ (not bare /v1/)
+      expect(path).toMatch(/^\/api\//);
     }
   });
 
@@ -216,7 +217,7 @@ describe('Cloud Connect E2E — Cloud API Liveness', () => {
   const CLOUD_URL = 'https://api.crewlyai.com';
   const SKIP_LIVE = process.env.CI === 'true' || process.env.SKIP_LIVE_CLOUD === 'true';
 
-  it.skipIf(SKIP_LIVE)('Cloud relay handshake endpoint exists (returns 401 without token)', async () => {
+  (SKIP_LIVE ? it.skip : it)('Cloud relay handshake endpoint exists (returns 401 without token)', async () => {
     const response = await fetch(`${CLOUD_URL}/api/v1/relay/handshake`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -225,43 +226,48 @@ describe('Cloud Connect E2E — Cloud API Liveness', () => {
     });
     // 401/403 means the endpoint exists but needs auth — that's what we want
     // 404 would mean the endpoint doesn't exist (BAD)
-    expect(response.status, 'Handshake endpoint should exist (not 404)').not.toBe(404);
+    // Handshake endpoint should exist (not 404)
+    expect(response.status).not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud relay device list endpoint exists (returns 401 without token)', async () => {
+  (SKIP_LIVE ? it.skip : it)('Cloud relay device list endpoint exists (returns 401 without token)', async () => {
     const response = await fetch(`${CLOUD_URL}/api/v1/relay/devices`, {
       method: 'GET',
       signal: AbortSignal.timeout(10_000),
     });
-    expect(response.status, 'Devices endpoint should exist (not 404)').not.toBe(404);
+    // Devices endpoint should exist (not 404)
+    expect(response.status).not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud relay queue send endpoint exists', async () => {
+  (SKIP_LIVE ? it.skip : it)('Cloud relay queue send endpoint exists', async () => {
     const response = await fetch(`${CLOUD_URL}/api/v1/relay/queue/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ toDeviceId: 'test', payload: '{}' }),
       signal: AbortSignal.timeout(10_000),
     });
-    expect(response.status, 'Message send endpoint should exist (not 404)').not.toBe(404);
+    // Message send endpoint should exist (not 404)
+    expect(response.status).not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud relay queue poll endpoint exists', async () => {
+  (SKIP_LIVE ? it.skip : it)('Cloud relay queue poll endpoint exists', async () => {
     const response = await fetch(`${CLOUD_URL}/api/v1/relay/queue/poll?queueId=test`, {
       method: 'GET',
       signal: AbortSignal.timeout(10_000),
     });
-    expect(response.status, 'Message poll endpoint should exist (not 404)').not.toBe(404);
+    // Message poll endpoint should exist (not 404)
+    expect(response.status).not.toBe(404);
   });
 
-  it.skipIf(SKIP_LIVE)('Cloud relay queue ack endpoint exists', async () => {
+  (SKIP_LIVE ? it.skip : it)('Cloud relay queue ack endpoint exists', async () => {
     const response = await fetch(`${CLOUD_URL}/api/v1/relay/queue/ack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ queueId: 'test', messageIds: [] }),
       signal: AbortSignal.timeout(10_000),
     });
-    expect(response.status, 'Message ack endpoint should exist (not 404)').not.toBe(404);
+    // Message ack endpoint should exist (not 404)
+    expect(response.status).not.toBe(404);
   });
 });
 
@@ -820,7 +826,8 @@ describe('Cloud Connect E2E — Type Guards', () => {
   it('isMessageType validates all types', () => {
     const validTypes = ['command', 'sync_teams', 'sync_settings', 'notification', 'relay', 'ping', 'task_update'];
     for (const t of validTypes) {
-      expect(isMessageType(t), `${t} should be valid`).toBe(true);
+      // `${t}` should be valid
+      expect(isMessageType(t)).toBe(true);
     }
     expect(isMessageType('invalid')).toBe(false);
   });
