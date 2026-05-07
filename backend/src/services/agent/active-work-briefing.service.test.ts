@@ -570,4 +570,69 @@ describe('ActiveWorkBriefingService', () => {
       expect(md).toContain('  - Do the thing');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // ESM require bridge — local regression guard (F-NEW-1, auditor cycle 1)
+  // ---------------------------------------------------------------------------
+  //
+  // The lazy load inside `getInstance()` was originally written as bare
+  // `require('../v3/request.service.js')`, which crashes under ESM (production)
+  // with `require is not defined`. The skill `get-my-active-work` and
+  // `AgentRegistrationService.activeWorkBriefing` both flow through that
+  // factory at session startup, so EVERY session was hitting the error
+  // (auditor cycle 1 reported 25 occurrences in a single day).
+  //
+  // The fix replaces bare `require(` with `nodeRequire(` (a CJS↔ESM bridge
+  // anchored to `pathToFileURL(process.argv[1])`). This guard scans the
+  // service source directly so a future contributor cannot silently revert
+  // the bridge or add a fresh bare `require(` in the same file.
+  //
+  // Static-only because under ts-jest's CJS transpile `typeof require ===
+  // 'function'` is true, so the runtime path picks the global `require`
+  // and never hits the createRequire branch — the runtime bug is invisible
+  // here. Source-scanning is the correct shape.
+  describe('ESM require bridge regression (F-NEW-1)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+    const fs = require('fs') as typeof import('fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+    const path = require('path') as typeof import('path');
+
+    const SERVICE_PATH = path.resolve(__dirname, 'active-work-briefing.service.ts');
+
+    /**
+     * Strip line and block comments so historical references inside JSDoc
+     * (e.g. "originally `require()`'d" wording in the file's own docblock)
+     * do not false-positive against the regex below.
+     */
+    const stripComments = (s: string): string =>
+      s
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .map((line) => line.replace(/\/\/.*$/, ''))
+        .join('\n');
+
+    it('source contains no bare `require(` calls outside of comments', () => {
+      const code = stripComments(fs.readFileSync(SERVICE_PATH, 'utf8'));
+      // Match `require(` or `require ` followed by `(` — but NOT `nodeRequire(`,
+      // `createRequire(`, or property-style `.require(`. Word-boundary lookbehind
+      // anchors the bare global form.
+      const BARE_REQUIRE = /(?<![A-Za-z0-9_$.])require\s*\(/g;
+      const matches = code.match(BARE_REQUIRE) ?? [];
+      expect(matches).toEqual([]);
+    });
+
+    it('source uses the canonical `nodeRequire` bridge', () => {
+      const code = stripComments(fs.readFileSync(SERVICE_PATH, 'utf8'));
+      // The lazy loads inside getInstance() must go through `nodeRequire`.
+      expect(code).toMatch(/nodeRequire\s*\(\s*['"]\.\.\/v3\/request\.service\.js['"]\s*\)/);
+      expect(code).toMatch(
+        /nodeRequire\s*\(\s*['"]\.\.\/task-pool\/task-pool\.service\.js['"]\s*\)/,
+      );
+      // And the bridge itself must be defined the canonical way (anchored
+      // to process.argv[1] via pathToFileURL — see commit 070cd3e5).
+      expect(code).toMatch(
+        /createRequire\s*\(\s*pathToFileURL\s*\(\s*process\.argv\[1\]/,
+      );
+    });
+  });
 });

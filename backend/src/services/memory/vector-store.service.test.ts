@@ -101,6 +101,13 @@ describe('ESM require pattern (cross-file regression guard)', () => {
     'backend/src/services/browser/browser-bridge.service.ts',
     'backend/src/services/slack/cross-machine-message.service.ts',
     'backend/src/controllers/agent-stream/agent-stream.controller.ts',
+    // Added 2026-05-07 (auditor cycle 1, F-NEW-1): the bare `require()` calls
+    // inside ActiveWorkBriefingService.getInstance() threw `require is not
+    // defined` for every agent registration that touched the active-work
+    // briefing path (skill `get-my-active-work` and AgentRegistrationService),
+    // breaking session startup. Now bridged via the canonical createRequire
+    // pattern; this guard locks the bridge in.
+    'backend/src/services/agent/active-work-briefing.service.ts',
   ];
 
   // The broken pattern's distinguishing feature: `createRequire(new Function(`
