@@ -376,6 +376,54 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // Require a non-empty `summary` string in the body. 2026-05-08 dogfood:
+    // Sam and Leo both marked WIs `done_by_worker` with empty output —
+    // workers were claiming completion without producing artifacts.
+    // Pool stored these as terminal-success but with `output=null,
+    // notes=null` (fake completion). The Done Definition in the Request
+    // Contract requires "what artifact/result must be produced". Enforce
+    // it at the API boundary so the proof of work lands with the
+    // transition, not as an afterthought.
+    //
+    // Skills already pass `summary`: the agent and orchestrator
+    // complete-task skills both emit `{summary: "..."}` in the body.
+    // Empty-summary callers (legacy or buggy) get a 400 with a
+    // helpful error directing them to populate `summary`.
+    const summary = typeof result?.summary === 'string' ? result.summary.trim() : '';
+    if (summary.length === 0) {
+      res.status(400).json({
+        success: false,
+        error:
+          `complete requires a non-empty 'summary' string in body.result. ` +
+          `Workers must report what they produced (artifact, decision, verified result) — ` +
+          `not just mark "done". This enforces the Request Contract Done Definition.`,
+        code: 'complete_requires_summary',
+      });
+      return;
+    }
+
+    // Persist the summary onto the WorkItem.output. This makes the proof of
+    // work queryable via `GET /api/task-pool/items/:id` (Request detail
+    // page), and downstream services that want to read what the worker
+    // actually produced (verifier, reviewer, mission audit) don't have to
+    // dig back through chat logs.
+    try {
+      const existing = await getService().findWorkItem(workItemId);
+      const mergedOutput: Record<string, unknown> = {
+        ...(existing?.output ?? {}),
+        summary,
+        // Preserve any caller-supplied result fields beyond `summary`
+        // (e.g. `links`, `prNumber`) as-is.
+        ...(result ?? {}),
+      };
+      await getService().setOutput(workItemId, mergedOutput);
+    } catch (err) {
+      logger.warn('Failed to persist completion summary onto WI.output (non-fatal)', {
+        workItemId,
+        error: formatError(err),
+      });
+    }
+
     await getService().completeItem(workItemId, result);
 
     // V3.1: Project task completion

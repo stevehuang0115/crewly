@@ -14,6 +14,7 @@ import {
   scanExpired,
   revokeAndRelease,
   deleteItem,
+  completeItem,
 } from './task-pool.controller.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 // Express types used for mock helpers below
@@ -44,6 +45,9 @@ const mockService = {
   scanExpiredClaims: jest.fn(),
   revokeAndRelease: jest.fn(),
   removeFromPool: jest.fn(),
+  completeItem: jest.fn(),
+  findWorkItem: jest.fn(),
+  setOutput: jest.fn(),
 };
 
 (TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
@@ -589,6 +593,110 @@ describe('TaskPoolController', () => {
       await deleteItem(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // completeItem (2026-05-08): require non-empty `summary` (Done Definition)
+  // ---------------------------------------------------------------------
+  describe('completeItem (require summary)', () => {
+    beforeEach(() => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-1', output: null });
+      mockService.setOutput.mockResolvedValue(undefined);
+      mockService.completeItem.mockResolvedValue(undefined);
+    });
+
+    it('returns 400 when result is missing entirely (fake-completion regression)', async () => {
+      // 2026-05-08 dogfood: Sam and Leo both marked WIs done_by_worker
+      // with `output=null, notes=null`. The Request Contract Done
+      // Definition requires "what artifact/result must be produced". The
+      // gate enforces it at the API boundary so workers can't claim
+      // completion without producing artefacts.
+      const req = mockReq({
+        params: { workItemId: 'wi-1' },
+        body: { agentId: 'agent-1' },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          code: 'complete_requires_summary',
+        }),
+      );
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when summary is an empty string', async () => {
+      const req = mockReq({
+        params: { workItemId: 'wi-2' },
+        body: { agentId: 'agent-1', result: { summary: '' } },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when summary is only whitespace', async () => {
+      const req = mockReq({
+        params: { workItemId: 'wi-3' },
+        body: { agentId: 'agent-1', result: { summary: '   \n\t  ' } },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('accepts a non-empty summary and persists it onto WorkItem.output', async () => {
+      const req = mockReq({
+        params: { workItemId: 'wi-4' },
+        body: {
+          agentId: 'leo',
+          result: { summary: 'Designed schema for users table; 4 fields finalized.' },
+        },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      expect(mockService.completeItem).toHaveBeenCalledWith(
+        'wi-4',
+        expect.objectContaining({ summary: expect.stringContaining('Designed schema') }),
+      );
+      // Output is persisted with the summary.
+      expect(mockService.setOutput).toHaveBeenCalledWith(
+        'wi-4',
+        expect.objectContaining({ summary: expect.stringContaining('Designed schema') }),
+      );
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true }),
+      );
+    });
+
+    it('preserves caller-supplied non-summary result fields on output', async () => {
+      const req = mockReq({
+        params: { workItemId: 'wi-5' },
+        body: {
+          agentId: 'leo',
+          result: { summary: 'Shipped PR #123', prNumber: 123, links: ['github.com/foo'] },
+        },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      expect(mockService.setOutput).toHaveBeenCalledWith(
+        'wi-5',
+        expect.objectContaining({
+          summary: 'Shipped PR #123',
+          prNumber: 123,
+          links: ['github.com/foo'],
+        }),
+      );
     });
   });
 });
