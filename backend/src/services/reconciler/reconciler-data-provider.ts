@@ -50,26 +50,51 @@ const AGENT_STALE_THRESHOLD_MS = 5 * 60 * 1000;
  * already returns `[]`, but it logs at `error` — every 10s for ~110s
  * — flooding logs and hiding real errors.
  *
- * This helper recognizes that specific TypeError shape so we can
- * silence it (debug log + empty array) without accidentally silencing
- * unrelated errors. Any error not matched here is still logged as
- * `error`.
+ * **F-CYCLE7-3-FU (2026-05-07, PR review #511 follow-up):** The original
+ * implementation enumerated `'filter'|'find'|'map'|'forEach'|'length'`
+ * in the message. That whitelist was brittle — adjacent reconciler /
+ * future-consumer code reaches for `.some()` / `.every()` / `.reduce()` /
+ * `.includes()` / `.indexOf()` / `.slice()` / property accesses that
+ * throw the SAME V8 TypeError shape during the same hydration window
+ * but are silently dropped from this classifier, re-introducing the
+ * noise pattern this PR is trying to silence.
+ *
+ * The fix mirrors the discipline used in
+ * `backend/src/utils/native-binding.utils.ts#isNativeArchMismatchError`
+ * (F-CYCLE7-1): match the **structural** error shape, not enumerated
+ * call sites.
+ *
+ * Contract:
+ *   1. Must be a real `TypeError` (not just any thrown value with a
+ *      matching string — that narrows the false-positive surface).
+ *   2. Message must carry both readonly anchors of the V8 shape:
+ *      `"Cannot read"` AND `"of undefined"`. The middle (`property` /
+ *      `properties of undefined (reading 'X')` / older `property 'X'
+ *      of undefined`) varies between Node versions; we don't anchor
+ *      on it.
+ *
+ * Negative cases this MUST reject (all tested):
+ *   - `Cannot read properties of null (reading 'filter')` — a null
+ *     pointer is a different bug class from hydration-not-ready.
+ *   - `TypeError: foo is not a function` — symptom of a missing API.
+ *   - Non-TypeError throws (`new Error('Cannot read … of undefined')`)
+ *     — strings can match by accident; the type narrow guards.
+ *   - `'Database connection refused'` — genuine downstream failure.
+ *
+ * @param error - The thrown value to classify. Anything not a
+ *   TypeError fails immediately, so callers can pass `error: unknown`
+ *   without pre-checks.
+ * @returns True iff the error is the V8 hydration-not-ready shape.
  */
-function isStorageNotReadyError(message: string): boolean {
-  // V8 / Node throws this exact message on `undefined.filter()` /
-  // `undefined.find()` etc. Match defensively on the readonly bits
-  // ("Cannot read prop" + "of undefined") to be tolerant of small
-  // engine-version wording variations.
-  const lower = message.toLowerCase();
-  return (
-    lower.includes('cannot read') &&
-    lower.includes('of undefined') &&
-    (lower.includes("'filter'") ||
-      lower.includes("'find'") ||
-      lower.includes("'map'") ||
-      lower.includes("'foreach'") ||
-      lower.includes("'length'"))
-  );
+function isStorageNotReadyError(error: unknown): boolean {
+  if (!(error instanceof TypeError)) return false;
+  const lower = error.message.toLowerCase();
+  // The two readonly anchors of the V8 / Node error shape, present
+  // across all engine versions and all property/method accesses on
+  // an undefined value:
+  //   modern V8: "Cannot read properties of undefined (reading 'X')"
+  //   older V8:  "Cannot read property 'X' of undefined"
+  return lower.includes('cannot read') && lower.includes('of undefined');
 }
 
 // ---------------------------------------------------------------------------
@@ -189,16 +214,18 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       }
       return claims;
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      // Storage-not-ready manifests as ".filter() on undefined" during
-      // the post-restart hydration window. Demote to debug so it
-      // doesn't drown out real errors in the log stream.
-      if (isStorageNotReadyError(msg)) {
+      // Storage-not-ready manifests as ".filter() / .some() / etc. on
+      // undefined" during the post-restart hydration window. The
+      // classifier checks `instanceof TypeError` + the V8 message
+      // shape — see the doc-comment on `isStorageNotReadyError` for
+      // why we no longer enumerate method names.
+      if (isStorageNotReadyError(error)) {
         this.logger.debug('Active claims unavailable (storage not yet hydrated)', {
-          error: msg,
+          error: (error as Error).message,
         });
         return [];
       }
+      const msg = error instanceof Error ? error.message : String(error);
       this.logger.error('Failed to get active claims', { error: msg });
       return [];
     }
@@ -401,13 +428,13 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       }
       return items;
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      if (isStorageNotReadyError(msg)) {
+      if (isStorageNotReadyError(error)) {
         this.logger.debug('Available pool items unavailable (storage not yet hydrated)', {
-          error: msg,
+          error: (error as Error).message,
         });
         return [];
       }
+      const msg = error instanceof Error ? error.message : String(error);
       this.logger.error('Failed to get available pool items', { error: msg });
       return [];
     }
