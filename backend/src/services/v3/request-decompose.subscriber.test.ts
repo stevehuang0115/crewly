@@ -277,6 +277,87 @@ describe('RequestDecomposeSubscriber', () => {
       const queued = (taskPool as unknown as { queued: WorkItem[] }).queued;
       expect(queued[0].metadata).toMatchObject({ autoDecomposed: true });
     });
+
+    it('resolves dependsOnTitles to WI ids and flips dependents to status=blocked (Sam-bug regression)', async () => {
+      // 2026-05-08 dogfood: Sam claimed the Review WI and marked it
+      // done_by_worker BEFORE Execute was done — because the fan-out
+      // emitted no dependency hints, all three queued concurrently and
+      // AutoClaim could pick any. Subscriber must resolve a planner-
+      // emitted `dependsOnTitles` into the canonical `WorkItem.dependsOn`
+      // (id list) AND set status='blocked' on the dependent so the
+      // pool's blocker-resolver gates the claim until the parent terminates.
+      const seedLocal: Map<string, Request> = new Map();
+      const planMock = jest.fn(async () => ({
+        message: 'irrelevant',
+        tasks: [
+          {
+            title: 'Plan: foo',
+            description: 'plan it',
+            acceptanceCriteria: ['planned'],
+            priority: 'high' as const,
+          },
+          {
+            title: 'Execute: foo',
+            description: 'do it',
+            acceptanceCriteria: ['done'],
+            priority: 'high' as const,
+            dependsOnTitles: ['Plan: foo'],
+          },
+          {
+            title: 'Review: foo',
+            description: 'check it',
+            acceptanceCriteria: ['reviewed'],
+            priority: 'low' as const,
+            dependsOnTitles: ['Execute: foo'],
+          },
+        ],
+        reasoning: 'sequential 3-step',
+        strategy: 'generic' as const,
+      }));
+      const fakeRequestService = {
+        getById: async (id: string) => seedLocal.get(id) ?? null,
+        plan: planMock,
+      } as unknown as RequestService;
+      const localPool = makeFakeTaskPool();
+      const localBus = makeFakeEventBus();
+      const localSub = new RequestDecomposeSubscriber({
+        eventBus: localBus,
+        requestService: fakeRequestService,
+        taskPool: localPool,
+        logger: SILENT_LOGGER,
+      });
+      const r = makeRequest();
+      seedLocal.set(r.id, r);
+      localSub.start();
+      await deliverRequestCreated(localBus, r.id);
+      await localSub.flushPending();
+
+      const queued = (localPool as unknown as { queued: WorkItem[] }).queued;
+      expect(queued).toHaveLength(3);
+
+      const planWi = queued.find((w) => w.title === 'Plan: foo');
+      const executeWi = queued.find((w) => w.title === 'Execute: foo');
+      const reviewWi = queued.find((w) => w.title === 'Review: foo');
+      expect(planWi).toBeDefined();
+      expect(executeWi).toBeDefined();
+      expect(reviewWi).toBeDefined();
+
+      // Plan: starts unblocked. `dependsOn` may be unset (undefined) or
+      // empty array — `createWorkItem` factory chooses one shape and we
+      // accept both since the *behaviour* is "no blockers".
+      expect(planWi!.status).toBe('queued');
+      const planDeps = planWi!.dependsOn ?? [];
+      expect(planDeps).toEqual([]);
+
+      // Execute: blocked by Plan's id.
+      expect(executeWi!.status).toBe('blocked');
+      expect(executeWi!.dependsOn).toEqual([planWi!.id]);
+
+      // Review: blocked by Execute's id (NOT by Plan — that's the
+      // specific shape the dogfood bug needed to fail before the fix).
+      expect(reviewWi!.status).toBe('blocked');
+      expect(reviewWi!.dependsOn).toEqual([executeWi!.id]);
+    });
   });
 
   // -------------------------------------------------------------------------

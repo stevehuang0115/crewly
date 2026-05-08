@@ -924,6 +924,23 @@ export interface PlannedTask {
   acceptanceCriteria: string[];
   /** Task priority */
   priority: 'high' | 'medium' | 'low';
+  /**
+   * Titles of other planned tasks this one depends on. The fan-out caller
+   * (request-decompose subscriber, mission executor) is expected to map
+   * these titles to the resolved WorkItem IDs and write them into
+   * `WorkItem.dependsOn` before queueing.
+   *
+   * **Why titles, not indices.** Titles survive plan() reordering and
+   * make the dependency intent self-documenting in the plan output.
+   *
+   * **Sequential plans.** A planner that wants strict A→B→C ordering
+   * sets `B.dependsOnTitles = [A.title]` and `C.dependsOnTitles = [B.title]`.
+   * Without this, all three tasks queue concurrently and a worker can
+   * claim Review before Execute is done — observed in the 2026-05-08
+   * dogfood, where Sam claimed Review while Plan/Execute were still
+   * blocked.
+   */
+  dependsOnTitles?: string[];
 }
 
 /**
@@ -1099,9 +1116,19 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
     }];
   }
 
+  // Generic Plan → Execute → Review chain. Strict sequential dependency
+  // is encoded via `dependsOnTitles` so the fan-out subscriber writes
+  // `WorkItem.dependsOn` correctly: Execute waits for Plan, Review waits
+  // for Execute. Without these, all three queue concurrently and a
+  // worker can claim Review before Execute completes — observed in the
+  // 2026-05-08 dogfood (Sam claimed Review with empty output while Plan
+  // and Execute were still blocked).
+  const planTitle = `Plan: ${truncate(objective, 60)}`;
+  const executeTitle = `Execute: ${truncate(objective, 60)}`;
+  const reviewTitle = `Review: ${truncate(objective, 60)}`;
   return [
     {
-      title: `Plan: ${truncate(objective, 60)}`,
+      title: planTitle,
       description: `Create an execution plan for: ${objective}. Break down the work into concrete steps.`,
       acceptanceCriteria: [
         'Execution plan created',
@@ -1111,7 +1138,7 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
       priority: 'high',
     },
     {
-      title: `Execute: ${truncate(objective, 60)}`,
+      title: executeTitle,
       description: `Execute the plan for: ${objective}. Complete all steps identified in the planning phase.`,
       acceptanceCriteria: [
         'All planned steps completed',
@@ -1119,9 +1146,10 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
         'Build passes',
       ],
       priority: 'high',
+      dependsOnTitles: [planTitle],
     },
     {
-      title: `Review: ${truncate(objective, 60)}`,
+      title: reviewTitle,
       description: `Review the completed work for: ${objective}. Verify quality, completeness, and alignment with the original objective.`,
       acceptanceCriteria: [
         'Work reviewed for quality',
@@ -1129,6 +1157,7 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
         'Documentation updated if needed',
       ],
       priority: 'low',
+      dependsOnTitles: [executeTitle],
     },
   ];
 }

@@ -365,16 +365,52 @@ export class RequestDecomposeSubscriber {
     // restart-replay.
     this.decomposedRequestIds.add(requestId);
 
+    // Two-pass fan-out so `dependsOnTitles` can be resolved to WorkItem IDs:
+    //   Pass 1 — build all WorkItems (without resolved deps) so we have a
+    //            complete title→id map.
+    //   Pass 2 — for each task with `dependsOnTitles`, look up the matching
+    //            WorkItem ids and write them into `wi.dependsOn` (canonical
+    //            field). Items that depend on something also flip to status
+    //            'blocked' so they don't get claimed before their dependency
+    //            completes (mirrors mission-executor's PR #491 fix).
+    //   Pass 3 — addToPool in plan order. Mission-executor takes the same
+    //            shape; symmetrising here means the pool always sees a
+    //            self-consistent dependency graph at insertion time.
     const queuedIds: string[] = [];
+    const titleToId = new Map<string, string>();
+    const builtItems: WorkItem[] = [];
+
+    // Pass 1: build (no deps)
     for (const task of plan.tasks) {
       const wi = this.buildWorkItemFromTask(task, request);
+      builtItems.push(wi);
+      titleToId.set(task.title, wi.id);
+    }
+
+    // Pass 2: resolve dependsOnTitles → dependsOn (id list) + status='blocked'
+    for (let i = 0; i < plan.tasks.length; i++) {
+      const task = plan.tasks[i];
+      const wi = builtItems[i];
+      if (!task.dependsOnTitles || task.dependsOnTitles.length === 0) continue;
+      const blockedByIds = task.dependsOnTitles
+        .map((title) => titleToId.get(title))
+        .filter((id): id is string => id !== undefined);
+      if (blockedByIds.length > 0) {
+        wi.dependsOn = blockedByIds;
+        wi.status = 'blocked';
+      }
+    }
+
+    // Pass 3: addToPool. Insert in plan order so the dependency-resolver
+    // sees parents before children at the moment of insertion.
+    for (const wi of builtItems) {
       try {
         await this.taskPool.addToPool(wi);
         queuedIds.push(wi.id);
       } catch (err) {
         this.logger.warn('addToPool failed during auto-decompose (non-fatal)', {
           requestId,
-          taskTitle: task.title,
+          taskTitle: wi.title,
           error: err instanceof Error ? err.message : String(err),
         });
       }
