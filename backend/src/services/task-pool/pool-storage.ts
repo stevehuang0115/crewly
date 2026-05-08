@@ -97,39 +97,62 @@ export class PoolStorage {
   /**
    * Loads pool data from disk (or returns cached copy).
    *
-   * @returns Current pool data
+   * **F-CYCLE7-3 (2026-05-07):** Normalizes legacy / partial on-disk
+   * shapes — if a previous write produced a `pool.json` missing the
+   * `workItems` or `claims` arrays (root cause of the post-restart
+   * `Cannot read properties of undefined (reading 'filter')` storm in
+   * `ReconcilerDataProvider`), we coerce the missing slots to `[]`
+   * before caching so every downstream consumer can rely on the
+   * `PoolData` invariant.
+   *
+   * @returns Current pool data with `workItems` and `claims` guaranteed to be arrays
    */
   async load(): Promise<PoolData> {
     if (this.cache) return this.cache;
 
     await ensureDir(path.dirname(this.filePath));
-    const data = await safeReadJson<PoolData>(
+    const raw = await safeReadJson<PoolData>(
       this.filePath,
       createEmptyPoolData(),
       this.logger,
     );
-    this.cache = data;
-    return data;
+    // Defensive normalization. `safeReadJson` round-trips whatever
+    // shape is on disk, so a partial / pre-migration file can produce
+    // `data.workItems === undefined`. Repair to canonical shape once,
+    // here, instead of every read site.
+    const normalized: PoolData = {
+      workItems: Array.isArray(raw?.workItems) ? raw.workItems : [],
+      claims: Array.isArray(raw?.claims) ? raw.claims : [],
+      lastUpdatedAt: raw?.lastUpdatedAt ?? new Date(0).toISOString(),
+    };
+    this.cache = normalized;
+    return normalized;
   }
 
   /**
    * Returns all work items currently in the pool.
    *
+   * Always returns an array — `load()` normalizes a missing
+   * `workItems` field to `[]` (F-CYCLE7-3).
+   *
    * @returns Array of WorkItems
    */
   async getWorkItems(): Promise<WorkItem[]> {
     const data = await this.load();
-    return data.workItems;
+    return data.workItems ?? [];
   }
 
   /**
    * Returns all claims.
    *
+   * Always returns an array — `load()` normalizes a missing `claims`
+   * field to `[]` (F-CYCLE7-3).
+   *
    * @returns Array of TaskClaims
    */
   async getClaims(): Promise<TaskClaim[]> {
     const data = await this.load();
-    return data.claims;
+    return data.claims ?? [];
   }
 
   /**

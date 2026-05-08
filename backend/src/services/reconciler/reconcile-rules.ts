@@ -497,9 +497,28 @@ export function cascadeCancelChildren(
  * Detects WorkItems that have been in 'queued' status for too long
  * without being picked up. These may indicate assignment problems.
  *
+ * **F-CYCLE7-3 fix (2026-05-07):** Previously emitted `queued → queued`
+ * which is *not* a valid transition per the canonical
+ * {@link WORK_ITEM_TRANSITIONS} table — every emitted correction was
+ * rejected by `StorageService` with `Invalid status transition: queued →
+ * queued`, generating reconciler-error noise that hid real signal. The
+ * comment "Don't change status, just flag for audit" assumed an
+ * audit-only path that doesn't exist: `applyCorrection()` always calls
+ * `pool.updateItemStatus()` which validates against the transition
+ * table.
+ *
+ * **Canonical state machine** (`backend/src/types/v2/work-item.types.ts`):
+ *   `queued` → one of `{ running, proposed, scheduled, cancelled }`.
+ *
+ * `'expired'` is *not* a valid `WorkItemStatus` (see `WORK_ITEM_STATUSES`),
+ * despite earlier reconciler briefs occasionally suggesting it. Of the
+ * canonical options, `cancelled` is the only terminal status reachable
+ * from `queued`, and is the correct semantic for "queued > threshold,
+ * never picked up — work was abandoned."
+ *
  * @param workItems - All WorkItems to check
  * @param staleThresholdMs - How long in queued before considered stale (default: 1h)
- * @returns Corrections for stale queued WorkItems
+ * @returns Corrections for stale queued WorkItems (transition: queued → cancelled)
  */
 export function detectStaleQueuedWorkItems(
   workItems: WorkItem[],
@@ -520,7 +539,9 @@ export function detectStaleQueuedWorkItems(
         entityType: 'work_item',
         entityId: wi.id,
         previousState: 'queued',
-        newState: 'queued', // Don't change status, just flag for audit
+        // queued → cancelled is the canonical valid transition for an
+        // abandoned-in-queue WorkItem. See WORK_ITEM_TRANSITIONS.
+        newState: 'cancelled',
         reason: `WorkItem has been queued for ${Math.round(waitTime / 60000)} minutes without pickup`,
         evidence: `Created at ${wi.createdAt}, waiting for ${Math.round(waitTime / 60000)}m (threshold: ${Math.round(staleThresholdMs / 60000)}m)`,
       }));

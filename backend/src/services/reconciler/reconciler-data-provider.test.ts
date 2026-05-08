@@ -181,6 +181,65 @@ describe('LiveReconcilerDataProvider', () => {
       expect(result).toEqual(claims);
       expect(mockPool.getActiveClaims).toHaveBeenCalledTimes(1);
     });
+
+    // F-CYCLE7-3 (2026-05-07) — post-restart hydration safety.
+    // Reproduces the prod 11:19→11:21Z error storm: when storage was
+    // not yet hydrated, the inner pool method threw "Cannot read
+    // properties of undefined (reading 'filter')" every 10s.
+    describe('F-CYCLE7-3: post-restart null-safety', () => {
+      it('returns [] without throwing when pool returns undefined (pre-hydration)', async () => {
+        mockPool.getActiveClaims.mockResolvedValue(undefined as any);
+
+        const result = await provider.getActiveClaims();
+
+        expect(result).toEqual([]);
+      });
+
+      it('returns [] without throwing when pool returns null', async () => {
+        mockPool.getActiveClaims.mockResolvedValue(null as any);
+
+        const result = await provider.getActiveClaims();
+
+        expect(result).toEqual([]);
+      });
+
+      it('returns [] when pool throws TypeError("Cannot read properties of undefined (reading filter)")', async () => {
+        // Exact V8 error shape from the prod log storm.
+        mockPool.getActiveClaims.mockRejectedValue(
+          new TypeError("Cannot read properties of undefined (reading 'filter')"),
+        );
+
+        const result = await provider.getActiveClaims();
+
+        expect(result).toEqual([]);
+      });
+
+      it('demotes storage-not-ready error to debug log (no error log)', async () => {
+        // Capture the logger this provider was given.
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+        const debugSpy = jest.spyOn((provider as any).logger, 'debug');
+
+        mockPool.getActiveClaims.mockRejectedValue(
+          new TypeError("Cannot read properties of undefined (reading 'filter')"),
+        );
+
+        await provider.getActiveClaims();
+
+        expect(errorSpy).not.toHaveBeenCalled();
+        expect(debugSpy).toHaveBeenCalled();
+      });
+
+      it('still logs at error level for genuine failures (non-hydration errors)', async () => {
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+
+        mockPool.getActiveClaims.mockRejectedValue(new Error('Database connection refused'));
+
+        const result = await provider.getActiveClaims();
+
+        expect(result).toEqual([]);
+        expect(errorSpy).toHaveBeenCalled();
+      });
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -343,6 +402,51 @@ describe('LiveReconcilerDataProvider', () => {
       const result = await provider.getAvailablePoolItems();
 
       expect(result).toEqual(items);
+    });
+
+    // F-CYCLE7-3 (2026-05-07) — post-restart hydration safety.
+    describe('F-CYCLE7-3: post-restart null-safety', () => {
+      it('returns [] without throwing when pool returns undefined', async () => {
+        mockPool.getAvailableItems.mockResolvedValue(undefined as any);
+
+        const result = await provider.getAvailablePoolItems();
+
+        expect(result).toEqual([]);
+      });
+
+      it('returns [] when pool throws "Cannot read properties of undefined (reading filter)"', async () => {
+        mockPool.getAvailableItems.mockRejectedValue(
+          new TypeError("Cannot read properties of undefined (reading 'filter')"),
+        );
+
+        const result = await provider.getAvailablePoolItems();
+
+        expect(result).toEqual([]);
+      });
+
+      it('demotes storage-not-ready error to debug log', async () => {
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+        const debugSpy = jest.spyOn((provider as any).logger, 'debug');
+
+        mockPool.getAvailableItems.mockRejectedValue(
+          new TypeError("Cannot read properties of undefined (reading 'filter')"),
+        );
+
+        await provider.getAvailablePoolItems();
+
+        expect(errorSpy).not.toHaveBeenCalled();
+        expect(debugSpy).toHaveBeenCalled();
+      });
+
+      it('still logs error for genuine failures', async () => {
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+
+        mockPool.getAvailableItems.mockRejectedValue(new Error('Disk full'));
+
+        await provider.getAvailablePoolItems();
+
+        expect(errorSpy).toHaveBeenCalled();
+      });
     });
   });
 
