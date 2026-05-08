@@ -1142,7 +1142,12 @@ class ApiService {
   }
 
   async getWorkItems(): Promise<unknown[]> {
-    const response = await axios.get<ApiResponse<unknown[]>>(`${API_BASE}/task-pool/all`);
+    // Use `/items` (audit-shaped) not `/all` (claimable-only). The `/all`
+    // alias filters to queued+unclaimed, which hides done/blocked/running/
+    // cancelled WIs — breaking the WorkItems page and the Request detail
+    // execution timeline (where users need to see the full progress
+    // history, including completed and in-flight items).
+    const response = await axios.get<ApiResponse<unknown[]>>(`${API_BASE}/task-pool/items`);
     return response.data.data || [];
   }
 

@@ -185,14 +185,17 @@ export function emitChatV2RequestCreated(
       const existing = await svc.findBySourceConversationItemId(sourceId);
       if (existing) return;
 
-      const { generateRequestTitle } = await import('../../services/v3/v3-data.service.js');
+      const { generateRequestTitle, classifyIntent } = await import('../../services/v3/v3-data.service.js');
       const rawText = message.content || '';
+      const { intentLevel, intentCategory } = classifyIntent(rawText);
       await svc.create({
-        title: generateRequestTitle(rawText, 'other'),
+        title: generateRequestTitle(rawText, intentCategory),
         description: rawText,
         sourceConversationItemId: sourceId,
         priority: 'normal',
         tags: ['chat-v2'],
+        intentLevel,
+        intentCategory,
       });
     } catch {
       // Non-critical — Request creation failure must not break chat send.

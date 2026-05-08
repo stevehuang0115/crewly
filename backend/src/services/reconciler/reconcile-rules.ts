@@ -738,6 +738,16 @@ export function detectUnclaimedTasks(
       score: bestAgent.score,
       scoreBreakdown: bestAgent.breakdown,
       triggeredAt: new Date().toISOString(),
+      // Propagate team identifiers so the wake-action HTTP call can hit
+      // `/api/teams/:teamId/members/:memberId/start` (the only registered
+      // route). Without these, the data-provider falls back to
+      // `/api/teams/members/start` which has no router match — the server
+      // matches the catch-all `/:teamId/members/:memberId/start` with
+      // teamId="members", memberId="start", and returns 404 "Team not
+      // found". This silent breakage made hybrid-wake a no-op for
+      // inactive team members across the entire fleet.
+      teamId: bestAgent.agent.teamId,
+      memberId: bestAgent.agent.memberId,
     });
 
     unclaimedWorkItemIds.push(wi.id);

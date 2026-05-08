@@ -386,4 +386,125 @@ describe('V3 pipeline E2E', () => {
       }
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Scenario 3: Slack-shaped Request (no explicit intent) → auto-classify → WIs
+  //
+  // Regression gate for the silent Slack/chat ingress bug (2026-05-06): the
+  // Slack bridge + chat controllers called `RequestService.create()` without
+  // passing `intentLevel` / `intentCategory`, leaving them at the L1+other
+  // default. The decompose subscriber's filter (`L2` + actionable category)
+  // then skipped every Slack-originated Request, so the orc-reply SLA path
+  // immediately auto-closed the Request with zero WorkItems queued.
+  //
+  // Fix: `RequestService.create` auto-classifies via `classifyIntent` when
+  // the caller omits the intent fields. This test pins that contract from the
+  // outside — if the backstop is removed or the classifier returns L1/other
+  // for an obviously-actionable description, the entire Slack→worker path
+  // reverts to silent-skip and this test will fail.
+  // ---------------------------------------------------------------------------
+
+  describe('Slack-shaped Request → auto-classify → WIs → dispatch', () => {
+    it('classifies an unscored inbound Request and decomposes it into WorkItems', async () => {
+      const fixture = await buildFixture();
+      try {
+        // 1) Create a Request the way the Slack/chat ingress does it pre-fix:
+        //    no intentLevel, no intentCategory. The description is the actual
+        //    user-message shape that previously regressed — multi-spec
+        //    delegation language matching the L2 file-extension trigger AND
+        //    the planning category. If the service-layer classifier wires up
+        //    correctly, this lands as L2+planning and the decompose subscriber
+        //    accepts it.
+        const request = await fixture.requestService.create({
+          sourceConversationItemId: 'slack-D0AC7NF5N7L-1778119901.952909',
+          title: '[Request] arrange the team to work on these designs',
+          description:
+            'Can the team take on these two design specs? Please plan, ' +
+            'implement, and verify the work end-to-end.\n' +
+            '- ./specs/2026-05-03-agent-improvement-plan.md\n' +
+            '- ./specs/2026-05-03-agent-improvement-p0-execution.md',
+          tags: ['slack'],
+          // Deliberately NO intentLevel / intentCategory — this is the bug
+          // shape. The service must classify on our behalf.
+        });
+
+        // 2) Service backstop must have populated the intent fields.
+        expect(request.intentLevel).toBe('L2');
+        // The description carries multi-step delegation language ("plan,
+        // implement, and verify") and an actionable spec list — accept any
+        // actionable category the classifier picks (planning is the most
+        // likely, but the contract this test protects is "actionable", not
+        // "planning specifically"). Pinning to a single category would make
+        // the test brittle to classifier-tuning landings.
+        expect(['planning', 'code_change', 'research', 'debugging', 'deployment'])
+          .toContain(request.intentCategory);
+
+        // 3) The decompose subscriber should have accepted the request and
+        //    queued at least one WorkItem. Pre-fix: this assertion was the
+        //    silent failure point — items.length stayed at 0 forever and the
+        //    SLA path closed the Request with no children.
+        await waitFor(async () => {
+          const items = await fixture.taskPool.getAllItems();
+          return items.some((wi) => wi.requestId === request.id);
+        });
+        const decomposed = (await fixture.taskPool.getAllItems()).filter(
+          (wi) => wi.requestId === request.id,
+        );
+        expect(decomposed.length).toBeGreaterThan(0);
+
+        // 4) Trigger the autonomy loop and confirm AutoClaim picks one up
+        //    and dispatches. This proves the full Slack→worker chain is
+        //    reachable from a no-intent inbound Request.
+        fixture.bus.publish({
+          id: 'evt-idle-slack',
+          type: 'agent:idle',
+          timestamp: new Date().toISOString(),
+          teamId: 't',
+          teamName: 't',
+          memberId: 'm',
+          memberName: 'm',
+          sessionName: 'dev-1',
+          previousValue: 'in_progress',
+          newValue: 'idle',
+          changedField: 'workingStatus',
+        });
+
+        await waitFor(() => dispatchCallsFor('dev-1').length > 0);
+        expect(dispatchCallsFor('dev-1').length).toBeGreaterThanOrEqual(1);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+
+    it('preserves explicit intent values when caller passes them (no overwrite)', async () => {
+      const fixture = await buildFixture();
+      try {
+        // The classifier would say L2+deployment for this description, but
+        // an explicit caller (e.g. an orc that already classified) should
+        // win. This test guards the "explicit > heuristic" precedence rule
+        // in the service-layer fallback.
+        const request = await fixture.requestService.create({
+          sourceConversationItemId: 'explicit-1',
+          title: 'pinned',
+          description: 'Deploy the build to the staging environment now',
+          intentLevel: 'L1',
+          intentCategory: 'communication',
+        });
+        expect(request.intentLevel).toBe('L1');
+        expect(request.intentCategory).toBe('communication');
+
+        // Filter must skip — non-actionable category. No WIs should land.
+        await new Promise<void>((res) => {
+          const t = setTimeout(res, 50);
+          t.unref?.();
+        });
+        const items = (await fixture.taskPool.getAllItems()).filter(
+          (wi) => wi.requestId === request.id,
+        );
+        expect(items.length).toBe(0);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  });
 });

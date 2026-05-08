@@ -487,13 +487,21 @@ export class SlackOrchestratorBridge extends EventEmitter {
                 return;
               }
 
-              const { generateRequestTitle } = await import('../v3/v3-data.service.js');
+              const { generateRequestTitle, classifyIntent } = await import('../v3/v3-data.service.js');
+              // Auto-classify so request-decompose.subscriber sees correct
+              // intentLevel/intentCategory. Without this, every Slack-auto
+              // Request defaulted to L1+other and was never decomposed
+              // into delegation WorkItems — the entire Slack→WorkItem
+              // pipeline was silently no-op.
+              const { intentLevel, intentCategory } = classifyIntent(rawText);
               const request = await svc.create({
-                title: generateRequestTitle(rawText, 'other'),
+                title: generateRequestTitle(rawText, intentCategory),
                 description: rawText,
                 sourceConversationItemId: msgId,
                 priority: 'normal',
                 tags: ['slack'],
+                intentLevel,
+                intentCategory,
               });
               // P2-2: RequestTracker.setActiveRequest write removed. The
               // companion read in v3-data.service.ts no longer falls back

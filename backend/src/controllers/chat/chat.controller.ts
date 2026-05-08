@@ -106,13 +106,16 @@ export async function sendMessage(
         // Deduplicate: one Request per conversation message
         const existing = await requestSvc.findBySourceConversationItemId(result.message.id);
         if (!existing) {
-          const { generateRequestTitle } = await import('../../services/v3/v3-data.service.js');
+          const { generateRequestTitle, classifyIntent } = await import('../../services/v3/v3-data.service.js');
+          const { intentLevel, intentCategory } = classifyIntent(content);
           const request = await requestSvc.create({
-            title: generateRequestTitle(content, 'other'),
+            title: generateRequestTitle(content, intentCategory),
             description: content,
             sourceConversationItemId: result.message.id,
             priority: 'normal',
             tags: ['chat-ui'],
+            intentLevel,
+            intentCategory,
           });
           // P2-2: RequestTracker.setActiveRequest write removed. The
           // companion read in v3-data.service.ts no longer falls back to
