@@ -1,3 +1,22 @@
+---
+name: watch-for-event
+description: Subscribe to a system event (like agent:idle or task:completed) and create a WorkItem every time it fires — reactive follow-up, not time-based.
+version: 1.0.0
+category: followup
+skillType: claude-skill
+tags:
+  - followup
+  - event
+  - reactive
+  - workitem
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
+---
+
 # watch-for-event
 
 Subscribe to a system event (like `agent:idle` or `task:completed`) and create

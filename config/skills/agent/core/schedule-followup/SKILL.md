@@ -1,3 +1,22 @@
+---
+name: schedule-followup
+description: Schedule a future check-in that creates a WorkItem for you or another agent at a specific time (one-shot or bounded recurring).
+version: 1.0.0
+category: followup
+skillType: claude-skill
+tags:
+  - followup
+  - schedule
+  - cron
+  - workitem
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
+---
+
 # schedule-followup
 
 Schedule a future check-in that creates a WorkItem for you or another agent.

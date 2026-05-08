@@ -1,3 +1,21 @@
+---
+name: cancel-followup
+description: Cancel a follow-up trigger previously created with `schedule-followup` or `watch-for-event`, by trigger id or by team-scoped name.
+version: 1.0.0
+category: followup
+skillType: claude-skill
+tags:
+  - followup
+  - trigger
+  - lifecycle
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
+---
+
 # cancel-followup
 
 Cancel a follow-up trigger you previously created with `schedule-followup` or

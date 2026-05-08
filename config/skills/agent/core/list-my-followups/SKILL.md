@@ -1,3 +1,21 @@
+---
+name: list-my-followups
+description: List every follow-up trigger owned by your team — call before creating a new watcher to avoid duplicates, or when auditing why something keeps firing.
+version: 1.0.0
+category: followup
+skillType: claude-skill
+tags:
+  - followup
+  - trigger
+  - audit
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
+---
+
 # list-my-followups
 
 List every follow-up trigger owned by your team. Call this **before** creating

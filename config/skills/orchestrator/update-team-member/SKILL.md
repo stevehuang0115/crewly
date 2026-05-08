@@ -1,3 +1,23 @@
+---
+name: update-team-member
+description: Update a team member's properties — name, role, runtimeType, systemPrompt — via the team membership API.
+version: 1.0.0
+category: team
+skillType: claude-skill
+assignableRoles:
+  - orchestrator
+tags:
+  - team
+  - member
+  - admin
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
+---
+
 # update-team-member
 
 Update a team member's properties including name, role, runtimeType, systemPrompt, and other attributes.
