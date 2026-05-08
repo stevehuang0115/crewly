@@ -30,6 +30,7 @@ import { CloudPortal } from './pages/CloudPortal';
 import { Missions } from './pages/Missions';
 import { MissionDetail } from './pages/MissionDetail';
 import { WorkItems } from './pages/WorkItems';
+import { WorkItemDetail } from './pages/WorkItemDetail';
 import { RequestsPage } from './pages/RequestsPage';
 import { RequestDetail } from './pages/RequestDetail';
 
@@ -93,7 +94,7 @@ function App() {
               <Route path="missions" element={<Missions />} />
               <Route path="missions/:id" element={<MissionDetail />} />
               <Route path="workitems" element={<WorkItems />} />
-              <Route path="workitems/:id" element={<WorkItems />} />
+              <Route path="workitems/:id" element={<WorkItemDetail />} />
 
               <Route
                 path="chat"
