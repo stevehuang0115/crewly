@@ -17,6 +17,7 @@
 import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createBareModuleRequire } from '../../utils/node-require.utils.js';
+import { loadNativeAddonOrFatal } from '../../utils/native-binding.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
@@ -42,21 +43,24 @@ const nodeRequire = createBareModuleRequire(
 let _BetterSqlite3: typeof import('better-sqlite3') | null = null;
 
 /**
- * Load `better-sqlite3` on demand. Throws a clear error if the native
- * addon cannot be loaded (a common symptom after Node upgrades).
+ * Load `better-sqlite3` on demand.
+ *
+ * F-CYCLE7-1: native-addon failures matching dlopen / arch-mismatch /
+ * ABI patterns are escalated to {@link NativeBindingFatalError} via
+ * {@link loadNativeAddonOrFatal}, so the gateway-layer try/catch in
+ * `backend/src/index.ts` can rethrow them and crash boot rather than
+ * downgrade silently. Non-arch errors (`Cannot find module`, etc.)
+ * bubble up unchanged.
  *
  * @returns The lazily-imported better-sqlite3 module
+ * @throws {NativeBindingFatalError} on dlopen / arch / ABI mismatches
  */
 function getBetterSqlite3(): typeof import('better-sqlite3') {
   if (!_BetterSqlite3) {
-    try {
-      _BetterSqlite3 = nodeRequire('better-sqlite3');
-    } catch (err) {
-      throw new Error(
-        'better-sqlite3 native module failed to load. Run `npm rebuild better-sqlite3` to fix. ' +
-          `Original error: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    _BetterSqlite3 = loadNativeAddonOrFatal<typeof import('better-sqlite3')>(
+      'better-sqlite3',
+      nodeRequire,
+    );
   }
   return _BetterSqlite3!;
 }
