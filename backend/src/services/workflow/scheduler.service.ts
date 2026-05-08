@@ -9,7 +9,7 @@
 
 import { EventEmitter } from 'events';
 import * as path from 'path';
-import { readdir, unlink } from 'fs/promises';
+import { readdir, unlink, stat } from 'fs/promises';
 import { ScheduledCheck } from '../../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 import * as cron from 'node-cron';
@@ -1648,17 +1648,53 @@ export class SchedulerService extends EventEmitter {
       // #217: Broadened to match ALL atomicWriteFile temp files (*.tmp.{timestamp}.{random})
       const tmpPattern = /\.tmp\.\d+\./;
 
+      // 2026-05-08: Add an mtime guard so the cleanup does not race with
+      // an in-flight atomicWrite. The race symptom was a recurring
+      // `SessionPersistence: Failed to auto-save session state | ENOENT:
+      // rename '.../session-state.json.tmp.xxx' -> 'session-state.json'`
+      // every backend boot — atomicWriteJson would create the .tmp file,
+      // and this cleanup pass (also running at boot) would unlink it
+      // milliseconds before the rename. Treat anything younger than the
+      // grace window as still-in-flight; only files older than that are
+      // truly orphaned (i.e. left behind by a previous crashed process).
+      //
+      // 60s is large enough to absorb the longest plausible
+      // create-then-rename interval (atomic writes complete in <1ms; we
+      // pick 60s to also tolerate a stalled writer), small enough that
+      // a true crash leftover from a prior boot still gets cleaned on
+      // the next boot.
+      const STALE_TMP_GRACE_MS = 60_000;
+      const now = Date.now();
+
       for (const entry of entries) {
-        if (tmpPattern.test(entry)) {
-          try {
-            await unlink(path.join(crewlyHome, entry));
-            cleaned++;
-          } catch (unlinkErr) {
-            this.logger.debug('Failed to remove stale temp file', {
-              file: entry,
-              error: unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr),
-            });
+        if (!tmpPattern.test(entry)) continue;
+        const fullPath = path.join(crewlyHome, entry);
+
+        // mtime guard — skip recent tmp files (in-flight writes).
+        try {
+          const st = await stat(fullPath);
+          if (now - st.mtimeMs < STALE_TMP_GRACE_MS) {
+            continue;
           }
+        } catch (statErr) {
+          // The file disappeared between readdir and stat (unlikely
+          // but possible if another worker won the race). Skip — there
+          // is nothing left for us to clean.
+          this.logger.debug('Failed to stat tmp file (likely already removed)', {
+            file: entry,
+            error: statErr instanceof Error ? statErr.message : String(statErr),
+          });
+          continue;
+        }
+
+        try {
+          await unlink(fullPath);
+          cleaned++;
+        } catch (unlinkErr) {
+          this.logger.debug('Failed to remove stale temp file', {
+            file: entry,
+            error: unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr),
+          });
         }
       }
 

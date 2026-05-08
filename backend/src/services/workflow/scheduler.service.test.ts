@@ -2150,6 +2150,67 @@ describe('SchedulerService', () => {
 
       cleanupSpy.mockRestore();
     });
+
+    // 2026-05-08: mtime-guarded cleanup, real fs (mocking ESM imports of
+    // fs/promises is unreliable post-instantiation). The bug we're
+    // protecting against is the cleanup deleting a tmp file that another
+    // atomicWriteJson call just created and is about to rename — observed
+    // in the dogfood as recurring `SessionPersistence: ENOENT` warnings
+    // every backend boot.
+    describe('mtime-guarded cleanup (race fix)', () => {
+      const fs = require('fs/promises');
+      const realPath = require('path');
+      const os = require('os');
+      let realTmpDir: string;
+
+      beforeEach(async () => {
+        realTmpDir = await fs.mkdtemp(realPath.join(os.tmpdir(), 'cleanup-mtime-'));
+        (mockStorageService as any).getCrewlyHome = jest.fn().mockReturnValue(realTmpDir);
+      });
+
+      afterEach(async () => {
+        await fs.rm(realTmpDir, { recursive: true, force: true });
+      });
+
+      it('skips tmp files younger than the grace window (in-flight writes)', async () => {
+        // Create a tmp file with a fresh mtime — simulates an
+        // atomicWriteJson call that just created its scratch file and is
+        // about to rename. The cleanup pass must NOT delete it; the
+        // race symptom was exactly that delete causing the rename to ENOENT.
+        const tmp = realPath.join(realTmpDir, 'session-state.json.tmp.9999.fresh');
+        await fs.writeFile(tmp, 'in-flight');
+
+        const cleaned = await service.cleanupStaleTempFiles();
+        expect(cleaned).toBe(0);
+
+        const stillExists = await fs.access(tmp).then(() => true).catch(() => false);
+        expect(stillExists).toBe(true);
+      });
+
+      it('cleans up tmp files older than the grace window (real orphans from prior crash)', async () => {
+        const tmp = realPath.join(realTmpDir, 'recurring-checks.json.tmp.1.crashed');
+        await fs.writeFile(tmp, 'orphan');
+        // Backdate mtime by 5 minutes (well past the 60s grace).
+        const fiveMinAgo = new Date(Date.now() - 5 * 60_000);
+        await fs.utimes(tmp, fiveMinAgo, fiveMinAgo);
+
+        const cleaned = await service.cleanupStaleTempFiles();
+        expect(cleaned).toBe(1);
+
+        const stillExists = await fs.access(tmp).then(() => true).catch(() => false);
+        expect(stillExists).toBe(false);
+      });
+
+      it('handles a tmp file that disappeared mid-scan (other-worker race) without throwing', async () => {
+        // Create then delete inside the same tick — readdir saw it,
+        // stat will fail. Cleanup should swallow + continue.
+        const tmp = realPath.join(realTmpDir, 'projects.json.tmp.2.gone');
+        await fs.writeFile(tmp, 'x');
+        await fs.unlink(tmp);
+
+        await expect(service.cleanupStaleTempFiles()).resolves.toBeDefined();
+      });
+    });
   });
 
   describe('memory pressure handling', () => {
