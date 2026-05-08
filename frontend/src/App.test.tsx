@@ -38,6 +38,8 @@ vi.mock('./pages/RequestsPage', () => ({ RequestsPage: () => <div>Requests Page<
 vi.mock('./pages/WorkItems', () => ({ WorkItems: () => <div>WorkItems Page</div> }));
 vi.mock('./pages/WorkItemDetail', () => ({ WorkItemDetail: () => <div>WorkItem Detail Page</div> }));
 vi.mock('./pages/Missions', () => ({ Missions: () => <div>Missions Page</div> }));
+vi.mock('./pages/MissionDetail', () => ({ MissionDetail: () => <div>Mission Detail Page</div> }));
+vi.mock('./pages/RequestDetail', () => ({ RequestDetail: () => <div>Request Detail Page</div> }));
 
 // Phase B Slack-like multi-team chat — mounted at /team-chat.
 vi.mock('./components/Chat-team', () => ({
@@ -60,5 +62,25 @@ describe('App routes', () => {
     render(<App />);
 
     expect(await screen.findByTestId('team-chat-route')).toBeInTheDocument();
+  });
+
+  it('mounts WorkItemDetail (not the list) at /workitems/:id', async () => {
+    // Pre-fix the route mounted the list `<WorkItems />` for both /workitems
+    // and /workitems/:id, so clicking a row navigated but rendered the
+    // same list page. The detail component must own the :id route.
+    window.history.pushState({}, '', '/workitems/abc-123');
+
+    render(<App />);
+
+    expect(await screen.findByText('WorkItem Detail Page')).toBeInTheDocument();
+    expect(screen.queryByText('WorkItems Page')).not.toBeInTheDocument();
+  });
+
+  it('still mounts the WorkItems list at /workitems (no id)', async () => {
+    window.history.pushState({}, '', '/workitems');
+
+    render(<App />);
+
+    expect(await screen.findByText('WorkItems Page')).toBeInTheDocument();
   });
 });
