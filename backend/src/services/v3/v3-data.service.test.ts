@@ -1153,6 +1153,30 @@ describe('planTasksFromObjective', () => {
     expect(tasks[2].title).toContain('Review');
   });
 
+  it('chains Plan → Execute → Review with sequential dependsOnTitles (regression gate)', () => {
+    // 2026-05-08 dogfood: Sam claimed Review and marked done_by_worker
+    // BEFORE Execute was done — because the planner emitted no
+    // dependency hints, all three queued concurrently and AutoClaim
+    // could pick any. Subscriber must now resolve these titles into
+    // `WorkItem.dependsOn` (canonical) so Execute is blocked until
+    // Plan completes, and Review is blocked until Execute completes.
+    const tasks = planTasksFromObjective(
+      'Improve team velocity by 20% and then optimize the reporting pipeline with weekly updates and alerting on regressions',
+    );
+    expect(tasks).toHaveLength(3);
+    expect(tasks[0].title).toContain('Plan');
+    expect(tasks[1].title).toContain('Execute');
+    expect(tasks[2].title).toContain('Review');
+
+    // Plan starts unblocked.
+    expect(tasks[0].dependsOnTitles).toBeUndefined();
+    // Execute waits for Plan.
+    expect(tasks[1].dependsOnTitles).toEqual([tasks[0].title]);
+    // Review waits for Execute (NOT Plan — Sam-bug regression: Review
+    // must not be claimable until Execute is done).
+    expect(tasks[2].dependsOnTitles).toEqual([tasks[1].title]);
+  });
+
   it('should include acceptance criteria on all tasks', () => {
     const tasks = planTasksFromObjective('Create a new API endpoint');
     for (const task of tasks) {
