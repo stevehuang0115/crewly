@@ -14,6 +14,7 @@
 import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createBareModuleRequire } from '../../../utils/node-require.utils.js';
+import { loadNativeAddonOrFatal } from '../../../utils/native-binding.utils.js';
 import { LoggerService, type ComponentLogger } from '../../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
@@ -39,19 +40,64 @@ const nodeRequire = createBareModuleRequire(
 let _BetterSqlite3: typeof import('better-sqlite3') | null = null;
 
 /**
- * Load `better-sqlite3` on demand. Throws a clear error if the native
- * addon cannot be loaded (a common symptom after Node upgrades).
+ * Test-only override for the better-sqlite3 require step. When set,
+ * `getBetterSqlite3()` calls this instead of the real `nodeRequire`,
+ * which lets unit tests simulate a dlopen / arch-mismatch failure
+ * without actually corrupting the installed native binary. Returning
+ * a value is treated as a successful load; throwing is treated as a
+ * load failure and goes through {@link loadNativeAddonOrFatal}'s
+ * fail-fast escalation path.
+ *
+ * Production code MUST NOT touch this — it is exported only for
+ * `chat-db.test.ts` (see `setBetterSqlite3LoaderForTesting`).
+ */
+let _testRequireOverride: ((name: string) => unknown) | null = null;
+
+/**
+ * F-CYCLE7-1: install a test-only stub for the better-sqlite3 loader.
+ *
+ * Pass a function to override; pass `null` to restore the real loader
+ * AND clear the cached `better-sqlite3` reference so the next call
+ * exercises the stub. Tests MUST call this with `null` in `afterEach`
+ * to avoid leaking state across cases.
+ *
+ * @param fn - Stub `require`-like function or `null` to restore real loader
+ */
+export function setBetterSqlite3LoaderForTesting(
+  fn: ((name: string) => unknown) | null,
+): void {
+  _testRequireOverride = fn;
+  _BetterSqlite3 = null;
+}
+
+/**
+ * Load `better-sqlite3` on demand.
+ *
+ * Native-addon failures are escalated to {@link NativeBindingFatalError}
+ * via {@link loadNativeAddonOrFatal} so the boot wiring in
+ * `backend/src/index.ts` can crash the process instead of silently
+ * falling back to the JSON-file chat persistence path. Other errors
+ * (e.g. `Cannot find module 'better-sqlite3'`) bubble up unchanged.
  *
  * @returns The lazily-imported better-sqlite3 module
+ * @throws {NativeBindingFatalError} when the native addon fails with a
+ *   dlopen / arch-mismatch / ABI-version pattern (F-CYCLE7-1).
  */
 function getBetterSqlite3(): typeof import('better-sqlite3') {
   if (!_BetterSqlite3) {
-    try {
-      _BetterSqlite3 = nodeRequire('better-sqlite3');
-    } catch (err) {
-      throw new Error(
-        'better-sqlite3 native module failed to load. Run `npm rebuild better-sqlite3` to fix. ' +
-          `Original error: ${err instanceof Error ? err.message : String(err)}`,
+    if (_testRequireOverride) {
+      // Route the test override through the same fail-fast escalation
+      // helper so the production and test paths share one truth.
+      const stubRequire = ((name: string) =>
+        _testRequireOverride!(name)) as unknown as NodeRequire;
+      _BetterSqlite3 = loadNativeAddonOrFatal<typeof import('better-sqlite3')>(
+        'better-sqlite3',
+        stubRequire,
+      );
+    } else {
+      _BetterSqlite3 = loadNativeAddonOrFatal<typeof import('better-sqlite3')>(
+        'better-sqlite3',
+        nodeRequire,
       );
     }
   }

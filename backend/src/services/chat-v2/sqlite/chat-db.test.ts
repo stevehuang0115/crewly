@@ -4,7 +4,15 @@
  * @module services/chat-v2/sqlite/chat-db.test
  */
 
-import { applyPhaseAColumnUpgrades, openChatDatabase } from './chat-db.js';
+import {
+  applyPhaseAColumnUpgrades,
+  openChatDatabase,
+  setBetterSqlite3LoaderForTesting,
+} from './chat-db.js';
+import {
+  NativeBindingFatalError,
+  isNativeBindingFatalError,
+} from '../../../utils/native-binding.utils.js';
 
 describe('openChatDatabase', () => {
   function openInMemory() {
@@ -354,6 +362,88 @@ describe('openChatDatabase', () => {
       } finally {
         db.close();
       }
+    });
+  });
+
+  /**
+   * F-CYCLE7-1 — fail-fast at boot when better-sqlite3 cannot dlopen.
+   *
+   * Before this fix, an arch-mismatched `better_sqlite3.node` raised a
+   * generic Error here that the chat-v2 WS-gateway init try/catch in
+   * `index.ts` logged as "non-critical" and continued — silently
+   * downgrading chat persistence to the JSON-file fallback in
+   * `~/.crewly/chat/`. The audit on 2026-05-07 §2.1 caught this:
+   * `chat.db` stopped getting writes at 11:17Z and nobody noticed.
+   *
+   * The fix promotes dlopen / arch / ABI errors to
+   * {@link NativeBindingFatalError} so the boot wiring rethrows
+   * (crashing the process) instead of swallowing.
+   */
+  describe('fail-fast on native-arch mismatch (F-CYCLE7-1)', () => {
+    afterEach(() => {
+      // CRITICAL: clear the test-only loader override so the real
+      // better-sqlite3 is used by every other test in this file.
+      setBetterSqlite3LoaderForTesting(null);
+    });
+
+    it('throws NativeBindingFatalError when better-sqlite3 fails with a Mach-O arch error', () => {
+      const dlopenError = new Error(
+        "dlopen .../node_modules/better-sqlite3/build/Release/better_sqlite3.node, 0x0001\n" +
+          "mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e' or 'arm64')",
+      );
+      setBetterSqlite3LoaderForTesting(() => {
+        throw dlopenError;
+      });
+
+      let caught: unknown = null;
+      try {
+        openChatDatabase({ dbPath: ':memory:', inMemory: true });
+      } catch (e) {
+        caught = e;
+      }
+      expect(isNativeBindingFatalError(caught)).toBe(true);
+      const fatal = caught as NativeBindingFatalError;
+      expect(fatal.fatal).toBe(true);
+      expect(fatal.moduleName).toBe('better-sqlite3');
+      expect(fatal.message).toContain('npm rebuild better-sqlite3');
+      // The original dlopen line is preserved in the cause chain so
+      // ops can see exactly which arch combo bit them.
+      expect(fatal.message).toContain('incompatible architecture');
+      expect(fatal.cause).toBe(dlopenError);
+    });
+
+    it('throws NativeBindingFatalError on an ABI / NODE_MODULE_VERSION mismatch', () => {
+      // Captures the post-Node-upgrade case: the binary is for the right
+      // arch but compiled against a different Node ABI. Same fail-fast
+      // contract applies.
+      setBetterSqlite3LoaderForTesting(() => {
+        throw new Error(
+          'The module was compiled against a different Node.js version using NODE_MODULE_VERSION 108',
+        );
+      });
+
+      expect(() =>
+        openChatDatabase({ dbPath: ':memory:', inMemory: true }),
+      ).toThrow(NativeBindingFatalError);
+    });
+
+    it('does NOT escalate "Cannot find module" to NativeBindingFatalError', () => {
+      // Sanity guard: the soft-error path for "package literally not
+      // installed" must keep its existing semantics — we only escalate
+      // recognised dlopen / arch / ABI patterns.
+      const cause = new Error("Cannot find module 'better-sqlite3'");
+      setBetterSqlite3LoaderForTesting(() => {
+        throw cause;
+      });
+
+      let caught: unknown = null;
+      try {
+        openChatDatabase({ dbPath: ':memory:', inMemory: true });
+      } catch (e) {
+        caught = e;
+      }
+      expect(isNativeBindingFatalError(caught)).toBe(false);
+      expect(caught).toBe(cause);
     });
   });
 

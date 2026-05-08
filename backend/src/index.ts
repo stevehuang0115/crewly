@@ -99,6 +99,7 @@ import { RuntimeExitMonitorService } from './services/agent/runtime-exit-monitor
 import { ContextWindowMonitorService } from './services/agent/context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monitor.service.js';
 import { findPackageRoot } from './utils/package-root.js';
+import { isNativeBindingFatalError } from './utils/native-binding.utils.js';
 import { VersionCheckService } from './services/system/version-check.service.js';
 import { LogRotationService } from './services/session/log-rotation.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
@@ -1262,6 +1263,23 @@ export class CrewlyServer {
 					});
 				}
 			} catch (error) {
+				// F-CYCLE7-1: a native-binding failure (e.g. better-sqlite3 built
+				// for the wrong arch) MUST crash the boot rather than be downgraded
+				// to a JSON-file fallback. The audit on 2026-05-07 caught this
+				// exact path: chat.db went stale at 11:17Z because dlopen errors
+				// were swallowed here as "non-critical", so operators had no signal
+				// to run `npm rebuild better-sqlite3 --build-from-source`.
+				//
+				// `isNativeBindingFatalError` matches structurally (not just via
+				// instanceof) so realm-boundary cases — same module loaded via
+				// two require paths — still trip the rethrow.
+				if (isNativeBindingFatalError(error)) {
+					this.logger.error(
+						'FATAL native binding failed at chat-v2 boot — refusing to downgrade to JSON fallback. Run the printed remediation and restart.',
+						{ error: error.message },
+					);
+					throw error;
+				}
 				this.logger.warn('Failed to start chat-v2 WS gateway (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
