@@ -175,4 +175,33 @@ describe('ApiService', () => {
       await expect(apiService.getIntentTaskStatistics()).rejects.toThrow('Service unavailable');
     });
   });
+
+  describe('getWorkItem', () => {
+    // Regression: pre-fix, this called `/api/task-pool/${id}` which has no
+    // backend handler (the route registry only mounts
+    // `/api/task-pool/items/:id` for single-item lookup). Express returned
+    // 404 HTML, axios rejected, and every WorkItem detail page rendered
+    // empty — including from the WorkItems list and Request Detail timeline.
+    it('hits /api/task-pool/items/:id (the registered single-item route), not /api/task-pool/:id', async () => {
+      const wi = { id: 'wi-test-1', status: 'queued', title: 'Hello' };
+      const axios = await import('axios');
+      const spy = vi.spyOn(axios.default, 'get').mockResolvedValue({
+        data: { success: true, data: wi },
+      });
+
+      const result = await apiService.getWorkItem('wi-test-1');
+
+      expect(result).toEqual(wi);
+      expect(spy).toHaveBeenCalledWith('/api/task-pool/items/wi-test-1');
+    });
+
+    it('throws when the response indicates failure', async () => {
+      const axios = await import('axios');
+      vi.spyOn(axios.default, 'get').mockResolvedValue({
+        data: { success: false, error: 'WorkItem not found: wi-missing' },
+      });
+
+      await expect(apiService.getWorkItem('wi-missing')).rejects.toThrow('Work item not found');
+    });
+  });
 });

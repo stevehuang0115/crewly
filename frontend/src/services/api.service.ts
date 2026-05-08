@@ -1152,7 +1152,12 @@ class ApiService {
   }
 
   async getWorkItem(id: string): Promise<unknown> {
-    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/task-pool/${id}`);
+    // Use `/items/:id` not `/:id`. The backend route registry only mounts
+    // GET /api/task-pool/items/:workItemId for single-item lookup; a bare
+    // /api/task-pool/:id has no handler and returns 404 HTML. Without
+    // this prefix every WorkItem detail page silently failed to load —
+    // including from the WorkItems list and Request Detail timeline.
+    const response = await axios.get<ApiResponse<unknown>>(`${API_BASE}/task-pool/items/${id}`);
     if (!response.data.success || !response.data.data) throw new Error('Work item not found');
     return response.data.data;
   }
