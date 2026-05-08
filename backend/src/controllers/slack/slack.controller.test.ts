@@ -169,6 +169,57 @@ describe('Slack Controller', () => {
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
     });
+
+    it('marks the thread-status entry as replied_completed (recovery-replay regression gate)', async () => {
+      // 2026-05-08 dogfood: every backend restart re-enqueued the user's
+      // original Slack message via ThreadStatusQueueService.recoverPendingThreads,
+      // and orc would re-reply to the same message multiple times. Root
+      // cause: /api/slack/send sent the reply but never marked the
+      // thread-status entry as replied_completed, so the next boot's
+      // recovery loop saw it as unreplied. The fix marks the entry here.
+      const { ThreadStatusQueueService } = await import(
+        '../../services/messaging/thread-status-queue.service.js'
+      );
+      const tsq = ThreadStatusQueueService.getInstance();
+      // Reset internal state — the singleton may carry over from prior tests.
+      // We test the markReplied side-effect via getStatus / get().
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1707.999');
+
+      const channelId = 'CUNIQUE-1';
+      const threadTs = '1707.thread-1';
+
+      // No pre-tracked entry — simulates orc replying to a thread we
+      // haven't recorded inbound for. The handler should still create
+      // the entry + mark replied so future restarts skip it.
+      await request(app).post('/api/slack/send').send({
+        channelId,
+        text: 'sup',
+        threadTs,
+      });
+
+      const threadKey = `${channelId}:${threadTs}`;
+      const entry = tsq.get(threadKey);
+      expect(entry).toBeDefined();
+      expect(entry?.status).toBe('replied_completed');
+      expect(entry?.repliedAt).toBeDefined();
+    });
+
+    it('does not crash when threadTs is omitted (no-thread DM path)', async () => {
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1707.005');
+
+      const response = await request(app).post('/api/slack/send').send({
+        channelId: 'C-NOTHREAD',
+        text: 'top-level message',
+        // intentionally no threadTs
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+    });
   });
 
   describe('POST /api/slack/notify', () => {

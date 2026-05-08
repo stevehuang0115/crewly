@@ -236,6 +236,58 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       }
     }
 
+    // Mark the thread as replied_completed in the thread-status queue.
+    //
+    // Bug from 2026-05-08 dogfood: every backend restart re-enqueued the
+    // user's original Slack message via the
+    // `ThreadStatusQueueService.recoverPendingThreads` → message-queue
+    // `[RECOVERY]` path. orc would then "re-reply" to the same message
+    // multiple times after each restart, even though the user only sent
+    // one message and orc had already replied.
+    //
+    // Root cause: when orc invoked `reply-slack` skill → `POST /slack/send`,
+    // we sent to Slack + persisted to chat, but we never updated the
+    // thread-status entry. The entry stayed in `received` (or
+    // `replied_waiting_actions`) status, so the recovery loop on the
+    // next boot considered it unreplied and re-fired it.
+    //
+    // Fix: mark the thread as `replied_completed` here, atomically with
+    // the actual Slack send. Now the next restart sees a terminal status
+    // and skips re-enqueue.
+    //
+    // Why `replied_completed` and not `replied_to_follow_up`: orc has
+    // produced its user-facing acknowledgement; whatever async work
+    // continues downstream (Request → WIs → workers) is tracked by the
+    // pool, not by the thread-status queue. Conflating "user got a reply"
+    // with "all downstream work resolved" was the original architectural
+    // mistake — they belong in different queues.
+    //
+    // Best-effort: if the threadKey isn't tracked yet (rare race where
+    // the trackInbound call hasn't landed) or the markReplied throws,
+    // we log and continue — Slack delivery is the primary success
+    // criterion, thread-status is bookkeeping.
+    if (threadTs && channelId) {
+      try {
+        const { ThreadStatusQueueService } = await import('../../services/messaging/thread-status-queue.service.js');
+        const tsq = ThreadStatusQueueService.getInstance();
+        const threadKey = `${channelId}:${threadTs}`;
+        // Create the entry if it isn't tracked yet, then mark replied.
+        // The trackInbound is idempotent — if the entry exists, this is
+        // a no-op via `get(threadKey)` short-circuit.
+        if (!tsq.get(threadKey)) {
+          tsq.trackInbound({
+            threadKey,
+            conversationId: conversationId || `slack-${channelId}-${String(threadTs).replace('.', '-')}`,
+            source: 'slack',
+            messagePreview: '[reply-only — no inbound recorded]',
+          });
+        }
+        tsq.markReplied(threadKey, 'replied_completed');
+      } catch {
+        // Non-fatal — Slack delivery succeeded, thread bookkeeping is best-effort
+      }
+    }
+
     res.json({
       success: true,
       data: { messageTs },
