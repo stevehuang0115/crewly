@@ -240,6 +240,142 @@ describe('LiveReconcilerDataProvider', () => {
         expect(errorSpy).toHaveBeenCalled();
       });
     });
+
+    // F-CYCLE7-3-FU (2026-05-07) — structural-shape coverage.
+    //
+    // The original classifier whitelisted method names
+    // (`filter|find|map|forEach|length`); a future consumer reaching
+    // for `.some()` / `.every()` / `.reduce()` / `.includes()` /
+    // `.indexOf()` / `.slice()` would re-introduce the noise pattern
+    // because its V8 shape would not match. The structural classifier
+    // (instanceof TypeError + "cannot read … of undefined") covers
+    // every method/property access on `undefined` in one rule and
+    // future-proofs the demotion against consumer drift.
+    describe('F-CYCLE7-3-FU: structural classifier (post-whitelist)', () => {
+      // Methods that adjacent reconciler code reaches for today + the
+      // ones likely to land via future audits. Each must be DEMOTED to
+      // debug, not logged at error.
+      const v8MethodShapes = [
+        "Cannot read properties of undefined (reading 'filter')",
+        "Cannot read properties of undefined (reading 'find')",
+        "Cannot read properties of undefined (reading 'map')",
+        "Cannot read properties of undefined (reading 'forEach')",
+        "Cannot read properties of undefined (reading 'length')",
+        "Cannot read properties of undefined (reading 'some')",
+        "Cannot read properties of undefined (reading 'every')",
+        "Cannot read properties of undefined (reading 'reduce')",
+        "Cannot read properties of undefined (reading 'includes')",
+        "Cannot read properties of undefined (reading 'indexOf')",
+        "Cannot read properties of undefined (reading 'slice')",
+        "Cannot read properties of undefined (reading 'flat')",
+        // Property access (no method call), e.g. `claims.id` on an
+        // undefined slot — same V8 shape, no enclosing parens needed.
+        "Cannot read properties of undefined (reading 'id')",
+        "Cannot read properties of undefined (reading 'status')",
+      ];
+
+      for (const shape of v8MethodShapes) {
+        it(`demotes to debug: ${shape}`, async () => {
+          const errorSpy = jest.spyOn((provider as any).logger, 'error');
+          const debugSpy = jest.spyOn((provider as any).logger, 'debug');
+
+          mockPool.getActiveClaims.mockRejectedValue(new TypeError(shape));
+
+          const result = await provider.getActiveClaims();
+
+          expect(result).toEqual([]);
+          expect(errorSpy).not.toHaveBeenCalled();
+          expect(debugSpy).toHaveBeenCalled();
+        });
+      }
+
+      it('matches the older Node V8 shape ("Cannot read property X of undefined")', async () => {
+        // Node ≤ 14 emits the singular "property" form. The classifier
+        // must accept both the modern "properties of undefined (reading
+        // X)" and the older "property 'X' of undefined" — both share
+        // the readonly anchors `cannot read` + `of undefined`.
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+        const debugSpy = jest.spyOn((provider as any).logger, 'debug');
+
+        mockPool.getActiveClaims.mockRejectedValue(
+          new TypeError("Cannot read property 'filter' of undefined"),
+        );
+
+        await provider.getActiveClaims();
+
+        expect(errorSpy).not.toHaveBeenCalled();
+        expect(debugSpy).toHaveBeenCalled();
+      });
+
+      // ---------------------- Negative cases -------------------------
+      // The classifier MUST NOT silence genuine bugs. Each of the
+      // following is a different bug class from hydration-not-ready
+      // and deserves its `error`-level log.
+
+      it('does NOT silence "Cannot read properties of NULL" (different bug class)', async () => {
+        // null != undefined in V8 error messages. A null pointer is a
+        // "we lost a reference" bug, not "storage warming up".
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+        const debugSpy = jest.spyOn((provider as any).logger, 'debug');
+
+        mockPool.getActiveClaims.mockRejectedValue(
+          new TypeError("Cannot read properties of null (reading 'filter')"),
+        );
+
+        await provider.getActiveClaims();
+
+        expect(errorSpy).toHaveBeenCalled();
+        expect(debugSpy).not.toHaveBeenCalled();
+      });
+
+      it('does NOT silence "X is not a function" TypeErrors (missing API, not hydration)', async () => {
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+
+        mockPool.getActiveClaims.mockRejectedValue(
+          new TypeError("pool.someUnknownMethod is not a function"),
+        );
+
+        await provider.getActiveClaims();
+
+        expect(errorSpy).toHaveBeenCalled();
+      });
+
+      it('does NOT silence non-TypeError throws even if the message matches', async () => {
+        // The instanceof TypeError narrow guards against accidental
+        // matches by message-content alone (e.g. an Error subclass
+        // whose author included the V8 phrase verbatim in a wrapper).
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+
+        mockPool.getActiveClaims.mockRejectedValue(
+          new Error("Cannot read properties of undefined (reading 'filter')"),
+        );
+
+        await provider.getActiveClaims();
+
+        expect(errorSpy).toHaveBeenCalled();
+      });
+
+      it('does NOT silence "Database connection refused" or other genuine downstream failures', async () => {
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+
+        mockPool.getActiveClaims.mockRejectedValue(new Error('Database connection refused'));
+
+        await provider.getActiveClaims();
+
+        expect(errorSpy).toHaveBeenCalled();
+      });
+
+      it('does NOT silence non-Error throws (string thrown, etc.)', async () => {
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+
+        // eslint-disable-next-line @typescript-eslint/no-throw-literal
+        mockPool.getActiveClaims.mockRejectedValue('string-thrown' as any);
+
+        await provider.getActiveClaims();
+
+        expect(errorSpy).toHaveBeenCalled();
+      });
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -442,6 +578,43 @@ describe('LiveReconcilerDataProvider', () => {
         const errorSpy = jest.spyOn((provider as any).logger, 'error');
 
         mockPool.getAvailableItems.mockRejectedValue(new Error('Disk full'));
+
+        await provider.getAvailablePoolItems();
+
+        expect(errorSpy).toHaveBeenCalled();
+      });
+    });
+
+    // F-CYCLE7-3-FU (2026-05-07) — confirm both call sites
+    // (`getActiveClaims` and `getAvailablePoolItems`) share the same
+    // structural classifier behavior. Smaller smoke than the
+    // exhaustive block on getActiveClaims, just verifying the second
+    // call site doesn't drift.
+    describe('F-CYCLE7-3-FU: structural classifier (post-whitelist) — second call site', () => {
+      it.each([
+        ["Cannot read properties of undefined (reading 'some')"],
+        ["Cannot read properties of undefined (reading 'reduce')"],
+        ["Cannot read properties of undefined (reading 'indexOf')"],
+        ["Cannot read property 'filter' of undefined"], // older V8 shape
+      ])('demotes %s to debug', async (shape: string) => {
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+        const debugSpy = jest.spyOn((provider as any).logger, 'debug');
+
+        mockPool.getAvailableItems.mockRejectedValue(new TypeError(shape));
+
+        const result = await provider.getAvailablePoolItems();
+
+        expect(result).toEqual([]);
+        expect(errorSpy).not.toHaveBeenCalled();
+        expect(debugSpy).toHaveBeenCalled();
+      });
+
+      it('does NOT silence "Cannot read properties of null" on second call site', async () => {
+        const errorSpy = jest.spyOn((provider as any).logger, 'error');
+
+        mockPool.getAvailableItems.mockRejectedValue(
+          new TypeError("Cannot read properties of null (reading 'filter')"),
+        );
 
         await provider.getAvailablePoolItems();
 
