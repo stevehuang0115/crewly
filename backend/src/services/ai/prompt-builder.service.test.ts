@@ -1744,6 +1744,7 @@ import {
 	type SessionRuntimeContext,
 } from './prompt-builder.service.js';
 import type { Team, TeamMember } from '../../types/index.js';
+import { RoleBoundaryModule } from './prompt-modules/role-boundary.module.js';
 
 /**
  * Build a minimal-valid TeamMember for unit tests. Override fields per case.
@@ -1973,6 +1974,149 @@ describe('buildModuleConfigFromTeamMember — WIRE-1 wiring', () => {
 		expect(config.agentSkillsPath).toBe('/another/agent');
 		expect(config.tlSkillsPath).toBe('/another/tl');
 		expect(config.projectRoot).toBe('/another/root');
+	});
+});
+
+// =============================================================================
+// F-CYCLE7-2 (Arch Veto #7) — WIRE-1 end-to-end regression
+// =============================================================================
+//
+// Pin the full WIRE-1 chain — TeamMember + Team
+//   → buildModuleConfigFromTeamMember
+//   → RoleBoundaryModule.build()
+// — for the three orgRole cascade outcomes. Audit cycle 7 (§2.2,
+// 2026-05-07-audit-cycle7.md) found a smoke harness at
+// /private/tmp/crewly-leo-fix6/dist/.../role-boundary.module.js firing the V4
+// throw 3× in 4 minutes. The throw itself is correct (it is the intended
+// fail-fast for canDelegate=true && orgRole=undefined). What the audit asked
+// us to pin is the inverse: the happy path through `buildModuleConfigFromTeamMember`
+// MUST resolve orgRole before assembly so the throw NEVER fires for a
+// well-formed TL session — and the three cascade branches must each render
+// their role-specific boundary content.
+// =============================================================================
+describe('F-CYCLE7-2 — WIRE-1 end-to-end (config + RoleBoundaryModule render)', () => {
+	/**
+	 * TL happy path — canDelegate=true → orgRole='team-lead' → RoleBoundaryModule
+	 * renders TL boundary content without throwing. This is the regression that
+	 * audit cycle 7 §2.2 asked us to pin in mainline.
+	 */
+	it('TL with canDelegate=true → orgRole=team-lead → renders TL boundary, no throw (V4 negative)', async () => {
+		const member = makeMember({
+			id: 'tl-member-1',
+			sessionName: 'crewly-product-sam-9487fefe',
+			role: 'team-leader',
+			canDelegate: true,
+		});
+		const team = makeTeam({
+			id: 'team-tl-1',
+			members: [
+				member,
+				makeMember({
+					id: 'sub-1',
+					name: 'Leo',
+					sessionName: 'crewly-product-leo-21a5477e',
+					parentMemberId: 'tl-member-1',
+				}),
+			],
+		});
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime({
+			sessionName: 'crewly-product-sam-9487fefe',
+		}));
+
+		// Contract: orgRole resolved BEFORE assembly (the WIRE-1 fix).
+		expect(config.orgRole).toBe('team-lead');
+		expect(config.canDelegate).toBe(true);
+
+		// RoleBoundaryModule.build does NOT throw — V4 throw is for the bug,
+		// not the happy path.
+		const moduleInstance = new RoleBoundaryModule();
+		const output = await moduleInstance.build(config);
+
+		// TL-specific content (matches buildTeamLeadBoundary).
+		expect(output).toContain('## Role Boundaries');
+		expect(output).toContain('Objective owner');
+		expect(output).toContain('Task Contract Protocol');
+		expect(output).toContain('Workflow Ownership');
+
+		// Negative: the executor boundary MUST NOT render for a TL.
+		expect(output).not.toContain('Scoped implementer');
+		expect(output).not.toContain('Structured Block Report');
+	});
+
+	/**
+	 * TL via legacy team shape — subordinateIds non-empty resolves to team-lead
+	 * even when canDelegate is undefined (the rule-3 cascade in deriveOrgRole).
+	 * Still must not throw, still must render TL boundary.
+	 */
+	it('TL via subordinateIds (rule 3) → orgRole=team-lead → renders TL boundary, no throw', async () => {
+		const member = makeMember({
+			id: 'tl-rule3',
+			sessionName: 'crewly-product-tl-rule3',
+			role: 'developer',
+			canDelegate: true, // explicit so V4 also covers this row
+			subordinateIds: ['sub-1'],
+		});
+		const team = makeTeam({
+			id: 'team-rule3',
+			members: [
+				member,
+				makeMember({ id: 'sub-1', name: 'Worker', sessionName: 'crewly-worker-1' }),
+			],
+		});
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime());
+
+		expect(config.orgRole).toBe('team-lead');
+		const moduleInstance = new RoleBoundaryModule();
+		const output = await moduleInstance.build(config);
+		expect(output).toContain('Objective owner');
+	});
+
+	/**
+	 * Plain executor (canDelegate=false, no subordinates) → orgRole=executor →
+	 * renders executor boundary, no throw. Confirms the fail-fast guard does
+	 * NOT regress non-TL members.
+	 */
+	it('plain executor (canDelegate=false) → orgRole=executor → renders executor boundary, no throw', async () => {
+		const member = makeMember({
+			id: 'worker-1',
+			sessionName: 'crewly-product-leo-21a5477e',
+			role: 'developer',
+			canDelegate: false,
+		});
+		const team = makeTeam({ id: 'team-1' });
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime());
+
+		expect(config.orgRole).toBe('executor');
+		const moduleInstance = new RoleBoundaryModule();
+		const output = await moduleInstance.build(config);
+		expect(output).toContain('## Role Boundaries');
+		expect(output).toContain('Scoped implementer');
+		expect(output).toContain('Structured Block Report');
+	});
+
+	/**
+	 * Orchestrator role → orgRole='orchestrator' (rule 1, highest priority) →
+	 * renders orchestrator boundary, no throw. Confirms the cascade short-circuits
+	 * even when canDelegate would otherwise classify as TL.
+	 */
+	it('orchestrator role → orgRole=orchestrator → renders orchestrator boundary, no throw', async () => {
+		const member = makeMember({
+			id: 'orc-1',
+			sessionName: 'crewly-orc',
+			role: 'orchestrator',
+			canDelegate: true, // ignored — rule 1 wins
+		});
+		const team = makeTeam({ id: 'team-orc' });
+		const config = buildModuleConfigFromTeamMember(member, team, makeRuntime({
+			sessionName: 'crewly-orc',
+		}));
+
+		expect(config.orgRole).toBe('orchestrator');
+		const moduleInstance = new RoleBoundaryModule();
+		const output = await moduleInstance.build(config);
+		expect(output).toContain('User secretary');
+		expect(output).toContain('message router');
+		expect(output).toContain('Event Response Rules');
 	});
 });
 
