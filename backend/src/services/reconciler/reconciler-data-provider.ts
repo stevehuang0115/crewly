@@ -494,10 +494,16 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           url = `http://localhost:${process.env.PORT || 8787}/api/teams/${teamId}/members/${memberId}/start`;
         }
 
+        // Pass `workItemId` so the team-controller wake-gate can verify
+        // that this wake is pool-driven (path 1 of the gate). Reconciler
+        // hybrid-wake has already decided which WI triggered the wake;
+        // the gate trusts that decision rather than re-scanning the pool.
+        // Without this, the gate would still pass via path 2 (pool scan)
+        // — but explicit is better when we already have the evidence.
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionName: agentSessionName }),
+          body: JSON.stringify({ sessionName: agentSessionName, workItemId: action.workItemId }),
         });
 
         if (!response.ok) {

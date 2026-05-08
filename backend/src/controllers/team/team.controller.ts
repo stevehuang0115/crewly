@@ -50,6 +50,126 @@ const logger = LoggerService.getInstance().createComponentLogger('TeamController
 let eventBusService: EventBusService | null = null;
 
 /**
+ * Result type for the wake-gate check used by {@link startTeamMember}.
+ */
+interface WakeGateResult {
+  allowed: boolean;
+  /** Human-readable reason. Surfaced in the 400 response when allowed=false. */
+  reason: string;
+}
+
+/**
+ * Wake-gate predicate for the `POST /api/teams/:teamId/members/:memberId/start`
+ * endpoint.
+ *
+ * **Rule.** A member may only be woken when at least one of the following is
+ * true:
+ *
+ * 1. **Caller-provided WI** — the request body carries a `workItemId` that
+ *    references an existing WorkItem in queued or blocked status. This is
+ *    the path the reconciler hybrid-wake takes: it has already decided
+ *    which WI triggered the wake, and the gate trusts that decision.
+ *
+ * 2. **Pool has work for this member** — at least one queued/blocked
+ *    WorkItem in the pool either explicitly targets `sessionName` or is
+ *    unassigned (target null/undefined, i.e. an orphan WI awaiting any
+ *    eligible worker via hybrid-wake or AutoClaim).
+ *
+ * Otherwise the gate denies and the controller returns
+ * `400 wake_gate_no_pool_work`.
+ *
+ * **Why this gate exists.** 2026-05-08 dogfood: orc's claude conversation
+ * history persisted threads from earlier sessions ("I owe Sam a sign-off
+ * on kit-fold"). After we purged pool/requests/cron, orc continued from
+ * history and invoked an orchestrator skill that calls `startTeamMember`
+ * to wake Sam — even though pool had ZERO work for Sam. Sam came up with
+ * an empty active-work briefing and produced no real output.
+ *
+ * The long-line outcome rule is: **agent wake-up MUST be gated by the
+ * pool, never by recalled intent.** Prompt-only fixes (PR #515) proved
+ * insufficient — claude conversation history wins over prompt additions.
+ * This is the structural enforcement that prompts cannot deliver.
+ *
+ * **Pool empty case.** If the TaskPoolService is unavailable (e.g.
+ * not yet initialised at boot), the gate logs a warning and allows the
+ * call through. We prefer fail-open during init over false-blocking a
+ * legit start before the pool is loaded; the bug we're protecting
+ * against (orc-from-history wake) does not happen during boot.
+ *
+ * @param sessionName - The member's session name (e.g. 'crewly-product-leo-…').
+ * @param body - The request body. We honour an optional `workItemId` field.
+ * @returns Decision and human-readable reason.
+ */
+async function checkWakeGate(
+  sessionName: string | undefined,
+  body: unknown,
+): Promise<WakeGateResult> {
+  if (!sessionName) {
+    return { allowed: true, reason: 'sessionName not yet assigned — gate skipped' };
+  }
+
+  let TaskPoolServiceCls: { getInstance: () => { getAllItems: () => Promise<Array<{ id: string; status: string; target?: string | null }>> } };
+  try {
+    TaskPoolServiceCls = (await import('../../services/task-pool/task-pool.service.js')).TaskPoolService;
+  } catch (err) {
+    logger.warn('Wake gate: TaskPoolService unavailable — fail-open', {
+      sessionName,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { allowed: true, reason: 'TaskPoolService unavailable — gate skipped' };
+  }
+
+  let items: Array<{ id: string; status: string; target?: string | null }>;
+  try {
+    items = await TaskPoolServiceCls.getInstance().getAllItems();
+  } catch (err) {
+    logger.warn('Wake gate: getAllItems failed — fail-open', {
+      sessionName,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { allowed: true, reason: 'pool query failed — gate skipped' };
+  }
+
+  // (1) Caller-provided WI takes precedence over the pool scan.
+  const bodyObj = body as Record<string, unknown> | null | undefined;
+  const explicitWorkItemId = typeof bodyObj?.workItemId === 'string' ? bodyObj.workItemId : null;
+  if (explicitWorkItemId) {
+    const referenced = items.find((w) => w.id === explicitWorkItemId);
+    if (referenced && (referenced.status === 'queued' || referenced.status === 'blocked')) {
+      return {
+        allowed: true,
+        reason: `caller provided workItemId=${explicitWorkItemId} (status=${referenced.status})`,
+      };
+    }
+    // Caller passed a workItemId but it doesn't satisfy the gate. We do
+    // NOT immediately deny — we still let rule (2) try; the workItemId
+    // hint may have been stale, but the pool may still contain other
+    // valid work for this member.
+  }
+
+  // (2) Pool scan — any queued/blocked WI targeting this member or unassigned?
+  const eligible = items.filter((w) => {
+    if (w.status !== 'queued' && w.status !== 'blocked') return false;
+    return w.target === sessionName || !w.target;
+  });
+
+  if (eligible.length > 0) {
+    return {
+      allowed: true,
+      reason: `pool has ${eligible.length} eligible WI(s) for ${sessionName}`,
+    };
+  }
+
+  return {
+    allowed: false,
+    reason:
+      `Cannot wake '${sessionName}': pool has no queued/blocked WorkItem targeting ` +
+      `this member or unassigned. Pool is the source of truth for what is in flight; ` +
+      `materialise a Request or WorkItem first, then retry the wake.`,
+  };
+}
+
+/**
  * Set the EventBusService instance for auto-subscribing the orchestrator.
  * Called during server initialization in index.ts.
  *
@@ -1569,6 +1689,64 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
     if (!member) {
       res.status(404).json({ success: false, error: 'Team member not found' } as ApiResponse);
       return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Wake Gate: pool must have queued/blocked work for this member
+    // -----------------------------------------------------------------------
+    //
+    // Rule: a member may only be woken when the pool has at least one
+    // queued or blocked WorkItem that this member could plausibly take —
+    // either explicitly targeted at the member's sessionName, or
+    // unassigned (target=null/undefined, i.e. orphaned WIs awaiting
+    // hybrid-wake's pick).
+    //
+    // Why this gate exists. 2026-05-08 dogfood: orc's claude conversation
+    // history persisted threads from earlier sessions ("I owe Sam a
+    // sign-off on kit-fold"). After we purged pool/requests/cron, orc
+    // continued from history and invoked an orchestrator skill that
+    // calls this endpoint to wake Sam — even though the pool had ZERO
+    // work assigned to Sam. Sam came up with an empty active-work
+    // briefing and produced no real output.
+    //
+    // The long-line outcome rule is: agent wake-up MUST be gated by the
+    // pool, never by recalled intent. Prompt-only fixes (PR #515) proved
+    // insufficient — claude conversation history wins over system-prompt
+    // additions. This is the backend hard gate that makes the rule
+    // structurally enforceable.
+    //
+    // Bypass: callers that already-have a target WI may pass `workItemId`
+    // in the body. The gate verifies that WI is in pool with
+    // queued/blocked status. Reconciler hybrid-wake takes this path:
+    // it has decided which WI triggered the wake, and the gate accepts
+    // it without re-scanning the pool.
+    //
+    // Skipped statuses: when a member is ALREADY active/started/starting,
+    // the early-return below treats this as a no-op without invoking
+    // the gate (the skipStatuses block hasn't moved).
+    const skipStatusesForGate: Set<string> = new Set([
+      CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE,
+      CREWLY_CONSTANTS.AGENT_STATUSES.STARTED,
+      CREWLY_CONSTANTS.AGENT_STATUSES.STARTING,
+      CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVATING,
+    ]);
+    const memberAlreadyActive = skipStatusesForGate.has(member.agentStatus);
+    if (!memberAlreadyActive) {
+      const gateResult = await checkWakeGate(member.sessionName, req.body);
+      if (!gateResult.allowed) {
+        logger.warn('startTeamMember rejected by wake gate', {
+          teamId,
+          memberId,
+          sessionName: member.sessionName,
+          reason: gateResult.reason,
+        });
+        res.status(400).json({
+          success: false,
+          error: gateResult.reason,
+          code: 'wake_gate_no_pool_work',
+        } as ApiResponse);
+        return;
+      }
     }
 
     // Skip members that are already active to avoid interrupting running agents
