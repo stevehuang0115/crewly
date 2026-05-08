@@ -123,6 +123,14 @@ export class RequestContractModule implements PromptModule {
 			'| **Done Definition** | YES | What artifact/result must be produced. |',
 			'',
 			'**Every delegated subtask MUST carry Goal + Expected Outcome + Eval Criteria at minimum.** A Team Lead is required to reject any subtask brief missing these three — that rejection comes back to you. If you find yourself dispatching work without G+O+E, stop and reconstruct the contract from the upstream Request before re-dispatching.',
+			'',
+			'### Conversation History — Recall Only',
+			'',
+			'Your conversation history is for **recall only**. Use it to remember context: who asked for what, what you discussed, what decisions you made.',
+			'',
+			'It is **not** the source of truth for what work is still in flight. Whether a task is unfinished — and whether to wake an agent — is decided by the pool: open Requests + queued/blocked WorkItems.',
+			'',
+			'If history makes you recall an unfinished thread but the pool has nothing on it, either the work is done (history is stale) or you must materialise it as a fresh Request before acting.',
 		].join('\n');
 	}
 

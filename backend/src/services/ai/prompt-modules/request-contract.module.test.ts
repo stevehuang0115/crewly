@@ -114,6 +114,20 @@ describe('RequestContractModule', () => {
 			expect(out).toMatch(/Team Lead is required to reject any subtask brief missing these three/);
 		});
 
+		it('should pin "conversation history is recall only — pool gates work-in-flight"', async () => {
+			// Root cause from 2026-05-08 dogfood: orc's claude conversation
+			// memory persisted "I owe Sam a sign-off" across PTY restarts;
+			// the pool had been purged but history hadn't, so orc resurrected
+			// Sam via a follow-up send-message. Fix lives in the prompt:
+			// history is for recall, the pool is the truth for what's still
+			// in flight. If a refactor strips this section, this test fails
+			// loud.
+			const out = await module.build({ ...baseConfig, role: 'orchestrator' });
+			expect(out).toMatch(/Conversation History — Recall Only/);
+			expect(out).toMatch(/recall only/);
+			expect(out).toMatch(/decided by the pool/);
+		});
+
 		it('should NOT include the TL Brief Reception Protocol header for the orchestrator', async () => {
 			const out = await module.build({ ...baseConfig, role: 'orchestrator' });
 			expect(out).not.toContain('## Brief Reception Protocol');
