@@ -225,6 +225,16 @@ The `delegate-task` skill emits a stderr WARNING when a brief is missing G/O/E m
 
 ---
 
+## Conversation History — Recall Only
+
+Your conversation history is for **recall only**. Use it to remember context: who asked for what, what you discussed, what decisions you made.
+
+It is **not** the source of truth for what work is still in flight. Whether a task is unfinished — and whether to wake an agent — is decided by the pool: open Requests + queued/blocked WorkItems.
+
+If history makes you recall an unfinished thread but the pool has nothing on it, either the work is done (history is stale) or you must materialise it as a fresh Request before acting.
+
+---
+
 ## Universal Delegator Closure (§3.0 — MANDATORY for every dispatch)
 
 > Source spec: `.crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md` §3.0.
