@@ -553,6 +553,66 @@ export class TaskPoolService {
   }
 
   /**
+   * Publish `task:cancelled` whenever a WorkItem transitions to the
+   * cancelled status via {@link updateItemStatus} or {@link transitionStatus}.
+   *
+   * **Why this exists.** 2026-05-09 dogfood: 4 child WIs of a Slack-
+   * originated Request all landed in `cancelled` (orc-not-in-health-map
+   * loop, fixed in #531) but the Request stayed in `ready` for hours.
+   * `cascadeRequestStatus` only fires from V3DataService's task
+   * handlers, which are wired to the retired `v3:task_*` events
+   * (`mission-executor.service.ts:152` v1-cleanup comment) — so out-of-
+   * band cancellations never reached cascade. The heartbeat sweep
+   * eventually caught it (#533), but with up-to-30-min latency that
+   * showed up as a misleading "0/4 in every bucket" ping in the user's
+   * Slack thread.
+   *
+   * Publishing `task:cancelled` lets `RequestCascadeSubscriber` close
+   * the Request within seconds of the last child cancelling, instead
+   * of waiting for the heartbeat catch.
+   *
+   * Mirrors {@link publishTaskDoneByWorker} / {@link publishTaskRejected}
+   * so the EventBus surface stays uniform.
+   *
+   * @param workItem - The WI snapshot AFTER the cancelled transition committed
+   * @param previousStatus - The status it transitioned from (for the event payload)
+   */
+  private publishTaskCancelled(
+    workItem: WorkItem,
+    previousStatus: WorkItemStatus,
+  ): void {
+    if (!this.eventBus) {
+      this.logger.debug('No EventBus wired — skipping task:cancelled publish', {
+        workItemId: workItem.id,
+      });
+      return;
+    }
+    try {
+      this.eventBus.publish({
+        id: `task:cancelled:${workItem.id}`,
+        type: 'task:cancelled',
+        timestamp: new Date().toISOString(),
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: '',
+        previousValue: previousStatus,
+        newValue: 'cancelled',
+        changedField: 'taskStatus',
+        workItemId: workItem.id,
+        missionId: workItem.missionId,
+        requestId: workItem.requestId,
+      });
+    } catch (err) {
+      this.logger.warn('task:cancelled publish threw', {
+        workItemId: workItem.id,
+        error: formatError(err),
+      });
+    }
+  }
+
+  /**
    * Claims the next available WorkItem from the pool for an agent.
    *
    * Selection strategy: FIFO among matching unclaimed 'queued' items.
@@ -1553,6 +1613,14 @@ export class TaskPoolService {
       to: newStatus,
       actorRole,
     });
+
+    // Cascade signal — let RequestCascadeSubscriber close the parent
+    // Request without waiting for the heartbeat catch. See
+    // {@link publishTaskCancelled} for the full bug writeup.
+    if (newStatus === 'cancelled') {
+      const post = await this.storage.findWorkItem(workItemId);
+      if (post) this.publishTaskCancelled(post, item.status);
+    }
   }
 
   /**
@@ -1682,7 +1750,16 @@ export class TaskPoolService {
     // resolved value rather than re-fetching. Coerce `undefined` (item
     // removed during the race window) to `null` to match the declared
     // return type.
-    return (await this.storage.findWorkItem(workItemId)) ?? null;
+    const post = (await this.storage.findWorkItem(workItemId)) ?? null;
+
+    // Cascade signal — let RequestCascadeSubscriber close the parent
+    // Request without waiting for the heartbeat catch. See
+    // {@link publishTaskCancelled} for the full bug writeup.
+    if (newStatus === 'cancelled' && post) {
+      this.publishTaskCancelled(post, item.status);
+    }
+
+    return post;
   }
 
   /**
