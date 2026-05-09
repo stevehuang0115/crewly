@@ -73,6 +73,7 @@ import {
 	setRequestDecomposeSubscriber,
 } from './services/v3/request-decompose.subscriber.js';
 import { RequestStatusUpdateSubscriber } from './services/v3/request-status-update.subscriber.js';
+import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscriber.js';
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
@@ -197,6 +198,7 @@ export class CrewlyServer {
 	/** Pipeline-#4 follow-up: subscribes to request:created and auto-decomposes actionable L2 Requests via plan() → addToPool. */
 	private requestDecomposeSubscriber: RequestDecomposeSubscriber | null = null;
 	private requestStatusUpdateSubscriber: RequestStatusUpdateSubscriber | null = null;
+	private requestCascadeSubscriber: RequestCascadeSubscriber | null = null;
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
 	private reconcilerService: ReconcilerService | null = null;
@@ -512,6 +514,19 @@ export class CrewlyServer {
 				heartbeatMinutes: 30,
 			});
 			this.requestStatusUpdateSubscriber.start();
+
+			// Cascade subscriber: keeps Request.status in sync with the
+			// aggregate state of its child WIs by reacting to live task
+			// lifecycle events. Closes the gap left by V3DataService's
+			// retired `v3:task_*` subscriptions (see 2026-05-09 dogfood
+			// note in request-cascade.subscriber.ts).
+			this.requestCascadeSubscriber = new RequestCascadeSubscriber({
+				eventBus: this.eventBusService,
+				requestService: RequestService.getInstance(),
+				taskPool: TaskPoolService.getInstance(),
+				notifier: this.eventBusService,
+			});
+			this.requestCascadeSubscriber.start();
 		} catch (subscriberBootErr) {
 			// Degraded mode: SLA tracking + auto-decompose are off, but the
 			// API surface and rest of the backend continue to serve. Ops can
@@ -535,6 +550,10 @@ export class CrewlyServer {
 			if (this.requestStatusUpdateSubscriber) {
 				try { this.requestStatusUpdateSubscriber.stop(); } catch { /* best-effort */ }
 				this.requestStatusUpdateSubscriber = null;
+			}
+			if (this.requestCascadeSubscriber) {
+				try { this.requestCascadeSubscriber.stop(); } catch { /* best-effort */ }
+				this.requestCascadeSubscriber = null;
 			}
 		}
 
