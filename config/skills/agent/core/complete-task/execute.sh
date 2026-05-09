@@ -89,6 +89,13 @@ fi
 # The optional `output` is now MERGED into `result` alongside `summary` —
 # this matches the controller's mergedOutput behavior (task-pool.controller.ts
 # §405-419) which spreads result fields beyond `summary` into WorkItem.output.
+#
+# Precedence (per Sam #527 review note): jq's `+` operator is right-side-wins
+# on key conflicts. The spread order here is `{summary: $summary} + $output`,
+# so a caller-supplied `output.summary` WILL override the explicit `--summary`
+# parameter. Intentional — callers passing structured output already have an
+# authoritative summary in there; the explicit param is the fallback. If you
+# need the param to win, swap the operands.
 BODY=$(jq -n \
   --arg agentId "$SESSION_NAME" \
   --arg summary "$SUMMARY" \
