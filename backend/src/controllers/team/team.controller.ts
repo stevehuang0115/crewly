@@ -67,16 +67,25 @@ interface WakeGateResult {
  *
  * 1. **Caller-provided WI** — the request body carries a `workItemId` that
  *    references an existing WorkItem in queued or blocked status. This is
- *    the path the reconciler hybrid-wake takes: it has already decided
- *    which WI triggered the wake, and the gate trusts that decision.
+ *    the path the reconciler hybrid-wake takes: it has already scored
+ *    agents and decided which WI routes to this caller. The gate trusts
+ *    that decision and does NOT re-validate target match.
  *
- * 2. **Pool has work for this member** — at least one queued/blocked
- *    WorkItem in the pool either explicitly targets `sessionName` or is
- *    unassigned (target null/undefined, i.e. an orphan WI awaiting any
- *    eligible worker via hybrid-wake or AutoClaim).
+ * 2. **Explicit-target pool scan** — at least one queued/blocked WorkItem
+ *    in the pool sets `target === sessionName` explicitly. This is the
+ *    path the `delegate-task` skill takes: it creates a WI with
+ *    `target=worker` first, then calls start.
  *
  * Otherwise the gate denies and the controller returns
  * `400 wake_gate_no_pool_work`.
+ *
+ * **Why path 2 does NOT accept orphan/unassigned WIs.** 2026-05-09 dogfood:
+ * orc invoked a skill that called start-team-member for Sam (a team-leader).
+ * Pool had a Plan WI with target=null. The original gate (PR #518) accepted
+ * it. But the Plan WI was meant for a developer (Leo by score), not Sam.
+ * Sam came up idle with no work — exactly the bug the gate was supposed to
+ * prevent. Orphan-routing is reconciler's job (path 1 with workItemId);
+ * direct callers must set target explicitly.
  *
  * **Why this gate exists.** 2026-05-08 dogfood: orc's claude conversation
  * history persisted threads from earlier sessions ("I owe Sam a sign-off
@@ -147,25 +156,46 @@ async function checkWakeGate(
     // valid work for this member.
   }
 
-  // (2) Pool scan — any queued/blocked WI targeting this member or unassigned?
+  // (2) Pool scan — require a queued/blocked WI EXPLICITLY targeting
+  // this member's sessionName.
+  //
+  // 2026-05-09: Tightened from the original PR #518 shape, which also
+  // accepted unassigned/orphan WIs (target null/undefined). That was
+  // too permissive: a single orphan WI in the pool gave any caller
+  // permission to wake any agent, regardless of whether the orphan
+  // would actually route to that agent via AutoClaim. The dogfood
+  // symptom: a Plan WI with target=null was in the pool; orc invoked
+  // a skill that called start-team-member for Sam (a team-leader);
+  // the gate saw the orphan and allowed Sam to spawn — but the orphan
+  // was meant for a developer (Leo by score) and Sam came up idle
+  // with no work, exactly the bug the gate was supposed to prevent.
+  //
+  // The orphan-routing case (legit) goes through path (1) instead:
+  // the reconciler hybrid-wake passes `workItemId` in the body,
+  // because it has already scored agents and decided this orphan
+  // routes to this caller. Workers spawned via the delegate-task
+  // skill flow take path (2) because that flow creates the WI with
+  // `target=worker` BEFORE calling start.
   const eligible = items.filter((w) => {
     if (w.status !== 'queued' && w.status !== 'blocked') return false;
-    return w.target === sessionName || !w.target;
+    return w.target === sessionName;
   });
 
   if (eligible.length > 0) {
     return {
       allowed: true,
-      reason: `pool has ${eligible.length} eligible WI(s) for ${sessionName}`,
+      reason: `pool has ${eligible.length} WI(s) explicitly targeting ${sessionName}`,
     };
   }
 
   return {
     allowed: false,
     reason:
-      `Cannot wake '${sessionName}': pool has no queued/blocked WorkItem targeting ` +
-      `this member or unassigned. Pool is the source of truth for what is in flight; ` +
-      `materialise a Request or WorkItem first, then retry the wake.`,
+      `Cannot wake '${sessionName}': pool has no queued/blocked WorkItem ` +
+      `with target=${sessionName} and no caller-provided workItemId. Pool is ` +
+      `the source of truth for what is in flight; either create a WorkItem ` +
+      `with target set explicitly to this member, or pass workItemId in the ` +
+      `request body to indicate which orphan WI you intend this wake to fulfil.`,
   };
 }
 

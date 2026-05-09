@@ -3804,11 +3804,47 @@ describe('Teams Handlers', () => {
       expect(got400).toBe(false);
     });
 
-    it('allows when pool has an unassigned (orphan) queued WI', async () => {
+    it('rejects when pool only has orphan WIs (no explicit target match) — direct caller path', async () => {
+      // 2026-05-09: tightened from PR #518's original behaviour. Orphan
+      // (target=null) WIs no longer satisfy the pool scan — only an
+      // explicit target=sessionName match does. Orphan-routing is the
+      // reconciler's job and goes through path (1) (workItemId in body).
+      //
+      // Bug shape this fixes: orc invoked a skill that called
+      // start-team-member for Sam (a team-leader). Pool had a Plan WI
+      // with target=null intended for a developer (by score). Old gate
+      // accepted, Sam came up idle with no work. New gate rejects.
       mockStorageService.getTeams.mockResolvedValue([buildTeamWithMember('crewly-product-leo')]);
       mockTaskPool([
         { id: 'wi-orphan', status: 'queued', target: null },
       ]);
+
+      const { startTeamMember } = await import('./team.controller.js');
+
+      await startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          code: 'wake_gate_no_pool_work',
+        }),
+      );
+    });
+
+    it('still allows orphan-routing via the reconciler path (caller passes workItemId)', async () => {
+      // The reconciler hybrid-wake has already scored agents and decided
+      // an orphan WI routes to this member. It encodes that decision by
+      // passing `workItemId` in the body. The gate trusts it.
+      mockStorageService.getTeams.mockResolvedValue([buildTeamWithMember('crewly-product-leo')]);
+      mockTaskPool([
+        { id: 'wi-orphan-1', status: 'queued', target: null },
+      ]);
+      mockRequest.body = { workItemId: 'wi-orphan-1' };
 
       const { startTeamMember } = await import('./team.controller.js');
       mockApiContext.agentRegistrationService = {
