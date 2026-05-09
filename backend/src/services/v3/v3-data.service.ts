@@ -274,16 +274,37 @@ export class V3DataService {
         requestId: resolvedRequestId,
       });
 
-      // Auto-claim for the target agent so WorkItem transitions queued → running
-      try {
-        await taskPool.claimFromPool(event.assignedTo, { types: ['delegate'] });
-      } catch (claimErr) {
-        this.logger.debug('Auto-claim after delegation failed (non-fatal)', {
-          workItemId: workItem.id,
-          target: event.assignedTo,
-          error: claimErr instanceof Error ? claimErr.message : String(claimErr),
-        });
-      }
+      // Hygiene #5 + #3 — DO NOT auto-claim here.
+      //
+      // The previous block did `taskPool.claimFromPool(event.assignedTo,
+      // { types: ['delegate'] })` inline, which transitioned the WI to
+      // `running` synchronously. Two compounding failures fell out of
+      // that:
+      //
+      //   Hygiene #5 (poll-tasks race): the targeted agent's first
+      //     `poll-tasks` call returned `available: 0` because the WI was
+      //     already running. Workers had to fall back to direct curl
+      //     against /task-pool/complete to make progress. Steve, Sam,
+      //     Quinn, Max each hit this in the 5/9 wave.
+      //
+      //   Hygiene #3 (target rotation): `claimFromPool` was passed only
+      //     `{ types: ['delegate'] }` — no target filter. It then
+      //     FIFO-picked the oldest queued+unclaimed delegate WI in the
+      //     pool, which was often a DIFFERENT agent's targeted WI
+      //     (queued because that agent had not claimed yet). The mutator
+      //     unconditionally rewrote `wi.target = event.assignedTo`, so
+      //     a Quinn-targeted WI got rotated to Sam, etc. Pool target
+      //     rotated through 3-4 sessions during the wave (WI 6e532a8b,
+      //     598c91da, c443c2cd).
+      //
+      // Fix: leave the WI queued. Notification is the
+      // {@link WorkItemDispatchSubscriber}'s job — it pushes a
+      // [CREWLY-DISPATCH] message to `target` and the agent's own
+      // `poll-tasks` invocation transitions the WI to running with the
+      // target-respect gate added in the same change to claimFromPool.
+      // No race, no rotation. See spec /tmp/sam-brief-max-hygiene-5-and-3-2026-05-09.md
+      // and the regression tests in v3-data.service.test.ts +
+      // task-pool.service.test.ts (describe 'target-respect' blocks).
 
       // Link WorkItem to Request for bidirectional tracking
       if (resolvedRequestId) {

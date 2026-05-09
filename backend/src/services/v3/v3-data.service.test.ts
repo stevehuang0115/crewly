@@ -148,10 +148,22 @@ describe('V3DataService', () => {
       expect(addedItem.projectTaskId).toBe('task-1');
     });
 
-    it('should auto-claim WorkItem for target agent after addToPool', async () => {
+    it('should NOT auto-claim WorkItem at delegation time (Hygiene #5 race fix)', async () => {
+      // Pre-Hygiene-5 fix: onTaskDelegated called claimFromPool inline,
+      // transitioning the WI to running BEFORE the targeted agent had a
+      // chance to call poll-tasks. That created two compounding bugs:
+      //   - Hygiene #5: poll-tasks returned available=0 (status was
+      //     already running), forcing direct curl workarounds.
+      //   - Hygiene #3: claimFromPool was passed only `{ types: ['delegate'] }`
+      //     (no target filter), so it FIFO-picked any older queued
+      //     delegate WI and rotated its target to event.assignedTo.
+      //
+      // After fix: WI is created queued. Notification is owned by
+      // WorkItemDispatchSubscriber (already wired). Claim is owned by the
+      // agent's own poll-tasks call.
       const event: TaskDelegatedEvent = {
-        taskId: 'task-autoclaim',
-        title: 'Auto-claim test',
+        taskId: 'task-no-autoclaim',
+        title: 'No-auto-claim test',
         assignedTo: 'agent-max',
         projectPath: '/tmp/test',
         timestamp: new Date().toISOString(),
@@ -160,28 +172,17 @@ describe('V3DataService', () => {
       eventBus.emit('v3:task_delegated', event);
       await new Promise((r) => setTimeout(r, 50));
 
+      // WI is created and added to the pool.
       expect(mockAddToPool).toHaveBeenCalledTimes(1);
-      expect(mockClaimFromPool).toHaveBeenCalledTimes(1);
-      expect(mockClaimFromPool).toHaveBeenCalledWith('agent-max', { types: ['delegate'] });
-    });
+      const addedItem = mockAddToPool.mock.calls[0][0];
+      expect(addedItem.target).toBe('agent-max');
+      // Status is 'queued' — set by createWorkItem default, NOT mutated to running.
+      expect(addedItem.status).toBe('queued');
 
-    it('should not fail if auto-claim throws', async () => {
-      mockClaimFromPool.mockRejectedValueOnce(new Error('No items to claim'));
-
-      const event: TaskDelegatedEvent = {
-        taskId: 'task-claim-fail',
-        title: 'Claim failure test',
-        assignedTo: 'agent-leo',
-        projectPath: '/tmp/test',
-        timestamp: new Date().toISOString(),
-      };
-
-      eventBus.emit('v3:task_delegated', event);
-      await new Promise((r) => setTimeout(r, 50));
-
-      // addToPool should still succeed even if claimFromPool fails
-      expect(mockAddToPool).toHaveBeenCalledTimes(1);
-      expect(mockClaimFromPool).toHaveBeenCalledTimes(1);
+      // Critical regression assertion: claimFromPool MUST NOT be called
+      // synchronously by onTaskDelegated. The targeted agent claims via
+      // their own poll-tasks invocation.
+      expect(mockClaimFromPool).not.toHaveBeenCalled();
     });
 
     it('should skip duplicate WorkItems', async () => {
