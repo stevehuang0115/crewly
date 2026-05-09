@@ -27,6 +27,7 @@ import { PtySessionBackend } from '../../services/session/pty/pty-session-backen
 import { InProcessLogBuffer } from '../../services/agent/crewly-agent/in-process-log-buffer.js';
 import type { PendingWorkSummary, HeartbeatState } from '../../services/agent/adaptive-heartbeat.service.js';
 import { ADAPTIVE_HEARTBEAT_DEFAULTS } from '../../services/agent/adaptive-heartbeat.service.js';
+import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
 
 /**
  * Bracketed paste mode markers.
@@ -783,7 +784,7 @@ function mapKeyToSequence(key: string): string {
 export async function deliverMessage(this: ApiContext, req: Request, res: Response): Promise<void> {
 	try {
 		const { sessionName } = req.params;
-		const { message, runtimeType, waitForReady, waitTimeout, force } = req.body;
+		const { message, runtimeType, waitForReady, waitTimeout, force, senderSessionName } = req.body;
 
 		if (!sessionName) {
 			res.status(400).json({
@@ -983,6 +984,29 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			messageLength: message.length,
 			runtimeType: resolvedRuntimeType,
 		});
+
+		// F14: record `agent.action` with actionType='delegate' on
+		// successful delivery via the canonical /deliver endpoint. This
+		// is the path used by the `delegate-task` skill for both
+		// orchestrator→TL and TL→worker dispatches. The `agent` field is
+		// sourced from an OPTIONAL `senderSessionName` body param —
+		// callers that omit it (legacy / non-delegate writes) record an
+		// empty agent string, which downstream digests can filter out.
+		// Best-effort — never blocks the success response.
+		try {
+			getAgentBehaviorLogService()?.record({
+				type: 'agent.action',
+				agent: typeof senderSessionName === 'string' ? senderSessionName : '',
+				actionType: 'delegate',
+				details: {
+					recipient: sessionName,
+					messageLength: message.length,
+					runtimeType: resolvedRuntimeType,
+				},
+			});
+		} catch {
+			/* observability is best-effort */
+		}
 
 		res.json({
 			success: true,

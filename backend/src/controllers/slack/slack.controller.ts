@@ -15,6 +15,7 @@ import { getSlackOrchestratorBridge } from '../../services/slack/slack-orchestra
 import { saveSlackCredentials, deleteSlackCredentials, hasSavedCredentials } from '../../services/slack/slack-credentials.service.js';
 import { SlackConfig, SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS } from '../../constants.js';
+import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
 
 const router = Router();
 const SLACK_MANIFEST_PATH = path.join(process.cwd(), 'config', 'slack-app-manifest.json');
@@ -213,6 +214,27 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       text,
       threadTs,
     });
+
+    // F14: record `agent.action` with actionType='send_slack' on
+    // successful Slack send. Source `agent` from senderSessionName
+    // already on the request body. Best-effort — never blocks the
+    // response. Note: if sendMessage threw, we never reach here, and
+    // the slack.delivery.failed event was recorded at the throw site.
+    try {
+      getAgentBehaviorLogService()?.record({
+        type: 'agent.action',
+        agent: typeof senderSessionName === 'string' ? senderSessionName : '',
+        actionType: 'send_slack',
+        details: {
+          channelId,
+          threadTs: threadTs ?? null,
+          textLength: typeof text === 'string' ? text.length : 0,
+          deduplicated: messageTs === '',
+        },
+      });
+    } catch {
+      /* observability is best-effort */
+    }
 
     // Persist orchestrator/agent replies to chat store so they appear in the Chat UI.
     // Without this, replies sent via reply_slack only go to Slack and are invisible

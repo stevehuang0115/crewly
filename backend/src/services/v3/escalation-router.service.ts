@@ -20,6 +20,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { ensureDir, atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import type { AlignmentRequest } from '../../types/v2/work-item.types.js';
 import type { EscalationRule, Mission } from '../../types/v2/mission.types.js';
+import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,6 +97,47 @@ export class EscalationRouterService {
     workItemId: string,
     workerSession: string,
   ): Promise<string | null> {
+    // F14: record `agent.escalation` at the canonical worker→{TL,human}
+    // entry point. Best-effort — never blocks the escalation flow. Why
+    // this site: it is the single chokepoint every structured worker
+    // alignment request flows through (target='team_lead' or 'human').
+    // The `escalate` skill / send-message-with-action paths converge
+    // here. Recording earlier (e.g. inside the skill bash) loses the
+    // structured `target`/`reason` shape; recording later (inside
+    // notifyHuman / notifyAgent) misses the handled-by-agent branch
+    // when target='team_lead' returns null.
+    try {
+      getAgentBehaviorLogService()?.record({
+        type: 'agent.escalation',
+        escalatingAgent: workerSession,
+        escalatedTo: request.target,
+        reason: request.reason,
+        taskId: workItemId,
+        details: {
+          discoveredIssue: request.discoveredIssue,
+          decisionNeeded: request.decisionNeeded,
+        },
+      });
+      // F14 ask_human boundary: when an agent escalates to a human
+      // (Steve), this IS an `agent.action` with actionType='ask_human'.
+      // We record both events so digests can compute (a) raw escalation
+      // counts and (b) per-agent ask_human rates as a subset.
+      if (request.target === 'human') {
+        getAgentBehaviorLogService()?.record({
+          type: 'agent.action',
+          agent: workerSession,
+          actionType: 'ask_human',
+          taskId: workItemId,
+          details: {
+            reason: request.reason,
+            workItemId,
+          },
+        });
+      }
+    } catch {
+      /* observability is best-effort */
+    }
+
     if (request.target === 'human') {
       // Create persistent record + notify human
       const escalation = await this.createPendingEscalation({
