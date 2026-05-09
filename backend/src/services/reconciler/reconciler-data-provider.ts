@@ -267,6 +267,40 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         }
       }
 
+      // Add the orchestrator. orc is a virtual team member — it does NOT
+      // appear in `storage.getTeams()`, so the loop above misses it. Without
+      // this entry, any WorkItem with `target=crewly-orc` that transitions
+      // to `running` is mis-identified by `detectStuckWorkItems` as having
+      // a "missing agent", and gets force-demoted back to `blocked`. The
+      // dogfood symptom (2026-05-09): a Plan WI auto-claimed by orc bounced
+      // running → blocked → running → blocked in a wedged loop, the chained
+      // Execute + Review never unlocked, and the parent Slack Request
+      // emitted hours of identical "still 3 blocked" heartbeats.
+      //
+      // We treat any orchestrator status persisted via OrchestratorStatus
+      // as `active` for health-map purposes — the reconciler only needs
+      // "exists / does not exist" granularity here. If the orc isn't
+      // running we'd rather skip the entry than fabricate a stale one,
+      // so we honour the persisted agentStatus when available.
+      try {
+        const orcStatus = await this.storage.getOrchestratorStatus();
+        if (orcStatus?.sessionName) {
+          healthMap.set(orcStatus.sessionName, {
+            sessionName: orcStatus.sessionName,
+            status: this.mapAgentStatus(orcStatus.agentStatus),
+            lastSeenAt: orcStatus.updatedAt,
+            role: 'orchestrator',
+            tags: [],
+            activeWorkItemCount: 0,
+            // teamId/memberId intentionally undefined — orc is virtual.
+          });
+        }
+      } catch (orcErr) {
+        this.logger.debug('Failed to add orchestrator to health map (non-fatal)', {
+          error: orcErr instanceof Error ? orcErr.message : String(orcErr),
+        });
+      }
+
       // Enrich with active claim counts from the pool
       try {
         const pool = TaskPoolService.getInstance();
