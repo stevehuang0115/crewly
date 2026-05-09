@@ -122,6 +122,13 @@ function makeSubscriber(opts: {
   const requestService: RequestServiceLike = {
     getById: async (id: string) => requestStore.get(id) ?? null,
     listAll: async () => Array.from(requestStore.values()),
+    update: async (id: string, patch: Partial<Request>) => {
+      const existing = requestStore.get(id);
+      if (!existing) return null;
+      const next = { ...existing, ...patch } as Request;
+      requestStore.set(id, next);
+      return next;
+    },
   };
   const taskPool: TaskPoolServiceLike = {
     findWorkItem: async (id: string) => pool.find((w) => w.id === id),
@@ -451,6 +458,139 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     posted = await sub.runHeartbeat();
     expect(posted).toBe(0);
     expect(posts).toHaveLength(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // Stale-Request closure (2026-05-09 dogfood: Request 6d60a1cd had 4
+  // cancelled WIs but Request stayed in `ready` for hours, generating
+  // misleading "0/4, 进行中 0, 排队 0, 卡住 0" heartbeats every sweep
+  // because the heartbeat text omits the failed/cancelled bucket).
+  // -------------------------------------------------------------------------
+
+  it('closes a stale Request to `cancelled` when every child WI is cancelled', async () => {
+    const wis = [
+      makeWI({ id: 'wi-1', requestId: 'req-stale', status: 'cancelled' }),
+      makeWI({ id: 'wi-2', requestId: 'req-stale', status: 'cancelled' }),
+      makeWI({ id: 'wi-3', requestId: 'req-stale', status: 'cancelled' }),
+      makeWI({ id: 'wi-4', requestId: 'req-stale', status: 'cancelled' }),
+    ];
+    const r = makeRequest({ id: 'req-stale', status: 'ready' });
+    const { sub, posts, requestStore } = makeSubscriber({ request: r, pool: wis });
+
+    const posted = await sub.runHeartbeat();
+
+    expect(posted).toBe(0);                            // no misleading ping
+    expect(posts).toHaveLength(0);
+    expect(requestStore.get('req-stale')!.status).toBe('cancelled');
+  });
+
+  it('closes a stale Request to `done` when at least one child WI succeeded', async () => {
+    // Mixed-terminal: some WIs done, some cancelled (e.g. orc cancelled
+    // a follow-up after the main task succeeded). Should land on `done`,
+    // not `cancelled` — work happened.
+    const wis = [
+      makeWI({ id: 'wi-1', requestId: 'req-mixed', status: 'verified' }),
+      makeWI({ id: 'wi-2', requestId: 'req-mixed', status: 'cancelled' }),
+    ];
+    const r = makeRequest({ id: 'req-mixed', status: 'running' });
+    const { sub, posts, requestStore } = makeSubscriber({ request: r, pool: wis });
+
+    const posted = await sub.runHeartbeat();
+
+    expect(posted).toBe(0);
+    expect(posts).toHaveLength(0);
+    expect(requestStore.get('req-mixed')!.status).toBe('done');
+  });
+
+  it('hops `ready → running → done` when target is done but direct edge is illegal', async () => {
+    // REQUEST_TRANSITIONS doesn't allow `ready → done`. The closer must
+    // detect this and step through `running` rather than silently giving
+    // up. Without the hop, a Request whose first event was a successful
+    // verify (no intermediate `running` post) would be uncloseable.
+    const wis = [makeWI({ id: 'wi-1', requestId: 'req-ready-done', status: 'done' })];
+    const r = makeRequest({ id: 'req-ready-done', status: 'ready' });
+    const { sub, posts, requestStore } = makeSubscriber({ request: r, pool: wis });
+
+    const posted = await sub.runHeartbeat();
+
+    expect(posted).toBe(0);
+    expect(posts).toHaveLength(0);
+    expect(requestStore.get('req-ready-done')!.status).toBe('done');
+  });
+
+  it('does not crash when requestService.update throws during stale-close', async () => {
+    // Heartbeat sweep iterates every Request; a single update failure
+    // must not poison the rest of the sweep. The next Request still
+    // gets its heartbeat.
+    const wis = [
+      makeWI({ id: 'wi-1', requestId: 'req-broken', status: 'cancelled' }),
+      makeWI({ id: 'wi-2', requestId: 'req-broken', status: 'cancelled' }),
+      makeWI({ id: 'wi-3', requestId: 'req-other', status: 'running' }),
+    ];
+    const broken = makeRequest({ id: 'req-broken', status: 'ready' });
+    const other = makeRequest({ id: 'req-other', status: 'running' });
+
+    const { sub, posts, requestStore } = makeSubscriber({ request: broken, pool: wis });
+    requestStore.set(other.id, other);
+    const origUpdate = (sub as unknown as {
+      requestService: RequestServiceLike;
+    }).requestService.update;
+    (sub as unknown as { requestService: RequestServiceLike }).requestService.update = async (
+      id: string,
+      patch: Partial<Request>,
+    ) => {
+      if (id === 'req-broken') throw new Error('disk full');
+      return origUpdate(id, patch);
+    };
+
+    const posted = await sub.runHeartbeat();
+
+    expect(posted).toBe(1); // req-other still posted
+    expect(posts.some((p) => p.channelId)).toBe(true);
+    expect(requestStore.get('req-broken')!.status).toBe('ready'); // unchanged
+  });
+
+  // -------------------------------------------------------------------------
+  // Heartbeat text — surface the cancelled/failed bucket when non-zero.
+  // The original shape hid `failed` and rendered 4 cancelled WIs as
+  // "0/4 with all four buckets at 0", which read as "everything vanished"
+  // rather than "everything got cancelled".
+  // -------------------------------------------------------------------------
+
+  it('includes 取消/失败 count in heartbeat text when some WIs are cancelled', async () => {
+    // Mixed in-flight: 1 done, 1 running, 0 queued, 0 blocked, 2 cancelled.
+    // Not all-terminal, so the close path doesn't fire — heartbeat posts.
+    const wis = [
+      makeWI({ id: 'wi-1', requestId: 'req-mix', status: 'done' }),
+      makeWI({ id: 'wi-2', requestId: 'req-mix', status: 'running' }),
+      makeWI({ id: 'wi-3', requestId: 'req-mix', status: 'cancelled' }),
+      makeWI({ id: 'wi-4', requestId: 'req-mix', status: 'cancelled' }),
+    ];
+    const r = makeRequest({ id: 'req-mix', status: 'running' });
+    const { sub, posts } = makeSubscriber({ request: r, pool: wis });
+
+    const posted = await sub.runHeartbeat();
+
+    expect(posted).toBe(1);
+    expect(posts[0].text).toContain('1/4');
+    expect(posts[0].text).toContain('进行中 1');
+    expect(posts[0].text).toContain('取消/失败 2');
+  });
+
+  it('omits the 取消/失败 clause when no WIs are cancelled or failed', async () => {
+    // Avoid noise — only show the bucket when it's actually non-zero.
+    const wis = [
+      makeWI({ id: 'wi-1', requestId: 'req-clean', status: 'done' }),
+      makeWI({ id: 'wi-2', requestId: 'req-clean', status: 'running' }),
+    ];
+    const r = makeRequest({ id: 'req-clean', status: 'running' });
+    const { sub, posts } = makeSubscriber({ request: r, pool: wis });
+
+    const posted = await sub.runHeartbeat();
+
+    expect(posted).toBe(1);
+    expect(posts[0].text).not.toContain('取消');
+    expect(posts[0].text).not.toContain('失败');
   });
 });
 

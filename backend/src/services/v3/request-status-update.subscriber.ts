@@ -40,9 +40,32 @@
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { EventBusService, InProcessUnsubscribe } from '../event-bus/event-bus.service.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
-import type { Request } from '../../types/v2/request.types.js';
-import type { WorkItem } from '../../types/v2/work-item.types.js';
-import { TERMINAL_REQUEST_STATUSES } from '../../types/v2/index.js';
+import type { Request, RequestStatus } from '../../types/v2/request.types.js';
+import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
+import { TERMINAL_REQUEST_STATUSES, isValidRequestTransition } from '../../types/v2/index.js';
+
+/**
+ * WorkItem statuses that count as "terminal" for the heartbeat's
+ * is-this-Request-actually-still-in-flight check. Includes both
+ * success-shaped terminals (done/verified/done_by_worker) and
+ * abandoned-shaped terminals (cancelled/failed/rejected).
+ *
+ * If every child WI of a Request lands in this set but the Request
+ * itself is still non-terminal, something upstream skipped the cascade
+ * (see 2026-05-09 dogfood bug: `cascadeRequestStatus` only fires from
+ * the retired `v3:task_*` events on V3DataService, so out-of-band
+ * cancellations leave the Request orphaned in `ready`). The heartbeat
+ * sweep treats this as "close the Request" rather than firing a
+ * misleading "still 0/4" ping.
+ */
+const TERMINAL_WORKITEM_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>([
+  'done',
+  'verified',
+  'done_by_worker',
+  'cancelled',
+  'failed',
+  'rejected',
+]);
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -86,6 +109,13 @@ const SUBSCRIBED_EVENTS: readonly EventType[] = [
 export interface RequestServiceLike {
   getById(id: string): Promise<Request | null>;
   listAll(): Promise<Request[]>;
+  /**
+   * Patch a Request's persisted state. The heartbeat-driven cascade only
+   * uses `{ status }` to close stale-but-non-terminal Requests, but the
+   * production type signature is wider — keep the signature loose so
+   * fakes can pass `Partial<Request>` without compiler grief.
+   */
+  update(id: string, patch: Partial<Request>): Promise<unknown>;
 }
 
 /**
@@ -343,6 +373,23 @@ export class RequestStatusUpdateSubscriber {
       const childWIs = items.filter((wi) => wi.requestId === r.id);
       if (childWIs.length === 0) continue;
 
+      // All-terminal guard — when every child WI is terminal but the
+      // Request itself is still non-terminal, the cascade upstream got
+      // skipped (cascadeRequestStatus is wired to the retired
+      // `v3:task_*` events on V3DataService — see 2026-05-09 dogfood
+      // bug, Request 6d60a1cd had 4 cancelled WIs and the Request
+      // stayed in `ready` for hours, generating misleading
+      // "0/4, 进行中 0, 排队 0, 卡住 0" heartbeats every sweep).
+      // Close the Request instead of pinging the user with a
+      // confusing zero-everywhere line.
+      const allTerminal = childWIs.every((wi) =>
+        TERMINAL_WORKITEM_STATUSES.has(wi.status),
+      );
+      if (allTerminal) {
+        await this.closeStaleRequest(r, childWIs);
+        continue;
+      }
+
       const fingerprint = computeStateFingerprint(childWIs);
       const lastFp = this.lastHeartbeatFingerprint.get(r.id);
       if (lastFp === fingerprint) {
@@ -469,11 +516,79 @@ export class RequestStatusUpdateSubscriber {
       else if (s === 'failed' || s === 'cancelled') counts.failed++;
       else counts.other++;
     }
+    // Only surface the failed/cancelled bucket when it's non-zero.
+    // Hiding it unconditionally (the original shape) was the bug —
+    // 4 cancelled WIs rendered as "0/4, 进行中 0, 排队 0, 卡住 0",
+    // which reads as "everything vanished" rather than "everything
+    // got cancelled". The all-terminal guard in runHeartbeat now
+    // intercepts the pure-cancelled case, but a mixed Request with
+    // some cancelled and some still in-flight would still hit this
+    // path, so include the count for honesty.
+    const tail = counts.failed > 0 ? `, 取消/失败 ${counts.failed}` : '';
     return (
       `⏳ 还在做。已完成 ${counts.done}/${childWIs.length}, ` +
-      `进行中 ${counts.running}, 排队 ${counts.queued}, 卡住 ${counts.blocked}。` +
+      `进行中 ${counts.running}, 排队 ${counts.queued}, 卡住 ${counts.blocked}${tail}。` +
       ` 我会在有变化时再更新。`
     );
+  }
+
+  /**
+   * Close a Request whose every child WI has reached a terminal status
+   * but whose own status hasn't been cascaded. Picks `done` if any
+   * child landed on a success-shaped terminal; otherwise `cancelled`.
+   *
+   * Honours `REQUEST_TRANSITIONS` — `ready → done` is illegal in the
+   * state machine, so for `ready` Requests we step through `running`
+   * first (a single `running` hop is harmless because the Request is
+   * about to land in a terminal state immediately after).
+   *
+   * Best-effort. Logs but does not throw on failure: the heartbeat
+   * sweep must keep moving across other Requests.
+   */
+  private async closeStaleRequest(request: Request, childWIs: WorkItem[]): Promise<void> {
+    const hasSuccess = childWIs.some(
+      (wi) => wi.status === 'done' || wi.status === 'verified' || wi.status === 'done_by_worker',
+    );
+    const target: RequestStatus = hasSuccess ? 'done' : 'cancelled';
+
+    const log = (extra: Record<string, unknown> = {}) => ({
+      requestId: request.id,
+      previousStatus: request.status,
+      newStatus: target,
+      childCount: childWIs.length,
+      childStatuses: childWIs.map((wi) => wi.status),
+      ...extra,
+    });
+
+    try {
+      // Direct transition when allowed.
+      if (isValidRequestTransition(request.status, target)) {
+        await this.requestService.update(request.id, { status: target });
+        this.logger.info('Heartbeat closed stale Request (all children terminal)', log());
+        return;
+      }
+
+      // `ready → done` is invalid; step through `running` first.
+      // ready → running → done is the canonical path for Requests
+      // that bypassed the running stage entirely.
+      if (
+        target === 'done' &&
+        isValidRequestTransition(request.status, 'running') &&
+        isValidRequestTransition('running', 'done')
+      ) {
+        await this.requestService.update(request.id, { status: 'running' });
+        await this.requestService.update(request.id, { status: 'done' });
+        this.logger.info('Heartbeat closed stale Request via running hop', log());
+        return;
+      }
+
+      this.logger.warn('Heartbeat: stale Request close blocked by state machine', log());
+    } catch (err) {
+      this.logger.warn('Heartbeat: stale Request close failed', {
+        ...log(),
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
