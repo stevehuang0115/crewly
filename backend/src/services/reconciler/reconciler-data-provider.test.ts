@@ -37,6 +37,7 @@ jest.mock('../task-pool/task-pool.service.js', () => {
 jest.mock('../core/storage.service.js', () => {
   const mockStorage = {
     getTeams: jest.fn().mockResolvedValue([]),
+    getOrchestratorStatus: jest.fn().mockResolvedValue(null),
   };
   return {
     StorageService: {
@@ -423,6 +424,69 @@ describe('LiveReconcilerDataProvider', () => {
       const max = result.get('agent-max')!;
       expect(max.status).toBe('suspended');
       expect(max.activeWorkItemCount).toBe(0);
+    });
+
+    it('includes the orchestrator (virtual member) in the health map', async () => {
+      // Regression: orc is a virtual team member that does NOT live in
+      // teams.json. Without explicit injection, getAgentHealthMap omits it
+      // and detectStuckWorkItems treats every orc-claimed running WI as
+      // "missing agent" → demotes to blocked → infinite re-claim loop.
+      mockStorage.getTeams.mockResolvedValue([]);
+      mockStorage.getOrchestratorStatus.mockResolvedValue({
+        sessionName: 'crewly-orc',
+        agentStatus: 'active',
+        workingStatus: 'idle',
+        runtimeType: 'tmux',
+        createdAt: '2026-05-01T00:00:00Z',
+        updatedAt: '2026-05-09T01:19:00Z',
+      });
+      mockPool.getActiveClaims.mockResolvedValue([]);
+
+      const result = await provider.getAgentHealthMap();
+
+      const orc = result.get('crewly-orc');
+      expect(orc).toBeDefined();
+      expect(orc!.status).toBe('active');
+      expect(orc!.role).toBe('orchestrator');
+      expect(orc!.activeWorkItemCount).toBe(0);
+    });
+
+    it('counts active claims against the orchestrator', async () => {
+      mockStorage.getTeams.mockResolvedValue([]);
+      mockStorage.getOrchestratorStatus.mockResolvedValue({
+        sessionName: 'crewly-orc',
+        agentStatus: 'active',
+        workingStatus: 'in_progress',
+        runtimeType: 'tmux',
+        createdAt: '2026-05-01T00:00:00Z',
+        updatedAt: '2026-05-09T01:19:00Z',
+      });
+      mockPool.getActiveClaims.mockResolvedValue([{ agentId: 'crewly-orc' }]);
+
+      const result = await provider.getAgentHealthMap();
+
+      expect(result.get('crewly-orc')!.activeWorkItemCount).toBe(1);
+    });
+
+    it('omits the orchestrator if status persistence is empty (degrades gracefully)', async () => {
+      mockStorage.getTeams.mockResolvedValue([]);
+      mockStorage.getOrchestratorStatus.mockResolvedValue(null);
+      mockPool.getActiveClaims.mockResolvedValue([]);
+
+      const result = await provider.getAgentHealthMap();
+
+      expect(result.has('crewly-orc')).toBe(false);
+      expect(result.size).toBe(0);
+    });
+
+    it('does not throw if orchestrator status lookup fails', async () => {
+      mockStorage.getTeams.mockResolvedValue([]);
+      mockStorage.getOrchestratorStatus.mockRejectedValue(new Error('disk full'));
+      mockPool.getActiveClaims.mockResolvedValue([]);
+
+      const result = await provider.getAgentHealthMap();
+
+      expect(result.has('crewly-orc')).toBe(false);
     });
 
     it('maps agent statuses correctly', async () => {
