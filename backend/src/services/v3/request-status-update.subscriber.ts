@@ -41,31 +41,37 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { EventBusService, InProcessUnsubscribe } from '../event-bus/event-bus.service.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 import type { Request, RequestStatus } from '../../types/v2/request.types.js';
-import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
+import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { TERMINAL_WORK_ITEM_STATUSES } from '../../types/v2/work-item.types.js';
 import { TERMINAL_REQUEST_STATUSES, isValidRequestTransition } from '../../types/v2/index.js';
 
 /**
  * WorkItem statuses that count as "terminal" for the heartbeat's
- * is-this-Request-actually-still-in-flight check. Includes both
- * success-shaped terminals (done/verified/done_by_worker) and
- * abandoned-shaped terminals (cancelled/failed/rejected).
+ * is-this-Request-actually-still-in-flight check.
  *
- * If every child WI of a Request lands in this set but the Request
- * itself is still non-terminal, something upstream skipped the cascade
- * (see 2026-05-09 dogfood bug: `cascadeRequestStatus` only fires from
- * the retired `v3:task_*` events on V3DataService, so out-of-band
- * cancellations leave the Request orphaned in `ready`). The heartbeat
- * sweep treats this as "close the Request" rather than firing a
- * misleading "still 0/4" ping.
+ * Imported from `work-item.types.ts` so the closer agrees with the
+ * canonical contract (`{done, verified, cancelled}`) used by
+ * `RequestService.update`'s child-validation gate. The previous shape
+ * of this constant was wider — it also included `done_by_worker`,
+ * `failed`, and `rejected` — which produced a real bug:
+ *
+ * 2026-05-09 dogfood: a Request with one `done_by_worker` child (verify
+ * WI cancelled out-of-band) and two `cancelled` children was deemed
+ * "all terminal" by the closer, but `RequestService.update` then refused
+ * the close because `done_by_worker` is not in the canonical terminal
+ * set. The closer logged a confusing "stale Request close failed"
+ * warning every 30 minutes and the Request stayed wedged in `running`.
+ *
+ * Aligning the closer's set with the validation gate keeps both views
+ * consistent. Trade-off: Requests with stuck-but-recoverable children
+ * (`done_by_worker` awaiting verification, `failed` awaiting BRIDGE-1
+ * retry, `rejected` awaiting re-queue) are NOT auto-closed by the
+ * sweep — they stay in flight until the recovery path completes or a
+ * human cancels them. That's the right call: the closer's job is to
+ * mop up genuinely-finished Requests, not to short-circuit pipelines
+ * that are merely paused.
  */
-const TERMINAL_WORKITEM_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>([
-  'done',
-  'verified',
-  'done_by_worker',
-  'cancelled',
-  'failed',
-  'rejected',
-]);
+const TERMINAL_WORKITEM_STATUSES = TERMINAL_WORK_ITEM_STATUSES;
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -546,8 +552,12 @@ export class RequestStatusUpdateSubscriber {
    * sweep must keep moving across other Requests.
    */
   private async closeStaleRequest(request: Request, childWIs: WorkItem[]): Promise<void> {
+    // `done_by_worker` is filtered out by the all-terminal guard
+    // upstream (it's not in TERMINAL_WORKITEM_STATUSES anymore — see
+    // the constant definition for the rationale). So success only
+    // comes from `done` or `verified` here.
     const hasSuccess = childWIs.some(
-      (wi) => wi.status === 'done' || wi.status === 'verified' || wi.status === 'done_by_worker',
+      (wi) => wi.status === 'done' || wi.status === 'verified',
     );
     const target: RequestStatus = hasSuccess ? 'done' : 'cancelled';
 

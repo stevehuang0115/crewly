@@ -577,6 +577,53 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     expect(posts[0].text).toContain('取消/失败 2');
   });
 
+  it('does NOT close a Request whose child WI is done_by_worker (awaiting verification)', async () => {
+    // 2026-05-09 dogfood follow-up. The original closer treated
+    // `done_by_worker` as terminal, but `RequestService.update`'s
+    // child-validation gate only counts `{done, verified, cancelled}`
+    // — so the closer fired, the gate refused, and the Request logged
+    // a confusing "stale Request close failed" warning every sweep.
+    //
+    // Now the closer's terminal set is imported from work-item.types.ts
+    // (the canonical contract), so done_by_worker children short-circuit
+    // the all-terminal check and the closer skips entirely. The
+    // heartbeat post still fires (the user sees real progress: "1/2
+    // done, 0 in flight"), and the eventual verification → cascade
+    // path closes the Request properly.
+    const wis = [
+      makeWI({ id: 'wi-quinn', requestId: 'req-pending-verify', status: 'done_by_worker' }),
+      makeWI({ id: 'wi-canc',  requestId: 'req-pending-verify', status: 'cancelled' }),
+    ];
+    const r = makeRequest({ id: 'req-pending-verify', status: 'running' });
+    const { sub, posts, requestStore } = makeSubscriber({ request: r, pool: wis });
+
+    const posted = await sub.runHeartbeat();
+
+    // Closer must NOT have fired.
+    expect(requestStore.get('req-pending-verify')!.status).toBe('running');
+    // But the heartbeat itself still posts (Request IS in flight, the
+    // user wants to know the verify WI is the bottleneck).
+    expect(posted).toBe(1);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toContain('1/2');
+  });
+
+  it('does NOT close a Request whose child WI is failed (awaiting retry)', async () => {
+    // Same rationale as done_by_worker — `failed` is not in the
+    // canonical terminal set because BRIDGE-1 may re-queue it. The
+    // closer must defer to the recovery path.
+    const wis = [
+      makeWI({ id: 'wi-fail', requestId: 'req-fail', status: 'failed' }),
+      makeWI({ id: 'wi-done', requestId: 'req-fail', status: 'done' }),
+    ];
+    const r = makeRequest({ id: 'req-fail', status: 'running' });
+    const { sub, requestStore } = makeSubscriber({ request: r, pool: wis });
+
+    await sub.runHeartbeat();
+
+    expect(requestStore.get('req-fail')!.status).toBe('running');
+  });
+
   it('omits the 取消/失败 clause when no WIs are cancelled or failed', async () => {
     // Avoid noise — only show the bucket when it's actually non-zero.
     const wis = [
