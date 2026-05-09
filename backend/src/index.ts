@@ -72,6 +72,7 @@ import {
 	RequestDecomposeSubscriber,
 	setRequestDecomposeSubscriber,
 } from './services/v3/request-decompose.subscriber.js';
+import { RequestStatusUpdateSubscriber } from './services/v3/request-status-update.subscriber.js';
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
@@ -195,6 +196,7 @@ export class CrewlyServer {
 	private requestSlaSubscriber: RequestSlaSubscriber | null = null;
 	/** Pipeline-#4 follow-up: subscribes to request:created and auto-decomposes actionable L2 Requests via plan() → addToPool. */
 	private requestDecomposeSubscriber: RequestDecomposeSubscriber | null = null;
+	private requestStatusUpdateSubscriber: RequestStatusUpdateSubscriber | null = null;
 	private notifyReconciliationService!: NotifyReconciliationService;
 	private systemResourceAlertService!: SystemResourceAlertService;
 	private reconcilerService: ReconcilerService | null = null;
@@ -488,6 +490,28 @@ export class CrewlyServer {
 			);
 			this.requestDecomposeSubscriber.start();
 			setRequestDecomposeSubscriber(this.requestDecomposeSubscriber);
+
+			// Status-update subscriber: posts progress on Slack-originated
+			// Requests as their child WIs reach milestones, plus a heartbeat
+			// while work is still in flight. Closes the "long silence after
+			// orc's first ack" UX gap. Idempotent — duplicate boots are no-ops.
+			this.requestStatusUpdateSubscriber = new RequestStatusUpdateSubscriber({
+				eventBus: this.eventBusService,
+				requestService: RequestService.getInstance(),
+				taskPool: TaskPoolService.getInstance(),
+				slackPoster: async ({ channelId, text, threadTs }) => {
+					// Post via the in-process SlackService to avoid a self-HTTP
+					// hop. The /api/slack/send route's other side-effects (chat
+					// persistence, thread-status replied marker) don't apply
+					// to mid-thread heartbeat updates — those are only for
+					// the user's direct reply, not for orc's progress pings.
+					const slack = getSlackService();
+					if (!slack.isConnected()) return;
+					await slack.sendMessage({ channelId, text, threadTs });
+				},
+				heartbeatMinutes: 30,
+			});
+			this.requestStatusUpdateSubscriber.start();
 		} catch (subscriberBootErr) {
 			// Degraded mode: SLA tracking + auto-decompose are off, but the
 			// API surface and rest of the backend continue to serve. Ops can
@@ -508,6 +532,10 @@ export class CrewlyServer {
 			setRequestServiceEventBus(null);
 			this.requestSlaSubscriber = null;
 			this.requestDecomposeSubscriber = null;
+			if (this.requestStatusUpdateSubscriber) {
+				try { this.requestStatusUpdateSubscriber.stop(); } catch { /* best-effort */ }
+				this.requestStatusUpdateSubscriber = null;
+			}
 		}
 
 		// Initialize Slack thread store for persistent thread conversations
