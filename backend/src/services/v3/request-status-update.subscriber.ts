@@ -143,6 +143,37 @@ interface ParsedSlackContext {
  * @param scid - The Request's `sourceConversationItemId`
  * @returns Parsed context, or null if the id is not a Slack id we recognise
  */
+/**
+ * Compute a stable, content-only fingerprint of a Request's child-WI
+ * state. Two snapshots produce the same fingerprint iff every status
+ * count is equal — so a heartbeat that would say "still 3 blocked, 0
+ * done" matches the previous "still 3 blocked, 0 done" and gets
+ * suppressed by {@link RequestStatusUpdateSubscriber.runHeartbeat}.
+ *
+ * Uses status counts only — not WI ids or titles — so cosmetic
+ * re-decompositions of the same Request (different uuids, same shape)
+ * still match. WI churn that doesn't move the count needle isn't a
+ * progress signal.
+ *
+ * @param childWIs - All WIs whose `requestId` matches the parent
+ * @returns A short string fingerprint, e.g. `done=1,running=0,queued=0,blocked=3,failed=0,total=4`
+ */
+export function computeStateFingerprint(childWIs: WorkItem[]): string {
+  const counts = { done: 0, running: 0, queued: 0, blocked: 0, failed: 0 };
+  for (const wi of childWIs) {
+    const s = wi.status;
+    if (s === 'done' || s === 'verified' || s === 'done_by_worker') counts.done++;
+    else if (s === 'running') counts.running++;
+    else if (s === 'queued') counts.queued++;
+    else if (s === 'blocked') counts.blocked++;
+    else if (s === 'failed' || s === 'cancelled') counts.failed++;
+  }
+  return (
+    `done=${counts.done},running=${counts.running},queued=${counts.queued},` +
+    `blocked=${counts.blocked},failed=${counts.failed},total=${childWIs.length}`
+  );
+}
+
 export function parseSlackThreadContext(scid: string | undefined): ParsedSlackContext | null {
   if (!scid || !scid.startsWith('slack-')) return null;
   const m = scid.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
@@ -169,6 +200,25 @@ export class RequestStatusUpdateSubscriber {
 
   /** In-memory map: requestId → epoch ms of last status post. */
   private readonly lastPostedAt: Map<string, number> = new Map();
+  /**
+   * In-memory map: requestId → state-fingerprint of the last heartbeat
+   * post. The heartbeat sweep skips a Request if its current fingerprint
+   * matches the last one — there's no point telling the user "still 3
+   * blocked" once an hour when nothing has changed since the previous
+   * "still 3 blocked" message.
+   *
+   * Bug shape (2026-05-09 dogfood): a Slack thread received 7+ identical
+   * "⏳ 还在做。已完成 0/4, 进行中 0, 排队 0, 卡住 3" messages over the
+   * day because the WI state genuinely hadn't moved (Plan WI was wedged
+   * blocked) but the heartbeat cadence faithfully kept firing. Plain-
+   * language UX rule: a "no change" heartbeat IS noise, not signal.
+   *
+   * Fingerprint is derived from the {done, running, queued, blocked,
+   * failed, total} counts (see {@link buildHeartbeatText}). Only counts —
+   * not WI ids or titles — so cosmetic re-decompositions don't trigger
+   * a fresh ping.
+   */
+  private readonly lastHeartbeatFingerprint: Map<string, string> = new Map();
   /** In-flight async dispatch promises (test affordance). */
   private readonly pendingDispatches: Set<Promise<void>> = new Set();
 
@@ -284,16 +334,30 @@ export class RequestStatusUpdateSubscriber {
       if (last !== undefined && now - last < stalenessMs) continue;
 
       // No status update has been emitted for this Request since the
-      // heartbeat window started. Post a heartbeat unless there's
-      // genuinely nothing to report (zero in-flight WIs).
+      // heartbeat window started. Post a heartbeat unless either:
+      //   (a) there's genuinely nothing to report (zero in-flight WIs), or
+      //   (b) the WI state-fingerprint matches the last heartbeat — i.e.
+      //       nothing has changed since we last said "still 3 blocked",
+      //       so saying it again is noise.
       const items = await this.taskPool.getAllItems();
       const childWIs = items.filter((wi) => wi.requestId === r.id);
       if (childWIs.length === 0) continue;
+
+      const fingerprint = computeStateFingerprint(childWIs);
+      const lastFp = this.lastHeartbeatFingerprint.get(r.id);
+      if (lastFp === fingerprint) {
+        this.logger.debug('Heartbeat skipped — state unchanged since last post', {
+          requestId: r.id,
+          fingerprint,
+        });
+        continue;
+      }
 
       const text = this.buildHeartbeatText(r, childWIs);
       try {
         await this.slackPoster({ channelId: slackCtx.channelId, text, threadTs: slackCtx.threadTs });
         this.lastPostedAt.set(r.id, now);
+        this.lastHeartbeatFingerprint.set(r.id, fingerprint);
         posted++;
       } catch (err) {
         this.logger.warn('Heartbeat post failed', {
