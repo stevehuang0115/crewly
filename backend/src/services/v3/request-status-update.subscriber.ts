@@ -1,0 +1,470 @@
+/**
+ * RequestStatusUpdateSubscriber — pushes progress updates back to the user's
+ * Slack thread while a Request is in flight.
+ *
+ * **Why this exists.** 2026-05-09 dogfood feedback: when a Slack message
+ * triggers a Request that decomposes into Plan/Execute/Review WIs and
+ * runs for an hour, the user has no visibility into progress. orc replied
+ * once at the start ("[Plan] received, will arrange"), then went silent
+ * until — sometimes — a final completion broadcast much later. Owner-Facing
+ * Communication Standard (P0-6, PR #493) covers tone + jargon for the
+ * messages we DO send, but says nothing about cadence. Sustained silence
+ * during long-running work is its own UX failure: it forces the owner
+ * to ping "?" or guess whether anything is happening.
+ *
+ * **What this does.** Subscribes to the canonical lifecycle events on
+ * the bus and posts a brief, plain-language status update to the
+ * originating Slack thread when:
+ *   - a child WorkItem reaches done_by_worker / verified
+ *   - a child WI is rejected / blocked / failed
+ *   - the parent Request transitions to a terminal status
+ *
+ * Plus a heartbeat: if a Request has been in flight for longer than
+ * the heartbeat interval since the last status post, the subscriber
+ * emits a brief "still working" update. This catches the case where
+ * a single WI runs for hours without a milestone event firing.
+ *
+ * **What this is NOT.** This is not a replacement for orc's first reply
+ * (the SLA `respond_to_user` path handles that). It's a layer on top
+ * that fires only after the Request is past its initial ack and while
+ * downstream work is still moving.
+ *
+ * **Anti-spam.** The subscriber tracks `lastStatusPostedAt` per Request
+ * in memory. Non-milestone events within MIN_INTER_POST_MS of the last
+ * post are coalesced. Milestones (terminal Request status changes)
+ * always go through.
+ *
+ * @module services/v3/request-status-update.subscriber
+ */
+
+import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import type { EventBusService, InProcessUnsubscribe } from '../event-bus/event-bus.service.js';
+import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
+import type { Request } from '../../types/v2/request.types.js';
+import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { TERMINAL_REQUEST_STATUSES } from '../../types/v2/index.js';
+
+// ---------------------------------------------------------------------------
+// Tunables
+// ---------------------------------------------------------------------------
+
+/**
+ * Default heartbeat interval. The subscriber only emits a heartbeat when
+ * the request has been quiet (no other status post) for at least this long
+ * AND the request is still in flight.
+ */
+const DEFAULT_HEARTBEAT_MINUTES = 30;
+
+/**
+ * Minimum time between any two posts on the same thread. Non-milestone
+ * events landing inside this window are coalesced. Milestones (terminal
+ * Request status) bypass this check — the user always sees the final
+ * verdict.
+ */
+const MIN_INTER_POST_MS = 5 * 60 * 1000;
+
+/**
+ * Events the subscriber listens to.
+ */
+const SUBSCRIBED_EVENTS: readonly EventType[] = [
+  'task:done_by_worker',
+  'task:verified',
+  'task:rejected',
+  'task:blocked',
+  'task:failed',
+] as const;
+
+// ---------------------------------------------------------------------------
+// Dependency surface
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal view of {@link RequestService} this subscriber needs.
+ * Defining the surface explicitly lets tests pass a fake without dragging
+ * in the full service singleton.
+ */
+export interface RequestServiceLike {
+  getById(id: string): Promise<Request | null>;
+  listAll(): Promise<Request[]>;
+}
+
+/**
+ * Minimal view of {@link TaskPoolService} this subscriber needs.
+ *
+ * `findWorkItem` returns `WorkItem | undefined | null` because production
+ * `TaskPoolService.findWorkItem` returns `null` when the id is unknown,
+ * while in-process fakes typically return `undefined`. The subscriber
+ * treats both as "no WI" and short-circuits.
+ */
+export interface TaskPoolServiceLike {
+  findWorkItem(id: string): Promise<WorkItem | undefined | null>;
+  getAllItems(): Promise<WorkItem[]>;
+}
+
+/**
+ * Slack post adapter. The production wiring posts via the in-process
+ * SlackService; tests pass a stub that records the calls.
+ */
+export type SlackPoster = (params: { channelId: string; text: string; threadTs: string }) => Promise<void>;
+
+export interface RequestStatusUpdateSubscriberDependencies {
+  eventBus: EventBusService;
+  requestService: RequestServiceLike;
+  taskPool: TaskPoolServiceLike;
+  slackPoster: SlackPoster;
+  /** Heartbeat interval override. If 0, heartbeat is disabled. */
+  heartbeatMinutes?: number;
+  /** Optional logger override. */
+  logger?: ComponentLogger;
+  /** Test override for the heartbeat scheduler. Defaults to setInterval. */
+  scheduler?: {
+    setInterval: (fn: () => void, ms: number) => unknown;
+    clearInterval: (handle: unknown) => void;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Subscriber
+// ---------------------------------------------------------------------------
+
+interface ParsedSlackContext {
+  channelId: string;
+  threadTs: string;
+}
+
+/**
+ * Parse the `sourceConversationItemId` of a Slack-originated Request into
+ * the `(channelId, threadTs)` pair needed to post back to the same thread.
+ *
+ * Format: `slack-{channelId}-{ts1}.{ts2}` OR `slack-{channelId}-{ts1}-{ts2}`
+ * (the bridge stamps both shapes — the second is the underscore-friendly
+ * variant). The threadTs we want is `{ts1}.{ts2}` (dot-joined).
+ *
+ * @param scid - The Request's `sourceConversationItemId`
+ * @returns Parsed context, or null if the id is not a Slack id we recognise
+ */
+export function parseSlackThreadContext(scid: string | undefined): ParsedSlackContext | null {
+  if (!scid || !scid.startsWith('slack-')) return null;
+  const m = scid.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
+  if (!m) return null;
+  const [, channelId, ts1, ts2] = m;
+  return { channelId, threadTs: `${ts1}.${ts2}` };
+}
+
+export class RequestStatusUpdateSubscriber {
+  private readonly eventBus: EventBusService;
+  private readonly requestService: RequestServiceLike;
+  private readonly taskPool: TaskPoolServiceLike;
+  private readonly slackPoster: SlackPoster;
+  private readonly heartbeatMinutes: number;
+  private readonly logger: ComponentLogger;
+  private readonly scheduler: {
+    setInterval: (fn: () => void, ms: number) => unknown;
+    clearInterval: (handle: unknown) => void;
+  };
+
+  private unsubscribers: InProcessUnsubscribe[] = [];
+  private heartbeatHandle: unknown = null;
+  private started = false;
+
+  /** In-memory map: requestId → epoch ms of last status post. */
+  private readonly lastPostedAt: Map<string, number> = new Map();
+  /** In-flight async dispatch promises (test affordance). */
+  private readonly pendingDispatches: Set<Promise<void>> = new Set();
+
+  constructor(deps: RequestStatusUpdateSubscriberDependencies) {
+    this.eventBus = deps.eventBus;
+    this.requestService = deps.requestService;
+    this.taskPool = deps.taskPool;
+    this.slackPoster = deps.slackPoster;
+    this.heartbeatMinutes = deps.heartbeatMinutes ?? DEFAULT_HEARTBEAT_MINUTES;
+    this.logger =
+      deps.logger ?? LoggerService.getInstance().createComponentLogger('RequestStatusUpdateSubscriber');
+    this.scheduler = deps.scheduler ?? {
+      setInterval: (fn: () => void, ms: number) => {
+        const t = setInterval(fn, ms);
+        // Don't keep the event loop alive just for the heartbeat sweep.
+        if (typeof (t as { unref?: () => void }).unref === 'function') {
+          (t as { unref: () => void }).unref();
+        }
+        return t;
+      },
+      clearInterval: (h: unknown) => clearInterval(h as ReturnType<typeof setInterval>),
+    };
+  }
+
+  /**
+   * Subscribe to bus events + start the heartbeat sweep. Idempotent.
+   */
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+
+    for (const eventType of SUBSCRIBED_EVENTS) {
+      this.unsubscribers.push(
+        this.eventBus.onInProcess(eventType, (e) => this.safeDispatch(eventType, e)),
+      );
+    }
+
+    if (this.heartbeatMinutes > 0) {
+      const intervalMs = this.heartbeatMinutes * 60 * 1000;
+      this.heartbeatHandle = this.scheduler.setInterval(() => {
+        // Don't await — this runs at scheduler cadence; an overlapping
+        // sweep is best left to skip itself via the inter-post window.
+        this.runHeartbeat().catch((err) => {
+          this.logger.warn('Heartbeat sweep threw', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }, intervalMs);
+    }
+
+    this.logger.info('RequestStatusUpdateSubscriber subscribed', {
+      eventTypes: SUBSCRIBED_EVENTS,
+      heartbeatMinutes: this.heartbeatMinutes,
+    });
+  }
+
+  /**
+   * Detach subscriptions + stop heartbeat. Safe to call repeatedly.
+   */
+  stop(): void {
+    for (const unsubscribe of this.unsubscribers) {
+      try {
+        unsubscribe();
+      } catch (err) {
+        this.logger.warn('Status-update unsubscribe threw', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    this.unsubscribers = [];
+    if (this.heartbeatHandle !== null) {
+      this.scheduler.clearInterval(this.heartbeatHandle);
+      this.heartbeatHandle = null;
+    }
+    this.started = false;
+  }
+
+  /**
+   * Wait for in-flight async dispatches to settle. Test affordance.
+   */
+  async flushPending(): Promise<void> {
+    while (this.pendingDispatches.size > 0) {
+      const inFlight = Array.from(this.pendingDispatches);
+      await Promise.allSettled(inFlight);
+    }
+  }
+
+  /**
+   * Manual trigger for the heartbeat sweep. Test affordance + ops button.
+   */
+  async runHeartbeat(): Promise<number> {
+    let posted = 0;
+    let allRequests: Request[];
+    try {
+      allRequests = await this.requestService.listAll();
+    } catch (err) {
+      this.logger.warn('Heartbeat: listAll failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return 0;
+    }
+
+    const now = Date.now();
+    const stalenessMs = this.heartbeatMinutes * 60 * 1000;
+
+    for (const r of allRequests) {
+      // Only follow up on Slack-originated, non-terminal Requests.
+      if (TERMINAL_REQUEST_STATUSES.has(r.status)) continue;
+      const slackCtx = parseSlackThreadContext(r.sourceConversationItemId);
+      if (!slackCtx) continue;
+
+      const last = this.lastPostedAt.get(r.id);
+      if (last !== undefined && now - last < stalenessMs) continue;
+
+      // No status update has been emitted for this Request since the
+      // heartbeat window started. Post a heartbeat unless there's
+      // genuinely nothing to report (zero in-flight WIs).
+      const items = await this.taskPool.getAllItems();
+      const childWIs = items.filter((wi) => wi.requestId === r.id);
+      if (childWIs.length === 0) continue;
+
+      const text = this.buildHeartbeatText(r, childWIs);
+      try {
+        await this.slackPoster({ channelId: slackCtx.channelId, text, threadTs: slackCtx.threadTs });
+        this.lastPostedAt.set(r.id, now);
+        posted++;
+      } catch (err) {
+        this.logger.warn('Heartbeat post failed', {
+          requestId: r.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    if (posted > 0) {
+      this.logger.info('Heartbeat sweep posted updates', { count: posted });
+    }
+    return posted;
+  }
+
+  // -------------------------------------------------------------------------
+  // Event handler
+  // -------------------------------------------------------------------------
+
+  private async handleTaskEvent(eventType: EventType, event: AgentEvent): Promise<void> {
+    const workItemId = event.workItemId ?? this.extractWorkItemId(event);
+    if (!workItemId) return;
+    const wi = await this.taskPool.findWorkItem(workItemId);
+    if (!wi || !wi.requestId) return;
+    const request = await this.requestService.getById(wi.requestId);
+    if (!request) return;
+    const slackCtx = parseSlackThreadContext(request.sourceConversationItemId);
+    if (!slackCtx) return;
+
+    // Spam guard: coalesce non-milestone events within the inter-post window.
+    // We treat all task lifecycle events as non-milestone here. The Request
+    // terminal cascade fires `request:status` events on the SlackBridge SLA
+    // path, where the existing `markResolvedByThread` handles user-facing
+    // closure separately.
+    const last = this.lastPostedAt.get(request.id);
+    if (last !== undefined && Date.now() - last < MIN_INTER_POST_MS) {
+      this.logger.debug('Coalesced status update (within MIN_INTER_POST_MS)', {
+        requestId: request.id,
+        eventType,
+        sinceLastMs: Date.now() - last,
+      });
+      return;
+    }
+
+    const text = this.buildEventText(eventType, wi, request);
+    try {
+      await this.slackPoster({ channelId: slackCtx.channelId, text, threadTs: slackCtx.threadTs });
+      this.lastPostedAt.set(request.id, Date.now());
+    } catch (err) {
+      this.logger.warn('Status update post failed', {
+        requestId: request.id,
+        eventType,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Best-effort `workItemId` extraction from an event payload. Newer
+   * publishers set the canonical field; older ones encode it on
+   * `eventId` (`task:done_by_worker:{workItemId}` shape).
+   */
+  private extractWorkItemId(event: AgentEvent): string | undefined {
+    if (event.workItemId) return event.workItemId;
+    const eid = event.id ?? '';
+    const match = eid.match(/^task:[^:]+:(.+)$/);
+    if (match) return match[1];
+    return undefined;
+  }
+
+  // -------------------------------------------------------------------------
+  // Message templates (plain language, per Owner-Facing Comm Standard P0-6)
+  // -------------------------------------------------------------------------
+
+  private buildEventText(eventType: EventType, wi: WorkItem, _request: Request): string {
+    const titleShort = (wi.title ?? '').split('\n')[0].slice(0, 60);
+    const targetShort = humanizeAgentName(wi.target);
+    switch (eventType) {
+      case 'task:done_by_worker':
+        return `✅ ${targetShort} 完成了「${titleShort}」, 等下一步。`;
+      case 'task:verified':
+        return `🟢 「${titleShort}」已通过检查。`;
+      case 'task:rejected':
+        return `🔁 「${titleShort}」检查未通过, 让 ${targetShort} 重做。`;
+      case 'task:blocked':
+        return `⛔ 「${titleShort}」卡住了 (target=${targetShort})。我会跟进。`;
+      case 'task:failed':
+        return `❌ 「${titleShort}」失败 (target=${targetShort})。我会跟进或转交。`;
+      default:
+        return `更新: 「${titleShort}」状态变化 (${eventType})。`;
+    }
+  }
+
+  private buildHeartbeatText(_request: Request, childWIs: WorkItem[]): string {
+    const counts = {
+      done: 0,
+      running: 0,
+      queued: 0,
+      blocked: 0,
+      failed: 0,
+      other: 0,
+    };
+    for (const wi of childWIs) {
+      const s = wi.status;
+      if (s === 'done' || s === 'verified' || s === 'done_by_worker') counts.done++;
+      else if (s === 'running') counts.running++;
+      else if (s === 'queued') counts.queued++;
+      else if (s === 'blocked') counts.blocked++;
+      else if (s === 'failed' || s === 'cancelled') counts.failed++;
+      else counts.other++;
+    }
+    return (
+      `⏳ 还在做。已完成 ${counts.done}/${childWIs.length}, ` +
+      `进行中 ${counts.running}, 排队 ${counts.queued}, 卡住 ${counts.blocked}。` +
+      ` 我会在有变化时再更新。`
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Plumbing
+  // -------------------------------------------------------------------------
+
+  private safeDispatch(eventType: EventType, event: AgentEvent): Promise<void> {
+    const dispatch = (async () => {
+      try {
+        await this.handleTaskEvent(eventType, event);
+      } catch (err) {
+        this.logger.error('Status-update handler threw', {
+          eventType,
+          eventId: event.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+    this.pendingDispatches.add(dispatch);
+    dispatch.finally(() => {
+      this.pendingDispatches.delete(dispatch);
+    });
+    return dispatch;
+  }
+}
+
+/**
+ * Translate an internal session name into something the owner recognises.
+ * Mirrors the spirit of P0-6 Owner-Facing Communication Standard rule 4
+ * ("Translate every internal term before sending"). The rule is a loose
+ * one — the goal is "less jargony", not "perfect human name lookup".
+ *
+ * @param sessionName - e.g. 'crewly-product-leo-21a5477e' or 'crewly-orc'
+ * @returns A short label suitable for Slack ('Leo', 'Orc', 'Sam', ...)
+ */
+function humanizeAgentName(sessionName: string | undefined): string {
+  if (!sessionName) return '团队';
+  if (sessionName === 'crewly-orc') return 'Orc';
+  // crewly-product-leo-21a5477e → 'Leo'
+  // crewly-marketing-luna-... → 'Luna'
+  // flopost-pia-... → 'Pia'
+  const parts = sessionName.split('-');
+  // Heuristic: pick the first segment that is a short alpha word and
+  // is neither the team prefix ('crewly', 'flopost', 'product', 'marketing',
+  // ...) nor an id segment.
+  const skip = new Set([
+    'crewly', 'product', 'marketing', 'flopost', 'support',
+    'auditor', 'team', 'pro', 'orc', 'agent',
+  ]);
+  for (const p of parts) {
+    if (!p) continue;
+    if (skip.has(p)) continue;
+    if (/^[a-z]{2,12}$/.test(p)) {
+      return p.charAt(0).toUpperCase() + p.slice(1);
+    }
+  }
+  return sessionName;
+}
