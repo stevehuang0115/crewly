@@ -404,4 +404,93 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     expect(posts).toHaveLength(1);
     sub.stop();
   });
+
+  it('suppresses identical-content heartbeats (state-fingerprint dedupe regression gate)', async () => {
+    // 2026-05-09 dogfood: a Slack thread received 7+ identical "still 3
+    // blocked" messages over the day because WI state genuinely hadn't
+    // moved (Plan WI was wedged blocked → Execute + Review depend-blocked)
+    // but the heartbeat cadence faithfully kept firing. The dedupe must
+    // suppress repeat heartbeats while state is unchanged AND emit a
+    // fresh heartbeat as soon as state moves.
+    const wi1 = makeWI({ id: 'wi-1', requestId: 'req-stuck', status: 'blocked', target: '' });
+    const wi2 = makeWI({ id: 'wi-2', requestId: 'req-stuck', status: 'blocked', target: '' });
+    const wi3 = makeWI({ id: 'wi-3', requestId: 'req-stuck', status: 'blocked', target: '' });
+    const r = makeRequest({ id: 'req-stuck', status: 'running' });
+
+    const pool: WorkItem[] = [wi1, wi2, wi3];
+    const { sub, posts } = makeSubscriber({ request: r, pool, heartbeatMinutes: 30 });
+
+    // First sweep — fingerprint not seen before, post.
+    let posted = await sub.runHeartbeat();
+    expect(posted).toBe(1);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toContain('卡住 3');
+
+    // Hour later, no state change — fingerprint matches, suppress.
+    jest.setSystemTime(new Date('2026-05-09T02:00:00.000Z'));
+    posted = await sub.runHeartbeat();
+    expect(posted).toBe(0);
+    expect(posts).toHaveLength(1);
+
+    // Another hour, still no change — still suppress.
+    jest.setSystemTime(new Date('2026-05-09T03:00:00.000Z'));
+    posted = await sub.runHeartbeat();
+    expect(posted).toBe(0);
+    expect(posts).toHaveLength(1);
+
+    // State changes (one WI unblocks → running). Fresh fingerprint, post.
+    pool[0].status = 'running';
+    jest.setSystemTime(new Date('2026-05-09T04:00:00.000Z'));
+    posted = await sub.runHeartbeat();
+    expect(posted).toBe(1);
+    expect(posts).toHaveLength(2);
+    expect(posts[1].text).toContain('进行中 1');
+
+    // Same state again, suppress.
+    jest.setSystemTime(new Date('2026-05-09T05:00:00.000Z'));
+    posted = await sub.runHeartbeat();
+    expect(posted).toBe(0);
+    expect(posts).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeStateFingerprint
+// ---------------------------------------------------------------------------
+
+describe('computeStateFingerprint', () => {
+  it('produces identical fingerprint when only WI ids change but counts match', () => {
+    // Imagine a re-decompose that swaps WI uuids but produces the same
+    // 1 done / 0 running / 0 queued / 3 blocked / 0 failed shape. We
+    // do NOT want this to look like progress — content fingerprint is
+    // counts only.
+    const { computeStateFingerprint } = require('./request-status-update.subscriber.js');
+    const a = [
+      makeWI({ id: 'a-1', status: 'done' }),
+      makeWI({ id: 'a-2', status: 'blocked' }),
+      makeWI({ id: 'a-3', status: 'blocked' }),
+      makeWI({ id: 'a-4', status: 'blocked' }),
+    ];
+    const b = [
+      makeWI({ id: 'b-X', status: 'done' }),
+      makeWI({ id: 'b-Y', status: 'blocked' }),
+      makeWI({ id: 'b-Z', status: 'blocked' }),
+      makeWI({ id: 'b-Q', status: 'blocked' }),
+    ];
+    expect(computeStateFingerprint(a)).toBe(computeStateFingerprint(b));
+  });
+
+  it('produces different fingerprint when a single WI moves status', () => {
+    const { computeStateFingerprint } = require('./request-status-update.subscriber.js');
+    const before = [makeWI({ status: 'blocked' }), makeWI({ status: 'blocked' })];
+    const after = [makeWI({ status: 'blocked' }), makeWI({ status: 'running' })];
+    expect(computeStateFingerprint(before)).not.toBe(computeStateFingerprint(after));
+  });
+
+  it('treats done/verified/done_by_worker as the same "done" bucket', () => {
+    const { computeStateFingerprint } = require('./request-status-update.subscriber.js');
+    const a = [makeWI({ status: 'done' }), makeWI({ status: 'done' })];
+    const b = [makeWI({ status: 'verified' }), makeWI({ status: 'done_by_worker' })];
+    expect(computeStateFingerprint(a)).toBe(computeStateFingerprint(b));
+  });
 });
