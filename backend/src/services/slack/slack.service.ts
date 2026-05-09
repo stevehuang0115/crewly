@@ -25,6 +25,7 @@ import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
+import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
 
 /**
  * Events emitted by SlackService
@@ -834,6 +835,28 @@ export class SlackService extends EventEmitter {
       return result.ts || '';
     } catch (error) {
       this.logger.error('Send message error', { error: error instanceof Error ? (error as Error).message : String(error) });
+
+      // F14: record slack.delivery.failed event (best-effort — never
+      // changes retry semantics or throws). The wrapper swallows
+      // construction errors and `record()` itself swallows DB errors.
+      try {
+        const errMessage =
+          error instanceof Error ? error.message : String(error);
+        getAgentBehaviorLogService()?.record({
+          type: 'slack.delivery.failed',
+          agent: '',
+          thread: `${message.channelId}:${message.threadTs ?? ''}`,
+          reason: 'api_error',
+          details: {
+            errorMessage: errMessage,
+            textLength: (message.text ?? '').length,
+            hasBlocks: Array.isArray(message.blocks) && message.blocks.length > 0,
+          },
+        });
+      } catch {
+        /* observability is best-effort — never block the original throw */
+      }
+
       throw error;
     }
   }

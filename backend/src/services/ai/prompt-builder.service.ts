@@ -7,6 +7,44 @@ import { SOPService } from '../sop/sop.service.js';
 import { getRoleService } from '../settings/role.service.js';
 import { PromptAssemblyService } from './prompt-modules/prompt-assembly.service.js';
 import type { ModuleConfig, OrgRole } from './prompt-modules/prompt-module.interface.js';
+import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
+
+/**
+ * F14: record a `prompt.size.bytes` telemetry event after the
+ * PromptAssemblyService finishes producing a final prompt. Centralised
+ * helper called from each `assembler.assemble(...)` callsite so the two
+ * paths in this service (team-context vs SessionConfig-only) share the
+ * same recording shape.
+ *
+ * Best-effort — swallows all errors. Never blocks prompt-building.
+ *
+ * @param prompt - Final assembled prompt string
+ * @param sessionName - Session name whose prompt was assembled
+ * @param details - Optional extra fields (component breakdown, role, etc.)
+ */
+function recordPromptSize(
+	prompt: string,
+	sessionName: string,
+	details: Record<string, unknown>,
+): void {
+	try {
+		// Byte length per UTF-8 spec — Buffer.byteLength is exact.
+		// Falls back to string length for environments without Buffer.
+		const bytes =
+			typeof Buffer !== 'undefined'
+				? Buffer.byteLength(prompt, 'utf8')
+				: prompt.length;
+		getAgentBehaviorLogService()?.record({
+			type: 'prompt.size.bytes',
+			agent: sessionName || '',
+			bytes,
+			sessionId: sessionName || undefined,
+			details,
+		});
+	} catch {
+		/* observability is best-effort */
+	}
+}
 
 // =============================================================================
 // WIRE-1: Autonomy field injection helpers
@@ -592,6 +630,16 @@ Recursion clause: every delegator hop carries this rule — ORC→TL, TL→Worke
 		const assembler = new PromptAssemblyService();
 		const { prompt, report } = await assembler.assemble(moduleConfig);
 
+		// F14 callsite 1/2: prompt.size.bytes (team-context path).
+		recordPromptSize(prompt, runtime.sessionName, {
+			path: 'team-context',
+			role: member.role,
+			memberId: member.id,
+			teamId: team.id,
+			tokens: report.totalTokens,
+			moduleCount: report.moduleBreakdown.length,
+		});
+
 		this.logger.info('Modular prompt assembled (team-context path)', {
 			sessionName: runtime.sessionName,
 			memberId: member.id,
@@ -663,6 +711,16 @@ Recursion clause: every delegator hop carries this rule — ORC→TL, TL→Worke
 
 		const assembler = new PromptAssemblyService();
 		const { prompt, report } = await assembler.assemble(moduleConfig);
+
+		// F14 callsite 2/2: prompt.size.bytes (SessionConfig-only path).
+		recordPromptSize(prompt, config.name, {
+			path: 'session-config',
+			role: config.role,
+			memberId: config.memberId ?? '',
+			teamId: config.teamId ?? '',
+			tokens: report.totalTokens,
+			moduleCount: report.moduleBreakdown.length,
+		});
 
 		this.logger.info('Modular prompt assembled', {
 			sessionName: config.name,
