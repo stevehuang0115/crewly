@@ -38,7 +38,11 @@ function makeWorkItem(overrides?: Record<string, unknown>) {
     type: 'delegate',
     owner: 'agent',
     title: 'Test task',
-    target: 'agent-1',
+    // Hygiene #3: default target=undefined so existing tests that claim
+    // with arbitrary agent ids continue to pass after the target-respect
+    // gate landed in claimFromPool / claimSpecificItem. Tests that need
+    // an explicit target pass it via overrides — see e.g. the
+    // "target-respect" describe block below for #3 regression coverage.
     ...overrides,
   });
 }
@@ -558,6 +562,205 @@ describe('TaskPoolService', () => {
       // Storage must reflect a single active claim, not two.
       const snapshot = await service.getPoolStatus();
       expect(snapshot.claimed).toBe(1);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Hygiene #3 — target-respect (target rotation regression)
+  //
+  // Before fix: claimFromPool/claimSpecificItem unconditionally rewrote
+  // wi.target = agentId at claim time. When v3-data.service.ts:279 fired
+  // claimFromPool(newAgent, { types: ['delegate'] }) without a target
+  // filter, the FIFO-oldest queued+unclaimed delegate WI got its target
+  // rotated from its original target to newAgent. Steve, Sam, Quinn each
+  // hit this in the 5/9 wave (WI 6e532a8b: Quinn → flopost-dex → null →
+  // flopost-dex; WI 598c91da: Quinn → Sam).
+  //
+  // After fix: a WI with target=A is claimable ONLY by A (or by anyone
+  // when target=undefined, the no-target broadcast pool). Other agents
+  // are silently skipped during candidate selection so they never even
+  // enter the transitionStatus mutator that would have rewritten target.
+  // -----------------------------------------------------------------------
+
+  describe('claimFromPool — target-respect (Hygiene #3)', () => {
+    it('does NOT rotate target when a non-matching agent claims (regression)', async () => {
+      // Insert a WI explicitly targeted at agent-quinn.
+      const wi = makeWorkItem({ title: "Quinn's task", target: 'agent-quinn' });
+      await service.addToPool(wi);
+
+      // Sam tries to claim with no target filter — the SAME shape that
+      // v3-data.service.ts onTaskDelegated used to fire (and rotated
+      // Quinn's WI to Sam in production).
+      const result = await service.claimFromPool('agent-sam', {
+        types: ['delegate'],
+      });
+
+      // After fix: Sam cannot claim Quinn's WI. result is null.
+      expect(result).toBeNull();
+
+      // The WI's target field is preserved as 'agent-quinn'.
+      const items = await service.getAllItems();
+      const stored = items.find((i) => i.id === wi.id)!;
+      expect(stored.target).toBe('agent-quinn');
+      expect(stored.status).toBe('queued'); // status also untouched
+    });
+
+    it('allows the matching target to claim their own WI', async () => {
+      const wi = makeWorkItem({ title: "Quinn's task", target: 'agent-quinn' });
+      await service.addToPool(wi);
+
+      const result = await service.claimFromPool('agent-quinn', {
+        types: ['delegate'],
+      });
+
+      expect(result).not.toBeNull();
+      expect(result!.workItem.target).toBe('agent-quinn');
+      expect(result!.workItem.status).toBe('running');
+    });
+
+    it('still allows any agent to claim a no-target broadcast WI', async () => {
+      // No target — broadcast pool item.
+      const wi = makeWorkItem({ title: 'Broadcast', target: undefined });
+      await service.addToPool(wi);
+
+      const result = await service.claimFromPool('agent-sam');
+      expect(result).not.toBeNull();
+      expect(result!.workItem.target).toBe('agent-sam');
+      expect(result!.workItem.status).toBe('running');
+    });
+
+    it('skips mismatched targets to find the next eligible WI', async () => {
+      // Two queued WIs: Quinn's first (oldest, FIFO), then Sam's broadcast.
+      const wi1 = makeWorkItem({ title: "Quinn's", target: 'agent-quinn' });
+      wi1.createdAt = new Date(Date.now() - 10000).toISOString();
+      const wi2 = makeWorkItem({ title: 'Broadcast', target: undefined });
+      wi2.createdAt = new Date().toISOString();
+
+      await service.addToPool(wi1);
+      await service.addToPool(wi2);
+
+      // Sam claims with no filter — pre-fix would FIFO-pick Quinn's and
+      // rotate target. After fix: Sam skips Quinn's (target mismatch) and
+      // picks the broadcast WI.
+      const result = await service.claimFromPool('agent-sam');
+      expect(result).not.toBeNull();
+      expect(result!.workItem.id).toBe(wi2.id);
+      expect(result!.workItem.title).toBe('Broadcast');
+
+      // Quinn's WI is still queued with original target preserved.
+      const items = await service.getAllItems();
+      const quinnsItem = items.find((i) => i.id === wi1.id)!;
+      expect(quinnsItem.target).toBe('agent-quinn');
+      expect(quinnsItem.status).toBe('queued');
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Path-B regression — atomic-claim (claim preserved) target rotation
+  //
+  // Sam captured a 4th wave-instance: WI da8c02b8 was created with
+  // target=Quinn AND a pre-existing active TaskClaim for Quinn (Sam's
+  // manual mitigation). 7 minutes later the target rotated to Sam while
+  // the claim record stayed with Quinn — a rotation path that does NOT
+  // go through claimFromPool/claimSpecificItem (those would have created
+  // a new claim record for Sam).
+  //
+  // Hypothesis verified by these tests: my fix does cover path-B
+  // incidentally because:
+  //   - The pre-existing `!claimedIds.has(wi.id)` filter (line 597)
+  //     already excludes any WI with an active claim from candidate
+  //     selection.
+  //   - The new target-respect filter additionally excludes any WI
+  //     whose target ≠ requesting agent.
+  // Both gates fire BEFORE the transitionStatus mutator that previously
+  // rewrote target. So even if some hypothetical path-B caller triggered
+  // claimFromPool/claimSpecificItem on a claim-preserved WI, the rotation
+  // would short-circuit at filter time.
+  //
+  // If a future path-B is identified that bypasses both gates (e.g. a
+  // direct storage.updateWorkItem(wi.target=...) write outside this
+  // service), these tests document the contract that must hold.
+  // ---------------------------------------------------------------------
+
+  describe('claimFromPool — atomic-claim path-B regression (Hygiene #3)', () => {
+    it('refuses to rotate target on a queued WI that has an active claim record', async () => {
+      // Sam's mitigation pattern: create a WI with target=Quinn AND
+      // pre-attach an active TaskClaim for Quinn (atomic-claim).
+      const wi = makeWorkItem({ title: "Quinn's atomic", target: 'agent-quinn' });
+      await service.addToPool(wi);
+      // Pre-attach an active claim record for Quinn directly on storage.
+      // This simulates the atomic-claim creation pattern Sam used.
+      const existingClaim = {
+        id: 'claim-pre-existing',
+        workItemId: wi.id,
+        agentId: 'agent-quinn',
+        status: 'active' as const,
+        claimedAt: new Date().toISOString(),
+        leaseExpiresAt: new Date(Date.now() + 600000).toISOString(),
+        lastHeartbeatAt: new Date().toISOString(),
+        extensionCount: 0,
+        maxExtensions: 3,
+        leaseDurationMs: 600000,
+      };
+      await storage.addClaim(existingClaim);
+
+      // Sam tries to claim with no target filter — pre-fix this rotated
+      // target. Path-B claim: even if this path were invoked, both the
+      // claimedIds gate AND the target-respect gate must refuse.
+      const result = await service.claimFromPool('agent-sam', {
+        types: ['delegate'],
+      });
+
+      expect(result).toBeNull();
+
+      // Target preserved — no rotation. Claim record preserved.
+      const items = await service.getAllItems();
+      const stored = items.find((i) => i.id === wi.id)!;
+      expect(stored.target).toBe('agent-quinn');
+      expect(stored.status).toBe('queued');
+
+      const claims = await service.getActiveClaims();
+      const ourClaim = claims.find((c) => c.workItemId === wi.id);
+      expect(ourClaim).toBeDefined();
+      expect(ourClaim!.agentId).toBe('agent-quinn');
+    });
+  });
+
+  describe('claimSpecificItem — target-respect (Hygiene #3)', () => {
+    it('refuses to rotate target when a non-matching agent specific-claims (regression)', async () => {
+      const wi = makeWorkItem({ title: "Quinn's task", target: 'agent-quinn' });
+      await service.addToPool(wi);
+
+      // Sam tries to specifically claim Quinn's WI (auto-claim path).
+      const result = await service.claimSpecificItem('agent-sam', wi.id);
+
+      // After fix: refused — null.
+      expect(result).toBeNull();
+
+      // Target preserved.
+      const items = await service.getAllItems();
+      const stored = items.find((i) => i.id === wi.id)!;
+      expect(stored.target).toBe('agent-quinn');
+      expect(stored.status).toBe('queued');
+    });
+
+    it('allows specific claim when target matches', async () => {
+      const wi = makeWorkItem({ title: 'Mine', target: 'agent-leo' });
+      await service.addToPool(wi);
+
+      const result = await service.claimSpecificItem('agent-leo', wi.id);
+      expect(result).not.toBeNull();
+      expect(result!.workItem.target).toBe('agent-leo');
+      expect(result!.workItem.status).toBe('running');
+    });
+
+    it('allows specific claim on a no-target broadcast WI', async () => {
+      const wi = makeWorkItem({ target: undefined });
+      await service.addToPool(wi);
+
+      const result = await service.claimSpecificItem('agent-sam', wi.id);
+      expect(result).not.toBeNull();
+      expect(result!.workItem.target).toBe('agent-sam');
     });
   });
 

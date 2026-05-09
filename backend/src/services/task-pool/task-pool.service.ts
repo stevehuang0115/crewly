@@ -592,9 +592,25 @@ export class TaskPoolService {
           .map((c) => c.workItemId),
       );
 
-      // Find first matching unclaimed queued item (FIFO by createdAt)
-      const candidates = workItems
+      // Hygiene #3 — target-respect gate. Before this filter, claimFromPool
+      // would FIFO-pick the oldest queued+unclaimed item regardless of
+      // its existing `target` field, then unconditionally rewrite
+      // `wi.target = agentId` in the transitionStatus mutator. That
+      // produced the target-rotation bug observed in the 5/9 wave (WIs
+      // rotating through Quinn → Sam, Leo → Quinn, etc.).
+      //
+      // After this filter:
+      //   - WIs with an explicit target are claimable ONLY by that target.
+      //   - WIs with no target (broadcast pool) remain claimable by any agent.
+      // The defensive identity check in the transitionStatus mutator
+      // below ensures we never accidentally overwrite an existing target
+      // even if a future code path bypasses this filter.
+      const targetRespectingCandidates = workItems
         .filter((wi) => wi.status === 'queued' && !claimedIds.has(wi.id))
+        .filter((wi) => !wi.target || wi.target === agentId);
+
+      // Find first matching unclaimed queued item (FIFO by createdAt)
+      const candidates = targetRespectingCandidates
         .filter((wi) => matchesFilters(wi, filters))
         .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
@@ -609,12 +625,21 @@ export class TaskPoolService {
       // same V3 actor-role + state-machine gates as external callers.
       // `startedAt` is set automatically by transitionStatus when
       // newStatus === 'running'; the mutator carries the agent target.
+      //
+      // Hygiene #3 — target-respect (defensive). The candidate filter
+      // above already excludes WIs whose target ≠ agentId, so the only
+      // remaining cases here are (a) wi.target === agentId (no-op assign)
+      // and (b) wi.target === undefined (broadcast claim). Either way we
+      // refuse to overwrite a non-matching existing target.
       const claimedItem = await this.transitionStatus(
         selected.id,
         'running',
         'system',
         (wi) => {
-          wi.target = agentId;
+          if (!wi.target) {
+            wi.target = agentId;
+          }
+          // else: target already === agentId per the filter; leave as-is.
         },
       );
 
@@ -667,17 +692,37 @@ export class TaskPoolService {
       const workItem = await this.storage.findWorkItem(workItemId);
       if (!workItem || workItem.status !== 'queued') return null;
 
+      // Hygiene #3 — target-respect gate. Refuse to claim a WI whose
+      // existing target is set to a different agent. This prevents the
+      // claimSpecificItem path (used by AgentAutoClaimService for
+      // score-based selection) from rotating target onto an idle agent
+      // when another agent is the actual target. Same rule as
+      // claimFromPool: target=undefined (broadcast) is claimable by any
+      // agent; target=agentId is claimable only by that agent.
+      if (workItem.target && workItem.target !== agentId) {
+        this.logger.debug('claimSpecificItem refused — target mismatch', {
+          workItemId,
+          existingTarget: workItem.target,
+          requestingAgent: agentId,
+        });
+        return null;
+      }
+
       const claims = await this.storage.getClaims();
       if (claims.some((c) => c.workItemId === workItemId && c.status === 'active')) return null;
 
       // TRANS-2: route the queued → running flip through transitionStatus
       // (mirrors claimFromPool — same V3 + state-machine gates).
+      // Hygiene #3 defensive: only assign target when it's currently
+      // undefined; never overwrite an existing target.
       const claimedItem = await this.transitionStatus(
         workItemId,
         'running',
         'system',
         (wi) => {
-          wi.target = agentId;
+          if (!wi.target) {
+            wi.target = agentId;
+          }
         },
       );
       if (!claimedItem) return null;
