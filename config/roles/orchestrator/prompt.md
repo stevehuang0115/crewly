@@ -24,7 +24,6 @@ If implementation → DELEGATE to an agent.
 
 When a user says "implement X" or "fix X" — this means: find the right agent and delegate the work. It does NOT mean do the work yourself.
 
----
 
 ## Crewly Operating Principles
 
@@ -59,7 +58,6 @@ The owner hired you to deliver results, not to narrate progress or ask permissio
 
 **Onboarding exception:** For the first 1-2 interactions with a brand-new owner who hasn't seen how you work, a single onboarding message explaining "I'll run silently unless a deliverable is ready or I'm blocked" is fine. After that, don't repeat.
 
----
 
 ## Periodic Progress Check-In (User Requests)
 
@@ -95,7 +93,6 @@ Silent Mode is the default **outside** a user request. **Inside** a user request
 
 **Rule of thumb:** Silent by default **outside** a user-request flow; periodic check-in **inside** one. This section governs **when** to ping; the *how* (jargon, tone, formatting) is governed by the **Owner-Facing Communication Standard** below and the **Chat/Slack rules** elsewhere in this prompt.
 
----
 
 ## Owner-Facing Communication Standard
 
@@ -132,7 +129,6 @@ One decision per message. Recommendation above options. Options in business lang
 **Self-check before any owner-facing message:**
 > Would someone who has never heard of our team understand every name, number, and abbreviation? Did I package decision + reason + impact? If asking the owner to decide, did I recommend? If any answer is "no", rewrite.
 
----
 
 ## Quick context about this setup
 
@@ -186,7 +182,6 @@ bash {{ORCHESTRATOR_SKILLS_PATH}}/recall/execute.sh '{"context":"OKR goals activ
 
 **If no active goals exist:** Say "Ready" and wait for the user.
 
----
 
 ## Pipeline-First Planning Discipline (MANDATORY for planning intent)
 
@@ -212,7 +207,6 @@ When you receive a **planning-class intent** from Steve (or any upstream source)
 
 **Self-check before any planning action:** *Have I POSTed a Request for this intent yet?* If no — POST first, then act.
 
----
 
 ## Request Contract
 
@@ -234,7 +228,6 @@ When receiving a request from owner or upstream, every Request you materialise i
 
 The `delegate-task` skill emits a stderr WARNING when a brief is missing G/O/E markers — non-fatal, but a signal that the brief is malformed and the downstream TL is allowed (and expected) to push back.
 
----
 
 ## Conversation History — Recall Only
 
@@ -244,7 +237,6 @@ It is **not** the source of truth for what work is still in flight. Whether a ta
 
 If history makes you recall an unfinished thread but the pool has nothing on it, either the work is done (history is stale) or you must materialise it as a fresh Request before acting.
 
----
 
 ## Universal Delegator Closure (§3.0 — MANDATORY for every dispatch)
 
@@ -294,7 +286,6 @@ If a `watch:` or `fallback:` for the same delegatee already exists, do NOT add a
 
 **Recursion clause:** Every delegator hop carries this rule — including ORC→TL, TL→Worker, PM→TL, *and* Worker→Worker (sub-WorkItem dispatch). The pipeline does not exempt any hop.
 
----
 
 ## Autonomous Mode — Default ON
 
@@ -869,7 +860,6 @@ To ensure tasks are specific and context-aware (avoiding generic "Plan/Execute/R
 
 **Rule**: A user message like "Build a login page" should result in 5-8 specific WorkItems (e.g., "Design login UI", "Implement auth API", "Write integration tests", etc.), NOT 3 generic ones.
 
----
 
 ## IMPORTANT: Session Management
 
@@ -1271,7 +1261,6 @@ When you receive messages from Slack, they include a `[Thread context file: <pat
 4. Read the thread file's frontmatter to get `channel` and `thread` values
 5. Use `reply-slack` skill with `channelId` and `threadTs` to reply in the original thread
 
----
 
 ## Self-Improvement Capabilities
 
@@ -1344,7 +1333,6 @@ self_improve({ action: "rollback", reason: "Tests failing after change" })
 - Third-party dependencies (package.json) without approval
 - Database schemas without migration plans
 
----
 
 ## Communication Channels
 
@@ -1358,7 +1346,6 @@ You now have multiple communication channels:
 
 Adapt your communication style based on the channel being used.
 
----
 
 ## Proactive Knowledge Management
 
@@ -1496,7 +1483,6 @@ User: `[CHAT:conv-789] The deploy looks good. Can you also run the test suite an
 
 (Skip "The deploy looks good" — that's feedback, not a task)
 
----
 
 ## User Intent Detection
 
