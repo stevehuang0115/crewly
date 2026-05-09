@@ -350,12 +350,49 @@ export async function releaseItem(req: Request, res: Response): Promise<void> {
 /**
  * Marks a running WorkItem as completed ('done').
  *
- * Request body:
+ * ## Canonical body shape (STRICT)
+ *
  * ```json
- * { "agentId": "crewly-product-leo-member-n", "tokenUsage": { ... }, "result": { ... } }
+ * {
+ *   "agentId": "crewly-product-leo-member-n",
+ *   "result": { "summary": "what I produced …", "prNumber": 525, "...": "..." },
+ *   "tokenUsage": { "inputTokens": 0, "outputTokens": 0, "totalCost": 0 }
+ * }
  * ```
  *
- * @param req - Express request with workItemId param
+ * Validation rules (in order — first failure short-circuits):
+ * 1. `workItemId` URL param — required (path; never empty).
+ * 2. `agentId` body field — required, non-empty string. Identifies the
+ *    completing agent for token attribution and audit trail.
+ * 3. `result.summary` body field — required, non-empty string after trim.
+ *    Enforces the Request Contract's Done Definition: workers report
+ *    what they produced (artifact, decision, verified result), not just
+ *    "done".
+ *
+ * Any field beyond `summary` inside `result` (e.g. `prNumber`, `links`)
+ * is preserved into `WorkItem.output` via spread merge, so downstream
+ * verifiers can read the proof-of-work without digging through chat logs.
+ *
+ * ## Hygiene #4 (PR ?) — strict-shape lock
+ *
+ * Prior to Hygiene #4, three skill callers (`config/skills/agent/core/{
+ * report-status,complete-task}/execute.sh`, `config/skills/orchestrator/
+ * complete-task/execute.sh`) and two TS callers (`tool-registry.ts`
+ * §complete_task + §report_status auto-complete) emitted top-level
+ * `{summary}` instead of the canonical `{agentId, result:{summary}}`.
+ * That shape failed both validators (missing agentId + result.summary),
+ * forcing every worker into a direct-curl workaround that Quinn
+ * surfaced on the #499 verify-WI dogfood.
+ *
+ * Decision (locked T+9min on Hygiene #4 by Quinn): keep the controller
+ * STRICT — fix all 5 callsites in the same PR rather than ship a
+ * backward-compat resolver. Rationale: all 5 callers are in-tree, OSS
+ * is the only consumer (Crewly Pro extends via Plugin System and does
+ * NOT fork core skill or task-pool callers per workspace CLAUDE.md),
+ * and a compat layer would add permanent ambiguity for zero downstream
+ * benefit.
+ *
+ * @param req - Express request with `workItemId` param + canonical body
  * @param res - Express response
  */
 export async function completeItem(req: Request, res: Response): Promise<void> {
@@ -385,10 +422,9 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
     // it at the API boundary so the proof of work lands with the
     // transition, not as an afterthought.
     //
-    // Skills already pass `summary`: the agent and orchestrator
-    // complete-task skills both emit `{summary: "..."}` in the body.
-    // Empty-summary callers (legacy or buggy) get a 400 with a
-    // helpful error directing them to populate `summary`.
+    // Hygiene #4 (2026-05-09): callers MUST emit the canonical body shape
+    // `{agentId, result:{summary}}` — see the JSDoc on this handler for
+    // the contract. Top-level `{summary}` returns a 400 here.
     const summary = typeof result?.summary === 'string' ? result.summary.trim() : '';
     if (summary.length === 0) {
       res.status(400).json({

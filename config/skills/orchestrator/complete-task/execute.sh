@@ -20,6 +20,11 @@ INPUT=$(read_json_input "${1:-}")
 WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // .taskId // empty')
 SUMMARY=$(printf '%s' "$INPUT" | jq -r '.summary // .result // empty')
 OUTPUT=$(printf '%s' "$INPUT" | jq -c '.output // empty')
+# Hygiene #4: agentId is required by the controller's completeItem validator.
+# Orchestrator-driven completions default to "crewly-orc" but accept an
+# explicit override (some flows complete on behalf of the agent that ran the
+# work — pass that session name instead).
+AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agentId // .sessionName // "crewly-orc"')
 
 require_param "workItemId" "$WORK_ITEM_ID"
 
@@ -30,7 +35,18 @@ if [ -n "$OUTPUT" ] && [ "$OUTPUT" != "null" ] && [ "$OUTPUT" != "" ]; then
   api_call POST "/task-pool/items/${WORK_ITEM_ID}/output" "$OUTPUT_BODY" >/dev/null 2>&1 || true
 fi
 
-COMPLETE_BODY=$(jq -n --arg summary "$SUMMARY" \
-  '(if $summary != "" then {summary: $summary} else {} end)')
+# Hygiene #4: emit canonical body shape `{agentId, result:{summary}}`
+# required by /api/task-pool/complete (task-pool.controller.ts `completeItem`).
+# Prior shape `{summary}` 400'd with `agentId is required` + `summary
+# required in body.result`. The controller enforces non-empty summary, so
+# bail early here too rather than send `{agentId, result:{}}` and let the
+# server reject it.
+if [ -z "$SUMMARY" ]; then
+  error_exit "summary is required (controller enforces non-empty body.result.summary)"
+fi
+COMPLETE_BODY=$(jq -n \
+  --arg agentId "$AGENT_ID" \
+  --arg summary "$SUMMARY" \
+  '{agentId: $agentId, result: {summary: $summary}}')
 
 api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$COMPLETE_BODY"

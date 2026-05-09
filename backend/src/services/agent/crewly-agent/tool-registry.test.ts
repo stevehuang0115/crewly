@@ -1325,7 +1325,12 @@ describe('Tool Registry', () => {
     // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
     // Auto-complete now resolves the agent's running WI from the pool and
     // calls `/task-pool/complete/:id`. Replaces v1 `/task-management/complete-by-session`.
-    it('should auto-complete the running WorkItem when status is done', async () => {
+    //
+    // Hygiene #4 (2026-05-09): the body shape is the canonical
+    // `{agentId, result:{summary}}` required by task-pool.controller.ts
+    // `completeItem`. `agentId` here is the session whose status=done
+    // message triggered this auto-complete path.
+    it('should auto-complete the running WorkItem when status is done — canonical body shape', async () => {
       mockClient.post.mockResolvedValue({ success: true, data: { acknowledged: true }, status: 200 });
       mockClient.get.mockResolvedValueOnce({
         success: true,
@@ -1341,9 +1346,12 @@ describe('Tool Registry', () => {
       expect(mockClient.get).toHaveBeenCalledWith(
         expect.stringMatching(/^\/task-pool\/items\?status=running&target=/),
       );
+      // Canonical body shape per Hygiene #4 — `{agentId, result:{summary}}`.
+      // The `crewly-orc` literal here is the createTools sessionName arg
+      // used in the test fixture (see top-of-file `createTools(mockClient, 'crewly-orc', ...)`).
       expect(mockClient.post).toHaveBeenCalledWith(
         '/task-pool/complete/wi-running-1',
-        { summary: 'Feature implemented' },
+        { agentId: 'crewly-orc', result: { summary: 'Feature implemented' } },
       );
     });
 
@@ -1869,7 +1877,7 @@ describe('Tool Registry', () => {
       mockClient.delete.mockResolvedValue({ success: true, data: {}, status: 200 });
 
       const result = await (tools.complete_task as any).execute({
-        absoluteTaskPath: '/tasks/task-1.md',
+        workItemId: 'wi-1',
         sessionName: 'agent-sam',
         summary: 'Done',
       });
@@ -1879,6 +1887,25 @@ describe('Tool Registry', () => {
       expect(mockClient.delete).toHaveBeenCalledWith('/schedule/chk-1');
       expect(mockClient.delete).toHaveBeenCalledWith('/schedule/chk-3');
       expect(mockClient.delete).not.toHaveBeenCalledWith('/schedule/chk-2');
+    });
+
+    // Hygiene #4 (2026-05-09): assert the canonical body shape on the
+    // /task-pool/complete POST. Prior shape `{summary}` 400'd because the
+    // controller looks at `result.summary` and requires non-empty `agentId`.
+    it('emits canonical body shape `{agentId, result:{summary}}`', async () => {
+      mockClient.post.mockResolvedValue({ success: true, data: { completed: true }, status: 200 });
+      mockClient.get.mockResolvedValue({ success: true, data: [], status: 200 });
+
+      await (tools.complete_task as any).execute({
+        workItemId: 'wi-shape-1',
+        sessionName: 'agent-quinn',
+        summary: 'Implemented hygiene #4',
+      });
+
+      expect(mockClient.post).toHaveBeenCalledWith(
+        '/task-pool/complete/wi-shape-1',
+        { agentId: 'agent-quinn', result: { summary: 'Implemented hygiene #4' } },
+      );
     });
 
     it('should still complete task even if check cleanup fails', async () => {

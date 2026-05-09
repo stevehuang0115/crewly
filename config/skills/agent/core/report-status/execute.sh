@@ -227,7 +227,15 @@ if [ "$STATUS" = "done" ]; then
   fi
 
   if [ -n "$TARGET_WI_ID" ]; then
-    COMPLETE_BODY=$(jq -n --arg summary "$SUMMARY" '{summary: $summary}')
+    # Hygiene #4: emit canonical body shape `{agentId, result:{summary}}`
+    # required by /api/task-pool/complete (task-pool.controller.ts
+    # `completeItem`). Prior shape `{summary}` 400'd with
+    # `agentId is required` + `summary required in body.result`,
+    # forcing every worker into a direct-curl workaround.
+    COMPLETE_BODY=$(jq -n \
+      --arg agentId "$SESSION_NAME" \
+      --arg summary "$SUMMARY" \
+      '{agentId: $agentId, result: {summary: $summary}}')
     api_call POST "/task-pool/complete/${TARGET_WI_ID}" "$COMPLETE_BODY" || true
   fi
 fi
