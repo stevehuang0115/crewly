@@ -80,13 +80,35 @@ if [ -z "$WORK_ITEM_ID" ]; then
   exit 1
 fi
 
+# Hygiene #4: emit canonical body shape `{agentId, result:{summary, ...output}}`
+# required by /api/task-pool/complete (task-pool.controller.ts `completeItem`).
+# Prior shape `{summary, ..., result: $output}` 400'd because top-level summary
+# was ignored (controller looks at result.summary) and `result` was overloaded
+# with the output payload instead of the summary wrapper.
+#
+# The optional `output` is now MERGED into `result` alongside `summary` —
+# this matches the controller's mergedOutput behavior (task-pool.controller.ts
+# §405-419) which spreads result fields beyond `summary` into WorkItem.output.
+#
+# Precedence (per Sam #527 review note): jq's `+` operator is right-side-wins
+# on key conflicts. The spread order here is `{summary: $summary} + $output`,
+# so a caller-supplied `output.summary` WILL override the explicit `--summary`
+# parameter. Intentional — callers passing structured output already have an
+# authoritative summary in there; the explicit param is the fallback. If you
+# need the param to win, swap the operands.
 BODY=$(jq -n \
+  --arg agentId "$SESSION_NAME" \
   --arg summary "$SUMMARY" \
   --arg skipGates "$SKIP_GATES" \
   --argjson output "${OUTPUT_JSON:-null}" \
-  '{summary: $summary} +
-   (if $skipGates == "true" then {skipGates: true} else {} end) +
-   (if $output != null then {result: $output} else {} end)')
+  '{
+    agentId: $agentId,
+    result: ({summary: $summary}
+              + (if $output != null and ($output | type) == "object"
+                 then $output
+                 else {} end))
+  }
+   + (if $skipGates == "true" then {skipGates: true} else {} end)')
 
 api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$BODY"
 

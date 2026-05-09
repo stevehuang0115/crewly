@@ -699,4 +699,135 @@ describe('TaskPoolController', () => {
       );
     });
   });
+
+  // ---------------------------------------------------------------------
+  // completeItem — Hygiene #4 (2026-05-09): strict-shape lock
+  //
+  // Quinn surfaced this on the #499 verify-WI dogfood. Five callsites
+  // (3 skills + 2 TS in tool-registry.ts) were emitting top-level
+  // `{summary}` instead of `{agentId, result:{summary}}`. Decision was
+  // to keep the controller STRICT and fix all callers in the same PR
+  // rather than ship a backward-compat resolver. These tests lock that
+  // contract — broken-shape variants must 400, canonical shape must
+  // succeed, and the broken-shape rejection messages must be specific
+  // enough to point a human caller at the fix.
+  // ---------------------------------------------------------------------
+  describe('completeItem (Hygiene #4 strict-shape lock)', () => {
+    beforeEach(() => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-h4', output: null });
+      mockService.setOutput.mockResolvedValue(undefined);
+      mockService.completeItem.mockResolvedValue(undefined);
+    });
+
+    it('rejects legacy top-level `{summary}` shape with 400 (no agentId)', async () => {
+      // The exact broken shape that 3 skills + 2 TS callsites used to
+      // emit. The agentId-required check fires FIRST (before the
+      // result.summary check), so the error here is `agentId is required`.
+      const req = mockReq({
+        params: { workItemId: 'wi-h4' },
+        body: { summary: 'Top-level summary, no agentId, no result wrapper' },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: 'agentId is required',
+        }),
+      );
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('rejects `{agentId, summary}` (top-level summary missing result wrapper) with 400', async () => {
+      // Caller has agentId but still puts summary at top level instead
+      // of inside `result`. This is the second-most-likely "fixed it
+      // halfway" mistake — passes the agentId gate, fails the
+      // result.summary gate.
+      const req = mockReq({
+        params: { workItemId: 'wi-h4' },
+        body: { agentId: 'agent-1', summary: 'Top-level summary, no result wrapper' },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          code: 'complete_requires_summary',
+        }),
+      );
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('error message on missing summary points caller at body.result', async () => {
+      // Discoverability check — the 400 message must contain the string
+      // "body.result" so a human caller (or LLM agent) reading the
+      // response can fix the shape without diving into source.
+      const req = mockReq({
+        params: { workItemId: 'wi-h4' },
+        body: { agentId: 'agent-1', result: {} },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      const jsonCall = (res.json as jest.Mock).mock.calls[0][0];
+      expect(jsonCall.error).toEqual(expect.stringContaining('body.result'));
+    });
+
+    it('accepts the canonical shape `{agentId, result:{summary}}` and returns success', async () => {
+      // The smoke-replay assertion. Mirror exactly what the 5 fixed
+      // callsites emit post-Hygiene #4 — controller must accept it.
+      const req = mockReq({
+        params: { workItemId: 'wi-h4' },
+        body: {
+          agentId: 'crewly-product-quinn-47ce967d',
+          result: { summary: 'Hygiene #4 strict-shape lock — 5 callsites fixed.' },
+        },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      expect(mockService.completeItem).toHaveBeenCalledWith(
+        'wi-h4',
+        expect.objectContaining({ summary: expect.stringContaining('Hygiene #4') }),
+      );
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true }),
+      );
+    });
+
+    it('canonical shape with extra result fields preserves them onto output', async () => {
+      // The complete-task skill's `output` parameter is now merged into
+      // `result` alongside `summary` (per the fixed body in
+      // config/skills/agent/core/complete-task/execute.sh). Verify the
+      // controller accepts that merged shape and persists every field.
+      const req = mockReq({
+        params: { workItemId: 'wi-h4' },
+        body: {
+          agentId: 'crewly-product-quinn-47ce967d',
+          result: {
+            summary: 'Shipped Hygiene #4',
+            prNumber: 999,
+            callsiteCount: 5,
+            decision: 'strict',
+          },
+        },
+      });
+      const res = mockRes();
+      await completeItem(req, res);
+
+      expect(mockService.setOutput).toHaveBeenCalledWith(
+        'wi-h4',
+        expect.objectContaining({
+          summary: 'Shipped Hygiene #4',
+          prNumber: 999,
+          callsiteCount: 5,
+          decision: 'strict',
+        }),
+      );
+    });
+  });
 });

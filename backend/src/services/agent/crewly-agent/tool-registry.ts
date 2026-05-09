@@ -1220,8 +1220,17 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         // `absoluteTaskPath` parameter is removed; callers must now pass
         // `workItemId` (returned from `start_agent_with_task` /
         // `delegate_task`).
+        //
+        // Hygiene #4: emit canonical body shape `{agentId, result:{summary}}`
+        // required by task-pool.controller.ts `completeItem`. Prior shape
+        // `{summary}` 400'd because the controller looks at `result.summary`
+        // and requires non-empty `agentId`. Cf. fix-paired changes in:
+        //   - config/skills/agent/core/{report-status,complete-task}/execute.sh
+        //   - config/skills/orchestrator/complete-task/execute.sh
+        //   - tool-registry.ts §report_status auto-complete path (below)
         const result = await client.post(`/task-pool/complete/${workItemId}`, {
-          summary,
+          agentId: agent,
+          result: { summary },
         });
 
         // Auto-cancel scheduled checks targeting the completing agent
@@ -1660,7 +1669,16 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
             );
             const wiId = list[0]?.id;
             if (wiId) {
-              await client.post(`/task-pool/complete/${wiId}`, { summary }).catch(() => {});
+              // Hygiene #4: canonical body shape `{agentId, result:{summary}}`.
+              // `agentId` here is `sessionName` because that's the runtime
+              // identity of the completing agent (the session whose
+              // status=done message triggered this auto-complete path).
+              await client
+                .post(`/task-pool/complete/${wiId}`, {
+                  agentId: sessionName,
+                  result: { summary },
+                })
+                .catch(() => {});
             }
           } catch {
             // Non-fatal: status report still succeeded.
