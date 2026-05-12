@@ -23,7 +23,7 @@ import {
 } from './reconcile-rules.js';
 import type { AgentHealth } from './reconcile-rules.js';
 import { createWorkItem, createRequest, createTaskClaim } from '../../types/v2/index.js';
-import type { WorkItem, Request, TaskClaim } from '../../types/v2/index.js';
+import type { WorkItem, WorkItemStatus, Request, TaskClaim } from '../../types/v2/index.js';
 import { WORK_ITEM_TRANSITIONS } from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
@@ -456,6 +456,48 @@ describe('detectTTLExpiredWorkItems', () => {
     });
     const { expiredIds } = detectTTLExpiredWorkItems([done]);
     expect(expiredIds).toHaveLength(0);
+  });
+
+  // 2026-05-12 dogfood: 10 done_by_worker WIs sat unreviewable for 86h
+  // because the TTL correction was illegal per WORK_ITEM_TRANSITIONS
+  // (`done_by_worker` only has edges to `verified` / `rejected`, not
+  // `cancelled`). Reconciler logged ERROR every minute, never cleaned up.
+  it('routes expired `done_by_worker` to `verified` (the legal terminal edge), not `cancelled`', () => {
+    const stale = makeWorkItem({
+      status: 'done_by_worker',
+      createdAt: new Date(Date.now() - 25 * 3600 * 1000).toISOString(),
+    });
+
+    const { corrections, expiredIds } = detectTTLExpiredWorkItems([stale]);
+
+    expect(expiredIds).toContain(stale.id);
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0].newState).toBe('verified');
+    expect(corrections[0].previousState).toBe('done_by_worker');
+  });
+
+  it('keeps `cancelled` as the default expiry target for non-done_by_worker statuses', () => {
+    // queued, running, blocked, scheduled, proposed, accepted, escalated
+    // — all of these have a `→ cancelled` edge in WORK_ITEM_TRANSITIONS,
+    // and `cancelled` is the right "abandoned work" semantic. Verify the
+    // picker doesn't accidentally over-generalise to other statuses.
+    const old = (status: WorkItemStatus) => makeWorkItem({
+      status,
+      createdAt: new Date(Date.now() - 25 * 3600 * 1000).toISOString(),
+    });
+    const items = [
+      old('queued'),
+      old('running'),
+      old('blocked'),
+      old('scheduled'),
+    ];
+
+    const { corrections } = detectTTLExpiredWorkItems(items);
+
+    expect(corrections).toHaveLength(4);
+    for (const c of corrections) {
+      expect(c.newState).toBe('cancelled');
+    }
   });
 });
 

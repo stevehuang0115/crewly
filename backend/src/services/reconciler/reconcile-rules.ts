@@ -362,8 +362,47 @@ export function detectOrphanWorkItems(
 // ---------------------------------------------------------------------------
 
 /**
+ * Pick the legal terminal status for a TTL-expired WorkItem.
+ *
+ * The reconciler's TTL rule used to unconditionally issue
+ * `→ cancelled` corrections. That works for `queued` / `running` /
+ * `blocked` / etc. — they all permit `→ cancelled` per
+ * `WORK_ITEM_TRANSITIONS`. But `done_by_worker` only permits
+ * `→ verified` and `→ rejected` (the work IS done from the worker's
+ * point of view; auto-cancelling would lose audit trail). Same for
+ * `proposed` (auto-acceptance after timeout is the right semantic).
+ *
+ * Mirrors the `pickResolveTarget` helper in `request-sla.subscriber.ts`,
+ * which makes the identical choice for SLA-timeout-resolved WIs.
+ *
+ * Dogfood symptom 2026-05-12: 10 stale `done_by_worker` WIs sat in
+ * pool for 86+ hours. The TTL rule fired every minute, every attempt
+ * failed with `Invalid status transition for WorkItem ...:
+ * done_by_worker → cancelled`, the log filled with ERROR noise and
+ * the WIs never cleaned up. Fix routes through this picker so the
+ * correction target matches what the state machine accepts.
+ *
+ * @param current - Current non-terminal WI status
+ * @returns Legal terminal status for TTL expiry
+ */
+function pickTTLExpiryTarget(current: WorkItemStatus): WorkItemStatus {
+  // done_by_worker has no `→ cancelled` edge — auto-approve via
+  // `verified` instead. Treat 24h-of-no-objection as implicit
+  // acceptance. The worker reported done; nobody pushed back.
+  if (current === 'done_by_worker') return 'verified';
+  // running has both `→ done` and `→ cancelled` — prefer `cancelled`
+  // for TTL since `done` should only come from an explicit completion
+  // event, not a timeout.
+  return 'cancelled';
+}
+
+/**
  * Detects WorkItems that have exceeded their time-to-live.
  * Default TTL is 24 hours.
+ *
+ * Picks a state-machine-legal terminal target for each expired WI via
+ * {@link pickTTLExpiryTarget}, so the correction never fails with
+ * `Invalid status transition`.
  *
  * @param workItems - All non-terminal WorkItems to check
  * @param ttlMs - Maximum age before auto-cancel (default: 24h)
@@ -384,11 +423,12 @@ export function detectTTLExpiredWorkItems(
     const age = now - createdAt;
 
     if (age > ttlMs) {
+      const target = pickTTLExpiryTarget(wi.status);
       corrections.push(createCorrection({
         entityType: 'work_item',
         entityId: wi.id,
         previousState: wi.status,
-        newState: 'cancelled',
+        newState: target,
         reason: `WorkItem exceeded TTL of ${Math.round(ttlMs / 3600000)}h`,
         evidence: `Created at ${wi.createdAt}, age=${Math.round(age / 3600000)}h`,
       }));
