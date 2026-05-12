@@ -411,7 +411,10 @@ export class SlackOrchestratorBridge extends EventEmitter {
           // Strip the @mention prefix and send to the target agent
           const cleanMessage = enrichedText.replace(new RegExp(`^@${mentionTarget.name}\\s*`, 'i'), '').trim();
           const response = await this.sendToAgent(mentionTarget.sessionName, cleanMessage || enrichedText, context);
-          await this.sendSlackResponse(message, response);
+          // Same empty-response guard as the orchestrator route — an
+          // empty response is QueueProcessor's fire-and-forget delivery
+          // ack, not a real reply. Don't auto-resolve the SLA tracker.
+          await this.sendSlackResponse(message, response, response.length > 0);
           if (this.config.showTypingIndicator) {
             await this.markComplete(message);
           }
@@ -1040,8 +1043,35 @@ Just type naturally to chat with the orchestrator!`;
                 if (!resolved) {
                   resolved = true;
                   clearTimeout(timeoutId);
-                  // Real orc reply path — safe to auto-resolve the SLA tracker.
-                  resolve({ response: resp, fromOrcReply: true });
+                  // 2026-05-12 dogfood bug: the QueueProcessor fires
+                  // `routeResponse(message, '')` immediately after PTY
+                  // delivery to unblock this promise (see
+                  // queue-processor.service.ts:692 "fire-and-forget"
+                  // comment). That call carries an EMPTY response — orc
+                  // has only RECEIVED the message, not REPLIED. The
+                  // previous shape of this callback always returned
+                  // `fromOrcReply: true`, so every Slack delivery
+                  // triggered `markResolvedByThread('orc_reply')` →
+                  // `maybeCloseRequest` → Request cascaded to `done`
+                  // with `result: "Auto-closed by SLA: orc_reply"`
+                  // before the user ever saw a reply.
+                  //
+                  // Real orc replies (via the reply-slack skill) come
+                  // through a different route — the orc invokes
+                  // `POST /slack/send`, which posts to Slack directly;
+                  // the SLA tracker is resolved when the
+                  // `respond_to_user` WI transitions to `verified` and
+                  // the cascade subscriber picks it up. That path
+                  // produces a non-empty response payload only when
+                  // a worker explicitly drives reply text back through
+                  // the queue (rare; most orc replies are direct API).
+                  //
+                  // Gate: treat empty resp as a delivery ack ONLY
+                  // (fromOrcReply=false). Non-empty resp keeps the
+                  // legacy `true` semantics for any worker path that
+                  // does echo a reply through the queue.
+                  const fromOrcReply = resp.length > 0;
+                  resolve({ response: resp, fromOrcReply });
                 }
               },
               userId: context?.userId,
