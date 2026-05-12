@@ -1300,6 +1300,63 @@ describe('SlackOrchestratorBridge', () => {
       const response = await messagePromise;
       expect(response).toContain('Failed to enqueue message');
     }, 30000);
+
+    // 2026-05-12 dogfood regression: QueueProcessor calls
+    // `slackResolve('')` on fire-and-forget PTY delivery (see
+    // queue-processor.service.ts:692). The previous bridge callback
+    // always returned `fromOrcReply: true`, so every Slack delivery
+    // triggered the SLA cascade-close → Request landed in `done` with
+    // `Auto-closed by SLA: orc_reply` before the user ever saw a reply.
+    // 5 of 7 Slack messages that day were falsely-done. Fix: gate on
+    // resp.length > 0 inside the bridge's slackResolve callback so
+    // the empty delivery ack stops short of the SLA cascade.
+    it('does NOT mark SLA resolved when slackResolve fires with empty resp (delivery ack only)', async () => {
+      const mockSubscriber = {
+        markResolvedByThread: jest.fn().mockResolvedValue(undefined),
+      };
+      const { setRequestSlaSubscriber } = await import('../v3/request-sla.subscriber.js');
+      setRequestSlaSubscriber(mockSubscriber as any);
+
+      try {
+        // Capture the slackResolve callback and fire it with EMPTY string
+        // (mirrors QueueProcessor's `routeResponse(message, '')` call).
+        mockQueueService.enqueue.mockImplementation((input: any) => {
+          setTimeout(() => input.sourceMetadata.slackResolve(''), 5);
+          return { id: 'q-empty' };
+        });
+
+        const bridge = new SlackOrchestratorBridge({ responseTimeoutMs: 5000 });
+        bridge.setMessageQueueService(mockQueueService);
+        await bridge.initialize();
+
+        const handled = new Promise<void>((resolve) => {
+          bridge.on('message_handled', () => resolve());
+        });
+
+        const slackService = (bridge as any).slackService;
+        jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+        jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+        jest.spyOn(slackService, 'getConversationContext').mockReturnValue({
+          conversationId: 'conv-x', channelId: 'C-x', userId: 'U-x',
+        });
+
+        slackService.emit('message', {
+          text: 'I sent a request, expecting a reply',
+          channelId: 'C-x',
+          userId: 'U-x',
+          ts: '1778100000.000001',
+        });
+
+        await handled;
+
+        // The whole point: SLA cascade-close must not fire. The Request
+        // stays in flight until orc actually replies via reply-slack →
+        // respond_to_user WI transitions → cascade subscriber closes it.
+        expect(mockSubscriber.markResolvedByThread).not.toHaveBeenCalled();
+      } finally {
+        setRequestSlaSubscriber(null);
+      }
+    }, 15000);
   });
 
   describe('sendSlackResponse', () => {

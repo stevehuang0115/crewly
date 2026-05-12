@@ -310,6 +310,29 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       }
     }
 
+    // 2026-05-12 dogfood: notify the V3 SLA tracker that this thread
+    // got a real orc reply. Without this hook, fixing the bridge's
+    // delivery-ack callback to no longer fire `fromOrcReply=true` (the
+    // 5-of-7-false-done bug) would leave Requests with no path at all
+    // to terminal — the respond_to_user WI would sit in `queued`
+    // forever after orc replies via this endpoint. Real orc replies
+    // come through here (reply-slack skill posts to /slack/send), so
+    // this is the right place to trigger the cascade.
+    //
+    // Best-effort: lazy import + try/catch so a subscriber-boot failure
+    // can never break the actual Slack reply.
+    if (threadTs) {
+      try {
+        const { getRequestSlaSubscriber } = await import('../../services/v3/request-sla.subscriber.js');
+        const sub = getRequestSlaSubscriber();
+        if (sub) {
+          await sub.markResolvedByThread(threadTs);
+        }
+      } catch {
+        // Slack delivery already succeeded; SLA hook is bookkeeping.
+      }
+    }
+
     res.json({
       success: true,
       data: { messageTs },
