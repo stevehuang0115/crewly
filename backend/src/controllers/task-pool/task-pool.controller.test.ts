@@ -15,6 +15,7 @@ import {
   revokeAndRelease,
   deleteItem,
   completeItem,
+  addItem,
 } from './task-pool.controller.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 // Express types used for mock helpers below
@@ -48,6 +49,8 @@ const mockService = {
   completeItem: jest.fn(),
   findWorkItem: jest.fn(),
   setOutput: jest.fn(),
+  addToPool: jest.fn(),
+  getAllItems: jest.fn().mockResolvedValue([]),
 };
 
 (TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
@@ -828,6 +831,192 @@ describe('TaskPoolController', () => {
           decision: 'strict',
         }),
       );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /add — addItem
+  //
+  // 2026-05-12 dogfood: the orchestrator's delegate-task shell skill (and 3
+  // sibling skills) all send a minimal `CreateWorkItemInput` shape — no id,
+  // no status, no createdAt. The previous validator required all of those
+  // and 400'd every shell-driven delegation. Fix: accept the minimal shape
+  // and let the server build the full WI via `createWorkItem`. Preserve
+  // legacy full-WI shape for callers that construct ids locally (e.g.
+  // `break-down-request`).
+  // -----------------------------------------------------------------------
+
+  describe('addItem', () => {
+    beforeEach(() => {
+      mockService.addToPool.mockResolvedValue(undefined);
+      mockService.getAllItems.mockResolvedValue([]);
+    });
+
+    it('accepts a minimal CreateWorkItemInput body and generates id + status + createdAt', async () => {
+      const req = mockReq({
+        body: {
+          type: 'delegate',
+          owner: 'orchestrator',
+          target: 'crewly-product-leo',
+          title: 'Implement feature X',
+          description: 'Short summary',
+          briefMarkdown: 'Long-form brief...',
+        },
+      });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(mockService.addToPool).toHaveBeenCalledTimes(1);
+
+      const addedWI = mockService.addToPool.mock.calls[0][0];
+      expect(typeof addedWI.id).toBe('string');
+      expect(addedWI.id.length).toBeGreaterThan(0);
+      expect(addedWI.status).toBe('queued');
+      expect(typeof addedWI.createdAt).toBe('string');
+      expect(addedWI.retryCount).toBe(0);
+      expect(addedWI.maxRetries).toBeGreaterThan(0);
+      expect(addedWI.title).toBe('Implement feature X');
+      expect(addedWI.type).toBe('delegate');
+      expect(addedWI.owner).toBe('orchestrator');
+      expect(addedWI.target).toBe('crewly-product-leo');
+      expect(addedWI.briefMarkdown).toBe('Long-form brief...');
+
+      // Response must echo the generated id so the skill can record it.
+      const body = res.json.mock.calls[0][0];
+      expect(body.success).toBe(true);
+      expect(body.data.workItemId).toBe(addedWI.id);
+      expect(body.data.id).toBe(addedWI.id);
+      expect(body.data.status).toBe('queued');
+    });
+
+    it('rejects a minimal body missing required CreateWorkItemInput fields', async () => {
+      // No type, no owner, no title — three errors expected.
+      const req = mockReq({ body: { description: 'orphan' } });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      const body = res.json.mock.calls[0][0];
+      expect(body.success).toBe(false);
+      expect(Array.isArray(body.errors)).toBe(true);
+      expect(mockService.addToPool).not.toHaveBeenCalled();
+    });
+
+    it('accepts a legacy full-WorkItem body and preserves the client-supplied id', async () => {
+      // break-down-request constructs WIs locally with deterministic ids it
+      // then records in `Request.workItemIds[]`. This path must keep working.
+      const req = mockReq({
+        body: {
+          id: 'wi_locally_minted_42',
+          type: 'delegate',
+          owner: 'orchestrator',
+          target: 'crewly-product-leo',
+          title: 'Pre-built WI',
+          status: 'queued',
+          createdAt: '2026-05-12T00:00:00.000Z',
+          retryCount: 0,
+          maxRetries: 3,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+        },
+      });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const addedWI = mockService.addToPool.mock.calls[0][0];
+      expect(addedWI.id).toBe('wi_locally_minted_42');
+      expect(addedWI.status).toBe('queued');
+    });
+
+    it('rejects a duplicate id against the existing pool (legacy path)', async () => {
+      mockService.getAllItems.mockResolvedValue([
+        { id: 'wi-dup', status: 'running', requestId: undefined },
+      ]);
+
+      const req = mockReq({
+        body: {
+          id: 'wi-dup',
+          type: 'delegate',
+          owner: 'orchestrator',
+          title: 'Dup',
+          status: 'queued',
+          createdAt: '2026-05-12T00:00:00.000Z',
+        },
+      });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      const body = res.json.mock.calls[0][0];
+      expect(body.errors.join(' ')).toMatch(/already exists/);
+      expect(mockService.addToPool).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the parent Request already holds MAX active WIs (per-request cap)', async () => {
+      // 25 active WIs sharing a requestId is the documented cap. A 26th
+      // should be refused as an "infinite decomposition" guardrail.
+      const existing = Array.from({ length: 25 }, (_, i) => ({
+        id: `wi-existing-${i}`,
+        status: 'queued',
+        requestId: 'req-runaway',
+      }));
+      mockService.getAllItems.mockResolvedValue(existing);
+
+      const req = mockReq({
+        body: {
+          type: 'delegate',
+          owner: 'orchestrator',
+          title: 'one more',
+          requestId: 'req-runaway',
+        },
+      });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      const body = res.json.mock.calls[0][0];
+      expect(body.errors.join(' ')).toMatch(/active WorkItems/);
+      expect(mockService.addToPool).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 if body is not an object', async () => {
+      const req = mockReq({ body: 'not-an-object' });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockService.addToPool).not.toHaveBeenCalled();
+    });
+
+    it('initial status for a minimal body with dependsOn is `blocked`, not `queued`', async () => {
+      // createWorkItem promotes dependency-gated items to `blocked`. The
+      // endpoint must propagate that — otherwise an item with unresolved
+      // deps would be claimable immediately, defeating the gate.
+      const req = mockReq({
+        body: {
+          type: 'delegate',
+          owner: 'orchestrator',
+          title: 'Has upstream deps',
+          dependsOn: ['wi-upstream-1', 'wi-upstream-2'],
+        },
+      });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const addedWI = mockService.addToPool.mock.calls[0][0];
+      expect(addedWI.status).toBe('blocked');
+      expect(addedWI.dependsOn).toEqual(['wi-upstream-1', 'wi-upstream-2']);
     });
   });
 });
