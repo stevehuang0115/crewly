@@ -21,6 +21,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { computeAgentScore, type AgentHealth } from '../reconciler/reconcile-rules.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { SLA_TRACKER_ID_PATTERN } from './workitem-dispatch.subscriber.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -219,8 +220,17 @@ export class AgentAutoClaimService {
   async tryAutoClaimForAgent(agentSessionName: string): Promise<{ workItemId: string; score: number } | null> {
     const taskPool = TaskPoolService.getInstance();
 
-    // Get available unclaimed items
-    const availableItems = await taskPool.getAvailableItems();
+    // Get available unclaimed items, excluding SLA tracker WIs.
+    // 2026-05-12 dogfood: AutoClaim happily claimed `respond_to_user`
+    // tracker WIs for crewly-orc, then `WorkItemDispatchSubscriber.dispatchTo`
+    // short-circuited on the SLA tracker id pattern — leaving the WI
+    // stuck in `running` with no PTY delivery, SLA breaching at 5/10 min,
+    // claim revoked, infinite re-claim loop. From the user's perspective:
+    // "Slack request never progresses; orc never replies." Skip these
+    // here so the trackers stay claimable only by the SLA resolve path.
+    const availableItems = (await taskPool.getAvailableItems()).filter(
+      (wi) => !SLA_TRACKER_ID_PATTERN.test(wi.id),
+    );
     if (availableItems.length === 0) return null;
 
     // Build agent health info for scoring
@@ -353,8 +363,13 @@ export class AgentAutoClaimService {
     const taskPool = TaskPoolService.getInstance();
     const availableItems = await taskPool.getAvailableItems();
 
-    // Find queued items with a specific target
-    const targetedItems = availableItems.filter((wi) => wi.target);
+    // Find queued items with a specific target. Skip SLA tracker WIs —
+    // they're not dispatchable work, so waking an offline agent for one
+    // would just trap the WI in a re-claim loop (see the comment in
+    // `tryAutoClaimForAgent` for the full bug shape).
+    const targetedItems = availableItems.filter(
+      (wi) => wi.target && !SLA_TRACKER_ID_PATTERN.test(wi.id),
+    );
     if (targetedItems.length === 0) return;
 
     // Get all known agent sessions from teams

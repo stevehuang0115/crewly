@@ -113,6 +113,64 @@ describe('AgentAutoClaimService', () => {
       expect(result).toBeNull();
     });
 
+    // 2026-05-12 dogfood regression: AutoClaim happily claimed
+    // `request:<rid>:respond_to_user` tracker WIs for crewly-orc, then
+    // `WorkItemDispatchSubscriber.dispatchTo` short-circuited on the
+    // SLA tracker pattern — WI stuck `running`, SLA breach in 5/10 min,
+    // claim revoked, infinite re-claim loop. User saw "Request never
+    // progresses." Filter these out at the source of `availableItems`.
+    it('skips SLA tracker WIs (request:*:respond_to_user) — they are not dispatchable', async () => {
+      const service = AgentAutoClaimService.getInstance();
+
+      const trackerWI = {
+        id: 'request:3e6b984f-80e8-4473-b6c9-a19a4c1240ba:respond_to_user',
+        title: 'Respond to user: [Fix] ...',
+        type: 'review',
+        status: 'queued',
+        target: 'crewly-orc',
+        createdAt: new Date().toISOString(),
+      };
+      mockGetAvailableItems.mockResolvedValueOnce([trackerWI]);
+
+      const result = await service.tryAutoClaimForAgent('crewly-orc');
+
+      expect(result).toBeNull();
+      expect(mockClaimSpecificItem).not.toHaveBeenCalled();
+    });
+
+    it('still claims a real delegate WI when an SLA tracker is also present', async () => {
+      // Mixed pool: one tracker (skip), one real work item (claim).
+      // Asserts the filter is targeted, not over-broad.
+      const service = AgentAutoClaimService.getInstance();
+
+      const tracker = {
+        id: 'request:abc:respond_to_user',
+        title: 'tracker',
+        type: 'review',
+        status: 'queued',
+        target: 'crewly-orc',
+        createdAt: new Date().toISOString(),
+      };
+      const real = {
+        id: 'wi-real-1',
+        title: 'Real task',
+        type: 'delegate',
+        status: 'queued',
+        target: 'crewly-orc',
+        createdAt: new Date().toISOString(),
+      };
+      mockGetAvailableItems.mockResolvedValueOnce([tracker, real]);
+      mockClaimSpecificItem.mockResolvedValueOnce({
+        workItem: real,
+        claim: { id: 'claim-real', agentId: 'crewly-orc' },
+      });
+
+      const result = await service.tryAutoClaimForAgent('crewly-orc');
+
+      expect(result?.workItemId).toBe('wi-real-1');
+      expect(mockClaimSpecificItem).toHaveBeenCalledWith('crewly-orc', 'wi-real-1');
+    });
+
     it('should skip items below score threshold', async () => {
       const service = AgentAutoClaimService.getInstance();
 
