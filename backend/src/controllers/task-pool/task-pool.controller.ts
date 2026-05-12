@@ -20,7 +20,14 @@ import { TaskProjectionService } from '../../services/v3/task-projection.service
 import { ServiceContractGate } from '../../services/v3/service-contract-gate.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import type { TokenUsage } from '../../types/v3/task-record.types.js';
-import { WORK_ITEM_TYPES, isValidWorkItemType } from '../../types/v2/work-item.types.js';
+import {
+  WORK_ITEM_TYPES,
+  isValidWorkItemType,
+  createWorkItem,
+  validateCreateWorkItemInput,
+  type CreateWorkItemInput,
+  type WorkItem,
+} from '../../types/v2/work-item.types.js';
 import { formatError } from '../../utils/format-error.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
@@ -168,34 +175,91 @@ export async function maybeEnforceContract(
 /**
  * Adds a WorkItem to the Task Pool.
  *
- * This is the HTTP entry point for the V3 pull-mode task path.
- * Used by delegate-task and other orchestration flows to queue
- * execution-ready WorkItems.
+ * HTTP entry point for the V3 pull-mode task path. Used by delegate-task
+ * and other orchestration shell skills to queue execution-ready WorkItems.
  *
- * Request body: a WorkItem object (id, type, owner, title, status='queued', etc.)
+ * Accepts two body shapes:
+ *
+ * 1. **Minimal `CreateWorkItemInput`** (preferred) — `{type, owner, title,
+ *    target?, description?, briefMarkdown?, priority?, requestId?, ...}`.
+ *    The server fills `id` (uuid), `status` (`'queued'` or `'blocked'`
+ *    if `dependsOn` set), `createdAt`, `retryCount=0`, `maxRetries`,
+ *    `inputTokens=0`, `outputTokens=0`, `cost=0`.
+ *
+ * 2. **Legacy full `WorkItem`** — body carries `id` AND `status` AND
+ *    `createdAt`. The server passes through unchanged (subject to the
+ *    same shape validation as before). Preserved for callers that
+ *    construct WIs locally with deterministic ids (e.g. break-down-request,
+ *    decomposition pipelines that need to record id-references upfront).
+ *
+ * **Why both shapes.** 2026-05-12 dogfood: orc-side `delegate-task` shell
+ * skill and 3 sibling skills (`agent/core/create-task`,
+ * `team-leader/decompose-goal`, `team-leader/delegate-task`) all send
+ * the minimal shape. They were silently 400'd by the strict validator
+ * because they omit `id` / `status` / `createdAt` / `retryCount` etc.
+ * Result: every orc delegation failed — `task-pool/add` returned
+ * `WorkItem.id is required and must be a string`, the skill exited 1,
+ * the orc thought it had delegated but no WI ever entered the pool.
+ *
+ * Fix the endpoint, not 4 skills — the canonical creation primitive
+ * `createWorkItem(input)` already exists for internal callers; the
+ * HTTP surface should expose the same shape.
  *
  * @param req - Express request with WorkItem body
  * @param res - Express response
  */
 export async function addItem(req: Request, res: Response): Promise<void> {
   try {
-    const workItem = req.body;
+    const body = req.body;
 
-    if (!workItem || typeof workItem !== 'object') {
+    if (!body || typeof body !== 'object') {
       res.status(400).json({ success: false, error: 'Request body must be a WorkItem object' });
       return;
     }
 
-    // V3.1 Task Validator
-    const validationErrors = await validateWorkItem(workItem);
-    if (validationErrors.length > 0) {
-      res.status(400).json({ success: false, errors: validationErrors });
-      return;
+    const isLegacyFullShape =
+      typeof body.id === 'string' &&
+      typeof body.status === 'string' &&
+      typeof body.createdAt === 'string';
+
+    let workItem: WorkItem;
+
+    if (isLegacyFullShape) {
+      // Legacy path — body already carries a complete WorkItem. Validate
+      // and pass through. This preserves backward compat for skills
+      // that construct the full shape locally and want their
+      // client-side id to win.
+      const validationErrors = await validateLegacyFullWorkItem(body);
+      if (validationErrors.length > 0) {
+        res.status(400).json({ success: false, errors: validationErrors });
+        return;
+      }
+      workItem = body as WorkItem;
+    } else {
+      // Minimal-input path — body is a CreateWorkItemInput. Validate
+      // the lighter shape and let `createWorkItem` build the full WI
+      // with server-generated id, timestamps, and defaults.
+      const inputErrors = validateCreateWorkItemInput(body as CreateWorkItemInput);
+      if (inputErrors.length > 0) {
+        res.status(400).json({ success: false, errors: inputErrors });
+        return;
+      }
+      workItem = createWorkItem(body as CreateWorkItemInput);
+
+      // The minimal-shape path still needs the duplicate / per-Request-cap
+      // guards from the legacy validator. Run them against the freshly
+      // built WI (id is now present and unique-by-uuid, so the duplicate
+      // check is effectively a per-Request-cap check on its own).
+      const postBuildErrors = await checkPoolInvariants(workItem);
+      if (postBuildErrors.length > 0) {
+        res.status(400).json({ success: false, errors: postBuildErrors });
+        return;
+      }
     }
 
     // ServiceContract gate — only runs when the body carries cross-team
     // routing hints. Rejects before the item is enqueued.
-    const rejection = await maybeEnforceContract(workItem as Record<string, unknown>);
+    const rejection = await maybeEnforceContract(workItem as unknown as Record<string, unknown>);
     if (rejection) {
       res.status(rejection.status).json(rejection.payload);
       return;
@@ -219,7 +283,7 @@ export async function addItem(req: Request, res: Response): Promise<void> {
     res.status(201).json({
       success: true,
       message: `WorkItem ${workItem.id} added to pool`,
-      data: { workItemId: workItem.id },
+      data: { workItemId: workItem.id, id: workItem.id, status: workItem.status },
     });
   } catch (error) {
     handleServiceError(res, error);
@@ -999,18 +1063,20 @@ export async function appendItemNote(req: Request, res: Response): Promise<void>
 const MAX_WORK_ITEMS_PER_REQUEST = 20;
 
 /**
- * Validates a WorkItem before it enters the pool.
+ * Validate a body that claims to be a fully-formed WorkItem (legacy path).
  * Returns a list of validation error strings (empty = valid).
  *
  * Checks:
  * 1. Schema: required fields present, type is valid
- * 2. Quantity: no more than MAX_WORK_ITEMS_PER_REQUEST per requestId
- * 3. Duplicate: workItemId must not already exist in pool
+ * 2. Pool invariants: per-request cap, duplicate-id
+ *
+ * The minimal-input path (`CreateWorkItemInput`) bypasses this — see
+ * {@link validateCreateWorkItemInput} for that shape's checks.
  *
  * @param workItem - The WorkItem to validate
  * @returns Array of error strings
  */
-async function validateWorkItem(workItem: Record<string, unknown>): Promise<string[]> {
+async function validateLegacyFullWorkItem(workItem: Record<string, unknown>): Promise<string[]> {
   const errors: string[] = [];
 
   // 1. Schema Check
@@ -1031,44 +1097,64 @@ async function validateWorkItem(workItem: Record<string, unknown>): Promise<stri
 
   if (errors.length > 0) return errors; // Bail out early on schema errors
 
+  // 2. Pool invariants
+  const invariantErrors = await checkPoolInvariants({
+    id: workItem.id as string,
+    requestId: workItem.requestId as string | undefined,
+  });
+  return invariantErrors;
+}
+
+/**
+ * Pool-level invariant checks that run for BOTH the legacy full-shape
+ * path and the minimal-input path. Split out from
+ * {@link validateLegacyFullWorkItem} so the minimal path (which has
+ * already passed `validateCreateWorkItemInput`) can reuse them after
+ * `createWorkItem` generates the id.
+ *
+ * Invariants:
+ * - Per-`requestId` cap: no more than `MAX_WORK_ITEMS_PER_REQUEST` active
+ *   WIs share the same parent Request. Guards against runaway recursive
+ *   decomposition.
+ * - Duplicate-id: a WI with this id must not already exist in the pool.
+ *
+ * @param wi - `{id, requestId?}` minimum surface needed for the checks
+ * @returns Array of error strings (empty = invariants hold)
+ */
+async function checkPoolInvariants(wi: { id: string; requestId?: string }): Promise<string[]> {
+  const errors: string[] = [];
   try {
     const svc = getService();
     const allItems = await svc.getAllItems();
 
-    // Single pass: collect both the duplicate (if any) and the count of
-    // active items sharing the same requestId. A previous implementation
-    // ran two separate O(n) scans — redundant on a hot insert path during
-    // decomposition bursts.
-    const requestId = workItem.requestId as string | undefined;
     let duplicate: typeof allItems[number] | undefined;
     let sameRequestActiveCount = 0;
-    for (const wi of allItems) {
-      if (!duplicate && wi.id === workItem.id) {
-        duplicate = wi;
+    for (const existing of allItems) {
+      if (!duplicate && existing.id === wi.id) {
+        duplicate = existing;
       }
       if (
-        requestId &&
-        wi.requestId === requestId &&
-        wi.status !== 'done' &&
-        wi.status !== 'cancelled'
+        wi.requestId &&
+        existing.requestId === wi.requestId &&
+        existing.status !== 'done' &&
+        existing.status !== 'cancelled'
       ) {
         sameRequestActiveCount += 1;
       }
     }
 
     if (duplicate) {
-      errors.push(`WorkItem.id "${workItem.id}" already exists in pool (status: ${duplicate.status})`);
+      errors.push(`WorkItem.id "${wi.id}" already exists in pool (status: ${duplicate.status})`);
     }
 
-    if (requestId && sameRequestActiveCount >= MAX_WORK_ITEMS_PER_REQUEST) {
+    if (wi.requestId && sameRequestActiveCount >= MAX_WORK_ITEMS_PER_REQUEST) {
       errors.push(
-        `Request ${requestId} already has ${sameRequestActiveCount} active WorkItems (max ${MAX_WORK_ITEMS_PER_REQUEST}). Possible infinite decomposition loop.`,
+        `Request ${wi.requestId} already has ${sameRequestActiveCount} active WorkItems (max ${MAX_WORK_ITEMS_PER_REQUEST}). Possible infinite decomposition loop.`,
       );
     }
   } catch (err) {
-    logger.debug('WorkItem validation check failed (non-fatal)', { error: formatError(err) });
+    logger.debug('WorkItem invariant check failed (non-fatal)', { error: formatError(err) });
   }
-
   return errors;
 }
 
