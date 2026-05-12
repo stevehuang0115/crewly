@@ -50,9 +50,20 @@ const API_BASE = 'http://localhost:8787';
 /**
  * SLA tracker WIs use a deterministic id pattern `request:<rid>:respond_to_user`
  * (see `request-sla.subscriber.ts`). They're internal bookkeeping items, not
- * dispatchable work, so we always skip them.
+ * dispatchable work — the orc never "claims and executes" one; the WI is
+ * passively tracked and resolved by the SLA path when orc actually replies
+ * via the reply-slack skill.
+ *
+ * Exported so {@link AgentAutoClaimService} can apply the same filter when
+ * scoring claimable WIs. Before that fix (2026-05-12), AutoClaim would
+ * happily claim a `respond_to_user` WI for crewly-orc, then call
+ * `dispatchTo` which short-circuits here on the same regex — leaving the
+ * WI stuck in `running` with no PTY delivery. 5/10-min SLA breach fired,
+ * claim revoked, WI cycled back to `queued`, AutoClaim re-claimed it,
+ * loop repeated indefinitely. From the user's perspective: "Request never
+ * progresses, only heartbeats and SLA-breach DMs."
  */
-const SLA_TRACKER_ID_PATTERN = /^request:.+:respond_to_user$/;
+export const SLA_TRACKER_ID_PATTERN = /^request:.+:respond_to_user$/;
 
 /** Per-WI delay between backfill pushes — keeps the burst polite. */
 const BACKFILL_THROTTLE_MS = 200;
