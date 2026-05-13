@@ -334,11 +334,17 @@ const ORC_REPLY_GRACE_MS = 30_000;     // 30s second-pass deferral
  */
 export function extractSlackThreadTs(sourceId: string | undefined): string | null {
   if (!sourceId || !sourceId.startsWith('slack-')) return null;
+  // 2026-05-13 dogfood fix: thread-reply Requests use the encoding
+  // `slack-{channelId}-{threadRoot}-msg-{messageTs}` so the SLA index
+  // keys on the thread root (which is what orc replies to). Strip the
+  // optional `-msg-{ts}` suffix before extracting the trailing ts.
+  // Top-level message ids (`slack-{channelId}-{ts}`) are unchanged.
+  const stripped = sourceId.replace(/-msg-\d+\.\d+$/, '');
   // slack-${channelId}-${ts}; channelId may not contain dashes, but ts is
   // dotted-decimal. We split on '-' and take the last segment as ts.
-  const lastDash = sourceId.lastIndexOf('-');
-  if (lastDash < 0 || lastDash === sourceId.length - 1) return null;
-  const ts = sourceId.slice(lastDash + 1);
+  const lastDash = stripped.lastIndexOf('-');
+  if (lastDash < 0 || lastDash === stripped.length - 1) return null;
+  const ts = stripped.slice(lastDash + 1);
   // ts looks like 1772899923.865659 — at minimum digits + '.'
   if (!/^\d+\.\d+$/.test(ts)) return null;
   return ts;
@@ -352,7 +358,10 @@ export function extractSlackThreadTs(sourceId: string | undefined): string | nul
  */
 export function extractSlackChannelId(sourceId: string | undefined): string | null {
   if (!sourceId || !sourceId.startsWith('slack-')) return null;
-  const rest = sourceId.slice('slack-'.length);
+  // Strip the optional `-msg-{ts}` suffix (thread-reply encoding) so the
+  // channelId is sliced from the threadRoot form, not from the messageTs.
+  const stripped = sourceId.replace(/-msg-\d+\.\d+$/, '');
+  const rest = stripped.slice('slack-'.length);
   const lastDash = rest.lastIndexOf('-');
   if (lastDash < 1) return null;
   return rest.slice(0, lastDash);

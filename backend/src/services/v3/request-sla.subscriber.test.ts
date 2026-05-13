@@ -245,6 +245,23 @@ describe('extractSlackThreadTs / extractSlackChannelId', () => {
     expect(extractSlackThreadTs(undefined)).toBeNull();
     expect(extractSlackChannelId('')).toBeNull();
   });
+
+  // 2026-05-13 dogfood regression: when a user replies WITHIN an existing
+  // Slack thread, the bridge encodes sourceConversationItemId as
+  // `slack-{channel}-{threadRoot}-msg-{messageTs}` so the SLA threadIndex
+  // keys on the actual thread root (which is what orc replies to via
+  // reply-slack). Both extractors MUST strip the `-msg-{ts}` suffix.
+  it('strips the `-msg-{ts}` suffix for thread-reply encoding (extractSlackThreadTs)', () => {
+    expect(
+      extractSlackThreadTs('slack-D0AC7NF5N7L-1777130816.772509-msg-1778679615.696949'),
+    ).toBe('1777130816.772509');
+  });
+
+  it('strips the `-msg-{ts}` suffix for thread-reply encoding (extractSlackChannelId)', () => {
+    expect(
+      extractSlackChannelId('slack-D0AC7NF5N7L-1777130816.772509-msg-1778679615.696949'),
+    ).toBe('D0AC7NF5N7L');
+  });
 });
 
 describe('pickResolveTarget', () => {

@@ -473,7 +473,32 @@ export class SlackOrchestratorBridge extends EventEmitter {
             try {
               const { RequestService } = await import('../v3/request.service.js');
               const svc = RequestService.getInstance();
-              const msgId = `slack-${message.channelId}-${message.ts}`;
+              // 2026-05-13 dogfood fix: encode BOTH thread root AND message
+              // ts in sourceConversationItemId. The previous form was
+              // `slack-{channel}-{message.ts}`, which made
+              // `extractSlackThreadTs(sourceConv)` return the per-message
+              // ts — never the actual Slack thread root. The SLA
+              // threadIndex therefore mapped per-message ts → requestId,
+              // but when orc replied via reply-slack → POST /api/slack/send
+              // → markResolvedByThread(realThreadRoot), the lookup missed
+              // and the Request never auto-closed (PR #538 hook was a
+              // no-op for thread-reply messages).
+              //
+              // New form:
+              //   Top-level message (msg.ts == thread root):
+              //     `slack-{channelId}-{ts}`              (unchanged)
+              //   Reply within an existing thread:
+              //     `slack-{channelId}-{threadRoot}-msg-{messageTs}`
+              //
+              // The `-msg-{...}` suffix preserves per-message uniqueness
+              // so `findBySourceConversationItemId` still works. The
+              // updated `parseSlackThreadContext` strips the suffix
+              // before extracting the threadTs, so the SLA's threadIndex
+              // now keys on the actual thread root for both shapes.
+              const threadRoot = message.threadTs || message.ts;
+              const msgId = message.threadTs && message.threadTs !== message.ts
+                ? `slack-${message.channelId}-${threadRoot}-msg-${message.ts}`
+                : `slack-${message.channelId}-${message.ts}`;
               const existing = await svc.findBySourceConversationItemId(msgId);
               if (existing) return;
 

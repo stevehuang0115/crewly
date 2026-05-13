@@ -212,7 +212,15 @@ export function computeStateFingerprint(childWIs: WorkItem[]): string {
 
 export function parseSlackThreadContext(scid: string | undefined): ParsedSlackContext | null {
   if (!scid || !scid.startsWith('slack-')) return null;
-  const m = scid.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
+  // 2026-05-13 dogfood fix: Slack thread-reply Requests use the
+  // `slack-{channelId}-{threadRoot}-msg-{messageTs}` encoding so that
+  // the SLA threadIndex keys on the actual thread root (which is what
+  // orc replies to via reply-slack). Strip the trailing `-msg-{ts}`
+  // before extracting threadTs so both shapes parse to the thread root.
+  // Top-level messages (`slack-{channelId}-{ts}`) are unaffected — the
+  // strip is a no-op on those.
+  const stripped = scid.replace(/-msg-\d+\.\d+$/, '');
+  const m = stripped.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
   if (!m) return null;
   const [, channelId, ts1, ts2] = m;
   return { channelId, threadTs: `${ts1}.${ts2}` };
