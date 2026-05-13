@@ -450,6 +450,66 @@ describe('QueueProcessorService', () => {
       expect(mockAgentRegistrationService.waitForAgentReady).toHaveBeenCalledTimes(1);
     });
 
+    // 2026-05-13 dogfood: a scheduler check-in body began with "启动分支 A"
+    // (echoed from orc's earlier "you nod and I'll start branch A" Slack
+    // proposal). Delivered as plain PTY text under the `❯` Claude-Code
+    // prompt prefix, orc misread it as user approval and fabricated
+    // "收到「启动分支 A」绿灯 ✅" — an approval the user never gave. Pin
+    // the `[SYSTEM]`/`[/SYSTEM]` wrap so future refactors can't quietly
+    // strip the marker that lets orc tell scheduler-injected text apart
+    // from a real user reply.
+    it('wraps system_event delivery content in [SYSTEM]...[/SYSTEM] markers', async () => {
+      processor.start();
+
+      queueService.enqueue({
+        content: 'Check think-tank-atlas-b4e166f6 progress',
+        conversationId: 'scheduler',
+        source: 'system_event',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      const [, deliveredContent] = mockAgentRegistrationService.sendMessageToAgent.mock.calls[0];
+      expect(deliveredContent).toMatch(/^\n\[SYSTEM\]\nCheck think-tank-atlas-b4e166f6 progress\n\[\/SYSTEM\]\n$/);
+    });
+
+    it('wraps EACH batched system_event message independently — adjacent payloads cannot fuse', async () => {
+      // The reported bug: two messages ending/beginning with "启动分支 A" and
+      // "Check think-tank-atlas..." got joined with a single `\n`, then orc
+      // read the seam as continuous text. With per-message wrappers, every
+      // payload is bracketed so no boundary can disappear.
+      processor.start();
+
+      queueService.enqueue({
+        content: '启动分支 A',
+        conversationId: 'scheduler',
+        source: 'system_event',
+      });
+      queueService.enqueue({
+        content: 'Check think-tank-atlas-b4e166f6: status?',
+        conversationId: 'scheduler',
+        source: 'system_event',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      const [, deliveredContent] = mockAgentRegistrationService.sendMessageToAgent.mock.calls[0];
+      // Both messages MUST appear inside their own [SYSTEM] block. The
+      // closing `[/SYSTEM]` of the first must precede the opening `[SYSTEM]`
+      // of the second — no possibility of "启动分支 ACheck..." fusion.
+      expect(deliveredContent).toContain('[SYSTEM]\n启动分支 A\n[/SYSTEM]');
+      expect(deliveredContent).toContain('[SYSTEM]\nCheck think-tank-atlas-b4e166f6: status?\n[/SYSTEM]');
+      expect(deliveredContent).not.toMatch(/启动分支 A\s*Check/);
+    });
+
     it('should NOT wait for idle after delivery failure', async () => {
       mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({
         success: false,
@@ -569,10 +629,12 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
 
-      // Second attempt should succeed (system events use raw content, no prefix)
+      // Second attempt should succeed. System events are now wrapped with
+      // [SYSTEM]...[/SYSTEM] markers (2026-05-13 dogfood fix) so they can be
+      // distinguished from user input in the agent's PTY.
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        'Retry me',
+        '\n[SYSTEM]\nRetry me\n[/SYSTEM]\n',
         'claude-code'
       );
     });
@@ -790,10 +852,11 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
 
-      // system_event uses raw content (no prefix)
+      // system_event is wrapped in [SYSTEM]...[/SYSTEM] markers
+      // (2026-05-13 dogfood fix — see queue-processor.service.ts comment).
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        'Retry test',
+        '\n[SYSTEM]\nRetry test\n[/SYSTEM]\n',
         'claude-code'
       );
     });
@@ -1242,10 +1305,11 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
 
-      // system_event should force-deliver even when agent is not ready
+      // system_event should force-deliver even when agent is not ready.
+      // Wrapped in [SYSTEM]...[/SYSTEM] per 2026-05-13 dogfood fix.
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-orc',
-        '[EVENT:agent_status] Agent Sam started',
+        '\n[SYSTEM]\n[EVENT:agent_status] Agent Sam started\n[/SYSTEM]\n',
         'claude-code'
       );
       expect(requeueSpy).not.toHaveBeenCalled();
@@ -1270,10 +1334,11 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
 
-      // Should deliver to the target session, not orchestrator
+      // Should deliver to the target session, not orchestrator.
+      // Wrapped in [SYSTEM]...[/SYSTEM] per 2026-05-13 dogfood fix.
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'crewly-assistant',
-        '[EVENT:agent_idle] Agent Leo idle',
+        '\n[SYSTEM]\n[EVENT:agent_idle] Agent Leo idle\n[/SYSTEM]\n',
         expect.any(String)
       );
       // waitForAgentReady should also target the subscriber
