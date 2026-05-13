@@ -185,6 +185,30 @@ describe('parseSlackThreadContext', () => {
     expect(parseSlackThreadContext(undefined)).toBeNull();
     expect(parseSlackThreadContext('')).toBeNull();
   });
+
+  // 2026-05-13 dogfood regression: thread-reply user messages now encode
+  // sourceConversationItemId as `slack-{channel}-{threadRoot}-msg-{messageTs}`
+  // so the SLA index keys on the actual thread root (which is what orc
+  // replies to via reply-slack). The parser MUST strip the `-msg-{ts}`
+  // suffix before extracting threadTs, otherwise the lookup misses and
+  // the Request never auto-closes when orc replies.
+  it('extracts the THREAD ROOT (not the message ts) from thread-reply encoding', () => {
+    expect(
+      parseSlackThreadContext('slack-D0AC7NF5N7L-1777130816.772509-msg-1778679615.696949'),
+    ).toEqual({
+      channelId: 'D0AC7NF5N7L',
+      threadTs: '1777130816.772509',  // ← thread root, NOT 1778679615.696949
+    });
+  });
+
+  it('handles the top-level (no-thread) form identically — no `-msg-` suffix to strip', () => {
+    // Regression gate: the strip must be a no-op on top-level message ids.
+    // If the regex were too greedy and ate part of the ts, this test fails.
+    expect(parseSlackThreadContext('slack-D0AC7NF5N7L-1778679615.696949')).toEqual({
+      channelId: 'D0AC7NF5N7L',
+      threadTs: '1778679615.696949',
+    });
+  });
 });
 
 describe('RequestStatusUpdateSubscriber — event handling', () => {
