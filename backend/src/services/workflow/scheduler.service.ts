@@ -1183,11 +1183,29 @@ export class SchedulerService extends EventEmitter {
    * @param message - Message to send
    */
   private async executeCheck(targetSession: string, message: string): Promise<void> {
+    // 2026-05-13 dogfood: a scheduler check-in body began with "启动分支 A"
+    // (echoed from orc's earlier "you nod and I'll start branch A" Slack
+    // proposal). When delivered as plain PTY text under the `❯` prompt,
+    // orc read it as a user approval and fabricated a Slack confirmation
+    // the user never gave. Wrap every scheduler-originated check-in in
+    // explicit `[SYSTEM]` markers so the agent reading the PTY can tell
+    // it apart from a real user reply.
+    //
+    // Queue-routed deliveries (orc target) ALSO get this wrapper applied
+    // in QueueProcessor — wrapping twice is harmless and the duplicate
+    // never reaches the wire because we wrap here BEFORE enqueue and
+    // QueueProcessor's wrap is on its own content. We wrap here so the
+    // direct-PTY fallback below (and any future non-queue delivery)
+    // also benefits.
+    const wrapped = `\n[SYSTEM]\n${message}\n[/SYSTEM]\n`;
+
     // Route orchestrator-targeted checks through the message queue when available.
     // This prevents scheduled checks from interrupting in-flight chat messages
     // (Slack, WhatsApp, web) that the queue processor is currently delivering.
     if (targetSession === ORCHESTRATOR_SESSION_NAME && this.messageQueueService) {
       try {
+        // For the queue path we pass the RAW message — QueueProcessor's
+        // system_event branch wraps it on delivery. Avoids double-wrapping.
         this.messageQueueService.enqueue({
           content: message,
           conversationId: 'scheduler',
@@ -1225,11 +1243,13 @@ export class SchedulerService extends EventEmitter {
 
     try {
       if (this.agentRegistrationService) {
-        // Reliable delivery path: uses retry + progressive verification + background scanner
+        // Reliable delivery path: uses retry + progressive verification + background scanner.
+        // Wrap with system markers — see the `wrapped` comment above for the
+        // dogfood rationale.
         const runtimeType = await this.resolveRuntimeType(targetSession);
         const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
           targetSession,
-          message,
+          wrapped,
           runtimeType
         );
         success = deliveryResult.success;
@@ -1265,7 +1285,7 @@ export class SchedulerService extends EventEmitter {
 
         const { SessionCommandHelper } = await import('../session/session-command-helper.js');
         const commandHelper = new SessionCommandHelper(backend);
-        await commandHelper.sendMessage(targetSession, message);
+        await commandHelper.sendMessage(targetSession, wrapped);
         success = true;
 
         this.logger.info('Check-in executed via fallback', {

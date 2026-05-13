@@ -191,9 +191,10 @@ describe('SchedulerService', () => {
       jest.advanceTimersByTime(60000);
       await jest.runAllTimersAsync();
 
+      // 2026-05-13 dogfood fix: scheduler messages are now wrapped.
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'test-session',
-        'Test message',
+        '\n[SYSTEM]\nTest message\n[/SYSTEM]\n',
         expect.any(String)
       );
       expect(emitSpy).toHaveBeenCalledWith('check_executed', expect.any(Object));
@@ -722,14 +723,17 @@ describe('SchedulerService', () => {
 
       await (service as any).executeCheck('test-session', 'Test message');
 
+      // 2026-05-13 dogfood fix: scheduler-injected messages now carry an
+      // explicit [SYSTEM]...[/SYSTEM] wrapper so the receiving agent's PTY
+      // can distinguish them from user input.
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
         'test-session',
-        'Test message',
+        '\n[SYSTEM]\nTest message\n[/SYSTEM]\n',
         expect.any(String) // runtime type
       );
       expect(mockLogger.info).toHaveBeenCalledWith('Check-in executed via reliable delivery', {
         targetSession: 'test-session',
-        messageLength: 12,
+        messageLength: 12, // logged length is of the original message, not the wrapper
       });
       expect(emitSpy).toHaveBeenCalledWith('check_executed', {
         targetSession: 'test-session',
@@ -768,7 +772,8 @@ describe('SchedulerService', () => {
         'AgentRegistrationService not available, using fallback PTY write',
         { targetSession: 'test-session' }
       );
-      expect(mockSendMessage).toHaveBeenCalledWith('test-session', 'Test message');
+      // Wrapped [SYSTEM]...[/SYSTEM] per 2026-05-13 dogfood fix.
+      expect(mockSendMessage).toHaveBeenCalledWith('test-session', '\n[SYSTEM]\nTest message\n[/SYSTEM]\n');
       expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
     });
 

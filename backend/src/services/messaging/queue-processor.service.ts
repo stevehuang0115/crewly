@@ -496,8 +496,29 @@ export class QueueProcessorService extends EventEmitter {
       let deliveryContent: string;
       const msgFingerprint = message.id.slice(-8);
       if (isSystemEvent) {
-        const allContents = [message.content, ...batchedMessages.map(m => m.content)];
-        deliveryContent = allContents.join('\n');
+        // 2026-05-13 dogfood incident: a scheduler check-in body began with
+        // "启动分支 A" (which orc had earlier proposed in its Slack reply
+        // "you nod and I'll start branch A"). When the check-in landed in
+        // orc's PTY as plain text under the `❯` Claude-Code prompt prefix,
+        // orc read "启动分支 A" as a user reply and announced "收到「启动
+        // 分支 A」绿灯 ✅" to Slack — fabricating an approval the user
+        // never gave. Two messages batched in the same delivery were also
+        // joined with a bare `\n`, so a tail like "启动分支 A" could mash
+        // against the next message's head ("Check think-tank-atlas...")
+        // and the boundary disappeared.
+        //
+        // Wrap every system-injected message in explicit `[SYSTEM]` /
+        // `[/SYSTEM]` markers and surround the whole block with newlines.
+        // This gives the orc (and any future agent reading the PTY)
+        // an unambiguous "this is a scheduler / SLA / reconciler ping,
+        // NOT a user reply" signal. Batched messages each get their own
+        // wrapper so adjacent payloads can't accidentally fuse.
+        const wrap = (content: string) => `[SYSTEM]\n${content}\n[/SYSTEM]`;
+        const wrappedContents = [
+          wrap(message.content),
+          ...batchedMessages.map((m) => wrap(m.content)),
+        ];
+        deliveryContent = `\n${wrappedContents.join('\n')}\n`;
       } else if (message.source === MESSAGE_SOURCES.GOOGLE_CHAT) {
         const prefix = CHAT_ROUTING_CONSTANTS.GOOGLE_CHAT_PREFIX;
         const threadId = message.sourceMetadata?.threadId as string | undefined;
