@@ -98,6 +98,24 @@ function isStorageNotReadyError(error: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Tunables
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum concurrent active agents allowed even under memory pressure.
+ *
+ * When `isUnderMemoryPressure()` returns true, the reconciler previously
+ * blocked every wake action — which wedged the entire system whenever
+ * free RAM stayed low (2026-05-13 dogfood: 6+ hours stuck). New
+ * behaviour: keep up to this many agents alive so something is always
+ * making progress; only block wakes beyond the floor. Set low enough
+ * that the OOM-prevention intent is preserved (3 active agents at
+ * crisis pressure is far below the 90%-threshold tipping point that
+ * blocks unbounded spawns).
+ */
+export const WAKE_FLOOR_UNDER_PRESSURE = 3;
+
+// ---------------------------------------------------------------------------
 // LiveReconcilerDataProvider
 // ---------------------------------------------------------------------------
 
@@ -484,21 +502,87 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * @param action - The wake action to execute
    * @returns True if the wake was initiated successfully
    */
+  /**
+   * Count agent sessions currently in an alive state. Used by the
+   * memory-pressure gate in {@link executeWakeAction} to decide whether
+   * a new wake would push us past the concurrency floor.
+   *
+   * Counts `'active'`, `'started'`, and `'starting'` — anything that
+   * has a live process consuming RAM. `started` and `starting` cover
+   * in-flight wakes from prior reconciler ticks that haven't fully
+   * promoted to active yet. `suspended` / `inactive` are NOT alive and
+   * don't contribute (suspended drops the runtime; inactive never had
+   * one).
+   *
+   * @returns The number of agent sessions currently alive
+   */
+  private async countActiveAgentSessions(): Promise<number> {
+    try {
+      const teams = await this.storage.getTeams();
+      let count = 0;
+      for (const team of teams) {
+        for (const member of team.members || []) {
+          const s = member.agentStatus;
+          if (s === 'active' || s === 'started' || s === 'starting') {
+            count += 1;
+          }
+        }
+      }
+      return count;
+    } catch (err) {
+      // Storage hiccup → fail closed (assume floor reached, skip wake).
+      // Better to defer a wake than to overshoot under crisis pressure.
+      this.logger.debug('countActiveAgentSessions failed — assuming floor reached', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return WAKE_FLOOR_UNDER_PRESSURE;
+    }
+  }
+
   async executeWakeAction(action: WakeAction): Promise<boolean> {
     const { agentSessionName, strategy } = action;
 
-    // Skip wake action under system memory pressure (>90% used).
-    // Prevents spawning new agent processes when the system is already low on memory,
-    // which would cause OOM → kill → reconciler wakes again → OOM loop.
+    // Memory-pressure gate with a concurrency floor.
+    //
+    // Previous behaviour (unconditional skip on >=90% used) wedged the
+    // system in the 2026-05-13 dogfood scenario: free RAM hovered at
+    // 16-33 MB for hours, the reconciler refused EVERY wake, and the
+    // user saw orc/think-tank/marketing all stuck inactive with queued
+    // WIs piling up. Nothing made progress until manual intervention.
+    //
+    // New behaviour: under memory pressure, still allow wakes up to
+    // `WAKE_FLOOR_UNDER_PRESSURE` concurrent active agents so the
+    // system stays minimally productive. Wakes beyond that cap are
+    // still blocked — we don't want to spawn an unbounded number of
+    // agents under crisis pressure and trigger an OOM cascade.
+    //
+    // The count includes 'active' and 'started' sessions (counting
+    // 'started' covers an in-flight wake from a prior reconciler tick
+    // that hasn't fully promoted to 'active' yet). Slight overshoot
+    // is possible across concurrent pass executions; acceptable
+    // because the cap is a SAFETY FLOOR, not a hard limit.
     if (isUnderMemoryPressure()) {
       const stats = getMemoryStats();
-      this.logger.warn('Skipping wake action due to memory pressure', {
+      const activeCount = await this.countActiveAgentSessions();
+      if (activeCount >= WAKE_FLOOR_UNDER_PRESSURE) {
+        this.logger.warn('Skipping wake action — memory pressure AND at concurrency floor', {
+          agent: agentSessionName,
+          strategy,
+          memoryUsedPercent: stats.usedPercent,
+          freeMemMB: stats.freeMB,
+          activeAgents: activeCount,
+          wakeFloor: WAKE_FLOOR_UNDER_PRESSURE,
+        });
+        return false;
+      }
+      this.logger.info('Memory pressure detected — allowing wake (under concurrency floor)', {
         agent: agentSessionName,
         strategy,
         memoryUsedPercent: stats.usedPercent,
         freeMemMB: stats.freeMB,
+        activeAgents: activeCount,
+        wakeFloor: WAKE_FLOOR_UNDER_PRESSURE,
       });
-      return false;
     }
 
     this.logger.info('Executing wake action', {

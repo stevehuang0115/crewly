@@ -783,10 +783,29 @@ describe('LiveReconcilerDataProvider', () => {
       globalThis.fetch = originalFetch;
     });
 
-    it('should skip wake action under memory pressure (>=90%)', async () => {
-      // Simulate >=90% memory usage
-      mockTotalmem.mockReturnValue(16_000_000_000); // 16GB
-      mockFreemem.mockReturnValue(800_000_000);      // 800MB free = 95% used
+    // 2026-05-13 dogfood: previously this gate UNCONDITIONALLY blocked
+    // every wake action whenever memory pressure tripped (>=90%), which
+    // wedged the entire system for hours when free RAM stayed low.
+    // New behaviour: allow wakes up to WAKE_FLOOR_UNDER_PRESSURE
+    // concurrent active agents so something keeps making progress;
+    // block additional wakes beyond that floor. Tests now pin both
+    // halves of the contract.
+    it('skips wake under memory pressure when active-agent count is at/above the floor', async () => {
+      // 95% used
+      mockTotalmem.mockReturnValue(16_000_000_000);
+      mockFreemem.mockReturnValue(800_000_000);
+
+      // 3 active agents = floor reached
+      mockStorage.getTeams.mockResolvedValue([
+        {
+          id: 't1',
+          members: [
+            { id: 'm1', sessionName: 's1', agentStatus: 'active', role: 'dev', updatedAt: '' },
+            { id: 'm2', sessionName: 's2', agentStatus: 'active', role: 'dev', updatedAt: '' },
+            { id: 'm3', sessionName: 's3', agentStatus: 'started', role: 'dev', updatedAt: '' },
+          ],
+        },
+      ]);
 
       mockSuspend.isSuspended.mockReturnValue(true);
       mockSuspend.rehydrateAgent.mockResolvedValue(true);
@@ -802,10 +821,75 @@ describe('LiveReconcilerDataProvider', () => {
 
       const result = await provider.executeWakeAction(action);
 
-      // Should return false without calling rehydrate because of memory pressure
       expect(result).toBe(false);
       expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
+    });
 
+    it('allows wake under memory pressure when active-agent count is BELOW the floor', async () => {
+      // 95% used (would have skipped pre-fix)
+      mockTotalmem.mockReturnValue(16_000_000_000);
+      mockFreemem.mockReturnValue(800_000_000);
+
+      // Only 1 active agent → 2 slots under floor → wake should go through
+      mockStorage.getTeams.mockResolvedValue([
+        {
+          id: 't1',
+          members: [
+            { id: 'm1', sessionName: 's1', agentStatus: 'active', role: 'dev', updatedAt: '' },
+            { id: 'm2', sessionName: 's2', agentStatus: 'inactive', role: 'dev', updatedAt: '' },
+            { id: 'm3', sessionName: 's3', agentStatus: 'suspended', role: 'dev', updatedAt: '' },
+          ],
+        },
+      ]);
+
+      mockSuspend.isSuspended.mockReturnValue(true);
+      mockSuspend.rehydrateAgent.mockResolvedValue(true);
+
+      const action: WakeAction = {
+        workItemId: 'wi-1',
+        agentSessionName: 'agent-max',
+        strategy: 'rehydrate',
+        score: 75,
+        scoreBreakdown: { skillMatch: 40, urgency: 15, contextFamiliarity: 20, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      };
+
+      const result = await provider.executeWakeAction(action);
+
+      expect(result).toBe(true);
+      expect(mockSuspend.rehydrateAgent).toHaveBeenCalledWith('agent-max');
+    });
+
+    it('counts `starting` and `started` toward the floor (in-flight wakes consume RAM too)', async () => {
+      mockTotalmem.mockReturnValue(16_000_000_000);
+      mockFreemem.mockReturnValue(800_000_000);
+
+      // 3 in-flight = floor reached even though none are fully active yet
+      mockStorage.getTeams.mockResolvedValue([
+        {
+          id: 't1',
+          members: [
+            { id: 'm1', sessionName: 's1', agentStatus: 'starting', role: 'dev', updatedAt: '' },
+            { id: 'm2', sessionName: 's2', agentStatus: 'started', role: 'dev', updatedAt: '' },
+            { id: 'm3', sessionName: 's3', agentStatus: 'starting', role: 'dev', updatedAt: '' },
+          ],
+        },
+      ]);
+
+      mockSuspend.isSuspended.mockReturnValue(true);
+      const action: WakeAction = {
+        workItemId: 'wi-1',
+        agentSessionName: 'agent-max',
+        strategy: 'rehydrate',
+        score: 75,
+        scoreBreakdown: { skillMatch: 40, urgency: 15, contextFamiliarity: 20, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      };
+
+      const result = await provider.executeWakeAction(action);
+
+      expect(result).toBe(false);
+      expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
     });
 
     it('should proceed with wake action when memory usage is below 90%', async () => {
