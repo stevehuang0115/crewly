@@ -1,6 +1,6 @@
 {
   "name": "crewly",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "type": "module",
   "description": "Multi-agent orchestration platform for AI coding teams — coordinates Claude Code, Gemini CLI, and Codex agents with a real-time web dashboard",
   "workspaces": [
