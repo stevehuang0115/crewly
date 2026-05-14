@@ -87,6 +87,40 @@ jest.mock('./pty-activity-tracker.service.js', () => ({
 }));
 
 // Mock OAuthReloginMonitorService — no-op for tests
+// Mocks for the dynamic imports used by routeInProcessResponseToSlack.
+// Default behaviour matches a "Slack disconnected" environment so existing
+// happy-path tests (which let the real method run) bail out at the
+// `isConnected()` check exactly as they do in CI today. Error-path tests
+// override these per-case.
+const mockSlackSendMessage = jest.fn().mockResolvedValue('1234567890.000100');
+const mockSlackIsConnected = jest.fn().mockReturnValue(false);
+jest.mock('../slack/slack.service.js', () => ({
+	getSlackService: jest.fn(() => ({
+		isConnected: mockSlackIsConnected,
+		sendMessage: mockSlackSendMessage,
+	})),
+}));
+
+const mockTsqGet = jest.fn().mockReturnValue(null);
+const mockTsqTrackInbound = jest.fn();
+const mockTsqMarkReplied = jest.fn();
+jest.mock('../messaging/thread-status-queue.service.js', () => ({
+	ThreadStatusQueueService: {
+		getInstance: jest.fn(() => ({
+			get: mockTsqGet,
+			trackInbound: mockTsqTrackInbound,
+			markReplied: mockTsqMarkReplied,
+		})),
+	},
+}));
+
+const mockMarkResolvedByThread = jest.fn().mockResolvedValue(undefined);
+jest.mock('../v3/request-sla.subscriber.js', () => ({
+	getRequestSlaSubscriber: jest.fn(() => ({
+		markResolvedByThread: mockMarkResolvedByThread,
+	})),
+}));
+
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
 		getInstance: jest.fn().mockReturnValue({
@@ -3813,6 +3847,128 @@ describe('AgentRegistrationService', () => {
 			});
 
 			expect(result.sessionName).toBe('broken-session-xyz');
+		});
+	});
+
+	// ──────────────────────────────────────────────────────────────────
+	// routeInProcessResponseToSlack — error paths
+	// ──────────────────────────────────────────────────────────────────
+	// The function is fire-and-forget (returns void) and every branch is
+	// best-effort with a `try/catch` that swallows errors and logs at
+	// debug/warn. These tests pin that contract: a future refactor that
+	// converts a `try/catch` to an unhandled `throw` would break the
+	// caller's success return — these tests are the safety net.
+	describe('routeInProcessResponseToSlack — error paths', () => {
+		beforeEach(() => {
+			mockSlackIsConnected.mockReset().mockReturnValue(true);
+			mockSlackSendMessage.mockReset().mockResolvedValue('1234567890.000100');
+			mockTsqGet.mockReset().mockReturnValue(null);
+			mockTsqTrackInbound.mockReset();
+			mockTsqMarkReplied.mockReset();
+			mockMarkResolvedByThread.mockReset().mockResolvedValue(undefined);
+		});
+
+		const flushAsync = async (): Promise<void> => {
+			// The function chains `.then().catch()` over a dynamic import.
+			// We need to drain microtasks AND the macrotask queue for the
+			// inner awaits (sendMessage, markResolvedByThread).
+			for (let i = 0; i < 5; i++) {
+				await new Promise(resolve => setImmediate(resolve));
+			}
+		};
+
+		const invoke = (overrides: Partial<{ channelId: string; threadTs?: string }> = {}): void => {
+			(service as any).routeInProcessResponseToSlack('crewly-orc', 'hello', {
+				channelId: overrides.channelId ?? 'C123',
+				threadTs: overrides.threadTs ?? '1234567890.000200',
+			});
+		};
+
+		it('(a) bails without throwing when Slack is not connected', async () => {
+			mockSlackIsConnected.mockReturnValue(false);
+
+			invoke();
+			await flushAsync();
+
+			expect(mockSlackSendMessage).not.toHaveBeenCalled();
+			expect(mockTsqTrackInbound).not.toHaveBeenCalled();
+			expect(mockTsqMarkReplied).not.toHaveBeenCalled();
+			expect(mockMarkResolvedByThread).not.toHaveBeenCalled();
+		});
+
+		it('(b) swallows sendMessage failure and skips downstream bookkeeping', async () => {
+			mockSlackSendMessage.mockRejectedValueOnce(new Error('slack 5xx'));
+
+			// Must not throw — the function is fire-and-forget.
+			expect(() => invoke()).not.toThrow();
+			await flushAsync();
+
+			expect(mockSlackSendMessage).toHaveBeenCalledTimes(1);
+			// When sendMessage throws, the .then() chain rejects and the
+			// outer .catch() handles it — bookkeeping never runs.
+			expect(mockTsqTrackInbound).not.toHaveBeenCalled();
+			expect(mockTsqMarkReplied).not.toHaveBeenCalled();
+			expect(mockMarkResolvedByThread).not.toHaveBeenCalled();
+		});
+
+		it('(c) swallows markReplied failure but still fires the V3 SLA cascade', async () => {
+			// Send succeeds, then the thread-status bookkeeping crashes —
+			// the SLA cascade in the *next* try/catch block must still run.
+			// Without independent try/catches, one failing primitive would
+			// silently leak Requests stuck in `queued`.
+			mockTsqGet.mockReturnValue(null);
+			mockTsqMarkReplied.mockImplementation(() => {
+				throw new Error('tsq corruption');
+			});
+
+			expect(() => invoke()).not.toThrow();
+			await flushAsync();
+
+			expect(mockSlackSendMessage).toHaveBeenCalledTimes(1);
+			expect(mockTsqTrackInbound).toHaveBeenCalledTimes(1);
+			expect(mockMarkResolvedByThread).toHaveBeenCalledTimes(1);
+		});
+
+		it('(d) swallows markResolvedByThread failure (last in chain — must not propagate)', async () => {
+			mockMarkResolvedByThread.mockRejectedValueOnce(new Error('subscriber down'));
+
+			expect(() => invoke()).not.toThrow();
+			await flushAsync();
+
+			expect(mockSlackSendMessage).toHaveBeenCalledTimes(1);
+			expect(mockTsqMarkReplied).toHaveBeenCalledTimes(1);
+			expect(mockMarkResolvedByThread).toHaveBeenCalledTimes(1);
+		});
+
+		it('builds the thread-status entry on the fly when no inbound was tracked (race-protection)', async () => {
+			// This is the #1 fix from the code review: /slack/send has
+			// always populated the entry before marking replied; the
+			// in-process route used to short-circuit on a missing entry
+			// and leave the recovery loop free to re-fire the inbound.
+			mockTsqGet.mockReturnValue(null);
+
+			invoke({ channelId: 'C999', threadTs: '1700000000.000111' });
+			await flushAsync();
+
+			expect(mockTsqTrackInbound).toHaveBeenCalledTimes(1);
+			const trackedArgs = mockTsqTrackInbound.mock.calls[0][0];
+			expect(trackedArgs).toMatchObject({
+				threadKey: 'C999:1700000000.000111',
+				source: 'slack',
+			});
+			// conversationId fallback format: 'slack-<channel>-<ts with . → ->'
+			expect(trackedArgs.conversationId).toBe('slack-C999-1700000000-000111');
+			expect(mockTsqMarkReplied).toHaveBeenCalledWith('C999:1700000000.000111', 'replied_completed');
+		});
+
+		it('skips trackInbound when the entry already exists (idempotent path)', async () => {
+			mockTsqGet.mockReturnValue({ threadKey: 'C123:abc' });
+
+			invoke();
+			await flushAsync();
+
+			expect(mockTsqTrackInbound).not.toHaveBeenCalled();
+			expect(mockTsqMarkReplied).toHaveBeenCalledTimes(1);
 		});
 	});
 });

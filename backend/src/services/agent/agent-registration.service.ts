@@ -453,6 +453,15 @@ export class AgentRegistrationService {
 				// replied_completed so the recovery loop on the next restart
 				// does not re-enqueue this inbound message. Without this, every
 				// backend restart would cause orc to re-reply.
+				//
+				// Race-protection: build the thread-status entry on the fly if
+				// it isn't tracked yet. The Slack listener's `trackInbound` is
+				// what normally populates the entry, but in a startup-race
+				// scenario the agent finish event can land before the listener
+				// has persisted the inbound. Without this fallback,
+				// `markReplied` short-circuits and the recovery loop on the
+				// next boot still re-fires the inbound (the exact bug
+				// /slack/send already guards against — keep parity).
 				if (slackContext.threadTs) {
 					try {
 						const { ThreadStatusQueueService } = await import(
@@ -460,9 +469,15 @@ export class AgentRegistrationService {
 						);
 						const tsq = ThreadStatusQueueService.getInstance();
 						const threadKey = `${slackContext.channelId}:${slackContext.threadTs}`;
-						if (tsq.get(threadKey)) {
-							tsq.markReplied(threadKey, 'replied_completed');
+						if (!tsq.get(threadKey)) {
+							tsq.trackInbound({
+								threadKey,
+								conversationId: `slack-${slackContext.channelId}-${String(slackContext.threadTs).replace('.', '-')}`,
+								source: 'slack',
+								messagePreview: '[in-process auto-route — no inbound recorded]',
+							});
 						}
+						tsq.markReplied(threadKey, 'replied_completed');
 					} catch (err) {
 						this.logger.debug('Failed to update thread-status after auto-route (non-fatal)', {
 							sessionName,
