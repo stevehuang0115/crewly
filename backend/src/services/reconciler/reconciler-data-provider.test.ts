@@ -1036,6 +1036,53 @@ describe('LiveReconcilerDataProvider', () => {
         // here. The contract is "must not throw".
       });
 
+      it('clears the skip counter on a successful wake under pressure (skip→wake→skip cannot accumulate)', async () => {
+        // Follow-up #6 from PR #543 review. Without this contract, a
+        // pressure episode that oscillates between "at floor → wake →
+        // back at floor" would let `consecutivePressureSkips` keep
+        // climbing across the wake events, producing an extra event
+        // each time the throttle window opens.
+        const publish = jest.fn();
+        provider.setEventBus({ publish } as any);
+
+        mockTotalmem.mockReturnValue(16_000_000_000);
+        mockFreemem.mockReturnValue(800_000_000);
+
+        // Phase 1: 4 skips at floor — below threshold, no fire yet.
+        mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
+        for (let i = 0; i < 4; i++) {
+          await provider.executeWakeAction(buildAction());
+        }
+        expect(publish).not.toHaveBeenCalled();
+
+        // Phase 2: active count drops below floor → one successful
+        // wake — this MUST reset the skip counter.
+        mockStorage.getTeams.mockResolvedValueOnce([
+          {
+            id: 't1',
+            members: [
+              { id: 'm1', sessionName: 's1', agentStatus: 'active', role: 'dev', updatedAt: '' },
+            ],
+          },
+        ]);
+        mockSuspend.isSuspended.mockReturnValue(true);
+        mockSuspend.rehydrateAgent.mockResolvedValue(true);
+        await provider.executeWakeAction(buildAction());
+
+        // Phase 3: back at floor, 4 more skips. Pre-fix this would
+        // bring the running total to 8 (≥ threshold of 5) and trigger
+        // a publish. With the fix it's only 4 — still below threshold.
+        mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
+        for (let i = 0; i < 4; i++) {
+          await provider.executeWakeAction(buildAction());
+        }
+        expect(publish).not.toHaveBeenCalled();
+
+        // Phase 4: 5th skip after the reset finally crosses threshold.
+        await provider.executeWakeAction(buildAction());
+        expect(publish).toHaveBeenCalledTimes(1);
+      });
+
       it('survives an EventBus publish failure without breaking the reconciler', async () => {
         mockTotalmem.mockReturnValue(16_000_000_000);
         mockFreemem.mockReturnValue(800_000_000);

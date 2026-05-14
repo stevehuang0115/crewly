@@ -30,6 +30,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
+import { WEB_CONSTANTS } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -702,6 +703,13 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         activeAgents: activeCount,
         wakeFloor: WAKE_FLOOR_UNDER_PRESSURE,
       });
+      // Pressure persists but a wake is proceeding — clear the skip
+      // counter so the FIRST_FIRE_THRESHOLD must be crossed again
+      // before the next broadcast. Keep `lastPressureNotifiedAt` so
+      // the 5min refire throttle still applies — we don't want the
+      // skip→wake→skip oscillation to slip past the throttle window.
+      // (Follow-up #6 from PR #543 review.)
+      this.consecutivePressureSkips = 0;
     } else {
       // Pressure cleared — reset state so the next episode re-fires.
       this.resetMemoryPressureBroadcast();
@@ -729,9 +737,14 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         // The agent session creation is complex — use the team-member-start API endpoint.
         const { teamId, memberId } = action;
 
-        let url = `http://localhost:${process.env.PORT || 8787}/api/teams/members/start`;
+        // Follow-up #10 from PR #543 review: replace the hardcoded
+        // 8787 with the canonical backend port constant. `process.env.PORT`
+        // still wins when set so deployments overriding the default keep
+        // working unchanged.
+        const port = process.env.PORT || WEB_CONSTANTS.PORTS.BACKEND;
+        let url = `http://localhost:${port}/api/teams/members/start`;
         if (teamId && memberId) {
-          url = `http://localhost:${process.env.PORT || 8787}/api/teams/${teamId}/members/${memberId}/start`;
+          url = `http://localhost:${port}/api/teams/${teamId}/members/${memberId}/start`;
         }
 
         // Pass `workItemId` so the team-controller wake-gate can verify
