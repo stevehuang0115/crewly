@@ -218,3 +218,155 @@ describe('dynamic heap size calculation', () => {
 		expect(calculateHeapSize(mem4GB)).toBe(1638);
 	});
 });
+
+/**
+ * Tests for shutdown handler semantics (re-entry guard + await-children-before-exit).
+ * Mirrors the inline-extraction pattern above: start.ts can't be imported directly
+ * (uses import.meta.url, incompatible with Jest CJS), so the core control flow of
+ * `setupShutdownHandlers` is re-implemented here against mock ChildProcess objects.
+ *
+ * Pins the regression that motivated the fix: on 2026-05-14 the previous handler
+ * exited the parent on a fixed 1s timer while scheduling SIGKILL at 5s — the SIGKILL
+ * timer died with the parent, orphaning a backend that needed >1s for graceful exit.
+ */
+describe('shutdown handler — re-entry guard + child wait', () => {
+	type FakeChild = {
+		killed: boolean;
+		exitCode: number | null;
+		kill: jest.Mock;
+		once: jest.Mock;
+		_exitHandlers: Array<() => void>;
+	};
+
+	function makeFakeChild(): FakeChild {
+		const child: FakeChild = {
+			killed: false,
+			exitCode: null,
+			kill: jest.fn(),
+			once: jest.fn(),
+			_exitHandlers: [],
+		};
+		child.once.mockImplementation((event: string, handler: () => void) => {
+			if (event === 'exit') {
+				child._exitHandlers.push(handler);
+			}
+			return child;
+		});
+		return child;
+	}
+
+	function buildCleanup(children: FakeChild[]): {
+		cleanup: () => Promise<void>;
+		invocationCount: () => number;
+	} {
+		let cleaningUp = false;
+		let invocations = 0;
+
+		const cleanup = async (): Promise<void> => {
+			invocations++;
+			if (cleaningUp) {
+				return;
+			}
+			cleaningUp = true;
+
+			const waits: Promise<void>[] = [];
+			for (const proc of children) {
+				if (!proc || proc.killed || proc.exitCode !== null) {
+					continue;
+				}
+				waits.push(
+					new Promise<void>((resolve) => {
+						proc.once('exit', () => resolve());
+						proc.kill('SIGTERM');
+						setTimeout(() => {
+							if (!proc.killed && proc.exitCode === null) {
+								proc.kill('SIGKILL');
+							}
+						}, 5000);
+						setTimeout(() => resolve(), 8000);
+					}),
+				);
+			}
+
+			await Promise.all(waits).catch(() => {
+				/* ignore */
+			});
+			// parent would call process.exit(0) here
+		};
+
+		return { cleanup, invocationCount: () => invocations };
+	}
+
+	it('sends SIGTERM to each non-killed child', async () => {
+		const c1 = makeFakeChild();
+		const c2 = makeFakeChild();
+		const { cleanup } = buildCleanup([c1, c2]);
+
+		const pending = cleanup();
+		// Drain microtasks so the kills run
+		await new Promise((r) => setImmediate(r));
+		expect(c1.kill).toHaveBeenCalledWith('SIGTERM');
+		expect(c2.kill).toHaveBeenCalledWith('SIGTERM');
+
+		// Resolve via child exit events
+		c1._exitHandlers.forEach((h) => h());
+		c2._exitHandlers.forEach((h) => h());
+		await pending;
+	});
+
+	it('skips children that have already exited (killed=true or exitCode set)', async () => {
+		const dead = makeFakeChild();
+		dead.killed = true;
+		const live = makeFakeChild();
+		const { cleanup } = buildCleanup([dead, live]);
+
+		const pending = cleanup();
+		await new Promise((r) => setImmediate(r));
+		expect(dead.kill).not.toHaveBeenCalled();
+		expect(live.kill).toHaveBeenCalledWith('SIGTERM');
+
+		live._exitHandlers.forEach((h) => h());
+		await pending;
+	});
+
+	it('re-entry guard: second cleanup invocation is a no-op (does not re-kill)', async () => {
+		const c1 = makeFakeChild();
+		const { cleanup, invocationCount } = buildCleanup([c1]);
+
+		const p1 = cleanup();
+		await new Promise((r) => setImmediate(r));
+		// SIGTERM sent exactly once
+		expect(c1.kill).toHaveBeenCalledTimes(1);
+
+		// Second signal arriving mid-shutdown must not re-kill or duplicate work
+		const p2 = cleanup();
+		await new Promise((r) => setImmediate(r));
+		expect(c1.kill).toHaveBeenCalledTimes(1);
+		expect(invocationCount()).toBe(2); // entered twice…
+		// …but the kill was only fired once — second invocation short-circuited.
+
+		c1._exitHandlers.forEach((h) => h());
+		await Promise.all([p1, p2]);
+	});
+
+	it('parent waits for child exit before resolving (no orphan window)', async () => {
+		const c1 = makeFakeChild();
+		const { cleanup } = buildCleanup([c1]);
+
+		const pending = cleanup();
+		let parentExited = false;
+		void pending.then(() => {
+			parentExited = true;
+		});
+
+		// 100ms of real time pass with no exit event — parent must still be waiting.
+		// This is the regression-pin: the old code would have exited at 1s wall-clock
+		// regardless of whether the child had exited.
+		await new Promise((r) => setTimeout(r, 50));
+		expect(parentExited).toBe(false);
+
+		c1._exitHandlers.forEach((h) => h());
+		await pending;
+		expect(parentExited).toBe(true);
+	});
+});
