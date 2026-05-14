@@ -276,14 +276,26 @@ describe('shutdown handler — re-entry guard + child wait', () => {
 				}
 				waits.push(
 					new Promise<void>((resolve) => {
-						proc.once('exit', () => resolve());
+						let settled = false;
+						let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+						let hardTimer: ReturnType<typeof setTimeout> | null = null;
+
+						const done = (): void => {
+							if (settled) return;
+							settled = true;
+							if (sigkillTimer) clearTimeout(sigkillTimer);
+							if (hardTimer) clearTimeout(hardTimer);
+							resolve();
+						};
+
+						proc.once('exit', done);
 						proc.kill('SIGTERM');
-						setTimeout(() => {
+						sigkillTimer = setTimeout(() => {
 							if (!proc.killed && proc.exitCode === null) {
 								proc.kill('SIGKILL');
 							}
 						}, 5000);
-						setTimeout(() => resolve(), 8000);
+						hardTimer = setTimeout(() => done(), 8000);
 					}),
 				);
 			}
@@ -347,6 +359,27 @@ describe('shutdown handler — re-entry guard + child wait', () => {
 
 		c1._exitHandlers.forEach((h) => h());
 		await Promise.all([p1, p2]);
+	});
+
+	it('registers exactly one "exit" listener per child (follow-up #7)', async () => {
+		// Previously the cleanup function called `proc.once('exit', ...)`
+		// twice per child (once to resolve the wait, once to clear the
+		// timers). That doubled listener registrations, which on a child
+		// with prior listeners can trip Node's MaxListenersExceededWarning.
+		// Now there is a single listener that handles both responsibilities.
+		const c1 = makeFakeChild();
+		const { cleanup } = buildCleanup([c1]);
+
+		const pending = cleanup();
+		await new Promise((r) => setImmediate(r));
+
+		const exitRegistrations = c1.once.mock.calls.filter(
+			(call: unknown[]) => call[0] === 'exit',
+		);
+		expect(exitRegistrations).toHaveLength(1);
+
+		c1._exitHandlers.forEach((h) => h());
+		await pending;
 	});
 
 	it('parent waits for child exit before resolving (no orphan window)', async () => {

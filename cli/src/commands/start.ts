@@ -419,9 +419,18 @@ function setupShutdownHandlers(activeProcesses: ChildProcess[]): void {
 			waits.push(
 				new Promise<void>((resolve) => {
 					let settled = false;
+					// Timers are declared in the outer closure so the
+					// single `exit` listener can clear them. Avoids the
+					// earlier double `proc.once('exit', ...)` registration
+					// pattern (follow-up #7 from PR #543 review).
+					let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+					let hardTimer: ReturnType<typeof setTimeout> | null = null;
+
 					const done = (): void => {
 						if (settled) return;
 						settled = true;
+						if (sigkillTimer) clearTimeout(sigkillTimer);
+						if (hardTimer) clearTimeout(hardTimer);
 						resolve();
 					};
 
@@ -436,7 +445,7 @@ function setupShutdownHandlers(activeProcesses: ChildProcess[]): void {
 					}
 
 					// Escalate to SIGKILL after 5s if SIGTERM didn't take.
-					const sigkillTimer = setTimeout(() => {
+					sigkillTimer = setTimeout(() => {
 						if (!proc.killed && proc.exitCode === null) {
 							try {
 								proc.kill('SIGKILL');
@@ -447,17 +456,12 @@ function setupShutdownHandlers(activeProcesses: ChildProcess[]): void {
 					}, 5000);
 
 					// Hard cap on the wait so parent always exits eventually.
-					const hardTimer = setTimeout(() => {
+					hardTimer = setTimeout(() => {
 						console.warn(
 							chalk.red('Backend did not exit within 8s of SIGTERM; exiting parent anyway'),
 						);
 						done();
 					}, 8000);
-
-					proc.once('exit', () => {
-						clearTimeout(sigkillTimer);
-						clearTimeout(hardTimer);
-					});
 				}),
 			);
 		}

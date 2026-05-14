@@ -595,6 +595,18 @@ export class CrewlyServer {
 			}
 		});
 
+		// Shared LiveReconcilerDataProvider instance used by both the
+		// Reconciler service and the TeamHealthWatchdog data provider.
+		// Sharing is required so the memory-pressure broadcast state
+		// (`consecutivePressureSkips` / `lastPressureNotifiedAt`) is
+		// counted ONCE per sustained pressure episode. Two separate
+		// instances would each cross the 5-skip threshold around the same
+		// time and publish two `system:memory_pressure` events with
+		// distinct `event.id` values (no debounce match), so orc would
+		// receive duplicates. See follow-up #5 from PR #543 review.
+		const liveDataProvider = new LiveReconcilerDataProvider();
+		liveDataProvider.setEventBus(this.eventBusService);
+
 		// Initialize Reconciler Service (V2 — system truth recomputation)
 		{
 			const reconcilerLogger = LoggerService.getInstance().createComponentLogger('ReconcilerInit');
@@ -602,11 +614,6 @@ export class CrewlyServer {
 			// Live data provider — connects Reconciler to Task Pool, Claim Service,
 			// Storage Service, and Agent Suspend for real reconciliation including
 			// Hybrid Wake (auto-rehydrating suspended agents when tasks go unclaimed).
-			const liveDataProvider = new LiveReconcilerDataProvider();
-			// Wire EventBus so the provider can broadcast `system:memory_pressure`
-			// when wake actions are sustained-skipped due to memory pressure.
-			liveDataProvider.setEventBus(this.eventBusService);
-
 			this.reconcilerService = new ReconcilerService(liveDataProvider);
 			setReconcilerService(this.reconcilerService);
 
@@ -657,10 +664,11 @@ export class CrewlyServer {
 				} else if (!this.reconcilerService) {
 					thwLogger.warn('Reconciler not available; skipping TeamHealthWatchdog init.');
 				} else {
-					const reconcilerProvider = new LiveReconcilerDataProvider();
-					reconcilerProvider.setEventBus(this.eventBusService);
+					// Reuse the shared LiveReconcilerDataProvider declared
+					// above (follow-up #5 from PR #543 review) — instantiating
+					// a second copy would double-broadcast memory-pressure.
 					const dataProvider = new LiveTeamHealthDataProvider({
-						reconcilerProvider,
+						reconcilerProvider: liveDataProvider,
 						getTeams: async () => StorageService.getInstance().getTeams(),
 						bootedAt: new Date(),
 					});
