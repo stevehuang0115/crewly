@@ -29,6 +29,7 @@ import { AgentSuspendService } from '../agent/agent-suspend.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
+import type { EventBusService } from '../event-bus/event-bus.service.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -102,16 +103,28 @@ function isStorageNotReadyError(error: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimum concurrent active agents allowed even under memory pressure.
+ * Cap on concurrent active agents while the system is under memory
+ * pressure. Named `WAKE_FLOOR` for historical reasons — the value
+ * acts as a CEILING on wake actions under pressure, not a guaranteed
+ * floor. The reconciler does not proactively bring the active count
+ * up to this value; it only permits wakes when `activeCount < N` and
+ * blocks them otherwise.
  *
- * When `isUnderMemoryPressure()` returns true, the reconciler previously
- * blocked every wake action — which wedged the entire system whenever
- * free RAM stayed low (2026-05-13 dogfood: 6+ hours stuck). New
- * behaviour: keep up to this many agents alive so something is always
- * making progress; only block wakes beyond the floor. Set low enough
- * that the OOM-prevention intent is preserved (3 active agents at
- * crisis pressure is far below the 90%-threshold tipping point that
- * blocks unbounded spawns).
+ * Behaviour:
+ *  - `activeCount <  N` AND memory pressure → wake allowed (keeps the
+ *    system minimally productive instead of fully wedged).
+ *  - `activeCount >= N` AND memory pressure → wake blocked (prevents
+ *    an OOM cascade by capping additional spawns during a crisis).
+ *  - No memory pressure → this gate is not consulted.
+ *
+ * History: an earlier implementation blocked EVERY wake under memory
+ * pressure, which wedged the system on 2026-05-13 (6+ hours, free RAM
+ * 16-33 MB, queued WIs piling up). On 2026-05-14 the system stalled
+ * again — this gate worked as designed, but `IdleDetectionService`
+ * silently stopped releasing idle agents, so `activeCount` stayed
+ * above N for ~20 hours. The cap itself is not the bug; the absence
+ * of forward progress when the cap is held is. See the heartbeat
+ * additions in `idle-detection.service.ts`.
  */
 export const WAKE_FLOOR_UNDER_PRESSURE = 3;
 
@@ -136,10 +149,30 @@ export const WAKE_FLOOR_UNDER_PRESSURE = 3;
 export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   private readonly logger: ComponentLogger;
   private readonly storage: StorageService;
+  private eventBus: EventBusService | null = null;
+
+  // Memory-pressure broadcast state. Per-instance to keep counters
+  // isolated, but the publish throttle ensures we don't flood orc even
+  // if multiple providers exist (each will throttle independently and
+  // EventBus deduplicates on event id).
+  private consecutivePressureSkips = 0;
+  private lastPressureNotifiedAt = 0;
 
   constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ReconcilerDataProvider');
     this.storage = StorageService.getInstance();
+  }
+
+  /**
+   * Inject the EventBus used to broadcast `system:memory_pressure` to
+   * orc. Optional — when not set, the reconciler still functions but
+   * no user-facing notification is emitted. Called once from the
+   * server bootstrap after both services are constructed.
+   *
+   * @param eventBus - The EventBusService singleton wired in `index.ts`
+   */
+  setEventBus(eventBus: EventBusService): void {
+    this.eventBus = eventBus;
   }
 
   /**
@@ -539,6 +572,91 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     }
   }
 
+  /**
+   * Broadcast `system:memory_pressure` to the EventBus when wake actions
+   * have been skipped enough consecutive times to indicate a sustained
+   * stall. Throttled so a long pressure episode emits at most one event
+   * per `MEMORY_PRESSURE_REFIRE_MS` window — orc only needs to surface
+   * the condition once per stuck period, not on every reconciler tick.
+   *
+   * The 2026-05-14 incident skipped wakes ~4,200 times across 20 hours
+   * with zero user-visible signal. After this change, orc receives a
+   * critical event within ~50 seconds of the stall starting and every
+   * ~5 minutes thereafter until pressure clears.
+   *
+   * @param stats - Snapshot of memory stats at the skip moment
+   * @param activeCount - Current active agent count (already computed)
+   */
+  private maybeBroadcastMemoryPressure(
+    stats: { usedPercent: number; freeMB: number },
+    activeCount: number,
+  ): void {
+    this.consecutivePressureSkips += 1;
+
+    if (!this.eventBus) {
+      return;
+    }
+
+    // First-fire threshold: 5 consecutive skips (~50s at 10s reconciler
+    // tick). Picked so a transient pressure spike that resolves on its
+    // own doesn't page orc; sustained pressure does.
+    const FIRST_FIRE_THRESHOLD = 5;
+    // Re-fire window: don't re-broadcast more often than once per 5min
+    // while pressure persists. Matches the EventBus dedup window order
+    // of magnitude and avoids spamming orc's terminal.
+    const MEMORY_PRESSURE_REFIRE_MS = 5 * 60 * 1000;
+
+    if (this.consecutivePressureSkips < FIRST_FIRE_THRESHOLD) {
+      return;
+    }
+
+    const now = Date.now();
+    if (this.lastPressureNotifiedAt > 0 && now - this.lastPressureNotifiedAt < MEMORY_PRESSURE_REFIRE_MS) {
+      return;
+    }
+
+    try {
+      this.eventBus.publish({
+        id: `system-memory-pressure-${now}`,
+        type: 'system:memory_pressure',
+        timestamp: new Date(now).toISOString(),
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: 'system',
+        sessionName: 'system',
+        previousValue: 'ok',
+        newValue: 'critical',
+        changedField: 'agentStatus',
+      });
+      this.lastPressureNotifiedAt = now;
+      this.logger.warn('Broadcast system:memory_pressure to EventBus', {
+        memoryUsedPercent: stats.usedPercent,
+        freeMemMB: stats.freeMB,
+        activeAgents: activeCount,
+        consecutiveSkips: this.consecutivePressureSkips,
+      });
+    } catch (err) {
+      // Failure isolation — never let a telemetry failure break the
+      // reconciler's primary control flow.
+      this.logger.warn('Failed to broadcast system:memory_pressure (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Reset the memory-pressure broadcast state. Called on every wake
+   * that runs without pressure so the next sustained episode re-fires
+   * the first-time threshold instead of being silenced by stale state.
+   */
+  private resetMemoryPressureBroadcast(): void {
+    if (this.consecutivePressureSkips > 0 || this.lastPressureNotifiedAt > 0) {
+      this.consecutivePressureSkips = 0;
+      this.lastPressureNotifiedAt = 0;
+    }
+  }
+
   async executeWakeAction(action: WakeAction): Promise<boolean> {
     const { agentSessionName, strategy } = action;
 
@@ -573,6 +691,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           activeAgents: activeCount,
           wakeFloor: WAKE_FLOOR_UNDER_PRESSURE,
         });
+        this.maybeBroadcastMemoryPressure(stats, activeCount);
         return false;
       }
       this.logger.info('Memory pressure detected — allowing wake (under concurrency floor)', {
@@ -583,6 +702,9 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         activeAgents: activeCount,
         wakeFloor: WAKE_FLOOR_UNDER_PRESSURE,
       });
+    } else {
+      // Pressure cleared — reset state so the next episode re-fires.
+      this.resetMemoryPressureBroadcast();
     }
 
     this.logger.info('Executing wake action', {
