@@ -449,6 +449,34 @@ export class AgentRegistrationService {
 					textLength: cleanText.length,
 				});
 
+				// Mirror /slack/send bookkeeping #3 — record `agent.action`
+				// with actionType='send_slack' so the auditor view and any
+				// V3 downstream analysis see the auto-routed reply. Without
+				// this entry the in-process auto-route is invisible in the
+				// behavior log (only `/slack/send`-originated replies show
+				// up). Follow-up #9 from PR #543 review.
+				try {
+					const { getAgentBehaviorLogService } = await import(
+						'../observability/agent-behavior-log.singleton.js'
+					);
+					getAgentBehaviorLogService()?.record({
+						type: 'agent.action',
+						agent: sessionName,
+						actionType: 'send_slack',
+						details: {
+							channelId: slackContext.channelId,
+							threadTs: slackContext.threadTs ?? null,
+							textLength: cleanText.length,
+							source: 'in_process_auto_route',
+						},
+					});
+				} catch (err) {
+					this.logger.debug('Failed to record send_slack agent.action (non-fatal)', {
+						sessionName,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+
 				// Mirror /slack/send bookkeeping #1 — mark thread as
 				// replied_completed so the recovery loop on the next restart
 				// does not re-enqueue this inbound message. Without this, every

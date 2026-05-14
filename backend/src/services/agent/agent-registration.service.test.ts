@@ -121,6 +121,13 @@ jest.mock('../v3/request-sla.subscriber.js', () => ({
 	})),
 }));
 
+const mockBehaviorLogRecord = jest.fn();
+jest.mock('../observability/agent-behavior-log.singleton.js', () => ({
+	getAgentBehaviorLogService: jest.fn(() => ({
+		record: mockBehaviorLogRecord,
+	})),
+}));
+
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
 		getInstance: jest.fn().mockReturnValue({
@@ -3866,6 +3873,7 @@ describe('AgentRegistrationService', () => {
 			mockTsqTrackInbound.mockReset();
 			mockTsqMarkReplied.mockReset();
 			mockMarkResolvedByThread.mockReset().mockResolvedValue(undefined);
+			mockBehaviorLogRecord.mockReset();
 		});
 
 		const flushAsync = async (): Promise<void> => {
@@ -3969,6 +3977,51 @@ describe('AgentRegistrationService', () => {
 
 			expect(mockTsqTrackInbound).not.toHaveBeenCalled();
 			expect(mockTsqMarkReplied).toHaveBeenCalledTimes(1);
+		});
+
+		// Follow-up #9 from PR #543 review. /slack/send records an
+		// `agent.action` row on every successful send; the in-process
+		// auto-route was missing this, so audit views silently lost the
+		// auto-routed branch of agent replies.
+		it('records an agent.action behavior-log row after successful send', async () => {
+			invoke({ channelId: 'C-AUDIT', threadTs: '1700000000.000222' });
+			await flushAsync();
+
+			expect(mockBehaviorLogRecord).toHaveBeenCalledTimes(1);
+			const event = mockBehaviorLogRecord.mock.calls[0][0];
+			expect(event).toMatchObject({
+				type: 'agent.action',
+				agent: 'crewly-orc',
+				actionType: 'send_slack',
+			});
+			expect(event.details).toMatchObject({
+				channelId: 'C-AUDIT',
+				threadTs: '1700000000.000222',
+				source: 'in_process_auto_route',
+			});
+		});
+
+		it('does NOT record agent.action when the Slack send failed', async () => {
+			mockSlackSendMessage.mockRejectedValueOnce(new Error('slack 5xx'));
+
+			invoke();
+			await flushAsync();
+
+			expect(mockSlackSendMessage).toHaveBeenCalledTimes(1);
+			expect(mockBehaviorLogRecord).not.toHaveBeenCalled();
+		});
+
+		it('survives behavior-log record failure (audit is best-effort)', async () => {
+			mockBehaviorLogRecord.mockImplementationOnce(() => {
+				throw new Error('sqlite locked');
+			});
+
+			expect(() => invoke()).not.toThrow();
+			await flushAsync();
+
+			// Downstream SLA cascade still ran — the audit failure is
+			// non-fatal and must not break the bookkeeping chain.
+			expect(mockMarkResolvedByThread).toHaveBeenCalledTimes(1);
 		});
 	});
 });
