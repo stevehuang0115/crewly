@@ -916,5 +916,144 @@ describe('LiveReconcilerDataProvider', () => {
       expect(mockSuspend.rehydrateAgent).toHaveBeenCalledWith('agent-max');
 
     });
+
+    describe('system:memory_pressure broadcast', () => {
+      // Sustained memory pressure should reach orc via EventBus so the
+      // user gets a "system memory critical" notice instead of silent
+      // stall (2026-05-14 incident: 20h, zero user-facing signal).
+
+      const buildAtFloorTeams = () => [
+        {
+          id: 't1',
+          members: [
+            { id: 'm1', sessionName: 's1', agentStatus: 'active', role: 'dev', updatedAt: '' },
+            { id: 'm2', sessionName: 's2', agentStatus: 'active', role: 'dev', updatedAt: '' },
+            { id: 'm3', sessionName: 's3', agentStatus: 'active', role: 'dev', updatedAt: '' },
+          ],
+        },
+      ];
+
+      const buildAction = (): WakeAction => ({
+        workItemId: 'wi-1',
+        agentSessionName: 'agent-max',
+        strategy: 'rehydrate',
+        score: 75,
+        scoreBreakdown: { skillMatch: 40, urgency: 15, contextFamiliarity: 20, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      });
+
+      it('does NOT publish on the first few skips (transient pressure is silenced)', async () => {
+        mockTotalmem.mockReturnValue(16_000_000_000);
+        mockFreemem.mockReturnValue(800_000_000); // 95% used
+        mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
+
+        const publish = jest.fn();
+        provider.setEventBus({ publish } as any);
+
+        // Below the FIRST_FIRE_THRESHOLD (5)
+        for (let i = 0; i < 4; i++) {
+          await provider.executeWakeAction(buildAction());
+        }
+
+        expect(publish).not.toHaveBeenCalled();
+      });
+
+      it('publishes once sustained pressure crosses the threshold', async () => {
+        mockTotalmem.mockReturnValue(16_000_000_000);
+        mockFreemem.mockReturnValue(800_000_000);
+        mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
+
+        const publish = jest.fn();
+        provider.setEventBus({ publish } as any);
+
+        for (let i = 0; i < 5; i++) {
+          await provider.executeWakeAction(buildAction());
+        }
+
+        expect(publish).toHaveBeenCalledTimes(1);
+        const event = publish.mock.calls[0][0];
+        expect(event.type).toBe('system:memory_pressure');
+        expect(event.sessionName).toBe('system');
+        expect(event.newValue).toBe('critical');
+      });
+
+      it('throttles re-fire — does not republish within the refire window', async () => {
+        mockTotalmem.mockReturnValue(16_000_000_000);
+        mockFreemem.mockReturnValue(800_000_000);
+        mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
+
+        const publish = jest.fn();
+        provider.setEventBus({ publish } as any);
+
+        // Cross the threshold, then keep skipping — only one event fires
+        for (let i = 0; i < 50; i++) {
+          await provider.executeWakeAction(buildAction());
+        }
+
+        expect(publish).toHaveBeenCalledTimes(1);
+      });
+
+      it('resets state when pressure clears, allowing a fresh first-fire on re-entry', async () => {
+        const publish = jest.fn();
+        provider.setEventBus({ publish } as any);
+
+        // Episode 1: pressure on, cross threshold → one event
+        mockTotalmem.mockReturnValue(16_000_000_000);
+        mockFreemem.mockReturnValue(800_000_000);
+        mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
+        for (let i = 0; i < 5; i++) {
+          await provider.executeWakeAction(buildAction());
+        }
+        expect(publish).toHaveBeenCalledTimes(1);
+
+        // Pressure clears
+        mockFreemem.mockReturnValue(8_000_000_000); // 50% used
+        mockSuspend.isSuspended.mockReturnValue(true);
+        await provider.executeWakeAction(buildAction());
+
+        // Episode 2: pressure returns, must cross threshold again before firing
+        mockFreemem.mockReturnValue(800_000_000);
+        for (let i = 0; i < 4; i++) {
+          await provider.executeWakeAction(buildAction());
+        }
+        expect(publish).toHaveBeenCalledTimes(1); // still only episode 1
+
+        await provider.executeWakeAction(buildAction()); // 5th skip
+        expect(publish).toHaveBeenCalledTimes(2);
+      });
+
+      it('is a no-op when no EventBus has been wired', async () => {
+        mockTotalmem.mockReturnValue(16_000_000_000);
+        mockFreemem.mockReturnValue(800_000_000);
+        mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
+
+        // No setEventBus call
+        for (let i = 0; i < 10; i++) {
+          await provider.executeWakeAction(buildAction());
+        }
+        // No throw, no crash — pure no-op observable only via the
+        // absence of additional logger warnings, which we don't assert
+        // here. The contract is "must not throw".
+      });
+
+      it('survives an EventBus publish failure without breaking the reconciler', async () => {
+        mockTotalmem.mockReturnValue(16_000_000_000);
+        mockFreemem.mockReturnValue(800_000_000);
+        mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
+
+        const publish = jest.fn(() => {
+          throw new Error('bus down');
+        });
+        provider.setEventBus({ publish } as any);
+
+        for (let i = 0; i < 5; i++) {
+          await provider.executeWakeAction(buildAction());
+        }
+
+        // We attempted to publish (the throw was thrown) but the wake
+        // path still returned cleanly without surfacing the error.
+        expect(publish).toHaveBeenCalled();
+      });
+    });
   });
 });

@@ -603,6 +603,9 @@ export class CrewlyServer {
 			// Storage Service, and Agent Suspend for real reconciliation including
 			// Hybrid Wake (auto-rehydrating suspended agents when tasks go unclaimed).
 			const liveDataProvider = new LiveReconcilerDataProvider();
+			// Wire EventBus so the provider can broadcast `system:memory_pressure`
+			// when wake actions are sustained-skipped due to memory pressure.
+			liveDataProvider.setEventBus(this.eventBusService);
 
 			this.reconcilerService = new ReconcilerService(liveDataProvider);
 			setReconcilerService(this.reconcilerService);
@@ -655,6 +658,7 @@ export class CrewlyServer {
 					thwLogger.warn('Reconciler not available; skipping TeamHealthWatchdog init.');
 				} else {
 					const reconcilerProvider = new LiveReconcilerDataProvider();
+					reconcilerProvider.setEventBus(this.eventBusService);
 					const dataProvider = new LiveTeamHealthDataProvider({
 						reconcilerProvider,
 						getTeams: async () => StorageService.getInstance().getTeams(),

@@ -384,30 +384,92 @@ async function waitForServer(port: number, maxAttempts: number = 30): Promise<vo
  * Set up signal handlers for graceful shutdown.
  * Uses a mutable array so the restart loop can update the active process.
  *
+ * The parent process must outlive its children long enough for the SIGKILL
+ * escalation timer to actually fire. The previous implementation exited
+ * the parent after a fixed 1s while scheduling SIGKILL at 5s — when the
+ * parent exited, the timer died with it and any backend that hadn't
+ * fully shut down in 1s was left as an orphan with PPID=1 still
+ * consuming resources. We now await each child's 'exit' event and only
+ * exit the parent once every child is gone (or 8s elapsed, whichever
+ * comes first).
+ *
+ * Re-entry: once cleanup runs, repeated signals are ignored. Without
+ * this guard, a second SIGINT during shutdown would re-run the
+ * already-in-flight kill sequence and call `process.exit(0)` twice.
+ *
  * @param activeProcesses - Mutable array of processes to kill on shutdown
  */
 function setupShutdownHandlers(activeProcesses: ChildProcess[]): void {
-	const cleanup = () => {
+	let cleaningUp = false;
+
+	const cleanup = (): void => {
+		if (cleaningUp) {
+			return;
+		}
+		cleaningUp = true;
 		console.log(chalk.yellow('\n🛑 Shutting down Crewly...'));
 
-		activeProcesses.forEach((proc) => {
-			if (proc && !proc.killed) {
-				console.log(chalk.gray(`Stopping Backend server...`));
-				proc.kill('SIGTERM');
-
-				// Force kill after 5 seconds
-				setTimeout(() => {
-					if (!proc.killed) {
-						proc.kill('SIGKILL');
-					}
-				}, 5000);
+		const waits: Promise<void>[] = [];
+		for (const proc of activeProcesses) {
+			if (!proc || proc.killed || proc.exitCode !== null) {
+				continue;
 			}
-		});
+			console.log(chalk.gray(`Stopping Backend server...`));
 
-		setTimeout(() => {
-			console.log(chalk.green('✅ Crewly stopped'));
-			process.exit(0);
-		}, 1000);
+			waits.push(
+				new Promise<void>((resolve) => {
+					let settled = false;
+					const done = (): void => {
+						if (settled) return;
+						settled = true;
+						resolve();
+					};
+
+					proc.once('exit', done);
+
+					try {
+						proc.kill('SIGTERM');
+					} catch {
+						// Child already gone — fine.
+						done();
+						return;
+					}
+
+					// Escalate to SIGKILL after 5s if SIGTERM didn't take.
+					const sigkillTimer = setTimeout(() => {
+						if (!proc.killed && proc.exitCode === null) {
+							try {
+								proc.kill('SIGKILL');
+							} catch {
+								/* already dead */
+							}
+						}
+					}, 5000);
+
+					// Hard cap on the wait so parent always exits eventually.
+					const hardTimer = setTimeout(() => {
+						console.warn(
+							chalk.red('Backend did not exit within 8s of SIGTERM; exiting parent anyway'),
+						);
+						done();
+					}, 8000);
+
+					proc.once('exit', () => {
+						clearTimeout(sigkillTimer);
+						clearTimeout(hardTimer);
+					});
+				}),
+			);
+		}
+
+		Promise.all(waits)
+			.catch(() => {
+				/* individual exits resolve, never reject */
+			})
+			.finally(() => {
+				console.log(chalk.green('✅ Crewly stopped'));
+				process.exit(0);
+			});
 	};
 
 	process.on('SIGTERM', cleanup);

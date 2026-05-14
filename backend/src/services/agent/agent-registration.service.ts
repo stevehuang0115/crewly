@@ -377,6 +377,147 @@ export class AgentRegistrationService {
 	}
 
 	/**
+	 * Auto-route an in-process agent's text response back to Slack.
+	 *
+	 * Mirrors the post-send side effects of POST /slack/send so that the
+	 * Slack reply, thread-status bookkeeping, and V3 SLA cascade all stay in
+	 * sync. Used as a finish-event hook for the in-process Crewly Agent
+	 * runtime when:
+	 *   1. The inbound message carried a `[SLACK:channelId:threadTs]` marker
+	 *   2. The agent produced text output (`result.text` non-empty)
+	 *   3. The agent did NOT explicitly call the `reply_slack` tool
+	 *
+	 * Without this hook, AI SDK agents that finish with `toolCalls=0,
+	 * finishReason=stop` would drop their reply on the floor — unlike the
+	 * claude-code PTY path, the in-process runtime has no stdout stream the
+	 * SlackBridge can tail.
+	 *
+	 * Best-effort: a Slack-not-connected condition or a downstream
+	 * bookkeeping failure is logged and swallowed; never throws. The chat
+	 * route (`routeInProcessResponseToChat`) handles persistence to the chat
+	 * service separately.
+	 *
+	 * @param sessionName - Agent session that produced the response
+	 * @param text - Response text from the agent
+	 * @param slackContext - Slack channel + thread metadata captured from the
+	 *                       inbound `[SLACK:channelId:threadTs]` marker
+	 */
+	private routeInProcessResponseToSlack(
+		sessionName: string,
+		text: string,
+		slackContext: { channelId: string; threadTs?: string },
+	): void {
+		// Lazy import to avoid module-load circular dependency between
+		// agent-registration ↔ slack ↔ messaging ↔ v3.
+		import('../slack/slack.service.js')
+			.then(async ({ getSlackService }) => {
+				const slack = getSlackService();
+				if (!slack.isConnected()) {
+					this.logger.warn('Slack not connected — cannot auto-route in-process agent response', {
+						sessionName,
+						channelId: slackContext.channelId,
+						threadTs: slackContext.threadTs,
+						textLength: text.length,
+					});
+					return;
+				}
+
+				// Auto-prefix with the agent display name (mirrors reply_slack tool
+				// behavior) so the message is attributable in the Slack thread.
+				// Skip if the text already starts with `[` — the agent supplied its
+				// own prefix.
+				let cleanText = text;
+				if (sessionName && !cleanText.startsWith('[')) {
+					const parts = sessionName.split('-');
+					const namePart = parts.length >= 3 ? parts[2] : parts[parts.length - 1];
+					if (namePart) {
+						const capitalized = namePart.charAt(0).toUpperCase() + namePart.slice(1);
+						cleanText = `[${capitalized}] ${cleanText}`;
+					}
+				}
+
+				await slack.sendMessage({
+					channelId: slackContext.channelId,
+					text: cleanText,
+					threadTs: slackContext.threadTs,
+				});
+
+				this.logger.info('Auto-routed in-process agent response to Slack', {
+					sessionName,
+					channelId: slackContext.channelId,
+					threadTs: slackContext.threadTs,
+					textLength: cleanText.length,
+				});
+
+				// Mirror /slack/send bookkeeping #1 — mark thread as
+				// replied_completed so the recovery loop on the next restart
+				// does not re-enqueue this inbound message. Without this, every
+				// backend restart would cause orc to re-reply.
+				//
+				// Race-protection: build the thread-status entry on the fly if
+				// it isn't tracked yet. The Slack listener's `trackInbound` is
+				// what normally populates the entry, but in a startup-race
+				// scenario the agent finish event can land before the listener
+				// has persisted the inbound. Without this fallback,
+				// `markReplied` short-circuits and the recovery loop on the
+				// next boot still re-fires the inbound (the exact bug
+				// /slack/send already guards against — keep parity).
+				if (slackContext.threadTs) {
+					try {
+						const { ThreadStatusQueueService } = await import(
+							'../messaging/thread-status-queue.service.js'
+						);
+						const tsq = ThreadStatusQueueService.getInstance();
+						const threadKey = `${slackContext.channelId}:${slackContext.threadTs}`;
+						if (!tsq.get(threadKey)) {
+							tsq.trackInbound({
+								threadKey,
+								conversationId: `slack-${slackContext.channelId}-${String(slackContext.threadTs).replace('.', '-')}`,
+								source: 'slack',
+								messagePreview: '[in-process auto-route — no inbound recorded]',
+							});
+						}
+						tsq.markReplied(threadKey, 'replied_completed');
+					} catch (err) {
+						this.logger.debug('Failed to update thread-status after auto-route (non-fatal)', {
+							sessionName,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+				}
+
+				// Mirror /slack/send bookkeeping #2 — fire the V3 SLA cascade so
+				// the matching Request transitions out of `queued`. Without
+				// this, requests whose acknowledgement came via this auto-route
+				// would never reach a terminal state.
+				if (slackContext.threadTs) {
+					try {
+						const { getRequestSlaSubscriber } = await import(
+							'../v3/request-sla.subscriber.js'
+						);
+						const sub = getRequestSlaSubscriber();
+						if (sub) {
+							await sub.markResolvedByThread(slackContext.threadTs);
+						}
+					} catch (err) {
+						this.logger.debug('Failed to fire SLA cascade after auto-route (non-fatal)', {
+							sessionName,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+				}
+			})
+			.catch((err) => {
+				this.logger.warn('Failed to auto-route in-process agent response to Slack', {
+					sessionName,
+					channelId: slackContext.channelId,
+					threadTs: slackContext.threadTs,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+	}
+
+	/**
 	 * Find the project root by looking for package.json
 	 */
 	private findProjectRoot(): string {
@@ -3057,6 +3198,26 @@ Loop until done, blocked, or explicitly reassigned:
 							this.logger.debug('Skipping chat routing — agent already replied via reply_slack', {
 								sessionName, conversationId: incomingConversationId,
 							});
+						}
+
+						// Auto-route to Slack when the message originated from Slack and the
+						// agent finished with text-only output (toolCalls=0, finishReason=stop)
+						// without explicitly invoking the reply_slack tool. Without this hook,
+						// the in-process AI SDK runtime drops Slack replies silently — unlike
+						// claude-code PTY where TerminalGateway tails stdout into SlackBridge,
+						// the in-process runtime has no stream the bridge can listen to.
+						//
+						// Skipped when the agent already called reply_slack (which posts via
+						// /slack/send) to prevent double-posting on the same thread.
+						if (slackMetadata?.channelId && result.text && !agentAlreadyReplied) {
+							this.routeInProcessResponseToSlack(
+								sessionName,
+								result.text,
+								{
+									channelId: slackMetadata.channelId,
+									threadTs: slackMetadata.threadTs,
+								},
+							);
 						}
 					})
 					.catch(async (agentError) => {

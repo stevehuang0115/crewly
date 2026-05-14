@@ -90,6 +90,15 @@ export const EVENT_TYPES = [
   // are wiped on every restart. Treated as CRITICAL because re-arm latency
   // determines coverage gap of every trigger-dependent watchdog in the system.
   'system:backend_restarted',
+
+  // Memory pressure broadcast (2026-05-14 follow-up): emitted by the
+  // reconciler when it has skipped wake actions due to memory pressure
+  // for long enough that the user-facing system has visibly stalled.
+  // Orc subscribes so it can surface "system memory critical, X agents
+  // frozen" in its next reply instead of silently spinning. The
+  // reconciler emits with built-in throttling (no more than once per
+  // sustained pressure episode + a re-fire cap) so this never floods.
+  'system:memory_pressure',
 ] as const;
 
 /**
@@ -143,6 +152,10 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   // backend-restart broadcast must NOT be debounced — coverage of every
   // trigger-dependent watchdog depends on exactly-one delivery per restart.
   'system:backend_restarted',
+  // Memory pressure is user-facing — orc surfaces it in its next reply.
+  // Debouncing here would defeat the purpose; the reconciler already
+  // throttles the emission rate at the source.
+  'system:memory_pressure',
 ]);
 
 /**
