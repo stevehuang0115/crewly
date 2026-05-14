@@ -3058,6 +3058,123 @@ describe('AgentRegistrationService', () => {
 			routeSpy.mockRestore();
 		});
 
+		// Bug 6: in-process AI SDK runtime auto-route to Slack
+		// When the agent finishes with text-only output (toolCalls=0,
+		// finishReason=stop) and the message came from Slack, the response
+		// must be auto-routed back to Slack via SlackService. Without this
+		// hook, the response is silently dropped — the AI SDK runtime has no
+		// PTY stream the SlackBridge can tail.
+		//
+		// See: P0 KR3 demo-blocker, 2026-05-14 (Steve livewalk on Crewly Demo
+		// Slack workspace).
+		it('should auto-route response to Slack when agent finished without calling reply_slack', async () => {
+			mockReadFile.mockResolvedValue('System prompt');
+			mockAccess.mockRejectedValue(new Error('ENOENT'));
+
+			await service.createAgentSession({
+				sessionName: 'crewly-orc',
+				role: 'orchestrator',
+				runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+			});
+
+			// Reproduce the production smoking-gun: 101-char reply, no tool calls.
+			mockCrewlyRuntime.handleMessage.mockResolvedValueOnce({
+				text: '你好！很高兴见到你。我是 Crewly 的协调员，请告诉我你想完成什么任务。',
+				steps: 1,
+				usage: { input: 7187, output: 56 },
+				toolCalls: [],
+				finishReason: 'stop',
+			});
+
+			const slackRouteSpy = jest.spyOn(service as any, 'routeInProcessResponseToSlack');
+
+			const sendResult = await service.sendMessageToAgent(
+				'crewly-orc',
+				'[CHAT:slack-D0B17U49LR4-ts1778721826748439] 你好 [SLACK:D0B17U49LR4:1778721826.748439]',
+				RUNTIME_TYPES.CREWLY_AGENT as any
+			);
+
+			expect(sendResult.success).toBe(true);
+
+			// Wait for fire-and-forget async callback to complete
+			await new Promise(r => setTimeout(r, 50));
+
+			expect(slackRouteSpy).toHaveBeenCalledTimes(1);
+			const [routedSession, routedText, routedSlack] = slackRouteSpy.mock.calls[0];
+			expect(routedSession).toBe('crewly-orc');
+			expect(routedText).toContain('你好');
+			expect(routedSlack).toEqual({
+				channelId: 'D0B17U49LR4',
+				threadTs: '1778721826.748439',
+			});
+			slackRouteSpy.mockRestore();
+		});
+
+		it('should NOT auto-route to Slack when agent already called reply_slack (prevent double-post)', async () => {
+			mockReadFile.mockResolvedValue('System prompt');
+			mockAccess.mockRejectedValue(new Error('ENOENT'));
+
+			await service.createAgentSession({
+				sessionName: 'crewly-orc',
+				role: 'orchestrator',
+				runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+			});
+
+			mockCrewlyRuntime.handleMessage.mockResolvedValueOnce({
+				text: 'Reply sent via tool',
+				steps: 2,
+				usage: { input: 100, output: 50 },
+				toolCalls: [{ toolName: 'reply_slack', args: { channelId: 'C123', text: 'Reply sent via tool' } }],
+				finishReason: 'stop',
+			});
+
+			const slackRouteSpy = jest.spyOn(service as any, 'routeInProcessResponseToSlack');
+
+			await service.sendMessageToAgent(
+				'crewly-orc',
+				'[CHAT:slack-C123-ts456] Hello [SLACK:C123:1234567890.123]',
+				RUNTIME_TYPES.CREWLY_AGENT as any
+			);
+
+			await new Promise(r => setTimeout(r, 50));
+
+			expect(slackRouteSpy).not.toHaveBeenCalled();
+			slackRouteSpy.mockRestore();
+		});
+
+		it('should NOT auto-route to Slack for non-Slack-sourced messages', async () => {
+			mockReadFile.mockResolvedValue('System prompt');
+			mockAccess.mockRejectedValue(new Error('ENOENT'));
+
+			await service.createAgentSession({
+				sessionName: 'crewly-orc',
+				role: 'orchestrator',
+				runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+			});
+
+			mockCrewlyRuntime.handleMessage.mockResolvedValueOnce({
+				text: 'Chat-only reply',
+				steps: 1,
+				usage: { input: 100, output: 50 },
+				toolCalls: [],
+				finishReason: 'stop',
+			});
+
+			const slackRouteSpy = jest.spyOn(service as any, 'routeInProcessResponseToSlack');
+
+			// Web-chat inbound — no [SLACK:] marker.
+			await service.sendMessageToAgent(
+				'crewly-orc',
+				'[CHAT:web-conv-123] Hello',
+				RUNTIME_TYPES.CREWLY_AGENT as any
+			);
+
+			await new Promise(r => setTimeout(r, 50));
+
+			expect(slackRouteSpy).not.toHaveBeenCalled();
+			slackRouteSpy.mockRestore();
+		});
+
 		// ──────────────────────────────────────────────────────────────────
 		// Orchestrator modelId resolution (P1 fix, cloud_pro_v2)
 		// ──────────────────────────────────────────────────────────────────
