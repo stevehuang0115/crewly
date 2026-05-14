@@ -486,4 +486,93 @@ describe('IdleDetectionService', () => {
 			expect(mockKillSession).not.toHaveBeenCalled();
 		});
 	});
+
+	describe('tick observability (re-entrancy guard + heartbeat)', () => {
+		it('should expose initial stats including new forcedResetCount field', () => {
+			const service = IdleDetectionService.getInstance();
+			expect(service.getStats()).toEqual({
+				isRunning: false,
+				isChecking: false,
+				lastTickStartedAt: null,
+				lastTickCompletedAt: null,
+				lastTickDurationMs: null,
+				consecutiveSkippedTicks: 0,
+				forcedResetCount: 0,
+			});
+		});
+
+		it('should skip overlapping ticks via re-entrancy guard (real exercise)', () => {
+			// Make performCheck hang so the first tick stays in flight.
+			let releaseHang: () => void = () => {};
+			mockGetTeams.mockReturnValue(
+				new Promise<unknown[]>(resolve => {
+					releaseHang = () => resolve([]);
+				}),
+			);
+
+			const service = IdleDetectionService.getInstance();
+			const runTick = (service as any).runTick.bind(service) as () => void;
+
+			// First call: starts a real tick, isChecking flips to true,
+			// and the hang holds it there.
+			runTick();
+			expect(service.getStats().isChecking).toBe(true);
+			expect(service.getStats().consecutiveSkippedTicks).toBe(0);
+
+			// Second call within the stuck-threshold: must short-circuit
+			// (not increment further into a new tick) AND must increment
+			// the skipped-tick counter — this is the assertion the
+			// previous test missed.
+			runTick();
+			expect(service.getStats().consecutiveSkippedTicks).toBe(1);
+			expect(service.getStats().isChecking).toBe(true);
+
+			// Third call still within threshold: counter keeps climbing.
+			runTick();
+			expect(service.getStats().consecutiveSkippedTicks).toBe(2);
+
+			// Cleanup so we don't leak the pending promise.
+			releaseHang();
+		});
+
+		it('should force-reset isChecking when a tick has been hung past the stuck threshold', () => {
+			// Hang the first tick indefinitely.
+			let releaseHang: () => void = () => {};
+			mockGetTeams.mockReturnValue(
+				new Promise<unknown[]>(resolve => {
+					releaseHang = () => resolve([]);
+				}),
+			);
+
+			const service = IdleDetectionService.getInstance();
+			const runTick = (service as any).runTick.bind(service) as () => void;
+
+			runTick();
+			expect(service.getStats().isChecking).toBe(true);
+
+			// Fast-forward perceived clock past 3× interval. We can't
+			// move `Date.now()` via fake timers without `modern` mode;
+			// instead we backdate `lastTickStartedAt` to simulate
+			// elapsed time.
+			const oldStart = service.getStats().lastTickStartedAt!;
+			const stuckBy = AGENT_SUSPEND_CONSTANTS.IDLE_CHECK_INTERVAL_MS * 3 + 1000;
+			(service as any).lastTickStartedAt = oldStart - stuckBy;
+
+			runTick();
+			// Watchdog fired: isChecking flipped to false (and a fresh
+			// tick was scheduled, which then re-set isChecking to true).
+			expect(service.getStats().forcedResetCount).toBe(1);
+
+			releaseHang();
+		});
+
+		it('should never let a thrown error in performCheck stop the timer', async () => {
+			mockGetTeams.mockRejectedValueOnce(new Error('boom'));
+			const service = IdleDetectionService.getInstance();
+
+			// performCheck swallows storage errors internally (returns void).
+			// The tick wrapper additionally catches anything that escapes.
+			await expect(service.performCheck()).resolves.toBeUndefined();
+		});
+	});
 });

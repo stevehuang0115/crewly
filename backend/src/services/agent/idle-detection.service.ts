@@ -32,6 +32,15 @@ export class IdleDetectionService {
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private agentRegistrationService: AgentRegistrationService | null = null;
 
+	// Observability: surfaces silent hangs that previously caused the
+	// loop to "stop" for hours with no log evidence (2026-05-14 incident).
+	private isChecking = false;
+	private lastTickStartedAt: number | null = null;
+	private lastTickCompletedAt: number | null = null;
+	private lastTickDurationMs: number | null = null;
+	private consecutiveSkippedTicks = 0;
+	private forcedResetCount = 0;
+
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('IdleDetection');
 	}
@@ -81,12 +90,120 @@ export class IdleDetectionService {
 		});
 
 		this.timer = setInterval(() => {
-			this.performCheck().catch(err => {
+			this.runTick();
+		}, AGENT_SUSPEND_CONSTANTS.IDLE_CHECK_INTERVAL_MS);
+	}
+
+	/**
+	 * Wrapper around `performCheck` that adds re-entrancy guard, heartbeat
+	 * logging, and duration tracking. Defensive against silent hangs — if
+	 * `performCheck` ever stops resolving (e.g., dependency hangs), the
+	 * `isChecking` guard prevents overlapping invocations from piling up,
+	 * and `consecutiveSkippedTicks` makes the stuck state observable.
+	 *
+	 * Why: on 2026-05-14 the loop stopped producing logs for 21 hours while
+	 * the timer was still scheduled. Without a per-tick heartbeat the
+	 * regression was invisible.
+	 */
+	private runTick(): void {
+		if (this.isChecking) {
+			this.consecutiveSkippedTicks++;
+			const elapsedMs = this.lastTickStartedAt ? Date.now() - this.lastTickStartedAt : 0;
+
+			// Self-heal watchdog: if a tick has been "in flight" for
+			// significantly longer than the configured tick interval, the
+			// previous `performCheck` is almost certainly hung on an
+			// upstream dependency that never resolves (e.g., a
+			// `getWorkingStatusForSession` that silently never settles —
+			// the 2026-05-14 incident shape). Re-entrancy guard alone is
+			// insufficient: every subsequent tick is just dropped while
+			// the system makes zero progress.
+			//
+			// Threshold = 3 × IDLE_CHECK_INTERVAL_MS. Tight enough that a
+			// genuinely slow but eventual completion (e.g., 1.5×
+			// interval) is not falsely flagged; loose enough that a real
+			// hang surfaces within ~6 minutes at the 2-minute default.
+			//
+			// Recovery action: force-reset `isChecking` and log at error
+			// level. We accept the small risk that the still-running
+			// previous tick later resolves into stale stats — that's
+			// strictly better than wedging the loop indefinitely.
+			const stuckThresholdMs = AGENT_SUSPEND_CONSTANTS.IDLE_CHECK_INTERVAL_MS * 3;
+			if (elapsedMs > stuckThresholdMs) {
+				this.forcedResetCount++;
+				this.logger.error('Idle check tick appears hung — force-resetting guard', {
+					elapsedMs,
+					stuckThresholdMs,
+					consecutiveSkippedTicks: this.consecutiveSkippedTicks,
+					forcedResetCount: this.forcedResetCount,
+					lastTickStartedAt: this.lastTickStartedAt
+						? new Date(this.lastTickStartedAt).toISOString()
+						: null,
+				});
+				this.isChecking = false;
+				// Fall through to start a fresh tick this cycle.
+			} else {
+				this.logger.warn('Idle check skipped — previous tick still running', {
+					consecutiveSkippedTicks: this.consecutiveSkippedTicks,
+					lastTickStartedAt: this.lastTickStartedAt
+						? new Date(this.lastTickStartedAt).toISOString()
+						: null,
+					elapsedMs,
+				});
+				return;
+			}
+		}
+
+		this.isChecking = true;
+		this.consecutiveSkippedTicks = 0;
+		this.lastTickStartedAt = Date.now();
+		this.logger.debug('Idle check tick started');
+
+		this.performCheck()
+			.then(() => {
+				this.lastTickCompletedAt = Date.now();
+				this.lastTickDurationMs = this.lastTickCompletedAt - (this.lastTickStartedAt ?? this.lastTickCompletedAt);
+				this.logger.debug('Idle check tick completed', {
+					durationMs: this.lastTickDurationMs,
+				});
+			})
+			.catch((err: unknown) => {
+				this.lastTickCompletedAt = Date.now();
+				this.lastTickDurationMs = this.lastTickCompletedAt - (this.lastTickStartedAt ?? this.lastTickCompletedAt);
 				this.logger.error('Idle check cycle failed', {
 					error: err instanceof Error ? err.message : String(err),
+					durationMs: this.lastTickDurationMs,
 				});
+			})
+			.finally(() => {
+				this.isChecking = false;
 			});
-		}, AGENT_SUSPEND_CONSTANTS.IDLE_CHECK_INTERVAL_MS);
+	}
+
+	/**
+	 * Snapshot of recent tick activity. Used by health/status endpoints
+	 * to detect a silently stuck loop without parsing logs.
+	 *
+	 * @returns Tick observability stats. All timestamps in epoch ms.
+	 */
+	getStats(): {
+		isRunning: boolean;
+		isChecking: boolean;
+		lastTickStartedAt: number | null;
+		lastTickCompletedAt: number | null;
+		lastTickDurationMs: number | null;
+		consecutiveSkippedTicks: number;
+		forcedResetCount: number;
+	} {
+		return {
+			isRunning: this.isRunning(),
+			isChecking: this.isChecking,
+			lastTickStartedAt: this.lastTickStartedAt,
+			lastTickCompletedAt: this.lastTickCompletedAt,
+			lastTickDurationMs: this.lastTickDurationMs,
+			consecutiveSkippedTicks: this.consecutiveSkippedTicks,
+			forcedResetCount: this.forcedResetCount,
+		};
 	}
 
 	/**
