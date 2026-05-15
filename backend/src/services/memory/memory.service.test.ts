@@ -128,13 +128,43 @@ describe('MemoryService', () => {
       expect(prefs.communicationStyle?.verbosity).toBe('concise');
     });
 
-    it('should throw error for invalid category', async () => {
-      await expect(service.remember({
+    // Steve 2026-05-15 dogfood: agents (Sam, Atlas) repeatedly called
+    // `category=decision, scope=agent` and the throw dropped their
+    // completion summaries. Coerce instead of reject — preserve data,
+    // warn so the next call is correct.
+
+    it('auto-promotes scope to project when category is project-only AND projectPath is provided', async () => {
+      const id = await service.remember({
         agentId: testAgentId,
-        content: 'Some content',
-        category: 'decision', // not valid for agent scope
+        projectPath: testProjectPath,
+        content: 'Use composite dedup keys to support re-target',
+        category: 'decision',
         scope: 'agent',
-      })).rejects.toThrow('not valid for agent scope');
+        metadata: { title: 'Dispatch dedup key shape', rationale: 'reassign repro' },
+      });
+
+      // Should land as a project-scope decision (not throw, not lose data)
+      expect(id).toBeDefined();
+      const projectService = service.getProjectMemoryService();
+      const decisions = await projectService.getDecisions(testProjectPath);
+      expect(decisions.some(d => d.decision.includes('composite dedup keys'))).toBe(true);
+    });
+
+    it('falls back to agent-scope fact (with a [coerced from] prefix) when projectPath is missing', async () => {
+      const id = await service.remember({
+        agentId: testAgentId,
+        content: 'Decisions need a projectPath to be useful here',
+        category: 'decision',
+        scope: 'agent',
+        // projectPath intentionally omitted
+      });
+
+      expect(id).toBeDefined();
+      const agentService = service.getAgentMemoryService();
+      const knowledge = await agentService.getRoleKnowledge(testAgentId);
+      const stored = knowledge.find(k => k.content.includes('[coerced from category=decision]'));
+      expect(stored).toBeDefined();
+      expect(stored?.content).toContain('Decisions need a projectPath');
     });
 
     // ===== F4 fix (2026-05-06): gotcha is now valid for agent scope =====

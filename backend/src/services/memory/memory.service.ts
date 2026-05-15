@@ -666,11 +666,47 @@ export class MemoryService implements IMemoryService {
         return 'preference-updated';
 
       default:
-        throw new Error(
-          `Category '${params.category}' is not valid for agent scope. ` +
-          `Use 'fact', 'pattern', 'gotcha', or 'preference'. ` +
-          `('decision', 'relationship', and 'user_preference' are project-scope only.)`
+        // Steve 2026-05-15 dogfood: agents (Sam, Atlas) repeatedly called
+        // `category=decision, scope=agent` for completion summaries.
+        // Throwing here dropped the memory content entirely. Coerce
+        // instead of reject — preserve the data, warn so the agent's
+        // next call uses the right shape, and prefer auto-promoting to
+        // project scope when a projectPath is available (the content
+        // usually IS a project-level decision).
+        if (params.projectPath) {
+          this.logger.warn(
+            'Coerced project-only category to project scope (was agent scope)',
+            {
+              agentId: params.agentId,
+              originalCategory: params.category,
+              originalScope: 'agent',
+              coercedScope: 'project',
+              projectPath: params.projectPath,
+            },
+          );
+          return this.rememberForProject(params);
+        }
+        // No projectPath — fall back to recording the content as a plain
+        // `fact` in agent scope so we don't lose it. The agent's next
+        // store attempt should pick a valid category.
+        this.logger.warn(
+          'Coerced project-only category to agent-scope fact (no projectPath)',
+          {
+            agentId: params.agentId,
+            originalCategory: params.category,
+            coercedCategory: 'fact',
+          },
         );
+        return this.agentMemory.addRoleKnowledge(params.agentId, {
+          category: this.mapToKnowledgeCategory('fact'),
+          content: `[coerced from category=${params.category}]\n${params.content}`,
+          learnedFrom: params.metadata?.taskId,
+          confidence: 0.5,
+          sourceTaskId: params.metadata?.sourceTaskId || params.metadata?.taskId,
+          sourceObjectiveId: params.metadata?.sourceObjectiveId,
+          sourceOutcome: params.metadata?.sourceOutcome as 'success' | 'failed' | 'partial' | undefined,
+          appliesTo: params.metadata?.appliesTo as string[] | undefined,
+        });
     }
   }
 
