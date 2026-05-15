@@ -239,7 +239,14 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     // Persist orchestrator/agent replies to chat store so they appear in the Chat UI.
     // Without this, replies sent via reply_slack only go to Slack and are invisible
     // in the frontend thread detail panel.
+    //
+    // Phase 3 of unified-chat-message-store spec: writes go to BOTH the
+    // legacy ChatService (primary, frontend-visible) AND the canonical
+    // chat-v2 recordTurn (audit trail, future authoritative source).
+    // Independent try/catches so either branch failing doesn't break the
+    // other. Phase 6 retires the legacy write.
     if (conversationId) {
+      // LEGACY
       try {
         const { getChatService } = await import('../../services/chat/chat.service.js');
         const chatService = getChatService();
@@ -255,6 +262,34 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
         );
       } catch {
         // Non-fatal — Slack delivery succeeded, chat persistence is best-effort
+      }
+
+      // CANONICAL — chat-v2 recordTurn with source='reply-tool' identifying
+      // the /slack/send tool-driven outbound path. agentSession defaults to
+      // 'crewly-orc' when caller didn't pass senderSessionName.
+      try {
+        const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+        const chatV2 = getChatV2Service();
+        const agentSession = typeof senderSessionName === 'string' && senderSessionName.length > 0
+          ? senderSessionName
+          : 'crewly-orc';
+        const channel = chatV2.ensureChannelForLegacyConversation({
+          conversationId: String(conversationId),
+          agentSession,
+        });
+        chatV2.recordTurn({
+          channelId: channel.id,
+          senderType: 'agent',
+          senderId: agentSession,
+          content: typeof text === 'string' ? text : String(text),
+          metadata: {
+            source: 'reply-tool',
+            slackChannelId: typeof channelId === 'string' ? channelId : undefined,
+            slackThreadTs: typeof threadTs === 'string' ? threadTs : undefined,
+          },
+        });
+      } catch {
+        // Non-fatal — Slack delivery already succeeded; canonical write is best-effort
       }
     }
 

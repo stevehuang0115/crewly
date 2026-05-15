@@ -25,6 +25,17 @@ jest.mock('../orchestrator/index.js', () => ({
   triggerOrchestratorSetup: jest.fn().mockResolvedValue({ success: false, error: 'not wired' }),
 }));
 
+// Phase 3 — chat-v2 dual-write target. Mocked so the bridge can fire
+// `dualWriteSlackInboundToV2` without opening a real SQLite database.
+const mockChatV2EnsureChannel = jest.fn();
+const mockChatV2RecordTurn = jest.fn();
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: jest.fn(() => ({
+    ensureChannelForLegacyConversation: mockChatV2EnsureChannel,
+    recordTurn: mockChatV2RecordTurn,
+  })),
+}));
+
 // Mock the slack image service
 jest.mock('./slack-image.service.js', () => ({
   getSlackImageService: jest.fn().mockReturnValue({
@@ -2261,6 +2272,98 @@ describe('SlackOrchestratorBridge', () => {
       it('does NOT suppress when no parent Request exists for the thread', () => {
         expect(runGate(null)).toBeNull();
       });
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // Phase 3 — dual-write to chat-v2 from Slack inbound paths
+  // Spec: 2026-05-14-unified-chat-message-store.md
+  // ────────────────────────────────────────────────────────────────────
+  describe('dualWriteSlackInboundToV2 (Phase 3)', () => {
+    beforeEach(() => {
+      mockChatV2EnsureChannel.mockReset().mockReturnValue({ id: 'conv-1' });
+      mockChatV2RecordTurn.mockReset().mockReturnValue({
+        message: { id: 'm1', content: 'hi' },
+        deduped: false,
+      });
+    });
+
+    const flushAsync = async (): Promise<void> => {
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setImmediate(r));
+      }
+    };
+
+    it('bridges legacy conversationId → chat-v2 channel + recordTurn with source=slack', async () => {
+      const bridge = new SlackOrchestratorBridge();
+
+      (bridge as any).dualWriteSlackInboundToV2(
+        'conv-1',
+        'hello orc',
+        { channelId: 'D0AC7', threadTs: '1700000000.000111', userId: 'U999' },
+        'crewly-orc',
+      );
+      await flushAsync();
+
+      expect(mockChatV2EnsureChannel).toHaveBeenCalledWith({
+        conversationId: 'conv-1',
+        agentSession: 'crewly-orc',
+      });
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      const call = mockChatV2RecordTurn.mock.calls[0][0];
+      expect(call).toMatchObject({
+        channelId: 'conv-1',
+        senderType: 'user',
+        senderId: 'U999',
+        content: 'hello orc',
+        metadata: {
+          source: 'slack',
+          slackChannelId: 'D0AC7',
+          slackThreadTs: '1700000000.000111',
+        },
+      });
+    });
+
+    it('is a no-op when conversationId is empty', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      (bridge as any).dualWriteSlackInboundToV2('', 'hi', {}, 'crewly-orc');
+      await flushAsync();
+
+      expect(mockChatV2EnsureChannel).not.toHaveBeenCalled();
+      expect(mockChatV2RecordTurn).not.toHaveBeenCalled();
+    });
+
+    it('defaults senderId to "slack-user" when userId is absent', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      (bridge as any).dualWriteSlackInboundToV2(
+        'conv-2',
+        'anon msg',
+        { channelId: 'C1' },
+        'crewly-orc',
+      );
+      await flushAsync();
+
+      expect(mockChatV2RecordTurn.mock.calls[0][0].senderId).toBe('slack-user');
+    });
+
+    it('survives chat-v2 ensureChannel failure (fire-and-forget contract)', async () => {
+      mockChatV2EnsureChannel.mockImplementationOnce(() => {
+        throw new Error('chat-v2 down');
+      });
+      const bridge = new SlackOrchestratorBridge();
+
+      expect(() =>
+        (bridge as any).dualWriteSlackInboundToV2(
+          'conv-3',
+          'hi',
+          {},
+          'crewly-orc',
+        ),
+      ).not.toThrow();
+      await flushAsync();
+
+      // recordTurn never reached
+      expect(mockChatV2RecordTurn).not.toHaveBeenCalled();
     });
   });
 });
