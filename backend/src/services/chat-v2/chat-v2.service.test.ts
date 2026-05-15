@@ -836,4 +836,202 @@ describe('ChatV2Service', () => {
       expect(() => service.countAllMessages()).not.toThrow();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // recordTurn — canonical server-internal write entry
+  // Spec: 2026-05-14-unified-chat-message-store.md (Phase 1)
+  // -------------------------------------------------------------------------
+
+  describe('recordTurn', () => {
+    it('persists an agent turn and stamps metadata.source', () => {
+      const ch = createSam();
+
+      const { message, deduped } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'Hello!',
+        metadata: { source: 'in-process-runtime', runtime: 'crewly-agent' },
+      });
+
+      expect(deduped).toBe(false);
+      expect(message.content).toBe('Hello!');
+      expect(message.senderType).toBe('agent');
+      expect(message.senderId).toBe('crewly-orc');
+      // metadata.source must be carried through to storage — audit trail
+      expect(message.metadata).toMatchObject({
+        source: 'in-process-runtime',
+        runtime: 'crewly-agent',
+      });
+    });
+
+    it('persists a user turn for Slack inbound', () => {
+      const ch = createSam();
+
+      const { message } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'user',
+        senderId: 'slack-U0XYZ',
+        content: 'hi orc',
+        metadata: {
+          source: 'slack',
+          slackChannelId: 'D0AC7',
+          slackThreadTs: '1700000000.000111',
+        },
+      });
+
+      expect(message.senderType).toBe('user');
+      expect(message.metadata).toMatchObject({
+        source: 'slack',
+        slackChannelId: 'D0AC7',
+      });
+    });
+
+    it('is idempotent via clientMessageId — second call returns deduped=true', () => {
+      const ch = createSam();
+      const clientId = 'agent-finish-2026-05-14T22:30:00Z';
+
+      const first = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'one',
+        clientMessageId: clientId,
+        metadata: { source: 'in-process-runtime' },
+      });
+      const second = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'one',  // same content
+        clientMessageId: clientId,
+        metadata: { source: 'in-process-runtime' },
+      });
+
+      expect(first.deduped).toBe(false);
+      expect(second.deduped).toBe(true);
+      expect(second.message.id).toBe(first.message.id);
+      expect(service.countAllMessages()).toBe(1);
+    });
+
+    it('rejects empty content (400)', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: '',
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(ChatError);
+    });
+
+    it('rejects missing metadata.source (audit trail required)', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: 'hi',
+          // @ts-expect-error — deliberately omitting source to test runtime guard
+          metadata: { runtime: 'crewly-agent' },
+        }),
+      ).toThrow(/metadata\.source is required/);
+    });
+
+    it('rejects unknown metadata.source values (closed enum)', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: 'hi',
+          // @ts-expect-error — invalid source string at compile + runtime
+          metadata: { source: 'made-up-source' },
+        }),
+      ).toThrow(/unknown metadata\.source/);
+    });
+
+    it('rejects unknown senderType', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          // @ts-expect-error
+          senderType: 'robot',
+          senderId: 'crewly-orc',
+          content: 'hi',
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(/unknown senderType/);
+    });
+
+    it('rejects empty senderId', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: '',
+          content: 'hi',
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(/senderId is required/);
+    });
+
+    it('rejects unknown channelId (channel_not_found)', () => {
+      expect(() =>
+        service.recordTurn({
+          channelId: 'no-such-channel',
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: 'hi',
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(ChatError);
+    });
+
+    it('accepts all RECORD_TURN_SOURCES values', () => {
+      const ch = createSam();
+      const sources = [
+        'web',
+        'slack',
+        'pty-runtime',
+        'in-process-runtime',
+        'reply-tool',
+        'system',
+      ] as const;
+
+      for (const source of sources) {
+        const { message } = service.recordTurn({
+          channelId: ch.id,
+          senderType: 'system',
+          senderId: 'system',
+          content: `msg from ${source}`,
+          metadata: { source },
+        });
+        expect(message.metadata).toMatchObject({ source });
+      }
+
+      expect(service.countAllMessages()).toBe(sources.length);
+    });
+
+    it('rejects oversized content with payload_too_large', () => {
+      const ch = createSam();
+      const huge = 'x'.repeat(service.config.maxMessageBytes + 1);
+
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: huge,
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(ChatError);
+    });
+  });
 });

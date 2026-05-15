@@ -18,6 +18,7 @@ import {
   CHAT_CHANNEL_TYPES,
   CHAT_CONTENT_TYPES,
   CHAT_ERROR_CODES,
+  CHAT_SENDER_TYPES,
   ChatError,
   type ChatAttachmentDTO,
   type ChatChannelDTO,
@@ -149,6 +150,63 @@ export interface SendMessageArgs {
    * channel before persisting.
    */
   threadId?: string;
+}
+
+/**
+ * Allowed values for `RecordTurnInput.metadata.source` — the audit-trail
+ * discriminator that identifies which subsystem produced the message.
+ *
+ * Per spec `2026-05-14-unified-chat-message-store.md`, every {@link
+ * ChatV2Service.recordTurn} caller MUST set `metadata.source` to one of
+ * these values. The set is intentionally closed so future audits can
+ * `GROUP BY metadata->>'$.source'` without surprise values.
+ */
+export const RECORD_TURN_SOURCES = [
+  'web',
+  'slack',
+  'pty-runtime',
+  'in-process-runtime',
+  'reply-tool',
+  'system',
+] as const;
+
+/** Union type of the values in {@link RECORD_TURN_SOURCES}. */
+export type RecordTurnSource = (typeof RECORD_TURN_SOURCES)[number];
+
+/** Server-internal write input for {@link ChatV2Service.recordTurn}. */
+export interface RecordTurnInput {
+  channelId: string;
+  /** Server resolved — runtime/controller already knows who's sending. */
+  senderType: ChatSenderType;
+  /** User id, agent session name, or `'system'`. */
+  senderId: string;
+  content: string;
+  contentType?: ChatContentType;
+  /** Stable idempotency key — dedup keyed on `(channel_id, clientMessageId)`. */
+  clientMessageId?: string;
+  /** Optional thread-root reference; validated to live in the same channel. */
+  threadId?: string;
+  /** Optional inline mention ids (member or team). */
+  mentions?: string[];
+  /** Required audit metadata. Caller MUST set `source`. */
+  metadata: {
+    source: RecordTurnSource;
+    /** Which agent runtime emitted the message, when applicable. */
+    runtime?: 'claude-code' | 'gemini-cli' | 'crewly-agent';
+    /** Slack correlation fields for cross-store reconciliation. */
+    slackChannelId?: string;
+    slackThreadTs?: string;
+    /** Free-form additional context — not parsed by the store. */
+    [key: string]: unknown;
+  };
+}
+
+/** Result of {@link ChatV2Service.recordTurn}. */
+export interface RecordTurnResult {
+  /** The persisted (or pre-existing, when deduped) message DTO. */
+  message: ChatMessageDTO;
+  /** True when `clientMessageId` matched an existing row. */
+  deduped: boolean;
 }
 
 /** Arguments for `listMessages`. */
@@ -489,6 +547,130 @@ export class ChatV2Service {
     });
 
     return this.toMessageDTO(persisted, args.attachments ?? []);
+  }
+
+  /**
+   * Canonical server-internal write entry for chat messages.
+   *
+   * Unlike {@link sendMessage}, which derives `sender_type` / `sender_id`
+   * from an authenticated request principal, `recordTurn` is the path
+   * used by runtimes, controllers, and bridges that have already
+   * resolved exactly who the sender is — e.g.:
+   *
+   *   - In-process agent runtime finishing a turn
+   *   - PTY runtime emitting a complete reply
+   *   - Slack inbound bridge persisting a user DM
+   *   - `/slack/send` controller persisting the agent's outbound reply
+   *
+   * Per spec `2026-05-14-unified-chat-message-store.md`, every chat
+   * write in the system funnels through this method. No caller should
+   * write to {@link MessageStore} directly; no caller should reach
+   * into legacy {@link ChatService} (Phase 6 retires it).
+   *
+   * Idempotent via `clientMessageId` — the underlying store dedups by
+   * `(channel_id, clientMessageId)` and returns the existing row with
+   * `deduped=true` instead of inserting a duplicate.
+   *
+   * @param input - Turn payload (channel, sender, content, metadata)
+   * @returns The persisted message DTO + dedupe flag
+   * @throws {ChatError} `channel_not_found` (404) if the channel is missing
+   * @throws {ChatError} `validation_error` (400) on empty content or invalid contentType
+   * @throws {ChatError} `payload_too_large` (413) if content exceeds maxMessageBytes
+   *
+   * @example
+   * ```typescript
+   * const { message, deduped } = chatV2.recordTurn({
+   *   channelId: 'slack-D0AC7-1234',
+   *   senderType: 'agent',
+   *   senderId: 'crewly-orc',
+   *   content: 'Hello!',
+   *   clientMessageId: 'agent-finish-2026-05-14T22:30:00Z',
+   *   metadata: {
+   *     source: 'in-process-runtime',
+   *     runtime: 'crewly-agent',
+   *     slackChannelId: 'D0AC7',
+   *     slackThreadTs: '1234',
+   *   },
+   * });
+   * ```
+   */
+  recordTurn(input: RecordTurnInput): RecordTurnResult {
+    const content = input.content ?? '';
+    if (content.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'content is required');
+    }
+    const byteLen = Buffer.byteLength(content, 'utf-8');
+    if (byteLen > this.config.maxMessageBytes) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.PAYLOAD_TOO_LARGE,
+        413,
+        `content exceeds max bytes (${this.config.maxMessageBytes})`,
+        { maxBytes: this.config.maxMessageBytes, yourBytes: byteLen },
+      );
+    }
+
+    const contentType: ChatContentType = input.contentType ?? 'markdown';
+    if (!CHAT_CONTENT_TYPES.includes(contentType)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `unknown contentType: ${contentType}`,
+      );
+    }
+
+    if (!CHAT_SENDER_TYPES.includes(input.senderType)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `unknown senderType: ${input.senderType}`,
+      );
+    }
+    if (!input.senderId || input.senderId.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'senderId is required');
+    }
+
+    const mentions = this.validateMentions(input.mentions);
+    const threadId = this.validateThreadId(input.threadId, input.channelId);
+
+    // `metadata.source` is the audit-trail discriminator that lets
+    // future tooling tell "this message came from PTY" vs "from
+    // in-process runtime" vs "from /slack/send" without parsing
+    // content. Spec success criterion #4 depends on this tag being
+    // present for every recordTurn caller.
+    const metadata: Record<string, unknown> = { ...(input.metadata ?? {}) };
+    if (!metadata.source) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'metadata.source is required for recordTurn (audit trail)',
+      );
+    }
+    if (!RECORD_TURN_SOURCES.includes(metadata.source as RecordTurnSource)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `unknown metadata.source: ${String(metadata.source)}`,
+        { allowed: RECORD_TURN_SOURCES },
+      );
+    }
+
+    const { row: persisted, deduped } = this.messages.insert({
+      channelId: input.channelId,
+      senderType: input.senderType,
+      senderId: input.senderId,
+      content,
+      contentType,
+      clientMessageId: input.clientMessageId,
+      mentions,
+      threadId,
+      metadata,
+      nowMs: this.now(),
+    });
+
+    return {
+      message: this.toMessageDTO(persisted, []),
+      deduped,
+    };
   }
 
   /**
