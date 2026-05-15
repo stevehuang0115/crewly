@@ -2120,5 +2120,47 @@ describe('TaskPoolService', () => {
       const after = await service.findWorkItem(wi.id);
       expect(after?.cancelReason).toBeUndefined();
     });
+
+    // Code-review P0 follow-up (2026-05-15) — transitionStatus is the
+    // path V3 SLA subscriber uses, and was missing reason propagation.
+    it('transitionStatus persists cancelReason when target is cancelled', async () => {
+      const wi = await service.addToPool({
+        type: 'delegate',
+        owner: 'orchestrator',
+        title: 'transitionStatus-cancel-reason',
+      });
+
+      await service.transitionStatus(
+        wi.id,
+        'cancelled',
+        'system',
+        undefined,
+        'SLA auto-resolved: orc_reply',
+      );
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.cancelReason).toBe('SLA auto-resolved: orc_reply');
+    });
+
+    it('transitionStatus mutator can override cancelReason (escape hatch)', async () => {
+      const wi = await service.addToPool({
+        type: 'delegate',
+        owner: 'orchestrator',
+        title: 'mutator-override',
+      });
+
+      await service.transitionStatus(
+        wi.id,
+        'cancelled',
+        'system',
+        (it) => {
+          it.cancelReason = 'mutator wins';
+        },
+        'default-from-param',
+      );
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.cancelReason).toBe('mutator wins');
+    });
   });
 });

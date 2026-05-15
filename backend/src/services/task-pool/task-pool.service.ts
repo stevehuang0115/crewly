@@ -1688,6 +1688,15 @@ export class TaskPoolService {
     newStatus: WorkItemStatus,
     actorRole: WorkItemOwner,
     mutator?: (wi: WorkItem) => void,
+    /**
+     * Optional human-readable reason. When `newStatus === 'cancelled'`
+     * persisted on `WorkItem.cancelReason` (atomic with the status
+     * flip, before the caller's mutator runs so the mutator may
+     * override if needed). Surfaces in the activity timeline so
+     * SLA-cascade / cancel paths don't read as opaque "WorkItem was
+     * cancelled." entries. Code-review P0 from 2026-05-15.
+     */
+    cancelReason?: string,
   ): Promise<WorkItem | null> {
     const item = await this.storage.findWorkItem(workItemId);
     if (!item) {
@@ -1746,6 +1755,11 @@ export class TaskPoolService {
         // shape here to keep the change minimal; the `cancelled`
         // semantics are out of scope.)
         wi.completedAt = undefined;
+      }
+      // Apply cancelReason BEFORE the user-supplied mutator so the
+      // mutator wins if the caller wants to override (rare).
+      if (newStatus === 'cancelled' && typeof cancelReason === 'string' && cancelReason.length > 0) {
+        wi.cancelReason = cancelReason;
       }
       if (mutator) mutator(wi);
     });
