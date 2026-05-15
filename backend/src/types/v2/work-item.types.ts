@@ -205,6 +205,21 @@ export interface WorkItem {
    * cascade, parent-cancel ripple, manual user cancel, etc.
    */
   cancelReason?: string;
+  /**
+   * Human-readable reason recorded when the item transitions to
+   * `blocked` (or is created already in `blocked` because of unmet
+   * dependencies). Surfaces in the work-item activity timeline so the
+   * user understands WHY a WI is stuck — "Waiting on Plan WI to
+   * complete" reads very differently from "Agent inactive — system
+   * paused this item" reads very differently from "Worker explicitly
+   * blocked with reason X". (Steve 2026-05-15 dogfood: UI showed
+   * `Blocked` badge with no timeline event explaining why.)
+   *
+   * Sources: RequestDecomposeSubscriber (dependency-blocked at
+   * create time), ReconcilerDataProvider (agent-inactive correction),
+   * TaskPoolService.blockItem (explicit worker block).
+   */
+  blockedReason?: string;
   /** Number of retry attempts so far */
   retryCount: number;
   /** Maximum retries before permanent failure */

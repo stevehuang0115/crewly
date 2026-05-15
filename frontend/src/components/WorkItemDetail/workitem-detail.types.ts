@@ -82,6 +82,14 @@ export interface WorkItem {
    * `TaskPoolService.updateItemStatus(..., reason)`.
    */
   cancelReason?: string;
+  /**
+   * Human-readable reason recorded when the item transitions to (or
+   * is created in) `blocked`. Used by the activity timeline so the
+   * UI's `Blocked` badge isn't opaque. Sources: dependency-blocked
+   * decomposition ("Waiting on dependency: ..."), reconciler
+   * agent-inactive correction, explicit worker block.
+   */
+  blockedReason?: string;
   /** Number of retry attempts so far */
   retryCount: number;
   /** Maximum retries before permanent failure */
@@ -379,6 +387,29 @@ export function buildTimeline(item: WorkItem): TimelineEvent[] {
       detail,
       timestamp: ts,
       status: 'cancelled',
+    });
+  }
+
+  // Blocked — surface the persisted `blockedReason` so the UI's
+  // `Blocked` badge isn't opaque. Sources include dependency-blocked
+  // decomposition (Plan/Execute/Review chains), reconciler
+  // agent-inactive correction, explicit worker block. Steve 2026-05-15
+  // dogfood — UI showed `Blocked` with an empty activity timeline.
+  // We use `createdAt` as the timestamp because blocked WIs may never
+  // have a `startedAt`/`completedAt` (they sit blocked from creation).
+  if (item.status === 'blocked') {
+    const reason = item.blockedReason;
+    const detail =
+      typeof reason === 'string' && reason.length > 0
+        ? `Blocked: ${reason}`
+        : 'Blocked (no reason recorded).';
+    events.push({
+      id: `${item.id}-blocked`,
+      kind: 'status_change',
+      label: 'BLOCKED',
+      detail,
+      timestamp: item.startedAt || item.createdAt,
+      status: 'blocked',
     });
   }
 
