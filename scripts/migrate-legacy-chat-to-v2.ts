@@ -54,6 +54,7 @@ interface PerFileResult {
   channelId: string;
   imported: number;
   deduped: number;
+  skipped: number;
   expected: number;
   ok: boolean;
   error?: string;
@@ -118,6 +119,7 @@ async function processFile(
       channelId: '',
       imported: 0,
       deduped: 0,
+      skipped: 0,
       expected,
       ok: false,
       error: 'missing conversation.id',
@@ -130,6 +132,7 @@ async function processFile(
       channelId: conversationId,
       imported: 0,
       deduped: 0,
+      skipped: 0,
       expected,
       ok: true,
     };
@@ -150,6 +153,7 @@ async function processFile(
       channelId: result.channelId,
       imported: result.imported,
       deduped: result.deduped,
+      skipped: result.skipped,
       expected,
       ok,
       error:
@@ -163,6 +167,7 @@ async function processFile(
       channelId: conversationId,
       imported: 0,
       deduped: 0,
+      skipped: 0,
       expected,
       ok: false,
       error: err instanceof Error ? err.message : String(err),
@@ -172,7 +177,8 @@ async function processFile(
 
 function fmtRow(r: PerFileResult): string {
   const tag = r.ok ? 'OK' : 'FAIL';
-  const counts = `imported=${r.imported} deduped=${r.deduped} expected=${r.expected}`;
+  const skippedPart = r.skipped > 0 ? ` skipped=${r.skipped}` : '';
+  const counts = `imported=${r.imported} deduped=${r.deduped}${skippedPart} expected=${r.expected}`;
   const err = r.error ? `  ← ${r.error}` : '';
   return `  [${tag}] ${r.filename}  ${counts}${err}`;
 }
@@ -220,9 +226,10 @@ async function main(): Promise<number> {
     (acc, r) => ({
       imported: acc.imported + r.imported,
       deduped: acc.deduped + r.deduped,
+      skipped: acc.skipped + r.skipped,
       expected: acc.expected + r.expected,
     }),
-    { imported: 0, deduped: 0, expected: 0 },
+    { imported: 0, deduped: 0, skipped: 0, expected: 0 },
   );
 
   console.log('');
@@ -231,8 +238,13 @@ async function main(): Promise<number> {
   }
   console.log('');
   console.log(
-    `Summary: files=${results.length} ok=${okCount} fail=${failCount}  totals: imported=${totals.imported} deduped=${totals.deduped} expected=${totals.expected}`,
+    `Summary: files=${results.length} ok=${okCount} fail=${failCount}  totals: imported=${totals.imported} deduped=${totals.deduped} skipped=${totals.skipped} expected=${totals.expected}`,
   );
+  if (totals.skipped > 0) {
+    console.log(
+      `Note: ${totals.skipped} malformed row(s) skipped — see [chat-v2] warnings above for details (missing-id / empty-content).`,
+    );
+  }
 
   if (mode === 'dry-run') {
     console.log('(dry-run — no writes made. Re-run with --apply to migrate.)');

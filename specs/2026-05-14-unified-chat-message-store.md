@@ -413,3 +413,101 @@ chore(chat-v1): retire legacy ChatService (Phase 6)
 ```
 
 Test coverage requirement per phase: every new or modified source file has a co-located `.test.ts` per CLAUDE.md, and the integration test verifying success criterion #6 lands no later than Phase 4.
+
+## Phase 6α follow-ups (2026-05-15 code-review on PR #545)
+
+The post-merge code review surfaced nine review items. Items #2 and the
+high-priority correctness/duplication fixes shipped in PR #545. This
+section captures the deferred plans (rollback path + long-term façade
+retirement) that affect future operators of this system.
+
+### Rollback path — restoring the `chat_messages` unique index
+
+Phase 6α dropped the unique-clientMessageId index because the legacy
+JSON store had let some duplicate `clientMessageId`s persist across
+direct-message channels. The migration imports them as-is; the
+constraint can't be re-enabled until those duplicates are merged.
+
+**Steps to re-add the index (if a future operator wants stricter
+idempotency at the DB level):**
+
+1. Identify duplicates:
+   ```sql
+   SELECT channel_id, client_message_id, COUNT(*) AS n
+     FROM chat_messages
+     WHERE client_message_id IS NOT NULL
+     GROUP BY channel_id, client_message_id
+     HAVING COUNT(*) > 1;
+   ```
+2. For each duplicate group, keep the earliest row (lowest `seq`) and
+   delete the rest, OR repoint downstream FK references (`mentions`,
+   etc.) before deletion.
+3. Add the index back as a one-shot migration:
+   ```sql
+   CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_messages_channel_client_id
+     ON chat_messages(channel_id, client_message_id)
+     WHERE client_message_id IS NOT NULL;
+   ```
+4. Verify `recordTurn`'s in-code dedup (the `SELECT … WHERE client_message_id = ?`
+   pre-check at `chat-v2.service.ts:910`) still works — it does, because
+   the unique index is now redundant with the application-level guard
+   but not in conflict with it.
+
+**Why not re-add the index now:** ~3% of imported rows are duplicates
+from the legacy store (counted on the dev environment, 2026-05-14).
+Merging them is a one-time human review, not a hot-path fix; running
+the migration once with the index missing is safer than blocking the
+chat-v2 cutover behind a data-cleanup project. The application-level
+dedup in `recordTurn` already prevents NEW duplicates from being
+written.
+
+### Long-term façade retirement (post-Phase 6c)
+
+Phase 6c retires the legacy `~/.crewly/chat/*.json` storage but keeps
+`backend/src/services/chat/chat.service.ts` as a thin DTO-translation
+shim. The shim exists so HTTP responses, WebSocket events, and the
+frontend's existing `ChatMessage`/`ChatConversation` types continue to
+work without a big-bang rewrite.
+
+**Retirement checklist (Phase 6d, not yet scheduled):**
+
+1. **Frontend cutover.** `frontend/src/components/ChatPanel/**` and
+   `frontend/src/hooks/useChat*.ts` currently consume the legacy
+   `ChatMessage` shape. Migrate them to call the chat-v2 HTTP API
+   surface (`/api/chat-v2/...` endpoints) and the chat-v2 WebSocket
+   payload shape (`ChatMessageDTO`, `ChatChannelDTO`) directly.
+2. **Drop the façade emit-counterpart on `conversation_updated`.**
+   chat-v2 should grow a `channel_touched` event so the façade's
+   remaining `this.emit('conversation_updated', …)` can go away.
+   `chat.service.ts:sendMessage` is the only emitter.
+3. **Delete the façade.** Once no caller depends on legacy DTOs,
+   remove:
+   - `backend/src/services/chat/chat.service.ts` + `.test.ts`
+   - `backend/src/services/chat-v2/legacy-dto.utils.ts` + `.test.ts`
+     (helpers stay only as long as the façade does — except
+     `synthesizeSlackConversationId`, which moves to
+     `backend/src/services/slack/` since it's a Slack-bridge concern
+     not a chat-v2 concern)
+   - Any `getChatService` / `resetChatService` exports
+4. **Search-and-replace surviving call sites.** Run
+   `grep -rn "getChatService\|chatService\." backend/src` and migrate
+   each one to call `getChatV2Service()` directly. The full list as of
+   2026-05-15 is:
+   - `backend/src/index.ts:1315` — already migrated; only references
+     `chatService.countAllMessages()` for the health endpoint, which
+     should call `chat-v2` directly.
+   - `backend/src/controllers/chat/chat.controller.ts` — HTTP routes
+     for the legacy DTO surface; replace with the chat-v2 controller.
+   - `backend/src/services/slack/slack-orchestrator-bridge.ts` — has
+     a leftover `chatService` field used only by error paths; remove.
+   - `backend/src/services/messaging/message-replay.service.ts` —
+     writes replay markers via the façade; migrate to `recordTurn`.
+   - `backend/src/services/chat/chat-highlights.service.ts` — reads
+     via the façade; migrate to `listMessages`.
+
+**Why this is intentionally deferred:** the façade is currently load-
+bearing for the WebSocket path. The Phase 6α follow-up removed the
+double-emit on `chat_message` (#27), which makes the façade strictly
+read-mostly. A clean retirement is a frontend + HTTP-surface project,
+not a backend-internal cleanup — scheduling it requires coordinating
+with whoever owns the chat UI.

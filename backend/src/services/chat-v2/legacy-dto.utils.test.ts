@@ -9,6 +9,7 @@ import {
   v2MessageToLegacy,
   v2ChannelToLegacy,
   inferSourceFromLegacyMetadata,
+  synthesizeSlackConversationId,
   SYSTEM_PRINCIPAL,
 } from './legacy-dto.utils.js';
 import type { ChatMessageDTO, ChatChannelDTO } from './types.js';
@@ -67,6 +68,7 @@ describe('v2MessageToLegacy', () => {
     createdAt: 1700000000000,
     metadata: { source: 'in-process-runtime' },
     mentions: [],
+    attachments: [],
   };
 
   it('converts createdAt ms → ISO timestamp', () => {
@@ -156,5 +158,40 @@ describe('inferSourceFromLegacyMetadata', () => {
 describe('SYSTEM_PRINCIPAL', () => {
   it('is a valid ChatPrincipal with system userId', () => {
     expect(SYSTEM_PRINCIPAL).toEqual({ userId: 'system', source: 'oss' });
+  });
+});
+
+describe('synthesizeSlackConversationId', () => {
+  it('produces the canonical slack-${channelId}-${threadTs} shape', () => {
+    expect(synthesizeSlackConversationId('D0AC7NF5N7L', '1777760999.956969')).toBe(
+      'slack-D0AC7NF5N7L-1777760999-956969',
+    );
+  });
+
+  it('replaces only the FIRST dot in threadTs (Slack ts has exactly one)', () => {
+    expect(synthesizeSlackConversationId('CHAN', '123.456')).toBe('slack-CHAN-123-456');
+  });
+
+  it('matches the format used by persistSlackInbound — same channel id for the SAME (channelId, threadTs) pair', () => {
+    const a = synthesizeSlackConversationId('CXYZ', '1234567890.123456');
+    const b = synthesizeSlackConversationId('CXYZ', '1234567890.123456');
+    expect(a).toBe(b);
+    expect(a).toBe('slack-CXYZ-1234567890-123456');
+  });
+
+  it('produces DIFFERENT channel ids for different threadTs values (thread isolation)', () => {
+    const t1 = synthesizeSlackConversationId('CXYZ', '1234567890.111111');
+    const t2 = synthesizeSlackConversationId('CXYZ', '1234567890.222222');
+    expect(t1).not.toBe(t2);
+  });
+
+  it('produces DIFFERENT channel ids for different channelIds (channel isolation)', () => {
+    const c1 = synthesizeSlackConversationId('CAAA', '1234567890.111111');
+    const c2 = synthesizeSlackConversationId('CBBB', '1234567890.111111');
+    expect(c1).not.toBe(c2);
+  });
+
+  it('handles threadTs with no dot (defensive — Slack always provides one, but be safe)', () => {
+    expect(synthesizeSlackConversationId('CHAN', '1234567890')).toBe('slack-CHAN-1234567890');
   });
 });

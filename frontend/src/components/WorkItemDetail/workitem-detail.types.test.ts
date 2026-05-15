@@ -263,6 +263,26 @@ describe('buildTimeline', () => {
     expect(events.some((e) => e.label === 'CANCELLED')).toBe(true);
   });
 
+  it('shows the persisted cancelReason in the CANCELLED event detail', () => {
+    const item = createTestWorkItem({
+      status: 'cancelled',
+      cancelReason: 'parent_cascade(WI-123)',
+    });
+    const events = buildTimeline(item);
+    const cancelled = events.find((e) => e.label === 'CANCELLED');
+    expect(cancelled?.detail).toBe('Cancelled: parent_cascade(WI-123)');
+  });
+
+  it('falls back to a terse "Cancelled (no reason recorded)" detail when cancelReason is missing', () => {
+    // Phase 6α follow-up #8: previous fallback included a transitional
+    // dev-note about pre-persistence rows. That note has aged out — the
+    // current fallback should be a clean, user-facing message.
+    const item = createTestWorkItem({ status: 'cancelled' });
+    const events = buildTimeline(item);
+    const cancelled = events.find((e) => e.label === 'CANCELLED');
+    expect(cancelled?.detail).toBe('Cancelled (no reason recorded).');
+  });
+
   it('adds RESULT DATA event when result is present', () => {
     const item = createTestWorkItem({
       status: 'done',

@@ -34,6 +34,49 @@ import {
   ChatTypingEvent,
   ConversationUpdatedEvent,
 } from '../../types/chat.types.js';
+
+/**
+ * Default page size for legacy `getMessages` calls without an explicit
+ * `filter.limit`. Matches the historical hardcoded value so the change
+ * to honor `filter.limit` is a strict superset of the prior behavior.
+ */
+const LEGACY_DEFAULT_PAGE_SIZE = 200;
+
+/**
+ * Hard cap on `getMessages` limit, applied after the caller-supplied
+ * value. Keeps a buggy/malicious caller from asking chat-v2 to load
+ * the entire channel history into a single response.
+ */
+const LEGACY_MAX_PAGE_SIZE = 1000;
+
+/**
+ * Pick the chat-v2 `metadata.source` for a legacy `addAgentMessage`
+ * /`addDirectMessage` call. Returns the caller-provided
+ * `metadata.source` when it is one of the closed chat-v2 source enum
+ * values, otherwise falls back to `defaultSource` (the historical
+ * hardcoded value for the call site).
+ *
+ * @param metadata - Legacy metadata blob (possibly undefined)
+ * @param defaultSource - Source to use when metadata has no valid source
+ * @returns A chat-v2 `RecordTurnSource` value
+ */
+function resolveLegacyRecordSource(
+  metadata: Record<string, unknown> | undefined,
+  defaultSource: 'web' | 'slack' | 'pty-runtime' | 'in-process-runtime' | 'reply-tool' | 'system',
+): 'web' | 'slack' | 'pty-runtime' | 'in-process-runtime' | 'reply-tool' | 'system' {
+  const raw = metadata?.source;
+  if (
+    raw === 'web' ||
+    raw === 'slack' ||
+    raw === 'pty-runtime' ||
+    raw === 'in-process-runtime' ||
+    raw === 'reply-tool' ||
+    raw === 'system'
+  ) {
+    return raw;
+  }
+  return defaultSource;
+}
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import {
@@ -42,6 +85,7 @@ import {
   v2MessageToLegacy,
   v2ChannelToLegacy,
   inferSourceFromLegacyMetadata,
+  synthesizeSlackConversationId,
 } from '../chat-v2/legacy-dto.utils.js';
 
 // =============================================================================
@@ -135,13 +179,19 @@ export class ChatService extends EventEmitter {
           ? input.metadata.clientMessageId
           : undefined,
       metadata: {
-        source: inferSourceFromLegacyMetadata(input.metadata),
         ...((input.metadata ?? {}) as Record<string, unknown>),
+        source: inferSourceFromLegacyMetadata(input.metadata),
       },
     });
     const conversation = v2ChannelToLegacy(channel, this.chatV2.countChannelMessages(channel.id, SYSTEM_PRINCIPAL));
     const legacyMessage = v2MessageToLegacy(message);
-    this.emit('chat_message', { type: 'chat_message', data: legacyMessage } satisfies ChatMessageEvent);
+    // Phase 6α follow-up #6: chat-v2 already emits 'chat_message' for
+    // every fresh recordTurn write (chat-v2.service.ts:936/1063). The
+    // chat.gateway WebSocket subscriber listens on the chat-v2
+    // EventEmitter directly, so a second emit here would double-broadcast
+    // to every connected client. The 'conversation_updated' event has no
+    // chat-v2 equivalent yet, so we keep emitting that one until chat-v2
+    // grows a channel-touched event.
     this.emit('conversation_updated', {
       type: 'conversation_updated',
       data: conversation,
@@ -162,7 +212,14 @@ export class ChatService extends EventEmitter {
     sender: ChatSender,
     metadata?: Record<string, unknown>,
   ): Promise<ChatMessage> {
-    return this.recordViaFacade(conversationId, rawOutput, sender, metadata, 'pty-runtime');
+    // Phase 6α follow-up #5: source defaults to 'pty-runtime' (the
+    // historical caller) but the caller can override via
+    // `metadata.source` — e.g. an in-process runtime route should tag
+    // its replies 'in-process-runtime', not 'pty-runtime'. Falling back
+    // through inferSourceFromLegacyMetadata preserves the previous
+    // default for callers that don't tag.
+    const source = resolveLegacyRecordSource(metadata, 'pty-runtime');
+    return this.recordViaFacade(conversationId, rawOutput, sender, metadata, source);
   }
 
   /**
@@ -175,7 +232,9 @@ export class ChatService extends EventEmitter {
     sender: ChatSender,
     metadata?: Record<string, unknown>,
   ): Promise<ChatMessage> {
-    return this.recordViaFacade(conversationId, content, sender, metadata, 'pty-runtime');
+    // Phase 6α follow-up #5: see addAgentMessage. Same default + override.
+    const source = resolveLegacyRecordSource(metadata, 'pty-runtime');
+    return this.recordViaFacade(conversationId, content, sender, metadata, source);
   }
 
   /**
@@ -214,10 +273,17 @@ export class ChatService extends EventEmitter {
       content,
       clientMessageId:
         typeof metadata?.clientMessageId === 'string' ? metadata.clientMessageId : undefined,
-      metadata: { source, ...((metadata ?? {}) as Record<string, unknown>) },
+      // `source` AFTER the spread: the resolved source from
+      // resolveLegacyRecordSource already incorporated metadata.source
+      // (if valid) or fell back to the default. Putting it last
+      // guarantees a value from the closed enum lands in the row
+      // regardless of what the legacy caller passed.
+      metadata: { ...((metadata ?? {}) as Record<string, unknown>), source },
     });
     const legacyMessage = v2MessageToLegacy(message);
-    this.emit('chat_message', { type: 'chat_message', data: legacyMessage } satisfies ChatMessageEvent);
+    // Phase 6α follow-up #6: chat-v2 already emits 'chat_message';
+    // chat.gateway subscribes to chat-v2 directly. No re-emit here to
+    // avoid double-broadcasting to WebSocket clients.
     return legacyMessage;
   }
 
@@ -232,10 +298,19 @@ export class ChatService extends EventEmitter {
       // the migration of those call sites surface explicit filters.
       return [];
     }
+    // Phase 6α follow-up #4: honor filter.limit. Defaults to the
+    // previous hardcoded 200, capped at 1000 so a malicious or buggy
+    // caller can't ask for an unbounded slice. Sub-1 values fall back
+    // to the default.
+    const requested =
+      typeof filter.limit === 'number' && Number.isFinite(filter.limit) && filter.limit > 0
+        ? Math.floor(filter.limit)
+        : LEGACY_DEFAULT_PAGE_SIZE;
+    const limit = Math.min(requested, LEGACY_MAX_PAGE_SIZE);
     const page = this.chatV2.listMessages({
       channelId: filter.conversationId,
       principal: SYSTEM_PRINCIPAL,
-      limit: 200,
+      limit,
       direction: 'forward',
     });
     return page.messages.map(v2MessageToLegacy);
@@ -382,7 +457,7 @@ export class ChatService extends EventEmitter {
       // Slack source — derive from channel + timestamp pattern.
       const channel = input.metadata.channelId;
       const ts = typeof input.metadata.threadTs === 'string' ? input.metadata.threadTs : `${Date.now()}`;
-      return `slack-${channel}-${String(ts).replace('.', '-')}`;
+      return synthesizeSlackConversationId(channel, ts);
     }
     return `web-conv-${Date.now()}`;
   }

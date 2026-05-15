@@ -17,6 +17,7 @@ import { PDFParse } from 'pdf-parse';
 import { getSlackService, SlackService } from './slack.service.js';
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
+import { synthesizeSlackConversationId } from '../chat-v2/legacy-dto.utils.js';
 import {
   isOrchestratorActive,
   isAgentActive,
@@ -2094,9 +2095,10 @@ Just type naturally to chat with the orchestrator!`;
   }): { conversationId: string; messageId: string } {
     const cid =
       args.conversationId ??
-      `slack-${args.channelId ?? 'unknown'}-${
-        args.threadTs ? String(args.threadTs).replace('.', '-') : Date.now()
-      }`;
+      synthesizeSlackConversationId(
+        args.channelId ?? 'unknown',
+        args.threadTs ?? String(Date.now()),
+      );
     const channel = this.chatV2.ensureChannelForLegacyConversation({
       conversationId: cid,
       agentSession: args.agentSession,

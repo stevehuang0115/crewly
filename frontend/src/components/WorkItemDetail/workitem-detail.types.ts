@@ -371,7 +371,7 @@ export function buildTimeline(item: WorkItem): TimelineEvent[] {
     const detail =
       typeof reason === 'string' && reason.length > 0
         ? `Cancelled: ${reason}`
-        : 'WorkItem was cancelled. (No reason recorded — likely cancelled before cancelReason persistence landed.)';
+        : 'Cancelled (no reason recorded).';
     events.push({
       id: `${item.id}-cancelled`,
       kind: 'status_change',

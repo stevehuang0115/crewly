@@ -127,3 +127,39 @@ export function inferSourceFromLegacyMetadata(
   if (src === 'web') return 'web';
   return 'system';
 }
+
+/**
+ * Canonical conversationId synthesizer for Slack inbound/outbound
+ * messages. Returns the chat-v2 channel id that both
+ * `persistSlackInbound` (in slack-orchestrator-bridge.ts) and the
+ * `/slack/send` controller agree on, so user inbound and agent
+ * reply on the same Slack thread always land on the SAME chat-v2
+ * channel.
+ *
+ * Shape: `slack-${channelId}-${threadTsWithDotsReplaced}`. The dot
+ * in Slack timestamps (e.g. `1777760999.956969`) is replaced with
+ * a hyphen because some downstream consumers (and the SLA
+ * subscriber's reverse parsing at `request-sla.subscriber.ts:343`)
+ * use the dot as a separator; replacing it removes the ambiguity.
+ *
+ * Extracted from 5 duplicated call sites (slack.controller × 2,
+ * slack-orchestrator-bridge, agent-runner, agent-registration) per
+ * the 2026-05-15 code-review P0 #1. Single source of truth
+ * prevents format drift if Slack ever changes its ts shape.
+ *
+ * @param channelId - Slack channel id (e.g. `D0AC7NF5N7L`)
+ * @param threadTs - Slack thread timestamp (e.g. `1777760999.956969`)
+ * @returns The canonical chat-v2 channel id for the conversation
+ *
+ * @example
+ * ```typescript
+ * synthesizeSlackConversationId('D0AC7NF5N7L', '1777760999.956969')
+ * // → 'slack-D0AC7NF5N7L-1777760999-956969'
+ * ```
+ */
+export function synthesizeSlackConversationId(
+  channelId: string,
+  threadTs: string,
+): string {
+  return `slack-${channelId}-${String(threadTs).replace('.', '-')}`;
+}
