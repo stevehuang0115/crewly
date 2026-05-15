@@ -1553,6 +1553,37 @@ describe('TaskPoolService', () => {
       expect(after!.status).toBe('cancelled');
       expect(after!.cancelReason).toBe('first cancel');
     });
+
+    it('logs the pre-write status as `from` even when storage mutates in place (Steve 2026-05-15)', async () => {
+      // pool-storage returns the in-memory object by reference, so the
+      // mutator's `wi.status = newStatus` also mutates the local `item`
+      // captured at the top of updateItemStatus. Without `const fromStatus
+      // = item.status` before the write, the post-write log reads
+      // `from: <newStatus>` (i.e. `cancelled → cancelled` for an actual
+      // `queued → cancelled` transition). Verified against the
+      // 17:48:29.328 log entry for request:4917f0c9:respond_to_user.
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+
+      const infoSpy = jest
+        .spyOn((service as any).logger, 'info')
+        .mockImplementation(() => {});
+      try {
+        await service.updateItemStatus(wi.id, 'cancelled', 'system', 'reason');
+
+        const updateCalls = infoSpy.mock.calls.filter(
+          (c) => c[0] === 'Work item status updated',
+        );
+        expect(updateCalls).toHaveLength(1);
+        expect(updateCalls[0][1]).toMatchObject({
+          workItemId: wi.id,
+          from: 'queued',   // NOT 'cancelled'
+          to: 'cancelled',
+        });
+      } finally {
+        infoSpy.mockRestore();
+      }
+    });
   });
 
   // -----------------------------------------------------------------------

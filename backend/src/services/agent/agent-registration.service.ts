@@ -1963,11 +1963,20 @@ export class AgentRegistrationService {
 			// Fallback to inline prompt if file doesn't exist
 			const attemptedPath = await this.getPromptFileForRole(role);
 
-			this.logger.error('Could not load prompt from config, using fallback', {
+			// Distinguish "role prompt simply absent" (team-config uses a
+			// custom role string, fallback covers it) from genuine read
+			// failures (permission denied, corrupt file). ENOENT is a
+			// common case — e.g. CE team config currently uses
+			// `role: "tech-lead"` while the filesystem canonical is
+			// `team-leader`. The fallback inline prompt is functionally
+			// sufficient; ERROR-level noise just buries real issues.
+			const msg = error instanceof Error ? error.message : String(error);
+			const isMissingFile = /ENOENT/.test(msg);
+			this.logger[isMissingFile ? 'warn' : 'error']('Could not load prompt from config, using fallback', {
 				role,
 				promptPath: attemptedPath,
-				error: error instanceof Error ? error.message : String(error),
-				stack: error instanceof Error ? error.stack : undefined,
+				error: msg,
+				...(isMissingFile ? {} : { stack: error instanceof Error ? error.stack : undefined }),
 			});
 
 			const memberIdJson = memberId ? `,"teamMemberId":"${memberId}"` : '';
