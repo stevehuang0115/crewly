@@ -1614,6 +1614,13 @@ export class TaskPoolService {
       );
     }
 
+    // Capture pre-write status. See transitionStatus's identical block
+    // for the writeup — storage.updateWorkItem mutates in place, so
+    // reading item.status after the write yields newStatus and the
+    // "Work item status updated" log reads like "X → X" for every
+    // valid transition.
+    const fromStatus = item.status;
+
     await this.storage.updateWorkItem(workItemId, (wi) => {
       wi.status = newStatus;
       // P1 1ffffb84 component (b): mirror the transitionStatus
@@ -1642,7 +1649,7 @@ export class TaskPoolService {
 
     this.logger.info('Work item status updated', {
       workItemId,
-      from: item.status,
+      from: fromStatus,
       to: newStatus,
       actorRole,
       ...(newStatus === 'cancelled' && reason ? { reason } : {}),
@@ -1653,7 +1660,7 @@ export class TaskPoolService {
     // {@link publishTaskCancelled} for the full bug writeup.
     if (newStatus === 'cancelled') {
       const post = await this.storage.findWorkItem(workItemId);
-      if (post) this.publishTaskCancelled(post, item.status);
+      if (post) this.publishTaskCancelled(post, fromStatus);
     }
   }
 
@@ -1744,6 +1751,15 @@ export class TaskPoolService {
       );
     }
 
+    // Capture the pre-write status into a local. `storage.updateWorkItem`
+    // mutates the same in-memory object that `findWorkItem` returned, so
+    // reading `item.status` AFTER the write yields the new value — which
+    // makes the "transitioned X → Y" log read like "Y → Y" and hides the
+    // real `previousValue` on the task:cancelled EventBus payload.
+    // (Steve 2026-05-15 dogfood: `from:cancelled, to:cancelled` showing
+    // for transitions that were actually `queued → cancelled`.)
+    const fromStatus = item.status;
+
     const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
       wi.status = newStatus;
       // Atomic timestamp side-effects enforce the invariant
@@ -1801,7 +1817,7 @@ export class TaskPoolService {
 
     this.logger.info('WorkItem transitioned', {
       workItemId,
-      from: item.status,
+      from: fromStatus,
       to: newStatus,
       actorRole,
     });
@@ -1816,7 +1832,7 @@ export class TaskPoolService {
     // Request without waiting for the heartbeat catch. See
     // {@link publishTaskCancelled} for the full bug writeup.
     if (newStatus === 'cancelled' && post) {
-      this.publishTaskCancelled(post, item.status);
+      this.publishTaskCancelled(post, fromStatus);
     }
 
     return post;
