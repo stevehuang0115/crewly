@@ -193,6 +193,31 @@ single storage (chat.db SQLite) via a single canonical write
 primitive (ChatV2Service.recordTurn)**. The "single unified storage
 and read entry point" success criterion is met at the storage layer.
 
+**Final-state architecture (after Phase 6c, commits b3d0d802 + b788fc2a):**
+
+- `ChatV2Service.recordTurn` is the only writer. Every caller —
+  in-process runtime, Slack inbound bridge (4 sites), `/slack/send`,
+  WebSocket PTY notify, system-resource alerts, queue-processor
+  failure messages, WhatsApp bridge — reaches it directly.
+- `ChatV2Service` extends EventEmitter and emits `'chat_message'`
+  on every freshly persisted row; `chat.gateway.ts` subscribes here.
+  Legacy `ChatService.EventEmitter` wiring is gone.
+- The legacy `ChatService` class still lives in
+  `backend/src/services/chat/chat.service.ts` as a thin façade for
+  the 14 read call sites in `chat.controller.ts`. The façade is a
+  DTO translation layer between the legacy HTTP API surface
+  (`ChatMessage`/`ChatConversation` types the frontend consumes)
+  and the canonical chat-v2 storage. **It is not a parallel
+  storage** — every method delegates straight to ChatV2Service.
+- `~/.crewly/chat/*.json` is no longer written to.
+
+Removing the façade is a wash: each of its 14 callers would need to
+inline the same DTO translation. The proper next step is the
+frontend adopting the chat-v2 API surface so the legacy
+`ChatMessage`/`ChatConversation` types can be retired alongside the
+HTTP routes and the façade. That is a frontend-coordinated change
+outside the scope of this spec.
+
 Remaining Phase 6 work (façade-removal cleanup, separate PR):
 
 Phase 6 originally staged carefully because legacy `ChatService` is still
