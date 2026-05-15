@@ -1529,6 +1529,30 @@ describe('TaskPoolService', () => {
       await expect(service.updateItemStatus(wi.id, 'done'))
         .rejects.toThrow('Invalid status transition');
     });
+
+    it('silently no-ops on same-state update (idempotent, Steve 2026-05-15)', async () => {
+      // Reproduces the dogfood race where reconciler stale-pickup and
+      // SLA close both attempt `→ cancelled` on the same WI within ms.
+      // Before this guard, the second call threw "Invalid status
+      // transition: cancelled → cancelled" because WORK_ITEM_TRANSITIONS
+      // for `cancelled` is the empty set; with the guard it should be a
+      // silent no-op so callers can be resilient.
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.updateItemStatus(wi.id, 'cancelled', 'system', 'first cancel');
+
+      // Second call same-state — must NOT throw
+      await expect(
+        service.updateItemStatus(wi.id, 'cancelled', 'system', 'second cancel'),
+      ).resolves.toBeUndefined();
+
+      // cancelReason should be preserved from the first call (mutator
+      // doesn't re-run on the no-op path)
+      const items = await service.getAllItems();
+      const after = items.find((i) => i.id === wi.id);
+      expect(after!.status).toBe('cancelled');
+      expect(after!.cancelReason).toBe('first cancel');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -2074,11 +2098,8 @@ describe('TaskPoolService', () => {
 
   describe('cancelReason persistence (2026-05-15)', () => {
     it('persists the reason when transitioning to cancelled', async () => {
-      const wi = await service.addToPool({
-        type: 'delegate',
-        owner: 'orchestrator',
-        title: 'cancel-reason test',
-      });
+      const wi = makeWorkItem({ title: 'cancel-reason test', owner: 'orchestrator' });
+      await service.addToPool(wi);
 
       await service.updateItemStatus(
         wi.id,
@@ -2094,11 +2115,8 @@ describe('TaskPoolService', () => {
     });
 
     it('leaves cancelReason undefined when caller passes no reason', async () => {
-      const wi = await service.addToPool({
-        type: 'delegate',
-        owner: 'orchestrator',
-        title: 'no-reason cancel',
-      });
+      const wi = makeWorkItem({ title: 'no-reason cancel', owner: 'orchestrator' });
+      await service.addToPool(wi);
 
       await service.updateItemStatus(wi.id, 'cancelled', 'system');
 
@@ -2107,11 +2125,8 @@ describe('TaskPoolService', () => {
     });
 
     it('ignores the reason argument on non-cancel transitions', async () => {
-      const wi = await service.addToPool({
-        type: 'delegate',
-        owner: 'orchestrator',
-        title: 'reason-on-non-cancel',
-      });
+      const wi = makeWorkItem({ title: 'reason-on-non-cancel', owner: 'orchestrator' });
+      await service.addToPool(wi);
 
       // running is a valid transition target and is not 'cancelled' —
       // a reason passed in must NOT spuriously populate cancelReason.
@@ -2124,11 +2139,8 @@ describe('TaskPoolService', () => {
     // Code-review P0 follow-up (2026-05-15) — transitionStatus is the
     // path V3 SLA subscriber uses, and was missing reason propagation.
     it('transitionStatus persists cancelReason when target is cancelled', async () => {
-      const wi = await service.addToPool({
-        type: 'delegate',
-        owner: 'orchestrator',
-        title: 'transitionStatus-cancel-reason',
-      });
+      const wi = makeWorkItem({ title: 'transitionStatus-cancel-reason', owner: 'orchestrator' });
+      await service.addToPool(wi);
 
       await service.transitionStatus(
         wi.id,
@@ -2143,11 +2155,8 @@ describe('TaskPoolService', () => {
     });
 
     it('transitionStatus mutator can override cancelReason (escape hatch)', async () => {
-      const wi = await service.addToPool({
-        type: 'delegate',
-        owner: 'orchestrator',
-        title: 'mutator-override',
-      });
+      const wi = makeWorkItem({ title: 'mutator-override', owner: 'orchestrator' });
+      await service.addToPool(wi);
 
       await service.transitionStatus(
         wi.id,

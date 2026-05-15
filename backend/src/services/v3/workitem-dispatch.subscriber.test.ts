@@ -134,6 +134,43 @@ describe('WorkItemDispatchSubscriber', () => {
       const [url] = mockedAxios.post.mock.calls[0];
       expect(url).toContain(encodeURIComponent('agent name with space'));
     });
+
+    it('re-dispatches the same WI to a different target (Steve 2026-05-15 dogfood)', async () => {
+      // Concrete repro: WI 20a778bc was dispatched to ethan (claim
+      // expired without ethan starting work, WI requeued), then
+      // AutoClaim reassigned it to crewly-orc. Before this fix the
+      // dispatched-set short-circuited on workItemId alone and orc
+      // never received the [CREWLY-DISPATCH] message. Composite key
+      // restores the second dispatch.
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const wi = makeWorkItem({ id: 'wi-reassigned', target: 'agent-ethan' });
+
+      const first = await svc.dispatchTo(wi);
+      expect(first).toBe(true);
+
+      // Same WI, NEW target (reassignment scenario)
+      const reassigned = { ...wi, target: 'crewly-orc' };
+      const second = await svc.dispatchTo(reassigned);
+      expect(second).toBe(true);
+
+      // Confirm BOTH targets received the message
+      expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+      const [url1] = mockedAxios.post.mock.calls[0];
+      const [url2] = mockedAxios.post.mock.calls[1];
+      expect(url1).toContain('agent-ethan');
+      expect(url2).toContain('crewly-orc');
+    });
+
+    it('still dedups within (workItemId, target) — a third call to the SAME target is a no-op', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const wi = makeWorkItem({ id: 'wi-target-dedup', target: 'agent-foo' });
+
+      await svc.dispatchTo(wi);
+      await svc.dispatchTo(wi);
+      const third = await svc.dispatchTo(wi);
+      expect(third).toBe(false);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('event subscription', () => {

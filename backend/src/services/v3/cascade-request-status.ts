@@ -74,6 +74,39 @@ export interface CascadeDeps {
 }
 
 /**
+ * Verified-reply SLA resolution reasons — these tags appear in
+ * `WorkItem.metadata.slaResolvedReason` when
+ * `RequestSlaSubscriber.markResolved` deliberately cancels the
+ * respond_to_user tracker because the orchestrator answered the user.
+ * Such cancellations are NOT abandonments and should not propagate
+ * a `cancelled` status to the parent Request; the SLA subscriber's
+ * own `maybeCloseRequest` owns that transition.
+ *
+ * Keep in sync with `request-sla.subscriber.ts:VERIFIED_REPLY_REASONS`.
+ */
+const VERIFIED_SLA_REPLY_REASONS = new Set([
+  'orc_reply',
+  'orc_reply_recheck',
+  'chatv2_reply',
+  'workitem_decompose',
+]);
+
+/**
+ * Returns true when a WorkItem's metadata indicates the cancellation
+ * came from a verified-reply SLA auto-resolve (orc replied to the
+ * user, or chat-v2 saw an agent reply, or the WI was retired because
+ * the Request was decomposed into new WIs).
+ *
+ * @param metadata - WorkItem.metadata bag (may be undefined)
+ * @returns true if the cancellation should be ignored for parent
+ *   Request cascade purposes
+ */
+function isSlaResolvedByVerifiedReply(metadata: Record<string, unknown> | undefined): boolean {
+  const reason = metadata?.slaResolvedReason;
+  return typeof reason === 'string' && VERIFIED_SLA_REPLY_REASONS.has(reason);
+}
+
+/**
  * Recompute Request.status from the aggregate state of its child WIs
  * and persist any change.
  *
@@ -116,8 +149,33 @@ export async function cascadeRequestStatus(
     if (request.status === 'done' || request.status === 'cancelled') return;
 
     const allItems = await deps.taskPool.getAllItems();
-    const childItems = allItems.filter((wi) => wi.requestId === requestId);
-    if (childItems.length === 0) return;
+    const allChildItems = allItems.filter((wi) => wi.requestId === requestId);
+    if (allChildItems.length === 0) return;
+
+    // 2026-05-15 dogfood (Steve): Slack Requests with a single
+    // respond_to_user SLA tracker were ending up in `cancelled` →
+    // overwritten to `done` by RequestSlaSubscriber.maybeCloseRequest
+    // in a ~10ms race window. Root cause: `markResolved(orc_reply)`
+    // transitions the SLA tracker `queued → cancelled`, the
+    // `task:cancelled` event fires here, and the cascade sees
+    // `statuses=['cancelled']` → newStatus='cancelled'. Then SLA's
+    // own auto-close (next tick) flips it to `done` and the Request
+    // ends with inconsistent status events in its log.
+    //
+    // Filter out children that were cancelled by a verified-reply
+    // SLA resolution — those aren't real abandonments, the SLA
+    // closer owns the parent Request transition. If after filtering
+    // nothing remains, let the SLA path drive the close.
+    const childItems = allChildItems.filter(
+      (wi) => wi.status !== 'cancelled' || !isSlaResolvedByVerifiedReply(wi.metadata),
+    );
+    if (childItems.length === 0) {
+      logger.debug('Cascade skipped — only SLA-resolved cancellations remain', {
+        requestId,
+        slaResolvedCount: allChildItems.length,
+      });
+      return;
+    }
 
     const statuses = childItems.map((wi) => wi.status);
 

@@ -271,6 +271,75 @@ describe('TerminalGateway', () => {
 
 			expect(mockSession.resize).toHaveBeenCalledWith(120, 40);
 		});
+
+		it('logs a missing-session resize failure at debug, not error (Steve 2026-05-15)', () => {
+			// Frontend reconnect race: a resize event lands for a session
+			// that has already exited. The PTY backend throws "Session 'X'
+			// does not exist". This is normal lifecycle noise and should
+			// not surface as ERROR (314 such rows in one day's prod log).
+			const errorSpy = jest
+				.spyOn((gateway as any).logger, 'error')
+				.mockImplementation(() => {});
+			const debugSpy = jest
+				.spyOn((gateway as any).logger, 'debug')
+				.mockImplementation(() => {});
+
+			mockSessionBackend.resizeSession = jest.fn(() => {
+				throw new Error("Session 'crewly-orc' does not exist");
+			});
+
+			if (connectionCallback) {
+				connectionCallback(mockSocket as Socket);
+			}
+			const onMock = mockSocket.on as jest.Mock;
+			const resizeHandler = onMock.mock.calls.find(
+				(call: any[]) => call[0] === 'terminal_resize'
+			)?.[1];
+			resizeHandler({ sessionName: 'crewly-orc', cols: 80, rows: 24 });
+
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(debugSpy).toHaveBeenCalledWith(
+				'Error resizing terminal',
+				expect.objectContaining({
+					sessionName: 'crewly-orc',
+					error: expect.stringMatching(/does not exist/),
+				}),
+			);
+
+			errorSpy.mockRestore();
+			debugSpy.mockRestore();
+			delete mockSessionBackend.resizeSession;
+		});
+
+		it('still logs at ERROR for non-missing-session resize failures', () => {
+			const errorSpy = jest
+				.spyOn((gateway as any).logger, 'error')
+				.mockImplementation(() => {});
+
+			mockSessionBackend.resizeSession = jest.fn(() => {
+				throw new Error('PTY ioctl failed: EIO');
+			});
+
+			if (connectionCallback) {
+				connectionCallback(mockSocket as Socket);
+			}
+			const onMock = mockSocket.on as jest.Mock;
+			const resizeHandler = onMock.mock.calls.find(
+				(call: any[]) => call[0] === 'terminal_resize'
+			)?.[1];
+			resizeHandler({ sessionName: 'test-session', cols: 80, rows: 24 });
+
+			expect(errorSpy).toHaveBeenCalledWith(
+				'Error resizing terminal',
+				expect.objectContaining({
+					sessionName: 'test-session',
+					error: expect.stringMatching(/EIO/),
+				}),
+			);
+
+			errorSpy.mockRestore();
+			delete mockSessionBackend.resizeSession;
+		});
 	});
 
 	describe('request_terminal_state', () => {

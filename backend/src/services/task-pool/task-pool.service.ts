@@ -1584,6 +1584,22 @@ export class TaskPoolService {
       throw new Error(`WorkItem not found: ${workItemId}`);
     }
 
+    // Idempotent same-state no-op: the reconciler's stale-pickup rule
+    // and the SLA close path can both race to apply the same terminal
+    // status. Silently no-op here instead of throwing or logging a
+    // misleading "transitioned cancelled → cancelled" entry. (Steve
+    // 2026-05-15 dogfood — see the duplicate "Work item status
+    // updated from cancelled to cancelled" rows in
+    // crewly-2026-05-15.log around 15:48:56 / 16:05:55.)
+    if (item.status === newStatus) {
+      this.logger.debug('Skipped idempotent same-state status update', {
+        workItemId,
+        status: newStatus,
+        actorRole,
+      });
+      return;
+    }
+
     if (!isValidWorkItemTransition(item.status, newStatus)) {
       throw new Error(
         `Invalid status transition for WorkItem ${workItemId}: ${item.status} → ${newStatus}`,
@@ -1701,6 +1717,18 @@ export class TaskPoolService {
     const item = await this.storage.findWorkItem(workItemId);
     if (!item) {
       throw new Error(`WorkItem not found: ${workItemId}`);
+    }
+
+    // Idempotent same-state no-op (matches updateItemStatus behavior).
+    // Return the current item so callers chaining on the result don't
+    // see a spurious null. Steve 2026-05-15.
+    if (item.status === newStatus) {
+      this.logger.debug('Skipped idempotent same-state transition', {
+        workItemId,
+        status: newStatus,
+        actorRole,
+      });
+      return item;
     }
 
     if (!isValidWorkItemTransition(item.status, newStatus)) {

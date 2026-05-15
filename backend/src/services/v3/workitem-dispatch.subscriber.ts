@@ -82,10 +82,29 @@ export class WorkItemDispatchSubscriber {
   private eventBusService: { on: (event: string, handler: (...args: unknown[]) => void) => void } | null = null;
 
   /**
-   * WI ids already dispatched in this process lifetime. Reset on restart —
+   * Dispatch dedup keyed by `${workItemId}::${target}`. Reset on restart —
    * which is intentional, the startup backfill re-reads the pool.
+   *
+   * 2026-05-15 Steve dogfood: previously keyed by `workItemId` alone, which
+   * silently dropped re-dispatches after a WI was reassigned to a different
+   * target. Concrete repro from crewly-2026-05-15.log:
+   *   - 14:55:26 WI 20a778bc dispatched to strategy-ethan-c36c18bd
+   *   - ethan never started work, claim expired, WI requeued
+   *   - 15:36:55 AgentAutoClaim reassigned to crewly-orc
+   *   - dispatchTo short-circuited (dispatched.has('20a778bc') === true)
+   *   - orc never saw [CREWLY-DISPATCH], claim expired 13min later
+   *   - loop repeated
+   * The composite key fixes this: a re-target gets a fresh dispatch.
+   * Within a (workItemId, target) pair the dedup still holds, so the
+   * `workitem:queued` event and the AutoClaim post-claim hand-off don't
+   * double-fire on the same target.
    */
   private readonly dispatched = new Set<string>();
+
+  /** Composite dedup key — workItem id alone is not enough (see above). */
+  private dispatchKey(workItemId: string, target: string): string {
+    return `${workItemId}::${target}`;
+  }
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger(SERVICE_NAME);
@@ -170,7 +189,8 @@ export class WorkItemDispatchSubscriber {
   async dispatchTo(workItem: WorkItem): Promise<boolean> {
     if (!workItem.target) return false;
     if (SLA_TRACKER_ID_PATTERN.test(workItem.id)) return false;
-    if (this.dispatched.has(workItem.id)) return false;
+    const key = this.dispatchKey(workItem.id, workItem.target);
+    if (this.dispatched.has(key)) return false;
 
     const message = this.buildDispatchMessage(workItem);
 
@@ -183,7 +203,7 @@ export class WorkItemDispatchSubscriber {
           timeout: 5_000,
         },
       );
-      this.dispatched.add(workItem.id);
+      this.dispatched.add(key);
       this.logger.info('Dispatched WorkItem to target session', {
         workItemId: workItem.id,
         target: workItem.target,
