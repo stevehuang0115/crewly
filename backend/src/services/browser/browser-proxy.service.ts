@@ -343,6 +343,7 @@ export class BrowserProxyService {
     instance?: string,
     timeoutMs: number = BROWSER_BRIDGE_CONSTANTS.COMMAND_TIMEOUT_MS,
     agentName?: string,
+    agentSession?: string,
   ): Promise<BrowserCommandResponse> {
     if (this.state !== 'connected' || !this.ws) {
       throw new Error('Browser proxy not connected to relay');
@@ -361,11 +362,51 @@ export class BrowserProxyService {
       );
     }
 
+    // Issue #384 — Per-tab dispatch was previously bypassed on the
+    // proxy path. The direct-WS path uses `BrowserBridgeService.
+    // sendCommandForAgent` which auto-injects `params.tabId` from the
+    // agentTabBindings map; the proxy path silently forwarded without
+    // tabId and the Chrome Extension fell back to `tabs.query({active:
+    // true})` (the user's focused tab — wrong tab when the user
+    // switched away). Steve's 2026-04-30 demo bug: Olivia's clicks
+    // "stopped registering" after a tab switch.
+    //
+    // Mirror sendCommandForAgent here: if agentSession is supplied AND
+    // params has no explicit tabId, look up the binding from the
+    // shared BrowserBridgeService.agentTabBindings map and inject the
+    // bound tabId before forwarding. Explicit tabId still wins.
+    let resolvedParams = params ?? {};
+    if (
+      agentSession &&
+      resolvedParams &&
+      typeof (resolvedParams as { tabId?: unknown }).tabId !== 'number'
+    ) {
+      // Lazy import to avoid a circular dep at module-load time.
+      // BrowserBridgeService and BrowserProxyService are wired together
+      // by the controller but neither service should import the other
+      // eagerly.
+      const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+      const binding = BrowserBridgeService.getInstance().getBinding(agentSession);
+      if (binding) {
+        resolvedParams = { ...resolvedParams, tabId: binding.tabId };
+        this.logger.debug('Injected bound tabId on proxy path (#384)', {
+          agentSession,
+          tabId: binding.tabId,
+          tool,
+        });
+      } else {
+        this.logger.debug('No binding for agentSession on proxy path — Extension will fall back to active tab', {
+          agentSession,
+          tool,
+        });
+      }
+    }
+
     const id = `proxy-${++this.commandCounter}-${Date.now()}`;
     const payload = JSON.stringify({
       id,
       tool,
-      params: params ?? {},
+      params: resolvedParams,
       agentName,
     });
 
