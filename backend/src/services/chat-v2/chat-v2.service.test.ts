@@ -1139,4 +1139,127 @@ describe('ChatV2Service', () => {
       ).toThrow(/agentSession is required/);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // importLegacyConversation
+  // Spec: 2026-05-14-unified-chat-message-store.md Phase 5
+  // -------------------------------------------------------------------------
+
+  describe('importLegacyConversation', () => {
+    const sampleLegacy = {
+      conversation: { id: 'slack-D0AC7-1777130816-772509' },
+      messages: [
+        {
+          id: 'msg-a',
+          from: { type: 'user', name: 'You' },
+          content: 'hello',
+          timestamp: '2026-05-04T11:26:58.361Z',
+          metadata: { source: 'slack', userId: 'UG94JLNGK', channelId: 'D0AC7' },
+        },
+        {
+          id: 'msg-b',
+          from: { type: 'orchestrator', name: 'Orchestrator' },
+          content: 'hi back',
+          timestamp: '2026-05-04T11:27:01.000Z',
+          metadata: { source: 'slack' },
+        },
+        {
+          id: 'msg-c',
+          from: { type: 'system' },
+          content: 'system note',
+          timestamp: '2026-05-04T11:28:00.000Z',
+        },
+      ],
+    };
+
+    it('imports all rows on first run, dedups on second run', () => {
+      const first = service.importLegacyConversation(sampleLegacy);
+      expect(first.imported).toBe(3);
+      expect(first.deduped).toBe(0);
+      expect(first.channelId).toBe('slack-D0AC7-1777130816-772509');
+
+      // Re-run — every row must dedupe via clientMessageId
+      const second = service.importLegacyConversation(sampleLegacy);
+      expect(second.imported).toBe(0);
+      expect(second.deduped).toBe(3);
+      expect(second.channelId).toBe(first.channelId);
+
+      // No phantom rows
+      expect(service.countAllMessages()).toBe(3);
+    });
+
+    it('maps from.type correctly (user, orchestrator → agent, anything → system)', () => {
+      service.importLegacyConversation(sampleLegacy);
+      // Fetch via listMessages to inspect sender types
+      const messages = service.listMessages({
+        channelId: 'slack-D0AC7-1777130816-772509',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      expect(messages).toHaveLength(3);
+      expect(messages.map((m) => m.senderType)).toEqual(['user', 'agent', 'system']);
+      expect(messages[1].senderId).toBe('crewly-orc');
+      expect(messages[2].senderId).toBe('system');
+    });
+
+    it('preserves legacy metadata under explicit legacy* keys', () => {
+      service.importLegacyConversation(sampleLegacy);
+      const messages = service.listMessages({
+        channelId: 'slack-D0AC7-1777130816-772509',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      expect(messages[0].metadata).toMatchObject({
+        source: 'system',
+        legacySource: 'slack',
+        legacyMessageId: 'msg-a',
+        legacyTimestamp: '2026-05-04T11:26:58.361Z',
+      });
+    });
+
+    it('skips malformed rows without aborting the import', () => {
+      const conv = {
+        conversation: { id: 'slack-X-1' },
+        messages: [
+          { id: 'good', from: { type: 'user' }, content: 'kept' },
+          { id: '', from: { type: 'user' }, content: 'dropped — no id' } as any,
+          { id: 'bad-empty', from: { type: 'user' }, content: '' },
+          { id: 'no-content', from: { type: 'user' } } as any,
+          { id: 'good2', from: { type: 'user' }, content: 'kept2' },
+        ],
+      };
+      const result = service.importLegacyConversation(conv as any);
+      expect(result.imported).toBe(2);
+      expect(result.deduped).toBe(0);
+    });
+
+    it('rejects missing conversation.id', () => {
+      expect(() =>
+        service.importLegacyConversation({
+          conversation: { id: '' },
+          messages: [],
+        } as any),
+      ).toThrow(/conversation\.id is required/);
+    });
+
+    it('rejects non-array messages', () => {
+      expect(() =>
+        service.importLegacyConversation({
+          conversation: { id: 'x' },
+          messages: null,
+        } as any),
+      ).toThrow(/messages must be an array/);
+    });
+
+    it('extracts user id from legacy metadata when present', () => {
+      service.importLegacyConversation(sampleLegacy);
+      const messages = service.listMessages({
+        channelId: 'slack-D0AC7-1777130816-772509',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      // First message has metadata.userId = 'UG94JLNGK'
+      expect(messages[0].senderId).toBe('UG94JLNGK');
+    });
+  });
 });

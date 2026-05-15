@@ -490,6 +490,126 @@ export class ChatV2Service {
   }
 
   /**
+   * Phase 5 of unified-chat-message-store spec — idempotent import of one
+   * legacy conversation file (`~/.crewly/chat/<conversationId>.json`)
+   * into the chat-v2 SQLite store. Each legacy message becomes one
+   * `chat_messages` row keyed by a deterministic `clientMessageId` so
+   * re-running the import is safe — the underlying `MessageStore`
+   * dedups on `(channel_id, clientMessageId)`.
+   *
+   * Designed as a service method (not a free function) so the CLI
+   * migration script can call it per file and so callers can unit-test
+   * the mapping in isolation.
+   *
+   * The mapping:
+   *   - `conversation.id` → `chat_channels.id` (via
+   *     {@link ensureChannelForLegacyConversation}). `agentSession`
+   *     defaults to `'crewly-orc'` because every legacy conversation was
+   *     a DM between the user and the orchestrator.
+   *   - `messages[].from.type === 'user'` → `senderType: 'user'`
+   *   - `messages[].from.type === 'orchestrator'` (or 'agent') →
+   *     `senderType: 'agent'`, `senderId: 'crewly-orc'`
+   *   - Anything else → `senderType: 'system'`, `senderId: 'system'`
+   *   - `messages[].id` → `clientMessageId = 'legacy-' + msg.id` for
+   *     stable idempotency across re-runs.
+   *   - `messages[].metadata.source` (legacy slack/web) → carried
+   *     through; `recordTurn`'s required outer `metadata.source` is set
+   *     to `'system'` to identify the migration as the writer.
+   *
+   * @param input - Parsed legacy JSON (the entire file body)
+   * @returns Per-message outcome (imported vs deduped) + the channel id
+   *
+   * @example
+   * ```typescript
+   * const json = JSON.parse(await readFile(filePath, 'utf-8'));
+   * const result = chatV2.importLegacyConversation(json);
+   * console.log(`Imported ${result.imported} new, ${result.deduped} dedup`);
+   * ```
+   */
+  importLegacyConversation(input: {
+    conversation: { id: string };
+    messages: Array<{
+      id: string;
+      from: { type: string; name?: string };
+      content: string;
+      contentType?: string;
+      timestamp?: string;
+      metadata?: Record<string, unknown>;
+    }>;
+  }): { channelId: string; imported: number; deduped: number } {
+    if (!input?.conversation?.id) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'legacy conversation.id is required',
+      );
+    }
+    if (!Array.isArray(input.messages)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'legacy messages must be an array',
+      );
+    }
+
+    const channel = this.ensureChannelForLegacyConversation({
+      conversationId: input.conversation.id,
+      agentSession: 'crewly-orc',
+      name: input.conversation.id,
+    });
+
+    let imported = 0;
+    let deduped = 0;
+    for (const msg of input.messages) {
+      if (!msg?.id || typeof msg.content !== 'string' || msg.content.length === 0) {
+        // Skip malformed rows rather than failing the whole import.
+        continue;
+      }
+
+      const fromType = (msg.from?.type ?? '').toLowerCase();
+      let senderType: ChatSenderType;
+      let senderId: string;
+      if (fromType === 'user') {
+        senderType = 'user';
+        senderId =
+          (typeof msg.metadata?.userId === 'string' && msg.metadata.userId) ||
+          msg.from?.name ||
+          'legacy-user';
+      } else if (fromType === 'agent' || fromType === 'orchestrator') {
+        senderType = 'agent';
+        senderId = 'crewly-orc';
+      } else {
+        senderType = 'system';
+        senderId = 'system';
+      }
+
+      const result = this.recordTurn({
+        channelId: channel.id,
+        senderType,
+        senderId,
+        content: msg.content,
+        clientMessageId: `legacy-${msg.id}`,
+        metadata: {
+          source: 'system',
+          // Carry through legacy metadata for forensic completeness —
+          // future audits can still see "this row was originally a slack
+          // inbound" via metadata.legacySource etc.
+          legacySource: typeof msg.metadata?.source === 'string' ? msg.metadata.source : undefined,
+          legacyMessageId: msg.id,
+          legacyTimestamp: msg.timestamp,
+        },
+      });
+      if (result.deduped) {
+        deduped++;
+      } else {
+        imported++;
+      }
+    }
+
+    return { channelId: channel.id, imported, deduped };
+  }
+
+  /**
    * List channels owned by the caller.
    *
    * Phase C: extended with optional `type` + `teamId` filters so the
