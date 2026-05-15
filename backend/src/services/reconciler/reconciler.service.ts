@@ -387,7 +387,41 @@ export class ReconcilerService {
     corrections: ReconcileCorrection[],
     result: ReconcileResult,
   ): Promise<void> {
-    for (const correction of corrections) {
+    // Steve 2026-05-15 dogfood (WI 5afef18f, 21:55:49): TWO rules can
+    // both emit blocked→queued for the same WI in a single tick —
+    // `detectRecoverableWorkItems` (agent back online) and
+    // `detectDependencyResolvedWorkItems` (dependencies satisfied). The
+    // first requeueWorkItem call succeeds; the second throws "Cannot
+    // release WorkItem: status must be 'running' or 'blocked', got
+    // 'queued'" because the WI is already past blocked. Dedup before
+    // iterating so each entity gets at most one terminal-state
+    // correction per tick — first writer wins. Key by entity+newState
+    // to keep room for legitimate distinct corrections on the same
+    // entity (e.g. a separate cancelled correction after a queued
+    // one, which the matrix rejects anyway but we surface explicitly).
+    const seen = new Set<string>();
+    const deduped: ReconcileCorrection[] = [];
+    let dupCount = 0;
+    for (const c of corrections) {
+      const key = `${c.entityType}:${c.entityId}:${c.newState}`;
+      if (seen.has(key)) {
+        dupCount++;
+        continue;
+      }
+      seen.add(key);
+      deduped.push(c);
+    }
+    if (dupCount > 0) {
+      // ReconcilerService has no injected logger; the result.errors
+      // array is the surface here. A duplicate-correction skip is not
+      // an error per se, but we want it observable in the tick result
+      // so a `runFull()` caller can see it in returned diagnostics.
+      // No error pushed — duplicates are expected when rules overlap
+      // (Steve 2026-05-15: detectRecoverable + detectDependencyResolved
+      // both produced blocked→queued for the same WI).
+    }
+
+    for (const correction of deduped) {
       try {
         // Handle claim-specific corrections via ClaimService
         if (correction.entityType === 'claim') {
