@@ -4042,70 +4042,10 @@ describe('AgentRegistrationService', () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────────────────────────
-	// routeInProcessResponseToChat — Phase 2 dual-write to chat-v2
-	// Spec: 2026-05-14-unified-chat-message-store.md
-	// ──────────────────────────────────────────────────────────────────
-	describe('routeInProcessResponseToChat — dual-write to chat-v2', () => {
-		const flushAsync = async (): Promise<void> => {
-			for (let i = 0; i < 5; i++) {
-				await new Promise(resolve => setImmediate(resolve));
-			}
-		};
-
-		beforeEach(() => {
-			mockChatV2EnsureChannel.mockReset().mockReturnValue({ id: 'slack-D0AC7-1234' });
-			mockChatV2RecordTurn.mockReset().mockReturnValue({
-				message: { id: 'msg-1', content: 'auto-reply' },
-				deduped: false,
-			});
-		});
-
-		it('writes to chat-v2 via ensureChannel + recordTurn alongside the legacy gateway call', async () => {
-			(service as any).routeInProcessResponseToChat(
-				'crewly-orc',
-				'auto-reply text',
-				'slack-D0AC7-1234',
-			);
-			await flushAsync();
-
-			// Channel bridged from legacy conversationId — Phase 2 contract
-			expect(mockChatV2EnsureChannel).toHaveBeenCalledWith({
-				conversationId: 'slack-D0AC7-1234',
-				agentSession: 'crewly-orc',
-			});
-
-			// Canonical recordTurn fired with the required source tag
-			expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
-			const callArgs = mockChatV2RecordTurn.mock.calls[0][0];
-			expect(callArgs).toMatchObject({
-				channelId: 'slack-D0AC7-1234',
-				senderType: 'agent',
-				senderId: 'crewly-orc',
-				content: 'auto-reply text',
-				metadata: {
-					source: 'in-process-runtime',
-					runtime: 'crewly-agent',
-				},
-			});
-		});
-
-		it('survives chat-v2 failure without breaking the legacy chat write path', async () => {
-			mockChatV2EnsureChannel.mockImplementationOnce(() => {
-				throw new Error('chat-v2 db locked');
-			});
-
-			expect(() =>
-				(service as any).routeInProcessResponseToChat(
-					'crewly-orc',
-					'reply',
-					'slack-D0AC7-1234',
-				),
-			).not.toThrow();
-			await flushAsync();
-
-			// recordTurn never reached
-			expect(mockChatV2RecordTurn).not.toHaveBeenCalled();
-		});
-	});
+	// Phase 6β of unified-chat-message-store spec — the explicit
+	// chat-v2 dual-write tests have been removed because the route
+	// now writes through `ChatService` (a façade over
+	// `ChatV2Service`). The chat-v2 mock at module scope is kept so
+	// future tests can assert against `recordTurn` without opening a
+	// real SQLite database.
 });

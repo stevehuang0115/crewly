@@ -958,14 +958,6 @@ Just type naturally to chat with the orchestrator!`;
             },
           });
 
-          // Phase 3 dual-write to chat-v2 (fire-and-forget)
-          this.dualWriteSlackInboundToV2(
-            result.conversation.id,
-            enrichedMessage,
-            { channelId: context?.channelId, threadTs: context?.threadTs, userId: context?.userId },
-            'crewly-orc',
-          );
-
           try {
             this.messageQueueService.enqueue({
               content: enrichedMessage,
@@ -1043,14 +1035,6 @@ Just type naturally to chat with the orchestrator!`;
           channelId: context?.channelId,
         },
       });
-
-      // Phase 3 dual-write to chat-v2 (fire-and-forget)
-      this.dualWriteSlackInboundToV2(
-        result.conversation.id,
-        enrichedMessage,
-        { channelId: context?.channelId, threadTs: context?.threadTs, userId: context?.userId },
-        'crewly-orc',
-      );
 
       // Enqueue the message with a resolve callback for response routing.
       // The QueueProcessorService will call slackResolve() when the
@@ -1217,15 +1201,6 @@ Just type naturally to chat with the orchestrator!`;
             channelId: context?.channelId,
           },
         });
-
-        // Phase 3 dual-write to chat-v2 (fire-and-forget). Note the
-        // recipient agent is the auditor on this path, not orc.
-        this.dualWriteSlackInboundToV2(
-          result.conversation.id,
-          enrichedMessage,
-          { channelId: context?.channelId, threadTs: context?.threadTs, userId: context?.userId },
-          auditorSession,
-        );
 
         this.messageQueueService.enqueue({
           content: enrichedMessage,
@@ -2039,14 +2014,6 @@ Just type naturally to chat with the orchestrator!`;
           metadata: { source: 'slack', channelId: context?.channelId },
         });
 
-        // Phase 3 dual-write to chat-v2 (fire-and-forget)
-        this.dualWriteSlackInboundToV2(
-          chatResult.conversation.id,
-          enrichedMessage,
-          { channelId: context?.channelId, threadTs: context?.threadTs, userId: context?.userId },
-          sessionName,
-        );
-
         return new Promise<string>((resolve) => {
           let resolved = false;
           const timeoutId = setTimeout(() => {
@@ -2087,65 +2054,12 @@ Just type naturally to chat with the orchestrator!`;
     }
   }
 
-  /**
-   * Phase 3 of unified-chat-message-store spec — dual-write a Slack
-   * inbound user message to chat-v2 alongside the legacy
-   * `chatService.sendMessage` call. Idempotent at the channel level
-   * (ensureChannelForLegacyConversation reuses an existing row);
-   * dedup at the message level happens via clientMessageId when
-   * callers supply one — Slack inbound paths typically don't, so
-   * each user turn becomes a fresh row.
-   *
-   * Fire-and-forget: callers do NOT await this. Errors are swallowed
-   * and logged at debug level so the canonical-but-not-yet-primary
-   * write can fail without affecting the legacy ChatService path
-   * that the production message queue still depends on.
-   *
-   * @param conversationId - The chat conversation id (legacy/canonical bridge key)
-   * @param content - The Slack message content (post-enrichment, as we want
-   *   the same text the orc sees in its prompt)
-   * @param slackContext - Slack channel/thread metadata for audit trail
-   * @param agentSession - The agent the inbound is being routed to
-   */
-  private dualWriteSlackInboundToV2(
-    conversationId: string,
-    content: string,
-    slackContext: {
-      channelId?: string;
-      threadTs?: string;
-      userId?: string;
-    },
-    agentSession: string,
-  ): void {
-    if (!conversationId || conversationId.length === 0) {
-      return;
-    }
-    import('../chat-v2/chat-v2.singleton.js')
-      .then(({ getChatV2Service }) => {
-        const chatV2 = getChatV2Service();
-        const channel = chatV2.ensureChannelForLegacyConversation({
-          conversationId,
-          agentSession,
-        });
-        chatV2.recordTurn({
-          channelId: channel.id,
-          senderType: 'user',
-          senderId: slackContext.userId ?? 'slack-user',
-          content,
-          metadata: {
-            source: 'slack',
-            slackChannelId: slackContext.channelId,
-            slackThreadTs: slackContext.threadTs,
-          },
-        });
-      })
-      .catch((err) => {
-        this.logger.debug('Failed to dual-write Slack inbound to chat-v2 (non-fatal)', {
-          conversationId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-  }
+  // Phase 6β of unified-chat-message-store spec: the
+  // `dualWriteSlackInboundToV2` helper added in Phase 3 was removed
+  // because `ChatService.sendMessage` is now a thin façade over
+  // `ChatV2Service.recordTurn` — the legacy write call already
+  // persists to the canonical chat-v2 store. Keeping the helper
+  // would have produced duplicate `chat_messages` rows.
 }
 
 /**
