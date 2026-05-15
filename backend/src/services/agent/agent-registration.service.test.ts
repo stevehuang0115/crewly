@@ -128,6 +128,18 @@ jest.mock('../observability/agent-behavior-log.singleton.js', () => ({
 	})),
 }));
 
+// chat-v2 singleton — mocked so tests don't open a real SQLite DB and
+// so we can assert the Phase 2 canonical dual-write path. Default mocks
+// return permissive values; per-test overrides exercise error paths.
+const mockChatV2EnsureChannel = jest.fn();
+const mockChatV2RecordTurn = jest.fn();
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+	getChatV2Service: jest.fn(() => ({
+		ensureChannelForLegacyConversation: mockChatV2EnsureChannel,
+		recordTurn: mockChatV2RecordTurn,
+	})),
+}));
+
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
 		getInstance: jest.fn().mockReturnValue({
@@ -3874,6 +3886,11 @@ describe('AgentRegistrationService', () => {
 			mockTsqMarkReplied.mockReset();
 			mockMarkResolvedByThread.mockReset().mockResolvedValue(undefined);
 			mockBehaviorLogRecord.mockReset();
+			mockChatV2EnsureChannel.mockReset().mockReturnValue({ id: 'C123' });
+			mockChatV2RecordTurn.mockReset().mockReturnValue({
+				message: { id: 'msg-1', content: 'hello' },
+				deduped: false,
+			});
 		});
 
 		const flushAsync = async (): Promise<void> => {
@@ -4022,6 +4039,73 @@ describe('AgentRegistrationService', () => {
 			// Downstream SLA cascade still ran — the audit failure is
 			// non-fatal and must not break the bookkeeping chain.
 			expect(mockMarkResolvedByThread).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	// ──────────────────────────────────────────────────────────────────
+	// routeInProcessResponseToChat — Phase 2 dual-write to chat-v2
+	// Spec: 2026-05-14-unified-chat-message-store.md
+	// ──────────────────────────────────────────────────────────────────
+	describe('routeInProcessResponseToChat — dual-write to chat-v2', () => {
+		const flushAsync = async (): Promise<void> => {
+			for (let i = 0; i < 5; i++) {
+				await new Promise(resolve => setImmediate(resolve));
+			}
+		};
+
+		beforeEach(() => {
+			mockChatV2EnsureChannel.mockReset().mockReturnValue({ id: 'slack-D0AC7-1234' });
+			mockChatV2RecordTurn.mockReset().mockReturnValue({
+				message: { id: 'msg-1', content: 'auto-reply' },
+				deduped: false,
+			});
+		});
+
+		it('writes to chat-v2 via ensureChannel + recordTurn alongside the legacy gateway call', async () => {
+			(service as any).routeInProcessResponseToChat(
+				'crewly-orc',
+				'auto-reply text',
+				'slack-D0AC7-1234',
+			);
+			await flushAsync();
+
+			// Channel bridged from legacy conversationId — Phase 2 contract
+			expect(mockChatV2EnsureChannel).toHaveBeenCalledWith({
+				conversationId: 'slack-D0AC7-1234',
+				agentSession: 'crewly-orc',
+			});
+
+			// Canonical recordTurn fired with the required source tag
+			expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+			const callArgs = mockChatV2RecordTurn.mock.calls[0][0];
+			expect(callArgs).toMatchObject({
+				channelId: 'slack-D0AC7-1234',
+				senderType: 'agent',
+				senderId: 'crewly-orc',
+				content: 'auto-reply text',
+				metadata: {
+					source: 'in-process-runtime',
+					runtime: 'crewly-agent',
+				},
+			});
+		});
+
+		it('survives chat-v2 failure without breaking the legacy chat write path', async () => {
+			mockChatV2EnsureChannel.mockImplementationOnce(() => {
+				throw new Error('chat-v2 db locked');
+			});
+
+			expect(() =>
+				(service as any).routeInProcessResponseToChat(
+					'crewly-orc',
+					'reply',
+					'slack-D0AC7-1234',
+				),
+			).not.toThrow();
+			await flushAsync();
+
+			// recordTurn never reached
+			expect(mockChatV2RecordTurn).not.toHaveBeenCalled();
 		});
 	});
 });

@@ -343,7 +343,10 @@ export class AgentRegistrationService {
 		text: string,
 		conversationId: string,
 	): void {
-		// Lazy import to avoid circular dependencies at module load time
+		// LEGACY PATH — chatGateway.processNotifyMessage → ChatService
+		// (JSON files in ~/.crewly/chat/). Kept until Phase 5 data
+		// migration retires the JSON store; until then the legacy file
+		// is what the frontend chat-v1 readers consume.
 		import('../../websocket/chat.gateway.js')
 			.then(({ getChatGateway }) => {
 				const chatGateway = getChatGateway();
@@ -362,14 +365,61 @@ export class AgentRegistrationService {
 			})
 			.then((chatMessage) => {
 				if (chatMessage) {
-					this.logger.debug('Routed in-process agent response to chat', {
+					this.logger.debug('Routed in-process agent response to chat (legacy)', {
 						sessionName, conversationId,
 						messageId: typeof chatMessage === 'object' ? (chatMessage as unknown as Record<string, unknown>).id : undefined,
 					});
 				}
 			})
 			.catch((err) => {
-				this.logger.warn('Failed to route in-process agent response to chat', {
+				this.logger.warn('Failed to route in-process agent response to chat (legacy)', {
+					sessionName, conversationId,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+
+		// CANONICAL PATH (Phase 2 of unified-chat-message-store spec) —
+		// also write through ChatV2Service.recordTurn so that the chat-v2
+		// SQLite store accumulates the same history. Dual-write during
+		// the migration window means readers/migrations can verify parity
+		// before Phase 6 retires the legacy file path. Best-effort: a
+		// failure here logs and continues; the legacy write above is the
+		// authoritative path for now.
+		import('../chat-v2/chat-v2.singleton.js')
+			.then(({ getChatV2Service }) => {
+				const chatV2 = getChatV2Service();
+				if (!chatV2) {
+					this.logger.debug('ChatV2Service not available, skipping canonical recordTurn', {
+						sessionName, conversationId,
+					});
+					return null;
+				}
+				const channel = chatV2.ensureChannelForLegacyConversation({
+					conversationId,
+					agentSession: sessionName,
+				});
+				return chatV2.recordTurn({
+					channelId: channel.id,
+					senderType: 'agent',
+					senderId: sessionName,
+					content: text,
+					metadata: {
+						source: 'in-process-runtime',
+						runtime: 'crewly-agent',
+					},
+				});
+			})
+			.then((result) => {
+				if (result) {
+					this.logger.debug('Routed in-process agent response via chat-v2.recordTurn', {
+						sessionName, conversationId,
+						messageId: result.message.id,
+						deduped: result.deduped,
+					});
+				}
+			})
+			.catch((err) => {
+				this.logger.warn('Failed canonical recordTurn for in-process response (non-fatal)', {
 					sessionName, conversationId,
 					error: err instanceof Error ? err.message : String(err),
 				});
