@@ -450,6 +450,42 @@ describe('ReconcilerService', () => {
       expect(provider.applyCorrection).not.toHaveBeenCalled();
     });
 
+    it('dedupes corrections sharing entity+newState in one tick (Steve 2026-05-15)', async () => {
+      // Repro: WI 5afef18f at 21:55:49 — both `detectRecoverableWorkItems`
+      // (agent back online) AND `detectDependencyResolvedWorkItems`
+      // (dependencies satisfied) emitted blocked→queued for the same
+      // WI in the same tick. First requeueWorkItem succeeded; second
+      // threw "Cannot release ... got 'queued'" because the WI was no
+      // longer in `blocked`. Dedup must skip the second.
+      provider = createMockProvider({});
+      service = new ReconcilerService(provider);
+
+      const correction = {
+        entityType: 'work_item' as const,
+        entityId: 'wi-1',
+        previousState: 'blocked',
+        newState: 'queued',
+        reason: 'agent back online',
+        evidence: '',
+        timestamp: new Date().toISOString(),
+        id: 'c1',
+      };
+      const duplicate = { ...correction, id: 'c2', reason: 'deps resolved' };
+
+      await (service as any).applyCorrections([correction, duplicate], {
+        corrections: [],
+        workItemsRequeued: 0,
+        claimsRevoked: 0,
+        errors: [],
+        staleItemsCleaned: 0,
+        workItemsTimedOut: 0,
+      });
+
+      // Only ONE requeueWorkItem call despite two corrections — dedup wins.
+      expect(provider.requeueWorkItem).toHaveBeenCalledTimes(1);
+      expect(provider.requeueWorkItem).toHaveBeenCalledWith('wi-1');
+    });
+
     it('should handle correction application errors gracefully', async () => {
       const wi = makeWorkItem({
         status: 'running',
