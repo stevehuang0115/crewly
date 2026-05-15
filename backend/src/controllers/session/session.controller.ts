@@ -13,6 +13,7 @@ import { getSessionBackendSync, getSessionBackend, getSessionStatePersistence, c
 import { LoggerService } from '../../services/core/logger.service.js';
 import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
 import { RUNTIME_TYPES } from '../../constants.js';
+import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SessionController');
 
@@ -280,6 +281,43 @@ export async function getPreviousSessions(
 		const sessions = persistence.getRegisteredSessionsMap();
 		const backend = getSessionBackendSync();
 
+		// Steve 2026-05-15 dogfood: the Resume Sessions dialog was
+		// listing every previously-running agent (12+ rows on a typical
+		// restart) including marketing/think-tank members with zero
+		// queued WorkItems. The wake-gate at startTeamMember rejects
+		// those wakes with "pool has no queued/blocked WorkItem with
+		// target=<session>" — so resuming them via the dialog burns
+		// compute and produces failed wake warnings. Filter the resume
+		// list to sessions that have a non-terminal WI in the pool
+		// targeting them; idle agents stay dismissed and the user can
+		// manually start them from the Teams page if they want.
+		let targetsWithWork: Set<string> | null = null;
+		try {
+			const items = await TaskPoolService.getInstance().getAllItems();
+			targetsWithWork = new Set(
+				items
+					.filter(
+						(w) =>
+							typeof w.target === 'string' &&
+							w.target.length > 0 &&
+							w.status !== 'done' &&
+							w.status !== 'verified' &&
+							w.status !== 'cancelled' &&
+							w.status !== 'failed' &&
+							w.status !== 'rejected',
+					)
+					.map((w) => w.target as string),
+			);
+		} catch (err) {
+			// Pool unavailable — fall back to the legacy include-all
+			// behavior so the dialog still helps the user resume after a
+			// crash where the pool can't be loaded.
+			logger.warn('getPreviousSessions: pool read failed, skipping pool-filter', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+			targetsWithWork = null;
+		}
+
 		const previousSessions: Array<{
 			name: string;
 			role?: string;
@@ -290,15 +328,25 @@ export async function getPreviousSessions(
 
 		for (const [name, info] of sessions) {
 			// Only include sessions that don't have an active PTY
-			if (!backend?.sessionExists(name)) {
-				previousSessions.push({
-					name: info.name,
-					role: info.role,
-					teamId: info.teamId,
-					runtimeType: info.runtimeType,
-					hasResumeId: info.runtimeType === RUNTIME_TYPES.CLAUDE_CODE,
-				});
+			if (backend?.sessionExists(name)) continue;
+			// Pool-filter: skip sessions with no active WI targeting them.
+			// Orchestrator is excluded from the filter — it auto-starts
+			// independently of pool state and the frontend already filters
+			// it out of the dialog separately.
+			if (
+				targetsWithWork &&
+				info.role !== 'orchestrator' &&
+				!targetsWithWork.has(name)
+			) {
+				continue;
 			}
+			previousSessions.push({
+				name: info.name,
+				role: info.role,
+				teamId: info.teamId,
+				runtimeType: info.runtimeType,
+				hasResumeId: info.runtimeType === RUNTIME_TYPES.CLAUDE_CODE,
+			});
 		}
 
 		res.json({ success: true, data: { sessions: previousSessions } });
