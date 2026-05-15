@@ -222,10 +222,37 @@ describe('ChatService (Phase 6 façade over ChatV2Service)', () => {
     it('getMessages caps filter.limit at 1000 to prevent unbounded responses', async () => {
       const service = getChatService();
       await service.sendMessage({ content: 'x', conversationId: 'slack-A-CAP' });
-      // The cap is internal; we assert behavior is identical to a
-      // normal request — i.e. asking for 10_000 doesn't blow up.
-      const result = await service.getMessages({ conversationId: 'slack-A-CAP', limit: 10_000 });
-      expect(result).toHaveLength(1);
+      // Spy on the underlying chat-v2 call so we can verify the cap
+      // actually clamps — observing behavior end-to-end (i.e. result
+      // length) can't distinguish "limit honored" from "limit clamped"
+      // when fewer than 1000 rows exist in the channel.
+      const spy = jest.spyOn(chatV2, 'listMessages');
+      await service.getMessages({ conversationId: 'slack-A-CAP', limit: 10_000 });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][0]).toMatchObject({
+        channelId: 'slack-A-CAP',
+        limit: 1000,
+      });
+      spy.mockRestore();
+    });
+
+    it('getMessages passes the resolved limit through to chat-v2.listMessages', async () => {
+      const service = getChatService();
+      await service.sendMessage({ content: 'x', conversationId: 'slack-A-PASS' });
+      const spy = jest.spyOn(chatV2, 'listMessages');
+
+      await service.getMessages({ conversationId: 'slack-A-PASS', limit: 50 });
+      expect(spy.mock.calls[0][0]).toMatchObject({ limit: 50 });
+
+      spy.mockClear();
+      await service.getMessages({ conversationId: 'slack-A-PASS' });
+      expect(spy.mock.calls[0][0]).toMatchObject({ limit: 200 });
+
+      spy.mockClear();
+      await service.getMessages({ conversationId: 'slack-A-PASS', limit: 0 });
+      expect(spy.mock.calls[0][0]).toMatchObject({ limit: 200 });
+
+      spy.mockRestore();
     });
 
     it('getMessages ignores non-positive or non-finite filter.limit values', async () => {

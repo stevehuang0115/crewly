@@ -130,7 +130,11 @@ describe('v2ChannelToLegacy', () => {
 
   it('infers channelType from conversationId', () => {
     expect(v2ChannelToLegacy(channel, 0).channelType).toBe('slack');
-    expect(v2ChannelToLegacy({ ...channel, id: 'web-conv-abc' }, 0).channelType).toBe('chat');
+    // Non-slack ids fall through to the 'crewly_chat' default — see
+    // `inferChannelTypeFromConversationId` in chat.types.ts. Prior
+    // assertion expected the obsolete 'chat' literal which no longer
+    // exists in `CHAT_CHANNEL_TYPES`.
+    expect(v2ChannelToLegacy({ ...channel, id: 'web-conv-abc' }, 0).channelType).toBe('crewly_chat');
   });
 
   it('builds participantIds from owner + agentSession', () => {

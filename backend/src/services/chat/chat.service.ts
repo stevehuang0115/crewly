@@ -178,6 +178,13 @@ export class ChatService extends EventEmitter {
         typeof input.metadata?.clientMessageId === 'string'
           ? input.metadata.clientMessageId
           : undefined,
+      // Source resolution here is intentionally STRICTER than
+      // `recordViaFacade` (which uses `resolveLegacyRecordSource`).
+      // `sendMessage` always writes `senderType: 'user'`, so the only
+      // legitimate sources are 'web' or 'slack'. Caller-supplied values
+      // like 'reply-tool' or 'pty-runtime' are agent-reply tags and
+      // would be nonsensical on a user-authored row — `inferSource…`
+      // downgrades them to 'system' on purpose. Phase 6α follow-up #5.
       metadata: {
         ...((input.metadata ?? {}) as Record<string, unknown>),
         source: inferSourceFromLegacyMetadata(input.metadata),
