@@ -48,8 +48,6 @@ describe('openChatDatabase', () => {
       const names = rows.map((r) => r.name);
       expect(names).toEqual(
         expect.arrayContaining([
-          // Phase A renamed `uq_channel_agent_active` -> `uq_channel_agent_dm_active`
-          'uq_channel_agent_dm_active',
           'ix_channels_owner',
           'ix_channels_team',
           'uq_messages_channel_seq',
@@ -62,6 +60,10 @@ describe('openChatDatabase', () => {
       );
       // Legacy index name must not exist on fresh installs.
       expect(names).not.toEqual(expect.arrayContaining(['uq_channel_agent_active']));
+      // Unified-chat-store spec (Option B): the post-Phase-A 1:1 DM
+      // constraint was dropped so a single agent can participate in
+      // many concurrent channels. Fresh installs MUST NOT have it.
+      expect(names).not.toEqual(expect.arrayContaining(['uq_channel_agent_dm_active']));
     } finally {
       db.close();
     }
@@ -147,7 +149,12 @@ describe('openChatDatabase', () => {
     }
   });
 
-  it('enforces the uq_channel_agent_dm_active partial index for type=dm rows', () => {
+  it('allows multiple active dm channels for the same agent (unified-chat-store Option B)', () => {
+    // Replaces the previous test that asserted the 1:1 unique index was
+    // enforced. Per spec `2026-05-14-unified-chat-message-store.md` the
+    // index `uq_channel_agent_dm_active` was dropped so an agent can
+    // participate in N concurrent DM-style channels (one per Slack
+    // thread, one per web chat session, etc.).
     const db = openInMemory();
     try {
       const now = Date.now();
@@ -155,16 +162,18 @@ describe('openChatDatabase', () => {
         `INSERT INTO chat_channels (id, agent_session, owner_user_id, name, created_at)
          VALUES (?, ?, ?, ?, ?)`,
       );
-      insert.run('ch1', 'shared-agent', 'user-a', 'First', now);
+      // Three concurrent active DMs for the same agent — formerly a
+      // UNIQUE violation on the second insert. All must now succeed.
+      expect(() => {
+        insert.run('slack-D0AC7-1234', 'shared-agent', 'user-a', 'Slack thread 1', now);
+        insert.run('slack-D0AC7-5678', 'shared-agent', 'user-a', 'Slack thread 2', now);
+        insert.run('web-conv-abc', 'shared-agent', 'user-b', 'Web chat', now);
+      }).not.toThrow();
 
-      // Second active dm channel for the same agent must fail the unique index.
-      // Both rows default `type` to 'dm' so the partial-index WHERE clause
-      // (archived_at IS NULL AND type='dm') matches both.
-      expect(() => insert.run('ch2', 'shared-agent', 'user-a', 'Second', now)).toThrow(/UNIQUE/i);
-
-      // But once the first is archived, a second active binding is allowed.
-      db.prepare('UPDATE chat_channels SET archived_at = ? WHERE id = ?').run(now, 'ch1');
-      expect(() => insert.run('ch2', 'shared-agent', 'user-a', 'Second', now)).not.toThrow();
+      const rows = db
+        .prepare("SELECT id FROM chat_channels WHERE agent_session = 'shared-agent' ORDER BY id")
+        .all() as Array<{ id: string }>;
+      expect(rows.map((r) => r.id)).toEqual(['slack-D0AC7-1234', 'slack-D0AC7-5678', 'web-conv-abc']);
     } finally {
       db.close();
     }

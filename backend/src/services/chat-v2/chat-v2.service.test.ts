@@ -1034,4 +1034,109 @@ describe('ChatV2Service', () => {
       ).toThrow(ChatError);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // ensureChannelForLegacyConversation
+  // Spec: 2026-05-14-unified-chat-message-store.md Phase 2 (Option B)
+  // -------------------------------------------------------------------------
+
+  describe('ensureChannelForLegacyConversation', () => {
+    it('creates a fresh channel using the conversationId as the id', () => {
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-D0AC7-1700000000.000111',
+        agentSession: 'crewly-orc',
+      });
+
+      expect(ch.id).toBe('slack-D0AC7-1700000000.000111');
+      expect(ch.agentSession).toBe('crewly-orc');
+      expect(ch.type).toBe('dm');
+    });
+
+    it('is idempotent — second call returns the existing channel', () => {
+      const first = service.ensureChannelForLegacyConversation({
+        conversationId: 'web-conv-abc',
+        agentSession: 'crewly-orc',
+      });
+      const second = service.ensureChannelForLegacyConversation({
+        conversationId: 'web-conv-abc',
+        agentSession: 'crewly-orc',
+      });
+
+      expect(second.id).toBe(first.id);
+      expect(second.createdAt).toBe(first.createdAt);
+    });
+
+    it('allows the same agent to participate in MANY concurrent channels (the whole point)', () => {
+      // This is the post-Option-B contract: no `agent_already_bound`
+      // failure on the second / third / Nth channel for the same agent.
+      const a = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-thread-1',
+        agentSession: 'crewly-orc',
+      });
+      const b = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-thread-2',
+        agentSession: 'crewly-orc',
+      });
+      const c = service.ensureChannelForLegacyConversation({
+        conversationId: 'web-conv-xyz',
+        agentSession: 'crewly-orc',
+      });
+
+      expect([a.id, b.id, c.id]).toEqual([
+        'slack-thread-1',
+        'slack-thread-2',
+        'web-conv-xyz',
+      ]);
+    });
+
+    it('feeds directly into recordTurn — combined bridge flow', () => {
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-X-1234',
+        agentSession: 'crewly-orc',
+      });
+
+      const { message, deduped } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'Hello from auto-route',
+        metadata: { source: 'in-process-runtime', runtime: 'crewly-agent' },
+      });
+
+      expect(deduped).toBe(false);
+      expect(message.content).toBe('Hello from auto-route');
+      expect(message.senderType).toBe('agent');
+    });
+
+    it('defaults ownerUserId to "system" for server-internal callers', () => {
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'server-internal-conv',
+        agentSession: 'crewly-orc',
+      });
+      // The DTO doesn't expose ownerUserId directly; we verify via list
+      // filter which is scoped by owner.
+      const channels = service.listChannels({
+        principal: { userId: 'system', source: 'oss' },
+      });
+      expect(channels.some((c) => c.id === ch.id)).toBe(true);
+    });
+
+    it('rejects empty conversationId', () => {
+      expect(() =>
+        service.ensureChannelForLegacyConversation({
+          conversationId: '',
+          agentSession: 'crewly-orc',
+        }),
+      ).toThrow(/conversationId is required/);
+    });
+
+    it('rejects empty agentSession', () => {
+      expect(() =>
+        service.ensureChannelForLegacyConversation({
+          conversationId: 'slack-X-1',
+          agentSession: '',
+        }),
+      ).toThrow(/agentSession is required/);
+    });
+  });
 });

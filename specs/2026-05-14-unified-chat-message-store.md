@@ -243,24 +243,37 @@ If we naively map every legacy conversationId to a chat_channels row of type='dm
    - Pros: Cleanest separation of concerns; no overloading of existing fields.
    - Cons: Schema migration, more tables, more work. Pushes Phase 1 milestone further.
 
-**Recommendation (deferred to user / architect review):**
+**Decision (2026-05-14, user-approved): Option B — drop the 1:1 unique index.**
 
-Option C is the lowest-cost path that preserves chat-v2's existing contracts. Suggested mapping:
-- `chat_channels.id = "agent:" + agentSession` (one channel per agent)
-- `chat_messages.thread_id = legacy_conversation_id` (Slack thread ts or web conv id)
-- Migrate the read API to require `thread_id` for "single-thread" views; existing `getThreadHistory` already supports filtering by `threadId`.
+The user's mental model: "one agent participates in many threads, like an employee in many Slack channels". This matches legacy `ChatService` semantics exactly — each Slack thread or web chat session is its own conversation; an agent has N concurrent conversations.
 
-This requires:
-- `ChatV2Service.ensureAgentChannel(agentSession)` helper to lazy-create the per-agent channel
-- `recordTurn` callers always pass `threadId = legacy_conversation_id`
-- A read API method `getConversationHistory(agentSession, conversationId)` that combines the two lookups
+The chat-v2 Phase A `uq_channel_agent_dm_active` index was a UX-driven constraint from the assumption that a user would have ONE persistent DM channel with each agent. That assumption doesn't hold once Slack thread inbound is the primary surface (and never held for ephemeral web chat sessions either).
+
+**Resolution:**
+- `chat_channels.id = legacy_conversation_id` (e.g. `slack-D0AC7-1234`, `web-conv-abc`) — direct 1:1 mapping, no synthetic IDs
+- `chat_channels.type = 'dm'` for both Slack threads and web chat (both model an agent↔user conversation)
+- `chat_channels.agent_session = agentSession` (multiple rows per agent — that's the whole point)
+- `chat_channels.owner_user_id = 'system'` for server-internal creation paths; real user id when known via auth
+- **Drop** `uq_channel_agent_dm_active` partial index
+- Update `chat-db.test.ts` to assert the index is absent (was: assert it enforces)
+
+**New helper (Phase 2):**
+```typescript
+ChatV2Service.ensureChannelForLegacyConversation(args: {
+  conversationId: string;       // legacy id used as the channel.id
+  agentSession: string;
+  name?: string;                // display name; defaults to conversationId
+  ownerUserId?: string;         // defaults to 'system'
+}): ChatChannelDTO;             // existing channel if present, freshly-created otherwise
+```
+
+Idempotent. Phase 2 callers (in-process runtime) invoke it before each `recordTurn`.
 
 **Impact on phases:**
-- Phase 1 (this PR) is unaffected — `recordTurn` already accepts `threadId`.
-- Phase 2 (in-process migration) is blocked on picking a mapping option. The recommended Option C requires ~50 additional lines (the helper + updated routing).
-- Phase 5 data migration changes shape: each legacy `~/.crewly/chat/*.json` becomes N message rows under a per-agent channel, not a new channel row.
-
-**Action**: pause Phase 2 implementation until Option A / B / C / D is selected. Until then, the spec is correct in destination but the migration path needs this decision locked.
+- Phase 1 (this PR) is unaffected — `recordTurn` already works against an existing channel.
+- Phase 2 adds the helper + drops the index + dual-writes from `routeInProcessResponseToChat`.
+- Phase 3 (Slack) and Phase 4 (PTY) reuse the same helper.
+- Phase 5 data migration: each `~/.crewly/chat/*.json` becomes one `chat_channels` row (id = filename without `.json`) plus N `chat_messages` rows.
 
 ## Implementation Tracking
 

@@ -417,6 +417,79 @@ export class ChatV2Service {
   }
 
   /**
+   * Server-internal idempotent helper used by migration / bridge code to
+   * map a legacy conversationId (e.g. `slack-D0AC7-1234`, `web-conv-abc`)
+   * onto a chat-v2 channel row with the conversationId as the primary key.
+   *
+   * Unlike {@link createChannel}, this method:
+   *   - Returns the existing channel when one already lives at the given
+   *     id — idempotent for runtimes that call it before every recordTurn.
+   *   - Accepts a synthetic owner (`'system'`) for paths where no human
+   *     principal is on the call stack (PTY finish hooks, Slack inbound
+   *     bridge, in-process runtime auto-route).
+   *   - Sets `type='dm'` so the channel matches the conversation-per-thread
+   *     legacy model the user approved (spec Option B).
+   *
+   * The `agent_already_bound` failure mode that existed in chat-v2 Phase A
+   * does not apply — the `uq_channel_agent_dm_active` index was dropped
+   * per the unified-chat-message-store spec exactly so this helper can
+   * lazy-create N concurrent DM channels for a single agent.
+   *
+   * @param args - Legacy bridge args
+   * @returns The existing or freshly created channel DTO
+   * @throws {ChatError} `validation_error` on missing id / agentSession
+   *
+   * @example
+   * ```typescript
+   * // Called from `routeInProcessResponseToChat` before `recordTurn`:
+   * const channel = chatV2.ensureChannelForLegacyConversation({
+   *   conversationId: 'slack-D0AC7-1700000000.000111',
+   *   agentSession: 'crewly-orc',
+   * });
+   * chatV2.recordTurn({ channelId: channel.id, ... });
+   * ```
+   */
+  ensureChannelForLegacyConversation(args: {
+    conversationId: string;
+    agentSession: string;
+    /** Display name; defaults to the conversationId. */
+    name?: string;
+    /** Owner id; defaults to `'system'` for server-internal callers. */
+    ownerUserId?: string;
+  }): ChatChannelDTO {
+    const conversationId = (args.conversationId ?? '').trim();
+    if (conversationId.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'conversationId is required');
+    }
+    const agentSession = (args.agentSession ?? '').trim();
+    if (agentSession.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agentSession is required');
+    }
+
+    const existing = this.channels.getById(conversationId);
+    if (existing) {
+      return this.toChannelDTO(existing);
+    }
+
+    const name = (args.name ?? conversationId).trim();
+    const ownerUserId = (args.ownerUserId ?? 'system').trim();
+
+    const row = this.channels.create({
+      id: conversationId,
+      agentSession,
+      ownerUserId,
+      name,
+      purpose: null,
+      type: 'dm',
+      teamId: null,
+      projectId: null,
+      targetMemberId: null,
+      nowMs: this.now(),
+    });
+    return this.toChannelDTO(row);
+  }
+
+  /**
    * List channels owned by the caller.
    *
    * Phase C: extended with optional `type` + `teamId` filters so the
