@@ -404,6 +404,45 @@ export class RequestStatusUpdateSubscriber {
         continue;
       }
 
+      // Steve 2026-05-15 dogfood: heartbeat fired for the 智库 Request
+      // showing "5/7 完成, 进行中 1" right after Grace's user-visible
+      // Review landed. The "进行中 1" was orc's *internal Verify WI*
+      // for Grace's Review — internal bookkeeping the user can't act
+      // on. From the user's chat view this read as "system still
+      // pending on something" when in fact the deliverable was done.
+      //
+      // Filter to user-deliverable WIs (`type === 'delegate'`). Review
+      // / verify / cron_run / notify / reconcile / check / confirm
+      // are internal types — surfacing their pending status to the
+      // owner is noise. If every deliverable has reached a
+      // user-perceived terminal state (done / verified / done_by_worker
+      // / cancelled / failed / rejected), suppress the heartbeat — the
+      // owner already saw the deliverable land; the internal verify
+      // path will close the Request soon enough.
+      const deliverableWIs = childWIs.filter((wi) => wi.type === 'delegate');
+      const userTerminalStatuses = new Set<WorkItem['status']>([
+        'done',
+        'verified',
+        'done_by_worker',
+        'cancelled',
+        'failed',
+        'rejected',
+      ]);
+      if (
+        deliverableWIs.length > 0 &&
+        deliverableWIs.every((wi) => userTerminalStatuses.has(wi.status))
+      ) {
+        this.logger.debug(
+          'Heartbeat suppressed — all user-deliverable WIs reached terminal; only internal verify/review remains',
+          {
+            requestId: r.id,
+            deliverableCount: deliverableWIs.length,
+            internalInFlight: childWIs.length - deliverableWIs.length,
+          },
+        );
+        continue;
+      }
+
       const fingerprint = computeStateFingerprint(childWIs);
       const lastFp = this.lastHeartbeatFingerprint.get(r.id);
       if (lastFp === fingerprint) {
@@ -414,7 +453,14 @@ export class RequestStatusUpdateSubscriber {
         continue;
       }
 
-      const text = this.buildHeartbeatText(r, childWIs);
+      // Build heartbeat from deliverables only when we have any, so the
+      // count the owner sees matches what they care about (their actual
+      // work, not the system's verify bookkeeping). Falls back to the
+      // full childWIs only if the Request somehow has zero delegates —
+      // a malformed shape we should still report on rather than hide.
+      const heartbeatBasis =
+        deliverableWIs.length > 0 ? deliverableWIs : childWIs;
+      const text = this.buildHeartbeatText(r, heartbeatBasis);
       try {
         await this.slackPoster({ channelId: slackCtx.channelId, text, threadTs: slackCtx.threadTs });
         this.lastPostedAt.set(r.id, now);

@@ -395,6 +395,52 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     expect(posts[0].text).toContain('1');     // running
   });
 
+  it('suppresses heartbeat when all delegate WIs are user-terminal and only a Verify WI is in flight (Steve 2026-05-15)', async () => {
+    // Repro of the 智库 Request heartbeat that fired right after Grace
+    // turned in her Review — "5/7 完成, 进行中 1" where the "1" was
+    // orc's internal Verify WI for Grace's Review. From the owner's
+    // view the deliverable was done; the verify-WI is internal noise.
+    const wis = [
+      makeWI({ id: 'wi-plan', requestId: 'req-x', type: 'delegate', status: 'verified' }),
+      makeWI({ id: 'wi-exec', requestId: 'req-x', type: 'delegate', status: 'verified' }),
+      makeWI({ id: 'wi-review', requestId: 'req-x', type: 'delegate', status: 'done_by_worker' }),
+      // The internal Verify WI for the Review — type=review, running.
+      makeWI({
+        id: 'wi-review:verify:wi-review',
+        requestId: 'req-x',
+        type: 'review',
+        status: 'running',
+        target: 'crewly-orc',
+      }),
+    ];
+    const r = makeRequest({ id: 'req-x', status: 'running' });
+    const { sub, posts } = makeSubscriber({ request: r, pool: wis });
+
+    const posted = await sub.runHeartbeat();
+    expect(posted).toBe(0);
+    expect(posts).toHaveLength(0);
+  });
+
+  it('still emits heartbeat when at least one delegate WI is non-terminal (mixed state)', async () => {
+    // Counter-test: if a delegate WI is still genuinely in flight, the
+    // user DOES want the heartbeat. Filter must only suppress when
+    // every deliverable is terminal.
+    const wis = [
+      makeWI({ id: 'wi-1', requestId: 'req-y', type: 'delegate', status: 'verified' }),
+      makeWI({ id: 'wi-2', requestId: 'req-y', type: 'delegate', status: 'running', target: 'leo' }),
+      makeWI({ id: 'wi-3', requestId: 'req-y', type: 'review', status: 'queued', target: 'orc' }),
+    ];
+    const r = makeRequest({ id: 'req-y', status: 'running' });
+    const { sub, posts } = makeSubscriber({ request: r, pool: wis });
+
+    const posted = await sub.runHeartbeat();
+    expect(posted).toBe(1);
+    // Counts surface only deliverables (2 total): 1 done, 1 running.
+    // The review/verify WI does NOT inflate the "进行中" tally.
+    expect(posts[0].text).toContain('1/2');
+    expect(posts[0].text).toContain('进行中 1');
+  });
+
   it('skips Requests in terminal status', async () => {
     const r = makeRequest({ id: 'req-done', status: 'done' });
     const { sub, posts } = makeSubscriber({ request: r, pool: [makeWI({ requestId: 'req-done' })] });
@@ -608,12 +654,19 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     // — so the closer fired, the gate refused, and the Request logged
     // a confusing "stale Request close failed" warning every sweep.
     //
-    // Now the closer's terminal set is imported from work-item.types.ts
+    // The closer's terminal set is now imported from work-item.types.ts
     // (the canonical contract), so done_by_worker children short-circuit
-    // the all-terminal check and the closer skips entirely. The
-    // heartbeat post still fires (the user sees real progress: "1/2
-    // done, 0 in flight"), and the eventual verification → cascade
-    // path closes the Request properly.
+    // the all-terminal check and the closer skips entirely.
+    //
+    // 2026-05-15 follow-up: the heartbeat is ALSO suppressed when every
+    // deliverable is at a user-terminal state (done/verified/done_by_worker/
+    // cancelled/failed/rejected) — the owner already saw the deliverable
+    // land; the verify path is internal and shouldn't ping them again
+    // with a confusing "0 in flight" message that reads as "what's the
+    // system waiting on?". Both arms still hold: the Request stays open
+    // (closer didn't fire), AND the user doesn't get a spurious
+    // heartbeat. The eventual verification → cascade path closes the
+    // Request properly without any owner-visible noise in between.
     const wis = [
       makeWI({ id: 'wi-quinn', requestId: 'req-pending-verify', status: 'done_by_worker' }),
       makeWI({ id: 'wi-canc',  requestId: 'req-pending-verify', status: 'cancelled' }),
@@ -625,11 +678,10 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
 
     // Closer must NOT have fired.
     expect(requestStore.get('req-pending-verify')!.status).toBe('running');
-    // But the heartbeat itself still posts (Request IS in flight, the
-    // user wants to know the verify WI is the bottleneck).
-    expect(posted).toBe(1);
-    expect(posts).toHaveLength(1);
-    expect(posts[0].text).toContain('1/2');
+    // Heartbeat now also suppressed — both deliverables are at
+    // user-terminal states (done_by_worker + cancelled).
+    expect(posted).toBe(0);
+    expect(posts).toHaveLength(0);
   });
 
   it('does NOT close a Request whose child WI is failed (awaiting retry)', async () => {
