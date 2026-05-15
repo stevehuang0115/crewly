@@ -74,6 +74,14 @@ export interface WorkItem {
   result?: Record<string, unknown>;
   /** Error details if failed */
   error?: string;
+  /**
+   * Human-readable reason recorded when the item transitions to
+   * `cancelled`. Used by the activity timeline to surface WHY the
+   * cancellation happened (stale-pickup, parent cascade, manual
+   * cancel, etc.). Persisted on the backend by
+   * `TaskPoolService.updateItemStatus(..., reason)`.
+   */
+  cancelReason?: string;
   /** Number of retry attempts so far */
   retryCount: number;
   /** Maximum retries before permanent failure */
@@ -354,14 +362,21 @@ export function buildTimeline(item: WorkItem): TimelineEvent[] {
     });
   }
 
-  // Cancelled
+  // Cancelled — include the persisted `cancelReason` so the user sees
+  // WHY (stale-pickup timeout, parent cascade, manual cancel, etc.)
+  // rather than just "WorkItem was cancelled."
   if (item.status === 'cancelled') {
     const ts = item.completedAt || item.createdAt;
+    const reason = item.cancelReason;
+    const detail =
+      typeof reason === 'string' && reason.length > 0
+        ? `Cancelled: ${reason}`
+        : 'WorkItem was cancelled. (No reason recorded — likely cancelled before cancelReason persistence landed.)';
     events.push({
       id: `${item.id}-cancelled`,
       kind: 'status_change',
       label: 'CANCELLED',
-      detail: 'WorkItem was cancelled.',
+      detail,
       timestamp: ts,
       status: 'cancelled',
     });

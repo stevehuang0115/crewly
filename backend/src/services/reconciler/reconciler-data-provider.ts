@@ -384,9 +384,15 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     try {
       if (correction.entityType === 'work_item') {
         const pool = TaskPoolService.getInstance();
+        // Forward the reconciler's reason (e.g. "queued for 61 minutes
+        // without pickup", "Cascade cancel: ancestor failed") through
+        // to the WorkItem so it persists alongside the status flip.
+        // The activity timeline reads this field for cancelled items.
         await pool.updateItemStatus(
           correction.entityId,
           correction.newState as WorkItem['status'],
+          'system',
+          correction.reason,
         );
         this.logger.info('Applied work item correction', {
           workItemId: correction.entityId,
