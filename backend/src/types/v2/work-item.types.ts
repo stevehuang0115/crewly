@@ -197,6 +197,14 @@ export interface WorkItem {
   result?: Record<string, unknown>;
   /** Error details if failed */
   error?: string;
+  /**
+   * Human-readable reason recorded when the item transitions to
+   * `cancelled`. Surfaces in the work-item activity timeline so the
+   * cancellation isn't an opaque event ("WorkItem was cancelled.").
+   * Sources include: reconciler stale-pickup detection, mission
+   * cascade, parent-cancel ripple, manual user cancel, etc.
+   */
+  cancelReason?: string;
   /** Number of retry attempts so far */
   retryCount: number;
   /** Maximum retries before permanent failure */

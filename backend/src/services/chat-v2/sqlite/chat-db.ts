@@ -227,13 +227,15 @@ CREATE INDEX IF NOT EXISTS ix_queue_pending
  * harmless no-op (`CREATE INDEX IF NOT EXISTS`).
  */
 export const CHAT_V2_PHASE_A_INDEX_SQL = `
--- Phase A (SEALED §3.1): the 1:1 agent-binding only applies to type='dm'
--- channels. type='channel' rows have agent_session='' and many such rows
--- can coexist for the same team; the partial index intentionally excludes
--- them so the unique constraint doesn't fire on multi-agent channels.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_channel_agent_dm_active
-  ON chat_channels(agent_session)
-  WHERE archived_at IS NULL AND type = 'dm';
+-- Phase A (SEALED §3.1) used to define uq_channel_agent_dm_active
+-- enforcing 1:1 agent<->DM-channel binding. That constraint was dropped
+-- per the unified-chat-message-store spec (2026-05-14 §"Phase 2 design
+-- discovery" → Option B): legacy ChatService models "one conversation
+-- per Slack thread or web chat session", so an agent participates in
+-- N concurrent DM-style channels. Dropping the index removes the
+-- agent_already_bound (409) failure that would otherwise block
+-- migration of the legacy multi-thread model. Existing databases get
+-- the drop applied in applyPhaseAColumnUpgrades.
 
 -- Phase A (SEALED §3.1): scoped lookup for "all channels in team T" and
 -- "project P channels". Indexes by team first because team-scoped reads
@@ -329,6 +331,7 @@ export function applyPhaseAColumnUpgrades(db: ChatDatabase): {
   channelsAdded: string[];
   messagesAdded: string[];
   legacyIndexDropped: boolean;
+  phaseADmIndexDropped: boolean;
 } {
   const channelsAdded: string[] = [];
   for (const spec of CHAT_CHANNELS_PHASE_A_COLUMNS) {
@@ -365,12 +368,31 @@ export function applyPhaseAColumnUpgrades(db: ChatDatabase): {
     legacyIndexDropped = true;
   }
 
+  // Unified-chat-message-store spec (2026-05-14 §"Phase 2 design
+  // discovery" → Option B): drop the post-Phase-A
+  // `uq_channel_agent_dm_active` partial index. The legacy ChatService
+  // models "one conversation per Slack thread or web chat session"
+  // — N concurrent channels per agent. The 1:1 DM-binding the index
+  // enforced would block migration. Existing fresh installs since
+  // the spec was merged no longer create it (see CHAT_V2_PHASE_A_INDEX_SQL).
+  const phaseADmIdx = db
+    .prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'index' AND name = 'uq_channel_agent_dm_active'`,
+    )
+    .get() as { name: string } | undefined;
+  let phaseADmIndexDropped = false;
+  if (phaseADmIdx) {
+    db.exec('DROP INDEX IF EXISTS uq_channel_agent_dm_active');
+    phaseADmIndexDropped = true;
+  }
+
   // Now that all Phase A columns are guaranteed to exist, create the
   // Phase A indexes that reference them. Idempotent — `CREATE INDEX IF NOT
   // EXISTS` makes this a no-op on subsequent boots.
   db.exec(CHAT_V2_PHASE_A_INDEX_SQL);
 
-  return { channelsAdded, messagesAdded, legacyIndexDropped };
+  return { channelsAdded, messagesAdded, legacyIndexDropped, phaseADmIndexDropped };
 }
 
 // ---------------------------------------------------------------------------

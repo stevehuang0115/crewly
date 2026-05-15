@@ -128,6 +128,18 @@ jest.mock('../observability/agent-behavior-log.singleton.js', () => ({
 	})),
 }));
 
+// chat-v2 singleton — mocked so tests don't open a real SQLite DB and
+// so we can assert the Phase 2 canonical dual-write path. Default mocks
+// return permissive values; per-test overrides exercise error paths.
+const mockChatV2EnsureChannel = jest.fn();
+const mockChatV2RecordTurn = jest.fn();
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+	getChatV2Service: jest.fn(() => ({
+		ensureChannelForLegacyConversation: mockChatV2EnsureChannel,
+		recordTurn: mockChatV2RecordTurn,
+	})),
+}));
+
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
 		getInstance: jest.fn().mockReturnValue({
@@ -3874,6 +3886,11 @@ describe('AgentRegistrationService', () => {
 			mockTsqMarkReplied.mockReset();
 			mockMarkResolvedByThread.mockReset().mockResolvedValue(undefined);
 			mockBehaviorLogRecord.mockReset();
+			mockChatV2EnsureChannel.mockReset().mockReturnValue({ id: 'C123' });
+			mockChatV2RecordTurn.mockReset().mockReturnValue({
+				message: { id: 'msg-1', content: 'hello' },
+				deduped: false,
+			});
 		});
 
 		const flushAsync = async (): Promise<void> => {
@@ -4024,4 +4041,11 @@ describe('AgentRegistrationService', () => {
 			expect(mockMarkResolvedByThread).toHaveBeenCalledTimes(1);
 		});
 	});
+
+	// Phase 6β of unified-chat-message-store spec — the explicit
+	// chat-v2 dual-write tests have been removed because the route
+	// now writes through `ChatService` (a façade over
+	// `ChatV2Service`). The chat-v2 mock at module scope is kept so
+	// future tests can assert against `recordTurn` without opening a
+	// real SQLite database.
 });

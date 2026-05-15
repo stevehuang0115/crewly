@@ -384,7 +384,12 @@ export class MissionExecutorService {
 
     let cancelled = 0;
     for (const wi of cancelableItems) {
-      await taskPool.updateItemStatus(wi.id, 'cancelled');
+      await taskPool.updateItemStatus(
+        wi.id,
+        'cancelled',
+        'system',
+        `Mission replan: phase '${currentPhase}' superseded`,
+      );
       cancelled++;
     }
 

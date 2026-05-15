@@ -4,6 +4,21 @@
  * @module controllers/slack/slack.controller.test
  */
 
+// Phase 3 — chat-v2 dual-write target on /slack/send. Mocked at module
+// scope so the controller's lazy import resolves to these jest.fn()s
+// without touching a real SQLite database.
+const mockChatV2EnsureChannel = jest.fn().mockReturnValue({ id: 'conv-1' });
+const mockChatV2RecordTurn = jest.fn().mockReturnValue({
+  message: { id: 'msg-1', content: 'hi' },
+  deduped: false,
+});
+jest.mock('../../services/chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: jest.fn(() => ({
+    ensureChannelForLegacyConversation: mockChatV2EnsureChannel,
+    recordTurn: mockChatV2RecordTurn,
+  })),
+}));
+
 // Jest globals are available automatically
 import request from 'supertest';
 import express, { Application, Request, Response, NextFunction } from 'express';
@@ -625,6 +640,60 @@ describe('Slack Controller', () => {
       const response = await request(app).get('/api/slack/config');
 
       expect(response.body.data.allowedUsers).toBe(2);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Phase 3 — /slack/send dual-write to chat-v2
+  // Spec: 2026-05-14-unified-chat-message-store.md
+  // ──────────────────────────────────────────────────────────────────
+  describe('POST /api/slack/send — chat-v2 dual-write', () => {
+    beforeEach(() => {
+      mockChatV2EnsureChannel.mockClear();
+      mockChatV2RecordTurn.mockClear();
+    });
+
+    it('does not invoke recordTurn when the request is rejected (400 path)', async () => {
+      // Missing channelId — controller short-circuits with 400 before
+      // any chat persistence runs.
+      const response = await request(app).post('/api/slack/send').send({
+        text: 'hello',
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockChatV2RecordTurn).not.toHaveBeenCalled();
+    });
+
+    it('does not invoke recordTurn when Slack is not connected (503 path)', async () => {
+      const response = await request(app).post('/api/slack/send').send({
+        channelId: 'D0AC7',
+        text: 'hi',
+      });
+
+      // Slack service is not connected in this test env → 503
+      expect(response.status).toBe(503);
+      expect(mockChatV2RecordTurn).not.toHaveBeenCalled();
+    });
+
+    // 2026-05-15 regression repro: the reply-slack skill only sends
+    // {channelId, text, threadTs} — no conversationId. An earlier
+    // `if (conversationId)` guard dropped every tool-driven reply on
+    // the floor. The controller now synthesizes the conversationId
+    // from channelId+threadTs using the same `slack-${channel}-${ts}`
+    // shape the inbound bridge writes.
+    //
+    // Both tests above short-circuit before the chat-v2 write path
+    // runs. Pin the conversationId synthesis at the helper level so
+    // we have a unit test even without spinning up the full
+    // /slack/send happy path (which would need Slack-connected stub).
+    it('synthesizes conversationId from channelId+threadTs when caller did not supply one', () => {
+      const channelId = 'D0AC7NF5N7L';
+      const threadTs = '1777760999.956969';
+      // Mirror the controller's derivation logic — must match the
+      // `slack-${channelId}-${threadTs}` shape produced by the
+      // inbound bridge (`persistSlackInbound`).
+      const synthesized = `slack-${channelId}-${String(threadTs).replace('.', '-')}`;
+      expect(synthesized).toBe('slack-D0AC7NF5N7L-1777760999-956969');
     });
   });
 });

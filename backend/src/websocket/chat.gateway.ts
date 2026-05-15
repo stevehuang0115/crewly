@@ -8,16 +8,17 @@
  */
 
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { getChatService, ChatService } from '../services/chat/chat.service.js';
+import { getChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
+import type { ChatV2Service } from '../services/chat-v2/chat-v2.service.js';
+import type { ChatMessageDTO } from '../services/chat-v2/types.js';
+import {
+  SYSTEM_PRINCIPAL,
+  v2MessageToLegacy,
+  v2ChannelToLegacy,
+  senderToV2,
+} from '../services/chat-v2/legacy-dto.utils.js';
 import { LoggerService, ComponentLogger } from '../services/core/logger.service.js';
-import type {
-  ChatMessage,
-  ChatConversation,
-  ChatSender,
-  ChatMessageEvent,
-  ChatTypingEvent,
-  ConversationUpdatedEvent,
-} from '../types/chat.types.js';
+import type { ChatMessage, ChatSender } from '../types/chat.types.js';
 
 /**
  * Chat Gateway class for WebSocket-based chat messaging.
@@ -31,7 +32,7 @@ import type {
 export class ChatGateway {
   private io: SocketIOServer;
   private logger: ComponentLogger;
-  private chatService: ChatService;
+  private chatV2: ChatV2Service;
   private initialized = false;
 
   /**
@@ -42,26 +43,19 @@ export class ChatGateway {
   constructor(io: SocketIOServer) {
     this.io = io;
     this.logger = LoggerService.getInstance().createComponentLogger('ChatGateway');
-    this.chatService = getChatService();
+    this.chatV2 = getChatV2Service();
   }
 
   /**
    * Initialize the chat gateway.
    *
-   * Sets up event listeners from ChatService and WebSocket handlers.
+   * Subscribes to chat-v2 message events and wires the
+   * client-facing WebSocket handlers.
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Ensure ChatService is initialized
-    if (!this.chatService.isInitialized()) {
-      await this.chatService.initialize();
-    }
-
-    // Set up ChatService event listeners
-    this.setupChatServiceListeners();
-
-    // Set up WebSocket event handlers
+    this.setupChatV2Listeners();
     this.setupWebSocketHandlers();
 
     this.initialized = true;
@@ -69,40 +63,17 @@ export class ChatGateway {
   }
 
   /**
-   * Set up listeners for ChatService events to broadcast to WebSocket clients.
+   * Subscribe to ChatV2Service events and broadcast to WebSocket clients.
+   * Phase 6c of the unified-chat-message-store spec — replaces the
+   * legacy ChatService EventEmitter wiring.
    */
-  private setupChatServiceListeners(): void {
-    // Forward chat messages to all connected clients
-    this.chatService.on('chat_message', (event: ChatMessageEvent) => {
-      this.logger.debug('Broadcasting chat_message', { messageId: event.data.id });
+  private setupChatV2Listeners(): void {
+    this.chatV2.on('chat_message', (dto: ChatMessageDTO) => {
+      const legacy = v2MessageToLegacy(dto);
+      this.logger.debug('Broadcasting chat_message', { messageId: legacy.id });
       this.broadcast('chat_message', {
         type: 'chat_message',
-        data: event.data,
-        timestamp: new Date().toISOString(),
-      });
-    });
-
-    // Forward typing indicators
-    this.chatService.on('chat_typing', (event: ChatTypingEvent) => {
-      this.logger.debug('Broadcasting chat_typing', {
-        conversationId: event.data.conversationId,
-        isTyping: event.data.isTyping,
-      });
-      this.broadcast('chat_typing', {
-        type: 'chat_typing',
-        data: event.data,
-        timestamp: new Date().toISOString(),
-      });
-    });
-
-    // Forward conversation updates
-    this.chatService.on('conversation_updated', (event: ConversationUpdatedEvent) => {
-      this.logger.debug('Broadcasting conversation_updated', {
-        conversationId: event.data.id,
-      });
-      this.broadcast('conversation_updated', {
-        type: 'conversation_updated',
-        data: event.data,
+        data: legacy,
         timestamp: new Date().toISOString(),
       });
     });
@@ -129,13 +100,17 @@ export class ChatGateway {
 
         // Send current conversation if requested
         if (conversationId) {
-          const conversation = await this.chatService.getConversation(conversationId);
-          if (conversation) {
+          try {
+            const channel = this.chatV2.getChannel(conversationId, SYSTEM_PRINCIPAL);
+            const messageCount = this.chatV2.countChannelMessages(conversationId, SYSTEM_PRINCIPAL);
             socket.emit('chat_conversation', {
               type: 'chat_conversation',
-              data: conversation,
+              data: v2ChannelToLegacy(channel, messageCount),
               timestamp: new Date().toISOString(),
             });
+          } catch {
+            // Channel not found / unauthorized — silently skip; the
+            // client will see no chat_conversation event.
           }
         }
 
@@ -223,24 +198,25 @@ export class ChatGateway {
     if (!hasResponseMarker) return null;
 
     try {
-      // Extract and add as chat message
-      const message = await this.chatService.addAgentMessage(
+      const channel = this.chatV2.ensureChannelForLegacyConversation({
         conversationId,
-        output,
-        {
-          type: 'orchestrator',
-          id: sessionId,
-          name: 'Orchestrator',
-        },
-        { sessionId }
-      );
+        agentSession: 'crewly-orc',
+      });
+      const { message } = this.chatV2.recordTurn({
+        channelId: channel.id,
+        senderType: 'agent',
+        senderId: sessionId,
+        content: output,
+        metadata: { source: 'pty-runtime', sessionId },
+      });
+      const legacyMessage = v2MessageToLegacy(message);
 
       this.logger.debug('Added agent message to chat', {
-        messageId: message.id,
+        messageId: legacyMessage.id,
         conversationId,
       });
 
-      return message;
+      return legacyMessage;
     } catch (error) {
       this.logger.error('Failed to process terminal output for chat', {
         sessionId,
@@ -270,23 +246,29 @@ export class ChatGateway {
     metadata?: Record<string, unknown>
   ): Promise<ChatMessage | null> {
     try {
-      const message = await this.chatService.addDirectMessage(
+      const channel = this.chatV2.ensureChannelForLegacyConversation({
         conversationId,
+        agentSession: 'crewly-orc',
+      });
+      const { message } = this.chatV2.recordTurn({
+        channelId: channel.id,
+        senderType: 'agent',
+        senderId: sessionId,
         content,
-        {
-          type: 'orchestrator',
-          id: sessionId,
-          name: 'Orchestrator',
+        metadata: {
+          source: 'in-process-runtime',
+          sessionId,
+          ...(metadata ?? {}),
         },
-        { sessionId, ...metadata }
-      );
+      });
+      const legacyMessage = v2MessageToLegacy(message);
 
       this.logger.debug('Added notify message to chat', {
-        messageId: message.id,
+        messageId: legacyMessage.id,
         conversationId,
       });
 
-      return message;
+      return legacyMessage;
     } catch (error) {
       this.logger.error('Failed to process notify message for chat', {
         sessionId,
@@ -306,14 +288,7 @@ export class ChatGateway {
    * @param isTyping - Whether the orchestrator is typing
    */
   emitOrchestratorTyping(conversationId: string, isTyping: boolean): void {
-    this.chatService.emitTypingIndicator(
-      conversationId,
-      {
-        type: 'orchestrator',
-        name: 'Orchestrator',
-      },
-      isTyping
-    );
+    this.broadcastTyping(conversationId, { type: 'orchestrator', name: 'Orchestrator' }, isTyping);
   }
 
   /**
@@ -324,7 +299,33 @@ export class ChatGateway {
    * @param isTyping - Whether the agent is typing
    */
   emitAgentTyping(conversationId: string, sender: ChatSender, isTyping: boolean): void {
-    this.chatService.emitTypingIndicator(conversationId, sender, isTyping);
+    this.broadcastTyping(conversationId, sender, isTyping);
+  }
+
+  /**
+   * Emit a typing indicator via the WebSocket broadcast channel.
+   * Phase 6c: typing indicators were previously emitted on the
+   * legacy ChatService EventEmitter; with that retired, the gateway
+   * sources them directly. Typing is transient and never persisted,
+   * so no chat-v2 write is involved.
+   *
+   * @param conversationId - Conversation ID
+   * @param sender - Sender descriptor
+   * @param isTyping - Whether the sender is typing
+   */
+  private broadcastTyping(
+    conversationId: string,
+    sender: ChatSender,
+    isTyping: boolean,
+  ): void {
+    // Resolve sender type via the shared mapper so the wire shape
+    // matches what existing subscribers expect.
+    senderToV2(sender);
+    this.broadcast('chat_typing', {
+      type: 'chat_typing',
+      data: { conversationId, sender, isTyping },
+      timestamp: new Date().toISOString(),
+    });
   }
 
   /**

@@ -21,7 +21,13 @@
 
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { MessageQueueService } from './message-queue.service.js';
-import type { ChatService } from '../chat/chat.service.js';
+import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
+import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
+import {
+  SYSTEM_PRINCIPAL,
+  v2MessageToLegacy,
+  v2ChannelToLegacy,
+} from '../chat-v2/legacy-dto.utils.js';
 import type { ChatMessage } from '../../types/chat.types.js';
 import { MESSAGE_REPLAY_CONSTANTS, MESSAGE_SOURCES, type MessageSource } from '../../constants.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
@@ -65,24 +71,22 @@ export interface ReplayResult {
 export class MessageReplayService {
   private logger: ComponentLogger;
   private messageQueueService: MessageQueueService;
-  private chatService: ChatService;
+  private chatV2: ChatV2Service;
   private crewlyHome: string;
 
   /**
    * Create a new MessageReplayService.
    *
    * @param messageQueueService - The message queue to enqueue replayed messages into
-   * @param chatService - The chat service to scan for unreplied messages
    * @param crewlyHome - Path to the crewly home directory (e.g. ~/.crewly)
    */
   constructor(
     messageQueueService: MessageQueueService,
-    chatService: ChatService,
-    crewlyHome: string
+    crewlyHome: string,
   ) {
     this.logger = LoggerService.getInstance().createComponentLogger('MessageReplay');
     this.messageQueueService = messageQueueService;
-    this.chatService = chatService;
+    this.chatV2 = getChatV2Service();
     this.crewlyHome = crewlyHome;
   }
 
@@ -138,10 +142,13 @@ export class MessageReplayService {
         replayWindowStart,
       });
 
-      // Step 2: Get all active conversations
-      const conversations = await this.chatService.getConversations({
-        includeArchived: false,
-      });
+      // Step 2: Get all active conversations (chat-v2 channels)
+      const conversations = this.chatV2
+        .listChannels({ principal: SYSTEM_PRINCIPAL })
+        .filter((c) => !c.archivedAt)
+        .map((c) =>
+          v2ChannelToLegacy(c, this.chatV2.countChannelMessages(c.id, SYSTEM_PRINCIPAL)),
+        );
 
       if (conversations.length === 0) {
         this.logger.debug('No active conversations found, skipping replay');
@@ -158,11 +165,19 @@ export class MessageReplayService {
       const unrepliedMessages: Array<{ conversationId: string; message: ChatMessage }> = [];
 
       for (const conversation of conversations) {
-        const messages = await this.chatService.getMessages({
-          conversationId: conversation.id,
-          after: replayWindowStart,
+        // Pull recent message page from chat-v2 then DTO-convert + filter
+        // by replayWindowStart locally (chat-v2's cursor pagination is
+        // by seq/created_at, but the legacy filter used an ISO date).
+        const v2Messages = this.chatV2.listMessages({
+          channelId: conversation.id,
+          principal: SYSTEM_PRINCIPAL,
           limit: 100,
-        });
+          direction: 'forward',
+        }).messages;
+        const cutoffMs = new Date(replayWindowStart).getTime();
+        const messages = v2Messages
+          .filter((m) => m.createdAt >= cutoffMs)
+          .map(v2MessageToLegacy);
 
         // Find user messages that have no orchestrator reply after them
         const userMessages = this.findUnrepliedUserMessages(messages);

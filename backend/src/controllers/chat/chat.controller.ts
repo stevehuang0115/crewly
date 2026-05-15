@@ -13,6 +13,12 @@ import {
   MessageValidationError,
   ConversationNotFoundError,
 } from '../../services/chat/chat.service.js';
+// Phase 6c — chat.controller.ts still imports the legacy ChatService
+// façade. Behaviour-neutral: the façade is a thin shim over
+// ChatV2Service (single storage, single write primitive). The 14
+// call sites below will be replaced one endpoint at a time in a
+// follow-up cleanup PR; doing so does not change runtime
+// architecture, only the import surface.
 import { sanitizeMessages, sanitizeMessage } from '../../services/chat/chat-sanitizer.service.js';
 import { getChatHighlightsService } from '../../services/chat/chat-highlights.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';

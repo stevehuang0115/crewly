@@ -2071,4 +2071,96 @@ describe('TaskPoolService', () => {
       }
     });
   });
+
+  describe('cancelReason persistence (2026-05-15)', () => {
+    it('persists the reason when transitioning to cancelled', async () => {
+      const wi = await service.addToPool({
+        type: 'delegate',
+        owner: 'orchestrator',
+        title: 'cancel-reason test',
+      });
+
+      await service.updateItemStatus(
+        wi.id,
+        'cancelled',
+        'system',
+        'WorkItem has been queued for 61 minutes without pickup',
+      );
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.cancelReason).toBe(
+        'WorkItem has been queued for 61 minutes without pickup',
+      );
+    });
+
+    it('leaves cancelReason undefined when caller passes no reason', async () => {
+      const wi = await service.addToPool({
+        type: 'delegate',
+        owner: 'orchestrator',
+        title: 'no-reason cancel',
+      });
+
+      await service.updateItemStatus(wi.id, 'cancelled', 'system');
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.cancelReason).toBeUndefined();
+    });
+
+    it('ignores the reason argument on non-cancel transitions', async () => {
+      const wi = await service.addToPool({
+        type: 'delegate',
+        owner: 'orchestrator',
+        title: 'reason-on-non-cancel',
+      });
+
+      // running is a valid transition target and is not 'cancelled' —
+      // a reason passed in must NOT spuriously populate cancelReason.
+      await service.updateItemStatus(wi.id, 'running', 'system', 'should be ignored');
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.cancelReason).toBeUndefined();
+    });
+
+    // Code-review P0 follow-up (2026-05-15) — transitionStatus is the
+    // path V3 SLA subscriber uses, and was missing reason propagation.
+    it('transitionStatus persists cancelReason when target is cancelled', async () => {
+      const wi = await service.addToPool({
+        type: 'delegate',
+        owner: 'orchestrator',
+        title: 'transitionStatus-cancel-reason',
+      });
+
+      await service.transitionStatus(
+        wi.id,
+        'cancelled',
+        'system',
+        undefined,
+        'SLA auto-resolved: orc_reply',
+      );
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.cancelReason).toBe('SLA auto-resolved: orc_reply');
+    });
+
+    it('transitionStatus mutator can override cancelReason (escape hatch)', async () => {
+      const wi = await service.addToPool({
+        type: 'delegate',
+        owner: 'orchestrator',
+        title: 'mutator-override',
+      });
+
+      await service.transitionStatus(
+        wi.id,
+        'cancelled',
+        'system',
+        (it) => {
+          it.cancelReason = 'mutator wins';
+        },
+        'default-from-param',
+      );
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.cancelReason).toBe('mutator wins');
+    });
+  });
 });

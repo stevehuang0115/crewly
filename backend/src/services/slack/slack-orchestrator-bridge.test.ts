@@ -25,6 +25,17 @@ jest.mock('../orchestrator/index.js', () => ({
   triggerOrchestratorSetup: jest.fn().mockResolvedValue({ success: false, error: 'not wired' }),
 }));
 
+// Phase 3 — chat-v2 dual-write target. Mocked so the bridge can fire
+// `dualWriteSlackInboundToV2` without opening a real SQLite database.
+const mockChatV2EnsureChannel = jest.fn();
+const mockChatV2RecordTurn = jest.fn();
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: jest.fn(() => ({
+    ensureChannelForLegacyConversation: mockChatV2EnsureChannel,
+    recordTurn: mockChatV2RecordTurn,
+  })),
+}));
+
 // Mock the slack image service
 jest.mock('./slack-image.service.js', () => ({
   getSlackImageService: jest.fn().mockReturnValue({
@@ -2263,4 +2274,10 @@ describe('SlackOrchestratorBridge', () => {
       });
     });
   });
+
+  // Phase 6β of unified-chat-message-store spec — the
+  // `dualWriteSlackInboundToV2` helper was deleted because
+  // `ChatService.sendMessage` is now a façade over
+  // `ChatV2Service.recordTurn`. The chat-v2 jest.mock at module scope
+  // is retained for any future re-instrumentation of the bridge.
 });

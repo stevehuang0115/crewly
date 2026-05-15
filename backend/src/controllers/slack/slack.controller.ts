@@ -236,23 +236,49 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       /* observability is best-effort */
     }
 
-    // Persist orchestrator/agent replies to chat store so they appear in the Chat UI.
-    // Without this, replies sent via reply_slack only go to Slack and are invisible
-    // in the frontend thread detail panel.
-    if (conversationId) {
+    // Persist orchestrator/agent replies to the chat store so they appear
+    // in the Chat UI. Phase 6c of unified-chat-message-store spec: the
+    // call site now invokes the canonical `ChatV2Service.recordTurn`
+    // directly (the legacy `ChatService.addDirectMessage` façade has
+    // been retired).
+    //
+    // 2026-05-15 follow-up: the reply-slack skill only sends
+    // `{channelId, text, threadTs}` (no `conversationId`), so an
+    // earlier `if (conversationId)` guard silently dropped every
+    // tool-driven reply on the floor. Synthesize a conversationId
+    // from `channelId + threadTs` using the same format the inbound
+    // bridge writes (`slack-${channelId}-${threadTs}`) so the agent
+    // reply and the user inbound land on the same chat-v2 channel.
+    const resolvedConversationId: string | undefined =
+      (typeof conversationId === 'string' && conversationId.length > 0
+        ? conversationId
+        : undefined) ??
+      (typeof channelId === 'string' && typeof threadTs === 'string'
+        ? `slack-${channelId}-${String(threadTs).replace('.', '-')}`
+        : undefined);
+    if (resolvedConversationId) {
       try {
-        const { getChatService } = await import('../../services/chat/chat.service.js');
-        const chatService = getChatService();
-        await chatService.addDirectMessage(
-          conversationId,
-          text,
-          {
-            type: 'orchestrator',
-            id: senderSessionName || 'orchestrator',
-            name: senderSessionName ? senderSessionName.split('-').slice(1, 3).join('-') : 'Orchestrator',
+        const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+        const chatV2 = getChatV2Service();
+        const agentSession =
+          typeof senderSessionName === 'string' && senderSessionName.length > 0
+            ? senderSessionName
+            : 'crewly-orc';
+        const channel = chatV2.ensureChannelForLegacyConversation({
+          conversationId: resolvedConversationId,
+          agentSession,
+        });
+        chatV2.recordTurn({
+          channelId: channel.id,
+          senderType: 'agent',
+          senderId: agentSession,
+          content: typeof text === 'string' ? text : String(text),
+          metadata: {
+            source: 'reply-tool',
+            slackChannelId: typeof channelId === 'string' ? channelId : undefined,
+            slackThreadTs: typeof threadTs === 'string' ? threadTs : undefined,
           },
-          { source: 'slack', slackChannelId: channelId, slackThreadTs: threadTs },
-        );
+        });
       } catch {
         // Non-fatal — Slack delivery succeeded, chat persistence is best-effort
       }

@@ -2280,4 +2280,72 @@ describe('B4 — DeepSeek tool_choice passthrough regression', () => {
     expect(callArgs).toHaveProperty('tools');
     expect(callArgs).not.toHaveProperty('toolChoice');
   });
+
+  // ──────────────────────────────────────────────────────────────────
+  // 2026-05-15 — thread isolation per Slack thread / chat thread
+  // Goal: "一个 Slack thread 代表一个 chat thread, 不同 Slack
+  // thread 之间不会串联在一起."
+  //
+  // The runner now keeps a Map<conversationKey, ConversationState>
+  // so the LLM context the model sees for thread A never contains
+  // turns from thread B. The conversationKey is the chat-v2 channel
+  // id (e.g. `slack-D0AC7-1777760999-956969`).
+  // ──────────────────────────────────────────────────────────────────
+  describe('thread isolation (per-conversation state)', () => {
+    it('keeps message histories separate across conversation keys', async () => {
+      // Conversation A — two turns. `run(message, conversationId)`
+      // is positional; conversationId is the second arg.
+      await runner.run('hello from A', 'slack-D0AC7-thread-A');
+      await runner.run('still in A', 'slack-D0AC7-thread-A');
+
+      // Conversation B — one turn
+      await runner.run('hello from B', 'slack-D0AC7-thread-B');
+
+      // Inspect the messages the LLM saw for the third call (B's
+      // run). It must contain ONLY B's user message, never A's.
+      const lastCallArgs = mockGenerateText.mock.calls[
+        mockGenerateText.mock.calls.length - 1
+      ]?.[0] as { messages: Array<{ role: string; content: string }> };
+      const userMessagesSeenByB = lastCallArgs.messages.filter(
+        (m) => m.role === 'user',
+      );
+      expect(userMessagesSeenByB.some((m) => m.content === 'hello from B')).toBe(
+        true,
+      );
+      expect(userMessagesSeenByB.some((m) => m.content === 'hello from A')).toBe(
+        false,
+      );
+      expect(userMessagesSeenByB.some((m) => m.content === 'still in A')).toBe(
+        false,
+      );
+
+      // Two conversation keys are now live.
+      expect(runner.getConversationCount()).toBe(2);
+    });
+
+    it('routes runtime-internal messages (no conversationId) to __default__', async () => {
+      await runner.run('a scheduled-check ping with no thread identity');
+      // First-time creation under the default key — count is 1.
+      expect(runner.getConversationCount()).toBe(1);
+
+      await runner.run('another no-id ping');
+      // Same default bucket — count stays 1.
+      expect(runner.getConversationCount()).toBe(1);
+    });
+
+    it('reuses an existing state when the same conversationId comes back', async () => {
+      await runner.run('first', 'web-conv-x');
+      await runner.run('second', 'web-conv-x');
+
+      // The second run's messages array (seen by the LLM) carries
+      // the first turn — proves we're not creating fresh state per
+      // run for a returning conversation.
+      const secondCall = mockGenerateText.mock.calls[1]?.[0] as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      const userMsgs = secondCall.messages.filter((m) => m.role === 'user');
+      expect(userMsgs.map((m) => m.content)).toEqual(['first', 'second']);
+      expect(runner.getConversationCount()).toBe(1);
+    });
+  });
 });

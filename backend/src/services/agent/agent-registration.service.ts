@@ -343,7 +343,10 @@ export class AgentRegistrationService {
 		text: string,
 		conversationId: string,
 	): void {
-		// Lazy import to avoid circular dependencies at module load time
+		// LEGACY PATH — chatGateway.processNotifyMessage → ChatService
+		// (JSON files in ~/.crewly/chat/). Kept until Phase 5 data
+		// migration retires the JSON store; until then the legacy file
+		// is what the frontend chat-v1 readers consume.
 		import('../../websocket/chat.gateway.js')
 			.then(({ getChatGateway }) => {
 				const chatGateway = getChatGateway();
@@ -362,7 +365,7 @@ export class AgentRegistrationService {
 			})
 			.then((chatMessage) => {
 				if (chatMessage) {
-					this.logger.debug('Routed in-process agent response to chat', {
+					this.logger.debug('Routed in-process agent response to chat (legacy)', {
 						sessionName, conversationId,
 						messageId: typeof chatMessage === 'object' ? (chatMessage as unknown as Record<string, unknown>).id : undefined,
 					});
@@ -374,6 +377,13 @@ export class AgentRegistrationService {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			});
+
+		// Phase 6β of unified-chat-message-store spec: the explicit
+		// chat-v2 recordTurn call that lived here during Phases 2-3
+		// was removed because `ChatService` is now a thin façade over
+		// `ChatV2Service` — the `processNotifyMessage` call above
+		// already writes through to chat-v2 internally. Keeping both
+		// paths would produce duplicate rows.
 	}
 
 	/**

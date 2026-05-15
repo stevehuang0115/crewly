@@ -746,13 +746,22 @@ export class RequestSlaSubscriber {
       const wi = await this.findWorkItemWithRetry(tracked.workItemId);
       if (wi && !TERMINAL_WI_STATUSES.has(wi.status)) {
         const target = pickResolveTarget(wi.status);
-        await this.taskPool.transitionStatus(tracked.workItemId, target, 'system', (item) => {
-          item.metadata = {
-            ...(item.metadata ?? {}),
-            slaResolvedReason: reason,
-            slaResolvedAt: new Date().toISOString(),
-          };
-        });
+        // Surface the SLA reason as cancelReason when the target is
+        // 'cancelled' so the activity timeline shows WHY (instead of
+        // an opaque "WorkItem was cancelled.").
+        await this.taskPool.transitionStatus(
+          tracked.workItemId,
+          target,
+          'system',
+          (item) => {
+            item.metadata = {
+              ...(item.metadata ?? {}),
+              slaResolvedReason: reason,
+              slaResolvedAt: new Date().toISOString(),
+            };
+          },
+          target === 'cancelled' ? `SLA auto-resolved: ${reason}` : undefined,
+        );
         this.logger.info('SLA WorkItem auto-resolved', {
           workItemId: tracked.workItemId,
           requestId,
@@ -1344,13 +1353,19 @@ export class RequestSlaSubscriber {
       // is illegal per WORK_ITEM_TRANSITIONS. Route queued WIs to
       // `cancelled`; running WIs go to `failed` as before.
       const target = pickFailTarget(wi.status);
-      await this.taskPool.transitionStatus(workItemId, target, 'system', (item) => {
-        item.metadata = {
-          ...(item.metadata ?? {}),
-          slaResolvedReason: 'escalation_timeout',
-          slaResolvedAt: new Date().toISOString(),
-        };
-      });
+      await this.taskPool.transitionStatus(
+        workItemId,
+        target,
+        'system',
+        (item) => {
+          item.metadata = {
+            ...(item.metadata ?? {}),
+            slaResolvedReason: 'escalation_timeout',
+            slaResolvedAt: new Date().toISOString(),
+          };
+        },
+        target === 'cancelled' ? 'SLA escalation timeout' : undefined,
+      );
       this.logger.info('SLA escalation orphan WI auto-closed', {
         workItemId,
         requestId,

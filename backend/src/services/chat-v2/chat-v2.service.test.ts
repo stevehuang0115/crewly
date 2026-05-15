@@ -836,4 +836,705 @@ describe('ChatV2Service', () => {
       expect(() => service.countAllMessages()).not.toThrow();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // recordTurn — canonical server-internal write entry
+  // Spec: 2026-05-14-unified-chat-message-store.md (Phase 1)
+  // -------------------------------------------------------------------------
+
+  describe('recordTurn', () => {
+    it('persists an agent turn and stamps metadata.source', () => {
+      const ch = createSam();
+
+      const { message, deduped } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'Hello!',
+        metadata: { source: 'in-process-runtime', runtime: 'crewly-agent' },
+      });
+
+      expect(deduped).toBe(false);
+      expect(message.content).toBe('Hello!');
+      expect(message.senderType).toBe('agent');
+      expect(message.senderId).toBe('crewly-orc');
+      // metadata.source must be carried through to storage — audit trail
+      expect(message.metadata).toMatchObject({
+        source: 'in-process-runtime',
+        runtime: 'crewly-agent',
+      });
+    });
+
+    it('persists a user turn for Slack inbound', () => {
+      const ch = createSam();
+
+      const { message } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'user',
+        senderId: 'slack-U0XYZ',
+        content: 'hi orc',
+        metadata: {
+          source: 'slack',
+          slackChannelId: 'D0AC7',
+          slackThreadTs: '1700000000.000111',
+        },
+      });
+
+      expect(message.senderType).toBe('user');
+      expect(message.metadata).toMatchObject({
+        source: 'slack',
+        slackChannelId: 'D0AC7',
+      });
+    });
+
+    it('is idempotent via clientMessageId — second call returns deduped=true', () => {
+      const ch = createSam();
+      const clientId = 'agent-finish-2026-05-14T22:30:00Z';
+
+      const first = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'one',
+        clientMessageId: clientId,
+        metadata: { source: 'in-process-runtime' },
+      });
+      const second = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'one',  // same content
+        clientMessageId: clientId,
+        metadata: { source: 'in-process-runtime' },
+      });
+
+      expect(first.deduped).toBe(false);
+      expect(second.deduped).toBe(true);
+      expect(second.message.id).toBe(first.message.id);
+      expect(service.countAllMessages()).toBe(1);
+    });
+
+    it('rejects empty content (400)', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: '',
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(ChatError);
+    });
+
+    it('rejects missing metadata.source (audit trail required)', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: 'hi',
+          // @ts-expect-error — deliberately omitting source to test runtime guard
+          metadata: { runtime: 'crewly-agent' },
+        }),
+      ).toThrow(/metadata\.source is required/);
+    });
+
+    it('rejects unknown metadata.source values (closed enum)', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: 'hi',
+          // @ts-expect-error — invalid source string at compile + runtime
+          metadata: { source: 'made-up-source' },
+        }),
+      ).toThrow(/unknown metadata\.source/);
+    });
+
+    it('rejects unknown senderType', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          // @ts-expect-error
+          senderType: 'robot',
+          senderId: 'crewly-orc',
+          content: 'hi',
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(/unknown senderType/);
+    });
+
+    it('rejects empty senderId', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: '',
+          content: 'hi',
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(/senderId is required/);
+    });
+
+    it('rejects unknown channelId (channel_not_found)', () => {
+      expect(() =>
+        service.recordTurn({
+          channelId: 'no-such-channel',
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: 'hi',
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(ChatError);
+    });
+
+    it('accepts all RECORD_TURN_SOURCES values', () => {
+      const ch = createSam();
+      const sources = [
+        'web',
+        'slack',
+        'pty-runtime',
+        'in-process-runtime',
+        'reply-tool',
+        'system',
+      ] as const;
+
+      for (const source of sources) {
+        const { message } = service.recordTurn({
+          channelId: ch.id,
+          senderType: 'system',
+          senderId: 'system',
+          content: `msg from ${source}`,
+          metadata: { source },
+        });
+        expect(message.metadata).toMatchObject({ source });
+      }
+
+      expect(service.countAllMessages()).toBe(sources.length);
+    });
+
+    it('rejects oversized content with payload_too_large', () => {
+      const ch = createSam();
+      const huge = 'x'.repeat(service.config.maxMessageBytes + 1);
+
+      expect(() =>
+        service.recordTurn({
+          channelId: ch.id,
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: huge,
+          metadata: { source: 'in-process-runtime' },
+        }),
+      ).toThrow(ChatError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // ensureChannelForLegacyConversation
+  // Spec: 2026-05-14-unified-chat-message-store.md Phase 2 (Option B)
+  // -------------------------------------------------------------------------
+
+  describe('ensureChannelForLegacyConversation', () => {
+    it('creates a fresh channel using the conversationId as the id', () => {
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-D0AC7-1700000000.000111',
+        agentSession: 'crewly-orc',
+      });
+
+      expect(ch.id).toBe('slack-D0AC7-1700000000.000111');
+      expect(ch.agentSession).toBe('crewly-orc');
+      expect(ch.type).toBe('dm');
+    });
+
+    it('is idempotent — second call returns the existing channel', () => {
+      const first = service.ensureChannelForLegacyConversation({
+        conversationId: 'web-conv-abc',
+        agentSession: 'crewly-orc',
+      });
+      const second = service.ensureChannelForLegacyConversation({
+        conversationId: 'web-conv-abc',
+        agentSession: 'crewly-orc',
+      });
+
+      expect(second.id).toBe(first.id);
+      expect(second.createdAt).toBe(first.createdAt);
+    });
+
+    it('allows the same agent to participate in MANY concurrent channels (the whole point)', () => {
+      // This is the post-Option-B contract: no `agent_already_bound`
+      // failure on the second / third / Nth channel for the same agent.
+      const a = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-thread-1',
+        agentSession: 'crewly-orc',
+      });
+      const b = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-thread-2',
+        agentSession: 'crewly-orc',
+      });
+      const c = service.ensureChannelForLegacyConversation({
+        conversationId: 'web-conv-xyz',
+        agentSession: 'crewly-orc',
+      });
+
+      expect([a.id, b.id, c.id]).toEqual([
+        'slack-thread-1',
+        'slack-thread-2',
+        'web-conv-xyz',
+      ]);
+    });
+
+    it('feeds directly into recordTurn — combined bridge flow', () => {
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-X-1234',
+        agentSession: 'crewly-orc',
+      });
+
+      const { message, deduped } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'Hello from auto-route',
+        metadata: { source: 'in-process-runtime', runtime: 'crewly-agent' },
+      });
+
+      expect(deduped).toBe(false);
+      expect(message.content).toBe('Hello from auto-route');
+      expect(message.senderType).toBe('agent');
+    });
+
+    it('defaults ownerUserId to "system" for server-internal callers', () => {
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'server-internal-conv',
+        agentSession: 'crewly-orc',
+      });
+      // The DTO doesn't expose ownerUserId directly; we verify via list
+      // filter which is scoped by owner.
+      const channels = service.listChannels({
+        principal: { userId: 'system', source: 'oss' },
+      });
+      expect(channels.some((c) => c.id === ch.id)).toBe(true);
+    });
+
+    it('rejects empty conversationId', () => {
+      expect(() =>
+        service.ensureChannelForLegacyConversation({
+          conversationId: '',
+          agentSession: 'crewly-orc',
+        }),
+      ).toThrow(/conversationId is required/);
+    });
+
+    it('rejects empty agentSession', () => {
+      expect(() =>
+        service.ensureChannelForLegacyConversation({
+          conversationId: 'slack-X-1',
+          agentSession: '',
+        }),
+      ).toThrow(/agentSession is required/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // importLegacyConversation
+  // Spec: 2026-05-14-unified-chat-message-store.md Phase 5
+  // -------------------------------------------------------------------------
+
+  describe('importLegacyConversation', () => {
+    const sampleLegacy = {
+      conversation: { id: 'slack-D0AC7-1777130816-772509' },
+      messages: [
+        {
+          id: 'msg-a',
+          from: { type: 'user', name: 'You' },
+          content: 'hello',
+          timestamp: '2026-05-04T11:26:58.361Z',
+          metadata: { source: 'slack', userId: 'UG94JLNGK', channelId: 'D0AC7' },
+        },
+        {
+          id: 'msg-b',
+          from: { type: 'orchestrator', name: 'Orchestrator' },
+          content: 'hi back',
+          timestamp: '2026-05-04T11:27:01.000Z',
+          metadata: { source: 'slack' },
+        },
+        {
+          id: 'msg-c',
+          from: { type: 'system' },
+          content: 'system note',
+          timestamp: '2026-05-04T11:28:00.000Z',
+        },
+      ],
+    };
+
+    it('imports all rows on first run, dedups on second run', () => {
+      const first = service.importLegacyConversation(sampleLegacy);
+      expect(first.imported).toBe(3);
+      expect(first.deduped).toBe(0);
+      expect(first.channelId).toBe('slack-D0AC7-1777130816-772509');
+
+      // Re-run — every row must dedupe via clientMessageId
+      const second = service.importLegacyConversation(sampleLegacy);
+      expect(second.imported).toBe(0);
+      expect(second.deduped).toBe(3);
+      expect(second.channelId).toBe(first.channelId);
+
+      // No phantom rows
+      expect(service.countAllMessages()).toBe(3);
+    });
+
+    it('maps from.type correctly (user, orchestrator → agent, anything → system)', () => {
+      service.importLegacyConversation(sampleLegacy);
+      // Fetch via listMessages to inspect sender types
+      const messages = service.listMessages({
+        channelId: 'slack-D0AC7-1777130816-772509',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      expect(messages).toHaveLength(3);
+      expect(messages.map((m) => m.senderType)).toEqual(['user', 'agent', 'system']);
+      expect(messages[1].senderId).toBe('crewly-orc');
+      expect(messages[2].senderId).toBe('system');
+    });
+
+    it('preserves legacy metadata under explicit legacy* keys', () => {
+      service.importLegacyConversation(sampleLegacy);
+      const messages = service.listMessages({
+        channelId: 'slack-D0AC7-1777130816-772509',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      expect(messages[0].metadata).toMatchObject({
+        source: 'system',
+        legacySource: 'slack',
+        legacyMessageId: 'msg-a',
+        legacyTimestamp: '2026-05-04T11:26:58.361Z',
+      });
+    });
+
+    it('skips malformed rows without aborting the import', () => {
+      const conv = {
+        conversation: { id: 'slack-X-1' },
+        messages: [
+          { id: 'good', from: { type: 'user' }, content: 'kept' },
+          { id: '', from: { type: 'user' }, content: 'dropped — no id' } as any,
+          { id: 'bad-empty', from: { type: 'user' }, content: '' },
+          { id: 'no-content', from: { type: 'user' } } as any,
+          { id: 'good2', from: { type: 'user' }, content: 'kept2' },
+        ],
+      };
+      const result = service.importLegacyConversation(conv as any);
+      expect(result.imported).toBe(2);
+      expect(result.deduped).toBe(0);
+    });
+
+    it('rejects missing conversation.id', () => {
+      expect(() =>
+        service.importLegacyConversation({
+          conversation: { id: '' },
+          messages: [],
+        } as any),
+      ).toThrow(/conversation\.id is required/);
+    });
+
+    it('rejects non-array messages', () => {
+      expect(() =>
+        service.importLegacyConversation({
+          conversation: { id: 'x' },
+          messages: null,
+        } as any),
+      ).toThrow(/messages must be an array/);
+    });
+
+    it('extracts user id from legacy metadata when present', () => {
+      service.importLegacyConversation(sampleLegacy);
+      const messages = service.listMessages({
+        channelId: 'slack-D0AC7-1777130816-772509',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      // First message has metadata.userId = 'UG94JLNGK'
+      expect(messages[0].senderId).toBe('UG94JLNGK');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 6.0 — API gap fill for legacy ChatService retirement
+  // Spec: 2026-05-14-unified-chat-message-store.md
+  // -------------------------------------------------------------------------
+
+  describe('updateMessageMetadata (Phase 6.0)', () => {
+    it('merges patch into existing metadata and returns the updated DTO', () => {
+      const ch = createSam();
+      const { message } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'hello',
+        metadata: {
+          source: 'reply-tool',
+          slackChannelId: 'D0AC7',
+          slackDeliveryStatus: 'pending',
+        },
+      });
+
+      const updated = service.updateMessageMetadata(message.id, {
+        slackDeliveryStatus: 'delivered',
+        slackMessageTs: '1234567890.000100',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated!.metadata).toMatchObject({
+        source: 'reply-tool',                  // preserved
+        slackChannelId: 'D0AC7',                // preserved
+        slackDeliveryStatus: 'delivered',       // overwritten
+        slackMessageTs: '1234567890.000100',    // added
+      });
+    });
+
+    it('returns null when the message does not exist', () => {
+      expect(service.updateMessageMetadata('no-such-msg', { x: 1 })).toBeNull();
+    });
+  });
+
+  describe('findMessagesWithPendingSlackDelivery (Phase 6.0)', () => {
+    it('returns only messages tagged pending with a slackChannelId, within window', () => {
+      const ch = createSam();
+
+      const pending = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'pending msg',
+        metadata: {
+          source: 'reply-tool',
+          slackChannelId: 'D0AC7',
+          slackDeliveryStatus: 'pending',
+        },
+      });
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'delivered msg',
+        metadata: {
+          source: 'reply-tool',
+          slackChannelId: 'D0AC7',
+          slackDeliveryStatus: 'delivered',
+        },
+      });
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'pending but no channel id',
+        metadata: { source: 'reply-tool', slackDeliveryStatus: 'pending' },
+      });
+
+      // Window large enough to include all
+      const found = service.findMessagesWithPendingSlackDelivery(60 * 60 * 1000);
+      expect(found).toHaveLength(1);
+      expect(found[0].id).toBe(pending.message.id);
+    });
+
+    it('respects the maxAgeMs window — older rows are excluded', () => {
+      const ch = createSam();
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'recent pending',
+        metadata: {
+          source: 'reply-tool',
+          slackChannelId: 'D0AC7',
+          slackDeliveryStatus: 'pending',
+        },
+      });
+
+      // 0ms window → nothing falls inside
+      expect(service.findMessagesWithPendingSlackDelivery(0)).toHaveLength(0);
+    });
+  });
+
+  describe('getStatistics (Phase 6.0)', () => {
+    it('counts active and archived channels separately and totals messages across both', () => {
+      const a = createSam();
+      service.archiveChannel(a.id, owner);
+
+      const b = service.createChannel({
+        agentSession: 'sess-b',
+        name: 'Active B',
+        principal: owner,
+      });
+
+      service.recordTurn({
+        channelId: b.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'one',
+        metadata: { source: 'in-process-runtime' },
+      });
+      service.recordTurn({
+        channelId: b.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'two',
+        metadata: { source: 'in-process-runtime' },
+      });
+
+      const stats = service.getStatistics();
+      expect(stats).toEqual({
+        totalChannels: 2,
+        activeChannels: 1,
+        archivedChannels: 1,
+        totalMessages: 2,
+      });
+    });
+
+    it('returns zeros on a fresh store', () => {
+      expect(service.getStatistics()).toEqual({
+        totalChannels: 0,
+        activeChannels: 0,
+        archivedChannels: 0,
+        totalMessages: 0,
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 6.0b — conversation-lifecycle methods (rename, unarchive, delete,
+  // clear, count). Each replaces a legacy ChatService method.
+  // -------------------------------------------------------------------------
+
+  describe('unarchiveChannel (Phase 6.0b)', () => {
+    it('flips an archived channel back to active', () => {
+      const ch = createSam();
+      service.archiveChannel(ch.id, owner);
+      expect(service.unarchiveChannel(ch.id, owner)).toBe(true);
+      // Channel is listable again
+      const list = service.listChannels({ principal: owner });
+      expect(list.some((c) => c.id === ch.id)).toBe(true);
+    });
+
+    it('returns false when the channel was already active', () => {
+      const ch = createSam();
+      expect(service.unarchiveChannel(ch.id, owner)).toBe(false);
+    });
+
+    it('rejects on non-owned channel', () => {
+      const ch = createSam();
+      service.archiveChannel(ch.id, owner);
+      expect(() => service.unarchiveChannel(ch.id, otherUser)).toThrow(ChatError);
+    });
+  });
+
+  describe('renameChannel (Phase 6.0b)', () => {
+    it('renames an existing channel and returns the updated DTO', () => {
+      const ch = createSam();
+      const renamed = service.renameChannel(ch.id, 'Sam (renamed)', owner);
+      expect(renamed.id).toBe(ch.id);
+      expect(renamed.name).toBe('Sam (renamed)');
+      // Round-trip through the store confirms it stuck
+      const fetched = service.getChannel(ch.id, owner);
+      expect(fetched.name).toBe('Sam (renamed)');
+    });
+
+    it('trims whitespace from the new name', () => {
+      const ch = createSam();
+      const renamed = service.renameChannel(ch.id, '  Trim Me  ', owner);
+      expect(renamed.name).toBe('Trim Me');
+    });
+
+    it('rejects empty / whitespace-only names', () => {
+      const ch = createSam();
+      expect(() => service.renameChannel(ch.id, '', owner)).toThrow(/name is required/);
+      expect(() => service.renameChannel(ch.id, '   ', owner)).toThrow(/name is required/);
+    });
+
+    it('rejects oversize names', () => {
+      const ch = createSam();
+      const tooLong = 'x'.repeat(service.config.maxChannelNameChars + 1);
+      expect(() => service.renameChannel(ch.id, tooLong, owner)).toThrow(/exceeds/);
+    });
+  });
+
+  describe('deleteChannel (Phase 6.0b)', () => {
+    it('hard-deletes channel + all messages via FK cascade', () => {
+      const ch = createSam();
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'msg',
+        metadata: { source: 'in-process-runtime' },
+      });
+      expect(service.countAllMessages()).toBe(1);
+
+      expect(service.deleteChannel(ch.id, owner)).toBe(true);
+
+      // Channel + messages both gone
+      expect(service.countAllMessages()).toBe(0);
+      const list = service.listChannels({ principal: owner });
+      expect(list.find((c) => c.id === ch.id)).toBeUndefined();
+    });
+
+    it('throws on unknown channel id (auth probe fails first)', () => {
+      expect(() => service.deleteChannel('no-such-id', owner)).toThrow(ChatError);
+    });
+  });
+
+  describe('clearChannel (Phase 6.0b)', () => {
+    it('deletes messages but keeps the channel row', () => {
+      const ch = createSam();
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'a',
+        metadata: { source: 'in-process-runtime' },
+      });
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'b',
+        metadata: { source: 'in-process-runtime' },
+      });
+      expect(service.countAllMessages()).toBe(2);
+
+      const cleared = service.clearChannel(ch.id, owner);
+      expect(cleared).toBe(2);
+
+      // Channel survives, messages don't
+      expect(service.countAllMessages()).toBe(0);
+      expect(service.getChannel(ch.id, owner).id).toBe(ch.id);
+    });
+  });
+
+  describe('countChannelMessages (Phase 6.0b)', () => {
+    it('returns 0 for a fresh channel and counts after writes', () => {
+      const ch = createSam();
+      expect(service.countChannelMessages(ch.id, owner)).toBe(0);
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'one',
+        metadata: { source: 'in-process-runtime' },
+      });
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'two',
+        metadata: { source: 'in-process-runtime' },
+      });
+      expect(service.countChannelMessages(ch.id, owner)).toBe(2);
+    });
+  });
 });

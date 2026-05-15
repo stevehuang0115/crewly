@@ -1466,12 +1466,9 @@ export class CrewlyServer {
 			// but before the queue processor starts (so replayed messages are ready for delivery).
 			try {
 				const { MessageReplayService } = await import('./services/messaging/message-replay.service.js');
-				const { getChatService } = await import('./services/chat/chat.service.js');
-				const chatService = getChatService();
 				const replayService = new MessageReplayService(
 					this.messageQueueService,
-					chatService,
-					this.config.crewlyHome
+					this.config.crewlyHome,
 				);
 				const replayResult = await replayService.replayPendingMessages();
 				if (replayResult.replayedCount > 0) {

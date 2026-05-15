@@ -12,12 +12,14 @@
 
 import type { ChatV2Config } from './config.js';
 import { ChannelStore } from './sqlite/channel.store.js';
+import { EventEmitter } from 'events';
 import { MessageStore } from './sqlite/message.store.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
 import {
   CHAT_CHANNEL_TYPES,
   CHAT_CONTENT_TYPES,
   CHAT_ERROR_CODES,
+  CHAT_SENDER_TYPES,
   ChatError,
   type ChatAttachmentDTO,
   type ChatChannelDTO,
@@ -151,6 +153,63 @@ export interface SendMessageArgs {
   threadId?: string;
 }
 
+/**
+ * Allowed values for `RecordTurnInput.metadata.source` — the audit-trail
+ * discriminator that identifies which subsystem produced the message.
+ *
+ * Per spec `2026-05-14-unified-chat-message-store.md`, every {@link
+ * ChatV2Service.recordTurn} caller MUST set `metadata.source` to one of
+ * these values. The set is intentionally closed so future audits can
+ * `GROUP BY metadata->>'$.source'` without surprise values.
+ */
+export const RECORD_TURN_SOURCES = [
+  'web',
+  'slack',
+  'pty-runtime',
+  'in-process-runtime',
+  'reply-tool',
+  'system',
+] as const;
+
+/** Union type of the values in {@link RECORD_TURN_SOURCES}. */
+export type RecordTurnSource = (typeof RECORD_TURN_SOURCES)[number];
+
+/** Server-internal write input for {@link ChatV2Service.recordTurn}. */
+export interface RecordTurnInput {
+  channelId: string;
+  /** Server resolved — runtime/controller already knows who's sending. */
+  senderType: ChatSenderType;
+  /** User id, agent session name, or `'system'`. */
+  senderId: string;
+  content: string;
+  contentType?: ChatContentType;
+  /** Stable idempotency key — dedup keyed on `(channel_id, clientMessageId)`. */
+  clientMessageId?: string;
+  /** Optional thread-root reference; validated to live in the same channel. */
+  threadId?: string;
+  /** Optional inline mention ids (member or team). */
+  mentions?: string[];
+  /** Required audit metadata. Caller MUST set `source`. */
+  metadata: {
+    source: RecordTurnSource;
+    /** Which agent runtime emitted the message, when applicable. */
+    runtime?: 'claude-code' | 'gemini-cli' | 'crewly-agent';
+    /** Slack correlation fields for cross-store reconciliation. */
+    slackChannelId?: string;
+    slackThreadTs?: string;
+    /** Free-form additional context — not parsed by the store. */
+    [key: string]: unknown;
+  };
+}
+
+/** Result of {@link ChatV2Service.recordTurn}. */
+export interface RecordTurnResult {
+  /** The persisted (or pre-existing, when deduped) message DTO. */
+  message: ChatMessageDTO;
+  /** True when `clientMessageId` matched an existing row. */
+  deduped: boolean;
+}
+
 /** Arguments for `listMessages`. */
 export interface ListMessagesArgs {
   channelId: string;
@@ -179,7 +238,7 @@ const DEFAULT_PRESENCE = () => ({
  * - Maps rows → DTOs.
  * - Fans out to WebSocket / adapters in later phases.
  */
-export class ChatV2Service {
+export class ChatV2Service extends EventEmitter {
   /** Phase A spec §3.2: max mention count per message. */
   static readonly MAX_MENTIONS_PER_MESSAGE = 50;
   /** Phase A spec §3.2: max JSON-encoded byte size of the mentions array. */
@@ -194,6 +253,7 @@ export class ChatV2Service {
   private readonly now: () => number;
 
   constructor(options: ChatV2ServiceOptions) {
+    super();
     this.config = options.config;
     this.db = options.db ?? openChatDatabase({ dbPath: options.config.storage.dbPath });
     this.channels = new ChannelStore(this.db);
@@ -226,6 +286,73 @@ export class ChatV2Service {
    */
   countAllMessages(): number {
     return this.messages.countAll();
+  }
+
+  /**
+   * Phase 6.0 of unified-chat-message-store spec — replacement for the
+   * legacy `ChatService.updateMessageMetadata`. Merges a partial
+   * metadata object into the stored row's `metadata` JSON column using
+   * SQLite's `json_patch` (atomic, server-side).
+   *
+   * No principal check — this is a server-internal mutation path used
+   * by reconciliation jobs (Slack delivery status updates) and never
+   * exposed directly to user HTTP traffic. Phase 6c will retire the
+   * legacy method that called this; until then it is the only callable
+   * write-through for the existing reconciliation code.
+   *
+   * @param messageId - Message id to update
+   * @param patch - Shallow metadata patch to merge
+   * @returns The updated message DTO, or null if no such message exists
+   */
+  updateMessageMetadata(
+    messageId: string,
+    patch: Record<string, unknown>,
+  ): ChatMessageDTO | null {
+    const row = this.messages.updateMetadata(messageId, patch);
+    if (!row) return null;
+    return this.toMessageDTO(row, []);
+  }
+
+  /**
+   * Phase 6.0 — replacement for the legacy
+   * `ChatService.getMessagesWithPendingSlackDelivery`. Returns the
+   * messages still marked `slackDeliveryStatus='pending'` within the
+   * caller-supplied lookback window, used by NotifyReconciliationService
+   * to retry stuck Slack deliveries.
+   *
+   * @param maxAgeMs - Lookback window in milliseconds
+   * @returns Pending-delivery messages, newest first, capped at MAX_LIMIT
+   */
+  findMessagesWithPendingSlackDelivery(maxAgeMs: number): ChatMessageDTO[] {
+    const rows = this.messages.findPendingSlackDelivery(maxAgeMs);
+    return rows.map((r) => this.toMessageDTO(r, []));
+  }
+
+  /**
+   * Phase 6.0 — replacement for the legacy `ChatService.getStatistics`.
+   * Aggregate counts used by the boot-time telemetry and the
+   * admin/audit dashboards.
+   *
+   * @returns Active/archived channel counts plus total message count
+   */
+  getStatistics(): {
+    totalChannels: number;
+    activeChannels: number;
+    archivedChannels: number;
+    totalMessages: number;
+  } {
+    const activeChannels = (this.db
+      .prepare(`SELECT COUNT(*) AS n FROM chat_channels WHERE archived_at IS NULL`)
+      .get() as { n: number }).n;
+    const archivedChannels = (this.db
+      .prepare(`SELECT COUNT(*) AS n FROM chat_channels WHERE archived_at IS NOT NULL`)
+      .get() as { n: number }).n;
+    return {
+      totalChannels: activeChannels + archivedChannels,
+      activeChannels,
+      archivedChannels,
+      totalMessages: this.messages.countAll(),
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -359,6 +486,199 @@ export class ChatV2Service {
   }
 
   /**
+   * Server-internal idempotent helper used by migration / bridge code to
+   * map a legacy conversationId (e.g. `slack-D0AC7-1234`, `web-conv-abc`)
+   * onto a chat-v2 channel row with the conversationId as the primary key.
+   *
+   * Unlike {@link createChannel}, this method:
+   *   - Returns the existing channel when one already lives at the given
+   *     id — idempotent for runtimes that call it before every recordTurn.
+   *   - Accepts a synthetic owner (`'system'`) for paths where no human
+   *     principal is on the call stack (PTY finish hooks, Slack inbound
+   *     bridge, in-process runtime auto-route).
+   *   - Sets `type='dm'` so the channel matches the conversation-per-thread
+   *     legacy model the user approved (spec Option B).
+   *
+   * The `agent_already_bound` failure mode that existed in chat-v2 Phase A
+   * does not apply — the `uq_channel_agent_dm_active` index was dropped
+   * per the unified-chat-message-store spec exactly so this helper can
+   * lazy-create N concurrent DM channels for a single agent.
+   *
+   * @param args - Legacy bridge args
+   * @returns The existing or freshly created channel DTO
+   * @throws {ChatError} `validation_error` on missing id / agentSession
+   *
+   * @example
+   * ```typescript
+   * // Called from `routeInProcessResponseToChat` before `recordTurn`:
+   * const channel = chatV2.ensureChannelForLegacyConversation({
+   *   conversationId: 'slack-D0AC7-1700000000.000111',
+   *   agentSession: 'crewly-orc',
+   * });
+   * chatV2.recordTurn({ channelId: channel.id, ... });
+   * ```
+   */
+  ensureChannelForLegacyConversation(args: {
+    conversationId: string;
+    agentSession: string;
+    /** Display name; defaults to the conversationId. */
+    name?: string;
+    /** Owner id; defaults to `'system'` for server-internal callers. */
+    ownerUserId?: string;
+  }): ChatChannelDTO {
+    const conversationId = (args.conversationId ?? '').trim();
+    if (conversationId.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'conversationId is required');
+    }
+    const agentSession = (args.agentSession ?? '').trim();
+    if (agentSession.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agentSession is required');
+    }
+
+    const existing = this.channels.getById(conversationId);
+    if (existing) {
+      return this.toChannelDTO(existing);
+    }
+
+    const name = (args.name ?? conversationId).trim();
+    const ownerUserId = (args.ownerUserId ?? 'system').trim();
+
+    const row = this.channels.create({
+      id: conversationId,
+      agentSession,
+      ownerUserId,
+      name,
+      purpose: null,
+      type: 'dm',
+      teamId: null,
+      projectId: null,
+      targetMemberId: null,
+      nowMs: this.now(),
+    });
+    return this.toChannelDTO(row);
+  }
+
+  /**
+   * Phase 5 of unified-chat-message-store spec — idempotent import of one
+   * legacy conversation file (`~/.crewly/chat/<conversationId>.json`)
+   * into the chat-v2 SQLite store. Each legacy message becomes one
+   * `chat_messages` row keyed by a deterministic `clientMessageId` so
+   * re-running the import is safe — the underlying `MessageStore`
+   * dedups on `(channel_id, clientMessageId)`.
+   *
+   * Designed as a service method (not a free function) so the CLI
+   * migration script can call it per file and so callers can unit-test
+   * the mapping in isolation.
+   *
+   * The mapping:
+   *   - `conversation.id` → `chat_channels.id` (via
+   *     {@link ensureChannelForLegacyConversation}). `agentSession`
+   *     defaults to `'crewly-orc'` because every legacy conversation was
+   *     a DM between the user and the orchestrator.
+   *   - `messages[].from.type === 'user'` → `senderType: 'user'`
+   *   - `messages[].from.type === 'orchestrator'` (or 'agent') →
+   *     `senderType: 'agent'`, `senderId: 'crewly-orc'`
+   *   - Anything else → `senderType: 'system'`, `senderId: 'system'`
+   *   - `messages[].id` → `clientMessageId = 'legacy-' + msg.id` for
+   *     stable idempotency across re-runs.
+   *   - `messages[].metadata.source` (legacy slack/web) → carried
+   *     through; `recordTurn`'s required outer `metadata.source` is set
+   *     to `'system'` to identify the migration as the writer.
+   *
+   * @param input - Parsed legacy JSON (the entire file body)
+   * @returns Per-message outcome (imported vs deduped) + the channel id
+   *
+   * @example
+   * ```typescript
+   * const json = JSON.parse(await readFile(filePath, 'utf-8'));
+   * const result = chatV2.importLegacyConversation(json);
+   * console.log(`Imported ${result.imported} new, ${result.deduped} dedup`);
+   * ```
+   */
+  importLegacyConversation(input: {
+    conversation: { id: string };
+    messages: Array<{
+      id: string;
+      from: { type: string; name?: string };
+      content: string;
+      contentType?: string;
+      timestamp?: string;
+      metadata?: Record<string, unknown>;
+    }>;
+  }): { channelId: string; imported: number; deduped: number } {
+    if (!input?.conversation?.id) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'legacy conversation.id is required',
+      );
+    }
+    if (!Array.isArray(input.messages)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'legacy messages must be an array',
+      );
+    }
+
+    const channel = this.ensureChannelForLegacyConversation({
+      conversationId: input.conversation.id,
+      agentSession: 'crewly-orc',
+      name: input.conversation.id,
+    });
+
+    let imported = 0;
+    let deduped = 0;
+    for (const msg of input.messages) {
+      if (!msg?.id || typeof msg.content !== 'string' || msg.content.length === 0) {
+        // Skip malformed rows rather than failing the whole import.
+        continue;
+      }
+
+      const fromType = (msg.from?.type ?? '').toLowerCase();
+      let senderType: ChatSenderType;
+      let senderId: string;
+      if (fromType === 'user') {
+        senderType = 'user';
+        senderId =
+          (typeof msg.metadata?.userId === 'string' && msg.metadata.userId) ||
+          msg.from?.name ||
+          'legacy-user';
+      } else if (fromType === 'agent' || fromType === 'orchestrator') {
+        senderType = 'agent';
+        senderId = 'crewly-orc';
+      } else {
+        senderType = 'system';
+        senderId = 'system';
+      }
+
+      const result = this.recordTurn({
+        channelId: channel.id,
+        senderType,
+        senderId,
+        content: msg.content,
+        clientMessageId: `legacy-${msg.id}`,
+        metadata: {
+          source: 'system',
+          // Carry through legacy metadata for forensic completeness —
+          // future audits can still see "this row was originally a slack
+          // inbound" via metadata.legacySource etc.
+          legacySource: typeof msg.metadata?.source === 'string' ? msg.metadata.source : undefined,
+          legacyMessageId: msg.id,
+          legacyTimestamp: msg.timestamp,
+        },
+      });
+      if (result.deduped) {
+        deduped++;
+      } else {
+        imported++;
+      }
+    }
+
+    return { channelId: channel.id, imported, deduped };
+  }
+
+  /**
    * List channels owned by the caller.
    *
    * Phase C: extended with optional `type` + `teamId` filters so the
@@ -421,6 +741,96 @@ export class ChatV2Service {
   archiveChannel(channelId: string, principal: ChatPrincipal): boolean {
     this.requireOwnedChannel(channelId, principal);
     return this.channels.archive(channelId, this.now());
+  }
+
+  /**
+   * Phase 6.0b — clear the `archived_at` flag on a channel. Inverse of
+   * {@link archiveChannel}; required to retire the legacy
+   * `unarchiveConversation` route.
+   *
+   * @param channelId - The channel to unarchive
+   * @param principal - Auth principal (must own the channel)
+   * @returns True if newly unarchived, false if already active
+   * @throws {ChatError} `channel_not_found` (404)
+   */
+  unarchiveChannel(channelId: string, principal: ChatPrincipal): boolean {
+    this.requireOwnedChannel(channelId, principal);
+    return this.channels.unarchive(channelId);
+  }
+
+  /**
+   * Phase 6.0b — rename a channel. Replaces the legacy
+   * `updateConversationTitle` route. Server validates the same name
+   * constraints as `createChannel`.
+   *
+   * @param channelId - The channel to rename
+   * @param name - New name (trimmed, ≤ maxChannelNameChars)
+   * @param principal - Auth principal (must own the channel)
+   * @returns The renamed channel DTO
+   * @throws {ChatError} `validation_error` (400) on empty / oversize name,
+   *                    `channel_not_found` (404)
+   */
+  renameChannel(channelId: string, name: string, principal: ChatPrincipal): ChatChannelDTO {
+    const trimmed = (name ?? '').trim();
+    if (trimmed.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'name is required');
+    }
+    if (trimmed.length > this.config.maxChannelNameChars) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `name exceeds ${this.config.maxChannelNameChars} characters`,
+      );
+    }
+    const row = this.requireOwnedChannel(channelId, principal);
+    this.channels.rename(channelId, trimmed);
+    return this.toChannelDTO({ ...row, name: trimmed });
+  }
+
+  /**
+   * Phase 6.0b — hard-delete a channel and all its messages. Distinct
+   * from {@link archiveChannel} (soft delete). Replaces the legacy
+   * `deleteConversation` route. Uses SQLite FK cascade so the row
+   * deletion atomically removes child messages.
+   *
+   * @param channelId - The channel to delete
+   * @param principal - Auth principal (must own the channel)
+   * @returns True if removed, false if the channel didn't exist
+   * @throws {ChatError} `channel_not_found` (404)
+   */
+  deleteChannel(channelId: string, principal: ChatPrincipal): boolean {
+    this.requireOwnedChannel(channelId, principal);
+    return this.channels.hardDelete(channelId);
+  }
+
+  /**
+   * Phase 6.0b — delete all messages in a channel while keeping the
+   * channel row. Replaces the legacy `clearConversation` route. Useful
+   * when the user wants a "fresh start" without losing the channel
+   * itself (and its bookkeeping like `agent_session` binding).
+   *
+   * @param channelId - The channel to clear
+   * @param principal - Auth principal (must own the channel)
+   * @returns Number of messages deleted
+   * @throws {ChatError} `channel_not_found` (404)
+   */
+  clearChannel(channelId: string, principal: ChatPrincipal): number {
+    this.requireOwnedChannel(channelId, principal);
+    return this.messages.deleteAllByChannel(channelId);
+  }
+
+  /**
+   * Phase 6.0b — count messages in a single channel. Replaces the
+   * legacy `getMessageCount` filtered to one conversation.
+   *
+   * @param channelId - The channel to count
+   * @param principal - Auth principal (must own the channel)
+   * @returns Message count (0 for empty channels)
+   * @throws {ChatError} `channel_not_found` (404)
+   */
+  countChannelMessages(channelId: string, principal: ChatPrincipal): number {
+    this.requireOwnedChannel(channelId, principal);
+    return this.messages.count(channelId);
   }
 
   // -------------------------------------------------------------------------
@@ -488,7 +898,141 @@ export class ChatV2Service {
       nowMs: this.now(),
     });
 
-    return this.toMessageDTO(persisted, args.attachments ?? []);
+    const dto = this.toMessageDTO(persisted, args.attachments ?? []);
+    // Phase 6c: broadcast so the WebSocket gateway (and any other
+    // in-process subscribers) can fan the new message out to connected
+    // clients. The legacy ChatService.EventEmitter contract is now
+    // owned by chat-v2 directly.
+    this.emit('chat_message', dto);
+    return dto;
+  }
+
+  /**
+   * Canonical server-internal write entry for chat messages.
+   *
+   * Unlike {@link sendMessage}, which derives `sender_type` / `sender_id`
+   * from an authenticated request principal, `recordTurn` is the path
+   * used by runtimes, controllers, and bridges that have already
+   * resolved exactly who the sender is — e.g.:
+   *
+   *   - In-process agent runtime finishing a turn
+   *   - PTY runtime emitting a complete reply
+   *   - Slack inbound bridge persisting a user DM
+   *   - `/slack/send` controller persisting the agent's outbound reply
+   *
+   * Per spec `2026-05-14-unified-chat-message-store.md`, every chat
+   * write in the system funnels through this method. No caller should
+   * write to {@link MessageStore} directly; no caller should reach
+   * into legacy {@link ChatService} (Phase 6 retires it).
+   *
+   * Idempotent via `clientMessageId` — the underlying store dedups by
+   * `(channel_id, clientMessageId)` and returns the existing row with
+   * `deduped=true` instead of inserting a duplicate.
+   *
+   * @param input - Turn payload (channel, sender, content, metadata)
+   * @returns The persisted message DTO + dedupe flag
+   * @throws {ChatError} `channel_not_found` (404) if the channel is missing
+   * @throws {ChatError} `validation_error` (400) on empty content or invalid contentType
+   * @throws {ChatError} `payload_too_large` (413) if content exceeds maxMessageBytes
+   *
+   * @example
+   * ```typescript
+   * const { message, deduped } = chatV2.recordTurn({
+   *   channelId: 'slack-D0AC7-1234',
+   *   senderType: 'agent',
+   *   senderId: 'crewly-orc',
+   *   content: 'Hello!',
+   *   clientMessageId: 'agent-finish-2026-05-14T22:30:00Z',
+   *   metadata: {
+   *     source: 'in-process-runtime',
+   *     runtime: 'crewly-agent',
+   *     slackChannelId: 'D0AC7',
+   *     slackThreadTs: '1234',
+   *   },
+   * });
+   * ```
+   */
+  recordTurn(input: RecordTurnInput): RecordTurnResult {
+    const content = input.content ?? '';
+    if (content.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'content is required');
+    }
+    const byteLen = Buffer.byteLength(content, 'utf-8');
+    if (byteLen > this.config.maxMessageBytes) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.PAYLOAD_TOO_LARGE,
+        413,
+        `content exceeds max bytes (${this.config.maxMessageBytes})`,
+        { maxBytes: this.config.maxMessageBytes, yourBytes: byteLen },
+      );
+    }
+
+    const contentType: ChatContentType = input.contentType ?? 'markdown';
+    if (!CHAT_CONTENT_TYPES.includes(contentType)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `unknown contentType: ${contentType}`,
+      );
+    }
+
+    if (!CHAT_SENDER_TYPES.includes(input.senderType)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `unknown senderType: ${input.senderType}`,
+      );
+    }
+    if (!input.senderId || input.senderId.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'senderId is required');
+    }
+
+    const mentions = this.validateMentions(input.mentions);
+    const threadId = this.validateThreadId(input.threadId, input.channelId);
+
+    // `metadata.source` is the audit-trail discriminator that lets
+    // future tooling tell "this message came from PTY" vs "from
+    // in-process runtime" vs "from /slack/send" without parsing
+    // content. Spec success criterion #4 depends on this tag being
+    // present for every recordTurn caller.
+    const metadata: Record<string, unknown> = { ...(input.metadata ?? {}) };
+    if (!metadata.source) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'metadata.source is required for recordTurn (audit trail)',
+      );
+    }
+    if (!RECORD_TURN_SOURCES.includes(metadata.source as RecordTurnSource)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `unknown metadata.source: ${String(metadata.source)}`,
+        { allowed: RECORD_TURN_SOURCES },
+      );
+    }
+
+    const { row: persisted, deduped } = this.messages.insert({
+      channelId: input.channelId,
+      senderType: input.senderType,
+      senderId: input.senderId,
+      content,
+      contentType,
+      clientMessageId: input.clientMessageId,
+      mentions,
+      threadId,
+      metadata,
+      nowMs: this.now(),
+    });
+
+    const dto = this.toMessageDTO(persisted, []);
+    // Phase 6c: emit only for freshly inserted rows. Skipping dedup hits
+    // prevents replay-loop subscribers from seeing the same message twice
+    // on idempotent retries.
+    if (!deduped) {
+      this.emit('chat_message', dto);
+    }
+    return { message: dto, deduped };
   }
 
   /**

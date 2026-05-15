@@ -1568,6 +1568,14 @@ export class TaskPoolService {
     workItemId: string,
     newStatus: WorkItemStatus,
     actorRole: WorkItemOwner = 'system',
+    /**
+     * Optional human-readable reason. When `newStatus === 'cancelled'`
+     * it is persisted on `WorkItem.cancelReason` and surfaces in the
+     * activity timeline so users see WHY the item was cancelled
+     * (stale-pickup, parent cascade, mission abort, etc.). Ignored
+     * for other status transitions.
+     */
+    reason?: string,
   ): Promise<void> {
     const items = await this.storage.getWorkItems();
     const item = items.find((wi) => wi.id === workItemId);
@@ -1605,6 +1613,15 @@ export class TaskPoolService {
       } else {
         wi.completedAt = undefined;
       }
+      // Persist the cancellation reason atomically with the status
+      // flip so the activity timeline always has the explanation
+      // alongside the terminal state. Only set on transitions INTO
+      // cancelled — leaving the field untouched on non-cancel paths
+      // preserves any earlier value (e.g. requeued after a manual
+      // cancel-then-revive flow).
+      if (newStatus === 'cancelled' && typeof reason === 'string' && reason.length > 0) {
+        wi.cancelReason = reason;
+      }
     });
 
     this.logger.info('Work item status updated', {
@@ -1612,6 +1629,7 @@ export class TaskPoolService {
       from: item.status,
       to: newStatus,
       actorRole,
+      ...(newStatus === 'cancelled' && reason ? { reason } : {}),
     });
 
     // Cascade signal — let RequestCascadeSubscriber close the parent
@@ -1670,6 +1688,15 @@ export class TaskPoolService {
     newStatus: WorkItemStatus,
     actorRole: WorkItemOwner,
     mutator?: (wi: WorkItem) => void,
+    /**
+     * Optional human-readable reason. When `newStatus === 'cancelled'`
+     * persisted on `WorkItem.cancelReason` (atomic with the status
+     * flip, before the caller's mutator runs so the mutator may
+     * override if needed). Surfaces in the activity timeline so
+     * SLA-cascade / cancel paths don't read as opaque "WorkItem was
+     * cancelled." entries. Code-review P0 from 2026-05-15.
+     */
+    cancelReason?: string,
   ): Promise<WorkItem | null> {
     const item = await this.storage.findWorkItem(workItemId);
     if (!item) {
@@ -1728,6 +1755,11 @@ export class TaskPoolService {
         // shape here to keep the change minimal; the `cancelled`
         // semantics are out of scope.)
         wi.completedAt = undefined;
+      }
+      // Apply cancelReason BEFORE the user-supplied mutator so the
+      // mutator wins if the caller wants to override (rare).
+      if (newStatus === 'cancelled' && typeof cancelReason === 'string' && cancelReason.length > 0) {
+        wi.cancelReason = cancelReason;
       }
       if (mutator) mutator(wi);
     });

@@ -12,6 +12,12 @@ jest.mock('node-pty', () => ({
   spawn: jest.fn(),
 }));
 
+// Phase 6c migration note — chat.controller still calls the legacy
+// ChatService façade (14 sites). The façade now delegates to chat-v2
+// under the hood, so existing fixtures continue to work without
+// modification. Full call-site migration is tracked as a follow-up
+// cleanup PR; no architectural invariant depends on it.
+
 import express, { Application } from 'express';
 import request from 'supertest';
 import { promises as fs } from 'fs';
