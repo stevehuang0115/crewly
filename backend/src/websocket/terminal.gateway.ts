@@ -656,9 +656,17 @@ export class TerminalGateway {
 				rows,
 			});
 		} catch (error) {
-			this.logger.error('Error resizing terminal', {
+			// Distinguish "session genuinely gone" (frontend reconnect
+			// race — common, expected, drop to debug) from other resize
+			// failures (PTY backend issue — keep at error). Steve
+			// 2026-05-15: 314 ERROR entries from `Session 'X' does not
+			// exist` across one day was overwhelming the log without
+			// indicating any actionable problem.
+			const msg = error instanceof Error ? error.message : String(error);
+			const isMissingSession = /does not exist/.test(msg);
+			this.logger[isMissingSession ? 'debug' : 'error']('Error resizing terminal', {
 				sessionName,
-				error: error instanceof Error ? error.message : String(error),
+				error: msg,
 			});
 		}
 	}
