@@ -262,7 +262,7 @@ async function sendToolCommand(
 	// Path 1: If a specific instance is requested AND proxy is available, use proxy
 	if (instance && proxy.isAvailable()) {
 		try {
-			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName);
+			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
 			res.json(result);
 			return;
 		} catch (err) {
@@ -289,7 +289,7 @@ async function sendToolCommand(
 	// Path 3: Proxy relay (relay_to addressed messaging)
 	if (proxy.isAvailable()) {
 		try {
-			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName);
+			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
 			res.json(result);
 			return;
 		} catch (err) {

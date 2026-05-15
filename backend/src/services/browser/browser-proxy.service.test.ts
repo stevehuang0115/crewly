@@ -396,6 +396,114 @@ describe('BrowserProxyService', () => {
       await cmdPromise;
     });
 
+    // Issue #384 — per-tab dispatch on the proxy path.
+
+    it('injects bound tabId on the proxy path when agentSession has a binding (#384)', async () => {
+      setupConnectedProxy();
+      const proxy = BrowserProxyService.getInstance();
+
+      // Stub the BrowserBridgeService lazy-imported inside sendCommand.
+      // The proxy imports it dynamically; intercept via the singleton.
+      const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+      const bridge = BrowserBridgeService.getInstance();
+      jest.spyOn(bridge, 'getBinding').mockReturnValue({
+        agentSession: 'crewly-product-leo',
+        tabId: 4242,
+        boundAt: new Date(),
+        lastActivityAt: new Date(),
+      } as any);
+
+      const cmdPromise = proxy.sendCommand(
+        'click',
+        { selector: '.foo' },
+        undefined,
+        5000,
+        undefined,
+        'crewly-product-leo',
+      );
+
+      // Drain the promise to allow the dynamic import + spy to resolve
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
+      const payload = JSON.parse(sentMsg.payload as string);
+      expect(payload.params.tabId).toBe(4242);
+      expect(payload.params.selector).toBe('.foo');
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'relay',
+          payload: JSON.stringify({ id: payload.id, success: true, result: 'ok' }),
+        }),
+      );
+      await cmdPromise;
+    });
+
+    it('explicit tabId in params wins over the binding (#384)', async () => {
+      setupConnectedProxy();
+      const proxy = BrowserProxyService.getInstance();
+
+      const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+      const bridge = BrowserBridgeService.getInstance();
+      const getBindingSpy = jest.spyOn(bridge, 'getBinding');
+
+      const cmdPromise = proxy.sendCommand(
+        'click',
+        { selector: '.foo', tabId: 99 },
+        undefined,
+        5000,
+        undefined,
+        'crewly-product-leo',
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Explicit tabId path: getBinding should NOT have been consulted.
+      expect(getBindingSpy).not.toHaveBeenCalled();
+
+      const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
+      const payload = JSON.parse(sentMsg.payload as string);
+      expect(payload.params.tabId).toBe(99);
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'relay',
+          payload: JSON.stringify({ id: payload.id, success: true, result: 'ok' }),
+        }),
+      );
+      await cmdPromise;
+    });
+
+    it('forwards without tabId when no agentSession is supplied (legacy active-tab path)', async () => {
+      setupConnectedProxy();
+      const proxy = BrowserProxyService.getInstance();
+
+      const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+      const bridge = BrowserBridgeService.getInstance();
+      const getBindingSpy = jest.spyOn(bridge, 'getBinding');
+
+      const cmdPromise = proxy.sendCommand('click', { selector: '.foo' });
+      await Promise.resolve();
+
+      // No agentSession → no binding lookup, no tabId injected.
+      expect(getBindingSpy).not.toHaveBeenCalled();
+      const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
+      const payload = JSON.parse(sentMsg.payload as string);
+      expect(payload.params.tabId).toBeUndefined();
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'relay',
+          payload: JSON.stringify({ id: payload.id, success: true, result: 'ok' }),
+        }),
+      );
+      await cmdPromise;
+    });
+
     it('should route to explicit instance name', async () => {
       // Add two instances
       const proxy = BrowserProxyService.getInstance();
