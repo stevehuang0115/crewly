@@ -173,11 +173,41 @@ Six phases. Each phase is independently shippable and reversible (until Phase 6)
 
 ### Phase 6 — Retire legacy `ChatService`
 
-- Delete `backend/src/services/chat/chat.service.ts` and its tests.
-- Delete `~/.crewly/chat/` directory (post-backup).
-- Remove `addDirectMessage` / `addAgentMessage` / `addSystemMessage` from all call sites (should be zero remaining after Phases 2–4).
-- Frontend reads through new `getThreadHistory` API.
-- **Deliverable:** Single source of truth. Goal achieved.
+Phase 6 has to be staged carefully because legacy `ChatService` is still
+the read source for the frontend chat UI today. Cutting writes before
+cutting reads would silently break the UI. The ordering is:
+
+**Phase 6a — Reader migration (one PR per reader, can land independently):**
+  - `chat.controller.ts` HTTP read endpoints (`GET /chat/messages`,
+    `GET /chat/conversations`, etc.) — point at `ChatV2Service.listMessages`
+    / `listChannels`.
+  - `chat.gateway.ts` WebSocket subscriber paths — emit chat-v2 events.
+  - V3 SLA subscribers and any audit tooling that reads
+    `chat_messages` indirectly.
+
+  Each reader migration must verify the frontend renders identically
+  against the migrated endpoint before merging. Phase 5b (the
+  migration script) must have run in production first so chat-v2
+  contains the full historical conversation set.
+
+**Phase 6b — Stop legacy writes:**
+  - Remove the legacy `chatService.*` write calls left in place by
+    Phases 2–3 (their dual-write companions remain).
+  - Remove `processNotifyMessage` from `chat.gateway.ts` (now
+    redundant with the in-process `recordTurn` direct call).
+  - Remove `routeInProcessResponseToChat`'s legacy branch.
+  - Verify the JSON store at `~/.crewly/chat/` stops growing.
+
+**Phase 6c — Delete legacy code + data:**
+  - Delete `backend/src/services/chat/chat.service.ts` and its tests.
+  - Delete `~/.crewly/chat/` directory (post-backup, per CLAUDE.md
+    no-destructive-action policy).
+  - Remove the dead `agent_already_bound` 409 branch in
+    `channel.store.ts` (became unreachable after Phase 2 dropped the
+    unique index; this is the natural cleanup window).
+  - Delete every `import ... from '../chat/chat.service'` line.
+
+**Success criteria for the entire spec are met when Phase 6c completes.**
 
 ## Dependent Work Enabled by This Spec
 
