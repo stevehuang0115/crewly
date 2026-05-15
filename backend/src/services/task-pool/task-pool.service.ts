@@ -986,6 +986,49 @@ export class TaskPoolService {
         if (result) wi.result = result;
       },
     );
+
+    // Steve 2026-05-15 dogfood: TL Verify WIs were completing (status=done)
+    // but the SOURCE work item they were verifying stayed stuck in
+    // `done_by_worker` forever. `resolveBlockedDependents` only treats
+    // `done|verified` as terminal-success, so blocked dependents of the
+    // SOURCE (e.g. an Execute waiting on a Plan in a Plan/Execute/Review
+    // chain) were never unblocked.
+    //
+    // Concrete repro: WI 12d7e988 (Plan) — done_by_worker; verify WI
+    // 12d7e988:verify:12d7e988 — done; Execute 722da42f — blocked for 41+
+    // min waiting on the Plan that was already verified.
+    //
+    // When a verify WI completes (metadata.verifyOf points at its source),
+    // propagate the verdict to the source via verifyItem so the source
+    // moves done_by_worker → verified AND its own dependents unblock. Use
+    // the 'system' actor — this is automatic propagation, not a fresh
+    // TL action (the TL action was completing this verify WI).
+    const verifyOf =
+      updated?.metadata && typeof updated.metadata.verifyOf === 'string'
+        ? updated.metadata.verifyOf
+        : undefined;
+    if (verifyOf) {
+      try {
+        const source = await this.storage.findWorkItem(verifyOf);
+        if (source && source.status === 'done_by_worker') {
+          await this.verifyItem(verifyOf, 'system', 'verified');
+          this.logger.info('Verify WI complete → propagated to source', {
+            verifyWorkItemId: workItemId,
+            sourceWorkItemId: verifyOf,
+            verdict: 'verified',
+          });
+        }
+      } catch (err) {
+        // Propagation is best-effort — a failed propagate must NOT roll
+        // back the verify WI's own completion.
+        this.logger.warn('Verify-to-source propagation failed (non-fatal)', {
+          verifyWorkItemId: workItemId,
+          sourceWorkItemId: verifyOf,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     // Promote any blocked dependents whose deps are now all satisfied.
     await this.resolveBlockedDependents(workItemId);
     await this.storage.flush();

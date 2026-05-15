@@ -1076,6 +1076,81 @@ describe('TaskPoolService', () => {
 
       expect(updated!.status).toBe('done');
     });
+
+    it('propagates verify-WI completion to the source WI and unblocks dependents (Steve 2026-05-15)', async () => {
+      // Repro of the Adsense Plan/Execute chain stall: Plan completes
+      // worker-side (done_by_worker), system creates Verify WI for TL,
+      // TL completes the Verify WI (done) — but the source Plan stayed
+      // done_by_worker because nothing propagated, so Execute (which
+      // depended on Plan) stayed blocked forever.
+      //
+      // The fix: when a verify WI completes with metadata.verifyOf set,
+      // automatically run verifyItem('verified') on the source so it
+      // transitions done_by_worker → verified and resolveBlockedDependents
+      // unblocks downstream WIs.
+
+      // Source Plan WI — delegate type, will go through verification path
+      const plan = makeWorkItem({ type: 'delegate', target: 'agent-leo' });
+      await service.addToPool(plan);
+      await service.claimFromPool('agent-leo');
+      // Worker reports done — Plan lands in done_by_worker
+      await service.submitForVerification(plan.id, 'agent');
+      const planAfterSubmit = (await service.getAllItems()).find((w) => w.id === plan.id);
+      expect(planAfterSubmit?.status).toBe('done_by_worker');
+
+      // Execute WI depends on the Plan — starts blocked
+      const execute = makeWorkItem({ type: 'cron_run', dependsOn: [plan.id] });
+      await service.addToPool(execute);
+      const executeBefore = (await service.getAllItems()).find((w) => w.id === execute.id);
+      expect(executeBefore?.status).toBe('blocked');
+
+      // System creates a Verify WI for the TL (simulating EventToWorkItemBridge)
+      const verifyWI = makeWorkItem({
+        id: `${plan.id}:verify:${plan.id}`,
+        type: 'review',
+        target: 'agent-tl',
+        metadata: { verifyOf: plan.id },
+      });
+      await service.addToPool(verifyWI);
+      await service.claimFromPool('agent-tl');
+
+      // TL completes the Verify WI
+      await service.completeSimpleItem(verifyWI.id, 'agent');
+
+      // Source Plan should now be verified
+      const planAfterVerify = (await service.getAllItems()).find((w) => w.id === plan.id);
+      expect(planAfterVerify?.status).toBe('verified');
+
+      // Execute (which depended on Plan) should now be queued
+      const executeAfter = (await service.getAllItems()).find((w) => w.id === execute.id);
+      expect(executeAfter?.status).toBe('queued');
+    });
+
+    it('does NOT propagate when the source is no longer in done_by_worker (defensive)', async () => {
+      // If the source has already been verified or cancelled out-of-band,
+      // the propagation must be a no-op (not throw, not double-verify).
+      const plan = makeWorkItem({ type: 'delegate', target: 'agent-leo' });
+      await service.addToPool(plan);
+      await service.claimFromPool('agent-leo');
+      await service.submitForVerification(plan.id, 'agent');
+      // Manually finalize the source as verified BEFORE the verify WI completes
+      await service.verifyItem(plan.id, 'team_lead', 'verified');
+
+      // Now the verify WI completes — propagation should bail because
+      // the source is already 'verified', not 'done_by_worker'.
+      const verifyWI = makeWorkItem({
+        id: `${plan.id}:verify:${plan.id}`,
+        type: 'review',
+        target: 'agent-tl',
+        metadata: { verifyOf: plan.id },
+      });
+      await service.addToPool(verifyWI);
+      await service.claimFromPool('agent-tl');
+
+      await expect(
+        service.completeSimpleItem(verifyWI.id, 'agent'),
+      ).resolves.not.toThrow();
+    });
   });
 
   // -----------------------------------------------------------------------
