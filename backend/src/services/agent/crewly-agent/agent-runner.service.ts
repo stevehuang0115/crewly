@@ -154,7 +154,105 @@ export class AgentRunnerService {
   private modelManager: ModelManager;
   private apiClient: CrewlyApiClient;
   private model: LanguageModel | null = null;
-  private state: ConversationState;
+  /**
+   * Per-conversation state map. Each Slack thread (or web chat
+   * conversation) gets its own `ConversationState` so the LLM
+   * context is isolated — messages from thread A never leak into
+   * the prompt when responding to thread B. The conversation key
+   * is the chat-v2 channel id (e.g. `slack-D0AC7-1777760999-956969`)
+   * derived from the inbound message's `[CHAT:xxx]` marker, the
+   * `[SLACK:channel:threadTs]` marker, or — if neither is present
+   * — the literal `__default__` for runtime cases like REPL or
+   * scheduled-check inputs that have no thread identity.
+   *
+   * 2026-05-15 fix per goal: "一个 Slack thread 代表一个 chat
+   * thread, 不同 Slack thread 之间不会串联在一起."
+   */
+  private conversationStates: Map<string, ConversationState> = new Map();
+  /**
+   * Active conversation key for the message currently being
+   * processed. `processQueue` sets this before each `executeRun`
+   * so the getter `this.state` resolves to the right per-thread
+   * state without every call site needing to know about the map.
+   */
+  private currentConversationKey: string = '__default__';
+  /**
+   * Effective system prompt — captured at construction time and
+   * applied to every fresh per-conversation state created on
+   * demand. Held on the instance so `getOrCreateState` doesn't
+   * need to recompute the eval-mode stripping logic.
+   */
+  private readonly effectiveSystemPrompt: string;
+  /**
+   * Soft cap on how many distinct conversation states we hold in
+   * memory. When exceeded, the least-recently-active state is
+   * evicted (its messages live on in chat-v2 SQLite so the next
+   * access can re-hydrate). Prevents unbounded growth when a busy
+   * agent participates in thousands of Slack threads over time.
+   */
+  private readonly MAX_LIVE_CONVERSATIONS = 100;
+
+  /**
+   * Backward-compatible getter: every existing `this.state.X`
+   * call site automatically routes to the active per-conversation
+   * state. Lazy-creates a fresh state on first access for a new
+   * conversation key.
+   */
+  private get state(): ConversationState {
+    return this.getOrCreateConversationState(this.currentConversationKey);
+  }
+
+  /**
+   * Look up or create the ConversationState for a given key.
+   * Evicts the least-recently-active state when the live-set
+   * size exceeds {@link MAX_LIVE_CONVERSATIONS}.
+   *
+   * @param key - Conversation key (chat-v2 channel id or `__default__`)
+   * @returns The per-conversation state object
+   */
+  private getOrCreateConversationState(key: string): ConversationState {
+    let s = this.conversationStates.get(key);
+    if (!s) {
+      s = {
+        messages: [],
+        systemPrompt: this.effectiveSystemPrompt,
+        totalTokens: { input: 0, output: 0 },
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+      };
+      this.conversationStates.set(key, s);
+
+      // LRU eviction — pop the oldest by `lastActivityAt`. Map
+      // preserves insertion order but we want recency, so scan
+      // once on overflow rather than maintain a separate index.
+      if (this.conversationStates.size > this.MAX_LIVE_CONVERSATIONS) {
+        let evictKey: string | null = null;
+        let evictedAt: number = Infinity;
+        for (const [k, v] of this.conversationStates) {
+          if (k === key) continue;
+          const t = v.lastActivityAt.getTime();
+          if (t < evictedAt) {
+            evictedAt = t;
+            evictKey = k;
+          }
+        }
+        if (evictKey !== null) this.conversationStates.delete(evictKey);
+      }
+    }
+    return s;
+  }
+
+  /**
+   * Test / introspection helper — number of active conversation
+   * states the runner currently holds. Surfaces in
+   * `getConversationStatus` for observability.
+   *
+   * @returns Number of live per-conversation states
+   */
+  public getConversationCount(): number {
+    return this.conversationStates.size;
+  }
+
   private processing = false;
   private messageQueue: Array<{ message: string; conversationId?: string; metadata?: Record<string, string>; resolve: (result: AgentRunResult) => void; reject: (error: Error) => void; options?: { abortSignal?: AbortSignal; streaming?: StreamingEventCallbacks } }> = [];
   private auditLog: AuditEntry[] = [];
@@ -203,16 +301,13 @@ export class AgentRunnerService {
     );
     this.securityPolicy = { ...CREWLY_AGENT_DEFAULTS.SECURITY_POLICY };
     // In eval mode, strip delegation-first instructions so agent implements directly
-    const effectivePrompt = config.evalMode
+    this.effectiveSystemPrompt = config.evalMode
       ? AgentRunnerService.stripDelegationInstructions(config.systemPrompt)
       : config.systemPrompt;
-    this.state = {
-      messages: [],
-      systemPrompt: effectivePrompt,
-      totalTokens: { input: 0, output: 0 },
-      createdAt: new Date(),
-      lastActivityAt: new Date(),
-    };
+    // Conversation states are lazy-created on first access via the
+    // `state` getter, so we don't need to seed `__default__` here.
+    // The first message processed will create whichever conversation
+    // it targets.
   }
 
   // ---------------------------------------------------------------------------
@@ -581,6 +676,22 @@ export class AgentRunnerService {
             threadTs: item.metadata.threadTs,
           };
         }
+        // 2026-05-15 thread isolation: pick the per-conversation
+        // state for this message so the LLM sees only this thread's
+        // history. Prefer the explicit conversationId; for Slack
+        // inbound that has no conversationId yet (rare path), derive
+        // it from the channelId+threadTs marker using the same
+        // `slack-${channelId}-${threadTs}` shape persistSlackInbound
+        // and `/slack/send` use, so chat-v2 channel ids and runner
+        // conversation keys stay aligned. Fall back to `__default__`
+        // for runtime-internal messages (scheduled checks, system
+        // events) that have no thread identity.
+        const resolvedConvKey: string =
+          item.conversationId ??
+          (item.metadata?.channelId && item.metadata?.threadTs
+            ? `slack-${item.metadata.channelId}-${String(item.metadata.threadTs).replace('.', '-')}`
+            : this.lastKnownConversationId ?? '__default__');
+        this.currentConversationKey = resolvedConvKey;
         // Set streaming callbacks for this run
         this.streamingCallbacks = item.options?.streaming ?? {};
         const result = await this.tracing.withSpan(TRACING_CONSTANTS.SPANS.AGENT_RUN, {
