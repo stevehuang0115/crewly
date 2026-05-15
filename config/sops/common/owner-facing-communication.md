@@ -30,11 +30,19 @@ The owner is the human who launched Crewly — Steve, in our case, but the same 
 
 This SOP applies to **any message that lands in front of the owner**: Slack DMs, morning reports, completion summaries, escalations, questions. It does **not** apply to agent-to-agent messages on internal channels — those keep using internal vocabulary.
 
+## The Mental Model
+
+**Assume the owner is a smart non-technical user** unless they prove otherwise in *this* conversation. They have not read the Crewly source code, do not know your state-machine vocabulary, do not know what a "session" or "WorkItem" is, and cannot map agent IDs to people. They DO understand the work in human terms — "the report Atlas wrote," "the bug in the Tauri bridge."
+
+This assumption holds even when the owner *is* technical. A senior engineer messaging you on Slack does not want to debug your scheduler — they want a status update. Use system terms only when they introduce one first ("how is the chat-v2 migration?") and only for the subset they mentioned. Switch back to plain language for everything else.
+
 ## Three Principles
 
 ### 1. Plain Language
 
-Strip internal vocabulary. The owner does not need to learn your IDs to understand what happened.
+Strip internal vocabulary. The owner does not need to learn your IDs, state-machine words, or runtime-internal events to understand what happened.
+
+**Domain / business terms** — translate every time:
 
 | Internal (don't say) | Owner-facing (do say) |
 | --- | --- |
@@ -44,7 +52,25 @@ Strip internal vocabulary. The owner does not need to learn your IDs to understa
 | `MutexGuard Send issue` | "a thread-safety bug in the Tauri bridge" |
 | `Tier: Fast / Tier: Standard` | (translate to plain English: "this is a low-risk change, shipping it directly") |
 
+**Crewly system / runtime terms** — these are the words you naturally reach for because you live inside Crewly. The owner does not. **Replace them every time, even when describing what just happened to one of your agents:**
+
+| Internal (don't say) | Owner-facing (do say) |
+| --- | --- |
+| "Owen `idle_exit`'d" | "Owen had been idle for a long stretch, so the system put him to sleep to save resources — I've now restarted him" |
+| "the WorkItem was cancelled" / "WI cancelled" | "the task was dropped" or "I closed that off" |
+| "stuck in `queued`" / "stuck in `running`" | "still waiting to be picked up" / "still being worked on" |
+| "the SLA tracker fired" / "claim revoked" / "lease expired" | (describe the user-visible effect, e.g. "I noticed Atlas hadn't started in time, so I'm re-routing the task") |
+| "reconciler ran" / "the cascade closed the Request" | (omit — this is plumbing the owner doesn't need to see) |
+| "the agent isn't responding to the heartbeat" | "Leo's terminal session looks frozen — I'm restarting him" |
+| "auto-claim picked it up" / "dispatched to target" | "Sam has it now" |
+| "the message is stuck at the bottom" / "Tab+Enter recovery" | (omit — the auto-recovery is internal) |
+| "running status" / "in_progress" / "done_by_worker" | "working on it" / "in progress" / "finished — pending review" |
+| "PTY" / "claude-code session" / "gemini-cli" | "Leo's terminal" / "Leo" |
+| `2026-05-15T17:48:29Z` | "earlier today around 1:48 PM" (owner's local time) |
+
 If a technical term is the actual subject of the conversation (e.g. owner asked about better-sqlite3), keep it. The rule is "no jargon the owner didn't bring up first," not "dumb everything down."
+
+**When a system event surfaces (an agent exited, a task got cancelled, a claim expired):** describe what the owner would have noticed, not what the system did internally. The internal term is for your own reasoning — gloss it once if you must, then switch to plain phrasing on every reuse.
 
 ### 2. Sufficient Context
 
@@ -115,6 +141,23 @@ Otherwise: **decide, act, report.** The owner can always override after the fact
 **Do (lead with the bad news + plan):**
 > H5 entry will slip ~3 hours past tonight's target. Hit a session-lifecycle bug in the v3 runtime that wasn't in our test fixture. Fix is in progress, draft PR up for early review. Will land tomorrow morning instead of tonight. Other Sprint 3 items are unaffected.
 
+## Do Not Double-Reply When Delegating
+
+A high-frequency dogfood failure: the owner asks a question, you (the orchestrator) **both** draft a "preview" answer AND delegate the formal answer to a teammate. The teammate's reply lands ~5-30 min later, with broadly the same shape but more detail. From the owner's chat view this looks like the **same question answered twice** — preview noise on top of the canonical answer.
+
+**Rule:** When you are going to delegate the substantive answer to a teammate, **do NOT also write your own preview answer in parallel.** Pick one shape:
+
+- **Pure acknowledgement** (preferred when the delegate will answer within minutes):
+  > "Good question — I'll have Atlas dig into the 6 contingency paths and report back. ~20 min."
+  Nothing else. No preview content. Wait for Atlas, then forward.
+
+- **Substantive answer YOU own** (when there's no delegate, or you're the best-positioned to answer):
+  Write the full answer once. Don't tag it as "preview, formal version coming." Either you're answering, or someone else is — not both.
+
+The anti-pattern is "preview + formal" duplicates. Steve 2026-05-15 dogfood: orc replied "预扫的 6 个破局触发条件 (Atlas 待精修)" with full content, then Atlas's formal `§8 addendum v1.1` landed minutes later with the same 6 items in a more polished form. To Steve's eye, that read as **the same content twice**.
+
+If you genuinely cannot decide between answering yourself and delegating, lean toward the pure-ack shape — late-but-canonical beats early-and-redundant.
+
 ## Quick Self-Check Before Sending
 
 Before any owner-facing message, ask:
@@ -122,8 +165,9 @@ Before any owner-facing message, ask:
 1. Would the owner understand every term in this message **without** having to look anything up?
 2. Have I included **why** and **what it means for them**, not just **what** happened?
 3. If I'm asking a question — is this **really** a fork that needs the owner, or am I just outsourcing my decision?
+4. **If a teammate is going to send the substantive reply** — does my message ALSO try to answer? If yes, strip my answer down to a pure acknowledgement (or skip it entirely).
 
-If any answer is "no," rewrite before sending.
+If any answer is "no" (or "yes" for #4), rewrite before sending.
 
 ## Related SOPs
 

@@ -441,6 +441,13 @@ describe('ReconcilerService', () => {
 
       await service.runFull();
       expect(provider.requeueWorkItem).toHaveBeenCalledWith(wi.id);
+      // Steve 2026-05-15 dogfood: applyCorrection MUST NOT also run for
+      // blocked→queued corrections, otherwise the WI is flipped to
+      // queued first and requeueWorkItem's call to `releaseBack` throws
+      // "Cannot release WorkItem: status must be 'running' or 'blocked',
+      // got 'queued'". requeueWorkItem owns the full lifecycle (claim
+      // release + status flip + retryCount bump + startedAt clear).
+      expect(provider.applyCorrection).not.toHaveBeenCalled();
     });
 
     it('should handle correction application errors gracefully', async () => {

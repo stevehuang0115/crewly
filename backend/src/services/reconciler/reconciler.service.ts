@@ -403,6 +403,26 @@ export class ReconcilerService {
           continue;
         }
 
+        // blocked → queued (agent-back-online recovery) is special: it
+        // needs the full lifecycle — release the dangling claim, clear
+        // startedAt, increment retryCount — which `releaseBack` owns.
+        // The earlier code called `applyCorrection` (which flips status
+        // to queued via updateItemStatus) AND `requeueWorkItem` (which
+        // calls `releaseBack`, which expects status running|blocked).
+        // The second call always threw "Cannot release WorkItem: status
+        // must be 'running' or 'blocked', got 'queued'" — see Steve's
+        // 2026-05-15 17:58:18 dogfood log for WI e61e16e9. Skip
+        // applyCorrection for this case so releaseBack sees the
+        // original blocked status and the full recovery side-effects run.
+        if (
+          correction.entityType === 'work_item' &&
+          correction.newState === 'queued' &&
+          correction.previousState === 'blocked'
+        ) {
+          await this.dataProvider.requeueWorkItem(correction.entityId);
+          continue;
+        }
+
         await this.dataProvider.applyCorrection(correction);
 
         // If a WorkItem was revoked (from claim expiry), release it back to pool
@@ -411,15 +431,6 @@ export class ReconcilerService {
           correction.newState === 'revoked'
         ) {
           await this.dataProvider.releaseToPool(correction.entityId, correction.reason);
-        }
-
-        // If a WorkItem should be re-queued (recovery)
-        if (
-          correction.entityType === 'work_item' &&
-          correction.newState === 'queued' &&
-          correction.previousState === 'blocked'
-        ) {
-          await this.dataProvider.requeueWorkItem(correction.entityId);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
