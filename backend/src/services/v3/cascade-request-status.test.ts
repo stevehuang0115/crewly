@@ -138,6 +138,86 @@ describe('cascadeRequestStatus', () => {
     expect(updates).toEqual([['req-1', { status: 'cancelled' }]]);
   });
 
+  it('does NOT cascade-cancel when the only cancelled child was SLA-resolved by orc_reply (Steve 2026-05-15)', async () => {
+    // Reproduces the dogfood race: a Slack Request with one
+    // respond_to_user SLA tracker. Orc replies in-window → markResolved
+    // transitions the tracker queued→cancelled with
+    // metadata.slaResolvedReason='orc_reply'. Cascade fires on
+    // task:cancelled; without this guard it overwrites Request.status
+    // to 'cancelled' just before RequestSlaSubscriber.maybeCloseRequest
+    // moves it to 'done'.
+    const r = makeRequest({ status: 'ready' });
+    const { deps, updates } = makeDeps({
+      request: r,
+      pool: [
+        makeWI({
+          id: 'request:req-1:respond_to_user',
+          status: 'cancelled',
+          metadata: { slaResolvedReason: 'orc_reply' },
+        }),
+      ],
+    });
+    await cascadeRequestStatus(r.id, deps);
+    expect(updates).toEqual([]);
+  });
+
+  it('honors verified-reply tags for chatv2_reply and workitem_decompose too', async () => {
+    const r = makeRequest({ status: 'ready' });
+    const { deps, updates } = makeDeps({
+      request: r,
+      pool: [
+        makeWI({
+          id: 'a',
+          status: 'cancelled',
+          metadata: { slaResolvedReason: 'chatv2_reply' },
+        }),
+        makeWI({
+          id: 'b',
+          status: 'cancelled',
+          metadata: { slaResolvedReason: 'workitem_decompose' },
+        }),
+      ],
+    });
+    await cascadeRequestStatus(r.id, deps);
+    expect(updates).toEqual([]);
+  });
+
+  it('still cascades to cancelled when SLA-resolved children sit alongside other genuine cancellations', async () => {
+    // Mixed: 1 SLA-resolved (orc_reply) + 1 real cancellation. The SLA
+    // tracker is filtered out, leaving ['cancelled'] → cascade fires.
+    const r = makeRequest({ status: 'ready' });
+    const { deps, updates } = makeDeps({
+      request: r,
+      pool: [
+        makeWI({
+          id: 'sla',
+          status: 'cancelled',
+          metadata: { slaResolvedReason: 'orc_reply' },
+        }),
+        makeWI({ id: 'real-cancel', status: 'cancelled' }),
+      ],
+    });
+    await cascadeRequestStatus(r.id, deps);
+    expect(updates).toEqual([['req-1', { status: 'cancelled' }]]);
+  });
+
+  it('still cascades to running when SLA-resolved cancellation coexists with a running sibling', async () => {
+    const r = makeRequest({ status: 'ready' });
+    const { deps, updates } = makeDeps({
+      request: r,
+      pool: [
+        makeWI({
+          id: 'sla',
+          status: 'cancelled',
+          metadata: { slaResolvedReason: 'orc_reply' },
+        }),
+        makeWI({ id: 'live', status: 'running' }),
+      ],
+    });
+    await cascadeRequestStatus(r.id, deps);
+    expect(updates).toEqual([['req-1', { status: 'running' }]]);
+  });
+
   it('cascades to running when any child is running, regardless of other state', async () => {
     const r = makeRequest({ status: 'ready' });
     const { deps, updates } = makeDeps({

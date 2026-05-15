@@ -620,16 +620,19 @@ export class CrewlyServer {
 			// Subscribe EventBus events for targeted reconciliation
 			if (this.reconcilerService) {
 				const reconciler = this.reconcilerService;
-				const eventTypes = ['agent:idle', 'task:completed', 'task:failed', 'agent:inactive'] as const;
-				for (const eventType of eventTypes) {
-					this.eventBusService.subscribe({
-						eventType,
-						filter: {},
-						subscriberSession: '__reconciler__',
-						oneShot: false,
-						ttlMinutes: 525_600, // 1 year — permanent subscription
-					});
-				}
+
+				// 2026-05-15 Steve dogfood: the prior `subscribe({ subscriberSession:
+				// '__reconciler__' })` loop here was redundant AND wrong. The
+				// subscribe path routes critical events through
+				// `MessageQueueService.enqueue` keyed by `targetSession`, which
+				// then fails noisily because `__reconciler__` is not a PTY
+				// session ("Session '__reconciler__' does not exist", every
+				// reconciler tick). The in-process `event_published` listener
+				// below already drives the reconciler — no second wiring needed.
+				// Removed the subscribe-block; if a future change needs persistent
+				// metadata for the reconciler subscription, attach it as a real
+				// in-process subscriber via `onInProcess` rather than the
+				// session-targeted `subscribe` API.
 
 				// Listen for all published events and trigger targeted reconciliation
 				this.eventBusService.on('event_published', (payload: { eventType: string; sessionName: string }) => {
