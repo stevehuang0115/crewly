@@ -3817,6 +3817,35 @@ describe('AgentRegistrationService', () => {
 				(service as any).getPromptFileForRole('')
 			).rejects.toThrow(InvalidAgentRoleError);
 		});
+
+		// Steve 2026-05-15 dogfood: CE team config used `role: "tech-lead"`
+		// while the canonical directory is `team-leader`, producing a
+		// steady drip of "Could not load prompt from config" warns on
+		// every member start.
+		it('resolves "tech-lead" alias → team-leader directory', async () => {
+			const result = await (service as any).getPromptFileForRole('tech-lead');
+			expect(result).toContain('config/roles/team-leader/prompt.md');
+		});
+
+		it('resolves "Tech Lead" (mixed case + space) → team-leader', async () => {
+			const result = await (service as any).getPromptFileForRole('Tech Lead');
+			expect(result).toContain('config/roles/team-leader/prompt.md');
+		});
+
+		it('resolves "tl" alias → team-leader', async () => {
+			const result = await (service as any).getPromptFileForRole('tl');
+			expect(result).toContain('config/roles/team-leader/prompt.md');
+		});
+
+		it('resolves "team-lead" alias → team-leader (synonym normalization)', async () => {
+			const result = await (service as any).getPromptFileForRole('team-lead');
+			expect(result).toContain('config/roles/team-leader/prompt.md');
+		});
+
+		it('does not alias a role that already matches a directory (no regression)', async () => {
+			const result = await (service as any).getPromptFileForRole('developer');
+			expect(result).toContain('config/roles/developer/prompt.md');
+		});
 	});
 
 	describe('createAgentSession role validation (Bug #1 fail-fast)', () => {

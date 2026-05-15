@@ -739,6 +739,27 @@ export class AgentRegistrationService {
 	}
 
 	/**
+	 * Role aliases — common synonyms users naturally type in team configs
+	 * mapped to the canonical directory name under `config/roles/`. Without
+	 * these, a team-config role like `"tech-lead"` would fall through to a
+	 * non-existent directory and trigger the ENOENT fallback path on every
+	 * agent registration (Steve 2026-05-15 dogfood: CE team config used
+	 * `role: "tech-lead"` while the canonical directory is `team-leader`,
+	 * producing a steady drip of "Could not load prompt from config" warns
+	 * for every member-start with no actionable resolution short of editing
+	 * user data).
+	 *
+	 * Keep keys lowercased + dash-normalized (matches the post-normalization
+	 * shape used by `getPromptFileForRole`).
+	 */
+	private static readonly ROLE_DIR_ALIASES: ReadonlyMap<string, string> = new Map([
+		['tech-lead', 'team-leader'],
+		['techlead', 'team-leader'],
+		['tl', 'team-leader'],
+		['team-lead', 'team-leader'],
+	]);
+
+	/**
 	 * Get prompt file path for a specific role
 	 * Uses the unified config/roles/{role}/prompt.md structure
 	 */
@@ -748,7 +769,11 @@ export class AgentRegistrationService {
 		// and trigger the silent fallback path that left agents with empty prompts (Bug #1).
 		validateAgentRole(role, 'getPromptFileForRole');
 		// Normalize role name to directory name format
-		const roleName = role.toLowerCase().replace(/\s+/g, '-');
+		const normalized = role.toLowerCase().replace(/\s+/g, '-');
+		// Resolve aliases (e.g. tech-lead → team-leader). Falls through for
+		// any role that already matches its directory name.
+		const roleName =
+			AgentRegistrationService.ROLE_DIR_ALIASES.get(normalized) ?? normalized;
 		return path.join(process.cwd(), 'config', 'roles', roleName, 'prompt.md');
 	}
 
