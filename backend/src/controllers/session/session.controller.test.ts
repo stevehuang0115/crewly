@@ -13,6 +13,8 @@ import { RUNTIME_TYPES } from '../../constants.js';
 
 // Mock dependencies
 const mockSendMessage = jest.fn<any>();
+const mockGetAllItems = jest.fn<any>().mockResolvedValue([]);
+
 jest.mock('../../services/session/index.js', () => ({
 	getSessionBackendSync: jest.fn(),
 	getSessionBackend: jest.fn(),
@@ -20,6 +22,14 @@ jest.mock('../../services/session/index.js', () => ({
 	createSessionCommandHelper: jest.fn(() => ({
 		sendMessage: mockSendMessage,
 	})),
+}));
+
+jest.mock('../../services/task-pool/task-pool.service.js', () => ({
+	TaskPoolService: {
+		getInstance: () => ({
+			getAllItems: () => mockGetAllItems(),
+		}),
+	},
 }));
 
 jest.mock('../../services/core/logger.service.js', () => ({
@@ -96,7 +106,21 @@ describe('Session Controller - Previous Sessions', () => {
 	});
 
 	describe('getPreviousSessions', () => {
-		it('should return sessions with no active PTY', async () => {
+		beforeEach(() => {
+			// Reset pool mock between tests
+			mockGetAllItems.mockReset();
+			mockGetAllItems.mockResolvedValue([]);
+		});
+
+		it('should return sessions with no active PTY (pool-filter retains them when WI targets them)', async () => {
+			// Steve 2026-05-15: pool filter retains sessions that have
+			// at least one non-terminal WI targeting them. Both agents
+			// here have pool work — pass through.
+			mockGetAllItems.mockResolvedValue([
+				{ target: 'agent-1', status: 'queued' },
+				{ target: 'agent-2', status: 'running' },
+			]);
+
 			const sessionsMap = new Map([
 				['agent-1', { name: 'agent-1', role: 'dev', teamId: 'team-1', runtimeType: RUNTIME_TYPES.CLAUDE_CODE, claudeSessionId: 'abc-123' }],
 				['agent-2', { name: 'agent-2', role: 'qa', runtimeType: RUNTIME_TYPES.GEMINI_CLI }],
@@ -121,6 +145,11 @@ describe('Session Controller - Previous Sessions', () => {
 		});
 
 		it('should filter out sessions with active PTY', async () => {
+			mockGetAllItems.mockResolvedValue([
+				{ target: 'active-agent', status: 'running' },
+				{ target: 'stopped-agent', status: 'queued' },
+			]);
+
 			const sessionsMap = new Map([
 				['active-agent', { name: 'active-agent', role: 'dev', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
 				['stopped-agent', { name: 'stopped-agent', role: 'qa', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
@@ -136,6 +165,71 @@ describe('Session Controller - Previous Sessions', () => {
 			const jsonCall = (res.json as jest.Mock).mock.calls[0][0] as PreviousSessionsResponse;
 			expect(jsonCall.data.sessions).toHaveLength(1);
 			expect(jsonCall.data.sessions[0].name).toBe('stopped-agent');
+		});
+
+		// Steve 2026-05-15 dogfood: Resume dialog listed 12 marketing/
+		// think-tank agents with zero pool work, then `startTeam` woke
+		// them all, then wake-gate rejected each member with "pool has
+		// no queued/blocked WorkItem with target=...". Filter now
+		// matches the wake-gate's contract.
+
+		it('filters out sessions with no active WI in the pool (Steve 2026-05-15)', async () => {
+			mockGetAllItems.mockResolvedValue([
+				{ target: 'agent-with-work', status: 'queued' },
+				{ target: 'agent-also-idle', status: 'done' }, // terminal — doesn't count
+			]);
+
+			const sessionsMap = new Map([
+				['agent-with-work', { name: 'agent-with-work', role: 'dev', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
+				['agent-idle', { name: 'agent-idle', role: 'dev', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
+				['agent-also-idle', { name: 'agent-also-idle', role: 'dev', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
+			]);
+			mockPersistence.getRegisteredSessionsMap.mockReturnValue(sessionsMap);
+			mockBackend.sessionExists.mockReturnValue(false);
+
+			const req = createMockReq();
+			const res = createMockRes();
+			await getPreviousSessions.call(undefined, req, res);
+
+			const jsonCall = (res.json as jest.Mock).mock.calls[0][0] as PreviousSessionsResponse;
+			expect(jsonCall.data.sessions).toHaveLength(1);
+			expect(jsonCall.data.sessions[0].name).toBe('agent-with-work');
+		});
+
+		it('always includes orchestrator sessions regardless of pool state', async () => {
+			mockGetAllItems.mockResolvedValue([]); // empty pool
+
+			const sessionsMap = new Map([
+				['crewly-orc', { name: 'crewly-orc', role: 'orchestrator', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
+				['agent-x', { name: 'agent-x', role: 'dev', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
+			]);
+			mockPersistence.getRegisteredSessionsMap.mockReturnValue(sessionsMap);
+			mockBackend.sessionExists.mockReturnValue(false);
+
+			const req = createMockReq();
+			const res = createMockRes();
+			await getPreviousSessions.call(undefined, req, res);
+
+			const jsonCall = (res.json as jest.Mock).mock.calls[0][0] as PreviousSessionsResponse;
+			expect(jsonCall.data.sessions.map((s) => s.name)).toEqual(['crewly-orc']);
+		});
+
+		it('falls back to include-all behavior when pool read fails (graceful degradation)', async () => {
+			mockGetAllItems.mockRejectedValue(new Error('pool unavailable'));
+
+			const sessionsMap = new Map([
+				['agent-x', { name: 'agent-x', role: 'dev', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
+			]);
+			mockPersistence.getRegisteredSessionsMap.mockReturnValue(sessionsMap);
+			mockBackend.sessionExists.mockReturnValue(false);
+
+			const req = createMockReq();
+			const res = createMockRes();
+			await getPreviousSessions.call(undefined, req, res);
+
+			const jsonCall = (res.json as jest.Mock).mock.calls[0][0] as PreviousSessionsResponse;
+			// Pool unavailable → fall back to legacy behavior, include all
+			expect(jsonCall.data.sessions.map((s) => s.name)).toEqual(['agent-x']);
 		});
 
 		it('should return empty array when no sessions registered', async () => {
