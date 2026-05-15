@@ -241,7 +241,22 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     // call site now invokes the canonical `ChatV2Service.recordTurn`
     // directly (the legacy `ChatService.addDirectMessage` façade has
     // been retired).
-    if (conversationId) {
+    //
+    // 2026-05-15 follow-up: the reply-slack skill only sends
+    // `{channelId, text, threadTs}` (no `conversationId`), so an
+    // earlier `if (conversationId)` guard silently dropped every
+    // tool-driven reply on the floor. Synthesize a conversationId
+    // from `channelId + threadTs` using the same format the inbound
+    // bridge writes (`slack-${channelId}-${threadTs}`) so the agent
+    // reply and the user inbound land on the same chat-v2 channel.
+    const resolvedConversationId: string | undefined =
+      (typeof conversationId === 'string' && conversationId.length > 0
+        ? conversationId
+        : undefined) ??
+      (typeof channelId === 'string' && typeof threadTs === 'string'
+        ? `slack-${channelId}-${String(threadTs).replace('.', '-')}`
+        : undefined);
+    if (resolvedConversationId) {
       try {
         const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
         const chatV2 = getChatV2Service();
@@ -250,7 +265,7 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
             ? senderSessionName
             : 'crewly-orc';
         const channel = chatV2.ensureChannelForLegacyConversation({
-          conversationId: String(conversationId),
+          conversationId: resolvedConversationId,
           agentSession,
         });
         chatV2.recordTurn({

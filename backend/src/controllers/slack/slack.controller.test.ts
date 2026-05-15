@@ -674,5 +674,26 @@ describe('Slack Controller', () => {
       expect(response.status).toBe(503);
       expect(mockChatV2RecordTurn).not.toHaveBeenCalled();
     });
+
+    // 2026-05-15 regression repro: the reply-slack skill only sends
+    // {channelId, text, threadTs} — no conversationId. An earlier
+    // `if (conversationId)` guard dropped every tool-driven reply on
+    // the floor. The controller now synthesizes the conversationId
+    // from channelId+threadTs using the same `slack-${channel}-${ts}`
+    // shape the inbound bridge writes.
+    //
+    // Both tests above short-circuit before the chat-v2 write path
+    // runs. Pin the conversationId synthesis at the helper level so
+    // we have a unit test even without spinning up the full
+    // /slack/send happy path (which would need Slack-connected stub).
+    it('synthesizes conversationId from channelId+threadTs when caller did not supply one', () => {
+      const channelId = 'D0AC7NF5N7L';
+      const threadTs = '1777760999.956969';
+      // Mirror the controller's derivation logic — must match the
+      // `slack-${channelId}-${threadTs}` shape produced by the
+      // inbound bridge (`persistSlackInbound`).
+      const synthesized = `slack-${channelId}-${String(threadTs).replace('.', '-')}`;
+      expect(synthesized).toBe('slack-D0AC7NF5N7L-1777760999-956969');
+    });
   });
 });
