@@ -214,6 +214,54 @@ The goal is achieved when **all** of these hold:
 2. **Multi-process safety**: when OSS + Pro both run and both can talk to the same backend, can they both write through `recordTurn` concurrently? `MessageStore.insert` uses a transaction with `seq = MAX(seq)+1` — verify behaviour under concurrent inserts.
 3. **PTY stream-json mode**: confirmed Claude Code supports it. Need to confirm Gemini CLI's equivalent before committing Phase 4 to a non-marker strategy.
 
+## Phase 2 design discovery — channel-id semantic mismatch (2026-05-14)
+
+Working through the Phase 2 implementation surfaced a real architectural friction that must be resolved before any writer migration can proceed.
+
+**The mismatch:**
+
+- **Legacy `ChatService` semantics**: a "conversation" is one Slack thread or one web chat thread. A single agent (e.g., `crewly-orc`) participates in MANY conversations concurrently — one per Slack DM thread, one per web chat session, etc.
+- **`chat-v2` schema (current)**: `chat_channels` has a partial unique index `uq_channel_agent_dm_active ON (agent_session) WHERE archived_at IS NULL AND type = 'dm'`. This enforces **one active DM channel per agent**. Trying to insert a second DM channel for the same agent throws `agent_already_bound` (409).
+
+If we naively map every legacy conversationId to a chat_channels row of type='dm', the second Slack thread to `crewly-orc` will be rejected at insert time. The current chat-v2 design assumed Phase 1 1:1 user↔agent DMs, not the many-thread reality of the production system.
+
+**Options:**
+
+1. **A. Treat each legacy conversation as `type='channel'`** instead of `'dm'`.
+   - Pros: The unique index doesn't apply to `'channel'` rows; we can have N concurrent threads per agent.
+   - Cons: `'channel'` rows require `team_id` per the schema check, and the type was introduced for the Slack-like team surface. Stretching it to cover ephemeral Slack DM threads muddles the type's meaning.
+
+2. **B. Drop or relax the unique index** so DM channels can also be N-per-agent.
+   - Pros: Cleanest mapping — legacy conversationId becomes `chat_channels.id` 1:1.
+   - Cons: Breaks the existing chat-v2 Phase A contract (which guaranteed 1:1 binding for UX reasons). Frontend code that lists "active DM for agent X" would need to handle multiple results.
+
+3. **C. One chat-v2 channel per agent, legacy conversationIds become `thread_id`** within that channel.
+   - Pros: Preserves chat-v2's 1:1 invariant; reuses the existing `thread_id` column on `chat_messages`.
+   - Cons: Frontend read code must group messages by `thread_id` to render "conversations". `chat_channels.last_message_at` and presence semantics conflate across all threads. A high-volume agent has all history in one channel, complicating pagination.
+
+4. **D. Add a new abstraction layer**: chat-v2 "channel" stays as the agent-level container; introduce a new `chat_conversations` table that maps `(channel_id, conversation_key)` → conversation metadata. `chat_messages` gains a `conversation_id` FK.
+   - Pros: Cleanest separation of concerns; no overloading of existing fields.
+   - Cons: Schema migration, more tables, more work. Pushes Phase 1 milestone further.
+
+**Recommendation (deferred to user / architect review):**
+
+Option C is the lowest-cost path that preserves chat-v2's existing contracts. Suggested mapping:
+- `chat_channels.id = "agent:" + agentSession` (one channel per agent)
+- `chat_messages.thread_id = legacy_conversation_id` (Slack thread ts or web conv id)
+- Migrate the read API to require `thread_id` for "single-thread" views; existing `getThreadHistory` already supports filtering by `threadId`.
+
+This requires:
+- `ChatV2Service.ensureAgentChannel(agentSession)` helper to lazy-create the per-agent channel
+- `recordTurn` callers always pass `threadId = legacy_conversation_id`
+- A read API method `getConversationHistory(agentSession, conversationId)` that combines the two lookups
+
+**Impact on phases:**
+- Phase 1 (this PR) is unaffected — `recordTurn` already accepts `threadId`.
+- Phase 2 (in-process migration) is blocked on picking a mapping option. The recommended Option C requires ~50 additional lines (the helper + updated routing).
+- Phase 5 data migration changes shape: each legacy `~/.crewly/chat/*.json` becomes N message rows under a per-agent channel, not a new channel row.
+
+**Action**: pause Phase 2 implementation until Option A / B / C / D is selected. Until then, the spec is correct in destination but the migration path needs this decision locked.
+
 ## Implementation Tracking
 
 Each phase ships as a separate PR with the conventional commits prefix and a reference back to this spec:
