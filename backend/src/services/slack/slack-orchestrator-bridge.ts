@@ -15,7 +15,8 @@ import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { PDFParse } from 'pdf-parse';
 import { getSlackService, SlackService } from './slack.service.js';
-import { getChatService, ChatService } from '../chat/chat.service.js';
+import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
+import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import {
   isOrchestratorActive,
   isAgentActive,
@@ -184,7 +185,7 @@ let bridgeInstance: SlackOrchestratorBridge | null = null;
 export class SlackOrchestratorBridge extends EventEmitter {
   private logger = LoggerService.getInstance().createComponentLogger('SlackBridge');
   private slackService: SlackService;
-  private chatService: ChatService;
+  private chatV2: ChatV2Service;
   private messageQueueService: MessageQueueService | null = null;
   private threadStatusQueue: ThreadStatusQueueService | null = null;
   private threadStore: SlackThreadStoreService | null = null;
@@ -214,7 +215,7 @@ export class SlackOrchestratorBridge extends EventEmitter {
   constructor(config: Partial<SlackBridgeConfig> = {}) {
     super();
     this.slackService = getSlackService();
-    this.chatService = getChatService();
+    this.chatV2 = getChatV2Service();
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
@@ -947,16 +948,19 @@ Just type naturally to chat with the orchestrator!`;
             enrichedMessage = `${message}\n\n[Thread context file: ${threadFilePath}]`;
           }
 
-          // Store in chat service for persistence
-          const result = await this.chatService.sendMessage({
-            content: enrichedMessage,
-            conversationId: context?.conversationId,
-            metadata: {
-              source: 'slack',
-              userId: context?.userId,
-              channelId: context?.channelId,
+          // Store in canonical chat-v2 for persistence
+          const result = {
+            conversation: {
+              id: this.persistSlackInbound({
+                content: enrichedMessage,
+                conversationId: context?.conversationId,
+                agentSession: 'crewly-orc',
+                channelId: context?.channelId,
+                threadTs: context?.threadTs,
+                userId: context?.userId,
+              }).conversationId,
             },
-          });
+          };
 
           try {
             this.messageQueueService.enqueue({
@@ -1025,16 +1029,19 @@ Just type naturally to chat with the orchestrator!`;
         enrichedMessage = `${message}\n\n[Thread context file: ${threadFilePath}]`;
       }
 
-      // Send message via chat service to store it
-      const result = await this.chatService.sendMessage({
-        content: enrichedMessage,
-        conversationId: context?.conversationId,
-        metadata: {
-          source: 'slack',
-          userId: context?.userId,
-          channelId: context?.channelId,
+      // Persist user message in canonical chat-v2 store
+      const result = {
+        conversation: {
+          id: this.persistSlackInbound({
+            content: enrichedMessage,
+            conversationId: context?.conversationId,
+            agentSession: 'crewly-orc',
+            channelId: context?.channelId,
+            threadTs: context?.threadTs,
+            userId: context?.userId,
+          }).conversationId,
         },
-      });
+      };
 
       // Enqueue the message with a resolve callback for response routing.
       // The QueueProcessorService will call slackResolve() when the
@@ -1191,16 +1198,18 @@ Just type naturally to chat with the orchestrator!`;
     // Try to enqueue via the message queue (same path as orchestrator delivery)
     if (this.messageQueueService) {
       try {
-        // Store in chat history
-        const result = await this.chatService.sendMessage({
-          content: enrichedMessage,
-          conversationId: context?.conversationId,
-          metadata: {
-            source: 'slack',
-            userId: context?.userId,
-            channelId: context?.channelId,
+        const result = {
+          conversation: {
+            id: this.persistSlackInbound({
+              content: enrichedMessage,
+              conversationId: context?.conversationId,
+              agentSession: auditorSession,
+              channelId: context?.channelId,
+              threadTs: context?.threadTs,
+              userId: context?.userId,
+            }).conversationId,
           },
-        });
+        };
 
         this.messageQueueService.enqueue({
           content: enrichedMessage,
@@ -2008,11 +2017,18 @@ Just type naturally to chat with the orchestrator!`;
 
       // Use message queue for agents that support it, or deliver directly
       if (this.messageQueueService) {
-        const chatResult = await this.chatService.sendMessage({
-          content: enrichedMessage,
-          conversationId: context?.conversationId,
-          metadata: { source: 'slack', channelId: context?.channelId },
-        });
+        const chatResult = {
+          conversation: {
+            id: this.persistSlackInbound({
+              content: enrichedMessage,
+              conversationId: context?.conversationId,
+              agentSession: sessionName,
+              channelId: context?.channelId,
+              threadTs: context?.threadTs,
+              userId: context?.userId,
+            }).conversationId,
+          },
+        };
 
         return new Promise<string>((resolve) => {
           let resolved = false;
@@ -2054,12 +2070,50 @@ Just type naturally to chat with the orchestrator!`;
     }
   }
 
-  // Phase 6β of unified-chat-message-store spec: the
-  // `dualWriteSlackInboundToV2` helper added in Phase 3 was removed
-  // because `ChatService.sendMessage` is now a thin façade over
-  // `ChatV2Service.recordTurn` — the legacy write call already
-  // persists to the canonical chat-v2 store. Keeping the helper
-  // would have produced duplicate `chat_messages` rows.
+  /**
+   * Persist a Slack inbound user message to chat-v2 and return the
+   * `(conversationId, messageId)` pair callers thread downstream
+   * into `MessageQueueService.enqueue` and `ThreadStatusQueueService.trackInbound`.
+   *
+   * Phase 6c of unified-chat-message-store spec: replaces the
+   * legacy `chatService.sendMessage` call sites on this bridge.
+   * Synthesizes a stable conversationId from Slack channel + thread
+   * ts when the caller didn't supply one, so re-enqueue paths
+   * (offline replay, recovery) reuse the same channel.
+   *
+   * @param args - Persistence inputs (content + slack context + recipient agent)
+   * @returns The chat-v2 channelId and the freshly persisted messageId
+   */
+  private persistSlackInbound(args: {
+    content: string;
+    conversationId?: string;
+    agentSession: string;
+    channelId?: string;
+    threadTs?: string;
+    userId?: string;
+  }): { conversationId: string; messageId: string } {
+    const cid =
+      args.conversationId ??
+      `slack-${args.channelId ?? 'unknown'}-${
+        args.threadTs ? String(args.threadTs).replace('.', '-') : Date.now()
+      }`;
+    const channel = this.chatV2.ensureChannelForLegacyConversation({
+      conversationId: cid,
+      agentSession: args.agentSession,
+    });
+    const { message } = this.chatV2.recordTurn({
+      channelId: channel.id,
+      senderType: 'user',
+      senderId: args.userId ?? 'slack-user',
+      content: args.content,
+      metadata: {
+        source: 'slack',
+        slackChannelId: args.channelId,
+        slackThreadTs: args.threadTs,
+      },
+    });
+    return { conversationId: channel.id, messageId: message.id };
+  }
 }
 
 /**

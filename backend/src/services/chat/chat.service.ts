@@ -33,16 +33,16 @@ import {
   ChatMessageEvent,
   ChatTypingEvent,
   ConversationUpdatedEvent,
-  inferChannelTypeFromConversationId,
 } from '../../types/chat.types.js';
-import type {
-  ChatChannelDTO,
-  ChatMessageDTO,
-  ChatPrincipal,
-  ChatSenderType,
-} from '../chat-v2/types.js';
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
+import {
+  SYSTEM_PRINCIPAL,
+  senderToV2,
+  v2MessageToLegacy,
+  v2ChannelToLegacy,
+  inferSourceFromLegacyMetadata,
+} from '../chat-v2/legacy-dto.utils.js';
 
 // =============================================================================
 // Error classes — preserved for callers that catch them by name
@@ -69,73 +69,6 @@ export class MessageValidationError extends Error {
 export interface ChatServiceOptions {
   /** @deprecated Legacy filesystem path; ignored — storage is now SQLite. */
   chatDir?: string;
-}
-
-// =============================================================================
-// DTO translation helpers (chat-v2 ↔ legacy)
-// =============================================================================
-
-const SYSTEM_PRINCIPAL: ChatPrincipal = { userId: 'system', source: 'oss' };
-
-/**
- * Map a legacy ChatSender.type onto chat-v2 senderType + senderId.
- * Legacy types: 'user' | 'orchestrator' | 'agent' | 'system' | 'auditor' | ...
- * chat-v2 types: 'user' | 'agent' | 'system' (closed enum).
- */
-function senderToV2(sender: ChatSender): { type: ChatSenderType; id: string } {
-  const t = (sender?.type ?? '').toLowerCase();
-  if (t === 'user') {
-    return { type: 'user', id: sender.id ?? sender.name ?? 'user' };
-  }
-  if (t === 'system') {
-    return { type: 'system', id: sender.id ?? 'system' };
-  }
-  // Everything else (orchestrator, agent, auditor, custom roles) maps to 'agent'
-  return { type: 'agent', id: sender.id ?? sender.name ?? 'agent' };
-}
-
-/**
- * Translate a chat-v2 message DTO back to the legacy ChatMessage shape
- * the frontend / WebSocket subscribers expect.
- */
-function v2MessageToLegacy(dto: ChatMessageDTO): ChatMessage {
-  const fromType: ChatSender['type'] =
-    dto.senderType === 'user'
-      ? 'user'
-      : dto.senderType === 'system'
-        ? 'system'
-        : 'orchestrator';
-  return {
-    id: dto.id,
-    conversationId: dto.channelId,
-    from: {
-      type: fromType,
-      id: dto.senderId,
-      name: dto.senderId,
-    },
-    content: dto.content,
-    contentType: (dto.contentType ?? 'markdown') as ChatContentType,
-    metadata: (dto.metadata ?? {}) as Record<string, unknown>,
-    status: 'sent',
-    timestamp: new Date(dto.createdAt).toISOString(),
-  };
-}
-
-/**
- * Translate a chat-v2 channel DTO back to the legacy ChatConversation
- * shape.
- */
-function v2ChannelToLegacy(channel: ChatChannelDTO, messageCount: number): ChatConversation {
-  return {
-    id: channel.id,
-    title: channel.name,
-    participantIds: ['user', channel.agentSession || 'orchestrator'].filter(Boolean) as string[],
-    createdAt: new Date(channel.createdAt).toISOString(),
-    updatedAt: new Date(channel.lastMessageAt ?? channel.createdAt).toISOString(),
-    isArchived: Boolean(channel.archivedAt),
-    messageCount,
-    channelType: inferChannelTypeFromConversationId(channel.id),
-  };
 }
 
 // =============================================================================
@@ -202,7 +135,7 @@ export class ChatService extends EventEmitter {
           ? input.metadata.clientMessageId
           : undefined,
       metadata: {
-        source: this.inferSourceFromMetadata(input.metadata),
+        source: inferSourceFromLegacyMetadata(input.metadata),
         ...((input.metadata ?? {}) as Record<string, unknown>),
       },
     });
@@ -455,21 +388,7 @@ export class ChatService extends EventEmitter {
   }
 
   /**
-   * Infer the canonical `metadata.source` enum value from legacy
-   * metadata. Falls back to 'system' when the legacy caller didn't
-   * label the message.
-   */
-  private inferSourceFromMetadata(
-    metadata: Record<string, unknown> | undefined,
-  ): 'web' | 'slack' | 'pty-runtime' | 'in-process-runtime' | 'reply-tool' | 'system' {
-    const src = metadata?.source;
-    if (src === 'slack') return 'slack';
-    if (src === 'web') return 'web';
-    return 'system';
-  }
-
-  /**
-   * @deprecated Will be removed in Phase 6c.
+   * @deprecated Will be removed when the façade is retired.
    */
   async ensureInitialized(): Promise<void> {
     /* no-op */

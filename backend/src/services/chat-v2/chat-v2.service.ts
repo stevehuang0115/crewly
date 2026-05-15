@@ -12,6 +12,7 @@
 
 import type { ChatV2Config } from './config.js';
 import { ChannelStore } from './sqlite/channel.store.js';
+import { EventEmitter } from 'events';
 import { MessageStore } from './sqlite/message.store.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
 import {
@@ -237,7 +238,7 @@ const DEFAULT_PRESENCE = () => ({
  * - Maps rows → DTOs.
  * - Fans out to WebSocket / adapters in later phases.
  */
-export class ChatV2Service {
+export class ChatV2Service extends EventEmitter {
   /** Phase A spec §3.2: max mention count per message. */
   static readonly MAX_MENTIONS_PER_MESSAGE = 50;
   /** Phase A spec §3.2: max JSON-encoded byte size of the mentions array. */
@@ -252,6 +253,7 @@ export class ChatV2Service {
   private readonly now: () => number;
 
   constructor(options: ChatV2ServiceOptions) {
+    super();
     this.config = options.config;
     this.db = options.db ?? openChatDatabase({ dbPath: options.config.storage.dbPath });
     this.channels = new ChannelStore(this.db);
@@ -896,7 +898,13 @@ export class ChatV2Service {
       nowMs: this.now(),
     });
 
-    return this.toMessageDTO(persisted, args.attachments ?? []);
+    const dto = this.toMessageDTO(persisted, args.attachments ?? []);
+    // Phase 6c: broadcast so the WebSocket gateway (and any other
+    // in-process subscribers) can fan the new message out to connected
+    // clients. The legacy ChatService.EventEmitter contract is now
+    // owned by chat-v2 directly.
+    this.emit('chat_message', dto);
+    return dto;
   }
 
   /**
@@ -1017,10 +1025,14 @@ export class ChatV2Service {
       nowMs: this.now(),
     });
 
-    return {
-      message: this.toMessageDTO(persisted, []),
-      deduped,
-    };
+    const dto = this.toMessageDTO(persisted, []);
+    // Phase 6c: emit only for freshly inserted rows. Skipping dedup hits
+    // prevents replay-loop subscribers from seeing the same message twice
+    // on idempotent retries.
+    if (!deduped) {
+      this.emit('chat_message', dto);
+    }
+    return { message: dto, deduped };
   }
 
   /**

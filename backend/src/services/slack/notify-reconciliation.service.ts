@@ -11,7 +11,8 @@
  */
 
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { getChatService, ChatService } from '../chat/chat.service.js';
+import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
+import { v2MessageToLegacy } from '../chat-v2/legacy-dto.utils.js';
 import { getSlackOrchestratorBridge } from './slack-orchestrator-bridge.js';
 import { NOTIFY_RECONCILIATION_CONSTANTS } from '../../constants.js';
 import type { SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
@@ -113,10 +114,10 @@ export class NotifyReconciliationService {
 		const stats = { total: 0, retried: 0, succeeded: 0, failed: 0, markedFailed: 0 };
 
 		try {
-			const chatService = getChatService();
-			const pendingMessages = await chatService.getMessagesWithPendingSlackDelivery(
-				NOTIFY_RECONCILIATION_CONSTANTS.MAX_MESSAGE_AGE_MS
-			);
+			const chatV2 = getChatV2Service();
+			const pendingMessages = chatV2
+				.findMessagesWithPendingSlackDelivery(NOTIFY_RECONCILIATION_CONSTANTS.MAX_MESSAGE_AGE_MS)
+				.map(v2MessageToLegacy);
 
 			stats.total = pendingMessages.length;
 			if (stats.total === 0) {
@@ -145,7 +146,7 @@ export class NotifyReconciliationService {
 
 				// Max attempts exceeded — mark as failed
 				if (attempts >= NOTIFY_RECONCILIATION_CONSTANTS.MAX_DELIVERY_ATTEMPTS) {
-					await chatService.updateMessageMetadata(msg.conversationId, msg.id, {
+					chatV2.updateMessageMetadata(msg.id, {
 						slackDeliveryStatus: 'failed',
 						slackDeliveryError: `Exceeded max delivery attempts (${NOTIFY_RECONCILIATION_CONSTANTS.MAX_DELIVERY_ATTEMPTS})`,
 					});
@@ -165,7 +166,7 @@ export class NotifyReconciliationService {
 					await bridge.sendNotification(notification);
 
 					// Mark as delivered
-					await chatService.updateMessageMetadata(msg.conversationId, msg.id, {
+					chatV2.updateMessageMetadata(msg.id, {
 						slackDeliveryStatus: 'delivered',
 						slackDeliveryAttemptedAt: new Date().toISOString(),
 						slackDeliveryAttempts: attempts + 1,
@@ -176,7 +177,7 @@ export class NotifyReconciliationService {
 					const errorMsg = error instanceof Error ? error.message : String(error);
 
 					// Record the failure
-					await chatService.updateMessageMetadata(msg.conversationId, msg.id, {
+					chatV2.updateMessageMetadata(msg.id, {
 						slackDeliveryAttemptedAt: new Date().toISOString(),
 						slackDeliveryAttempts: attempts + 1,
 						slackDeliveryError: errorMsg,
