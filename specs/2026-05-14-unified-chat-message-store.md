@@ -228,13 +228,23 @@ Surveying call sites for Phase 6a showed the legacy `ChatService` surface is **s
 Phase 6 must therefore be expanded to include **API gap-filling on ChatV2Service** before the reader migration can proceed:
 
 **Phase 6.0 — chat-v2 API gap fill (precondition for 6a):**
-  - Add `ChatV2Service.findMessagesWithPendingSlackDelivery(maxAgeMs)` using the `metadata->>'$.slackDeliveryStatus'` JSON predicate.
-  - Add `ChatV2Service.updateMessageMetadata(messageId, patch)` (in-place merge into `chat_messages.metadata`).
-  - Add `ChatV2Service.getStatistics()` returning aggregate counts.
-  - Migrate typing indicators to a separate ephemeral channel (probably keeps living on ChatV2Service's EventEmitter without persistence).
-  - Decide how to model "current conversation" — likely a frontend-only concept now (latest-touched channel for a given owner).
 
-  Estimated: 1-2 PRs, ~400 LOC + tests.
+Sub-phase **6.0a (done in this PR, commit d2a9e967):**
+  - `ChatV2Service.findMessagesWithPendingSlackDelivery(maxAgeMs)` using the `metadata->>'$.slackDeliveryStatus'` JSON predicate.
+  - `ChatV2Service.updateMessageMetadata(messageId, patch)` (in-place merge into `chat_messages.metadata` via `json_patch`).
+  - `ChatV2Service.getStatistics()` returning aggregate counts.
+
+Sub-phase **6.0b (still TODO — own PR):** the broader survey of `chat.controller.ts` found 7 additional missing methods that block Phase 6a:
+  - `createNewConversation(title)` — `chat-v2.createChannel` requires `agentSession` + principal, but the legacy method just creates an unbound channel for the current user. Need a thinner factory or to update controllers to pass agentSession explicitly (per-route decision).
+  - `updateConversationTitle(id, title)` — chat-v2 has no rename method. Add `renameChannel(channelId, name, principal)`.
+  - `archiveConversation(id)` — already has `archiveChannel`; map.
+  - `unarchiveConversation(id)` — add `unarchiveChannel`.
+  - `deleteConversation(id)` — chat-v2 only archives. Decide: hard delete or alias to archive? Likely add `deleteChannel(channelId, principal)` with hard-delete semantics; archive remains the soft-delete path.
+  - `clearConversation(id)` — delete all messages but keep channel. Add `clearChannel(channelId, principal)`.
+  - `getMessageCount(filter)` — partial of `getStatistics`; promote to a per-channel `countMessages(channelId)`.
+  - `getCurrentConversation()` — semantically deprecated; frontend should adopt "latest channel for this owner" by reading from `listChannels({principal, sort: 'last_message_at_desc', limit: 1})`. Phase 6a controllers can call that directly.
+
+  Estimated: 1 PR, ~250 LOC + tests.
 
 **Phase 6a-c then proceeds as originally written.**
 
