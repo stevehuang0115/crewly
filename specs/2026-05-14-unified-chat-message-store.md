@@ -152,11 +152,17 @@ Six phases. Each phase is independently shippable and reversible (until Phase 6)
 
 ### Phase 4 — Migrate PTY runtimes (claude-code, gemini-cli)
 
-- `TerminalGateway` adds a finalizer hook that fires on each "agent turn complete" boundary. The hook calls `recordTurn(source: 'pty-runtime', runtime: ...)`.
-- **Boundary detection** is the hard sub-problem. Initial strategy:
-  - Claude Code: use Claude Code's stream-json mode (stdout JSON events with explicit turn boundaries) instead of raw PTY scraping. Falls back to `[NOTIFY]` marker if stream-json is unavailable.
-  - Gemini CLI: similar approach if available; otherwise retain marker dependency with explicit documentation.
-- **Deliverable:** PTY runtimes write via the canonical API; `[NOTIFY]` becomes a deprecated fallback rather than the primary mechanism.
+**Discovery (2026-05-14, during Phase 3 implementation):** there is no production write path from raw PTY stdout into the chat layer.
+
+  - `chat.gateway.processTerminalOutput` (the `[RESPONSE]` / `[CHAT_RESPONSE]` regex extractor) has zero external callers — `grep -r processTerminalOutput backend/src --include="*.ts"` returns only the definition site. Effectively dead code.
+  - `chat.gateway.processNotifyMessage` is called exclusively from the in-process runtime (`routeInProcessResponseToChat`), which Phase 2 already migrated to also call `recordTurn` directly.
+  - PTY runtimes (claude-code, gemini-cli) emit their user-facing replies by invoking the `reply-slack` (or equivalent) tool, which POSTs to `/slack/send`. That outbound path is covered by Phase 3.
+
+**Conclusion:** No Phase 4 code changes required. The "boundary detection" sub-problem the spec originally anticipated does not exist in the current architecture — PTY agents reach the chat layer through tool calls, not stdout scraping.
+
+**Open follow-up (out of scope for this PR series):** if a future runtime emits user-facing replies as raw PTY stdout (no tool call), we'd need to introduce stream-json boundary detection at that point. Defer until a real consumer materializes.
+
+- **Deliverable:** This phase becomes a no-op; the spec text is left in place as a marker that the work was considered and declined with cause.
 
 ### Phase 5 — Data migration
 
