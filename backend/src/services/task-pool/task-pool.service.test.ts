@@ -489,15 +489,28 @@ describe('TaskPoolService', () => {
       expect(result).toBeNull();
     });
 
-    it('prevents agent from claiming when they already have a claim', async () => {
+    it('returns the existing claim with alreadyHeld=true when agent already has one (issue #513)', async () => {
+      // Steve 2026-05-08 incident: an agent that already held an
+      // active claim called accept-task and got a 404 "No available
+      // WorkItem". Misleading — there WAS a WI for them (the one
+      // they already claimed). Now we return the held claim+WI with
+      // alreadyHeld=true so the skill output is honest.
       const wi1 = makeWorkItem({ title: 'First' });
       const wi2 = makeWorkItem({ title: 'Second' });
       await service.addToPool(wi1);
       await service.addToPool(wi2);
 
-      await service.claimFromPool('agent-leo');
+      const first = await service.claimFromPool('agent-leo');
+      expect(first).not.toBeNull();
+      expect(first!.alreadyHeld).toBeFalsy();
+      expect(first!.workItem.id).toBe(wi1.id);
+
       const second = await service.claimFromPool('agent-leo');
-      expect(second).toBeNull();
+      // Now returns the existing claim, not null.
+      expect(second).not.toBeNull();
+      expect(second!.alreadyHeld).toBe(true);
+      expect(second!.workItem.id).toBe(wi1.id);   // same WI as first
+      expect(second!.claim.id).toBe(first!.claim.id); // same claim
     });
 
     it('filters by type', async () => {

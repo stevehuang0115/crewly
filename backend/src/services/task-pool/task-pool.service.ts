@@ -132,12 +132,21 @@ export interface PoolSnapshot {
 
 /**
  * Result returned when claiming a work item.
+ *
+ * `alreadyHeld` (Steve 2026-05-15, issue #513): true when the caller
+ * already had an active claim — we return that claim + its WorkItem
+ * instead of returning null. Callers (skill scripts, controller) can
+ * distinguish "fresh claim" from "you already own this" and route
+ * accordingly. Default `false` for new claims so existing callers
+ * stay source-compat.
  */
 export interface ClaimResult {
   /** The claimed work item */
   workItem: WorkItem;
   /** The claim object tracking the lease */
   claim: TaskClaim;
+  /** Set when the caller already held an active claim before this call */
+  alreadyHeld?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -634,12 +643,31 @@ export class TaskPoolService {
       // Check if agent already has an active claim
       const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
       if (existingClaim) {
-        this.logger.warn('Agent already has an active claim', {
+        // Issue #513 — Steve 2026-05-15. Previously this returned
+        // null, which the controller mapped to 404 "No available
+        // WorkItem matching filters". That was misleading: the caller
+        // DOES have a WorkItem (the one they already claimed), they
+        // just couldn't see it without grepping pool.json. Return the
+        // held claim + its WorkItem with `alreadyHeld: true` so the
+        // skill / agent can recognize the situation.
+        this.logger.info('Agent already has an active claim — returning existing', {
           agentId,
           existingClaimId: existingClaim.id,
           existingWorkItemId: existingClaim.workItemId,
         });
-        return null;
+        const heldWorkItem = await this.storage.findWorkItem(existingClaim.workItemId);
+        if (!heldWorkItem) {
+          // Held claim exists but WI is missing — orphan state. Best we
+          // can do is fall through to the empty-pool null so the agent
+          // doesn't think they own a phantom item. Log so we notice.
+          this.logger.warn('Orphan claim — claim exists but WorkItem missing', {
+            agentId,
+            existingClaimId: existingClaim.id,
+            existingWorkItemId: existingClaim.workItemId,
+          });
+          return null;
+        }
+        return { workItem: heldWorkItem, claim: existingClaim, alreadyHeld: true };
       }
 
       const workItems = await this.storage.getWorkItems();
