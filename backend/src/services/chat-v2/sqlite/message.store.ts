@@ -454,4 +454,64 @@ export class MessageStore {
       .get() as { n: number };
     return row.n;
   }
+
+  /**
+   * Merge a JSON patch into an existing message's metadata column.
+   * Implementation of Phase 6.0 of the unified-chat-message-store spec
+   * — replaces the legacy `ChatService.updateMessageMetadata` so all
+   * mutation flows through the canonical store. SQLite's `json_patch`
+   * built-in handles the merge atomically.
+   *
+   * @param id - Message id to update
+   * @param patch - Partial metadata object to merge in (shallow merge)
+   * @returns The post-update row, or null if the message doesn't exist
+   */
+  updateMetadata(id: string, patch: Record<string, unknown>): ChatMessageRow | null {
+    const patchJson = JSON.stringify(patch);
+    const existing = this.db
+      .prepare('SELECT metadata FROM chat_messages WHERE id = ?')
+      .get(id) as { metadata: string | null } | undefined;
+    if (!existing) {
+      return null;
+    }
+    // SQLite's json_patch merges the right operand into the left,
+    // adding missing keys and overwriting existing ones. NULL-safe:
+    // when the current metadata is NULL we feed an empty object so
+    // the patch becomes the final state.
+    const baseExpr = existing.metadata ?? '{}';
+    this.db
+      .prepare(`UPDATE chat_messages SET metadata = json_patch(?, ?) WHERE id = ?`)
+      .run(baseExpr, patchJson, id);
+    return this.getById(id);
+  }
+
+  /**
+   * Find messages with `metadata.slackDeliveryStatus = 'pending'` AND a
+   * non-empty `metadata.slackChannelId`, created within the past
+   * `maxAgeMs`. Used by `NotifyReconciliationService` to retry Slack
+   * deliveries that failed mid-flight.
+   *
+   * The `slackDeliveryStatus` field is set by callers (legacy code and
+   * Phase 3 Slack writes) — this method is the canonical replacement
+   * for `ChatService.getMessagesWithPendingSlackDelivery`.
+   *
+   * @param maxAgeMs - Lookback window in milliseconds
+   * @param nowMs - Optional clock override for tests
+   * @returns Up to `MAX_LIMIT` matching rows, newest first
+   */
+  findPendingSlackDelivery(maxAgeMs: number, nowMs?: number): ChatMessageRow[] {
+    const cutoff = (nowMs ?? Date.now()) - maxAgeMs;
+    const rows = this.db
+      .prepare(
+        `SELECT ${MESSAGE_SELECT_COLUMNS}
+         FROM chat_messages
+         WHERE json_extract(metadata, '$.slackDeliveryStatus') = 'pending'
+           AND json_extract(metadata, '$.slackChannelId') IS NOT NULL
+           AND created_at >= ?
+         ORDER BY created_at DESC
+         LIMIT ${MessageStore.MAX_LIMIT}`,
+      )
+      .all(cutoff) as ChatMessageRow[];
+    return rows;
+  }
 }

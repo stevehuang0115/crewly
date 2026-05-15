@@ -1262,4 +1262,147 @@ describe('ChatV2Service', () => {
       expect(messages[0].senderId).toBe('UG94JLNGK');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Phase 6.0 — API gap fill for legacy ChatService retirement
+  // Spec: 2026-05-14-unified-chat-message-store.md
+  // -------------------------------------------------------------------------
+
+  describe('updateMessageMetadata (Phase 6.0)', () => {
+    it('merges patch into existing metadata and returns the updated DTO', () => {
+      const ch = createSam();
+      const { message } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'hello',
+        metadata: {
+          source: 'reply-tool',
+          slackChannelId: 'D0AC7',
+          slackDeliveryStatus: 'pending',
+        },
+      });
+
+      const updated = service.updateMessageMetadata(message.id, {
+        slackDeliveryStatus: 'delivered',
+        slackMessageTs: '1234567890.000100',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated!.metadata).toMatchObject({
+        source: 'reply-tool',                  // preserved
+        slackChannelId: 'D0AC7',                // preserved
+        slackDeliveryStatus: 'delivered',       // overwritten
+        slackMessageTs: '1234567890.000100',    // added
+      });
+    });
+
+    it('returns null when the message does not exist', () => {
+      expect(service.updateMessageMetadata('no-such-msg', { x: 1 })).toBeNull();
+    });
+  });
+
+  describe('findMessagesWithPendingSlackDelivery (Phase 6.0)', () => {
+    it('returns only messages tagged pending with a slackChannelId, within window', () => {
+      const ch = createSam();
+
+      const pending = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'pending msg',
+        metadata: {
+          source: 'reply-tool',
+          slackChannelId: 'D0AC7',
+          slackDeliveryStatus: 'pending',
+        },
+      });
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'delivered msg',
+        metadata: {
+          source: 'reply-tool',
+          slackChannelId: 'D0AC7',
+          slackDeliveryStatus: 'delivered',
+        },
+      });
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'pending but no channel id',
+        metadata: { source: 'reply-tool', slackDeliveryStatus: 'pending' },
+      });
+
+      // Window large enough to include all
+      const found = service.findMessagesWithPendingSlackDelivery(60 * 60 * 1000);
+      expect(found).toHaveLength(1);
+      expect(found[0].id).toBe(pending.message.id);
+    });
+
+    it('respects the maxAgeMs window — older rows are excluded', () => {
+      const ch = createSam();
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'recent pending',
+        metadata: {
+          source: 'reply-tool',
+          slackChannelId: 'D0AC7',
+          slackDeliveryStatus: 'pending',
+        },
+      });
+
+      // 0ms window → nothing falls inside
+      expect(service.findMessagesWithPendingSlackDelivery(0)).toHaveLength(0);
+    });
+  });
+
+  describe('getStatistics (Phase 6.0)', () => {
+    it('counts active and archived channels separately and totals messages across both', () => {
+      const a = createSam();
+      service.archiveChannel(a.id, owner);
+
+      const b = service.createChannel({
+        agentSession: 'sess-b',
+        name: 'Active B',
+        principal: owner,
+      });
+
+      service.recordTurn({
+        channelId: b.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'one',
+        metadata: { source: 'in-process-runtime' },
+      });
+      service.recordTurn({
+        channelId: b.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'two',
+        metadata: { source: 'in-process-runtime' },
+      });
+
+      const stats = service.getStatistics();
+      expect(stats).toEqual({
+        totalChannels: 2,
+        activeChannels: 1,
+        archivedChannels: 1,
+        totalMessages: 2,
+      });
+    });
+
+    it('returns zeros on a fresh store', () => {
+      expect(service.getStatistics()).toEqual({
+        totalChannels: 0,
+        activeChannels: 0,
+        archivedChannels: 0,
+        totalMessages: 0,
+      });
+    });
+  });
 });

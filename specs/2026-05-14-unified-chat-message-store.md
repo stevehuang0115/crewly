@@ -209,6 +209,37 @@ cutting reads would silently break the UI. The ordering is:
 
 **Success criteria for the entire spec are met when Phase 6c completes.**
 
+### Phase 6 scope refinement (2026-05-14, discovered during impl)
+
+Surveying call sites for Phase 6a showed the legacy `ChatService` surface is **substantially larger** than the original spec assumed:
+
+- `backend/src/controllers/chat/chat.controller.ts` — 14 separate `getChatService()` call sites covering messages, conversations, conversation-by-id, current-conversation, statistics, pending-Slack-delivery scan, message metadata updates, archiving, etc.
+- `backend/src/websocket/chat.gateway.ts` — tight integration via event listeners (`chat_message`, `chat_typing`, `conversation_updated`) and the `processNotifyMessage` / `processTerminalOutput` PTY hooks.
+- `backend/src/index.ts:1469` — bootstrap path reads `chatService.countAllMessages()` for telemetry.
+- `backend/src/services/slack/notify-reconciliation.service.ts` — `getMessagesWithPendingSlackDelivery` + `updateMessageMetadata` (Slack delivery state machine).
+
+`ChatV2Service` is missing equivalents for several of these:
+  - `getCurrentConversation()` — legacy semantic of "the single active conversation" doesn't map to chat-v2's multi-channel model.
+  - `getMessagesWithPendingSlackDelivery(maxAgeMs)` — Slack-delivery reconciliation scan.
+  - `updateMessageMetadata(conversationId, messageId, patch)` — mutation of stored message metadata.
+  - `emitTypingIndicator(...)` — WebSocket-side ephemeral event (no storage write).
+  - `getStatistics()` — aggregate counts grouped by conversation.
+
+Phase 6 must therefore be expanded to include **API gap-filling on ChatV2Service** before the reader migration can proceed:
+
+**Phase 6.0 — chat-v2 API gap fill (precondition for 6a):**
+  - Add `ChatV2Service.findMessagesWithPendingSlackDelivery(maxAgeMs)` using the `metadata->>'$.slackDeliveryStatus'` JSON predicate.
+  - Add `ChatV2Service.updateMessageMetadata(messageId, patch)` (in-place merge into `chat_messages.metadata`).
+  - Add `ChatV2Service.getStatistics()` returning aggregate counts.
+  - Migrate typing indicators to a separate ephemeral channel (probably keeps living on ChatV2Service's EventEmitter without persistence).
+  - Decide how to model "current conversation" — likely a frontend-only concept now (latest-touched channel for a given owner).
+
+  Estimated: 1-2 PRs, ~400 LOC + tests.
+
+**Phase 6a-c then proceeds as originally written.**
+
+This expansion does not change the destination (single store + single entry); it just acknowledges the migration runway is longer than the initial spec anticipated.
+
 ## Dependent Work Enabled by This Spec
 
 Once the unified store lands, several blocked items become feasible:

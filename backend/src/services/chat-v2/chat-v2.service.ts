@@ -286,6 +286,73 @@ export class ChatV2Service {
     return this.messages.countAll();
   }
 
+  /**
+   * Phase 6.0 of unified-chat-message-store spec — replacement for the
+   * legacy `ChatService.updateMessageMetadata`. Merges a partial
+   * metadata object into the stored row's `metadata` JSON column using
+   * SQLite's `json_patch` (atomic, server-side).
+   *
+   * No principal check — this is a server-internal mutation path used
+   * by reconciliation jobs (Slack delivery status updates) and never
+   * exposed directly to user HTTP traffic. Phase 6c will retire the
+   * legacy method that called this; until then it is the only callable
+   * write-through for the existing reconciliation code.
+   *
+   * @param messageId - Message id to update
+   * @param patch - Shallow metadata patch to merge
+   * @returns The updated message DTO, or null if no such message exists
+   */
+  updateMessageMetadata(
+    messageId: string,
+    patch: Record<string, unknown>,
+  ): ChatMessageDTO | null {
+    const row = this.messages.updateMetadata(messageId, patch);
+    if (!row) return null;
+    return this.toMessageDTO(row, []);
+  }
+
+  /**
+   * Phase 6.0 — replacement for the legacy
+   * `ChatService.getMessagesWithPendingSlackDelivery`. Returns the
+   * messages still marked `slackDeliveryStatus='pending'` within the
+   * caller-supplied lookback window, used by NotifyReconciliationService
+   * to retry stuck Slack deliveries.
+   *
+   * @param maxAgeMs - Lookback window in milliseconds
+   * @returns Pending-delivery messages, newest first, capped at MAX_LIMIT
+   */
+  findMessagesWithPendingSlackDelivery(maxAgeMs: number): ChatMessageDTO[] {
+    const rows = this.messages.findPendingSlackDelivery(maxAgeMs);
+    return rows.map((r) => this.toMessageDTO(r, []));
+  }
+
+  /**
+   * Phase 6.0 — replacement for the legacy `ChatService.getStatistics`.
+   * Aggregate counts used by the boot-time telemetry and the
+   * admin/audit dashboards.
+   *
+   * @returns Active/archived channel counts plus total message count
+   */
+  getStatistics(): {
+    totalChannels: number;
+    activeChannels: number;
+    archivedChannels: number;
+    totalMessages: number;
+  } {
+    const activeChannels = (this.db
+      .prepare(`SELECT COUNT(*) AS n FROM chat_channels WHERE archived_at IS NULL`)
+      .get() as { n: number }).n;
+    const archivedChannels = (this.db
+      .prepare(`SELECT COUNT(*) AS n FROM chat_channels WHERE archived_at IS NOT NULL`)
+      .get() as { n: number }).n;
+    return {
+      totalChannels: activeChannels + archivedChannels,
+      activeChannels,
+      archivedChannels,
+      totalMessages: this.messages.countAll(),
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Channel operations
   // -------------------------------------------------------------------------
