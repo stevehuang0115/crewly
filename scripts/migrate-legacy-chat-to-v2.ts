@@ -41,7 +41,11 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getChatV2Service } from '../backend/src/services/chat-v2/chat-v2.singleton.js';
+// Note: imports from the COMPILED dist tree, not source. tsx has
+// flaky ESM resolution for cross-package imports under the v22
+// runtime; loading the compiled .js avoids that path entirely.
+// Requires `npm run build:backend` before running this script.
+import { getChatV2Service } from '../dist/backend/backend/src/services/chat-v2/chat-v2.singleton.js';
 
 type Mode = 'dry-run' | 'apply' | 'verify';
 

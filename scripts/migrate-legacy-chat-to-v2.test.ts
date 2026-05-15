@@ -8,6 +8,13 @@
  * CLI-arg parsing contract and the no-op behaviours that must not
  * touch the filesystem or DB.
  *
+ * Note: the script imports from `../dist/backend/...` rather than
+ * `../backend/src/...` because tsx (v22) returns a misleading
+ * "does not provide an export named 'getChatV2Service'" error when
+ * resolving the source path under our project layout. Running plain
+ * `node` against the compiled `.js` resolves correctly.
+ * Requires `npm run build:backend` first.
+ *
  * @module scripts/migrate-legacy-chat-to-v2.test
  */
 
