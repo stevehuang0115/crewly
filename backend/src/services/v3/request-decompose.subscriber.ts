@@ -398,6 +398,15 @@ export class RequestDecomposeSubscriber {
       if (blockedByIds.length > 0) {
         wi.dependsOn = blockedByIds;
         wi.status = 'blocked';
+        // Steve 2026-05-15 dogfood: surface a human-readable reason so
+        // the UI's "Blocked" badge isn't opaque. List the dependency
+        // titles (truncated) so a user clicking through sees "Waiting
+        // on: Plan: ..." rather than just "Blocked" with no timeline
+        // event.
+        const depTitles = task.dependsOnTitles
+          .map((t) => (t.length > 50 ? `${t.slice(0, 50)}…` : t))
+          .join('; ');
+        wi.blockedReason = `Waiting on dependency: ${depTitles}`;
       }
     }
 

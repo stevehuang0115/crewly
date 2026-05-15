@@ -168,6 +168,14 @@ export class MissionExecutorService {
         const wi = createdItems.get(workItemId);
         if (wi) {
           wi.dependsOn = blockedByIds;
+          // Steve 2026-05-15 dogfood: surface human-readable reason on
+          // the WI's blockedReason field so the UI activity timeline
+          // shows WHY this task is blocked (mirrors the same change in
+          // request-decompose.subscriber.ts).
+          const depTitles = task.dependsOn
+            .map((t) => (t.length > 50 ? `${t.slice(0, 50)}…` : t))
+            .join('; ');
+          wi.blockedReason = `Waiting on dependency: ${depTitles}`;
         }
       }
     }

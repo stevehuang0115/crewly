@@ -283,6 +283,44 @@ describe('buildTimeline', () => {
     expect(cancelled?.detail).toBe('Cancelled (no reason recorded).');
   });
 
+  // Steve 2026-05-15 dogfood: UI showed `Blocked` badge with empty
+  // activity timeline. Mirror the cancelReason pattern for blocked.
+
+  it('adds BLOCKED event for blocked items', () => {
+    const item = createTestWorkItem({ status: 'blocked' });
+    const events = buildTimeline(item);
+    expect(events.some((e) => e.label === 'BLOCKED')).toBe(true);
+  });
+
+  it('shows the persisted blockedReason in the BLOCKED event detail', () => {
+    const item = createTestWorkItem({
+      status: 'blocked',
+      blockedReason: 'Waiting on dependency: Plan: Adsense…',
+    });
+    const events = buildTimeline(item);
+    const blocked = events.find((e) => e.label === 'BLOCKED');
+    expect(blocked?.detail).toBe('Blocked: Waiting on dependency: Plan: Adsense…');
+  });
+
+  it('falls back to "Blocked (no reason recorded)" when blockedReason is missing', () => {
+    const item = createTestWorkItem({ status: 'blocked' });
+    const events = buildTimeline(item);
+    const blocked = events.find((e) => e.label === 'BLOCKED');
+    expect(blocked?.detail).toBe('Blocked (no reason recorded).');
+  });
+
+  it('renders a wedged-agent blockedReason verbatim (reconciler agent-inactive case)', () => {
+    const item = createTestWorkItem({
+      status: 'blocked',
+      blockedReason: 'Agent crewly-product-leo-21a5477e is inactive',
+    });
+    const events = buildTimeline(item);
+    const blocked = events.find((e) => e.label === 'BLOCKED');
+    expect(blocked?.detail).toBe(
+      'Blocked: Agent crewly-product-leo-21a5477e is inactive',
+    );
+  });
+
   it('adds RESULT DATA event when result is present', () => {
     const item = createTestWorkItem({
       status: 'done',

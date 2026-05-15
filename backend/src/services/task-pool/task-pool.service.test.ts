@@ -2278,4 +2278,67 @@ describe('TaskPoolService', () => {
       expect(after?.cancelReason).toBe('mutator wins');
     });
   });
+
+  describe('blockedReason persistence (Steve 2026-05-15)', () => {
+    // Mirrors cancelReason — when a WI transitions to (or is created in)
+    // `blocked`, the human-readable reason should land on the canonical
+    // `blockedReason` field so the UI activity timeline can render
+    // "Blocked: <reason>" instead of an opaque "Blocked" badge.
+
+    it('updateItemStatus persists the reason on blocked transitions', async () => {
+      const wi = makeWorkItem({ owner: 'orchestrator' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      await service.updateItemStatus(
+        wi.id,
+        'blocked',
+        'system',
+        'Agent crewly-product-leo-21a5477e is inactive',
+      );
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.status).toBe('blocked');
+      expect(after?.blockedReason).toBe('Agent crewly-product-leo-21a5477e is inactive');
+      // cancelReason must NOT be polluted by a blocked transition
+      expect(after?.cancelReason).toBeUndefined();
+    });
+
+    it('updateItemStatus leaves blockedReason undefined when caller passes no reason', async () => {
+      const wi = makeWorkItem({ owner: 'orchestrator' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      await service.updateItemStatus(wi.id, 'blocked', 'system');
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.blockedReason).toBeUndefined();
+    });
+
+    it('transitionStatus persists blockedReason when target is blocked', async () => {
+      const wi = makeWorkItem({ owner: 'orchestrator' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      await service.transitionStatus(
+        wi.id,
+        'blocked',
+        'system',
+        undefined,
+        'Waiting on dependency: Plan: foo',
+      );
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.blockedReason).toBe('Waiting on dependency: Plan: foo');
+    });
+
+    it('a reason passed on a non-blocked, non-cancel transition is ignored (no field pollution)', async () => {
+      const wi = makeWorkItem({ owner: 'orchestrator' });
+      await service.addToPool(wi);
+      await service.updateItemStatus(wi.id, 'running', 'system', 'this should be ignored');
+
+      const after = await service.findWorkItem(wi.id);
+      expect(after?.blockedReason).toBeUndefined();
+      expect(after?.cancelReason).toBeUndefined();
+    });
+  });
 });

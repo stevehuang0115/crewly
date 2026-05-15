@@ -1612,11 +1612,12 @@ export class TaskPoolService {
     newStatus: WorkItemStatus,
     actorRole: WorkItemOwner = 'system',
     /**
-     * Optional human-readable reason. When `newStatus === 'cancelled'`
-     * it is persisted on `WorkItem.cancelReason` and surfaces in the
-     * activity timeline so users see WHY the item was cancelled
-     * (stale-pickup, parent cascade, mission abort, etc.). Ignored
-     * for other status transitions.
+     * Optional human-readable reason. Persisted on:
+     *   - `WorkItem.cancelReason` when `newStatus === 'cancelled'`
+     *   - `WorkItem.blockedReason` when `newStatus === 'blocked'` (Steve
+     *     2026-05-15 dogfood — UI showed Blocked badge with no
+     *     explanation)
+     *   - Ignored for other status transitions.
      */
     reason?: string,
   ): Promise<void> {
@@ -1688,6 +1689,14 @@ export class TaskPoolService {
       if (newStatus === 'cancelled' && typeof reason === 'string' && reason.length > 0) {
         wi.cancelReason = reason;
       }
+      // Mirror for blocked transitions (Steve 2026-05-15 dogfood): the
+      // UI showed `Blocked` badge with an empty activity timeline.
+      // Sources include reconciler agent-inactive correction, mission
+      // executor dependency-blocked creation (not via this path),
+      // explicit blockItem.
+      if (newStatus === 'blocked' && typeof reason === 'string' && reason.length > 0) {
+        wi.blockedReason = reason;
+      }
     });
 
     this.logger.info('Work item status updated', {
@@ -1696,6 +1705,7 @@ export class TaskPoolService {
       to: newStatus,
       actorRole,
       ...(newStatus === 'cancelled' && reason ? { reason } : {}),
+      ...(newStatus === 'blocked' && reason ? { reason } : {}),
     });
 
     // Cascade signal — let RequestCascadeSubscriber close the parent
@@ -1755,12 +1765,16 @@ export class TaskPoolService {
     actorRole: WorkItemOwner,
     mutator?: (wi: WorkItem) => void,
     /**
-     * Optional human-readable reason. When `newStatus === 'cancelled'`
-     * persisted on `WorkItem.cancelReason` (atomic with the status
-     * flip, before the caller's mutator runs so the mutator may
-     * override if needed). Surfaces in the activity timeline so
-     * SLA-cascade / cancel paths don't read as opaque "WorkItem was
-     * cancelled." entries. Code-review P0 from 2026-05-15.
+     * Optional human-readable reason. Routed by target status:
+     *   - `cancelled` → persisted on `WorkItem.cancelReason`
+     *   - `blocked`   → persisted on `WorkItem.blockedReason`
+     *     (Steve 2026-05-15 dogfood)
+     *   - other       → ignored
+     * Applied BEFORE the caller's mutator runs so the mutator may
+     * override if needed. Surfaces in the activity timeline so the
+     * Blocked/Cancelled badges aren't opaque ("WorkItem was X.").
+     * Parameter name retained as `cancelReason` for source compat;
+     * effectively a generic transition reason.
      */
     cancelReason?: string,
   ): Promise<WorkItem | null> {
@@ -1844,9 +1858,15 @@ export class TaskPoolService {
         wi.completedAt = undefined;
       }
       // Apply cancelReason BEFORE the user-supplied mutator so the
-      // mutator wins if the caller wants to override (rare).
+      // mutator wins if the caller wants to override (rare). The
+      // parameter is named `cancelReason` for source-compat but is
+      // routed to cancelReason OR blockedReason based on newStatus
+      // (Steve 2026-05-15).
       if (newStatus === 'cancelled' && typeof cancelReason === 'string' && cancelReason.length > 0) {
         wi.cancelReason = cancelReason;
+      }
+      if (newStatus === 'blocked' && typeof cancelReason === 'string' && cancelReason.length > 0) {
+        wi.blockedReason = cancelReason;
       }
       if (mutator) mutator(wi);
     });
