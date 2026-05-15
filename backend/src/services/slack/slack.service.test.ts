@@ -608,6 +608,72 @@ describe('SlackService', () => {
       mockSocketClient.emit('close');
       expect(service.isConnected()).toBe(false);
     });
+
+    // Issue #548 — finity throws `Unhandled event 'server explicit
+    // disconnect' in state 'connecting'` synchronously inside the
+    // WebSocket message callback. Pre-fix this killed the process on
+    // v1 hosts. Wrapped `onWebSocketMessage` must catch the throw,
+    // log a WARN, schedule reconnect, and return cleanly.
+    it('catches finity Unhandled event throws and schedules reconnect (issue #548)', () => {
+      const service = new SlackService();
+      const { EventEmitter } = require('events');
+      class MockSocketClient extends EventEmitter {
+        onWebSocketMessage(_msg: unknown): void {
+          throw new Error(`Unhandled event 'server explicit disconnect' in state 'connecting'`);
+        }
+      }
+      const mockSocketClient = new MockSocketClient();
+
+      (service as any).app = {
+        receiver: { client: mockSocketClient },
+        message: jest.fn(),
+        event: jest.fn(),
+        error: jest.fn(),
+        start: jest.fn(),
+        stop: jest.fn(),
+      };
+      (service as any).status.connected = true;
+
+      const scheduleReconnectSpy = jest
+        .spyOn(service as any, 'scheduleReconnect')
+        .mockImplementation(() => {});
+
+      (service as any).setupConnectionMonitoring();
+
+      // Invoke the (now-wrapped) onWebSocketMessage — should NOT throw
+      expect(() => mockSocketClient.onWebSocketMessage('{"type": "disconnect"}')).not.toThrow();
+
+      // Reconnect was scheduled, status flipped to disconnected
+      expect(scheduleReconnectSpy).toHaveBeenCalledTimes(1);
+      expect(service.isConnected()).toBe(false);
+      expect(service.getStatus().lastError).toMatch(/Unhandled event/);
+
+      scheduleReconnectSpy.mockRestore();
+    });
+
+    it('lets non-Unhandled-event throws propagate (issue #548 guard is targeted)', () => {
+      const service = new SlackService();
+      const { EventEmitter } = require('events');
+      class MockSocketClient extends EventEmitter {
+        onWebSocketMessage(_msg: unknown): void {
+          throw new Error('some other error');
+        }
+      }
+      const mockSocketClient = new MockSocketClient();
+
+      (service as any).app = {
+        receiver: { client: mockSocketClient },
+        message: jest.fn(),
+        event: jest.fn(),
+        error: jest.fn(),
+        start: jest.fn(),
+        stop: jest.fn(),
+      };
+      (service as any).setupConnectionMonitoring();
+
+      // Non-finity throws must still surface
+      expect(() => mockSocketClient.onWebSocketMessage('msg')).toThrow('some other error');
+    });
   });
 
   describe('health check active ping', () => {

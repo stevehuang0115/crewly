@@ -504,6 +504,54 @@ export class SlackService extends EventEmitter {
         return;
       }
 
+      // Issue #548 — `@slack/socket-mode`'s finity state machine throws
+      // `Unhandled event 'server explicit disconnect' in state 'connecting'`
+      // when Slack sends a disconnect signal during the reconnect
+      // handshake window. The throw is SYNCHRONOUS inside the WebSocket
+      // message callback (WebSocket.onMessage → SocketModeClient.
+      // onWebSocketMessage → finity.handle → throw) so it surfaces as
+      // an uncaughtException that takes the process down on v1 hosts
+      // (no pm2/systemd to restart). CrewlyNode1 went dark for ~21
+      // hours on 2026-05-14 from exactly this.
+      //
+      // Wrap `onWebSocketMessage` with a synchronous try/catch that
+      // swallows the unhandled-event throw, logs it as a recoverable
+      // event, and triggers the reconnect path. Other throws still
+      // surface normally — we only suppress the specific finity
+      // "Unhandled event" signature.
+      const wrappedClient = socketClient as unknown as {
+        onWebSocketMessage?: (...args: unknown[]) => unknown;
+      };
+      const originalOnMessage = wrappedClient.onWebSocketMessage;
+      if (typeof originalOnMessage === 'function') {
+        wrappedClient.onWebSocketMessage = (...args: unknown[]) => {
+          try {
+            return originalOnMessage.apply(socketClient, args);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (/Unhandled event/.test(msg)) {
+              this.logger.warn(
+                'Suppressed finity unhandled-event from SocketModeClient (issue #548) — triggering reconnect',
+                {
+                  error: msg,
+                },
+              );
+              this.status.connected = false;
+              this.status.lastError = `SocketMode finity throw: ${msg}`;
+              this.status.lastErrorAt = new Date().toISOString();
+              this.scheduleReconnect();
+              return undefined;
+            }
+            throw err;
+          }
+        };
+        this.logger.info('SocketModeClient.onWebSocketMessage wrapped for #548 finity-throw recovery');
+      } else {
+        this.logger.warn(
+          'SocketModeClient.onWebSocketMessage not found — #548 finity-throw guard NOT installed',
+        );
+      }
+
       socketClient.on('disconnected', () => {
         this.status.connected = false;
         this.status.lastError = 'Socket Mode connection lost';
