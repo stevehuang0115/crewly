@@ -1231,6 +1231,65 @@ describe('ChatV2Service', () => {
       const result = service.importLegacyConversation(conv as any);
       expect(result.imported).toBe(2);
       expect(result.deduped).toBe(0);
+      expect(result.skipped).toBe(3);
+    });
+
+    it('logs a warning surfacing skipped row count + reasons when malformed rows are present', () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        service.importLegacyConversation({
+          conversation: { id: 'slack-Y-1' },
+          messages: [
+            { id: 'ok', from: { type: 'user' }, content: 'ok' },
+            { id: 'bad-empty', from: { type: 'user' }, content: '' },
+            { id: '', from: { type: 'user' }, content: 'no id' } as any,
+          ],
+        } as any);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [msg, ctx] = warn.mock.calls[0];
+        expect(String(msg)).toMatch(/skipped 2\/3 malformed row/);
+        expect(ctx).toMatchObject({
+          skipped: 2,
+          totalRows: 3,
+          truncated: false,
+        });
+        expect((ctx as any).reasons).toEqual([
+          { index: 1, reason: 'empty-content', id: 'bad-empty' },
+          { index: 2, reason: 'missing-id', id: '' },
+        ]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does NOT log a warning when no rows are skipped (silent on the happy path)', () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        service.importLegacyConversation(sampleLegacy);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('caps the reasons list at 10 entries and sets truncated=true beyond that', () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const messages: Array<{ id: string; from: { type: string }; content: string }> = [];
+        for (let i = 0; i < 12; i++) {
+          messages.push({ id: `bad-${i}`, from: { type: 'user' }, content: '' });
+        }
+        service.importLegacyConversation({
+          conversation: { id: 'slack-Z-1' },
+          messages,
+        } as any);
+        const [, ctx] = warn.mock.calls[0];
+        expect((ctx as any).reasons).toHaveLength(10);
+        expect((ctx as any).truncated).toBe(true);
+        expect((ctx as any).skipped).toBe(12);
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('rejects missing conversation.id', () => {

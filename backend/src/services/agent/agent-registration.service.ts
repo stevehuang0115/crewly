@@ -67,6 +67,7 @@ import {
 	stripBoxDrawing,
 } from '../../utils/terminal-string-ops.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
+import { synthesizeSlackConversationId } from '../chat-v2/legacy-dto.utils.js';
 
 export interface OrchestratorConfig {
 	sessionName: string;
@@ -510,7 +511,7 @@ export class AgentRegistrationService {
 						if (!tsq.get(threadKey)) {
 							tsq.trackInbound({
 								threadKey,
-								conversationId: `slack-${slackContext.channelId}-${String(slackContext.threadTs).replace('.', '-')}`,
+								conversationId: synthesizeSlackConversationId(slackContext.channelId, slackContext.threadTs),
 								source: 'slack',
 								messagePreview: '[in-process auto-route — no inbound recorded]',
 							});

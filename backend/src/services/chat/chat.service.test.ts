@@ -80,22 +80,113 @@ describe('ChatService (Phase 6 façade over ChatV2Service)', () => {
       expect(messages[0].senderType).toBe('system');
     });
 
-    it('sendMessage emits chat_message + conversation_updated events with the correct envelope shape', async () => {
+    it('sendMessage does NOT emit chat_message on the façade — chat-v2 is the canonical emitter (avoid double-broadcast)', async () => {
       const service = getChatService();
-      const messageEvents: unknown[] = [];
+      const facadeMessageEvents: unknown[] = [];
+      const chatV2MessageEvents: unknown[] = [];
       const conversationEvents: unknown[] = [];
-      service.on('chat_message', (e) => messageEvents.push(e));
+      service.on('chat_message', (e) => facadeMessageEvents.push(e));
       service.on('conversation_updated', (e) => conversationEvents.push(e));
+      chatV2.on('chat_message', (e) => chatV2MessageEvents.push(e));
 
       await service.sendMessage({ content: 'hi', conversationId: 'slack-Z-1' });
 
-      expect(messageEvents).toHaveLength(1);
-      expect(messageEvents[0]).toMatchObject({ type: 'chat_message', data: { content: 'hi' } });
+      // Façade is silent for chat_message (Phase 6α follow-up #6)
+      expect(facadeMessageEvents).toHaveLength(0);
+      // chat-v2 is the single source of truth and emits exactly once
+      expect(chatV2MessageEvents).toHaveLength(1);
+      // conversation_updated stays on the façade until chat-v2 grows
+      // a channel-touched event
       expect(conversationEvents).toHaveLength(1);
       expect(conversationEvents[0]).toMatchObject({
         type: 'conversation_updated',
         data: { id: 'slack-Z-1' },
       });
+    });
+
+    it('addAgentMessage defaults to source=pty-runtime when metadata has no source override', async () => {
+      const service = getChatService();
+      await service.addAgentMessage(
+        'slack-Q-1',
+        'reply',
+        { type: 'orchestrator', id: 'crewly-orc', name: 'Orchestrator' },
+        undefined,
+      );
+
+      const messages = chatV2.listMessages({
+        channelId: 'slack-Q-1',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].metadata).toMatchObject({ source: 'pty-runtime' });
+    });
+
+    it('addAgentMessage honors metadata.source override (e.g. in-process-runtime)', async () => {
+      const service = getChatService();
+      await service.addAgentMessage(
+        'slack-Q-2',
+        'reply',
+        { type: 'orchestrator', id: 'crewly-orc', name: 'Orchestrator' },
+        { source: 'in-process-runtime' },
+      );
+
+      const messages = chatV2.listMessages({
+        channelId: 'slack-Q-2',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      expect(messages[0].metadata).toMatchObject({ source: 'in-process-runtime' });
+    });
+
+    it('addDirectMessage honors metadata.source override (reply-tool path)', async () => {
+      const service = getChatService();
+      await service.addDirectMessage(
+        'slack-Q-3',
+        'tool-driven reply',
+        { type: 'orchestrator', id: 'crewly-orc', name: 'Orchestrator' },
+        { source: 'reply-tool' },
+      );
+      const messages = chatV2.listMessages({
+        channelId: 'slack-Q-3',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      expect(messages[0].metadata).toMatchObject({ source: 'reply-tool' });
+    });
+
+    it('addAgentMessage falls back to default source when metadata.source is not a valid enum value', async () => {
+      const service = getChatService();
+      await service.addAgentMessage(
+        'slack-Q-4',
+        'reply',
+        { type: 'orchestrator', id: 'crewly-orc', name: 'Orchestrator' },
+        { source: 'not-a-real-source' as unknown as string },
+      );
+      const messages = chatV2.listMessages({
+        channelId: 'slack-Q-4',
+        principal: { userId: 'system', source: 'oss' },
+        direction: 'forward',
+      }).messages;
+      expect(messages[0].metadata).toMatchObject({ source: 'pty-runtime' });
+    });
+
+    it('addAgentMessage does NOT emit chat_message on the façade (chat-v2 emits)', async () => {
+      const service = getChatService();
+      const facadeEvents: unknown[] = [];
+      const chatV2Events: unknown[] = [];
+      service.on('chat_message', (e) => facadeEvents.push(e));
+      chatV2.on('chat_message', (e) => chatV2Events.push(e));
+
+      await service.addAgentMessage(
+        'slack-Q-5',
+        'silent',
+        { type: 'orchestrator', id: 'crewly-orc', name: 'Orchestrator' },
+        undefined,
+      );
+
+      expect(facadeEvents).toHaveLength(0);
+      expect(chatV2Events).toHaveLength(1);
     });
   });
 
@@ -108,6 +199,71 @@ describe('ChatService (Phase 6 façade over ChatV2Service)', () => {
       const messages = await service.getMessages({ conversationId: 'slack-A-1' });
       expect(messages).toHaveLength(2);
       expect(messages.map((m) => m.content)).toEqual(['one', 'two']);
+    });
+
+    it('getMessages honors filter.limit when provided (Phase 6α follow-up #4)', async () => {
+      const service = getChatService();
+      for (let i = 0; i < 5; i++) {
+        await service.sendMessage({ content: `msg-${i}`, conversationId: 'slack-A-LIMIT' });
+      }
+      const limited = await service.getMessages({ conversationId: 'slack-A-LIMIT', limit: 2 });
+      expect(limited).toHaveLength(2);
+    });
+
+    it('getMessages falls back to 200 default when filter.limit is missing', async () => {
+      const service = getChatService();
+      await service.sendMessage({ content: 'x', conversationId: 'slack-A-DEFAULT' });
+      // We can't reach 200 in a unit test, but we can assert that
+      // omitting limit doesn't truncate small result sets.
+      const result = await service.getMessages({ conversationId: 'slack-A-DEFAULT' });
+      expect(result).toHaveLength(1);
+    });
+
+    it('getMessages caps filter.limit at 1000 to prevent unbounded responses', async () => {
+      const service = getChatService();
+      await service.sendMessage({ content: 'x', conversationId: 'slack-A-CAP' });
+      // Spy on the underlying chat-v2 call so we can verify the cap
+      // actually clamps — observing behavior end-to-end (i.e. result
+      // length) can't distinguish "limit honored" from "limit clamped"
+      // when fewer than 1000 rows exist in the channel.
+      const spy = jest.spyOn(chatV2, 'listMessages');
+      await service.getMessages({ conversationId: 'slack-A-CAP', limit: 10_000 });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][0]).toMatchObject({
+        channelId: 'slack-A-CAP',
+        limit: 1000,
+      });
+      spy.mockRestore();
+    });
+
+    it('getMessages passes the resolved limit through to chat-v2.listMessages', async () => {
+      const service = getChatService();
+      await service.sendMessage({ content: 'x', conversationId: 'slack-A-PASS' });
+      const spy = jest.spyOn(chatV2, 'listMessages');
+
+      await service.getMessages({ conversationId: 'slack-A-PASS', limit: 50 });
+      expect(spy.mock.calls[0][0]).toMatchObject({ limit: 50 });
+
+      spy.mockClear();
+      await service.getMessages({ conversationId: 'slack-A-PASS' });
+      expect(spy.mock.calls[0][0]).toMatchObject({ limit: 200 });
+
+      spy.mockClear();
+      await service.getMessages({ conversationId: 'slack-A-PASS', limit: 0 });
+      expect(spy.mock.calls[0][0]).toMatchObject({ limit: 200 });
+
+      spy.mockRestore();
+    });
+
+    it('getMessages ignores non-positive or non-finite filter.limit values', async () => {
+      const service = getChatService();
+      await service.sendMessage({ content: 'x', conversationId: 'slack-A-BAD' });
+      const zero = await service.getMessages({ conversationId: 'slack-A-BAD', limit: 0 });
+      expect(zero).toHaveLength(1);
+      const negative = await service.getMessages({ conversationId: 'slack-A-BAD', limit: -5 });
+      expect(negative).toHaveLength(1);
+      const nan = await service.getMessages({ conversationId: 'slack-A-BAD', limit: Number.NaN });
+      expect(nan).toHaveLength(1);
     });
 
     it('getMessageCount returns 0 for unknown conversation', async () => {

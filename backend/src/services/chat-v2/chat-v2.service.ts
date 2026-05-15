@@ -605,7 +605,7 @@ export class ChatV2Service extends EventEmitter {
       timestamp?: string;
       metadata?: Record<string, unknown>;
     }>;
-  }): { channelId: string; imported: number; deduped: number } {
+  }): { channelId: string; imported: number; deduped: number; skipped: number } {
     if (!input?.conversation?.id) {
       throw new ChatError(
         CHAT_ERROR_CODES.VALIDATION,
@@ -629,9 +629,18 @@ export class ChatV2Service extends EventEmitter {
 
     let imported = 0;
     let deduped = 0;
-    for (const msg of input.messages) {
-      if (!msg?.id || typeof msg.content !== 'string' || msg.content.length === 0) {
-        // Skip malformed rows rather than failing the whole import.
+    let skipped = 0;
+    const skippedReasons: Array<{ index: number; reason: string; id?: unknown }> = [];
+    for (let i = 0; i < input.messages.length; i++) {
+      const msg = input.messages[i];
+      if (!msg?.id) {
+        skipped++;
+        skippedReasons.push({ index: i, reason: 'missing-id', id: msg?.id });
+        continue;
+      }
+      if (typeof msg.content !== 'string' || msg.content.length === 0) {
+        skipped++;
+        skippedReasons.push({ index: i, reason: 'empty-content', id: msg.id });
         continue;
       }
 
@@ -675,7 +684,28 @@ export class ChatV2Service extends EventEmitter {
       }
     }
 
-    return { channelId: channel.id, imported, deduped };
+    if (skipped > 0) {
+      // Surface malformed legacy rows so the migration operator can
+      // decide whether to repair the source JSON before re-running, or
+      // accept that some history is unrecoverable. Without this log the
+      // earlier silent-skip behavior turned data-loss into a counter
+      // mismatch that nobody noticed. ChatV2Service has no injected
+      // logger; the migration runs as a CLI script so console output
+      // is the right sink.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[chat-v2] importLegacyConversation: skipped ${skipped}/${input.messages.length} malformed row(s) in ${input.conversation.id}`,
+        {
+          channelId: channel.id,
+          skipped,
+          totalRows: input.messages.length,
+          reasons: skippedReasons.slice(0, 10),
+          truncated: skippedReasons.length > 10,
+        },
+      );
+    }
+
+    return { channelId: channel.id, imported, deduped, skipped };
   }
 
   /**

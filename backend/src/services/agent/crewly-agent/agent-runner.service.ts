@@ -19,6 +19,7 @@ import { McpClientService } from '../../mcp-client.js';
 import { connectAndLoadMcpTools } from './mcp-tool-bridge.js';
 import { ApprovalQueueService, type PendingApproval } from './approval-queue.service.js';
 import { OutputFilterService } from './output-filter.service.js';
+import { synthesizeSlackConversationId } from '../../chat-v2/legacy-dto.utils.js';
 import type { ToolDefinition } from './types.js';
 import {
   type CrewlyAgentConfig,
@@ -689,7 +690,10 @@ export class AgentRunnerService {
         const resolvedConvKey: string =
           item.conversationId ??
           (item.metadata?.channelId && item.metadata?.threadTs
-            ? `slack-${item.metadata.channelId}-${String(item.metadata.threadTs).replace('.', '-')}`
+            ? synthesizeSlackConversationId(
+                String(item.metadata.channelId),
+                String(item.metadata.threadTs),
+              )
             : this.lastKnownConversationId ?? '__default__');
         this.currentConversationKey = resolvedConvKey;
         // Set streaming callbacks for this run

@@ -1034,6 +1034,13 @@ export class SlackService extends EventEmitter {
     userId: string
   ): SlackConversationContext {
     const key = `${channelId}:${threadTs}`;
+    // NOTE: This is intentionally NOT `synthesizeSlackConversationId`
+    // (chat-v2/legacy-dto.utils.ts). That helper produces the chat-v2
+    // channel id by replacing the single dot in the Slack ts. The id
+    // built here is for an in-memory `SlackConversationContext` map keyed
+    // by a broader sanitized form (any non-alphanumeric → `-`) and may
+    // diverge from the chat-v2 channel id by design. Do not "unify" —
+    // see the 2026-05-15 review of PR #547 for the discussion.
     const conversationId = `slack-${channelId}-${threadTs}`.replace(/[^A-Za-z0-9_-]/g, '-');
     let context = this.conversationContexts.get(key);
 

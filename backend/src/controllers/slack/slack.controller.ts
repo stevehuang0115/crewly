@@ -16,6 +16,7 @@ import { saveSlackCredentials, deleteSlackCredentials, hasSavedCredentials } fro
 import { SlackConfig, SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS } from '../../constants.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
+import { synthesizeSlackConversationId } from '../../services/chat-v2/legacy-dto.utils.js';
 
 const router = Router();
 const SLACK_MANIFEST_PATH = path.join(process.cwd(), 'config', 'slack-app-manifest.json');
@@ -254,7 +255,7 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
         ? conversationId
         : undefined) ??
       (typeof channelId === 'string' && typeof threadTs === 'string'
-        ? `slack-${channelId}-${String(threadTs).replace('.', '-')}`
+        ? synthesizeSlackConversationId(channelId, threadTs)
         : undefined);
     if (resolvedConversationId) {
       try {
@@ -325,7 +326,7 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
         if (!tsq.get(threadKey)) {
           tsq.trackInbound({
             threadKey,
-            conversationId: conversationId || `slack-${channelId}-${String(threadTs).replace('.', '-')}`,
+            conversationId: conversationId || synthesizeSlackConversationId(channelId, threadTs),
             source: 'slack',
             messagePreview: '[reply-only — no inbound recorded]',
           });
