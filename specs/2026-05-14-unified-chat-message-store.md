@@ -173,7 +173,29 @@ Six phases. Each phase is independently shippable and reversible (until Phase 6)
 
 ### Phase 6 — Retire legacy `ChatService`
 
-Phase 6 has to be staged carefully because legacy `ChatService` is still
+**Status (2026-05-14, after PR #545):**
+
+- **Phase 6α — façade rewrite — DONE** (commit `990a1b06`).
+  `ChatService` is now a thin shim that delegates every method to
+  `ChatV2Service`. The original ~/.crewly/chat/*.json filesystem
+  storage layer no longer runs. Reader and writer call sites
+  continue to compile and execute unchanged; the underlying storage
+  is chat-v2 SQLite for both.
+
+- **Phase 6β — remove redundant explicit chat-v2 writes — DONE**
+  (commit `b8e02293`). The dual-write code that Phases 2 and 3
+  added (explicit `chatV2.recordTurn` calls alongside legacy writes)
+  was removed to prevent duplicate rows now that the façade routes
+  everything to chat-v2.
+
+After 6α + 6β: **every chat message in the system flows through a
+single storage (chat.db SQLite) via a single canonical write
+primitive (ChatV2Service.recordTurn)**. The "single unified storage
+and read entry point" success criterion is met at the storage layer.
+
+Remaining Phase 6 work (façade-removal cleanup, separate PR):
+
+Phase 6 originally staged carefully because legacy `ChatService` is still
 the read source for the frontend chat UI today. Cutting writes before
 cutting reads would silently break the UI. The ordering is:
 
