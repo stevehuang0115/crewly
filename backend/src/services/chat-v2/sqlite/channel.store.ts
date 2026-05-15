@@ -264,6 +264,57 @@ export class ChannelStore {
   }
 
   /**
+   * Phase 6.0b — clear an archived flag. Inverse of {@link archive};
+   * required by the legacy `unarchiveConversation` controller route.
+   *
+   * @param id - The channel id
+   * @returns True if a row was updated (was archived), false otherwise
+   */
+  unarchive(id: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE chat_channels
+         SET archived_at = NULL
+         WHERE id = ? AND archived_at IS NOT NULL`,
+      )
+      .run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * Phase 6.0b — rename a channel. Used by the legacy
+   * `updateConversationTitle` controller route.
+   *
+   * @param id - The channel id
+   * @param name - The new name
+   * @returns True if a row was updated, false if the channel doesn't exist
+   */
+  rename(id: string, name: string): boolean {
+    const result = this.db
+      .prepare(`UPDATE chat_channels SET name = ? WHERE id = ?`)
+      .run(name, id);
+    return result.changes > 0;
+  }
+
+  /**
+   * Phase 6.0b — hard-delete a channel and all its messages. Note: this
+   * is distinct from {@link archive} (soft delete via archived_at).
+   * Used by the legacy `deleteConversation` controller route.
+   *
+   * FK ON DELETE CASCADE on `chat_messages.channel_id` cleans up
+   * messages atomically with the channel row.
+   *
+   * @param id - The channel id to remove
+   * @returns True if a row was removed, false if no such channel
+   */
+  hardDelete(id: string): boolean {
+    const result = this.db
+      .prepare(`DELETE FROM chat_channels WHERE id = ?`)
+      .run(id);
+    return result.changes > 0;
+  }
+
+  /**
    * Bump `last_message_at` to a provided timestamp if it is greater than
    * the current value. Safe to call many times.
    *

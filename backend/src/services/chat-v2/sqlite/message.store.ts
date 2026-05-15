@@ -456,6 +456,22 @@ export class MessageStore {
   }
 
   /**
+   * Phase 6.0b — delete every message in a channel while leaving the
+   * channel row in place. Used by the legacy `clearConversation`
+   * controller route. Not transactional with channel state; callers
+   * that need atomicity should wrap in their own transaction.
+   *
+   * @param channelId - The channel whose messages to remove
+   * @returns Number of rows deleted
+   */
+  deleteAllByChannel(channelId: string): number {
+    const result = this.db
+      .prepare(`DELETE FROM chat_messages WHERE channel_id = ?`)
+      .run(channelId);
+    return result.changes;
+  }
+
+  /**
    * Merge a JSON patch into an existing message's metadata column.
    * Implementation of Phase 6.0 of the unified-chat-message-store spec
    * — replaces the legacy `ChatService.updateMessageMetadata` so all

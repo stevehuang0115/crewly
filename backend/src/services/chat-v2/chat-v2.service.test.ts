@@ -1405,4 +1405,136 @@ describe('ChatV2Service', () => {
       });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Phase 6.0b — conversation-lifecycle methods (rename, unarchive, delete,
+  // clear, count). Each replaces a legacy ChatService method.
+  // -------------------------------------------------------------------------
+
+  describe('unarchiveChannel (Phase 6.0b)', () => {
+    it('flips an archived channel back to active', () => {
+      const ch = createSam();
+      service.archiveChannel(ch.id, owner);
+      expect(service.unarchiveChannel(ch.id, owner)).toBe(true);
+      // Channel is listable again
+      const list = service.listChannels({ principal: owner });
+      expect(list.some((c) => c.id === ch.id)).toBe(true);
+    });
+
+    it('returns false when the channel was already active', () => {
+      const ch = createSam();
+      expect(service.unarchiveChannel(ch.id, owner)).toBe(false);
+    });
+
+    it('rejects on non-owned channel', () => {
+      const ch = createSam();
+      service.archiveChannel(ch.id, owner);
+      expect(() => service.unarchiveChannel(ch.id, otherUser)).toThrow(ChatError);
+    });
+  });
+
+  describe('renameChannel (Phase 6.0b)', () => {
+    it('renames an existing channel and returns the updated DTO', () => {
+      const ch = createSam();
+      const renamed = service.renameChannel(ch.id, 'Sam (renamed)', owner);
+      expect(renamed.id).toBe(ch.id);
+      expect(renamed.name).toBe('Sam (renamed)');
+      // Round-trip through the store confirms it stuck
+      const fetched = service.getChannel(ch.id, owner);
+      expect(fetched.name).toBe('Sam (renamed)');
+    });
+
+    it('trims whitespace from the new name', () => {
+      const ch = createSam();
+      const renamed = service.renameChannel(ch.id, '  Trim Me  ', owner);
+      expect(renamed.name).toBe('Trim Me');
+    });
+
+    it('rejects empty / whitespace-only names', () => {
+      const ch = createSam();
+      expect(() => service.renameChannel(ch.id, '', owner)).toThrow(/name is required/);
+      expect(() => service.renameChannel(ch.id, '   ', owner)).toThrow(/name is required/);
+    });
+
+    it('rejects oversize names', () => {
+      const ch = createSam();
+      const tooLong = 'x'.repeat(service.config.maxChannelNameChars + 1);
+      expect(() => service.renameChannel(ch.id, tooLong, owner)).toThrow(/exceeds/);
+    });
+  });
+
+  describe('deleteChannel (Phase 6.0b)', () => {
+    it('hard-deletes channel + all messages via FK cascade', () => {
+      const ch = createSam();
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'msg',
+        metadata: { source: 'in-process-runtime' },
+      });
+      expect(service.countAllMessages()).toBe(1);
+
+      expect(service.deleteChannel(ch.id, owner)).toBe(true);
+
+      // Channel + messages both gone
+      expect(service.countAllMessages()).toBe(0);
+      const list = service.listChannels({ principal: owner });
+      expect(list.find((c) => c.id === ch.id)).toBeUndefined();
+    });
+
+    it('throws on unknown channel id (auth probe fails first)', () => {
+      expect(() => service.deleteChannel('no-such-id', owner)).toThrow(ChatError);
+    });
+  });
+
+  describe('clearChannel (Phase 6.0b)', () => {
+    it('deletes messages but keeps the channel row', () => {
+      const ch = createSam();
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'a',
+        metadata: { source: 'in-process-runtime' },
+      });
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'b',
+        metadata: { source: 'in-process-runtime' },
+      });
+      expect(service.countAllMessages()).toBe(2);
+
+      const cleared = service.clearChannel(ch.id, owner);
+      expect(cleared).toBe(2);
+
+      // Channel survives, messages don't
+      expect(service.countAllMessages()).toBe(0);
+      expect(service.getChannel(ch.id, owner).id).toBe(ch.id);
+    });
+  });
+
+  describe('countChannelMessages (Phase 6.0b)', () => {
+    it('returns 0 for a fresh channel and counts after writes', () => {
+      const ch = createSam();
+      expect(service.countChannelMessages(ch.id, owner)).toBe(0);
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'one',
+        metadata: { source: 'in-process-runtime' },
+      });
+      service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'two',
+        metadata: { source: 'in-process-runtime' },
+      });
+      expect(service.countChannelMessages(ch.id, owner)).toBe(2);
+    });
+  });
 });

@@ -741,6 +741,96 @@ export class ChatV2Service {
     return this.channels.archive(channelId, this.now());
   }
 
+  /**
+   * Phase 6.0b — clear the `archived_at` flag on a channel. Inverse of
+   * {@link archiveChannel}; required to retire the legacy
+   * `unarchiveConversation` route.
+   *
+   * @param channelId - The channel to unarchive
+   * @param principal - Auth principal (must own the channel)
+   * @returns True if newly unarchived, false if already active
+   * @throws {ChatError} `channel_not_found` (404)
+   */
+  unarchiveChannel(channelId: string, principal: ChatPrincipal): boolean {
+    this.requireOwnedChannel(channelId, principal);
+    return this.channels.unarchive(channelId);
+  }
+
+  /**
+   * Phase 6.0b — rename a channel. Replaces the legacy
+   * `updateConversationTitle` route. Server validates the same name
+   * constraints as `createChannel`.
+   *
+   * @param channelId - The channel to rename
+   * @param name - New name (trimmed, ≤ maxChannelNameChars)
+   * @param principal - Auth principal (must own the channel)
+   * @returns The renamed channel DTO
+   * @throws {ChatError} `validation_error` (400) on empty / oversize name,
+   *                    `channel_not_found` (404)
+   */
+  renameChannel(channelId: string, name: string, principal: ChatPrincipal): ChatChannelDTO {
+    const trimmed = (name ?? '').trim();
+    if (trimmed.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'name is required');
+    }
+    if (trimmed.length > this.config.maxChannelNameChars) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `name exceeds ${this.config.maxChannelNameChars} characters`,
+      );
+    }
+    const row = this.requireOwnedChannel(channelId, principal);
+    this.channels.rename(channelId, trimmed);
+    return this.toChannelDTO({ ...row, name: trimmed });
+  }
+
+  /**
+   * Phase 6.0b — hard-delete a channel and all its messages. Distinct
+   * from {@link archiveChannel} (soft delete). Replaces the legacy
+   * `deleteConversation` route. Uses SQLite FK cascade so the row
+   * deletion atomically removes child messages.
+   *
+   * @param channelId - The channel to delete
+   * @param principal - Auth principal (must own the channel)
+   * @returns True if removed, false if the channel didn't exist
+   * @throws {ChatError} `channel_not_found` (404)
+   */
+  deleteChannel(channelId: string, principal: ChatPrincipal): boolean {
+    this.requireOwnedChannel(channelId, principal);
+    return this.channels.hardDelete(channelId);
+  }
+
+  /**
+   * Phase 6.0b — delete all messages in a channel while keeping the
+   * channel row. Replaces the legacy `clearConversation` route. Useful
+   * when the user wants a "fresh start" without losing the channel
+   * itself (and its bookkeeping like `agent_session` binding).
+   *
+   * @param channelId - The channel to clear
+   * @param principal - Auth principal (must own the channel)
+   * @returns Number of messages deleted
+   * @throws {ChatError} `channel_not_found` (404)
+   */
+  clearChannel(channelId: string, principal: ChatPrincipal): number {
+    this.requireOwnedChannel(channelId, principal);
+    return this.messages.deleteAllByChannel(channelId);
+  }
+
+  /**
+   * Phase 6.0b — count messages in a single channel. Replaces the
+   * legacy `getMessageCount` filtered to one conversation.
+   *
+   * @param channelId - The channel to count
+   * @param principal - Auth principal (must own the channel)
+   * @returns Message count (0 for empty channels)
+   * @throws {ChatError} `channel_not_found` (404)
+   */
+  countChannelMessages(channelId: string, principal: ChatPrincipal): number {
+    this.requireOwnedChannel(channelId, principal);
+    return this.messages.count(channelId);
+  }
+
   // -------------------------------------------------------------------------
   // Message operations
   // -------------------------------------------------------------------------
