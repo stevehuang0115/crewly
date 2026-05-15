@@ -12,6 +12,14 @@ import {
 import { getWhatsAppService, resetWhatsAppService } from './whatsapp.service.js';
 import { resetChatService, getChatService } from '../chat/chat.service.js';
 
+// Phase 6c migration — bridge now writes via chat-v2 directly
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: jest.fn(() => ({
+    ensureChannelForLegacyConversation: jest.fn(() => ({ id: 'test-channel' })),
+    recordTurn: jest.fn(() => ({ message: { id: 'm1' }, deduped: false })),
+  })),
+}));
+
 // Mock the orchestrator status module
 jest.mock('../orchestrator/index.js', () => ({
   isOrchestratorActive: jest.fn().mockResolvedValue(true),

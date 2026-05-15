@@ -19,7 +19,7 @@ import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { MessageQueueService } from './message-queue.service.js';
 import { ResponseRouterService } from './response-router.service.js';
 import { AgentRegistrationService } from '../agent/agent-registration.service.js';
-import { getChatService } from '../chat/chat.service.js';
+import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import {
   MESSAGE_QUEUE_CONSTANTS,
@@ -437,11 +437,18 @@ export class QueueProcessorService extends EventEmitter {
             // Notify user in conversation
             if (message.source !== MESSAGE_SOURCES.SYSTEM_EVENT) {
               try {
-                const chatService = getChatService();
-                await chatService.addSystemMessage(
-                  message.conversationId,
-                  `Message delivery failed: ${errorMsg} Please try again later.`
-                );
+                const chatV2 = getChatV2Service();
+                const channel = chatV2.ensureChannelForLegacyConversation({
+                  conversationId: message.conversationId,
+                  agentSession: 'crewly-orc',
+                });
+                chatV2.recordTurn({
+                  channelId: channel.id,
+                  senderType: 'system',
+                  senderId: 'system',
+                  content: `Message delivery failed: ${errorMsg} Please try again later.`,
+                  metadata: { source: 'system' },
+                });
               } catch (sysErr) {
                 this.logger.warn('Failed to send max-retry failure system message', {
                   error: sysErr instanceof Error ? sysErr.message : String(sysErr),
@@ -640,11 +647,18 @@ export class QueueProcessorService extends EventEmitter {
         // (skip for system events — no user conversation to notify)
         if (!isSystemEvent) {
           try {
-            const chatService = getChatService();
-            await chatService.addSystemMessage(
-              message.conversationId,
-              `Failed to deliver message to orchestrator: ${errorMsg}. Please try again.`
-            );
+            const chatV2 = getChatV2Service();
+            const channel = chatV2.ensureChannelForLegacyConversation({
+              conversationId: message.conversationId,
+              agentSession: 'crewly-orc',
+            });
+            chatV2.recordTurn({
+              channelId: channel.id,
+              senderType: 'system',
+              senderId: 'system',
+              content: `Failed to deliver message to orchestrator: ${errorMsg}. Please try again.`,
+              metadata: { source: 'system' },
+            });
           } catch (sysErr) {
             this.logger.warn('Failed to send delivery-failure system message', {
               error: sysErr instanceof Error ? sysErr.message : String(sysErr),

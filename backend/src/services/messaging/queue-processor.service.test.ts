@@ -115,6 +115,14 @@ jest.mock('../chat/chat.service.js', () => ({
   getChatService: () => mockChatService,
 }));
 
+// Phase 6c migration — failure system messages now write via chat-v2 directly
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: jest.fn(() => ({
+    ensureChannelForLegacyConversation: jest.fn(() => ({ id: 'test-channel' })),
+    recordTurn: jest.fn(() => ({ message: { id: 'm1' }, deduped: false })),
+  })),
+}));
+
 // Mock terminal gateway
 const mockSetActiveConversationId = jest.fn();
 jest.mock('../../websocket/terminal.gateway.js', () => ({

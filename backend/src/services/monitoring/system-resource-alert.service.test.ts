@@ -7,7 +7,13 @@ import { SYSTEM_RESOURCE_ALERT_CONSTANTS } from '../../constants.js';
 jest.mock('../core/logger.service.js');
 jest.mock('./monitoring.service.js');
 jest.mock('../../websocket/terminal.gateway.js');
-jest.mock('../chat/chat.service.js');
+// Phase 6c migration — alert path now writes via chat-v2 directly
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: jest.fn(() => ({
+    ensureChannelForLegacyConversation: jest.fn(() => ({ id: 'test-channel' })),
+    recordTurn: jest.fn(() => ({ message: { id: 'm1' }, deduped: false })),
+  })),
+}));
 
 // Import mocked modules for setup
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';

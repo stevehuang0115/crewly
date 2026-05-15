@@ -17,7 +17,7 @@
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { MonitoringService } from './monitoring.service.js';
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
-import { getChatService } from '../chat/chat.service.js';
+import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import { SYSTEM_RESOURCE_ALERT_CONSTANTS } from '../../constants.js';
 import { IdleDetectionService } from '../agent/idle-detection.service.js';
 
@@ -198,11 +198,18 @@ export class SystemResourceAlertService {
 			const conversationId = terminalGateway?.getActiveConversationId();
 
 			if (conversationId) {
-				const chatService = getChatService();
-				await chatService.addSystemMessage(
+				const chatV2 = getChatV2Service();
+				const channel = chatV2.ensureChannelForLegacyConversation({
 					conversationId,
-					`[System Alert] ${message}`
-				);
+					agentSession: 'crewly-orc',
+				});
+				chatV2.recordTurn({
+					channelId: channel.id,
+					senderType: 'system',
+					senderId: 'system',
+					content: `[System Alert] ${message}`,
+					metadata: { source: 'system' },
+				});
 			}
 
 			// Broadcast WebSocket event for frontend toast/banner

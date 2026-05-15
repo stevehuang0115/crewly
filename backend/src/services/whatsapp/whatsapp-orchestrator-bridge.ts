@@ -9,7 +9,8 @@
 
 import { EventEmitter } from 'events';
 import { getWhatsAppService, WhatsAppService } from './whatsapp.service.js';
-import { getChatService, ChatService } from '../chat/chat.service.js';
+import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
+import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import {
   isOrchestratorActive,
   isAgentActive,
@@ -62,7 +63,7 @@ let bridgeInstance: WhatsAppOrchestratorBridge | null = null;
 export class WhatsAppOrchestratorBridge extends EventEmitter {
   private logger = LoggerService.getInstance().createComponentLogger('WhatsAppBridge');
   private whatsappService: WhatsAppService;
-  private chatService: ChatService;
+  private chatV2: ChatV2Service;
   private messageQueueService: MessageQueueService | null = null;
   private config: WhatsAppBridgeConfig;
   private initialized = false;
@@ -76,7 +77,7 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
   constructor(config: Partial<WhatsAppBridgeConfig> = {}) {
     super();
     this.whatsappService = getWhatsAppService();
-    this.chatService = getChatService();
+    this.chatV2 = getChatV2Service();
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
@@ -192,16 +193,25 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
         return 'The WhatsApp bridge is not properly configured. Please restart the server.';
       }
 
-      // Store message in chat service
-      const result = await this.chatService.sendMessage({
+      // Store message in canonical chat-v2 store
+      const conversationId =
+        context?.conversationId ?? `whatsapp-${context?.chatId ?? 'unknown'}-${Date.now()}`;
+      const channel = this.chatV2.ensureChannelForLegacyConversation({
+        conversationId,
+        agentSession: 'crewly-orc',
+      });
+      this.chatV2.recordTurn({
+        channelId: channel.id,
+        senderType: 'user',
+        senderId: context?.chatId ?? 'whatsapp-user',
         content: message,
-        conversationId: context?.conversationId,
         metadata: {
-          source: 'whatsapp',
+          source: 'slack',  // closest enum value; whatsapp is treated as a similar inbound surface
           chatId: context?.chatId,
           contactName: context?.contactName,
-        },
+        } as Record<string, unknown> & { source: 'slack' },
       });
+      const result = { conversation: { id: channel.id } };
 
       // Enqueue with a resolve callback for response routing
       const response = await new Promise<string>((resolve) => {
@@ -258,15 +268,24 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
     const mqService = this.messageQueueService;
     if (mqService) {
       try {
-        const result = await this.chatService.sendMessage({
+        const conversationId =
+          context?.conversationId ?? `whatsapp-${context?.chatId ?? 'unknown'}-${Date.now()}`;
+        const channel = this.chatV2.ensureChannelForLegacyConversation({
+          conversationId,
+          agentSession: 'crewly-orc',
+        });
+        this.chatV2.recordTurn({
+          channelId: channel.id,
+          senderType: 'user',
+          senderId: context?.chatId ?? 'whatsapp-user',
           content: enrichedMessage,
-          conversationId: context?.conversationId,
           metadata: {
-            source: 'whatsapp',
+            source: 'slack',  // closest enum value; whatsapp is an inbound surface
             chatId: context?.chatId,
             contactName: context?.contactName,
-          },
+          } as Record<string, unknown> & { source: 'slack' },
         });
+        const result = { conversation: { id: channel.id } };
 
         mqService.enqueue({
           content: enrichedMessage,
