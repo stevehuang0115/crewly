@@ -317,6 +317,17 @@ export class ChatV2DispatcherService {
    * Messages where `senderType !== "user"` are a no-op — we never loop an
    * agent's own reply back into its own PTY.
    *
+   * @deprecated Issue #334 — `dispatchToAgent` is the legacy 1:1 entry
+   * point. New callers MUST go through `dispatchMessage`, which routes
+   * type='dm' messages here and adds the type='channel' (@mentions /
+   * @team) path. Direct callers of `dispatchToAgent` silently bypass
+   * the mention-resolution layer.
+   *
+   * Conversion: replace `dispatchToAgent(channel, message)` with
+   * `dispatchMessage(channel, message)` and read the `dmResult` field
+   * of the returned object. See chat-v2.dispatcher.service.ts:dispatchMessage
+   * for the contract.
+   *
    * @param channel - Channel DTO (provides `agentSession` + display name)
    * @param message - Persisted message DTO
    */
