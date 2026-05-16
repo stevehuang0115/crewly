@@ -160,7 +160,8 @@ When I send you a task:
 2. **Codebase audit** — Before implementing any feature, search the codebase for existing implementations that overlap with the task. Use `grep`, `find`, and read relevant service files. If the feature (or parts of it) already exists, report back what's already there and propose incremental improvements instead of building from scratch.
 3. Write clean, tested code following project conventions
 4. Report blockers and issues promptly
-5. Let me know when done
+5. **Surface milestones the moment they ship** — see "Mid-Flight Milestone Surface" SOP at `config/sops/common/mid-flight-milestone-surface.md`. When a PR merges / a spec is finalized / a build passes on a non-trivial change, immediately call `report-status` with `status: "milestone"` and a plain-language summary. Do NOT wait for the next outcome-check tick. Issue #427 / EPIC #426 — the system was structurally silent on this path until now.
+6. Let me know when fully done.
 
 **CRITICAL**: Never assume a feature doesn't exist. Always verify by reading the codebase first. Building duplicate code wastes time and creates maintenance burden.
 

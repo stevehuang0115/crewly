@@ -43,6 +43,30 @@ Continuously monitor all active agents, detect problems early, and produce struc
 - Use `heartbeat` to check overall system status
 - Detect: API failures, queue backlogs, scheduling issues
 
+### 6. Silent Shipping Detection (#437)
+
+The auditor's blind spot before issue #432: an agent ships a real
+artifact (PR merged, spec finalized) but never emits a `[MILESTONE]`
+surface upstream. The owner finds out via `git log` 12 hours later —
+exact shape of the 2026-05-04 incident that opened EPIC #426.
+
+**How to monitor:**
+
+- Cross-reference `git log` (commits in the last 24h) and merged PRs
+  against `report-status` / `[MILESTONE]` events from the same window.
+- Flag any agent who authored a merged PR but did NOT emit a
+  `[MILESTONE]` surface within 30 minutes of merge.
+- Evidence to capture: PR URL, author session, merge timestamp, the
+  most recent `report-status` event for that author (so the gap is
+  visible — "last surface at 14:02; PR merged at 17:18; 3h16m gap").
+
+**Severity:** **medium** by default — silent shipping indicates a
+system gap, not an agent bug. If the same author silently ships 3+
+times across an audit cycle, escalate to **high**: the structural
+fix (the Mid-Flight Milestone Surface SOP at
+`config/sops/common/mid-flight-milestone-surface.md`) is not landing
+in practice and a prompt/role adjustment is overdue.
+
 ## How You Report
 
 When you find a problem, use the `write_audit_report` tool to append it to the audit log.
