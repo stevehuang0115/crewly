@@ -188,14 +188,38 @@ export type CredentialBindings = Record<string, string>;
 // ============================================================================
 
 /**
+ * One available credential, surfaced in MissingCredentialError so the
+ * caller can re-invoke with `credentialBindings: { [slot]: id }`.
+ */
+export interface AvailableCredentialHint {
+  id: string;
+  name: string;
+  type: CredentialType;
+  status: CredentialStatus;
+}
+
+/**
  * Thrown when a required slot has neither a binding nor a default.
+ *
+ * The error message now includes the list of available credentials of
+ * the matching provider so the caller can re-invoke with the right
+ * `credentialBindings` map without having to grep `~/.crewly/credentials/`
+ * by hand. Issue #324.
  */
 export class MissingCredentialError extends Error {
   constructor(
     public readonly slot: string,
     public readonly provider: string,
+    public readonly available: readonly AvailableCredentialHint[] = [],
   ) {
-    super(`No credential bound to required slot '${slot}' (provider: ${provider})`);
+    const base = `No credential bound to required slot '${slot}' (provider: ${provider}).`;
+    const hint =
+      available.length > 0
+        ? ` Available ${provider} credentials: ${available
+            .map((c) => `${c.id} (name="${c.name}", status=${c.status})`)
+            .join(', ')}. Re-invoke with credentialBindings: { ${slot}: "<id>" }.`
+        : ` No ${provider} credentials registered. Add one via the Settings → Credentials UI before invoking this skill.`;
+    super(base + hint);
     this.name = 'MissingCredentialError';
   }
 }
