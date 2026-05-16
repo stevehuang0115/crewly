@@ -63,6 +63,56 @@ describe('pickTeamLead', () => {
     expect(pickTeamLead(team)?.id).toBe('m1');
   });
 
+  // Issue #332: rule-4 fallback must emit a warn so missing hierarchy
+  // data surfaces in observability. Rules 1-3 must stay silent.
+  describe('observability (#332)', () => {
+    let warnSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    function countTeamUtilsWarns(): number {
+      return warnSpy.mock.calls.filter(([msg]) =>
+        typeof msg === 'string' && msg.includes('pickTeamLead falling back to first member'),
+      ).length;
+    }
+
+    it('rule-1 (hierarchy TL) does NOT warn', () => {
+      const tl = baseMember({ id: 'tl', hierarchyLevel: 1, canDelegate: true });
+      const other = baseMember({ id: 'dev' });
+      const team = mkTeam([other, tl]);
+      pickTeamLead(team);
+      expect(countTeamUtilsWarns()).toBe(0);
+    });
+
+    it('rule-2 (canDelegate) does NOT warn', () => {
+      const tl = baseMember({ id: 'tl', canDelegate: true });
+      const team = mkTeam([tl]);
+      pickTeamLead(team);
+      expect(countTeamUtilsWarns()).toBe(0);
+    });
+
+    it('rule-3 (role=team-leader) does NOT warn', () => {
+      const tl = baseMember({ id: 'tl', role: 'team-leader' });
+      const team = mkTeam([tl]);
+      pickTeamLead(team);
+      expect(countTeamUtilsWarns()).toBe(0);
+    });
+
+    it('rule-4 (first member fallback) DOES warn', () => {
+      const m1 = baseMember({ id: 'm1' });
+      const m2 = baseMember({ id: 'm2' });
+      const team = mkTeam([m1, m2]);
+      pickTeamLead(team);
+      expect(countTeamUtilsWarns()).toBe(1);
+    });
+  });
+
   it('returns null when team has no members', () => {
     const team = mkTeam([]);
     expect(pickTeamLead(team)).toBeNull();
