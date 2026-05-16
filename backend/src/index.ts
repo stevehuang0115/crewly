@@ -55,6 +55,7 @@ import { getSettingsService } from './services/settings/index.js';
 import { MemoryService } from './services/memory/memory.service.js';
 import { getImprovementStartupService } from './services/orchestrator/improvement-startup.service.js';
 import { initializeSlackIfConfigured, shutdownSlack } from './services/slack/index.js';
+import { resolveTeamByIdOrSlug, slugifyTeamName } from './services/workflow/team-identifier-resolver.js';
 import { initializeWhatsAppIfConfigured, shutdownWhatsApp } from './services/whatsapp/index.js';
 import { initializeGoogleChatIfConfigured } from './services/messaging/google-chat-initializer.js';
 import { initializeTelegramIfConfigured, shutdownTelegram } from './services/telegram/index.js';
@@ -1541,6 +1542,16 @@ export class CrewlyServer {
 						`[CRON_TASK:${task.id}] ${task.taskDescription}`,
 					);
 				});
+				// Issue #307: cron tasks created with `targetTeamId` set to a
+				// name slug (e.g. "stock-ops-team") instead of the UUID would
+				// silently 404 on every fire — `teams.find(t => t.id === teamId)`
+				// returned undefined and both callbacks returned `false` with
+				// no log surface. `resolveTeamByIdOrSlug` (imported statically
+				// at the top of the file) tries UUID first, then falls back
+				// to a slug match against `name`. Misses now surface a distinct
+				// warn-log with the available slugs so the cause is visible
+				// instead of hiding behind the generic "agent offline" warn
+				// from cron-task.service.
 				cronTaskService.setAgentStatusCallback(async (sessionName, teamId) => {
 					// Handle orchestrator separately — it's not in regular teams
 					if (sessionName === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME || teamId === 'orchestrator') {
@@ -1548,8 +1559,16 @@ export class CrewlyServer {
 						return orchStatus?.agentStatus === 'active' || orchStatus?.agentStatus === 'started';
 					}
 					const teams = await storageRef.getTeams();
-					const team = teams.find((t) => t.id === teamId);
-					if (!team) return false;
+					const team = resolveTeamByIdOrSlug(teams, teamId);
+					if (!team) {
+						this.logger.warn('CronTask: targetTeamId resolves to no team', {
+							sessionName,
+							targetTeamId: teamId,
+							availableSlugs: teams.slice(0, 10).map((t) => slugifyTeamName(t.name)),
+							hint: 'Set targetTeamId to either the team UUID or one of availableSlugs (lowercase, spaces→-)',
+						});
+						return false;
+					}
 					const member = team.members.find((m) => m.sessionName === sessionName);
 					if (!member) return false;
 					// #286 Root Cause C: treat both 'active' and 'started' as online
@@ -1558,14 +1577,24 @@ export class CrewlyServer {
 				cronTaskService.setAgentStartCallback(async (sessionName, teamId) => {
 					try {
 						const teams = await storageRef.getTeams();
-						const team = teams.find((t) => t.id === teamId);
-						if (!team) return false;
+						const team = resolveTeamByIdOrSlug(teams, teamId);
+						if (!team) {
+							this.logger.warn('CronTask auto-start: targetTeamId resolves to no team', {
+								sessionName,
+								targetTeamId: teamId,
+								availableSlugs: teams.slice(0, 10).map((t) => slugifyTeamName(t.name)),
+								hint: 'Set targetTeamId to either the team UUID or one of availableSlugs (lowercase, spaces→-)',
+							});
+							return false;
+						}
 						const member = team.members.find((m) => m.sessionName === sessionName);
 						if (!member) return false;
 						await registrationRef.createAgentSession({
 							sessionName: member.sessionName,
 							role: member.role,
-							teamId,
+							// Use the resolved team's UUID — not the user-supplied identifier
+							// — so downstream agent-registration always sees the canonical id.
+							teamId: team.id,
 							memberId: member.id,
 						});
 						return true;
