@@ -259,21 +259,13 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
       // persist the empty state.
       //
       // We can't directly call persistTriggers (private). Instead: nuke the
-      // map via the undocumented but accessible internal field, then call a
-      // CRUD method that triggers persist. The next persist sees prior=100
-      // on disk + next=0 in memory → guard rejects with
-      // IntegrityViolationError.
-      const internalEngine = engine as unknown as { triggers: Map<string, Trigger> };
-      internalEngine.triggers.clear();
+      // map via the typed test accessor, then call a CRUD method that
+      // triggers persist. The next persist sees prior=100 on disk + next=0
+      // in memory → guard rejects with IntegrityViolationError.
+      const { triggers, persistTriggers } = engine.__testing__();
+      triggers.clear();
 
-      // Trigger a persist by attempting to delete — delete returns false
-      // since the trigger isn't in the map, so persist won't fire. Use a
-      // direct cancel on a known-id; that also returns false on no-such-id.
-      // The cleanest path: invoke the private persistTriggers via the
-      // unsafe cast. This is what production callers (CRUD methods) do.
-      const internalPersist = (engine as unknown as { persistTriggers: () => Promise<void> }).persistTriggers.bind(engine);
-
-      await expect(internalPersist()).rejects.toThrow(/Refusing to write empty collection|collapse-to-empty/i);
+      await expect(persistTriggers()).rejects.toThrow(/Refusing to write empty collection|collapse-to-empty/i);
 
       // Critical: disk MUST be unchanged. A regression here would mean the
       // guard threw but the file still got truncated.
@@ -294,19 +286,18 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
         });
       }
 
-      const internalEngine = engine as unknown as { triggers: Map<string, Trigger> };
-      const internalPersist = (engine as unknown as { persistTriggers: () => Promise<void> }).persistTriggers.bind(engine);
-      const original = Array.from(internalEngine.triggers.values());
+      const { triggers, persistTriggers } = engine.__testing__();
+      const original = Array.from(triggers.values());
 
       // Drop to 49 → guard rejects (51% decrease, > 50% threshold).
-      internalEngine.triggers.clear();
-      for (const t of original.slice(0, 49)) internalEngine.triggers.set(t.id, t);
-      await expect(internalPersist()).rejects.toThrow(/decrease-exceeds-threshold|below.*threshold/i);
+      triggers.clear();
+      for (const t of original.slice(0, 49)) triggers.set(t.id, t);
+      await expect(persistTriggers()).rejects.toThrow(/decrease-exceeds-threshold|below.*threshold/i);
 
       // Restore to 50 → guard PASSES (exactly at threshold; minAllowed=50).
-      internalEngine.triggers.clear();
-      for (const t of original.slice(0, 50)) internalEngine.triggers.set(t.id, t);
-      await expect(internalPersist()).resolves.not.toThrow();
+      triggers.clear();
+      for (const t of original.slice(0, 50)) triggers.set(t.id, t);
+      await expect(persistTriggers()).resolves.not.toThrow();
 
       // Disk should now reflect 50.
       const afterRaw = await fs.readFile(triggersFile(projectPath), 'utf-8');
@@ -344,21 +335,18 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
 
       // Stage the regression: clear the in-memory map (5 → 0). The guard
       // will reject on collapse-to-empty.
-      const internalEngine = engine as unknown as { triggers: Map<string, Trigger> };
-      const internalPersist = (engine as unknown as {
-        persistTriggers: () => Promise<void>;
-      }).persistTriggers.bind(engine);
-      internalEngine.triggers.clear();
+      const { triggers, persistTriggers } = engine.__testing__();
+      triggers.clear();
 
       // persist1: warn fires (5→0 collapse), guard rejects.
-      await expect(internalPersist()).rejects.toThrow(
+      await expect(persistTriggers()).rejects.toThrow(
         /Refusing to write empty collection|collapse-to-empty/i,
       );
 
       // persist2: same regression still in memory. With the fix, baseline
       // remained at 5, so the warn-log fires AGAIN. Without the fix
       // (regression), baseline would be 0 and warn would be silenced.
-      await expect(internalPersist()).rejects.toThrow(
+      await expect(persistTriggers()).rejects.toThrow(
         /Refusing to write empty collection|collapse-to-empty/i,
       );
 
@@ -446,6 +434,63 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
       const recovered = JSON.parse(recoveredRaw) as Trigger[];
       expect(recovered).toHaveLength(1);
       expect(recovered[0].id).toBe(created.id);
+    });
+
+    // Issue #456: a flapping write path can spray hundreds of `.corrupt.*`
+    // files into the triggers directory. The loader prunes the oldest so
+    // only the newest 10 are retained.
+    it('prunes oldest .corrupt.* backups, keeping the newest 10', async () => {
+      const triggersDir = path.join(projectPath, '.crewly', 'triggers');
+      await fs.mkdir(triggersDir, { recursive: true });
+
+      // Pre-seed 15 stale `.corrupt.<ts>` backups with monotonically
+      // increasing timestamps. These mimic a prior session's accumulation.
+      const baseTs = 1700000000000;
+      for (let i = 0; i < 15; i++) {
+        await fs.writeFile(
+          path.join(triggersDir, `triggers.json.corrupt.${baseTs + i}`),
+          `stale-${i}`,
+          'utf-8',
+        );
+      }
+
+      // Trigger one more corrupt-detection on boot — that's the only path
+      // that runs the prune. After this we should have 11 total: 10 oldest
+      // pre-seeded that survived + 1 brand-new backup. Wait — the prune
+      // keeps the newest 10 OVERALL, so post-prune we expect exactly 10
+      // (the 9 newest of the pre-seeded + the new one).
+      await fs.writeFile(triggersFile(projectPath), '{ corrupt }', 'utf-8');
+      const engine = TriggerEngine.getInstance(projectPath);
+      await engine.start();
+
+      const after = (await fs.readdir(triggersDir)).filter((f) =>
+        /^triggers\.json\.corrupt\.\d+$/.test(f),
+      );
+      expect(after).toHaveLength(10);
+
+      // The freshly-created backup (timestamp ~Date.now(), much newer
+      // than the seeds) MUST survive.
+      const tsValues = after
+        .map((f) => Number(f.replace(/^triggers\.json\.corrupt\./, '')))
+        .sort((a, b) => b - a);
+      expect(tsValues[0]).toBeGreaterThan(baseTs + 15);
+
+      // The 6 oldest pre-seeded backups MUST be gone — 15 pre-seeded + 1
+      // newly written = 16 total, pruned down to MAX_RETAINED=10, so 6 get
+      // unlinked: the 6 oldest seeded (baseTs+0..baseTs+5). Asserting all
+      // 6 catches an off-by-one in the slice math.
+      for (let i = 0; i < 6; i++) {
+        await expect(
+          fs.access(path.join(triggersDir, `triggers.json.corrupt.${baseTs + i}`)),
+        ).rejects.toThrow();
+      }
+
+      // The 9 surviving pre-seeded backups (baseTs+6..baseTs+14) MUST exist.
+      for (let i = 6; i < 15; i++) {
+        await expect(
+          fs.access(path.join(triggersDir, `triggers.json.corrupt.${baseTs + i}`)),
+        ).resolves.toBeUndefined();
+      }
     });
   });
 

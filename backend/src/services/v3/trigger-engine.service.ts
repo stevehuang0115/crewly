@@ -859,6 +859,10 @@ export class TriggerEngine {
       } catch {
         // Best-effort backup. Continue regardless.
       }
+      // Prune old corrupt-backups so a flapping write path can't accumulate
+      // hundreds of `.corrupt.*` files. Cost paid only on the (rare) corrupt
+      // path — issue #456.
+      await this.pruneCorruptBackups();
       // B1 spec: emit `system:trigger_persistence_corrupt` warn-log via logger.
       // Do NOT add a new event-bus type without separate TL approval.
       this.logger.warn('system:trigger_persistence_corrupt', {
@@ -868,6 +872,94 @@ export class TriggerEngine {
       });
       return [];
     }
+  }
+
+  /**
+   * Keep the newest `MAX_RETAINED` `.corrupt.<TS>` backups next to the
+   * triggers file; unlink everything older.
+   *
+   * Bounds the directory size when a flapping bug periodically corrupts
+   * the persistence file. The retention window is "newest 10" rather than
+   * an age-based TTL because in practice operators want the most recent
+   * forensic evidence regardless of when the corruption stopped, and a
+   * count-based bound is easier to reason about than a time-based one.
+   *
+   * Best-effort: failure to readdir or unlink is swallowed — corruption
+   * recovery itself must never block on bookkeeping. Issue #456.
+   */
+  private async pruneCorruptBackups(): Promise<void> {
+    const MAX_RETAINED = 10;
+    const dir = path.dirname(this.triggersFile);
+    const baseName = path.basename(this.triggersFile);
+    const prefix = `${baseName}.corrupt.`;
+
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      return;
+    }
+
+    // Filter to corrupt-backup siblings, then sort by trailing timestamp
+    // descending. Files whose suffix isn't a parseable epoch (somehow
+    // mangled) sort to the end so they're the first to be pruned.
+    const backups = entries
+      .filter((name) => name.startsWith(prefix))
+      .map((name) => {
+        const tsStr = name.slice(prefix.length);
+        const ts = Number(tsStr);
+        return { name, ts: Number.isFinite(ts) ? ts : 0 };
+      })
+      .sort((a, b) => b.ts - a.ts);
+
+    if (backups.length <= MAX_RETAINED) return;
+
+    // Parallelize unlinks — if a pathological case ever inflates the
+    // directory to thousands of backups, sequential awaits would block
+    // the corrupt-recovery path. Each unlink failure is independently
+    // swallowed; the prune is best-effort.
+    const toUnlink = backups.slice(MAX_RETAINED);
+    await Promise.all(
+      toUnlink.map(({ name }) =>
+        fs.unlink(path.join(dir, name)).catch(() => {
+          /* best-effort */
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Test-only accessor for the persistence integration tests.
+   *
+   * `trigger-engine-persistence.integration.test.ts` needs to drive the
+   * private `persistTriggers` method and mutate the internal `triggers`
+   * `Map` to simulate write failures + partial state. Without a typed
+   * accessor the only path is `as unknown as { ... }` casts, which
+   * silently break when the field/method is renamed — typecheck passes,
+   * runtime returns `undefined`, test falsely passes. Issue #457.
+   *
+   * Runtime production guard: throws if `NODE_ENV === 'production'`. The
+   * `__testing__` name is also a hard-to-grep marker so a reviewer can
+   * spot any accidental production call site.
+   *
+   * Caveat: returns the live `Map` reference, not a defensive copy —
+   * tests need to `.set()` and `.clear()` to stage the integrity-guard
+   * scenarios. Don't call this from non-test code.
+   *
+   * @returns A typed view of internals needed by integration tests
+   * @throws Error if called when NODE_ENV is 'production'
+   */
+  public __testing__(): {
+    triggers: Map<string, Trigger>;
+    persistTriggers: () => Promise<void>;
+  } {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('TriggerEngine.__testing__ is not callable in production');
+    }
+    return {
+      triggers: this.triggers,
+      persistTriggers: this.persistTriggers.bind(this),
+    };
   }
 
   /**
