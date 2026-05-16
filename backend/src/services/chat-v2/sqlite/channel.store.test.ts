@@ -184,6 +184,72 @@ describe('ChannelStore', () => {
     });
   });
 
+  describe('findActiveDmByOwnerAndAgent', () => {
+    it('returns null when no DM exists for the (owner, agent) pair', () => {
+      expect(store.findActiveDmByOwnerAndAgent('user-a', 'sess-x')).toBeNull();
+    });
+
+    it('returns the active DM matching both owner and agentSession', () => {
+      const dm = store.create({
+        agentSession: 'sess-a',
+        ownerUserId: 'user-a',
+        name: 'A',
+      });
+      const got = store.findActiveDmByOwnerAndAgent('user-a', 'sess-a');
+      expect(got?.id).toBe(dm.id);
+    });
+
+    it('ignores rows owned by a different user', () => {
+      store.create({ agentSession: 'sess-a', ownerUserId: 'user-a', name: 'A' });
+      expect(store.findActiveDmByOwnerAndAgent('user-b', 'sess-a')).toBeNull();
+    });
+
+    it('ignores archived rows', () => {
+      const dm = store.create({
+        agentSession: 'sess-a',
+        ownerUserId: 'user-a',
+        name: 'A',
+      });
+      store.archive(dm.id);
+      expect(store.findActiveDmByOwnerAndAgent('user-a', 'sess-a')).toBeNull();
+    });
+
+    it('ignores type=channel rows', () => {
+      store.create({
+        agentSession: 'sess-shared',
+        ownerUserId: 'user-a',
+        name: '#shared',
+        type: 'channel',
+        teamId: 'team-1',
+      });
+      expect(store.findActiveDmByOwnerAndAgent('user-a', 'sess-shared')).toBeNull();
+    });
+
+    it('prefers the most-recently-active DM when multiple rows exist', () => {
+      // Multiple DMs for the same (owner, agent) are possible after the
+      // unique-index drop; the helper must return the freshest one so the
+      // /agents page lands on the channel the user was last using.
+      const older = store.create({
+        agentSession: 'sess-a',
+        ownerUserId: 'user-a',
+        name: 'older',
+        nowMs: 1000,
+      });
+      const newer = store.create({
+        agentSession: 'sess-a',
+        ownerUserId: 'user-a',
+        name: 'newer',
+        nowMs: 2000,
+      });
+      const got = store.findActiveDmByOwnerAndAgent('user-a', 'sess-a');
+      // Newer row should win — both rows are unarchived, COALESCE(last_message_at,created_at)
+      // picks created_at since neither has had a message; created_at=2000 > 1000.
+      expect(got?.id).toBe(newer.id);
+      // older row is still present (we don't touch it).
+      expect(store.getById(older.id)).not.toBeNull();
+    });
+  });
+
   describe('listByOwner', () => {
     it('returns only this user\'s channels', () => {
       store.create({ agentSession: 'sess-a', ownerUserId: 'user-a', name: 'A', nowMs: 100 });

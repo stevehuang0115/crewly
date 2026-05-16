@@ -496,6 +496,182 @@ describe('chat-v2 controller (REST)', () => {
       }
     });
   });
+
+  // -------------------------------------------------------------------------
+  // /agents directory + /presence + /channels/dm/ensure (Phase F)
+  // -------------------------------------------------------------------------
+
+  describe('Phase F — /agents page endpoints', () => {
+    /**
+     * Builder that injects `directory` + `presence` providers along with
+     * the chat-v2 service. Each test gets its own in-memory DB.
+     */
+    function buildAppWithProviders(opts: {
+      directoryTeams?: Awaited<
+        ReturnType<
+          NonNullable<
+            Parameters<typeof createChatV2Router>[1]
+          >['directory'] extends infer T
+            ? T extends { getTeams(): infer R }
+              ? () => R
+              : never
+            : never
+        >
+      >;
+      presence?: (sess: string) => Promise<{
+        agentSession: string;
+        status: 'online' | 'busy' | 'offline' | 'starting';
+        lastSeenAt: number | null;
+      }>;
+    } = {}) {
+      const db = openChatDatabase({
+        dbPath: ':memory:',
+        inMemory: true,
+        skipIntegrityCheck: true,
+      });
+      const service = new ChatV2Service({
+        config: loadChatV2Config({}),
+        db,
+        getPresence: () => ({ status: 'online', lastSeenAt: 111 }),
+        now: () => 1000,
+      });
+      const directory = opts.directoryTeams
+        ? { async getTeams() { return opts.directoryTeams!; } }
+        : undefined;
+      const presence = opts.presence
+        ? { async getPresence(s: string) { return opts.presence!(s); } }
+        : undefined;
+      const app = express();
+      app.use(express.json());
+      app.use(
+        '/api/chat',
+        createChatV2Router(service, { directory, presence }),
+      );
+      return { app, service };
+    }
+
+    it('POST /channels/dm/ensure — creates a new DM channel on first call (201)', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const res = await request(app)
+          .post('/api/chat/channels/dm/ensure')
+          .send({ agentSession: 'sess-leo', name: 'Leo' });
+        expect(res.status).toBe(201);
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.agentSession).toBe('sess-leo');
+        expect(res.body.data.name).toBe('Leo');
+        expect(res.body.data.type).toBe('dm');
+      } finally {
+        service.close();
+      }
+    });
+
+    it('POST /channels/dm/ensure — returns the same channel on second call (200)', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const first = await request(app)
+          .post('/api/chat/channels/dm/ensure')
+          .send({ agentSession: 'sess-leo', name: 'Leo' });
+        expect(first.status).toBe(201);
+        const second = await request(app)
+          .post('/api/chat/channels/dm/ensure')
+          .send({ agentSession: 'sess-leo', name: 'Leo' });
+        expect(second.status).toBe(200);
+        expect(second.body.data.id).toBe(first.body.data.id);
+      } finally {
+        service.close();
+      }
+    });
+
+    it('POST /channels/dm/ensure — 400 on empty agentSession', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const res = await request(app)
+          .post('/api/chat/channels/dm/ensure')
+          .send({ name: 'Ghost' });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      } finally {
+        service.close();
+      }
+    });
+
+    it('GET /agents — returns flattened directory entries when wired', async () => {
+      const { app, service } = buildAppWithProviders({
+        directoryTeams: [
+          {
+            id: 't-orc',
+            name: 'Orchestrator Team',
+            members: [
+              {
+                sessionName: 'crewly-orc',
+                name: 'Orc',
+                role: 'orchestrator',
+                agentStatus: 'active',
+                workingStatus: 'idle',
+              },
+            ],
+          },
+        ],
+      });
+      try {
+        const res = await request(app).get('/api/chat/agents');
+        expect(res.status).toBe(200);
+        expect(res.body.data.agents).toHaveLength(1);
+        expect(res.body.data.agents[0]).toMatchObject({
+          agentSession: 'crewly-orc',
+          name: 'Orc',
+          teamId: 't-orc',
+          teamName: 'Orchestrator Team',
+        });
+      } finally {
+        service.close();
+      }
+    });
+
+    it('GET /agents — 503 when directory provider is not wired', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const res = await request(app).get('/api/chat/agents');
+        expect(res.status).toBe(503);
+        expect(res.body.error.code).toBe('directory_unavailable');
+      } finally {
+        service.close();
+      }
+    });
+
+    it('GET /presence/:agentId — returns presence when wired', async () => {
+      const { app, service } = buildAppWithProviders({
+        presence: async (sess) => ({
+          agentSession: sess,
+          status: 'busy',
+          lastSeenAt: 1_700_000_000,
+        }),
+      });
+      try {
+        const res = await request(app).get('/api/chat/presence/crewly-orc');
+        expect(res.status).toBe(200);
+        expect(res.body.data).toEqual({
+          agentSession: 'crewly-orc',
+          status: 'busy',
+          lastSeenAt: 1_700_000_000,
+        });
+      } finally {
+        service.close();
+      }
+    });
+
+    it('GET /presence/:agentId — 503 when presence provider is not wired', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const res = await request(app).get('/api/chat/presence/crewly-orc');
+        expect(res.status).toBe(503);
+        expect(res.body.error.code).toBe('presence_unavailable');
+      } finally {
+        service.close();
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
