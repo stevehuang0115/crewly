@@ -1492,6 +1492,39 @@ describe('SlackOrchestratorBridge', () => {
         setRequestSlaSubscriber(null);
       }
     });
+
+    // Issue #394: sendToAgent now returns the OrcResponse envelope so
+    // the mention-routing path can distinguish a real reply from the
+    // three placeholder return paths (timeout, direct-delivery, error)
+    // that previously slipped past the `response.length > 0` proxy.
+    // This test pins the shape of the direct-delivery fallback —
+    // the easiest of the three to hit deterministically (no queue
+    // service wired → falls through to the direct-delivery branch
+    // and returns the placeholder with fromOrcReply: false).
+    it('sendToAgent returns fromOrcReply=false on the direct-delivery placeholder path (#394)', async () => {
+      // Build a bridge WITHOUT a messageQueueService so sendToAgent
+      // takes the direct-delivery fallback branch.
+      const noQueueBridge = new SlackOrchestratorBridge();
+      // Force the fetch call inside the fallback to no-op cleanly.
+      const origFetch = (globalThis as any).fetch;
+      (globalThis as any).fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+
+      try {
+        const sendToAgent = (noQueueBridge as any).sendToAgent.bind(noQueueBridge);
+        const result = await sendToAgent('agent-session-x', 'hello agent', {
+          channelId: 'C394',
+          threadTs: '1900.394',
+        });
+        expect(result).toEqual(
+          expect.objectContaining({
+            fromOrcReply: false,
+            response: expect.stringContaining('Message delivered to agent'),
+          }),
+        );
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
   });
 
   // -----------------------------------------------------------------------
