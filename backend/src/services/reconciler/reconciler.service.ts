@@ -41,6 +41,7 @@ import {
 } from './reconcile-rules.js';
 import type { AgentHealth } from './reconcile-rules.js';
 import { getSettingsService } from '../settings/index.js';
+import { LoggerService } from '../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
 // Data Provider Interface (dependency injection)
@@ -194,6 +195,28 @@ export class ReconcilerService {
       const pruning = runPruningPass(workItems);
       result.corrections.push(...pruning.totalCorrections);
       result.staleItemsCleaned += pruning.ttlExpiredCount + pruning.orphanCancelledCount + pruning.cascadeCancelledCount;
+
+      // 4a. Stale-queued visibility (2026-05-16): the pruning rule no
+      // longer auto-cancels these WIs (was destroying user work — Atlas
+      // X-article task on 2026-05-16). Log them so the stuck condition
+      // is observable without destroying the work; the wake / eviction-
+      // under-pressure path (PR #585) is responsible for actually
+      // making progress on them.
+      if (pruning.staleQueuedCount > 0) {
+        // ReconcilerService has no injected logger field (the rest of
+        // the service surfaces failures via result.errors); use the
+        // shared LoggerService directly. Stale-queued isn't a failure
+        // — it's an observability signal, so it lives in the log
+        // stream rather than the result envelope.
+        LoggerService.getInstance()
+          .createComponentLogger('ReconcilerService')
+          .warn('WorkItems queued past staleness threshold (NOT cancelling — eviction path will retry wake)', {
+            staleQueuedCount: pruning.staleQueuedCount,
+            // Cap the id list to avoid huge log lines if dozens accumulate.
+            staleIds: pruning.staleQueuedIds.slice(0, 20),
+            truncated: pruning.staleQueuedIds.length > 20,
+          });
+      }
 
       // 5. Reconcile Request statuses
       for (const request of requests) {

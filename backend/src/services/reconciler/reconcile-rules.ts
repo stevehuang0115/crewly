@@ -537,34 +537,44 @@ export function cascadeCancelChildren(
  * Detects WorkItems that have been in 'queued' status for too long
  * without being picked up. These may indicate assignment problems.
  *
- * **F-CYCLE7-3 fix (2026-05-07):** Previously emitted `queued → queued`
- * which is *not* a valid transition per the canonical
- * {@link WORK_ITEM_TRANSITIONS} table — every emitted correction was
- * rejected by `StorageService` with `Invalid status transition: queued →
- * queued`, generating reconciler-error noise that hid real signal. The
- * comment "Don't change status, just flag for audit" assumed an
- * audit-only path that doesn't exist: `applyCorrection()` always calls
- * `pool.updateItemStatus()` which validates against the transition
- * table.
+ * **2026-05-16 policy change — DO NOT auto-cancel stale queued WIs.**
+ * The earlier behavior emitted `queued → cancelled` corrections whenever
+ * a WI sat queued for more than `staleThresholdMs` (default 1h). On
+ * 2026-05-16 a real user request (Steve's X-article analysis dispatched
+ * to inactive Atlas) was destroyed by this rule: the WI sat queued
+ * because the target agent was dead, the 60-min timer expired before
+ * orc could re-wake Atlas, and the WI was silently cancelled. Cancelling
+ * was *masking* the underlying bugs (wake-gate ordering race, idle
+ * agents holding the floor under memory pressure) instead of surfacing
+ * them. PR #585's eviction-under-pressure is the right mechanism to
+ * actually make progress on stale queued WIs — wake their target rather
+ * than kill the work.
  *
- * **Canonical state machine** (`backend/src/types/v2/work-item.types.ts`):
- *   `queued` → one of `{ running, proposed, scheduled, cancelled }`.
+ * This function now returns ONLY `staleIds` for observability (so
+ * callers can log/escalate the stuck condition); no corrections are
+ * emitted, so applying the returned (empty) corrections is a no-op. The
+ * `corrections` field is preserved for API compatibility with
+ * `runPruningPass` which spreads it into the aggregate list.
  *
- * `'expired'` is *not* a valid `WorkItemStatus` (see `WORK_ITEM_STATUSES`),
- * despite earlier reconciler briefs occasionally suggesting it. Of the
- * canonical options, `cancelled` is the only terminal status reachable
- * from `queued`, and is the correct semantic for "queued > threshold,
- * never picked up — work was abandoned."
+ * Historical context preserved:
+ *   - F-CYCLE7-3 (2026-05-07) was an earlier fix that switched the
+ *     emitted correction from `queued→queued` (invalid transition) to
+ *     `queued→cancelled` (valid but destructive). The destructive flip
+ *     is what we're now reverting; the transition-table-validity lesson
+ *     still applies to other rules that DO emit corrections.
+ *   - Canonical state machine (`work-item.types.ts`): `queued` → one of
+ *     `{ running, proposed, scheduled, cancelled }`.
  *
  * @param workItems - All WorkItems to check
  * @param staleThresholdMs - How long in queued before considered stale (default: 1h)
- * @returns Corrections for stale queued WorkItems (transition: queued → cancelled)
+ * @returns `{ corrections: [], staleIds }` — observability-only. The
+ *   `corrections` array is always empty; iterate `staleIds` for the
+ *   list of WIs that have been queued past `staleThresholdMs`.
  */
 export function detectStaleQueuedWorkItems(
   workItems: WorkItem[],
   staleThresholdMs: number = 60 * 60 * 1000,
 ): { corrections: ReconcileCorrection[]; staleIds: string[] } {
-  const corrections: ReconcileCorrection[] = [];
   const staleIds: string[] = [];
   const now = Date.now();
 
@@ -575,21 +585,13 @@ export function detectStaleQueuedWorkItems(
     const waitTime = now - createdAt;
 
     if (waitTime > staleThresholdMs) {
-      corrections.push(createCorrection({
-        entityType: 'work_item',
-        entityId: wi.id,
-        previousState: 'queued',
-        // queued → cancelled is the canonical valid transition for an
-        // abandoned-in-queue WorkItem. See WORK_ITEM_TRANSITIONS.
-        newState: 'cancelled',
-        reason: `WorkItem has been queued for ${Math.round(waitTime / 60000)} minutes without pickup`,
-        evidence: `Created at ${wi.createdAt}, waiting for ${Math.round(waitTime / 60000)}m (threshold: ${Math.round(staleThresholdMs / 60000)}m)`,
-      }));
       staleIds.push(wi.id);
     }
   }
 
-  return { corrections, staleIds };
+  // No corrections — staleIds is observability-only. See the JSDoc
+  // banner above for why we no longer auto-cancel.
+  return { corrections: [], staleIds };
 }
 
 // ---------------------------------------------------------------------------
@@ -606,8 +608,18 @@ export interface PruningResult {
   orphanCancelledCount: number;
   /** WorkItems cancelled due to deep cascade */
   cascadeCancelledCount: number;
-  /** WorkItems flagged as stale in queue */
+  /**
+   * WorkItems still queued past `staleThresholdMs`. Surfaced for
+   * observability ONLY — no longer auto-cancelled (policy change
+   * 2026-05-16; see {@link detectStaleQueuedWorkItems} banner).
+   */
   staleQueuedCount: number;
+  /**
+   * IDs of the still-queued WIs that exceeded the staleness threshold.
+   * Callers (the reconciler service) log these so the stuck condition
+   * is visible without destroying the work. Empty when none are stale.
+   */
+  staleQueuedIds: string[];
   /** Total corrections from pruning */
   totalCorrections: ReconcileCorrection[];
 }
@@ -658,10 +670,14 @@ export function runPruningPass(
     orphanCancelledCount: orphans.orphanIds.length,
     cascadeCancelledCount: cascade.cascadedIds.length,
     staleQueuedCount: stale.staleIds.length,
+    staleQueuedIds: stale.staleIds,
     totalCorrections: [
       ...ttl.corrections,
       ...orphans.corrections,
       ...cascade.corrections,
+      // stale.corrections is intentionally always empty per the
+      // 2026-05-16 policy change — the spread is kept for the
+      // unlikely case that the policy is ever reverted.
       ...stale.corrections,
     ],
   };
