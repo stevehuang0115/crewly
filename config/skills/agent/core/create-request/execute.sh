@@ -155,9 +155,36 @@ if [ -n "$PRIORITY" ]; then
   BODY=$(printf '%s' "$BODY" | jq --arg p "$PRIORITY" '. + {priority: $p}')
 fi
 
-if [ -n "$SOURCE_MESSAGE_ID" ]; then
-  BODY=$(printf '%s' "$BODY" | jq --arg sid "$SOURCE_MESSAGE_ID" '. + {sourceConversationItemId: $sid}')
+# Issue #458: the backend validator at v2/request.types.ts:283 requires
+# `sourceConversationItemId` to be a non-empty string. The orc passes the
+# inbound Slack/chat message id when filing a Request, but agent-context
+# callers (e.g. a TL filing a child Request from a delegated task) have
+# no inbound message of their own. Auto-synthesize a stable
+# `agent-self-{session}-{epoch}-{nonce}` id so the request lands instead
+# of 400-ing.
+#
+# Notes:
+# - The synthetic shape is intentionally distinct from the `slack-{ch}-
+#   {ts}` / `chatv2-{ch}__{msg}` prefixes so downstream consumers
+#   (extractSlackThreadTs, extractChatV2ChannelId, SLA tracker, .md
+#   store) inert-skip it.
+# - The trailing `${RANDOM}` nonce prevents per-second collisions when
+#   two rapid create-request calls from the same session land in the
+#   same wall-clock second. `findBySourceConversationItemId` (the dedup
+#   path) keys on this string verbatim.
+# - When `CREWLY_SESSION_NAME` is unset (likely a misconfiguration, but
+#   not load-bearing), we warn to stderr and continue with
+#   `unknown-session` so the request still lands instead of failing
+#   silently. The warn surfaces the missing env in observability.
+if [ -z "$SOURCE_MESSAGE_ID" ]; then
+  AGENT_SESSION="${CREWLY_SESSION_NAME:-}"
+  if [ -z "$AGENT_SESSION" ]; then
+    echo "warn: CREWLY_SESSION_NAME unset; falling back to 'unknown-session' for synthesized sourceConversationItemId" >&2
+    AGENT_SESSION="unknown-session"
+  fi
+  SOURCE_MESSAGE_ID="agent-self-${AGENT_SESSION}-$(date +%s)-${RANDOM}"
 fi
+BODY=$(printf '%s' "$BODY" | jq --arg sid "$SOURCE_MESSAGE_ID" '. + {sourceConversationItemId: $sid}')
 
 # Call the API to create the Request
 RESULT=$(api_call POST "/requests" "$BODY")

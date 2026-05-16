@@ -91,7 +91,7 @@ Use these to classify the complexity of the request:
 | `--intent-level` | Yes | -- | L0, L1, L2, or L3 |
 | `--intent-category` | Yes | -- | communication, query, code_change, planning, debugging, deployment, team_management, other |
 | `--priority` | No | normal | low, normal, high, urgent |
-| `--source-message-id` | No | -- | Original message ID (for dedup) |
+| `--source-message-id` | No | `agent-self-{session}-{epoch}` | Original message ID (for dedup). When omitted, the skill synthesizes `agent-self-{CREWLY_SESSION_NAME}-{epoch}` so agent-context callers (e.g. TL self-filing a child Request) don't 400 on the backend's required-field check. Issue #458. |
 | `--needs-mission` | No | false | Whether this L3 request should trigger Mission creation |
 
 ## Examples -- CLI Flags (preferred)
