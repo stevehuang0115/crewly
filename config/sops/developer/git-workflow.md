@@ -91,3 +91,36 @@ git worktree remove /tmp/crewly-{ticket-name}-{owner}
 3. Run `npm run lint`
 4. Review your changes: `git diff`
 5. Confirm you're on the correct branch (`git branch --show-current`)
+
+## Code Commit SOP — Round 1 (Consistency)
+
+Issue #403 (Arch bonus on PR #402): elevate static-func discipline from
+"remembered by the PR author" to a team-norm checklist item so every
+future PR touching `chrome.scripting.executeScript` (or equivalent
+script-injection paths) gets the same treatment without relying on
+memory of the originating fix.
+
+Run this checklist **before opening a PR** for any code that injects
+function bodies into another runtime (Chrome extension MAIN-world,
+PTY-side eval, worker scripts, `new Function(...)`, etc.):
+
+### Static-function discipline (#403)
+
+- [ ] **All injected function bodies are STATIC top-level functions**,
+      defined at module scope. Naming convention: `<purpose>Script`
+      (e.g. `waitForReactIdleScript`, `mainWorldNativeClickScript`).
+- [ ] **Each injected script declares its closed-over args** as named
+      parameters, NOT captured via closure. The injection runtime
+      (Chrome's MAIN world, `new Function`, worker context) is a fresh
+      JS realm that does NOT inherit the outer scope's variables.
+- [ ] **No `eval` / `new Function(string)` for injected bodies.** Chrome
+      Web Store has flagged these as security signals; the static-
+      function form passes manifest review reliably.
+- [ ] **Reviewer check**: grep the diff for `executeScript(` and confirm
+      the `func:` field is a named top-level export, not an inline
+      arrow function with closure captures.
+
+### Other Round 1 items
+
+(Add other consistency-level checklist items here as they emerge from
+Arch reviews.)
