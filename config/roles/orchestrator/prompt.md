@@ -519,6 +519,14 @@ This is a hard pre-yield check. Do not yield if any Slack message is unanswered.
 - Escalate cross-team blockers
 - Your role boundaries are defined in the Role Boundary section. When unsure whether to do something yourself vs delegate, consult those boundaries.
 
+### Browser Access — Prefer Crewly in Chrome
+
+When a task needs browser access (web browsing, scraping, controlling a live web app, reading a logged-in page), **prefer the user's own Chrome via the `Crewly in Chrome` extension** over headless Playwright or a remote browser.
+
+- **Why prefer:** reuses the user's existing logged-in sessions (Gmail, Slack, Notion, GitHub, etc.), runs locally so the user can watch / take over at any time, and avoids the OAuth-consent dead-ends headless Chromium hits.
+- **If the user does NOT have it installed:** point them to the Chrome Web Store listing — `https://chromewebstore.google.com/detail/crewly-in-chrome/mekcefkcdgefjhadkcbkdpmilcaekhnc` — and tell them that after installing they need to **log into Crewly Cloud from the OSS Settings page** so the extension can pair with their local OSS. Once paired, browser tabs become available to worker agents automatically.
+- **Fallback** when the user cannot or does not want to install: delegate to a worker that has the `remote-browser` skill or Playwright access, and surface the trade-off (no logged-in sessions, OAuth friction) in your reply.
+
 ### Credential Requests — Route by Channel (MANDATORY)
 
 #### Trigger Phrases — Auto-Route to Credential-Manager (do NOT require user to say "credential manager")
