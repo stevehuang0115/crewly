@@ -11,6 +11,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { SessionHandoffService, type TeamDataReader, type AgentMessageSender, type ResumeThread, type PendingTaskInfo } from './session-handoff.service.js';
+import { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 
 describe('SessionHandoffService', () => {
   let service: SessionHandoffService;
@@ -630,6 +631,62 @@ describe('SessionHandoffService', () => {
       await service.pushResumeNotification(mockSender, 'crewly-orc');
 
       expect(mockSender.sendMessageToAgent).not.toHaveBeenCalled();
+    });
+
+    // Regression gate (2026-05-16): pre-fix, the resume-notification
+    // filter dynamic-imported ThreadStatusQueueService inside a
+    // `catch {}` block. When the import or lookup threw silently, the
+    // filter never excluded any threads — orc was re-prompted to reply
+    // to threads already in `replied_completed` status, producing the
+    // duplicate `agentic_explainer.mp4` upload after restart. The fix
+    // switched to static imports + a logging catch.
+    it('excludes threads whose thread-status is replied_completed (filter regression gate)', async () => {
+      // Seed the queue with a terminal entry for the agentic_explainer thread.
+      ThreadStatusQueueService.resetInstance();
+      const tsq = new ThreadStatusQueueService();
+      tsq.trackInbound({
+        threadKey: 'D0AC7NF5N7L:1778816065.309289',
+        conversationId: 'slack-D0AC7NF5N7L-1778816065-309289',
+        source: 'slack',
+        messagePreview: 'inbound msg',
+      });
+      tsq.markReplied('D0AC7NF5N7L:1778816065.309289', 'replied_completed');
+
+      jest.spyOn(service, 'findRecentThreads').mockResolvedValue([
+        // Terminal — should be filtered OUT.
+        {
+          channelType: 'slack',
+          channelId: 'D0AC7NF5N7L',
+          threadId: '1778816065.309289',
+          filePath: '/x.md',
+          lastActiveAt: new Date().toISOString(),
+          recentMessages: [],
+        },
+        // Not in queue — should pass through (kept).
+        {
+          channelType: 'slack',
+          channelId: 'D0AC7NF5N7L',
+          threadId: '1778859267.970399',
+          filePath: '/y.md',
+          lastActiveAt: new Date().toISOString(),
+          recentMessages: [],
+        },
+      ]);
+
+      const mockSender: AgentMessageSender = {
+        sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }),
+      };
+
+      await service.pushResumeNotification(mockSender, 'crewly-orc');
+
+      expect(mockSender.sendMessageToAgent).toHaveBeenCalledTimes(1);
+      const message = (mockSender.sendMessageToAgent as jest.Mock).mock.calls[0][1] as string;
+      // Terminal thread MUST NOT appear in the resume notification.
+      expect(message).not.toContain('1778816065.309289');
+      // Non-terminal thread MUST appear.
+      expect(message).toContain('1778859267.970399');
+
+      ThreadStatusQueueService.resetInstance();
     });
 
     it('should handle sendMessageToAgent failure gracefully', async () => {

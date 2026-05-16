@@ -15,6 +15,19 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { LoggerService } from '../core/logger.service.js';
+// Issue: SessionHandoff's resume-notification filter previously dynamic-
+// imported the thread-status-queue + isTerminalStatus, with a catch
+// block that silently swallowed any error. When the import / lookup
+// path threw (verified empirically 2026-05-16: the `Filtered terminal
+// threads` log line was missing from the post-restart cycle), terminal-
+// status threads slipped through the filter and orc was prompted to
+// re-reply to already-answered threads.
+//
+// Switch to static imports so module-resolution errors surface at boot
+// (not at first filter-call), and the catch now logs warn-level so any
+// remaining runtime failure is visible.
+import { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
+import { isTerminalStatus } from '../../types/thread-status.types.js';
 import { CREWLY_CONSTANTS, SLACK_THREAD_CONSTANTS, GCHAT_THREAD_CONSTANTS } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
 import { RUNTIME_TYPES } from '../../constants.js';
@@ -855,8 +868,9 @@ export class SessionHandoffService {
       // handled before the restart (e.g. email processing, answered questions).
       let threads = allThreads;
       try {
-        const { ThreadStatusQueueService } = await import('../messaging/thread-status-queue.service.js');
-        const { isTerminalStatus } = await import('../../types/thread-status.types.js');
+        // Static-imported above so module-resolution errors surface at
+        // boot. The catch below is now a real fail-loud signal, not a
+        // shrug-and-include-all.
         const tsq = ThreadStatusQueueService.getInstance();
 
         threads = allThreads.filter(thread => {
@@ -893,8 +907,20 @@ export class SessionHandoffService {
             filtered: allThreads.length - threads.length,
           });
         }
-      } catch {
-        // Thread status queue not available — include all threads
+      } catch (err) {
+        // Was previously a silent `catch {}` — empirically masked a real
+        // failure (2026-05-16: filter never executed at the 17:07 restart,
+        // and orc was prompted with 5 threads including one already in
+        // replied_completed status, leading to a duplicate file upload).
+        // Now surfaces the error and includes the thread count we
+        // would have filtered against so the next debug pass has a
+        // starting point.
+        this.logger.warn('SessionHandoff resume-notification filter threw — including all threads (potential duplicate-reply risk)', {
+          sessionName,
+          allThreadsCount: allThreads.length,
+          error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        });
       }
 
       if (threads.length === 0) {
