@@ -625,6 +625,11 @@ export class CrewlyServer {
 		// receive duplicates. See follow-up #5 from PR #543 review.
 		const liveDataProvider = new LiveReconcilerDataProvider();
 		liveDataProvider.setEventBus(this.eventBusService);
+		// Wire AgentRegistrationService so the memory-pressure eviction
+		// path can terminate idle agents to free wake slots (issue surfaced
+		// 2026-05-16: queued WIs for inactive Atlas could not get woken
+		// because the floor was held by idle product/marketing agents).
+		liveDataProvider.setAgentRegistrationService(this.apiController.agentRegistrationService);
 
 		// Initialize Reconciler Service (V2 — system truth recomputation)
 		{

@@ -30,7 +30,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
-import { WEB_CONSTANTS } from '../../constants.js';
+import { WEB_CONSTANTS, AGENT_SUSPEND_CONSTANTS } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -129,6 +129,18 @@ function isStorageNotReadyError(error: unknown): boolean {
  */
 export const WAKE_FLOOR_UNDER_PRESSURE = 3;
 
+/**
+ * Minimal slice of `AgentRegistrationService` the provider needs for the
+ * memory-pressure eviction path. Declared narrowly so test fixtures can
+ * stub a single method without simulating the full registration surface.
+ */
+export interface IAgentRegistrationServiceLike {
+  terminateAgentSession(
+    sessionName: string,
+    role?: string,
+  ): Promise<{ success: boolean; message?: string; error?: string }>;
+}
+
 // ---------------------------------------------------------------------------
 // LiveReconcilerDataProvider
 // ---------------------------------------------------------------------------
@@ -151,6 +163,12 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   private readonly logger: ComponentLogger;
   private readonly storage: StorageService;
   private eventBus: EventBusService | null = null;
+  // Injected at boot time by `index.ts` so eviction can terminate an
+  // agent's full session (monitors + tmux + in-process runtime). The
+  // dep is optional — tests that don't exercise the pressure path leave
+  // it null, which makes `evictIdleAgent` fall back to "no candidate"
+  // and the wake-pressure path skips as before.
+  private agentRegistration: IAgentRegistrationServiceLike | null = null;
 
   // Memory-pressure broadcast state. Per-instance to keep counters
   // isolated, but the publish throttle ensures we don't flood orc even
@@ -174,6 +192,19 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    */
   setEventBus(eventBus: EventBusService): void {
     this.eventBus = eventBus;
+  }
+
+  /**
+   * Inject the AgentRegistrationService so the memory-pressure eviction
+   * path can terminate idle agents (the same primitive
+   * `IdleDetectionService` uses). Optional — when not wired, eviction
+   * is disabled and the reconciler falls back to the prior skip-on-floor
+   * behaviour.
+   *
+   * @param svc - AgentRegistrationService instance from the bootstrap
+   */
+  setAgentRegistrationService(svc: IAgentRegistrationServiceLike): void {
+    this.agentRegistration = svc;
   }
 
   /**
@@ -664,6 +695,156 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     }
   }
 
+  /**
+   * Find one idle, evictable agent that can be terminated to free a wake
+   * slot under memory pressure.
+   *
+   * An agent is "evictable" when ALL of the following hold:
+   *   - `agentStatus === 'active'` (no point evicting an already-dead one)
+   *   - `workingStatus === 'idle'` (don't kill a mid-task agent)
+   *   - role is NOT in `ALWAYS_ON_ROLES` (orchestrator, auditor)
+   *   - no non-terminal WorkItem in the pool targets this sessionName
+   *     (otherwise eviction would orphan that WI just like Atlas's)
+   *   - sessionName !== `incomingAgent` (don't evict ourselves)
+   *
+   * Among eligible agents, returns the longest-idle one (oldest
+   * `updatedAt`). This biases towards freeing agents that have been sitting
+   * quietly without work — the freshest idle agent might be about to claim
+   * something via the auto-claim path.
+   *
+   * @param incomingAgent - sessionName of the agent we want to wake;
+   *   excluded from the eviction pool so we never recommend evicting the
+   *   very agent we're trying to wake.
+   * @returns Eviction candidate metadata, or `null` if no agent qualifies.
+   */
+  private async findEvictableIdleAgent(incomingAgent: string): Promise<{
+    sessionName: string;
+    teamId: string;
+    memberId: string;
+    role: string;
+    idleMs: number;
+  } | null> {
+    let teams;
+    try {
+      teams = await this.storage.getTeams();
+    } catch (err) {
+      this.logger.warn('findEvictableIdleAgent: failed to load teams', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+
+    // Collect sessions that have any non-terminal WorkItem targeting them.
+    // Eviction would orphan those WIs (recreating the very stall we're
+    // trying to fix), so they're excluded.
+    const targetedSessions = new Set<string>();
+    try {
+      const pool = TaskPoolService.getInstance();
+      const allItems = await pool.getAllItems();
+      for (const wi of allItems) {
+        if (wi.status === 'done' || wi.status === 'cancelled') continue;
+        const t = (wi as { target?: string }).target;
+        if (typeof t === 'string' && t.length > 0) targetedSessions.add(t);
+      }
+    } catch (err) {
+      // Pool unavailable → be conservative, refuse eviction so we don't
+      // accidentally kill an agent who's about to claim a queued WI.
+      this.logger.warn('findEvictableIdleAgent: pool query failed — refusing eviction', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+
+    const now = Date.now();
+    type Candidate = {
+      sessionName: string;
+      teamId: string;
+      memberId: string;
+      role: string;
+      idleMs: number;
+    };
+    const candidates: Candidate[] = [];
+
+    for (const team of teams) {
+      for (const member of team.members || []) {
+        if (member.agentStatus !== 'active') continue;
+        if (member.workingStatus !== 'idle') continue;
+        if (
+          (AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES as readonly string[]).includes(member.role)
+        ) {
+          continue;
+        }
+        if (member.sessionName === incomingAgent) continue;
+        if (targetedSessions.has(member.sessionName)) continue;
+
+        const lastActive = member.updatedAt
+          ? new Date(member.updatedAt).getTime()
+          : member.createdAt
+            ? new Date(member.createdAt).getTime()
+            : 0;
+        const idleMs = lastActive > 0 ? Math.max(0, now - lastActive) : 0;
+        candidates.push({
+          sessionName: member.sessionName,
+          teamId: team.id,
+          memberId: member.id,
+          role: member.role,
+          idleMs,
+        });
+      }
+    }
+    if (candidates.length === 0) return null;
+    // Longest-idle first.
+    candidates.sort((a, b) => b.idleMs - a.idleMs);
+    return candidates[0];
+  }
+
+  /**
+   * Terminate an evicted agent so the wake slot is freed.
+   *
+   * Uses the same `terminateAgentSession` + `updateAgentStatus(..,
+   * 'idle_exit_pressure')` pair that `IdleDetectionService` uses for the
+   * regular auto-stop path, just with a different dropoutReason so the
+   * pressure-driven evictions are distinguishable in audit logs.
+   *
+   * @param victim - Eviction candidate returned by `findEvictableIdleAgent`
+   * @returns `true` if the agent was terminated AND marked inactive;
+   *   `false` if either step failed (the caller falls back to skip).
+   */
+  private async evictIdleAgent(victim: {
+    sessionName: string;
+    teamId: string;
+    memberId: string;
+    role: string;
+  }): Promise<boolean> {
+    if (!this.agentRegistration) {
+      this.logger.warn(
+        'evictIdleAgent: AgentRegistrationService not wired — eviction disabled',
+        { sessionName: victim.sessionName },
+      );
+      return false;
+    }
+    try {
+      await this.agentRegistration.terminateAgentSession(victim.sessionName, victim.role);
+      // `terminateAgentSession` already marks the row inactive without a
+      // dropoutReason; overwrite it with `idle_exit_pressure` so this
+      // path is distinguishable from the IdleDetectionService auto-stop
+      // path (`idle_exit`) in audit logs.
+      await this.storage.updateAgentStatus(
+        victim.sessionName,
+        'inactive' as never,
+        'idle_exit_pressure' as never,
+      );
+      return true;
+    } catch (err) {
+      this.logger.error('evictIdleAgent failed', {
+        sessionName: victim.sessionName,
+        role: victim.role,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
   async executeWakeAction(action: WakeAction): Promise<boolean> {
     const { agentSessionName, strategy } = action;
 
@@ -690,7 +871,64 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       const stats = getMemoryStats();
       const activeCount = await this.countActiveAgentSessions();
       if (activeCount >= WAKE_FLOOR_UNDER_PRESSURE) {
-        this.logger.warn('Skipping wake action — memory pressure AND at concurrency floor', {
+        // Last-resort eviction: rather than silently skipping forever,
+        // look for an idle agent that is doing nothing productive and
+        // terminate it to free a slot for `agentSessionName` (which has
+        // a queued WI waiting). This is the failure mode that stranded
+        // Atlas on 2026-05-16 — the wake floor was held by idle product
+        // / marketing agents while a queued WI for an inactive Atlas
+        // never made progress.
+        //
+        // Eviction is intentionally narrow: ALWAYS_ON_ROLES are exempt,
+        // agents with any non-terminal WI of their own are exempt, and
+        // anything mid-task (workingStatus=in_progress) is exempt.
+        // We pick the longest-idle eligible agent (oldest `updatedAt`)
+        // so a freshly-idle agent that may auto-claim something stays
+        // alive.
+        const victim = await this.findEvictableIdleAgent(agentSessionName);
+        if (!victim) {
+          this.logger.warn('Skipping wake action — memory pressure AND at concurrency floor', {
+            agent: agentSessionName,
+            strategy,
+            memoryUsedPercent: stats.usedPercent,
+            freeMemMB: stats.freeMB,
+            activeAgents: activeCount,
+            wakeFloor: WAKE_FLOOR_UNDER_PRESSURE,
+            reason: 'no evictable idle agent — all active agents are busy or always-on',
+          });
+          this.maybeBroadcastMemoryPressure(stats, activeCount);
+          return false;
+        }
+        this.logger.warn('Evicting idle agent under memory pressure to free wake slot', {
+          evictingAgent: victim.sessionName,
+          evictingRole: victim.role,
+          idleMs: victim.idleMs,
+          incomingAgent: agentSessionName,
+          incomingStrategy: strategy,
+          memoryUsedPercent: stats.usedPercent,
+          freeMemMB: stats.freeMB,
+          activeAgents: activeCount,
+          wakeFloor: WAKE_FLOOR_UNDER_PRESSURE,
+        });
+        const evicted = await this.evictIdleAgent(victim);
+        if (!evicted) {
+          // Eviction failed — fall back to the historical skip behaviour
+          // rather than overshooting the floor with both agents alive.
+          this.logger.warn('Eviction failed — falling back to skip', {
+            agent: agentSessionName,
+            evictAttempted: victim.sessionName,
+            memoryUsedPercent: stats.usedPercent,
+            freeMemMB: stats.freeMB,
+            activeAgents: activeCount,
+          });
+          this.maybeBroadcastMemoryPressure(stats, activeCount);
+          return false;
+        }
+        // Slot freed — proceed with the wake. Net activeCount stays
+        // the same (one out, one in), so the floor invariant holds.
+        this.consecutivePressureSkips = 0;
+      } else {
+        this.logger.info('Memory pressure detected — allowing wake (under concurrency floor)', {
           agent: agentSessionName,
           strategy,
           memoryUsedPercent: stats.usedPercent,
@@ -698,24 +936,14 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           activeAgents: activeCount,
           wakeFloor: WAKE_FLOOR_UNDER_PRESSURE,
         });
-        this.maybeBroadcastMemoryPressure(stats, activeCount);
-        return false;
+        // Pressure persists but a wake is proceeding — clear the skip
+        // counter so the FIRST_FIRE_THRESHOLD must be crossed again
+        // before the next broadcast. Keep `lastPressureNotifiedAt` so
+        // the 5min refire throttle still applies — we don't want the
+        // skip→wake→skip oscillation to slip past the throttle window.
+        // (Follow-up #6 from PR #543 review.)
+        this.consecutivePressureSkips = 0;
       }
-      this.logger.info('Memory pressure detected — allowing wake (under concurrency floor)', {
-        agent: agentSessionName,
-        strategy,
-        memoryUsedPercent: stats.usedPercent,
-        freeMemMB: stats.freeMB,
-        activeAgents: activeCount,
-        wakeFloor: WAKE_FLOOR_UNDER_PRESSURE,
-      });
-      // Pressure persists but a wake is proceeding — clear the skip
-      // counter so the FIRST_FIRE_THRESHOLD must be crossed again
-      // before the next broadcast. Keep `lastPressureNotifiedAt` so
-      // the 5min refire throttle still applies — we don't want the
-      // skip→wake→skip oscillation to slip past the throttle window.
-      // (Follow-up #6 from PR #543 review.)
-      this.consecutivePressureSkips = 0;
     } else {
       // Pressure cleared — reset state so the next episode re-fires.
       this.resetMemoryPressureBroadcast();
