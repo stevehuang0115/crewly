@@ -1,4 +1,8 @@
-export default {
+// ESLint v8 expects CommonJS for its config when the package.json has
+// `"type": "module"`. Renamed from `.eslintrc.js` + converted to CJS
+// (`module.exports = { ... }`) so Node treats this file as CJS even
+// though the parent package is ESM. Issue #405.
+module.exports = {
   parser: '@typescript-eslint/parser',
   parserOptions: {
     ecmaVersion: 2020,
@@ -10,7 +14,7 @@ export default {
   plugins: ['@typescript-eslint'],
   extends: [
     'eslint:recommended',
-    '@typescript-eslint/recommended',
+    'plugin:@typescript-eslint/recommended',
   ],
   rules: {
     '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],

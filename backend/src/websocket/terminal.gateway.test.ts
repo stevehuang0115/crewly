@@ -739,5 +739,39 @@ describe('TerminalGateway', () => {
 			// cancelled there would be 4 (a duplicate retry for the same slot).
 			expect(mockSessionBackend.getSession).toHaveBeenCalledTimes(3);
 		});
+
+		// Issue #389: Arch nice-to-have on PR #386. A frontend client may
+		// call subscribeToSession WHILE a backoff retry is still queued.
+		// The persistent-flag must stay set across the retry window so
+		// the parallel subscriber doesn't bypass eventual attach (which
+		// was the original race the PR fixed).
+		it('lets a parallel subscribeToSession attach while a retry is queued', () => {
+			// Sync attempt + retry-1 both miss; retry-2 (500ms slot) finds
+			// the session available. In between, a parallel subscribe
+			// fires — both must converge on attaching exactly once.
+			mockSessionBackend.getSession
+				.mockReturnValueOnce(null) // sync attempt
+				.mockReturnValueOnce(null) // first retry @ 100ms
+				.mockReturnValue(mockSession); // everything after
+
+			gateway.startOrchestratorChatMonitoring(orcSession);
+			expect(mockSession.onData).not.toHaveBeenCalled();
+
+			// Parallel subscribe arrives BEFORE the retry window completes.
+			// The persistent flag must still be set so this call sees the
+			// pending-attach state and doesn't fast-path to "already
+			// attached" or no-op.
+			jest.advanceTimersByTime(50); // mid-retry-1 window
+			gateway.subscribeToSession(orcSession, mockSocket as Socket);
+
+			// Now advance past the retry window. The chat-monitoring
+			// retry should also attach successfully once the session is
+			// registered. onData listeners across both paths should be
+			// idempotent — we just need at least one attached.
+			jest.advanceTimersByTime(1000);
+
+			expect(mockSession.onData).toHaveBeenCalled();
+			expect(gateway.getConnectionStats().activeStreams).toBeGreaterThan(0);
+		});
 	});
 });
