@@ -172,11 +172,14 @@ describe('parseSlackThreadContext', () => {
     });
   });
 
-  it('parses a hyphen-separated thread id (the underscore-friendly variant)', () => {
-    expect(parseSlackThreadContext('slack-CTEST123-1707000000-123456')).toEqual({
-      channelId: 'CTEST123',
-      threadTs: '1707000000.123456',
-    });
+  // PR #562 follow-up: the hyphen-between-digits form
+  // `slack-CH-1707000000-123456` is no longer accepted. Confirmed across
+  // the codebase that no producer emits this shape (slack-orchestrator-bridge
+  // always interpolates Slack-API dotted-decimal ts). The old `[.-]` regex
+  // flexibility was dead defense; canonicalizing on dot-only via the
+  // request-sla.subscriber helpers eliminates a maintenance hazard.
+  it('rejects the legacy hyphen-between-digits ts form (no producer emits it)', () => {
+    expect(parseSlackThreadContext('slack-CTEST123-1707000000-123456')).toBeNull();
   });
 
   it('returns null for non-slack ids', () => {

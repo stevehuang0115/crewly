@@ -649,6 +649,43 @@ describe('Slack Controller', () => {
       expect(entry?.repliedAt).toBeDefined();
     });
 
+    // PR #562 review: `initialComment` is caller-controlled and unbounded.
+    // Without a cap, a pathological 10KB comment would land in chat-v2
+    // verbatim. The controller slices to UPLOAD_MARKER_CONTENT_MAX (500).
+    it('caps chat-v2 content at 500 chars when initialComment is pathologically long', async () => {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const os = await import('os');
+      const tmpFile = path.join(os.tmpdir(), 'test-upload-long-comment.pdf');
+      await fs.writeFile(tmpFile, 'fake pdf');
+
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'uploadFile').mockResolvedValue({ fileId: 'F-LONG' });
+
+      mockChatV2EnsureChannel.mockClear();
+      mockChatV2RecordTurn.mockClear();
+
+      const longComment = 'x'.repeat(10000);
+
+      try {
+        await request(app).post('/api/slack/upload-file').send({
+          channelId: 'CCAP-1',
+          filePath: tmpFile,
+          filename: 'big.pdf',
+          initialComment: longComment,
+          threadTs: '1800.cap-1',
+        });
+      } finally {
+        await fs.unlink(tmpFile).catch(() => {});
+      }
+
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      const turnCall = mockChatV2RecordTurn.mock.calls[0][0];
+      expect(turnCall.content.length).toBeLessThanOrEqual(500);
+      expect(turnCall.content.startsWith('[file uploaded: big.pdf]')).toBe(true);
+    });
+
     it('skips bookkeeping when threadTs is absent (no thread to mark)', async () => {
       const fs = await import('fs/promises');
       const path = await import('path');

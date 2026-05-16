@@ -22,6 +22,18 @@ const router = Router();
 const SLACK_MANIFEST_PATH = path.join(process.cwd(), 'config', 'slack-app-manifest.json');
 
 /**
+ * Cap for upload-marker content written to chat-v2.
+ *
+ * The marker is `[file uploaded: ${name}]${: comment}` — `initialComment`
+ * is caller-controlled and unbounded. Without this cap a 10KB comment
+ * would land in the chat history verbatim. Mirrors the bounded preview
+ * pattern used elsewhere (`THREAD_STATUS_CONSTANTS.MAX_PREVIEW_LENGTH`
+ * = 200 for inbound; 500 here so the file marker + a reasonable comment
+ * tail both fit). PR #562 review follow-up.
+ */
+const UPLOAD_MARKER_CONTENT_MAX = 500;
+
+/**
  * Handle Slack platform errors consistently across endpoints.
  * Returns true if the error was handled (422 sent), false otherwise.
  *
@@ -505,6 +517,27 @@ router.post('/upload-image', async (req: Request, res: Response, next: NextFunct
       threadTs,
     });
 
+    // F14 observability parity with /send — record `agent.action` so
+    // dashboards counting `send_slack` include attachment uploads.
+    // `details.kind` discriminates text vs file vs image when finer-
+    // grained queries are needed.
+    try {
+      getAgentBehaviorLogService()?.record({
+        type: 'agent.action',
+        agent: typeof senderSessionName === 'string' ? senderSessionName : '',
+        actionType: 'send_slack',
+        details: {
+          kind: 'image',
+          channelId,
+          threadTs: threadTs ?? null,
+          fileId: result.fileId ?? null,
+          fileSize: stat.size,
+        },
+      });
+    } catch {
+      /* observability is best-effort */
+    }
+
     // Mirror /send post-success bookkeeping so orc's context recovery sees
     // the image was already delivered. Content captures the file marker so
     // the chat history shows what was actually sent.
@@ -515,7 +548,7 @@ router.post('/upload-image', async (req: Request, res: Response, next: NextFunct
       threadTs,
       conversationId,
       senderSessionName,
-      content: `[image uploaded: ${displayName}]${commentSuffix}`,
+      content: `[image uploaded: ${displayName}]${commentSuffix}`.slice(0, UPLOAD_MARKER_CONTENT_MAX),
       replyKind: 'image-upload',
     });
 
@@ -607,6 +640,25 @@ router.post('/upload-file', async (req: Request, res: Response, next: NextFuncti
       threadTs,
     });
 
+    // F14 observability parity with /send — see /upload-image for the
+    // shared rationale.
+    try {
+      getAgentBehaviorLogService()?.record({
+        type: 'agent.action',
+        agent: typeof senderSessionName === 'string' ? senderSessionName : '',
+        actionType: 'send_slack',
+        details: {
+          kind: 'file',
+          channelId,
+          threadTs: threadTs ?? null,
+          fileId: result.fileId ?? null,
+          fileSize: stat.size,
+        },
+      });
+    } catch {
+      /* observability is best-effort */
+    }
+
     // Mirror /send post-success bookkeeping. Without this the orchestrator
     // re-uploads the same file after every restart (regression 2026-05-15:
     // duplicate agentic_explainer.mp4 in D0AC7NF5N7L:1778816065.309289 thread).
@@ -617,7 +669,7 @@ router.post('/upload-file', async (req: Request, res: Response, next: NextFuncti
       threadTs,
       conversationId,
       senderSessionName,
-      content: `[file uploaded: ${displayName}]${commentSuffix}`,
+      content: `[file uploaded: ${displayName}]${commentSuffix}`.slice(0, UPLOAD_MARKER_CONTENT_MAX),
       replyKind: 'file-upload',
     });
 
