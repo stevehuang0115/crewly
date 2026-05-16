@@ -892,6 +892,189 @@ describe('LiveReconcilerDataProvider', () => {
       expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
     });
 
+    // -----------------------------------------------------------------------
+    // Eviction-under-pressure path (issue surfaced 2026-05-16: queued WI
+    // for inactive Atlas couldn't get woken because idle marketing/product
+    // agents held the floor. Fix: terminate one idle, non-always-on, no-WI
+    // agent to free a slot for the incoming wake.)
+    // -----------------------------------------------------------------------
+
+    describe('eviction under memory pressure', () => {
+      const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+      const mockUpdateAgentStatus = jest.fn().mockResolvedValue(undefined);
+
+      beforeEach(() => {
+        mockTerminate.mockClear();
+        mockUpdateAgentStatus.mockClear();
+        mockStorage.updateAgentStatus = mockUpdateAgentStatus;
+        provider.setAgentRegistrationService({ terminateAgentSession: mockTerminate });
+        // Memory pressure: BOTH >=90% used AND <300MB free.
+        // 16GB total, 100MB free = 99.4% used + 100MB free → pressure triggers.
+        mockTotalmem.mockReturnValue(16_000_000_000);
+        mockFreemem.mockReturnValue(100_000_000);
+        // Default rehydrate path: agent is suspended → rehydrate succeeds.
+        mockSuspend.isSuspended.mockReturnValue(true);
+        mockSuspend.rehydrateAgent.mockResolvedValue(true);
+      });
+
+      const wakeFor = (sessionName: string): WakeAction => ({
+        workItemId: 'wi-incoming',
+        agentSessionName: sessionName,
+        strategy: 'rehydrate',
+        score: 50,
+        scoreBreakdown: { skillMatch: 30, urgency: 10, contextFamiliarity: 10, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      });
+
+      it('evicts the longest-idle non-always-on agent then proceeds with wake', async () => {
+        mockStorage.getTeams.mockResolvedValue([
+          {
+            id: 't1',
+            members: [
+              { id: 'mFresh', sessionName: 'fresh', agentStatus: 'active', workingStatus: 'idle', role: 'developer', updatedAt: '2026-05-16T18:50:00Z' },
+              { id: 'mStale', sessionName: 'stale', agentStatus: 'active', workingStatus: 'idle', role: 'developer', updatedAt: '2026-05-16T17:00:00Z' },
+              { id: 'mOrc',   sessionName: 'orc',   agentStatus: 'active', workingStatus: 'idle', role: 'orchestrator', updatedAt: '2026-05-16T17:00:00Z' },
+            ],
+          },
+        ]);
+        mockSuspend.isSuspended.mockReturnValue(true);
+        mockSuspend.rehydrateAgent.mockResolvedValue(true);
+        // No queued WIs targeting any of these agents.
+        mockPool.getAllItems.mockResolvedValue([]);
+
+        const result = await provider.executeWakeAction(wakeFor('atlas'));
+
+        expect(mockTerminate).toHaveBeenCalledTimes(1);
+        // Longest-idle eligible candidate is `stale` (17:00 < 18:50).
+        expect(mockTerminate).toHaveBeenCalledWith('stale', 'developer');
+        expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
+          'stale',
+          'inactive',
+          'idle_exit_pressure',
+        );
+        expect(result).toBe(true);
+        expect(mockSuspend.rehydrateAgent).toHaveBeenCalledWith('atlas');
+      });
+
+      it('refuses to evict an idle agent that has a non-terminal WorkItem targeting it', async () => {
+        mockStorage.getTeams.mockResolvedValue([
+          {
+            id: 't1',
+            members: [
+              { id: 'mIdle', sessionName: 'idle-with-wi', agentStatus: 'active', workingStatus: 'idle', role: 'developer', updatedAt: '2026-05-16T17:00:00Z' },
+              { id: 'm2', sessionName: 'a2', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+              { id: 'm3', sessionName: 'a3', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+            ],
+          },
+        ]);
+        mockPool.getAllItems.mockResolvedValue([
+          { id: 'wi-self', status: 'queued', target: 'idle-with-wi' },
+        ]);
+
+        const result = await provider.executeWakeAction(wakeFor('atlas'));
+
+        expect(mockTerminate).not.toHaveBeenCalled();
+        expect(result).toBe(false);
+      });
+
+      it('refuses to evict always-on roles (orchestrator/auditor) even when idle', async () => {
+        mockStorage.getTeams.mockResolvedValue([
+          {
+            id: 't1',
+            members: [
+              { id: 'mOrc', sessionName: 'orc',     agentStatus: 'active', workingStatus: 'idle', role: 'orchestrator', updatedAt: '2026-05-16T10:00:00Z' },
+              { id: 'mAud', sessionName: 'auditor', agentStatus: 'active', workingStatus: 'idle', role: 'auditor',      updatedAt: '2026-05-16T10:00:00Z' },
+              { id: 'mBusy', sessionName: 'busy',   agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+            ],
+          },
+        ]);
+        mockPool.getAllItems.mockResolvedValue([]);
+
+        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        expect(mockTerminate).not.toHaveBeenCalled();
+        expect(result).toBe(false);
+      });
+
+      it('refuses to evict an agent in workingStatus=in_progress', async () => {
+        mockStorage.getTeams.mockResolvedValue([
+          {
+            id: 't1',
+            members: [
+              { id: 'mA', sessionName: 'a1', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '2026-05-16T10:00:00Z' },
+              { id: 'mB', sessionName: 'a2', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '2026-05-16T10:00:00Z' },
+              { id: 'mC', sessionName: 'a3', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '2026-05-16T10:00:00Z' },
+            ],
+          },
+        ]);
+        mockPool.getAllItems.mockResolvedValue([]);
+
+        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        expect(mockTerminate).not.toHaveBeenCalled();
+        expect(result).toBe(false);
+      });
+
+      it('refuses to evict the agent we are trying to wake (no self-eviction)', async () => {
+        // Edge case — `atlas` itself shows up as active+idle in the team
+        // file (race between status updates). We must NOT evict our own
+        // target.
+        mockStorage.getTeams.mockResolvedValue([
+          {
+            id: 't1',
+            members: [
+              { id: 'mA', sessionName: 'atlas', agentStatus: 'active', workingStatus: 'idle', role: 'developer', updatedAt: '2026-05-16T10:00:00Z' },
+              { id: 'mB', sessionName: 'b', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+              { id: 'mC', sessionName: 'c', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+            ],
+          },
+        ]);
+        mockPool.getAllItems.mockResolvedValue([]);
+
+        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        expect(mockTerminate).not.toHaveBeenCalled();
+        expect(result).toBe(false);
+      });
+
+      it('falls back to skip when eviction itself fails (termination throws)', async () => {
+        mockStorage.getTeams.mockResolvedValue([
+          {
+            id: 't1',
+            members: [
+              { id: 'mIdle', sessionName: 'idle1', agentStatus: 'active', workingStatus: 'idle', role: 'developer', updatedAt: '2026-05-16T10:00:00Z' },
+              { id: 'mB', sessionName: 'b', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+              { id: 'mC', sessionName: 'c', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+            ],
+          },
+        ]);
+        mockPool.getAllItems.mockResolvedValue([]);
+        mockTerminate.mockRejectedValueOnce(new Error('tmux gone'));
+        mockSuspend.rehydrateAgent.mockResolvedValue(true);
+
+        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        expect(mockTerminate).toHaveBeenCalledTimes(1);
+        expect(result).toBe(false); // skip, don't wake (floor invariant)
+        expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
+      });
+
+      it('disables eviction when AgentRegistrationService is not wired (and falls back to skip)', async () => {
+        const unwired = new LiveReconcilerDataProvider();
+        mockStorage.getTeams.mockResolvedValue([
+          {
+            id: 't1',
+            members: [
+              { id: 'mIdle', sessionName: 'idle1', agentStatus: 'active', workingStatus: 'idle', role: 'developer', updatedAt: '2026-05-16T10:00:00Z' },
+              { id: 'mB', sessionName: 'b', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+              { id: 'mC', sessionName: 'c', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+            ],
+          },
+        ]);
+        mockPool.getAllItems.mockResolvedValue([]);
+
+        const result = await unwired.executeWakeAction(wakeFor('atlas'));
+        expect(mockTerminate).not.toHaveBeenCalled();
+        expect(result).toBe(false);
+      });
+    });
+
     it('should proceed with wake action when memory usage is below 90%', async () => {
       // Simulate normal memory usage (75% used)
       mockTotalmem.mockReturnValue(16_000_000_000); // 16GB
