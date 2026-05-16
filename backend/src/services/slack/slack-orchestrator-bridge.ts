@@ -412,11 +412,14 @@ export class SlackOrchestratorBridge extends EventEmitter {
           }
           // Strip the @mention prefix and send to the target agent
           const cleanMessage = enrichedText.replace(new RegExp(`^@${mentionTarget.name}\\s*`, 'i'), '').trim();
-          const response = await this.sendToAgent(mentionTarget.sessionName, cleanMessage || enrichedText, context);
-          // Same empty-response guard as the orchestrator route — an
-          // empty response is QueueProcessor's fire-and-forget delivery
-          // ack, not a real reply. Don't auto-resolve the SLA tracker.
-          await this.sendSlackResponse(message, response, response.length > 0);
+          const agentResponse = await this.sendToAgent(mentionTarget.sessionName, cleanMessage || enrichedText, context);
+          // Issue #394: `fromOrcReply` comes from the envelope — only
+          // `true` when slackResolve fired with a non-empty body. The
+          // pre-fix `response.length > 0` proxy false-positived on the
+          // 3 placeholder strings (timeout, direct-delivery, error),
+          // any of which would have auto-resolved the SLA tracker on a
+          // non-reply.
+          await this.sendSlackResponse(message, agentResponse.response, agentResponse.fromOrcReply);
           if (this.config.showTypingIndicator) {
             await this.markComplete(message);
           }
@@ -2002,13 +2005,17 @@ Just type naturally to chat with the orchestrator!`;
    * @param sessionName - Target agent session
    * @param message - Message to send
    * @param context - Slack context for response routing
-   * @returns Agent response text
+   * @returns OrcResponse envelope — `fromOrcReply` is `true` ONLY when the
+   *   reply came from the agent's `slackResolve` callback (a real reply
+   *   via the reply-slack skill). Timeout / direct-delivery / error
+   *   placeholders return `fromOrcReply: false` so callers can gate the
+   *   SLA cascade. Issue #394.
    */
   private async sendToAgent(
     sessionName: string,
     message: string,
     context?: SlackConversationContext,
-  ): Promise<string> {
+  ): Promise<OrcResponse> {
     try {
       // Enrich with Slack context for reply routing
       let enrichedMessage = message;
@@ -2031,10 +2038,17 @@ Just type naturally to chat with the orchestrator!`;
           },
         };
 
-        return new Promise<string>((resolve) => {
+        return new Promise<OrcResponse>((resolve) => {
           let resolved = false;
           const timeoutId = setTimeout(() => {
-            if (!resolved) { resolved = true; resolve('Agent is processing your message. Check back shortly.'); }
+            if (!resolved) {
+              resolved = true;
+              // Timeout placeholder — explicitly NOT a real reply.
+              resolve({
+                response: 'Agent is processing your message. Check back shortly.',
+                fromOrcReply: false,
+              });
+            }
           }, this.config.responseTimeoutMs);
 
           this.messageQueueService!.enqueue({
@@ -2044,7 +2058,15 @@ Just type naturally to chat with the orchestrator!`;
             targetSession: sessionName,
             sourceMetadata: {
               slackResolve: (resp: string) => {
-                if (!resolved) { resolved = true; clearTimeout(timeoutId); resolve(resp); }
+                if (!resolved) {
+                  resolved = true;
+                  clearTimeout(timeoutId);
+                  // Real agent reply path. Empty `resp` is the
+                  // QueueProcessor fire-and-forget delivery ack — treat
+                  // it as a non-reply too (mirrors the orchestrator
+                  // path's empty-string gate in sendToOrchestrator).
+                  resolve({ response: resp, fromOrcReply: resp.length > 0 });
+                }
               },
               channelId: context?.channelId,
               threadTs: context?.threadTs,
@@ -2053,7 +2075,10 @@ Just type naturally to chat with the orchestrator!`;
         });
       }
 
-      // Fallback: direct terminal delivery
+      // Fallback: direct terminal delivery — the agent acknowledges the
+      // write, but the actual reply hasn't been generated yet. Return a
+      // placeholder with fromOrcReply=false so the SLA cascade does NOT
+      // close on this.
       const { default: fetch } = await import('node-fetch' as any).catch(() => ({ default: globalThis.fetch }));
       const apiUrl = process.env.CREWLY_API_URL || 'http://localhost:8787';
       await fetch(`${apiUrl}/api/terminal/${sessionName}/deliver`, {
@@ -2061,13 +2086,19 @@ Just type naturally to chat with the orchestrator!`;
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: enrichedMessage, force: true }),
       });
-      return 'Message delivered to agent. Response will arrive shortly.';
+      return {
+        response: 'Message delivered to agent. Response will arrive shortly.',
+        fromOrcReply: false,
+      };
     } catch (err) {
       this.logger.error('Failed to send to agent', {
         session: sessionName,
         error: err instanceof Error ? err.message : String(err),
       });
-      return `Failed to reach agent. Error: ${err instanceof Error ? err.message : String(err)}`;
+      return {
+        response: `Failed to reach agent. Error: ${err instanceof Error ? err.message : String(err)}`,
+        fromOrcReply: false,
+      };
     }
   }
 
