@@ -515,7 +515,19 @@ export class SkillExecutorService {
 
       if (!bindingId) {
         if (req.required) {
-          throw new MissingCredentialError(req.slot, req.provider);
+          // Issue #324: include available credentials of the matching
+          // provider in the error so the caller can self-recover by
+          // re-invoking with credentialBindings: { slot: id }. Without
+          // this hint the agent has to grep ~/.crewly/credentials/ to
+          // figure out what's even registered.
+          const available = await store.findCredentialsByProvider(req.provider);
+          const hints = available.map((c) => ({
+            id: c.id,
+            name: c.name,
+            type: c.type,
+            status: c.status,
+          }));
+          throw new MissingCredentialError(req.slot, req.provider, hints);
         }
         continue;
       }

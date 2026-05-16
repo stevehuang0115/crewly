@@ -25,6 +25,27 @@ describe('credential.types', () => {
       expect(err.message).toContain('gemini');
       expect(err).toBeInstanceOf(Error);
     });
+
+    // Issue #324: caller gets no way to discover available credentials
+    // from the bare error. The enriched message lists them so the agent
+    // can self-recover with `credentialBindings: { slot: id }`.
+    it('lists available credentials of the matching provider when supplied', () => {
+      const err = new MissingCredentialError('gmail', 'google', [
+        { id: 'cred-aaa', name: "Steve's Gmail", type: 'google-oauth', status: 'active' },
+        { id: 'cred-bbb', name: 'Service Account', type: 'google-oauth', status: 'active' },
+      ]);
+      expect(err.message).toContain('cred-aaa');
+      expect(err.message).toContain("name=\"Steve's Gmail\"");
+      expect(err.message).toContain('status=active');
+      expect(err.message).toContain('credentialBindings');
+      expect(err.available).toHaveLength(2);
+    });
+
+    it('surfaces a clear no-credentials-registered hint when the provider list is empty', () => {
+      const err = new MissingCredentialError('gmail', 'google');
+      expect(err.message).toContain('No google credentials registered');
+      expect(err.message).toContain('Settings → Credentials');
+    });
   });
 
   describe('InsufficientScopeError', () => {
