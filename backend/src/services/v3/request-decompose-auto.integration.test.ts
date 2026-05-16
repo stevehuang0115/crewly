@@ -78,75 +78,93 @@ interface IntegrationFixture {
 }
 
 async function buildFixture(): Promise<IntegrationFixture> {
+  // Issue #463 follow-up: wrap construction in try/catch so a partial
+  // failure (e.g. an awaitable subscriber init throws) doesn't leak the
+  // temp dir or the mutated CREWLY_HOME env var.
   const tmpRoot = await fs.mkdtemp(
     path.join(os.tmpdir(), 'pipeline-decompose-auto-int-'),
   );
-  const crewlyHome = path.join(tmpRoot, '.crewly');
-  await fs.mkdir(crewlyHome, { recursive: true });
   const previousCrewlyHome = process.env.CREWLY_HOME;
-  process.env.CREWLY_HOME = crewlyHome;
+  try {
+    const crewlyHome = path.join(tmpRoot, '.crewly');
+    await fs.mkdir(crewlyHome, { recursive: true });
+    process.env.CREWLY_HOME = crewlyHome;
 
-  // Reset singletons so we get clean instances scoped to this CREWLY_HOME.
-  RequestService.resetInstance();
-  TaskPoolService.resetInstance();
-  setRequestSlaSubscriber(null);
-  setRequestDecomposeSubscriber(null);
+    // Reset singletons so we get clean instances scoped to this CREWLY_HOME.
+    RequestService.resetInstance();
+    TaskPoolService.resetInstance();
+    setRequestSlaSubscriber(null);
+    setRequestDecomposeSubscriber(null);
 
-  const bus = new EventBusService();
-  const requestService = RequestService.getInstance(tmpRoot);
-  const taskPool = TaskPoolService.getInstance();
+    const bus = new EventBusService();
+    const requestService = RequestService.getInstance(tmpRoot);
+    const taskPool = TaskPoolService.getInstance();
 
-  // CRITICAL: wire the bus into both producers BEFORE starting subscribers.
-  // RequestService publishes `request:created` synchronously inside
-  // create(); without the bus wired the event never lands and the
-  // subscriber never fires.
-  setRequestServiceEventBus(bus);
-  taskPool.setEventBusService(bus);
+    // CRITICAL: wire the bus into both producers BEFORE starting subscribers.
+    // RequestService publishes `request:created` synchronously inside
+    // create(); without the bus wired the event never lands and the
+    // subscriber never fires.
+    setRequestServiceEventBus(bus);
+    taskPool.setEventBusService(bus);
 
-  // Start the SLA subscriber (PR #453 L4 fix — workitem:queued → linkWorkItem).
-  const slaSubscriber = new RequestSlaSubscriber({
-    eventBus: bus,
-    requestService,
-    taskPool,
-    orchestratorSession: 'test-orc',
-  });
-  slaSubscriber.start();
-  setRequestSlaSubscriber(slaSubscriber);
+    // Start the SLA subscriber (PR #453 L4 fix — workitem:queued → linkWorkItem).
+    const slaSubscriber = new RequestSlaSubscriber({
+      eventBus: bus,
+      requestService,
+      taskPool,
+      orchestratorSession: 'test-orc',
+    });
+    slaSubscriber.start();
+    setRequestSlaSubscriber(slaSubscriber);
 
-  // Start the auto-decompose subscriber under test.
-  const decomposeSubscriber = new RequestDecomposeSubscriber({
-    eventBus: bus,
-    requestService,
-    taskPool,
-  });
-  decomposeSubscriber.start();
-  setRequestDecomposeSubscriber(decomposeSubscriber);
+    // Start the auto-decompose subscriber under test.
+    const decomposeSubscriber = new RequestDecomposeSubscriber({
+      eventBus: bus,
+      requestService,
+      taskPool,
+    });
+    decomposeSubscriber.start();
+    setRequestDecomposeSubscriber(decomposeSubscriber);
 
-  return {
-    tmpRoot,
-    bus,
-    requestService,
-    taskPool,
-    slaSubscriber,
-    decomposeSubscriber,
-    cleanup: async () => {
-      decomposeSubscriber.stop();
-      slaSubscriber.stop();
-      setRequestDecomposeSubscriber(null);
-      setRequestSlaSubscriber(null);
-      setRequestServiceEventBus(null);
-      taskPool.setEventBusService(null);
-      RequestService.resetInstance();
-      TaskPoolService.resetInstance();
+    return {
+      tmpRoot,
+      bus,
+      requestService,
+      taskPool,
+      slaSubscriber,
+      decomposeSubscriber,
+      cleanup: async () => {
+        decomposeSubscriber.stop();
+        slaSubscriber.stop();
+        setRequestDecomposeSubscriber(null);
+        setRequestSlaSubscriber(null);
+        setRequestServiceEventBus(null);
+        taskPool.setEventBusService(null);
+        RequestService.resetInstance();
+        TaskPoolService.resetInstance();
 
-      if (previousCrewlyHome === undefined) {
-        delete process.env.CREWLY_HOME;
-      } else {
-        process.env.CREWLY_HOME = previousCrewlyHome;
-      }
-      await fs.rm(tmpRoot, { recursive: true, force: true });
-    },
-  };
+        if (previousCrewlyHome === undefined) {
+          delete process.env.CREWLY_HOME;
+        } else {
+          process.env.CREWLY_HOME = previousCrewlyHome;
+        }
+        await fs.rm(tmpRoot, { recursive: true, force: true });
+      },
+    };
+  } catch (err) {
+    // Symmetric env + dir rollback so a mid-construction throw doesn't
+    // leak. The temp dir is best-effort (might already partially exist);
+    // the env restore must run regardless.
+    if (previousCrewlyHome === undefined) {
+      delete process.env.CREWLY_HOME;
+    } else {
+      process.env.CREWLY_HOME = previousCrewlyHome;
+    }
+    await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {
+      /* best-effort */
+    });
+    throw err;
+  }
 }
 
 /**
