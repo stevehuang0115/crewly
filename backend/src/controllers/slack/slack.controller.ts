@@ -116,8 +116,11 @@ async function recordSlackReplyBookkeeping(params: {
         metadata: {
           source: 'reply-tool',
           replyKind,
-          slackChannelId: channelId,
-          slackThreadTs: threadTs,
+          // Mirror the pre-PR /send guards exactly. `req.body` destructure
+          // is `any`, so a non-string slip-through would persist as-is into
+          // chat-v2 metadata without these `typeof` checks.
+          slackChannelId: typeof channelId === 'string' ? channelId : undefined,
+          slackThreadTs: typeof threadTs === 'string' ? threadTs : undefined,
         },
       });
     } catch {

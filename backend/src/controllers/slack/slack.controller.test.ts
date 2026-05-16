@@ -663,18 +663,46 @@ describe('Slack Controller', () => {
       mockChatV2EnsureChannel.mockClear();
       mockChatV2RecordTurn.mockClear();
 
+      // Spy on the SLA cascade to verify it does NOT fire without threadTs.
+      // The earlier version of this test only asserted recordTurn — which
+      // would silently pass even if the helper crashed mid-flight (all three
+      // bookkeeping steps are wrapped in try/catch). These extra spies pin
+      // the negative behavior explicitly.
+      const slaModule = await import('../../services/v3/request-sla.subscriber.js');
+      const slaSpy = jest.spyOn(slaModule, 'getRequestSlaSubscriber');
+
       try {
         const response = await request(app).post('/api/slack/upload-file').send({
           channelId: 'C-NOTHREAD',
           filePath: tmpFile,
         });
         expect(response.status).toBe(200);
+        expect(response.body.data.fileId).toBe('F-NT');
       } finally {
         await fs.unlink(tmpFile).catch(() => {});
       }
 
-      // No threadTs → no conversationId can be synthesized → no chat-v2 turn.
+      // No threadTs →
+      //   1. No conversationId synthesis path → no chat-v2 turn recorded.
+      //   2. Thread-status branch is gated on threadTs → no markReplied call
+      //      (we cannot directly assert that without leaking through the
+      //      singleton, but verifying tsq has no `C-NOTHREAD:*` entry is a
+      //      sufficient proxy because trackInbound would have left one).
+      //   3. SLA cascade is gated on threadTs → getRequestSlaSubscriber is
+      //      never invoked.
       expect(mockChatV2RecordTurn).not.toHaveBeenCalled();
+      expect(slaSpy).not.toHaveBeenCalled();
+
+      const { ThreadStatusQueueService } = await import(
+        '../../services/messaging/thread-status-queue.service.js'
+      );
+      const tsq = ThreadStatusQueueService.getInstance();
+      // Any threadKey starting with `C-NOTHREAD:` would have been created
+      // by trackInbound. There should be none.
+      const allEntries = tsq.getPendingThreads().concat(tsq.getByStatus('replied_completed'));
+      expect(allEntries.find((e) => e.threadKey.startsWith('C-NOTHREAD'))).toBeUndefined();
+
+      slaSpy.mockRestore();
     });
   });
 
@@ -819,6 +847,40 @@ describe('Slack Controller', () => {
       // inbound bridge (`persistSlackInbound`).
       const synthesized = `slack-${channelId}-${String(threadTs).replace('.', '-')}`;
       expect(synthesized).toBe('slack-D0AC7NF5N7L-1777760999-956969');
+    });
+
+    // Positive regression gate: the bookkeeping-helper refactor in
+    // PR #562 collapsed /send's inline chat-v2 + thread-status + SLA
+    // blocks into a shared `recordSlackReplyBookkeeping` call. The
+    // existing tests only verify the helper fires for uploads or that
+    // the dual-write is SKIPPED on error paths — neither catches a
+    // future regression where the helper is removed from /send or its
+    // metadata shape changes. Lock in the happy-path shape here.
+    it('records a chat-v2 turn with replyKind=text after a successful send', async () => {
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1707.send-1');
+
+      const channelId = 'CSEND-1';
+      const threadTs = '1707.thread-send-1';
+      const text = 'orc text reply';
+
+      await request(app).post('/api/slack/send').send({
+        channelId,
+        text,
+        threadTs,
+        senderSessionName: 'crewly-orc',
+      });
+
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      const turnCall = mockChatV2RecordTurn.mock.calls[0][0];
+      expect(turnCall.senderType).toBe('agent');
+      expect(turnCall.senderId).toBe('crewly-orc');
+      expect(turnCall.content).toBe(text);
+      expect(turnCall.metadata.source).toBe('reply-tool');
+      expect(turnCall.metadata.replyKind).toBe('text');
+      expect(turnCall.metadata.slackChannelId).toBe(channelId);
+      expect(turnCall.metadata.slackThreadTs).toBe(threadTs);
     });
   });
 });
