@@ -48,7 +48,7 @@ When `status` is `done` and a `taskPath` is provided, the task file is automatic
 | Flag | JSON Field | Required | Description |
 |------|-----------|----------|-------------|
 | `--session` / `-s` | `sessionName` | Yes | Your agent session name |
-| `--status` / `-S` | `status` | Yes | Status: `done`, `blocked`, `failed`, `in_progress`, `active` |
+| `--status` / `-S` | `status` | Yes | Status: `done`, `blocked`, `failed`, `in_progress`, `active`, `milestone`. `milestone` = a SHIPPED artifact inside an open goal (PR merged / spec finalized / build pass); emits a `[MILESTONE]` envelope that orc's Smart Notification Protocol always forwards to the owner. See `config/sops/common/mid-flight-milestone-surface.md` (#435). Summary must be ≥30 chars. |
 | `--summary` / `-m` | `summary` | Yes | Brief description (or pipe via stdin) |
 | `--summary-file` | — | No | Read summary from a file path |
 | `--project` / `-p` | `projectPath` | No | Project path for auto-remember on completion |
@@ -68,6 +68,13 @@ bash execute.sh --session dev-1 --status blocked --summary "Waiting on API crede
 
 # Report failure
 bash execute.sh --session dev-1 --status failed --summary "Build fails due to missing dependency"
+
+# Surface a milestone (#435) — a SHIPPED artifact inside an open goal.
+# Emits the [MILESTONE] envelope orc's Smart Notification table always
+# forwards to the owner. Summary must carry both WHAT shipped AND
+# WHAT-IT-MEANS-FOR-OWNER (≥30 chars).
+bash execute.sh --session dev-1 --status milestone \
+  --summary "PR #420 merged — agent state file is now corruption-resistant + auto-snapshots every 30s"
 
 # Multi-line summary via stdin (avoids shell escaping)
 echo "Fixed the bug — it's working now" | bash execute.sh --session dev-1 --status done --project /path

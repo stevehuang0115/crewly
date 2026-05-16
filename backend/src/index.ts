@@ -65,6 +65,7 @@ import { ThreadStatusQueueService } from './services/messaging/thread-status-que
 import { EventBusService } from './services/event-bus/index.js';
 import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-bridge.service.js';
 import { AutoLearningSubscriber } from './services/memory/auto-learning.subscriber.js';
+import { MilestoneNotificationSubscriber } from './services/notification/milestone-notification.subscriber.js';
 import {
 	RequestSlaSubscriber,
 	setRequestSlaSubscriber,
@@ -194,6 +195,9 @@ export class CrewlyServer {
 	private eventToWorkItemBridge: EventToWorkItemBridge | null = null;
 	/** LEARN-1: subscribes to terminal task / mission:replanned events and auto-records learnings. */
 	private autoLearningSubscriber: AutoLearningSubscriber | null = null;
+	// DF-1 #438 — symmetric to AutoLearningSubscriber; surfaces milestones
+	// to orc's chat queue.
+	private milestoneNotificationSubscriber: MilestoneNotificationSubscriber | null = null;
 	/** INBOUND-1: subscribes to request:created and tracks 5/10 min SLA on respond_to_user WIs. */
 	private requestSlaSubscriber: RequestSlaSubscriber | null = null;
 	/** Pipeline-#4 follow-up: subscribes to request:created and auto-decomposes actionable L2 Requests via plan() → addToPool. */
@@ -439,6 +443,20 @@ export class CrewlyServer {
 		// contract (V1) and the V7/V9 self-checks in the co-located test.
 		this.autoLearningSubscriber = AutoLearningSubscriber.boot(this.eventBusService);
 		this.autoLearningSubscriber.start();
+
+		// DF-1 #438: symmetric notification subscriber. Same architectural
+		// pattern as AutoLearningSubscriber — listens to terminal lifecycle
+		// events (`task:verified`, `mission:replanned`) and enqueues a
+		// `[MILESTONE]` envelope into orc's chat queue. The QW-3 row in
+		// `config/roles/orchestrator/prompt.md` (#436) handles the
+		// always-forward-to-owner rule on the orc side; this subscriber
+		// closes the gap where an agent ships work but forgets to call
+		// `report-status --status milestone` (the agent-side QW-1 path).
+		this.milestoneNotificationSubscriber = new MilestoneNotificationSubscriber({
+			eventBus: this.eventBusService,
+			messageQueueService: this.messageQueueService,
+		});
+		this.milestoneNotificationSubscriber.start();
 
 		// INBOUND-1 + Pipeline-#4 follow-up: wire RequestService → bus, then
 		// boot both v3 subscribers (SLA tracker + auto-decompose). Order
@@ -3031,6 +3049,12 @@ export class CrewlyServer {
 			if (this.autoLearningSubscriber) {
 				this.autoLearningSubscriber.stop();
 				this.autoLearningSubscriber = null;
+			}
+
+			// DF-1 #438: same shutdown window as auto-learning above.
+			if (this.milestoneNotificationSubscriber) {
+				this.milestoneNotificationSubscriber.stop();
+				this.milestoneNotificationSubscriber = null;
 			}
 
 			// INBOUND-1: stop the SLA subscriber and unset the module-level

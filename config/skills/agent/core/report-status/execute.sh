@@ -22,7 +22,12 @@ Usage:
 
 Options:
   --session  | -s   Agent session name (required)
-  --status   | -S   Status: done, blocked, failed, in_progress, active (required)
+  --status   | -S   Status: done, blocked, failed, in_progress, active, milestone (required)
+                       milestone = a SHIPPED artifact inside an open goal (PR merged,
+                       spec finalized, build pass on a non-trivial change). Emits a
+                       [MILESTONE] envelope that orc's Smart Notification Protocol
+                       always forwards to the owner. See:
+                       config/sops/common/mid-flight-milestone-surface.md (issue #435)
   --summary  | -m   Status summary text (required unless piped via stdin)
   --summary-file    Read summary from file path
   --project  | -p   Project path for auto-remember on completion
@@ -151,6 +156,18 @@ require_param "sessionName (--session)" "$SESSION_NAME"
 require_param "status (--status)" "$STATUS"
 require_param "summary (--summary)" "$SUMMARY"
 
+# Gate: milestone summaries must carry a real "WHAT shipped + WHAT it means
+# for the owner" — see config/sops/common/mid-flight-milestone-surface.md
+# (issue #435). Reject anything that looks like "task done" boilerplate
+# (under 30 chars) so the [MILESTONE] envelope doesn't get diluted.
+if [ "$STATUS" = "milestone" ]; then
+  SUMMARY_LEN=${#SUMMARY}
+  if [ "$SUMMARY_LEN" -lt 30 ]; then
+    echo "{\"error\":\"milestone gate failed: summary too short (${SUMMARY_LEN} chars, minimum 30). Per the Mid-Flight Milestone Surface SOP, a milestone surface must carry both WHAT shipped AND WHAT-IT-MEANS-FOR-OWNER.\"}" >&2
+    error_exit "Summary must be at least 30 characters when reporting milestone (got ${SUMMARY_LEN})"
+  fi
+fi
+
 # Gate: before_mark_done — reject empty or trivially short summaries
 # This prevents agents from marking tasks done without meaningful output.
 if [ "$STATUS" = "done" ]; then
@@ -168,6 +185,11 @@ map_status_to_state() {
     blocked) echo "blocked" ;;
     failed) echo "failed" ;;
     in_progress|working) echo "working" ;;
+    # Issue #435: `milestone` is a SHIPPED artifact inside an open goal,
+    # not the outer goal's completion. It maps to its own state so the
+    # downstream consumer (auto-learning subscriber, milestone-notification
+    # subscriber #438, orc Smart Notification table row #436) can branch.
+    milestone) echo "milestone" ;;
     *) echo "$1" ;;
   esac
 }
