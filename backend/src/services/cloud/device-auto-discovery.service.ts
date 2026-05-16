@@ -282,6 +282,11 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 		this.pollTimer = setTimeout(() => {
 			this.pollDevices().finally(() => this.schedulePoll());
 		}, delay);
+		// .unref() so a CLI invocation that never reaches `stop()` can
+		// still exit cleanly — the timer keeps re-arming forever now that
+		// the heartbeat hard-stop is gone (#296), and we don't want it
+		// holding the event loop open in test/CLI contexts.
+		this.pollTimer.unref?.();
 	}
 
 	/**
@@ -298,6 +303,9 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 		this.heartbeatTimer = setTimeout(() => {
 			this.sendHeartbeat().finally(() => this.scheduleHeartbeat());
 		}, delay);
+		// .unref() — see schedulePoll for rationale. The hard-stop removal
+		// in #296 makes this load-bearing for CLI / test process exit.
+		this.heartbeatTimer.unref?.();
 	}
 
 	// ---------------------------------------------------------------------------
@@ -508,11 +516,16 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 	/**
 	 * Send a heartbeat to the cloud to keep this device marked as online.
 	 * On failure, increments heartbeat failure counter and backs off.
-	 * After MAX_CONSECUTIVE_HEARTBEAT_FAILURES, stops sending heartbeats.
+	 * After MAX_CONSECUTIVE_HEARTBEAT_FAILURES, escalates the log level
+	 * from `warn` to `error` (one-shot edge event) but keeps retrying at
+	 * the capped backoff so heartbeats resume automatically when
+	 * connectivity returns. See issue #296.
 	 */
 	private async sendHeartbeat(): Promise<void> {
 		if (!this.config) return;
 
+		// Issue #296: heartbeats now retry indefinitely at the capped
+		// backoff. See `handleHeartbeatFailure` JSDoc for the rationale.
 		try {
 			const url = `${this.config.cloudUrl}${DISCOVERY_CONSTANTS.DEVICES_PATH}/heartbeat`;
 
@@ -541,8 +554,23 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 	}
 
 	/**
-	 * Handle a heartbeat failure: increment counter and stop heartbeats
-	 * if the max retry limit is exceeded.
+	 * Handle a heartbeat failure: increment counter and log a warning. The
+	 * timer is NOT stopped — heartbeats continue at the capped backoff
+	 * (`BACKOFF_MAX_MS`, currently 5 min) so that whenever the network
+	 * or Cloud server recovers, `lastHeartbeatAt` resumes updating
+	 * automatically.
+	 *
+	 * Issue #296 background: previously, hitting
+	 * `MAX_CONSECUTIVE_HEARTBEAT_FAILURES` (10) permanently cleared
+	 * `heartbeatTimer`. A transient network blip 24-48h ago would freeze
+	 * `lastHeartbeatAt` forever even after sync recovered — the Cloud
+	 * dashboard then showed the device as offline indefinitely. Removing
+	 * the hard stop trades a small (capped) ongoing log volume for
+	 * self-healing.
+	 *
+	 * After `MAX_CONSECUTIVE_HEARTBEAT_FAILURES` we still emit an `error`
+	 * log so persistent failures stay visible in observability, but the
+	 * timer keeps firing at the 5-min cap until something succeeds.
 	 *
 	 * @param reason - Human-readable failure reason
 	 */
@@ -550,20 +578,26 @@ export class DeviceAutoDiscoveryService extends EventEmitter {
 		this.consecutiveHeartbeatFailures++;
 		const nextDelay = DeviceAutoDiscoveryService.calculateBackoff(this.consecutiveHeartbeatFailures);
 
-		this.logger.warn('Heartbeat failed', {
+		const meta = {
 			reason,
 			consecutiveFailures: this.consecutiveHeartbeatFailures,
 			nextRetryMs: nextDelay,
-		});
+		};
 
-		if (this.consecutiveHeartbeatFailures >= DISCOVERY_CONSTANTS.MAX_CONSECUTIVE_HEARTBEAT_FAILURES) {
-			this.logger.error('Max heartbeat retries exceeded, stopping heartbeats', {
-				failures: this.consecutiveHeartbeatFailures,
-			});
-			if (this.heartbeatTimer) {
-				clearTimeout(this.heartbeatTimer);
-				this.heartbeatTimer = null;
-			}
+		const maxFails = DISCOVERY_CONSTANTS.MAX_CONSECUTIVE_HEARTBEAT_FAILURES;
+		if (this.consecutiveHeartbeatFailures < maxFails) {
+			this.logger.warn('Heartbeat failed', meta);
+			return;
+		}
+
+		// At or past the threshold — escalate once at the exact crossing,
+		// then drop to debug to avoid log-spam (~288/day per device at the
+		// 5-min cap). A persistent-failure dashboard alarm should watch
+		// the threshold-crossing error, not the every-cycle log.
+		if (this.consecutiveHeartbeatFailures === maxFails) {
+			this.logger.error('Heartbeat persistently failing (will keep retrying at capped backoff)', meta);
+		} else {
+			this.logger.debug('Heartbeat still failing (post-threshold)', meta);
 		}
 	}
 }
