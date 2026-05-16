@@ -1434,17 +1434,23 @@ export class CrewlyServer {
 			// resume notification won't re-send already-answered conversations.
 			try {
 				const { RequestService } = await import('./services/v3/request.service.js');
+				const { extractSlackChannelId, extractSlackThreadTs } = await import('./services/v3/request-sla.subscriber.js');
 				const reqSvc = RequestService.getInstance();
 				const allReqs = await reqSvc.listAll();
 				let backfilled = 0;
 				for (const req of allReqs) {
 					if (req.status !== 'done') continue;
 					const scid = req.sourceConversationItemId || '';
-					if (!scid.startsWith('slack-')) continue;
-					const m = scid.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
-					if (!m) continue;
-					const [, channelId, t1, t2] = m;
-					const threadKey = `${channelId}:${t1}.${t2}`;
+					// `extractSlack*` strips the optional `-msg-{ts}` thread-reply
+					// suffix before parsing, so both top-level and in-thread
+					// Requests resolve to the canonical `{channelId}:{threadRoot}`.
+					// Previously a local regex was used here and its greedy `.+`
+					// swallowed the suffix, producing a malformed threadKey that
+					// missed the dedup check and bloated the persistence file.
+					const channelId = extractSlackChannelId(scid);
+					const threadTs = extractSlackThreadTs(scid);
+					if (!channelId || !threadTs) continue;
+					const threadKey = `${channelId}:${threadTs}`;
 					if (this.threadStatusQueueService.get(threadKey)) continue;
 					this.threadStatusQueueService.trackInbound({
 						threadKey,
@@ -2781,14 +2787,13 @@ export class CrewlyServer {
 					if (req.sourceConversationItemId.startsWith('slack-')) {
 						try {
 							const { ThreadStatusQueueService } = await import('./services/messaging/thread-status-queue.service.js');
+							const { extractSlackChannelId, extractSlackThreadTs } = await import('./services/v3/request-sla.subscriber.js');
 							const tsq = ThreadStatusQueueService.getInstance();
-							// sourceConversationItemId format: "slack-{channelId}-{messageTs}"
-							// messageTs format in the ID uses hyphens: "1775935980-197679"
-							// Slack threadTs uses dots: "1775935980.197679"
-							const match = req.sourceConversationItemId.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
-							if (match) {
-								const channelId = match[1];
-								const threadTs = `${match[2]}.${match[3]}`;
+							// Use the canonical parser (handles both `slack-{ch}-{ts}` and
+							// the thread-reply `slack-{ch}-{root}-msg-{msgTs}` shapes).
+							const channelId = extractSlackChannelId(req.sourceConversationItemId);
+							const threadTs = extractSlackThreadTs(req.sourceConversationItemId);
+							if (channelId && threadTs) {
 								const threadKey = `${channelId}:${threadTs}`;
 								// Create entry if not tracked, then mark terminal
 								if (!tsq.get(threadKey)) {

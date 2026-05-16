@@ -22,6 +22,18 @@ const router = Router();
 const SLACK_MANIFEST_PATH = path.join(process.cwd(), 'config', 'slack-app-manifest.json');
 
 /**
+ * Cap for upload-marker content written to chat-v2.
+ *
+ * The marker is `[file uploaded: ${name}]${: comment}` — `initialComment`
+ * is caller-controlled and unbounded. Without this cap a 10KB comment
+ * would land in the chat history verbatim. Mirrors the bounded preview
+ * pattern used elsewhere (`THREAD_STATUS_CONSTANTS.MAX_PREVIEW_LENGTH`
+ * = 200 for inbound; 500 here so the file marker + a reasonable comment
+ * tail both fit). PR #562 review follow-up.
+ */
+const UPLOAD_MARKER_CONTENT_MAX = 500;
+
+/**
  * Handle Slack platform errors consistently across endpoints.
  * Returns true if the error was handled (422 sent), false otherwise.
  *
@@ -44,6 +56,122 @@ function handleSlackPlatformError(error: unknown, res: Response): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * Post-Slack-send bookkeeping shared by /send, /upload-image, and /upload-file.
+ *
+ * After a successful Slack write, mirror the side-effects the orchestrator
+ * relies on for restart-safety and request lifecycle:
+ *
+ *  1. Persist a turn to chat-v2 so the agent's context-recovery sees the
+ *     action and does not re-send. The orchestrator was previously re-uploading
+ *     attached files after restart because file uploads landed in Slack but
+ *     never in chat-v2 (regression observed 2026-05-15 — dup `agentic_explainer.mp4`).
+ *  2. Mark the thread-status queue entry as `replied_completed` so
+ *     `recoverPendingThreads()` does not re-fire the inbound on the next boot.
+ *  3. Fire the V3 SLA `markResolvedByThread` cascade so the matching Request
+ *     auto-closes on file-only replies (it already worked for text replies
+ *     via the same hook).
+ *
+ * All three steps are best-effort. The Slack send itself has already
+ * succeeded; failures here are bookkeeping-only and must never throw.
+ *
+ * @param params.channelId - Slack channel the send hit
+ * @param params.threadTs - Optional Slack thread root timestamp
+ * @param params.conversationId - Optional caller-supplied conversation id
+ * @param params.senderSessionName - Optional agent session that initiated the send
+ * @param params.content - The turn content to persist (text or file marker)
+ * @param params.source - Marker for the chat-v2 metadata.source field
+ */
+async function recordSlackReplyBookkeeping(params: {
+  channelId: string;
+  threadTs?: string;
+  conversationId?: string;
+  senderSessionName?: string;
+  content: string;
+  /**
+   * Audit sub-kind for the chat-v2 metadata, recorded alongside the
+   * canonical `source: 'reply-tool'`. Keeps the closed `RECORD_TURN_SOURCES`
+   * enum intact while still letting downstream consumers distinguish text
+   * replies from attachment uploads.
+   */
+  replyKind: 'text' | 'file-upload' | 'image-upload';
+}): Promise<void> {
+  const { channelId, threadTs, conversationId, senderSessionName, content, replyKind } = params;
+
+  // 1. Persist agent turn into chat-v2 so context recovery sees the reply.
+  const resolvedConversationId: string | undefined =
+    (typeof conversationId === 'string' && conversationId.length > 0
+      ? conversationId
+      : undefined) ??
+    (typeof channelId === 'string' && typeof threadTs === 'string'
+      ? synthesizeSlackConversationId(channelId, threadTs)
+      : undefined);
+  if (resolvedConversationId) {
+    try {
+      const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+      const chatV2 = getChatV2Service();
+      const agentSession =
+        typeof senderSessionName === 'string' && senderSessionName.length > 0
+          ? senderSessionName
+          : 'crewly-orc';
+      const channel = chatV2.ensureChannelForLegacyConversation({
+        conversationId: resolvedConversationId,
+        agentSession,
+      });
+      chatV2.recordTurn({
+        channelId: channel.id,
+        senderType: 'agent',
+        senderId: agentSession,
+        content,
+        metadata: {
+          source: 'reply-tool',
+          replyKind,
+          // Mirror the pre-PR /send guards exactly. `req.body` destructure
+          // is `any`, so a non-string slip-through would persist as-is into
+          // chat-v2 metadata without these `typeof` checks.
+          slackChannelId: typeof channelId === 'string' ? channelId : undefined,
+          slackThreadTs: typeof threadTs === 'string' ? threadTs : undefined,
+        },
+      });
+    } catch {
+      // Non-fatal — Slack delivery succeeded.
+    }
+  }
+
+  // 2. Mark thread-status replied_completed (idempotent — creates entry if missing).
+  if (threadTs && channelId) {
+    try {
+      const { ThreadStatusQueueService } = await import('../../services/messaging/thread-status-queue.service.js');
+      const tsq = ThreadStatusQueueService.getInstance();
+      const threadKey = `${channelId}:${threadTs}`;
+      if (!tsq.get(threadKey)) {
+        tsq.trackInbound({
+          threadKey,
+          conversationId: resolvedConversationId ?? synthesizeSlackConversationId(channelId, threadTs),
+          source: 'slack',
+          messagePreview: '[reply-only — no inbound recorded]',
+        });
+      }
+      tsq.markReplied(threadKey, 'replied_completed');
+    } catch {
+      // Non-fatal.
+    }
+  }
+
+  // 3. SLA cascade — closes the matching Request when orc replies in-thread.
+  if (threadTs) {
+    try {
+      const { getRequestSlaSubscriber } = await import('../../services/v3/request-sla.subscriber.js');
+      const sub = getRequestSlaSubscriber();
+      if (sub) {
+        await sub.markResolvedByThread(threadTs);
+      }
+    } catch {
+      // Non-fatal.
+    }
+  }
 }
 
 /**
@@ -237,128 +365,17 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       /* observability is best-effort */
     }
 
-    // Persist orchestrator/agent replies to the chat store so they appear
-    // in the Chat UI. Phase 6c of unified-chat-message-store spec: the
-    // call site now invokes the canonical `ChatV2Service.recordTurn`
-    // directly (the legacy `ChatService.addDirectMessage` façade has
-    // been retired).
-    //
-    // 2026-05-15 follow-up: the reply-slack skill only sends
-    // `{channelId, text, threadTs}` (no `conversationId`), so an
-    // earlier `if (conversationId)` guard silently dropped every
-    // tool-driven reply on the floor. Synthesize a conversationId
-    // from `channelId + threadTs` using the same format the inbound
-    // bridge writes (`slack-${channelId}-${threadTs}`) so the agent
-    // reply and the user inbound land on the same chat-v2 channel.
-    const resolvedConversationId: string | undefined =
-      (typeof conversationId === 'string' && conversationId.length > 0
-        ? conversationId
-        : undefined) ??
-      (typeof channelId === 'string' && typeof threadTs === 'string'
-        ? synthesizeSlackConversationId(channelId, threadTs)
-        : undefined);
-    if (resolvedConversationId) {
-      try {
-        const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
-        const chatV2 = getChatV2Service();
-        const agentSession =
-          typeof senderSessionName === 'string' && senderSessionName.length > 0
-            ? senderSessionName
-            : 'crewly-orc';
-        const channel = chatV2.ensureChannelForLegacyConversation({
-          conversationId: resolvedConversationId,
-          agentSession,
-        });
-        chatV2.recordTurn({
-          channelId: channel.id,
-          senderType: 'agent',
-          senderId: agentSession,
-          content: typeof text === 'string' ? text : String(text),
-          metadata: {
-            source: 'reply-tool',
-            slackChannelId: typeof channelId === 'string' ? channelId : undefined,
-            slackThreadTs: typeof threadTs === 'string' ? threadTs : undefined,
-          },
-        });
-      } catch {
-        // Non-fatal — Slack delivery succeeded, chat persistence is best-effort
-      }
-    }
-
-    // Mark the thread as replied_completed in the thread-status queue.
-    //
-    // Bug from 2026-05-08 dogfood: every backend restart re-enqueued the
-    // user's original Slack message via the
-    // `ThreadStatusQueueService.recoverPendingThreads` → message-queue
-    // `[RECOVERY]` path. orc would then "re-reply" to the same message
-    // multiple times after each restart, even though the user only sent
-    // one message and orc had already replied.
-    //
-    // Root cause: when orc invoked `reply-slack` skill → `POST /slack/send`,
-    // we sent to Slack + persisted to chat, but we never updated the
-    // thread-status entry. The entry stayed in `received` (or
-    // `replied_waiting_actions`) status, so the recovery loop on the
-    // next boot considered it unreplied and re-fired it.
-    //
-    // Fix: mark the thread as `replied_completed` here, atomically with
-    // the actual Slack send. Now the next restart sees a terminal status
-    // and skips re-enqueue.
-    //
-    // Why `replied_completed` and not `replied_to_follow_up`: orc has
-    // produced its user-facing acknowledgement; whatever async work
-    // continues downstream (Request → WIs → workers) is tracked by the
-    // pool, not by the thread-status queue. Conflating "user got a reply"
-    // with "all downstream work resolved" was the original architectural
-    // mistake — they belong in different queues.
-    //
-    // Best-effort: if the threadKey isn't tracked yet (rare race where
-    // the trackInbound call hasn't landed) or the markReplied throws,
-    // we log and continue — Slack delivery is the primary success
-    // criterion, thread-status is bookkeeping.
-    if (threadTs && channelId) {
-      try {
-        const { ThreadStatusQueueService } = await import('../../services/messaging/thread-status-queue.service.js');
-        const tsq = ThreadStatusQueueService.getInstance();
-        const threadKey = `${channelId}:${threadTs}`;
-        // Create the entry if it isn't tracked yet, then mark replied.
-        // The trackInbound is idempotent — if the entry exists, this is
-        // a no-op via `get(threadKey)` short-circuit.
-        if (!tsq.get(threadKey)) {
-          tsq.trackInbound({
-            threadKey,
-            conversationId: conversationId || synthesizeSlackConversationId(channelId, threadTs),
-            source: 'slack',
-            messagePreview: '[reply-only — no inbound recorded]',
-          });
-        }
-        tsq.markReplied(threadKey, 'replied_completed');
-      } catch {
-        // Non-fatal — Slack delivery succeeded, thread bookkeeping is best-effort
-      }
-    }
-
-    // 2026-05-12 dogfood: notify the V3 SLA tracker that this thread
-    // got a real orc reply. Without this hook, fixing the bridge's
-    // delivery-ack callback to no longer fire `fromOrcReply=true` (the
-    // 5-of-7-false-done bug) would leave Requests with no path at all
-    // to terminal — the respond_to_user WI would sit in `queued`
-    // forever after orc replies via this endpoint. Real orc replies
-    // come through here (reply-slack skill posts to /slack/send), so
-    // this is the right place to trigger the cascade.
-    //
-    // Best-effort: lazy import + try/catch so a subscriber-boot failure
-    // can never break the actual Slack reply.
-    if (threadTs) {
-      try {
-        const { getRequestSlaSubscriber } = await import('../../services/v3/request-sla.subscriber.js');
-        const sub = getRequestSlaSubscriber();
-        if (sub) {
-          await sub.markResolvedByThread(threadTs);
-        }
-      } catch {
-        // Slack delivery already succeeded; SLA hook is bookkeeping.
-      }
-    }
+    // Post-send bookkeeping (chat-v2 persist + thread-status terminal mark +
+    // SLA cascade). The same helper is used by /upload-image and /upload-file
+    // so the orchestrator never has to re-derive "did I already reply here?".
+    await recordSlackReplyBookkeeping({
+      channelId,
+      threadTs,
+      conversationId,
+      senderSessionName,
+      content: typeof text === 'string' ? text : String(text),
+      replyKind: 'text',
+    });
 
     res.json({
       success: true,
@@ -431,7 +448,7 @@ router.post('/notify', async (req: Request, res: Response, next: NextFunction) =
  */
 router.post('/upload-image', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { channelId, filePath, filename, title, initialComment, threadTs } = req.body;
+    const { channelId, filePath, filename, title, initialComment, threadTs, conversationId, senderSessionName } = req.body;
 
     if (!channelId || !filePath) {
       res.status(400).json({
@@ -500,6 +517,41 @@ router.post('/upload-image', async (req: Request, res: Response, next: NextFunct
       threadTs,
     });
 
+    // F14 observability parity with /send — record `agent.action` so
+    // dashboards counting `send_slack` include attachment uploads.
+    // `details.kind` discriminates text vs file vs image when finer-
+    // grained queries are needed.
+    try {
+      getAgentBehaviorLogService()?.record({
+        type: 'agent.action',
+        agent: typeof senderSessionName === 'string' ? senderSessionName : '',
+        actionType: 'send_slack',
+        details: {
+          kind: 'image',
+          channelId,
+          threadTs: threadTs ?? null,
+          fileId: result.fileId ?? null,
+          fileSize: stat.size,
+        },
+      });
+    } catch {
+      /* observability is best-effort */
+    }
+
+    // Mirror /send post-success bookkeeping so orc's context recovery sees
+    // the image was already delivered. Content captures the file marker so
+    // the chat history shows what was actually sent.
+    const displayName = typeof filename === 'string' && filename.length > 0 ? filename : path.basename(filePath);
+    const commentSuffix = typeof initialComment === 'string' && initialComment.length > 0 ? `: ${initialComment}` : '';
+    await recordSlackReplyBookkeeping({
+      channelId,
+      threadTs,
+      conversationId,
+      senderSessionName,
+      content: `[image uploaded: ${displayName}]${commentSuffix}`.slice(0, UPLOAD_MARKER_CONTENT_MAX),
+      replyKind: 'image-upload',
+    });
+
     res.json({
       success: true,
       data: { fileId: result.fileId },
@@ -528,7 +580,7 @@ router.post('/upload-image', async (req: Request, res: Response, next: NextFunct
  */
 router.post('/upload-file', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { channelId, filePath, filename, title, initialComment, threadTs } = req.body;
+    const { channelId, filePath, filename, title, initialComment, threadTs, conversationId, senderSessionName } = req.body;
 
     if (!channelId || !filePath) {
       res.status(400).json({
@@ -586,6 +638,39 @@ router.post('/upload-file', async (req: Request, res: Response, next: NextFuncti
       title,
       initialComment,
       threadTs,
+    });
+
+    // F14 observability parity with /send — see /upload-image for the
+    // shared rationale.
+    try {
+      getAgentBehaviorLogService()?.record({
+        type: 'agent.action',
+        agent: typeof senderSessionName === 'string' ? senderSessionName : '',
+        actionType: 'send_slack',
+        details: {
+          kind: 'file',
+          channelId,
+          threadTs: threadTs ?? null,
+          fileId: result.fileId ?? null,
+          fileSize: stat.size,
+        },
+      });
+    } catch {
+      /* observability is best-effort */
+    }
+
+    // Mirror /send post-success bookkeeping. Without this the orchestrator
+    // re-uploads the same file after every restart (regression 2026-05-15:
+    // duplicate agentic_explainer.mp4 in D0AC7NF5N7L:1778816065.309289 thread).
+    const displayName = typeof filename === 'string' && filename.length > 0 ? filename : path.basename(filePath);
+    const commentSuffix = typeof initialComment === 'string' && initialComment.length > 0 ? `: ${initialComment}` : '';
+    await recordSlackReplyBookkeeping({
+      channelId,
+      threadTs,
+      conversationId,
+      senderSessionName,
+      content: `[file uploaded: ${displayName}]${commentSuffix}`.slice(0, UPLOAD_MARKER_CONTENT_MAX),
+      replyKind: 'file-upload',
     });
 
     res.json({

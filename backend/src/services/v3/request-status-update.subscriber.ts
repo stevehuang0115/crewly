@@ -44,6 +44,7 @@ import type { Request, RequestStatus } from '../../types/v2/request.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { TERMINAL_WORK_ITEM_STATUSES } from '../../types/v2/work-item.types.js';
 import { TERMINAL_REQUEST_STATUSES, isValidRequestTransition } from '../../types/v2/index.js';
+import { extractSlackChannelId, extractSlackThreadTs } from './request-sla.subscriber.js';
 
 /**
  * WorkItem statuses that count as "terminal" for the heartbeat's
@@ -211,19 +212,22 @@ export function computeStateFingerprint(childWIs: WorkItem[]): string {
 }
 
 export function parseSlackThreadContext(scid: string | undefined): ParsedSlackContext | null {
-  if (!scid || !scid.startsWith('slack-')) return null;
-  // 2026-05-13 dogfood fix: Slack thread-reply Requests use the
-  // `slack-{channelId}-{threadRoot}-msg-{messageTs}` encoding so that
-  // the SLA threadIndex keys on the actual thread root (which is what
-  // orc replies to via reply-slack). Strip the trailing `-msg-{ts}`
-  // before extracting threadTs so both shapes parse to the thread root.
-  // Top-level messages (`slack-{channelId}-{ts}`) are unaffected — the
-  // strip is a no-op on those.
-  const stripped = scid.replace(/-msg-\d+\.\d+$/, '');
-  const m = stripped.match(/^slack-(.+)-(\d+)[.-](\d+)$/);
-  if (!m) return null;
-  const [, channelId, ts1, ts2] = m;
-  return { channelId, threadTs: `${ts1}.${ts2}` };
+  // Delegate to the canonical helpers in `request-sla.subscriber`. They
+  // already handle both the top-level `slack-{ch}-{ts}` and the
+  // thread-reply `slack-{ch}-{root}-msg-{msgTs}` shapes (suffix-strip)
+  // and reject anything that isn't dot-decimal. Keeping a separate inline
+  // regex here was a maintenance hazard — PR #562 review.
+  //
+  // Behavior change vs the prior inline regex: hyphen-between-digits
+  // ts form (e.g. `slack-CH-1707000000-123456`) is no longer accepted.
+  // No production producer emits that shape (verified across the
+  // codebase — slack-orchestrator-bridge always interpolates the
+  // Slack-API-supplied dotted-decimal ts), so this strictly removes
+  // dead defense.
+  const channelId = extractSlackChannelId(scid);
+  const threadTs = extractSlackThreadTs(scid);
+  if (!channelId || !threadTs) return null;
+  return { channelId, threadTs };
 }
 
 export class RequestStatusUpdateSubscriber {

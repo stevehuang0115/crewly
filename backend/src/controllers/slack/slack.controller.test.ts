@@ -595,6 +595,196 @@ describe('Slack Controller', () => {
         await fs.unlink(tmpFile).catch(() => {});
       }
     });
+
+    // Regression: 2026-05-15 — duplicate `agentic_explainer.mp4` posted by
+    // orchestrator after every backend restart. Root cause: /upload-file
+    // wrote to Slack but never persisted a chat-v2 turn / marked the
+    // thread-status terminal, so on context recovery orc concluded the
+    // file had not been sent and re-uploaded it.
+    it('marks thread-status replied_completed + records chat-v2 turn after successful upload', async () => {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const os = await import('os');
+      const tmpFile = path.join(os.tmpdir(), 'test-upload-bookkeeping.pdf');
+      await fs.writeFile(tmpFile, 'fake pdf');
+
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'uploadFile').mockResolvedValue({ fileId: 'F-BOOK' });
+
+      mockChatV2EnsureChannel.mockClear();
+      mockChatV2RecordTurn.mockClear();
+
+      const channelId = 'CUPLOAD-1';
+      const threadTs = '1800.upload-1';
+
+      try {
+        await request(app).post('/api/slack/upload-file').send({
+          channelId,
+          filePath: tmpFile,
+          filename: 'agentic_explainer.mp4',
+          initialComment: 'here is the file',
+          threadTs,
+        });
+      } finally {
+        await fs.unlink(tmpFile).catch(() => {});
+      }
+
+      // chat-v2 turn was recorded so orc's context recovery can see the upload.
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      const turnCall = mockChatV2RecordTurn.mock.calls[0][0];
+      expect(turnCall.content).toContain('agentic_explainer.mp4');
+      expect(turnCall.metadata.source).toBe('reply-tool');
+      expect(turnCall.metadata.replyKind).toBe('file-upload');
+      expect(turnCall.metadata.slackChannelId).toBe(channelId);
+      expect(turnCall.metadata.slackThreadTs).toBe(threadTs);
+
+      // thread-status is terminal so recoverPendingThreads() skips it.
+      const { ThreadStatusQueueService } = await import(
+        '../../services/messaging/thread-status-queue.service.js'
+      );
+      const tsq = ThreadStatusQueueService.getInstance();
+      const entry = tsq.get(`${channelId}:${threadTs}`);
+      expect(entry?.status).toBe('replied_completed');
+      expect(entry?.repliedAt).toBeDefined();
+    });
+
+    // PR #562 review: `initialComment` is caller-controlled and unbounded.
+    // Without a cap, a pathological 10KB comment would land in chat-v2
+    // verbatim. The controller slices to UPLOAD_MARKER_CONTENT_MAX (500).
+    it('caps chat-v2 content at 500 chars when initialComment is pathologically long', async () => {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const os = await import('os');
+      const tmpFile = path.join(os.tmpdir(), 'test-upload-long-comment.pdf');
+      await fs.writeFile(tmpFile, 'fake pdf');
+
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'uploadFile').mockResolvedValue({ fileId: 'F-LONG' });
+
+      mockChatV2EnsureChannel.mockClear();
+      mockChatV2RecordTurn.mockClear();
+
+      const longComment = 'x'.repeat(10000);
+
+      try {
+        await request(app).post('/api/slack/upload-file').send({
+          channelId: 'CCAP-1',
+          filePath: tmpFile,
+          filename: 'big.pdf',
+          initialComment: longComment,
+          threadTs: '1800.cap-1',
+        });
+      } finally {
+        await fs.unlink(tmpFile).catch(() => {});
+      }
+
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      const turnCall = mockChatV2RecordTurn.mock.calls[0][0];
+      expect(turnCall.content.length).toBeLessThanOrEqual(500);
+      expect(turnCall.content.startsWith('[file uploaded: big.pdf]')).toBe(true);
+    });
+
+    it('skips bookkeeping when threadTs is absent (no thread to mark)', async () => {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const os = await import('os');
+      const tmpFile = path.join(os.tmpdir(), 'test-upload-no-thread.pdf');
+      await fs.writeFile(tmpFile, 'fake pdf');
+
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'uploadFile').mockResolvedValue({ fileId: 'F-NT' });
+
+      mockChatV2EnsureChannel.mockClear();
+      mockChatV2RecordTurn.mockClear();
+
+      // Spy on the SLA cascade to verify it does NOT fire without threadTs.
+      // The earlier version of this test only asserted recordTurn — which
+      // would silently pass even if the helper crashed mid-flight (all three
+      // bookkeeping steps are wrapped in try/catch). These extra spies pin
+      // the negative behavior explicitly.
+      const slaModule = await import('../../services/v3/request-sla.subscriber.js');
+      const slaSpy = jest.spyOn(slaModule, 'getRequestSlaSubscriber');
+
+      try {
+        const response = await request(app).post('/api/slack/upload-file').send({
+          channelId: 'C-NOTHREAD',
+          filePath: tmpFile,
+        });
+        expect(response.status).toBe(200);
+        expect(response.body.data.fileId).toBe('F-NT');
+      } finally {
+        await fs.unlink(tmpFile).catch(() => {});
+      }
+
+      // No threadTs →
+      //   1. No conversationId synthesis path → no chat-v2 turn recorded.
+      //   2. Thread-status branch is gated on threadTs → no markReplied call
+      //      (we cannot directly assert that without leaking through the
+      //      singleton, but verifying tsq has no `C-NOTHREAD:*` entry is a
+      //      sufficient proxy because trackInbound would have left one).
+      //   3. SLA cascade is gated on threadTs → getRequestSlaSubscriber is
+      //      never invoked.
+      expect(mockChatV2RecordTurn).not.toHaveBeenCalled();
+      expect(slaSpy).not.toHaveBeenCalled();
+
+      const { ThreadStatusQueueService } = await import(
+        '../../services/messaging/thread-status-queue.service.js'
+      );
+      const tsq = ThreadStatusQueueService.getInstance();
+      // Any threadKey starting with `C-NOTHREAD:` would have been created
+      // by trackInbound. There should be none.
+      const allEntries = tsq.getPendingThreads().concat(tsq.getByStatus('replied_completed'));
+      expect(allEntries.find((e) => e.threadKey.startsWith('C-NOTHREAD'))).toBeUndefined();
+
+      slaSpy.mockRestore();
+    });
+  });
+
+  describe('POST /api/slack/upload-image — bookkeeping parity', () => {
+    it('marks thread-status replied_completed + records chat-v2 turn after successful upload', async () => {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const os = await import('os');
+      const tmpFile = path.join(os.tmpdir(), 'test-upload-image-bookkeeping.png');
+      await fs.writeFile(tmpFile, 'fake png');
+
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'uploadImage').mockResolvedValue({ fileId: 'F-IMG' });
+
+      mockChatV2EnsureChannel.mockClear();
+      mockChatV2RecordTurn.mockClear();
+
+      const channelId = 'CIMG-1';
+      const threadTs = '1800.image-1';
+
+      try {
+        await request(app).post('/api/slack/upload-image').send({
+          channelId,
+          filePath: tmpFile,
+          filename: 'preview.png',
+          threadTs,
+        });
+      } finally {
+        await fs.unlink(tmpFile).catch(() => {});
+      }
+
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      const turnCall = mockChatV2RecordTurn.mock.calls[0][0];
+      expect(turnCall.content).toContain('preview.png');
+      expect(turnCall.metadata.source).toBe('reply-tool');
+      expect(turnCall.metadata.replyKind).toBe('image-upload');
+
+      const { ThreadStatusQueueService } = await import(
+        '../../services/messaging/thread-status-queue.service.js'
+      );
+      const tsq = ThreadStatusQueueService.getInstance();
+      const entry = tsq.get(`${channelId}:${threadTs}`);
+      expect(entry?.status).toBe('replied_completed');
+    });
   });
 
   describe('GET /api/slack/config', () => {
@@ -694,6 +884,40 @@ describe('Slack Controller', () => {
       // inbound bridge (`persistSlackInbound`).
       const synthesized = `slack-${channelId}-${String(threadTs).replace('.', '-')}`;
       expect(synthesized).toBe('slack-D0AC7NF5N7L-1777760999-956969');
+    });
+
+    // Positive regression gate: the bookkeeping-helper refactor in
+    // PR #562 collapsed /send's inline chat-v2 + thread-status + SLA
+    // blocks into a shared `recordSlackReplyBookkeeping` call. The
+    // existing tests only verify the helper fires for uploads or that
+    // the dual-write is SKIPPED on error paths — neither catches a
+    // future regression where the helper is removed from /send or its
+    // metadata shape changes. Lock in the happy-path shape here.
+    it('records a chat-v2 turn with replyKind=text after a successful send', async () => {
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1707.send-1');
+
+      const channelId = 'CSEND-1';
+      const threadTs = '1707.thread-send-1';
+      const text = 'orc text reply';
+
+      await request(app).post('/api/slack/send').send({
+        channelId,
+        text,
+        threadTs,
+        senderSessionName: 'crewly-orc',
+      });
+
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      const turnCall = mockChatV2RecordTurn.mock.calls[0][0];
+      expect(turnCall.senderType).toBe('agent');
+      expect(turnCall.senderId).toBe('crewly-orc');
+      expect(turnCall.content).toBe(text);
+      expect(turnCall.metadata.source).toBe('reply-tool');
+      expect(turnCall.metadata.replyKind).toBe('text');
+      expect(turnCall.metadata.slackChannelId).toBe(channelId);
+      expect(turnCall.metadata.slackThreadTs).toBe(threadTs);
     });
   });
 });
