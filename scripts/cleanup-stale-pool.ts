@@ -49,13 +49,28 @@
  * @module scripts/cleanup-stale-pool
  */
 
-import {
+// Issue #478: the lib's named exports are bundled inside `default` when
+// tsx transpiles for this `"type": "module"` package — Node's strict ESM
+// loader then refuses any named-import specifier (the symptom was
+// SyntaxError "does not provide an export named 'DEFAULT_KEEP_IDS'").
+// Workaround: import the namespace as default, then destructure at
+// runtime. Types come from a separate `import type` line, which tsc /
+// tsx erases entirely so the runtime resolution is unaffected.
+import libDefault from '../backend/src/scripts/cleanup-stale-pool.lib.js';
+import type {
+  CleanupClassification,
+  MinimalWorkItem,
+} from '../backend/src/scripts/cleanup-stale-pool.lib.js';
+
+const {
   classifyPoolForCleanup,
   DEFAULT_KEEP_IDS,
   DEFAULT_KEEP_PARENT_REQUEST_IDS,
-  type CleanupClassification,
-  type MinimalWorkItem,
-} from '../backend/src/scripts/cleanup-stale-pool.lib.js';
+} = libDefault as unknown as {
+  classifyPoolForCleanup: typeof import('../backend/src/scripts/cleanup-stale-pool.lib.js').classifyPoolForCleanup;
+  DEFAULT_KEEP_IDS: typeof import('../backend/src/scripts/cleanup-stale-pool.lib.js').DEFAULT_KEEP_IDS;
+  DEFAULT_KEEP_PARENT_REQUEST_IDS: typeof import('../backend/src/scripts/cleanup-stale-pool.lib.js').DEFAULT_KEEP_PARENT_REQUEST_IDS;
+};
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8787';
 const STALE_CUTOFF = process.env.STALE_CUTOFF || '2026-05-06T00:00:00Z';
