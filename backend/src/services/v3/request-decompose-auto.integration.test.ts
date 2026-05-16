@@ -207,6 +207,57 @@ describe('Request auto-decompose pipeline (Option C subscriber, end-to-end)', ()
   // Acceptance criteria #1 — POST creates Request with WorkItems within 5s
   // -------------------------------------------------------------------------
 
+  // Issue #565 regression gate. The decompose subscriber's
+  // `shouldDecompose` previously rejected any Request whose
+  // `workItemIds.length > 0` — including the housekeeping
+  // `:respond_to_user` WI seeded synchronously by the SLA subscriber
+  // for inbound-Slack Requests. Every L2 inbound-Slack Request thus
+  // silently skipped decomposition. PR-B (#566) tried to add this test
+  // and discovered the bug; the fix here filters housekeeping WIs out
+  // of the gate.
+  it('co-existence: an L2 inbound-Slack Request produces SLA respond_to_user + ≥1 decomposition WI', async () => {
+    const created = await fx.requestService.create({
+      title: 'Build feature X for SLA co-existence test',
+      description: 'Build a comprehensive feature with auth, persistence, and end-to-end tests',
+      sourceConversationItemId: 'slack-CCOEX565-1.000001',
+      priority: 'normal',
+      // `tags: ['slack']` is what the SLA subscriber gates on for
+      // seeding the respond_to_user WI.
+      tags: ['slack'],
+      intentLevel: 'L2' as IntentLevel,
+      intentCategory: 'code_change' as IntentCategory,
+    });
+
+    // Loop multiple flush rounds — both subscribers may schedule more
+    // work in response to each other's events.
+    for (let i = 0; i < 5; i++) {
+      await fx.decomposeSubscriber.flushPending();
+      await fx.slaSubscriber.flushPending();
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    // Confirm decompose actually ran. If this fails, the bug isn't the
+    // SLA-WI gate — it's something earlier in the subscriber chain.
+    const decomposed = fx.decomposeSubscriber.getDecomposedRequestIdsSnapshot();
+    expect(decomposed.has(created.id)).toBe(true);
+
+    const refreshed = await fx.requestService.getById(created.id);
+    expect(refreshed).not.toBeNull();
+
+    // ≥2 decomposition WIs must exist — proves BOTH root causes are fixed:
+    //   1. shouldDecompose's housekeeping-WI filter (SLA's :respond_to_user
+    //      WI no longer falsely trips the "already decomposed" gate).
+    //   2. EventBus type+sessionName dedup no longer collapses N workitem:
+    //      queued events to 1 for system-level events (sessionName='').
+    //      Pre-fix the second WI's event was silently dropped.
+    // The plan() heuristic returns ≥3 tasks for the build-style description
+    // used here, so requiring ≥2 in workItemIds is a tighter gate that
+    // catches dedup regressions specifically.
+    const slaWiId = `request:${created.id}:respond_to_user`;
+    const decompositionWis = refreshed!.workItemIds.filter((id) => id !== slaWiId);
+    expect(decompositionWis.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('an L2 code_change Request lands with WorkItems linked end-to-end', async () => {
     const created = await fx.requestService.create({
       title: 'Build a feature for X',

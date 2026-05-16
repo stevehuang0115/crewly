@@ -218,21 +218,33 @@ export class EventBusService extends EventEmitter {
    * @param event - The agent lifecycle event to publish
    */
   publish(event: AgentEvent): void {
+    const nowMs = Date.now();
+
     // Dedup: ignore duplicate events for the same (type, sessionName) within
     // the debounce window. This prevents redundant notifications when both
     // the file watcher and ActivityMonitor detect the same status transition.
-    const dedupKey = `${event.type}:${event.sessionName}`;
-    const nowMs = Date.now();
-    const lastPublished = this.recentPublishMap.get(dedupKey);
-    if (lastPublished && nowMs - lastPublished < EVENT_BUS_CONSTANTS.EVENT_DEBOUNCE_WINDOW_MS) {
-      this.logger.debug('Duplicate event suppressed within debounce window', {
-        type: event.type,
-        sessionName: event.sessionName,
-        msSinceLast: nowMs - lastPublished,
-      });
-      return;
+    //
+    // Issue #565: system-level events (sessionName === '') — `workitem:queued`,
+    // `task:done_by_worker`, etc. — are distinct work items, not duplicate
+    // observations of the same agent state. Collapsing them under a single
+    // `${type}:` dedup key drops every event after the first within 5s, so
+    // decomposition fan-outs lost N-1 of N `workitem:queued` events and the
+    // `linkWorkItem` cascade never fired for those WIs. Skip dedup when
+    // sessionName is empty — the publisher's event.id already encodes
+    // uniqueness for these (e.g. `workitem:queued:${workItemId}`).
+    if (event.sessionName !== '') {
+      const dedupKey = `${event.type}:${event.sessionName}`;
+      const lastPublished = this.recentPublishMap.get(dedupKey);
+      if (lastPublished && nowMs - lastPublished < EVENT_BUS_CONSTANTS.EVENT_DEBOUNCE_WINDOW_MS) {
+        this.logger.debug('Duplicate event suppressed within debounce window', {
+          type: event.type,
+          sessionName: event.sessionName,
+          msSinceLast: nowMs - lastPublished,
+        });
+        return;
+      }
+      this.recentPublishMap.set(dedupKey, nowMs);
     }
-    this.recentPublishMap.set(dedupKey, nowMs);
 
     // Clean up old entries periodically (keep map small)
     if (this.recentPublishMap.size > EVENT_BUS_CONSTANTS.DEDUP_MAP_CLEANUP_THRESHOLD) {

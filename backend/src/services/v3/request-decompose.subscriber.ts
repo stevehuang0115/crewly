@@ -87,6 +87,7 @@ import type { Request, IntentCategory } from '../../types/v2/request.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { createWorkItem } from '../../types/v2/work-item.types.js';
 import type { PlannedTask } from './v3-data.service.js';
+import { SLA_TRACKER_ID_PATTERN } from './workitem-dispatch.subscriber.js';
 
 // ---------------------------------------------------------------------------
 // Filter rules
@@ -463,10 +464,27 @@ export class RequestDecomposeSubscriber {
     // Request manually. Don't double-add. The check is on the persisted
     // workItemIds (cross-process safe) — distinct from the in-memory
     // decomposedRequestIds dedupe (within-process redelivery).
-    if (request.workItemIds.length > 0) {
-      this.logger.debug('skip auto-decompose — Request already has linked WorkItems', {
+    //
+    // Issue #565: filter out the SLA-side `:respond_to_user` WI before
+    // counting. That WI is created by `RequestSlaSubscriber` for every
+    // inbound-Slack Request and lands in `workItemIds` BEFORE this
+    // handler runs. Treating it as evidence of "already decomposed"
+    // made every L2 inbound-Slack Request silently skip auto-decompose
+    // — confirmed in production via PR-B test (closed as #566). The
+    // gate now counts only non-housekeeping WIs.
+    //
+    // Use the canonical `SLA_TRACKER_ID_PATTERN` regex (exported by
+    // `workitem-dispatch.subscriber`) rather than a `endsWith` check so
+    // a user-named WI like `foo:respond_to_user` can't accidentally
+    // match the filter.
+    const decompositionWiCount = request.workItemIds.filter(
+      (id) => !SLA_TRACKER_ID_PATTERN.test(id),
+    ).length;
+    if (decompositionWiCount > 0) {
+      this.logger.debug('skip auto-decompose — Request already has linked decomposition WorkItems', {
         requestId: request.id,
-        existingCount: request.workItemIds.length,
+        decompositionWiCount,
+        totalWiCount: request.workItemIds.length,
       });
       return false;
     }
