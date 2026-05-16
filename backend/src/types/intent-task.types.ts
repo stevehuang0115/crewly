@@ -19,30 +19,17 @@
 // =============================================================================
 
 /**
- * Intent complexity levels:
- * - L0: Simple query — single agent, no tool calls (e.g., "what time is it?")
- * - L1: Standard task — single agent, may use tools (e.g., "fix this bug")
- * - L2: Complex task — multi-agent, multi-step orchestration (e.g., "build a feature")
- * - L3: OKR/sprint-scoped initiative — multi-day, multi-PR, multi-team. ORC owns
- *   the plan personally; success measured against KR/sprint gate, not artifact.
- *   Routed identically to L2 in v0 (Mia §5 Q1 default); the label is preserved so
- *   the L3-specific routing-split can land without retro-classifying.
+ * Intent classification types are owned by `v2/request.types.ts` — it's
+ * the domain-shape file and `IntentLevel` / `IntentCategory` are properties
+ * of `Request`. Re-exported here so existing import paths from this module
+ * keep working. Issue #474.
+ *
+ * Imported locally below because subsequent type declarations in this
+ * module reference these aliases; `export type {}` alone only re-exports
+ * and doesn't bring the names into local scope.
  */
-export type IntentLevel = 'L0' | 'L1' | 'L2' | 'L3';
-
-/**
- * Intent classification labels for categorizing user requests
- */
-export type IntentCategory =
-  | 'query'
-  | 'code_change'
-  | 'debugging'
-  | 'deployment'
-  | 'research'
-  | 'review'
-  | 'planning'
-  | 'communication'
-  | 'other';
+import type { IntentLevel, IntentCategory } from './v2/request.types.js';
+export type { IntentLevel, IntentCategory };
 
 // =============================================================================
 // Task Status
@@ -535,7 +522,10 @@ export function isActionableIntent(text: string): boolean {
 export function classifyIntentLevel(intent: string): IntentLevel {
   const lower = intent.toLowerCase();
   const wordCount = intent.split(/\s+/).filter(Boolean).length;
-  const charCount = intent.length;
+  // Issue #473: trim before measuring so leading/trailing whitespace
+  // doesn't trip the §2.7 length floor. The wordCount axis is already
+  // trim-equivalent via `.filter(Boolean)` — charCount should match.
+  const charCount = intent.trim().length;
 
   // ---------------------------------------------------------------------
   // L0 — read-only / status / lookup (no state change).

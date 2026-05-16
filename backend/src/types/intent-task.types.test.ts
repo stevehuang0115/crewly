@@ -163,6 +163,23 @@ describe('classifyIntentLevel', () => {
     const longIntent = Array(40).fill('word').join(' ');
     expect(classifyIntentLevel(longIntent)).toBe('L2');
   });
+
+  // Issue #473: charCount must be measured AFTER trim so leading/trailing
+  // whitespace doesn't falsely trip the §2.7 length floor for L2.
+  it('measures char count on the trimmed string (whitespace must not count toward the L2 length floor)', () => {
+    // Body that is intentionally short enough (sub-80 chars) to fall BELOW
+    // the L2 §2.7 length-floor escalation. Should classify as L1.
+    const body = 'Fix the login bug in auth service';
+    expect(body.length).toBeLessThan(80);
+    expect(classifyIntentLevel(body)).toBe('L1');
+
+    // Same body padded with leading + trailing whitespace pushing the raw
+    // length over 80. With trimming, the meaningful content is unchanged
+    // and the classification must stay L1.
+    const padded = '   '.repeat(20) + body + '   '.repeat(20);
+    expect(padded.length).toBeGreaterThan(80);
+    expect(classifyIntentLevel(padded)).toBe(classifyIntentLevel(body));
+  });
 });
 
 // =============================================================================
