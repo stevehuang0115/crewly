@@ -355,6 +355,107 @@ describe('CronTaskService', () => {
 			await service.evaluateTasks();
 			expect(executedTasks).toHaveLength(0);
 		});
+
+		// Issue #305 regression gate: an offline agent that auto-start
+		// successfully wakes up must be allowed to receive the cron task
+		// once it reports ready. Previously the executionCallback fired
+		// immediately after the start callback returned, before the agent
+		// had fully booted, and the message was lost.
+		it('waits for agent to become ready after auto-start before executing', async () => {
+			const executedTasks: CronTask[] = [];
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+
+			// Agent starts offline, then becomes online on the 2nd status check.
+			let statusCheckCount = 0;
+			service.setAgentStatusCallback(async () => {
+				statusCheckCount++;
+				return statusCheckCount >= 2;
+			});
+			let startCalled = false;
+			service.setAgentStartCallback(async () => {
+				startCalled = true;
+				return true;
+			});
+
+			setupTeamDirs(['team-a']);
+			const pastTime = new Date(Date.now() - 60000).toISOString();
+			mockReadFile.mockImplementation(async (path: any) => {
+				if (String(path).includes('team-a')) {
+					return JSON.stringify({ tasks: [{
+						id: 'cron-readiness-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+						targetAgent: 'a1', targetTeamId: 'team-a', taskDescription: 'Run',
+						enabled: true, lastRunAt: null, nextRunAt: pastTime,
+						createdBy: 'user', createdAt: '2026-01-01',
+					}] });
+				}
+				throw new Error('ENOENT');
+			});
+
+			await service.evaluateTasks();
+
+			expect(startCalled).toBe(true);
+			expect(executedTasks).toHaveLength(1);
+			expect(executedTasks[0].id).toBe('cron-readiness-1');
+		});
+
+		// Issue #305: when the agent never reports ready within the wait
+		// window, the task must be skipped with `lastSkippedAt` set and
+		// a `lastSkipReason` distinguishable from "never ran" — not
+		// silently dropped.
+		it('skips with lastSkipReason="agent_offline_not_ready" when readiness wait expires', async () => {
+			const executedTasks: CronTask[] = [];
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+
+			// Agent never reports ready, status callback always returns false.
+			service.setAgentStatusCallback(async () => false);
+			service.setAgentStartCallback(async () => true); // kicks off, never becomes ready
+
+			setupTeamDirs(['team-a']);
+			const pastTime = new Date(Date.now() - 60000).toISOString();
+			mockReadFile.mockImplementation(async (path: any) => {
+				if (String(path).includes('team-a')) {
+					return JSON.stringify({ tasks: [{
+						id: 'cron-stuck-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+						targetAgent: 'a1', targetTeamId: 'team-a', taskDescription: 'Run',
+						enabled: true, lastRunAt: null, nextRunAt: pastTime,
+						createdBy: 'user', createdAt: '2026-01-01',
+					}] });
+				}
+				throw new Error('ENOENT');
+			});
+
+			// Patch the timeout to keep the test fast — the real value is 15s.
+			// We rely on the readiness poll loop honoring the deadline; reducing
+			// it via a module-level patch isn't necessary because the test
+			// already exits via the polling loop with status=false repeatedly
+			// until deadline. To keep this test fast, mock setTimeout to no-op
+			// the inter-poll delay and override Date.now to fast-forward.
+			const realNow = Date.now;
+			let fakeNow = realNow();
+			jest.spyOn(Date, 'now').mockImplementation(() => fakeNow);
+			const origSetTimeout = global.setTimeout;
+			(global as any).setTimeout = (cb: () => void) => {
+				fakeNow += 500; // each poll fast-forwards 500ms
+				cb();
+				return 0 as any;
+			};
+
+			try {
+				await service.evaluateTasks();
+			} finally {
+				(global as any).setTimeout = origSetTimeout;
+				(Date.now as jest.Mock).mockRestore();
+			}
+
+			expect(executedTasks).toHaveLength(0);
+			// Confirm the persisted task carries the skip reason.
+			const writeCall = mockWriteFile.mock.calls.find(c => String(c[0]).includes('team-a'));
+			expect(writeCall).toBeDefined();
+			const written = JSON.parse(writeCall![1] as string);
+			expect(written.tasks[0].lastSkippedAt).toBeTruthy();
+			expect(written.tasks[0].lastSkipReason).toBe('agent_offline_not_ready');
+			expect(written.tasks[0].lastRunAt).toBeNull();
+		});
 	});
 
 	describe('migrateGlobalToTeamScoped', () => {

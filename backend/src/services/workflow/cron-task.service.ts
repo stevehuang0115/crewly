@@ -29,6 +29,20 @@ import type {
  */
 const CRON_CHECK_INTERVAL_MS = 60_000;
 
+/**
+ * Issue #305: when a cron task fires against an offline agent, we
+ * kick off auto-start, then poll the agent's online status until it
+ * reports ready or this deadline fires.
+ *
+ * 15s covers a cold tmux + Claude-Code init (~5-10s typically) with
+ * some headroom. Tasks that miss this window are skipped with
+ * `lastSkipReason: 'agent_offline_not_ready'`.
+ */
+const CRON_AUTO_START_READY_TIMEOUT_MS = 15_000;
+
+/** How often to re-check the agent's status during the readiness wait. */
+const CRON_AUTO_START_READY_POLL_MS = 500;
+
 /** Name of the per-team cron task file */
 const CRON_TASKS_FILENAME = 'cron-tasks.json';
 
@@ -732,19 +746,27 @@ export class CronTaskService {
 			}
 		}
 
-		// Auto-start offline agent if callback is available
+		// Auto-start offline agent if callback is available. Issue #305:
+		// the callback returns immediately when it kicks off the registration
+		// flow, but the agent takes a few seconds to actually report
+		// `active` / `started`. Without a readiness wait, the execution
+		// callback fires while the agent is still booting and the message
+		// is lost. We now poll `agentStatusCallback` up to the configured
+		// wait window before proceeding.
+		let skipReason: CronTask['lastSkipReason'] | null = null;
 		if (!agentOnline && this.agentStartCallback) {
 			this.logger.info('Agent offline for cron task, attempting auto-start', {
 				id: task.id,
 				target: task.targetAgent,
 			});
+			let kicked = false;
 			try {
-				const started = await this.agentStartCallback(task.targetAgent, task.targetTeamId);
-				if (started) {
-					agentOnline = true;
-					this.logger.info('Agent auto-started successfully', {
+				kicked = await this.agentStartCallback(task.targetAgent, task.targetTeamId);
+				if (kicked) {
+					this.logger.info('Agent auto-start kicked off, waiting for ready', {
 						id: task.id,
 						target: task.targetAgent,
+						maxWaitMs: CRON_AUTO_START_READY_TIMEOUT_MS,
 					});
 				}
 			} catch (error) {
@@ -753,14 +775,54 @@ export class CronTaskService {
 					target: task.targetAgent,
 					error: error instanceof Error ? error.message : String(error),
 				});
+				skipReason = 'agent_offline_start_failed';
 			}
+
+			if (kicked && this.agentStatusCallback) {
+				// Poll until ready or timeout. The status callback already
+				// treats both `active` and `started` as online (#286).
+				const deadline = Date.now() + CRON_AUTO_START_READY_TIMEOUT_MS;
+				while (Date.now() < deadline) {
+					try {
+						if (await this.agentStatusCallback(task.targetAgent, task.targetTeamId)) {
+							agentOnline = true;
+							break;
+						}
+					} catch {
+						// Transient — keep retrying until deadline.
+					}
+					await new Promise((res) => setTimeout(res, CRON_AUTO_START_READY_POLL_MS));
+				}
+				if (!agentOnline) {
+					skipReason = 'agent_offline_not_ready';
+					this.logger.warn('Agent did not become ready before cron auto-start deadline', {
+						id: task.id,
+						target: task.targetAgent,
+						maxWaitMs: CRON_AUTO_START_READY_TIMEOUT_MS,
+					});
+				} else {
+					this.logger.info('Agent auto-started and ready', {
+						id: task.id,
+						target: task.targetAgent,
+					});
+				}
+			} else if (!kicked && skipReason === null) {
+				skipReason = 'agent_offline_start_failed';
+			}
+		} else if (!agentOnline) {
+			skipReason = 'agent_offline_no_callback';
 		}
 
 		if (!agentOnline) {
 			this.logger.warn('Skipping cron task — agent offline and auto-start unavailable', {
 				id: task.id,
 				target: task.targetAgent,
+				skipReason,
 			});
+			// Mark the skip distinctly from "never ran" so the user can tell
+			// from API surfaces why `lastRunAt` is still null. Issue #305.
+			task.lastSkippedAt = now.toISOString();
+			task.lastSkipReason = skipReason ?? 'agent_offline_no_callback';
 			// Still advance nextRunAt to prevent re-evaluating the same missed slot
 			task.nextRunAt = getNextRunTime(task.cronExpression, task.timezone, now);
 			return true;

@@ -33,6 +33,23 @@ export interface CronTask {
 	lastRunAt: string | null;
 	/** ISO timestamp of next scheduled run */
 	nextRunAt: string | null;
+	/**
+	 * ISO timestamp of the most recent fire-slot that was skipped because
+	 * the target agent was offline AND auto-start could not bring it back
+	 * online within the wait window. Distinct from `lastRunAt: null`
+	 * which means "never ran" — `lastSkippedAt` set + `lastRunAt: null`
+	 * means "tried but couldn't deliver." Issue #305.
+	 */
+	lastSkippedAt?: string | null;
+	/**
+	 * Human-readable reason the last fire-slot was skipped. One of:
+	 *   - `agent_offline_no_callback` — auto-start wasn't configured
+	 *   - `agent_offline_start_failed` — callback threw or returned false
+	 *   - `agent_offline_not_ready` — callback succeeded but agent
+	 *     didn't come online within the wait window
+	 * Issue #305.
+	 */
+	lastSkipReason?: string;
 }
 
 /**
