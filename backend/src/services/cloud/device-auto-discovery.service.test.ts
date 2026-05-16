@@ -452,6 +452,44 @@ describe('DeviceAutoDiscoveryService', () => {
 
 			expect(service.getConsecutiveHeartbeatFailures()).toBe(0);
 		});
+
+		// Issue #296 regression gate: hitting MAX_CONSECUTIVE_HEARTBEAT_FAILURES
+		// previously permanently cleared the heartbeat timer. A transient blip
+		// would freeze `lastHeartbeatAt` in the Cloud registry indefinitely.
+		// The fix removes the hard stop — failures continue at the capped
+		// backoff so heartbeats resume the moment connectivity returns.
+		it('keeps re-arming the timer past MAX_CONSECUTIVE_HEARTBEAT_FAILURES, then recovers on success (#296)', async () => {
+			mockSuccessfulStart();
+			const service = DeviceAutoDiscoveryService.getInstance();
+			await service.start(mockConfig);
+
+			// Fire MAX_CONSECUTIVE_HEARTBEAT_FAILURES + 2 = 12 failures.
+			// After each, advance the (capped) backoff so the next attempt
+			// fires. If the bug were present, attempt 11 would never run
+			// because the timer would have been cleared at attempt 10.
+			for (let i = 0; i < DISCOVERY_CONSTANTS.MAX_CONSECUTIVE_HEARTBEAT_FAILURES + 2; i++) {
+				mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [] }) }); // poll
+				mockFetch.mockResolvedValueOnce({ ok: false, status: 503 }); // heartbeat fails
+				jest.advanceTimersByTime(DISCOVERY_CONSTANTS.BACKOFF_MAX_MS + 200);
+				await flushPromises();
+			}
+
+			expect(service.getConsecutiveHeartbeatFailures()).toBeGreaterThan(
+				DISCOVERY_CONSTANTS.MAX_CONSECUTIVE_HEARTBEAT_FAILURES,
+			);
+			// Direct assertion: timer must still be alive after the threshold.
+			// Pre-fix this was null because `handleHeartbeatFailure` had
+			// `clearTimeout(this.heartbeatTimer); this.heartbeatTimer = null;`.
+			expect((service as unknown as { heartbeatTimer: unknown }).heartbeatTimer).not.toBeNull();
+
+			// Now succeed — counter must reset, proving the timer was still alive.
+			mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ devices: [] }) }); // poll
+			mockFetch.mockResolvedValueOnce({ ok: true }); // heartbeat succeeds
+			jest.advanceTimersByTime(DISCOVERY_CONSTANTS.BACKOFF_MAX_MS + 200);
+			await flushPromises();
+
+			expect(service.getConsecutiveHeartbeatFailures()).toBe(0);
+		});
 	});
 
 	describe('DISCOVERY_CONSTANTS', () => {
