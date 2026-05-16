@@ -184,6 +184,41 @@ export class ChannelStore {
   }
 
   /**
+   * Find the most-recent active DM channel owned by a specific user and
+   * bound to a specific agent session. Used by the `ensureDmChannel`
+   * helper backing the /agents page — the owner-scoped variant is needed
+   * because the `uq_channel_agent_dm_active` unique index was dropped
+   * (see chat-db.ts:380-386), so multiple DM rows for the same agent
+   * can coexist (e.g. created by legacy bridge code with the synthetic
+   * `'system'` owner).
+   *
+   * Ordering matches `listByOwner`: most-recent activity first, so the
+   * caller always lands on the DM the user was last using.
+   *
+   * @param ownerUserId - The user_id that must own the channel
+   * @param agentSession - The agent session id
+   * @returns The most-recent active DM channel row, or null
+   */
+  findActiveDmByOwnerAndAgent(
+    ownerUserId: string,
+    agentSession: string,
+  ): ChatChannelRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT ${CHANNEL_SELECT_COLUMNS}
+         FROM chat_channels
+         WHERE owner_user_id = ?
+           AND agent_session = ?
+           AND archived_at IS NULL
+           AND type = 'dm'
+         ORDER BY COALESCE(last_message_at, created_at) DESC
+         LIMIT 1`,
+      )
+      .get(ownerUserId, agentSession) as ChatChannelRow | undefined;
+    return row ?? null;
+  }
+
+  /**
    * List channels owned by a user.
    *
    * Phase C — extended with `type` + `teamId` filter options so the

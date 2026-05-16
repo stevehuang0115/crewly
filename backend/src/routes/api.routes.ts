@@ -51,6 +51,10 @@ import { createActiveWorkRouter } from '../controllers/active-work/active-work.c
 import { createChatV2Router } from '../controllers/chat-v2/index.js';
 import { getChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
 import { createOssTeamMembershipValidator } from '../services/chat-v2/chat-v2.team-membership.js';
+import {
+  createOssAgentDirectoryProvider,
+  createOssAgentPresenceProvider,
+} from '../services/chat-v2/chat-v2.providers.js';
 
 /**
  * Creates API routes using the new organized controller structure
@@ -199,12 +203,22 @@ export function createApiRoutes(apiController: ApiController): Router {
   // first construction so type='channel' creates are gated by team
   // existence (single-user OSS treats existence === membership; Cloud
   // Portal Phase E swaps in a tenant-aware validator).
+  //
+  // Phase F (/agents page): inject `directory` + `presence` providers so
+  // the new `/agents` + `/presence/:agentId` + `/channels/dm/ensure`
+  // endpoints can resolve real team data and live agent status. Providers
+  // live in `chat-v2.providers.ts` so this wire-up doesn't bloat the
+  // route table or pull controller code into the routes module.
   router.use(
     '/chat',
     createChatV2Router(
       getChatV2Service({
         validateTeamMembership: createOssTeamMembershipValidator(),
       }),
+      {
+        directory: createOssAgentDirectoryProvider(apiController.storageService),
+        presence: createOssAgentPresenceProvider(apiController.storageService),
+      },
     ),
   );
 

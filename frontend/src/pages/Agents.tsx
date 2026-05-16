@@ -1,46 +1,47 @@
 /**
  * Agents page — first-class user ↔ agent direct chat surface.
  *
- * Mounts the shared `@crewly/chat-ui` package, which hosts the same React
- * components used by the Cloud Portal. Keeping the markup here deliberately
- * thin: every chat behavior lives in the shared package so the two surfaces
- * cannot drift.
+ * Renders a left rail of *agents* (discovered via `GET /api/chat/agents`)
+ * rather than channels. Clicking an agent calls
+ * `POST /api/chat/channels/dm/ensure` to find-or-create that agent's DM
+ * channel, then mounts the shared `@crewly/chat-ui` thread + composer on
+ * the resolved channel.
  *
- * The orchestrator-pipe chat at `/chat` is a different product (see
- * `pages/Chat.tsx`); this page is the new Phase 1 Chat namespace
- * (`/api/chat/channels/*`, Sam's tech spec v1.0, §1).
+ * Why agents not channels?
+ *   Channels are an implementation detail — what the user thinks about is
+ *   "which agent am I talking to right now?". The directory rail reads
+ *   directly from the team file so every agent is reachable on first
+ *   page-load, even before any chat has happened.
  *
- * Mode selection:
- *  - `mock` (default, until Sam's backend ships) — exercises the UI + mock
- *    reply loop so we can iterate without waiting on endpoints.
- *  - `real` — wires `HttpChatApiClient` against the current origin; Vite
- *    dev proxy forwards `/api/*` and `/ws/*` to the OSS backend.
- *
- * Switch via `VITE_CHAT_MODE=real npm run dev` or by editing `.env.local`.
+ * Mode selection (kept from prior implementation):
+ *   - `real` (default) — wires `HttpChatApiClient` against the current
+ *     origin; Vite dev proxy forwards `/api/*` and `/ws/*` to the OSS
+ *     backend. Set `VITE_CHAT_MODE=mock` to fall back to the in-memory
+ *     stub when iterating without a backend.
  *
  * @module pages/Agents
  */
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ChatAPIProvider,
-  ChannelList,
   MessageThread,
   MessageInput,
   AgentStatusBadge,
   type Channel,
 } from '@crewly/chat-ui';
+import { AgentDirectory, type DirectoryAgent } from '../components/Chat/AgentDirectory';
 
 /**
  * Resolve the chat-ui provider mode from Vite env at build/dev time.
  *
- * We default to `"mock"` so the page is usable the moment it ships, before
- * Sam's backend endpoints go live. Flip to `"real"` once the first endpoint
- * is up (Day 2 of Week 2).
+ * Defaults to `"real"` so the page is wired to the live backend out of
+ * the box. Set `VITE_CHAT_MODE=mock` in `.env.local` to fall back to the
+ * in-memory stub while iterating on UI bits in isolation.
  */
 function resolveChatMode(): 'mock' | 'real' {
   const raw = (import.meta.env.VITE_CHAT_MODE ?? '').toString().toLowerCase();
-  return raw === 'real' ? 'real' : 'mock';
+  return raw === 'mock' ? 'mock' : 'real';
 }
 
 /**
@@ -71,21 +72,74 @@ function MockModeBanner(): JSX.Element {
     >
       <span className="font-semibold">Mock mode:</span>{' '}
       messages are served from an in-memory stub. Set{' '}
-      <code className="font-mono">VITE_CHAT_MODE=real</code> to hit the
-      live backend once it&apos;s up.
+      <code className="font-mono">VITE_CHAT_MODE=real</code> (default) to hit
+      the live backend.
     </div>
   );
 }
 
 /**
- * Agents page component — 3-pane layout: channel list, message thread,
- * composer. Mirrors the demo app in `packages/chat-ui/demo/App.tsx` so
- * visual regressions in either surface are caught in the other.
+ * POST `/api/chat/channels/dm/ensure` and return the resolved channel.
+ * Throws on any non-2xx so the caller can surface a user-visible error.
+ */
+async function ensureDmChannel(agent: DirectoryAgent): Promise<Channel> {
+  const res = await fetch('/api/chat/channels/dm/ensure', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      agentSession: agent.agentSession,
+      name: agent.name,
+      purpose: `Direct chat with ${agent.name} (${agent.role})`,
+    }),
+  });
+  type EnsureChannelResponse =
+    | { success: true; data: Channel }
+    | { success: false; error: { code: string; message: string } };
+  const body = (await res.json()) as EnsureChannelResponse;
+  if (body.success === false) {
+    throw new Error(`Failed to open chat: ${body.error.message}`);
+  }
+  if (!res.ok) {
+    throw new Error(`Failed to open chat: HTTP ${res.status}`);
+  }
+  return body.data;
+}
+
+/**
+ * Agents page component — 3-pane layout: agent directory, message thread,
+ * composer. The directory replaces the chat-ui ChannelList so the user
+ * sees agents directly (not channels) — a channel is silently created on
+ * the first click.
  */
 export const Agents: React.FC = () => {
   const mode = resolveChatMode();
   const backendURL = mode === 'real' ? resolveBackendURL() : undefined;
   const [active, setActive] = useState<Channel | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const [openingAgentSession, setOpeningAgentSession] = useState<string | null>(
+    null,
+  );
+
+  const handleSelectAgent = useCallback(
+    async (agent: DirectoryAgent) => {
+      setOpenError(null);
+      setOpeningAgentSession(agent.agentSession);
+      try {
+        const channel = await ensureDmChannel(agent);
+        setActive(channel);
+      } catch (err) {
+        setOpenError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setOpeningAgentSession(null);
+      }
+    },
+    [],
+  );
+
+  // Clear the error banner when the user successfully lands on a channel.
+  useEffect(() => {
+    if (active) setOpenError(null);
+  }, [active]);
 
   return (
     <ChatAPIProvider mode={mode} backendURL={backendURL}>
@@ -100,18 +154,27 @@ export const Agents: React.FC = () => {
         </header>
 
         {mode === 'mock' && <MockModeBanner />}
+        {openError && (
+          <div
+            className="mb-3 rounded-md border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-200"
+            role="alert"
+          >
+            {openError}
+          </div>
+        )}
 
         <div className="flex flex-1 overflow-hidden rounded-lg border border-border-dark bg-surface-dark shadow-lg">
-          <ChannelList
-            activeChannelId={active?.id ?? null}
-            onSelectChannel={setActive}
+          <AgentDirectory
+            activeAgentSession={active?.agentSession ?? null}
+            openingAgentSession={openingAgentSession}
+            onSelectAgent={handleSelectAgent}
           />
 
           <main className="flex flex-1 flex-col">
             <div className="flex items-center justify-between border-b border-border-dark px-4 py-3">
               <div className="min-w-0">
                 <h2 className="truncate text-sm font-semibold text-text-primary-dark">
-                  {active?.name ?? 'No channel selected'}
+                  {active?.name ?? 'Select an agent to start chatting'}
                 </h2>
                 {active?.purpose && (
                   <p className="truncate text-xs text-text-secondary-dark">

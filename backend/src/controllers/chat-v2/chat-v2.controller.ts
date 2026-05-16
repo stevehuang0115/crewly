@@ -243,15 +243,94 @@ export interface ChatV2ControllerHandlers {
   archiveChannel: (req: Request, res: Response) => void;
   listMessages: (req: Request, res: Response) => void;
   sendMessage: (req: Request, res: Response) => void | Promise<void>;
+  ensureDmChannel: (req: Request, res: Response) => void;
+  listAgents: (req: Request, res: Response) => void | Promise<void>;
+  getAgentPresence: (req: Request, res: Response) => void | Promise<void>;
+}
+
+/**
+ * Minimal directory entry surfaced by `GET /api/chat/agents`.
+ *
+ * Lives on the wire as-is; the /agents page renders one row per entry,
+ * grouped by team. The fields match the join the controller performs
+ * between {@link IAgentDirectoryProvider} (teams + members) and the
+ * presence provider, with no extra denormalization.
+ */
+export interface ChatAgentDirectoryEntry {
+  /** Member's `sessionName` — the agent's wire id, matches `Channel.agentSession`. */
+  agentSession: string;
+  /** Member display name (e.g. "Leo"). */
+  name: string;
+  /** Member role (e.g. "team-leader"). */
+  role: string;
+  /** Owning team id. */
+  teamId: string;
+  /** Owning team display name. */
+  teamName: string;
+  /** Stored agentStatus from the team file. */
+  agentStatus: string;
+  /** Stored workingStatus from the team file. */
+  workingStatus: string;
+  /** Optional emoji / avatar surfaced by the team file. */
+  avatar?: string;
+}
+
+/**
+ * Minimal storage surface the controller needs to enumerate agents.
+ * Decoupled from `StorageService` so tests can pass a fixture without
+ * spinning up SQLite + the team-file watcher.
+ */
+export interface IAgentDirectoryProvider {
+  /**
+   * Return all teams + members visible to the caller. The controller
+   * filters/flattens; no need to pre-shape the response.
+   */
+  getTeams(): Promise<
+    Array<{
+      id: string;
+      name: string;
+      members: Array<{
+        sessionName: string;
+        name: string;
+        role: string;
+        agentStatus: string;
+        workingStatus: string;
+        avatar?: string;
+      }>;
+    }>
+  >;
+}
+
+/** Wire shape returned by `GET /api/chat/presence/:agentId`. */
+export interface ChatAgentPresenceDTO {
+  agentSession: string;
+  status: 'online' | 'busy' | 'offline' | 'starting';
+  lastSeenAt: number | null;
+}
+
+/**
+ * Presence resolver. Returns the live status + last-seen timestamp for
+ * an agent session. Default implementation (`createDefaultPresenceProvider`)
+ * delegates to the orchestrator-status helper; tests inject a stub.
+ */
+export interface IAgentPresenceProvider {
+  getPresence(agentSession: string): Promise<ChatAgentPresenceDTO>;
 }
 
 /**
  * Optional wiring for real-time fan-out + agent dispatch. Leave undefined
  * in REST-only tests; supply both in the live server.
+ *
+ * Phase F — `directory` + `presence` providers are needed only by the
+ * new `/agents`, `/presence/:id`, and `/channels/dm/ensure` endpoints.
+ * When omitted, those endpoints return HTTP 503 `directory_unavailable`
+ * so REST-only tests can keep mounting the router without wiring storage.
  */
 export interface ChatV2ControllerDeps {
   gateway?: ChatV2Gateway;
   dispatcher?: ChatV2DispatcherService;
+  directory?: IAgentDirectoryProvider;
+  presence?: IAgentPresenceProvider;
 }
 
 /**
@@ -276,6 +355,11 @@ export function createChatV2Controller(
     return {
       gateway: live.gateway ?? deps.gateway,
       dispatcher: live.dispatcher ?? deps.dispatcher,
+      // `directory` + `presence` are constructor-only (not realtime); pass
+      // them through unchanged so the holder fallback path still surfaces
+      // them to the agents/presence handlers.
+      directory: deps.directory,
+      presence: deps.presence,
     };
   };
 
@@ -464,6 +548,132 @@ export function createChatV2Controller(
         notifyChatV2AgentReply(persisted);
       } catch {
         // INBOUND-2 hooks must never break the ack
+      }
+    },
+
+    /**
+     * POST /channels/dm/ensure
+     *
+     * Find-or-create a DM channel for the caller bound to `agentSession`.
+     * Idempotent: repeated calls for the same (owner, agentSession) return
+     * the same channel row, so the /agents page can map "click agent" →
+     * "active channel" without leaking duplicate DMs on reloads.
+     *
+     * Status code:
+     *  - 200 when the channel already existed
+     *  - 201 when a new channel was created
+     */
+    ensureDmChannel: (req, res) =>
+      runHandler(res, () => {
+        const principal = principalFromRequest(req);
+        const body = req.body ?? {};
+        const { channel, created } = service.ensureDmChannel({
+          agentSession: body.agentSession,
+          name: body.name,
+          purpose: body.purpose,
+          principal,
+        });
+        res.status(created ? 201 : 200).json({ success: true, data: channel });
+      }),
+
+    /**
+     * GET /agents
+     *
+     * Directory of all agents reachable from the configured teams.
+     * Returns one entry per (team × member), with cached
+     * agentStatus/workingStatus from the team file. The /agents page
+     * uses this to render the left rail; presence freshness comes from
+     * the per-agent `GET /presence/:agentId` endpoint, not from this list
+     * (intentional — the list is cheap; presence is per-row + on focus).
+     *
+     * Returns HTTP 503 `directory_unavailable` when the controller was
+     * wired without a `directory` provider (REST-only tests, etc.).
+     */
+    listAgents: async (req, res) => {
+      try {
+        // principalFromRequest enforces auth; the returned principal is
+        // intentionally unused here because the directory is global
+        // within a single OSS instance (no per-user filtering yet).
+        principalFromRequest(req);
+        const { directory } = resolveDeps();
+        if (!directory) {
+          res.status(503).json({
+            success: false,
+            error: {
+              code: 'directory_unavailable',
+              message: 'agent directory provider is not wired',
+            },
+          });
+          return;
+        }
+        const teams = await directory.getTeams();
+        const entries: ChatAgentDirectoryEntry[] = [];
+        for (const team of teams) {
+          for (const member of team.members) {
+            const sessionName = (member.sessionName ?? '').trim();
+            if (sessionName.length === 0) continue;
+            entries.push({
+              agentSession: sessionName,
+              name: member.name,
+              role: member.role,
+              teamId: team.id,
+              teamName: team.name,
+              agentStatus: member.agentStatus,
+              workingStatus: member.workingStatus,
+              avatar: member.avatar,
+            });
+          }
+        }
+        res.json({ success: true, data: { agents: entries } });
+      } catch (err) {
+        if (err instanceof ChatError) {
+          sendChatError(res, err);
+        } else {
+          sendInternalError(res, err);
+        }
+      }
+    },
+
+    /**
+     * GET /presence/:agentId
+     *
+     * Returns the agent's current presence + last-seen timestamp. Backs
+     * the chat-ui `getAgentPresence(agentId)` client call so the message
+     * thread can surface a live `online/busy/offline` badge per agent.
+     *
+     * Returns HTTP 503 `presence_unavailable` when the controller was
+     * wired without a `presence` provider (REST-only tests).
+     */
+    getAgentPresence: async (req, res) => {
+      try {
+        principalFromRequest(req);
+        const agentId = (req.params.agentId ?? '').trim();
+        if (agentId.length === 0) {
+          throw new ChatError(
+            CHAT_ERROR_CODES.VALIDATION,
+            400,
+            'agentId is required',
+          );
+        }
+        const { presence } = resolveDeps();
+        if (!presence) {
+          res.status(503).json({
+            success: false,
+            error: {
+              code: 'presence_unavailable',
+              message: 'presence provider is not wired',
+            },
+          });
+          return;
+        }
+        const result = await presence.getPresence(agentId);
+        res.json({ success: true, data: result });
+      } catch (err) {
+        if (err instanceof ChatError) {
+          sendChatError(res, err);
+        } else {
+          sendInternalError(res, err);
+        }
       }
     },
   };

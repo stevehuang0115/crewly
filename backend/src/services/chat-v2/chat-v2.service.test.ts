@@ -1141,6 +1141,74 @@ describe('ChatV2Service', () => {
   });
 
   // -------------------------------------------------------------------------
+  // ensureDmChannel — find-or-create for the /agents page
+  // -------------------------------------------------------------------------
+
+  describe('ensureDmChannel', () => {
+    it('creates a fresh DM channel when none exists', () => {
+      const { channel, created } = service.ensureDmChannel({
+        agentSession: 'sess-x',
+        name: 'Leo',
+        principal: owner,
+      });
+      expect(created).toBe(true);
+      expect(channel.agentSession).toBe('sess-x');
+      expect(channel.name).toBe('Leo');
+      expect(channel.type).toBe('dm');
+    });
+
+    it('returns the existing channel on a second call (idempotent)', () => {
+      const first = service.ensureDmChannel({
+        agentSession: 'sess-x',
+        name: 'Leo',
+        principal: owner,
+      });
+      const second = service.ensureDmChannel({
+        agentSession: 'sess-x',
+        name: 'Leo (renamed)',
+        principal: owner,
+      });
+      expect(second.created).toBe(false);
+      expect(second.channel.id).toBe(first.channel.id);
+      // We don't auto-rename — the existing row's name wins.
+      expect(second.channel.name).toBe('Leo');
+    });
+
+    it('scopes find-or-create by ownerUserId — other users get a separate channel', () => {
+      // F2b: this matters for Cloud Portal where multiple users share the
+      // singleton ChatV2Service. In OSS we always have one user, but the
+      // scoping invariant must hold so the same code path works in both.
+      const first = service.ensureDmChannel({
+        agentSession: 'sess-x',
+        name: 'Leo',
+        principal: owner,
+      });
+      const otherOwnerChan = service.ensureDmChannel({
+        agentSession: 'sess-x',
+        name: 'Leo',
+        principal: otherUser,
+      });
+      expect(otherOwnerChan.created).toBe(true);
+      expect(otherOwnerChan.channel.id).not.toBe(first.channel.id);
+    });
+
+    it('rejects empty agentSession', () => {
+      expect(() =>
+        service.ensureDmChannel({ agentSession: '   ', principal: owner }),
+      ).toThrow(/agentSession is required/);
+    });
+
+    it('falls back to the agentSession as the channel name when no name is provided', () => {
+      const { channel, created } = service.ensureDmChannel({
+        agentSession: 'sess-y',
+        principal: owner,
+      });
+      expect(created).toBe(true);
+      expect(channel.name).toBe('sess-y');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // importLegacyConversation
   // Spec: 2026-05-14-unified-chat-message-store.md Phase 5
   // -------------------------------------------------------------------------

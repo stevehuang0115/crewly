@@ -22,10 +22,13 @@ import {
  * Routes (mounted under `/api/chat`):
  * - `GET    /channels`
  * - `POST   /channels`
+ * - `POST   /channels/dm/ensure` — find-or-create DM channel for an agent
  * - `GET    /channels/:id`
  * - `DELETE /channels/:id`
  * - `GET    /channels/:id/messages`
  * - `POST   /channels/:id/messages`
+ * - `GET    /agents` — directory of agents across all teams
+ * - `GET    /presence/:agentId` — live presence for one agent
  *
  * @param service - Configured ChatV2Service
  * @param deps    - Optional gateway + dispatcher for realtime wiring
@@ -40,11 +43,17 @@ export function createChatV2Router(
 
   router.get('/channels', requireAuth, handlers.listChannels);
   router.post('/channels', requireAuth, handlers.createChannel);
+  // `/channels/dm/ensure` must precede `/channels/:id` matchers so Express
+  // doesn't bind `:id = 'dm'` here.
+  router.post('/channels/dm/ensure', requireAuth, handlers.ensureDmChannel);
   router.get('/channels/:id', requireAuth, handlers.getChannel);
   router.delete('/channels/:id', requireAuth, handlers.archiveChannel);
 
   router.get('/channels/:id/messages', requireAuth, handlers.listMessages);
   router.post('/channels/:id/messages', requireAuth, handlers.sendMessage);
+
+  router.get('/agents', requireAuth, handlers.listAgents);
+  router.get('/presence/:agentId', requireAuth, handlers.getAgentPresence);
 
   return router;
 }

@@ -1,9 +1,11 @@
 /**
  * Agents page tests.
  *
- * Focus: the page mounts the shared chat-ui components, defaults to mock
- * mode, and renders the header + layout scaffold. Deep behavior lives in
- * `@crewly/chat-ui`'s own test suite — duplicating it here would be noise.
+ * Focus: the page mounts the shared chat-ui components, defaults to real
+ * mode, and renders the header + AgentDirectory rail. Deep directory
+ * behavior lives in `AgentDirectory.test.tsx`; deep chat behavior lives
+ * in `@crewly/chat-ui`'s own test suite — duplicating either here would
+ * be noise.
  *
  * @module pages/Agents.test
  */
@@ -12,10 +14,9 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// The chat-ui package is imported by `./Agents`. We mock each named export
-// so we can assert wiring (e.g. which mode/backendURL the provider gets)
-// without pulling in the real implementation (which fetches channels via
-// the mock client's timers and would slow every test file).
+// Mock chat-ui exports so we can assert wiring (mode/backendURL) without
+// pulling in the real implementation (which would fire network/timer
+// calls on every render).
 vi.mock('@crewly/chat-ui', () => {
   return {
     ChatAPIProvider: ({
@@ -35,12 +36,16 @@ vi.mock('@crewly/chat-ui', () => {
         {children}
       </div>
     ),
-    ChannelList: () => <div data-testid="channel-list" />,
     MessageThread: () => <div data-testid="message-thread" />,
     MessageInput: () => <div data-testid="message-input" />,
     AgentStatusBadge: () => <div data-testid="agent-status-badge" />,
   };
 });
+
+// Mock AgentDirectory so this suite is just about the page-level wiring.
+vi.mock('../components/Chat/AgentDirectory', () => ({
+  AgentDirectory: () => <div data-testid="agent-directory" />,
+}));
 
 import { Agents } from './Agents';
 
@@ -57,15 +62,24 @@ describe('Agents page', () => {
     ).toBeInTheDocument();
   });
 
-  it('mounts ChannelList, MessageThread, and MessageInput', () => {
+  it('mounts AgentDirectory, MessageThread, and MessageInput', () => {
     render(<Agents />);
-    expect(screen.getByTestId('channel-list')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-directory')).toBeInTheDocument();
     expect(screen.getByTestId('message-thread')).toBeInTheDocument();
     expect(screen.getByTestId('message-input')).toBeInTheDocument();
   });
 
-  it('defaults to mock mode when VITE_CHAT_MODE is unset', () => {
+  it('defaults to real mode when VITE_CHAT_MODE is unset', () => {
     vi.stubEnv('VITE_CHAT_MODE', '');
+    render(<Agents />);
+    expect(screen.getByTestId('chat-provider')).toHaveAttribute(
+      'data-mode',
+      'real',
+    );
+  });
+
+  it('falls back to mock mode when VITE_CHAT_MODE=mock', () => {
+    vi.stubEnv('VITE_CHAT_MODE', 'mock');
     render(<Agents />);
     expect(screen.getByTestId('chat-provider')).toHaveAttribute(
       'data-mode',
@@ -73,27 +87,23 @@ describe('Agents page', () => {
     );
   });
 
-  it('shows the "Mock mode" banner when running against the stub', () => {
-    vi.stubEnv('VITE_CHAT_MODE', '');
-    render(<Agents />);
-    const banner = screen.getByRole('note');
-    expect(banner).toHaveTextContent(/mock mode/i);
-  });
+  it('shows the "Mock mode" banner only in mock mode', () => {
+    vi.stubEnv('VITE_CHAT_MODE', 'mock');
+    const { unmount } = render(<Agents />);
+    expect(screen.getByRole('note')).toHaveTextContent(/mock mode/i);
+    unmount();
 
-  it('switches to real mode when VITE_CHAT_MODE=real', () => {
-    vi.stubEnv('VITE_CHAT_MODE', 'real');
-    render(<Agents />);
-    const provider = screen.getByTestId('chat-provider');
-    expect(provider).toHaveAttribute('data-mode', 'real');
-    // `backendURL` should be populated — jsdom sets location.origin to
-    // http://localhost by default.
-    expect(provider.getAttribute('data-backend-url')).toMatch(/^http/);
-  });
-
-  it('does not render the mock banner in real mode', () => {
     vi.stubEnv('VITE_CHAT_MODE', 'real');
     render(<Agents />);
     expect(screen.queryByRole('note')).not.toBeInTheDocument();
+  });
+
+  it('populates backendURL from window.location.origin in real mode', () => {
+    vi.stubEnv('VITE_CHAT_MODE', 'real');
+    render(<Agents />);
+    expect(
+      screen.getByTestId('chat-provider').getAttribute('data-backend-url'),
+    ).toMatch(/^http/);
   });
 
   it('prefers VITE_CHAT_BACKEND_URL override over window origin', () => {
@@ -106,8 +116,10 @@ describe('Agents page', () => {
     );
   });
 
-  it('renders without a selected channel (null channelId path)', () => {
+  it('renders the empty placeholder when no agent is selected', () => {
     render(<Agents />);
-    expect(screen.getByText(/no channel selected/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/select an agent to start chatting/i),
+    ).toBeInTheDocument();
   });
 });

@@ -486,6 +486,60 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * Idempotent DM channel lookup-or-create for the /agents page.
+   *
+   * Returns the most-recent active DM channel owned by `principal.userId`
+   * and bound to `agentSession`; creates a new one when none exists. The
+   * caller is the human owner (auth principal), unlike
+   * {@link ensureChannelForLegacyConversation} which runs as `'system'`
+   * for server-internal bridge paths.
+   *
+   * Used by `POST /api/chat/channels/dm/ensure` so the /agents page can
+   * map "user clicked an agent in the directory" → "send/receive messages
+   * on this channel" without leaking duplicate DMs every time the page
+   * is reloaded.
+   *
+   * @param args - Lookup-or-create args
+   * @returns The channel DTO plus a `created` flag (true when a new row
+   *   was inserted; false when an existing row was reused).
+   * @throws {ChatError} `validation_error` (400) on empty `agentSession`
+   *   or oversize `name` / `purpose`.
+   */
+  ensureDmChannel(args: {
+    agentSession: string;
+    name?: string;
+    purpose?: string;
+    principal: ChatPrincipal;
+  }): { channel: ChatChannelDTO; created: boolean } {
+    const agentSession = (args.agentSession ?? '').trim();
+    if (agentSession.length === 0) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'agentSession is required',
+      );
+    }
+    const existing = this.channels.findActiveDmByOwnerAndAgent(
+      args.principal.userId,
+      agentSession,
+    );
+    if (existing) {
+      return { channel: this.toChannelDTO(existing), created: false };
+    }
+    // Fall through to createChannel so the full validation + tenant
+    // checks (purpose length, name length, etc.) run consistently with
+    // the public POST /channels endpoint.
+    const channel = this.createChannel({
+      agentSession,
+      name: (args.name ?? agentSession).trim(),
+      purpose: args.purpose,
+      principal: args.principal,
+      type: 'dm',
+    });
+    return { channel, created: true };
+  }
+
+  /**
    * Server-internal idempotent helper used by migration / bridge code to
    * map a legacy conversationId (e.g. `slack-D0AC7-1234`, `web-conv-abc`)
    * onto a chat-v2 channel row with the conversationId as the primary key.
