@@ -626,52 +626,51 @@ describe('detectStaleQueuedWorkItems', () => {
     expect(staleIds).toHaveLength(0);
   });
 
-  // F-CYCLE7-3 (2026-05-07) — regression: emitted correction MUST be a
-  // canonical valid transition. Prior behavior emitted queued→queued
-  // which StorageService rejected with "Invalid status transition:
-  // queued → queued", generating reconciler-error noise that hid real
-  // signal. Per WORK_ITEM_TRANSITIONS in work-item.types.ts, queued can
-  // legally transition to: running, proposed, scheduled, cancelled.
-  // 'expired' is not a valid WorkItemStatus.
-  describe('F-CYCLE7-3: queued→queued correction fix', () => {
-    it('emits queued→cancelled (NOT queued→queued) for stale-queued WorkItems', () => {
+  // 2026-05-16 policy change — stale-queued WIs MUST NOT be auto-cancelled.
+  // The pre-2026-05-16 behavior emitted `queued→cancelled` corrections
+  // when a WI sat queued past staleThresholdMs. That destroyed real
+  // user work on 2026-05-16 (Steve's X-article task dispatched to
+  // inactive Atlas → cancelled at 60min). PR #585 (eviction-under-
+  // memory-pressure) is the right mechanism to actually make progress
+  // on stale queued WIs. The function now returns staleIds for
+  // observability only; corrections is always empty.
+  describe('2026-05-16 no-auto-cancel policy', () => {
+    it('emits NO corrections — staleIds is observability-only', () => {
       const stale = makeWorkItem({
         status: 'queued',
-        createdAt: new Date(Date.now() - 16 * 3600 * 1000).toISOString(), // 16h ago, like the 945min real-world case
+        createdAt: new Date(Date.now() - 16 * 3600 * 1000).toISOString(), // 16h ago
       });
 
-      const { corrections } = detectStaleQueuedWorkItems([stale], 60 * 60 * 1000);
+      const { corrections, staleIds } = detectStaleQueuedWorkItems([stale], 60 * 60 * 1000);
 
-      expect(corrections).toHaveLength(1);
-      expect(corrections[0].previousState).toBe('queued');
-      expect(corrections[0].newState).toBe('cancelled');
-      expect(corrections[0].newState).not.toBe('queued');
+      expect(corrections).toEqual([]);
+      // Still surfaced for callers that want to log/escalate.
+      expect(staleIds).toEqual([stale.id]);
     });
 
-    it('emitted newState is a valid transition target per canonical WORK_ITEM_TRANSITIONS', () => {
+    it('emits no corrections even for very-long-queued WIs (945min real-world case)', () => {
+      const stale = makeWorkItem({
+        status: 'queued',
+        createdAt: new Date(Date.now() - 945 * 60 * 1000).toISOString(), // 945min — earlier real-world case
+      });
+
+      const { corrections, staleIds } = detectStaleQueuedWorkItems([stale], 60 * 60 * 1000);
+
+      // Old behaviour cancelled this; new behaviour keeps it queued
+      // so the target agent can eventually pick it up via the wake /
+      // eviction-under-pressure path.
+      expect(corrections).toHaveLength(0);
+      expect(staleIds).toContain(stale.id);
+    });
+
+    it('does not mutate caller-supplied WorkItem objects', () => {
       const stale = makeWorkItem({
         status: 'queued',
         createdAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
       });
-
-      const { corrections } = detectStaleQueuedWorkItems([stale], 60 * 60 * 1000);
-
-      expect(corrections).toHaveLength(1);
-      const validNextStates = WORK_ITEM_TRANSITIONS['queued'];
-      expect(validNextStates.has(corrections[0].newState as any)).toBe(true);
-      // Specifically NOT a same-state self-loop.
-      expect(corrections[0].newState).not.toBe(corrections[0].previousState);
-    });
-
-    it('reason field still preserves the queue-wait audit info', () => {
-      const stale = makeWorkItem({
-        status: 'queued',
-        createdAt: new Date(Date.now() - 945 * 60 * 1000).toISOString(), // 945min — exact prod scenario
-      });
-
-      const { corrections } = detectStaleQueuedWorkItems([stale], 60 * 60 * 1000);
-
-      expect(corrections[0].reason).toMatch(/queued for \d+ minutes without pickup/);
+      const before = { ...stale };
+      detectStaleQueuedWorkItems([stale], 60 * 60 * 1000);
+      expect(stale).toEqual(before);
     });
   });
 });
