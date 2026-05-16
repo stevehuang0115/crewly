@@ -743,6 +743,57 @@ describe('Slack Controller', () => {
     });
   });
 
+  // PR follow-up (2026-05-16): orc reads the per-thread .md file at
+  // ~/.crewly/slack-threads/{channel}/{threadTs}.md on session wake-up,
+  // not chat-v2. Replies sent via /api/slack/send were chat-v2-persisted
+  // and thread-status-marked but never appended to the .md file, so orc
+  // saw only user messages on wake-up and re-replied to everything.
+  describe('POST /api/slack/send — slack-thread store append', () => {
+    it('appends the orchestrator reply to the slack-thread .md store', async () => {
+      const { SlackThreadStoreService, setSlackThreadStore, resetSlackThreadStore } = await import(
+        '../../services/slack/slack-thread-store.service.js'
+      );
+      const os = await import('os');
+      const fs = await import('fs/promises');
+      const path = await import('path');
+
+      // Spin up a temp-rooted store so we don't touch the real ~/.crewly/.
+      const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'slack-thread-store-test-'));
+      const store = new SlackThreadStoreService(tmpRoot);
+      setSlackThreadStore(store);
+
+      const channelId = 'CSTORE-1';
+      const threadTs = '1900.store-1';
+
+      // Seed the thread file (appendOrchestratorReply is a no-op when the
+      // file doesn't exist — mirrors the inbound-bridge behavior).
+      await store.ensureThreadFile(channelId, threadTs, 'USTEVE');
+
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1900.reply-1');
+
+      try {
+        await request(app).post('/api/slack/send').send({
+          channelId,
+          text: 'orc here, working on it',
+          threadTs,
+        });
+
+        // Read the .md file and assert the reply landed.
+        // SlackThreadStoreService nests under `slack-threads/` inside the
+        // crewlyHome — the file path is the public surface, use it.
+        const filePath = store.getThreadFilePath(channelId, threadTs);
+        const contents = await fs.readFile(filePath, 'utf-8');
+        expect(contents).toContain('**Crewly**');
+        expect(contents).toContain('orc here, working on it');
+      } finally {
+        resetSlackThreadStore();
+        await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+  });
+
   describe('POST /api/slack/upload-image — bookkeeping parity', () => {
     it('marks thread-status replied_completed + records chat-v2 turn after successful upload', async () => {
       const fs = await import('fs/promises');

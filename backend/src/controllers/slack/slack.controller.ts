@@ -73,8 +73,17 @@ function handleSlackPlatformError(error: unknown, res: Response): boolean {
  *  3. Fire the V3 SLA `markResolvedByThread` cascade so the matching Request
  *     auto-closes on file-only replies (it already worked for text replies
  *     via the same hook).
+ *  4. Append the reply to the slack-thread `.md` store (the file orc reads
+ *     directly on session restart). The legacy `slack-orchestrator-bridge.
+ *     sendSlackResponse` path already did this for its internal flow, but
+ *     replies coming through `/api/slack/send` (the reply-slack skill path
+ *     orc actually uses) never reached the .md file. Without this, orc's
+ *     wake-up read of the thread context shows only user messages and
+ *     re-replies to everything (regression observed 2026-05-16 — orc
+ *     re-replied to all 3 user messages on the CE thread after a session
+ *     restart, even though /send had already marked chat-v2 + thread-status).
  *
- * All three steps are best-effort. The Slack send itself has already
+ * All four steps are best-effort. The Slack send itself has already
  * succeeded; failures here are bookkeeping-only and must never throw.
  *
  * @param params.channelId - Slack channel the send hit
@@ -170,6 +179,21 @@ async function recordSlackReplyBookkeeping(params: {
       }
     } catch {
       // Non-fatal.
+    }
+  }
+
+  // 4. Append to the slack-thread .md store so orc's wake-up read of the
+  //    thread context file sees its own reply. Without this, orc reads the
+  //    file, sees only user messages, and re-replies to everything.
+  if (threadTs && channelId) {
+    try {
+      const { getSlackThreadStore } = await import('../../services/slack/slack-thread-store.service.js');
+      const store = getSlackThreadStore();
+      if (store) {
+        await store.appendOrchestratorReply(channelId, threadTs, content);
+      }
+    } catch {
+      // Non-fatal — Slack delivery succeeded.
     }
   }
 }
