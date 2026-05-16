@@ -159,13 +159,17 @@ describe('RequestDecomposeSubscriber', () => {
   // -------------------------------------------------------------------------
 
   describe('filter rules', () => {
+    // Issue #462 follow-up: each category row pins the (L2 + category) gate,
+    // not "any intentLevel + category". The intentLevel is explicit so a
+    // future change to `makeRequest`'s default doesn't silently shift what
+    // the test pins.
     it.each<[string, Partial<Request>]>([
       ['intentLevel L0', { intentLevel: 'L0' as IntentLevel }],
       ['intentLevel L1', { intentLevel: 'L1' as IntentLevel }],
-      ['intentCategory communication', { intentCategory: 'communication' as IntentCategory }],
-      ['intentCategory query', { intentCategory: 'query' as IntentCategory }],
-      ['intentCategory other', { intentCategory: 'other' as IntentCategory }],
-      ['intentCategory review', { intentCategory: 'review' as IntentCategory }],
+      ['L2 + intentCategory communication', { intentLevel: 'L2' as IntentLevel, intentCategory: 'communication' as IntentCategory }],
+      ['L2 + intentCategory query', { intentLevel: 'L2' as IntentLevel, intentCategory: 'query' as IntentCategory }],
+      ['L2 + intentCategory other', { intentLevel: 'L2' as IntentLevel, intentCategory: 'other' as IntentCategory }],
+      ['L2 + intentCategory review', { intentLevel: 'L2' as IntentLevel, intentCategory: 'review' as IntentCategory }],
     ])('skips when %s', async (_label, overrides) => {
       const r = makeRequest(overrides);
       seed.set(r.id, r);
