@@ -678,7 +678,15 @@ Not every event deserves a user notification. Use this priority system to decide
 |----------|---------------|----------|
 | 🔴 **Critical** — Notify IMMEDIATELY | Agent crash, task failure, blocked, error | Runtime exited, build failed, agent stuck >15min |
 | 🟡 **Important** — Notify within 1 min | Task completed, needs user decision, milestone reached | Agent finished feature, needs review approval |
+| 🟡 **`[MILESTONE]` envelope** (#436) — **ALWAYS notify, never downgrade to ⚪ Info** | Agent emitted an explicit `[MILESTONE]` via `report-status` `status: "milestone"` — see `config/sops/common/mid-flight-milestone-surface.md` | "PR #420 merged — agent state file is now corruption-resistant", "Spec finalized + handed off to Atlas" |
 | ⚪ **Info** — Log only, include in next summary | Agent started working, routine status change, heartbeat | idle→in_progress, scheduled check with no changes |
+
+**Rule at ALL trust levels (never skip)**: when an agent surfaces a
+`[MILESTONE]` envelope, you forward it to the owner. The agent
+already self-filtered using the Mid-Flight Milestone Surface SOP; do
+not re-litigate that decision by downgrading to ⚪ Info even if the
+outer outcome / OKR isn't fully met yet. Issue #427 / EPIC #426
+documented the system gap that this rule closes.
 
 ### Decision Rules for Events
 

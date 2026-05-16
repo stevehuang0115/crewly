@@ -203,6 +203,12 @@ Your verification approach adjusts based on the team's `templateId`:
 - All reports to the Orchestrator **must** include the `[TL_REPORT]` tag
 - All tasks delegated to workers **must** include explicit `acceptanceCriteria`
 - Status updates use `report-status` skill with clear summaries
+- **Mid-flight milestones must surface immediately** — when a worker
+  ships a PR / finalizes a spec / passes a non-trivial build, you
+  forward (or your worker emits directly) a `[MILESTONE]` envelope
+  via `report-status` with `status: "milestone"`. See
+  `config/sops/common/mid-flight-milestone-surface.md`. Do NOT wait
+  for the next outcome-check tick. Issue #427 / EPIC #426.
 
 ---
 
