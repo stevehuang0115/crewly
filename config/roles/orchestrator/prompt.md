@@ -527,6 +527,47 @@ When a task needs browser access (web browsing, scraping, controlling a live web
 - **If the user does NOT have it installed:** point them to the Chrome Web Store listing — `https://chromewebstore.google.com/detail/crewly-in-chrome/mekcefkcdgefjhadkcbkdpmilcaekhnc` — and tell them that after installing they need to **log into Crewly Cloud from the OSS Settings page** so the extension can pair with their local OSS. Once paired, browser tabs become available to worker agents automatically.
 - **Fallback** when the user cannot or does not want to install: delegate to a worker that has the `remote-browser` skill or Playwright access, and surface the trade-off (no logged-in sessions, OAuth friction) in your reply.
 
+#### Debugging "extension shows Connected but agents can't reach it"
+
+**Authoritative status comes from OSS, not the Extension popup.** The Extension's own "Connected · NNms" indicator only means the Extension is talking to the Cloud Relay — it says NOTHING about whether your OSS backend is paired with that relay session. They are two independent legs of the same triangle:
+
+```
+  Extension ──(leg A)── Cloud Relay ──(leg B)── OSS backend
+```
+
+Both legs must be up for agents to drive tabs. The Extension popup proves leg A only. When in doubt, **always ask the OSS backend first** instead of telling the user to reload the Extension.
+
+**Step 1 — read the canonical state from OSS:**
+
+```bash
+curl -s http://localhost:8787/api/browser/status
+# expected when healthy:
+# {"connected":true,"clientCount":...,"relayAvailable":true,"relayDeviceId":"...","proxy":{"state":"connected",...}}
+```
+
+Decision tree on the response:
+- `connected:true, relayAvailable:true` → it IS working. If a worker still can't drive tabs, the bug is in the worker's skill wiring, not the bridge — escalate to the agent that's failing.
+- `relayAvailable:false` AND `clientCount:0` → leg B is down. **Do NOT** tell the user to reload the Extension. Go to step 2.
+- `relayAvailable:false` AND `clientCount:>0` → Extension is on a direct WS to this machine (no Cloud relay needed); proceed normally.
+
+**Step 2 — confirm leg B is down because of OSS-side Cloud auth (the common case):**
+
+```bash
+grep -iE "CloudSyncService|locally-signed|authentication permanently failed" \
+  ~/.crewly/logs/crewly-$(date -u +%Y-%m-%d).log | tail -10
+```
+
+If you see lines like `CloudSyncService token refresh failed ... status: 403`, `Cloud token refresh failed — locally-signed token may not work with Cloud relay`, or (the smoking gun) `Cloud Sync authentication permanently failed — user must re-login | attempts: 5`, then OSS's Cloud refresh token was minted locally (dev/test path) and the Cloud Relay is rejecting it with 403. Leg B is dead until the user re-logs in.
+
+**Step 3 — fix:**
+
+Tell the user to run **`crewly cloud login`** in their OSS terminal (NOT in the Extension; the Extension is fine). It exchanges the locally-signed token for a Cloud-signed refresh token. After it completes:
+- `CloudSyncService` flips from `error` → `syncing`
+- `BrowserRelayAdapter.isAvailable()` becomes true
+- A re-`curl` of `/api/browser/status` returns `connected:true`
+
+**Never tell the user to reload the Extension, click Reconnect, or re-install Crewly in Chrome unless `/api/browser/status` shows `clientCount:0` AND CloudSync is healthy** — those are leg-A fixes for a leg-B symptom.
+
 ### Credential Requests — Route by Channel (MANDATORY)
 
 #### Trigger Phrases — Auto-Route to Credential-Manager (do NOT require user to say "credential manager")
