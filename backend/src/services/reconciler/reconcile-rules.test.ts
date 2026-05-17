@@ -836,8 +836,11 @@ describe('selectBestAgent', () => {
     expect(result!.agent.sessionName).toBe('agent-1'); // target match = highest score
   });
 
-  it('should exclude agents in excludeAgents set', () => {
-    const wi = makeWorkItem({ target: 'agent-1', type: 'delegate' });
+  it('should exclude agents in excludeAgents set (no-target WI falls back to others)', () => {
+    // No `target` on the WI → fall back to skill-based scoring across all agents.
+    // `makeWorkItem` defaults `target: 'agent-1'`, so we explicitly clear it
+    // to exercise the no-target branch.
+    const wi = { ...makeWorkItem({ type: 'delegate' }), target: undefined } as WorkItem;
     const agents: AgentHealth[] = [
       { sessionName: 'agent-1', status: 'suspended', role: 'developer' },
       { sessionName: 'agent-2', status: 'inactive', role: 'developer' },
@@ -862,6 +865,43 @@ describe('selectBestAgent', () => {
     const result = selectBestAgent(wi, agents, 5 * 60_000, new Set(['agent-1']));
     expect(result).toBeNull();
   });
+
+  // 2026-05-17 — when a WorkItem has an explicit `target`, the reconciler
+  // must ONLY wake that exact agent. The previous "best-score across all
+  // agents" fallback was substituting unrelated agents (Quinn / Reed /
+  // Victor) for SLA-tracker `respond_to_user` WIs targeted at crewly-orc,
+  // causing the team to spin up on every restart with no actual work.
+  describe('2026-05-17 target-strict policy', () => {
+    it('only considers the explicit target when wi.target is set', () => {
+      const wi = makeWorkItem({ target: 'agent-1', type: 'delegate' });
+      const agents: AgentHealth[] = [
+        { sessionName: 'agent-1', status: 'suspended', role: 'developer' },
+        { sessionName: 'agent-2', status: 'inactive', role: 'developer' },
+      ];
+      const result = selectBestAgent(wi, agents, 5 * 60_000);
+      expect(result?.agent.sessionName).toBe('agent-1');
+    });
+
+    it('returns null when the explicit target is excluded — does NOT substitute another agent', () => {
+      const wi = makeWorkItem({ target: 'agent-1', type: 'delegate' });
+      const agents: AgentHealth[] = [
+        { sessionName: 'agent-1', status: 'suspended', role: 'developer' },
+        { sessionName: 'agent-2', status: 'inactive', role: 'developer' },
+      ];
+      const result = selectBestAgent(wi, agents, 5 * 60_000, new Set(['agent-1']));
+      expect(result).toBeNull();
+    });
+
+    it('returns null when the explicit target is not in the wakable list', () => {
+      const wi = makeWorkItem({ target: 'crewly-orc', type: 'review' });
+      const agents: AgentHealth[] = [
+        { sessionName: 'product-quinn', status: 'inactive', role: 'developer' },
+        { sessionName: 'support-reed', status: 'inactive', role: 'customer-support' },
+      ];
+      const result = selectBestAgent(wi, agents, 5 * 60_000);
+      expect(result).toBeNull();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -876,6 +916,11 @@ describe('detectUnclaimedTasks', () => {
       status: 'queued',
       createdAt: TWO_MIN_AGO,
       type: 'delegate',
+      // 2026-05-17 target-strict policy: explicit target must match a wakable
+      // agent. Earlier this test relied on skill-based fallback when target
+      // was 'agent-1' (the makeWorkItem default) and no such agent existed —
+      // that fallback is gone. Target the actual wakable agent.
+      target: 'agent-suspended',
     });
     const agentMap = makeAgentMap([
       ['agent-suspended', { status: 'suspended', role: 'developer' }],
@@ -893,6 +938,7 @@ describe('detectUnclaimedTasks', () => {
       status: 'queued',
       createdAt: TWO_MIN_AGO,
       type: 'delegate',
+      target: 'agent-off', // target-strict policy
     });
     const agentMap = makeAgentMap([
       ['agent-off', { status: 'inactive', role: 'developer' }],
@@ -997,6 +1043,7 @@ describe('detectUnclaimedTasks', () => {
       status: 'queued',
       createdAt: new Date(Date.now() - 6 * 60_000).toISOString(),
       type: 'delegate',
+      target: 'agent-suspended', // target-strict policy
     });
     const agentMap = makeAgentMap([
       ['agent-active', { status: 'active' }],

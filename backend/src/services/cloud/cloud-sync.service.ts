@@ -380,6 +380,56 @@ export class CloudSyncService extends EventEmitter {
     this.logger.info('Message sent via Cloud Sync', { to: toDeviceId, type, peerSessionId: targetDevice.sessionId });
   }
 
+  /**
+   * Send a message directly to a peer queueId, bypassing the device cache.
+   *
+   * Used by `ChatV2RelayAdapter` for routing `chat_response` back to a
+   * Portal browser whose deviceId may not yet have propagated to the
+   * 30s-interval device poll. The production relay's `/queue/send`
+   * endpoint accepts a raw `peerQueueId`, so when the target identifier
+   * IS already a queueId (which Portal's wrapper.fromDeviceName field
+   * carries — see `chat-v2.relay-adapter.service.ts:handleRequest`),
+   * we can skip the cache lookup entirely and avoid the race.
+   *
+   * Falls back to `sendMessage(...)` semantics on the wire (same JSON
+   * wrapper) so the receiver's CloudSyncService normalizes it identically.
+   *
+   * @param peerQueueId - The relay queueId to route to (no cache lookup)
+   * @param type - MessageType for the wrapper
+   * @param payload - JSON-serializable inner data
+   * @throws Error when not started or the HTTP send fails
+   */
+  async sendToPeerQueueId(
+    peerQueueId: string,
+    type: MessageType,
+    payload: unknown,
+  ): Promise<void> {
+    if (!this.config) {
+      throw new Error('CloudSyncService not started. Call start() first.');
+    }
+    if (!peerQueueId) {
+      throw new Error('sendToPeerQueueId requires a non-empty peerQueueId');
+    }
+    const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES}`;
+    const wrappedPayload = JSON.stringify({
+      type,
+      data: payload,
+      encrypted: false,
+      fromDeviceName: this.config.deviceName,
+    });
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.authHeaders(),
+      body: JSON.stringify({ peerQueueId, payload: wrappedPayload }),
+      signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`Failed to send message (queueId path): ${response.status} ${errorText}`);
+    }
+    this.logger.info('Message sent via Cloud Sync (queueId path)', { peerQueueId, type });
+  }
+
   // -------------------------------------------------------------------------
   // Internal: Queue Registration
   // -------------------------------------------------------------------------

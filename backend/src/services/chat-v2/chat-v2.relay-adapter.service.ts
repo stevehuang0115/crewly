@@ -80,6 +80,17 @@ export interface ICloudSyncLike extends EventEmitter {
     type: 'chat_response' | 'chat_event',
     payload: unknown,
   ): Promise<void>;
+  /**
+   * Optional queueId-direct send. When present, the adapter prefers it
+   * for chat_response routing — Portal's queueId may not yet be in the
+   * 30s device-poll cache, and the production relay routes by queueId
+   * anyway. Methods without this fall back to sendMessage (stub-friendly).
+   */
+  sendToPeerQueueId?(
+    peerQueueId: string,
+    type: 'chat_response' | 'chat_event',
+    payload: unknown,
+  ): Promise<void>;
 }
 
 /**
@@ -227,7 +238,18 @@ export class ChatV2RelayAdapter {
    * @param msg - Raw IncomingMessage from CloudSyncService
    */
   private async handleRequest(msg: IncomingMessage): Promise<void> {
-    const fromDevice = msg.from;
+    // The production relay's `/queue/poll` response only returns
+    // `{id, payload, createdAt}` — sender info is dropped. To route the
+    // `chat_response` back to Portal, we fall back to `msg.fromDeviceName`
+    // (preserved verbatim from the sender's wrapper), where Portal stamps
+    // its own queueId. See `relay-chat-client.ts:sendOverRelay`.
+    const fromDevice = msg.from || msg.fromDeviceName || '';
+    if (!fromDevice) {
+      this.logger.warn('chat_request missing sender id (from + fromDeviceName both empty) — dropping', {
+        msgId: msg.id,
+      });
+      return;
+    }
     if (!isChatRequestPayload(msg.payload)) {
       this.logger.warn('chat_request payload failed validation — dropping', {
         fromDevice,
@@ -250,7 +272,15 @@ export class ChatV2RelayAdapter {
     }
 
     try {
-      await this.cloudSync.sendMessage(fromDevice, 'chat_response', response);
+      // Prefer the queueId-direct path when available — Portal's deviceId
+      // == its relay queueId, and that bypasses CloudSyncService's stale
+      // 30s device cache (Portal may have registered moments ago, faster
+      // than the poll cadence).
+      if (typeof this.cloudSync.sendToPeerQueueId === 'function') {
+        await this.cloudSync.sendToPeerQueueId(fromDevice, 'chat_response', response);
+      } else {
+        await this.cloudSync.sendMessage(fromDevice, 'chat_response', response);
+      }
     } catch (err) {
       // If we can't reply, log it — Portal will retry the request on
       // timeout. We can't surface the failure any other way (the
@@ -424,9 +454,15 @@ export class ChatV2RelayAdapter {
     this.pruneExpiredPortals();
     if (this.knownPortals.size === 0) return;
     const payload: ChatEventPayload = { channelId, event };
+    // Prefer queueId-direct path for the same reason as `handleRequest`
+    // — Portal queueIds may not be in the 30s device-poll cache.
+    const send =
+      typeof this.cloudSync.sendToPeerQueueId === 'function'
+        ? this.cloudSync.sendToPeerQueueId.bind(this.cloudSync)
+        : this.cloudSync.sendMessage.bind(this.cloudSync);
     for (const deviceId of this.knownPortals.keys()) {
       // Fire-and-forget — log on failure but keep going.
-      this.cloudSync.sendMessage(deviceId, 'chat_event', payload).catch((err) => {
+      send(deviceId, 'chat_event', payload).catch((err) => {
         this.logger.warn('Failed to forward chat_event to Portal', {
           deviceId,
           channelId,
