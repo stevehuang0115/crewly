@@ -138,7 +138,17 @@ export type MessageType =
   | 'agent_message'
   | 'cross-machine'
   | 'browser_command'
-  | 'browser_response';
+  | 'browser_response'
+  // Cloud Portal ↔ user-local OSS chat-v2 relay (2026-05-16):
+  //   chat_request   — Portal calls a chat-v2 RPC method on user's OSS
+  //   chat_response  — user's OSS replies, correlated by request id
+  //   chat_event     — user's OSS pushes a broadcast (new message, presence
+  //                    change) to the Portal — analogous to the local WS
+  //                    `gateway.broadcast` frames but tunnelled through the
+  //                    relay queue.
+  | 'chat_request'
+  | 'chat_response'
+  | 'chat_event';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -153,6 +163,9 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'cross-machine',
   'browser_command',
   'browser_response',
+  'chat_request',
+  'chat_response',
+  'chat_event',
 ] as const;
 
 /**
@@ -255,6 +268,152 @@ export function isAgentMessagePayload(value: unknown): value is AgentMessagePayl
     typeof obj.fromDevice === 'string' &&
     typeof obj.fromDeviceName === 'string'
   );
+}
+
+// ---------------------------------------------------------------------------
+// chat-v2 RPC over relay (Cloud Portal ↔ user-local OSS)
+// ---------------------------------------------------------------------------
+
+/**
+ * RPC methods Portal can invoke on the user's OSS chat-v2 surface via the
+ * relay. Mirrors the public methods on `@crewly/chat-ui`'s `ChatApiClient`
+ * plus the OSS-only directory/presence helpers added by the /agents page.
+ *
+ * Closed-set on purpose so unknown methods are rejected by the OSS-side
+ * adapter (returns `unsupported_method` error) — saves the round-trip from
+ * Portal's perspective and gives the audit log a stable enum to group by.
+ */
+export type ChatRpcMethod =
+  | 'listAgents'
+  | 'getAgentPresence'
+  | 'listChannels'
+  | 'ensureDmChannel'
+  | 'createChannel'
+  | 'listMessages'
+  | 'sendMessage';
+
+/** Set form for runtime validation. */
+export const CHAT_RPC_METHODS: readonly ChatRpcMethod[] = [
+  'listAgents',
+  'getAgentPresence',
+  'listChannels',
+  'ensureDmChannel',
+  'createChannel',
+  'listMessages',
+  'sendMessage',
+] as const;
+
+/**
+ * Payload for a `chat_request` message. JSON-RPC-style with stable
+ * correlation id so the Portal can match the response that comes back on
+ * its inbound queue (responses are out-of-order in general because the
+ * OSS adapter may handle them concurrently).
+ *
+ * Designed so the wire shape is symmetrical between request and response
+ * — the same `id` field appears in {@link ChatResponsePayload}.
+ */
+export interface ChatRequestPayload {
+  /**
+   * Caller-generated correlation id. Use a UUID v4 or any other source of
+   * uniqueness; the OSS adapter does NOT inspect or validate it beyond
+   * echoing it back in the matching `chat_response`.
+   */
+  id: string;
+  /** RPC method name. Must be in {@link CHAT_RPC_METHODS}. */
+  method: ChatRpcMethod;
+  /** Method-specific parameters. Shape is method-dependent; the OSS adapter validates per-method. */
+  params?: Record<string, unknown>;
+}
+
+/**
+ * Payload for a `chat_response` message — the OSS adapter's reply to a
+ * Portal `chat_request`. Exactly one of `result` / `error` is populated.
+ */
+export interface ChatResponsePayload {
+  /** Correlation id echoed from the originating {@link ChatRequestPayload}. */
+  id: string;
+  /**
+   * Method-specific success payload. For `listChannels` this is the
+   * channel list, for `sendMessage` the persisted message DTO, etc.
+   * Shape matches the underlying ChatV2Service / `@crewly/chat-ui`
+   * return type for that method.
+   */
+  result?: unknown;
+  /** Error envelope. Mirrors the REST error shape used by chat-v2. */
+  error?: {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
+}
+
+/**
+ * Payload for a `chat_event` message — server-pushed broadcast originating
+ * from the OSS adapter (after a local `gateway.broadcast` would fire). The
+ * Portal client dispatches these to per-channel subscribers based on
+ * `payload.channelId`, the same way `HttpChatApiClient.subscribeToChannel`
+ * does for direct WebSocket frames.
+ *
+ * `event` re-uses the {@link import('../../websocket/chat-v2.gateway.js').ChatWireEvent}
+ * shape verbatim so Portal's RelayChatApiClient can hand the event straight
+ * to the existing `@crewly/chat-ui` reconciler without re-shaping.
+ */
+export interface ChatEventPayload {
+  /** Affected channel. Portal dispatches by this field. */
+  channelId: string;
+  /**
+   * The wire event itself — `{type:'message', payload:{channelId, message}}`
+   * or `{type:'presence', ...}`. Typed as `unknown` here to avoid pulling
+   * a chat-v2 type into the cloud-sync module (which lives below the
+   * chat-v2 layer in the dep graph).
+   */
+  event: unknown;
+}
+
+/**
+ * Best-effort type guard for `chat_request` payloads. Used by the OSS
+ * adapter when consuming raw IncomingMessage.payload values before
+ * dispatching to ChatV2Service.
+ *
+ * @param value - Untyped payload from the relay
+ * @returns True iff the value has the minimum fields for a valid request
+ */
+export function isChatRequestPayload(value: unknown): value is ChatRequestPayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  // Wire shape requires `id` + `method` to both be strings. We intentionally
+  // do NOT check `method` against {@link CHAT_RPC_METHODS} here — that's the
+  // OSS adapter's job, and rejecting unknown methods at the guard level
+  // would drop the message silently. Instead, the adapter responds with
+  // a structured `unsupported_method` error so Portal gets a clear signal
+  // rather than a hang.
+  return typeof obj.id === 'string' && typeof obj.method === 'string';
+}
+
+/**
+ * Best-effort type guard for `chat_response` payloads. Used by the Portal
+ * client to discard malformed responses without throwing inside the
+ * inbound-message dispatch loop.
+ *
+ * @param value - Untyped payload from the relay
+ * @returns True iff the value has a string `id` field
+ */
+export function isChatResponsePayload(value: unknown): value is ChatResponsePayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return typeof obj.id === 'string';
+}
+
+/**
+ * Best-effort type guard for `chat_event` payloads.
+ *
+ * @param value - Untyped payload from the relay
+ * @returns True iff the value has a string `channelId` and an `event` field
+ */
+export function isChatEventPayload(value: unknown): value is ChatEventPayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return typeof obj.channelId === 'string' && obj.event !== undefined;
 }
 
 // ---------------------------------------------------------------------------

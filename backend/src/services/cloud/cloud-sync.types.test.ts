@@ -11,8 +11,12 @@ import {
   isIncomingMessage,
   isCloudSyncConfig,
   isAgentMessagePayload,
+  isChatRequestPayload,
+  isChatResponsePayload,
+  isChatEventPayload,
   CLOUD_SYNC_STATES,
   MESSAGE_TYPES,
+  CHAT_RPC_METHODS,
 } from './cloud-sync.types.js';
 
 describe('cloud-sync.types', () => {
@@ -203,6 +207,134 @@ describe('cloud-sync.types', () => {
 
     it('should be included in MESSAGE_TYPES', () => {
       expect(MESSAGE_TYPES).toContain('agent_message');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // chat-v2 RPC over relay (Cloud Portal ↔ user-local OSS)
+  // ---------------------------------------------------------------------------
+
+  describe('chat_request / chat_response / chat_event message types', () => {
+    it('all three are valid MessageTypes', () => {
+      expect(isMessageType('chat_request')).toBe(true);
+      expect(isMessageType('chat_response')).toBe(true);
+      expect(isMessageType('chat_event')).toBe(true);
+    });
+
+    it('all three are included in MESSAGE_TYPES', () => {
+      expect(MESSAGE_TYPES).toContain('chat_request');
+      expect(MESSAGE_TYPES).toContain('chat_response');
+      expect(MESSAGE_TYPES).toContain('chat_event');
+    });
+  });
+
+  describe('CHAT_RPC_METHODS', () => {
+    it('lists the closed set of RPC methods', () => {
+      // Locked set — if you add a new ChatRpcMethod, update both the
+      // type union AND this expectation so the OSS adapter is forced
+      // to grow a matching dispatch handler.
+      expect([...CHAT_RPC_METHODS]).toEqual([
+        'listAgents',
+        'getAgentPresence',
+        'listChannels',
+        'ensureDmChannel',
+        'createChannel',
+        'listMessages',
+        'sendMessage',
+      ]);
+    });
+  });
+
+  describe('isChatRequestPayload', () => {
+    it('accepts a minimal valid request', () => {
+      expect(
+        isChatRequestPayload({ id: 'r-1', method: 'listChannels' }),
+      ).toBe(true);
+    });
+
+    it('accepts a request with params', () => {
+      expect(
+        isChatRequestPayload({
+          id: 'r-2',
+          method: 'sendMessage',
+          params: { channelId: 'c-1', content: 'hi' },
+        }),
+      ).toBe(true);
+    });
+
+    it('accepts an unknown method string (rejected later by the adapter)', () => {
+      // Intentionally not gating on CHAT_RPC_METHODS at the guard level
+      // so the adapter can return a structured `unsupported_method` error
+      // back to Portal instead of dropping the message silently.
+      expect(
+        isChatRequestPayload({ id: 'r-3', method: 'deleteEverything' }),
+      ).toBe(true);
+    });
+
+    it('rejects missing id / method', () => {
+      expect(isChatRequestPayload({ method: 'listChannels' })).toBe(false);
+      expect(isChatRequestPayload({ id: 'r-4' })).toBe(false);
+    });
+
+    it('rejects non-objects', () => {
+      expect(isChatRequestPayload(null)).toBe(false);
+      expect(isChatRequestPayload(undefined)).toBe(false);
+      expect(isChatRequestPayload('string')).toBe(false);
+    });
+  });
+
+  describe('isChatResponsePayload', () => {
+    it('accepts a success response', () => {
+      expect(isChatResponsePayload({ id: 'r-1', result: { ok: true } })).toBe(true);
+    });
+
+    it('accepts an error response', () => {
+      expect(
+        isChatResponsePayload({
+          id: 'r-2',
+          error: { code: 'validation_error', message: 'bad' },
+        }),
+      ).toBe(true);
+    });
+
+    it('accepts a response with neither result nor error (shape contract is just id)', () => {
+      // The wire shape only mandates the correlation id; semantic
+      // "exactly one of result|error" is enforced by the dispatcher,
+      // not by the type guard.
+      expect(isChatResponsePayload({ id: 'r-3' })).toBe(true);
+    });
+
+    it('rejects responses without an id', () => {
+      expect(isChatResponsePayload({ result: 'oops' })).toBe(false);
+    });
+
+    it('rejects non-objects', () => {
+      expect(isChatResponsePayload(null)).toBe(false);
+      expect(isChatResponsePayload(42)).toBe(false);
+    });
+  });
+
+  describe('isChatEventPayload', () => {
+    it('accepts a message event', () => {
+      expect(
+        isChatEventPayload({
+          channelId: 'c-1',
+          event: { type: 'message', payload: { channelId: 'c-1', message: {} } },
+        }),
+      ).toBe(true);
+    });
+
+    it('rejects missing channelId', () => {
+      expect(isChatEventPayload({ event: { type: 'message' } })).toBe(false);
+    });
+
+    it('rejects missing event', () => {
+      expect(isChatEventPayload({ channelId: 'c-1' })).toBe(false);
+    });
+
+    it('rejects non-objects', () => {
+      expect(isChatEventPayload(null)).toBe(false);
+      expect(isChatEventPayload([])).toBe(false);
     });
   });
 });

@@ -139,6 +139,15 @@ export class ChatV2Gateway {
   private attached = false;
   /** channelId → set of subscribers listening on that channel. */
   private readonly subscribers = new Map<string, Set<ChatSubscriber>>();
+  /**
+   * External broadcast listeners registered via {@link onBroadcast}.
+   * Independent from the WebSocket subscriber map so a listener still
+   * fires when there are no local WS clients (e.g. when only the Cloud
+   * Portal is observing the channel via the relay adapter).
+   */
+  private readonly externalListeners = new Set<
+    (channelId: string, event: ChatWireEvent) => void
+  >();
 
   constructor(options: ChatV2GatewayOptions) {
     this.service = options.service;
@@ -257,20 +266,65 @@ export class ChatV2Gateway {
    * @param event - Wire frame to push
    */
   broadcast(channelId: string, event: ChatWireEvent): void {
+    // 1. Fan to local WebSocket subscribers (the original behaviour).
     const set = this.subscribers.get(channelId);
-    if (!set || set.size === 0) return;
-    const frame = JSON.stringify(event);
-    for (const sub of set) {
-      if (sub.ws.readyState !== WebSocket.OPEN) continue;
+    if (set && set.size > 0) {
+      const frame = JSON.stringify(event);
+      for (const sub of set) {
+        if (sub.ws.readyState !== WebSocket.OPEN) continue;
+        try {
+          sub.ws.send(frame);
+        } catch (err) {
+          this.logger.warn('chat-v2 ws send failed', {
+            channelId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
+    // 2. Fan to external listeners (e.g. ChatV2RelayAdapter forwarding the
+    // event to Cloud Portal subscribers over the relay queue). Runs even
+    // when there are zero local WS subscribers — the Portal may be the
+    // ONLY listener for a given session.
+    if (this.externalListeners.size === 0) return;
+    for (const listener of this.externalListeners) {
       try {
-        sub.ws.send(frame);
+        listener(channelId, event);
       } catch (err) {
-        this.logger.warn('chat-v2 ws send failed', {
+        // Never let a misbehaving listener break the broadcast loop; the
+        // next listener (and the user's WS subscribers above) must still
+        // see the event.
+        this.logger.warn('chat-v2 external broadcast listener threw', {
           channelId,
           err: err instanceof Error ? err.message : String(err),
         });
       }
     }
+  }
+
+  /**
+   * Register an external listener that fires on every {@link broadcast} call,
+   * even when there are no local WebSocket subscribers.
+   *
+   * The primary consumer is `ChatV2RelayAdapter`, which forwards events
+   * over the Cloud relay so the Crewly Portal (running on a different
+   * device) can render the same realtime updates that the local OSS UI
+   * receives via WebSocket.
+   *
+   * Listener errors are caught and logged — a thrown listener never
+   * interrupts the broadcast loop or affects other listeners / WS sends.
+   *
+   * @param listener - Called with `(channelId, event)` per broadcast
+   * @returns Unsubscribe function; call once during shutdown
+   */
+  onBroadcast(
+    listener: (channelId: string, event: ChatWireEvent) => void,
+  ): () => void {
+    this.externalListeners.add(listener);
+    return () => {
+      this.externalListeners.delete(listener);
+    };
   }
 
   /**

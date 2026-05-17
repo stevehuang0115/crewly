@@ -267,6 +267,48 @@ describe('ChatV2Gateway', () => {
       ws.close(1000, 'client disconnect');
       expect(gw.subscriberCount('c1')).toBe(0);
     });
+
+    // onBroadcast — external listener registration for Cloud Portal relay
+    // adapter. The adapter needs to mirror every broadcast over the Cloud
+    // queue, even when there are zero local WebSocket subscribers.
+    it('onBroadcast listener fires on every broadcast (even with no WS subscribers)', () => {
+      const { service } = makeService('u1', 'c-empty', 'agent-1');
+      const gw = new ChatV2Gateway({ service, verifyToken: async () => ({ userId: 'u1' }) });
+      const events: Array<{ channelId: string; event: unknown }> = [];
+      gw.onBroadcast((channelId, event) => events.push({ channelId, event }));
+      // No connected WS clients.
+      gw.broadcast('c-empty', buildMessageEvent('c-empty', makeMsgDTO('c-empty')));
+      expect(events).toHaveLength(1);
+      expect(events[0].channelId).toBe('c-empty');
+    });
+
+    it('onBroadcast unsubscribe removes the listener', () => {
+      const { service } = makeService('u1', 'c1', 'agent-1');
+      const gw = new ChatV2Gateway({ service, verifyToken: async () => ({ userId: 'u1' }) });
+      let count = 0;
+      const off = gw.onBroadcast(() => {
+        count += 1;
+      });
+      gw.broadcast('c1', buildMessageEvent('c1', makeMsgDTO('c1')));
+      expect(count).toBe(1);
+      off();
+      gw.broadcast('c1', buildMessageEvent('c1', makeMsgDTO('c1')));
+      expect(count).toBe(1);
+    });
+
+    it('a misbehaving listener does not break the broadcast loop', async () => {
+      const { gw, ws } = await makeConnectedGateway();
+      gw.onBroadcast(() => {
+        throw new Error('listener exploded');
+      });
+      const events: Array<unknown> = [];
+      gw.onBroadcast((_c, ev) => events.push(ev));
+      // The thrown listener must not stop the second listener from firing,
+      // nor block the local WS broadcast.
+      gw.broadcast('c1', buildMessageEvent('c1', makeMsgDTO('c1')));
+      expect(events).toHaveLength(1);
+      expect(ws.sent).toHaveLength(1);
+    });
   });
 
   describe('handleMessage — ping/pong', () => {
