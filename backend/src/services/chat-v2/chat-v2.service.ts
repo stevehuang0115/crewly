@@ -157,9 +157,27 @@ export interface SendMessageArgs {
   /** Attachment hooks — the store is added in a later step, so pre-resolved DTOs are accepted. */
   attachments?: ChatAttachmentDTO[];
   /**
-   * Phase A (SEALED §3.2) — array of mention IDs (member or team)
-   * referenced inline in `content`. Persisted as JSON; emitted on the
-   * outbound message DTO. Empty / omitted → no mentions.
+   * Phase A (SEALED §3.2) — array of mention IDs referenced inline in
+   * `content`. Persisted as JSON; emitted on the outbound message DTO.
+   * Empty / omitted → no mentions.
+   *
+   * **Wire-shape varies by channel type — callers must pass the right
+   * one for the channel they're posting to:**
+   *
+   * - `type='channel'`: each entry is a **member id** or **team id**.
+   *   The dispatcher routes these through `ChatV2MentionResolver` to
+   *   look up the matching session name(s).
+   *
+   * - `type='huddle'`: each entry is an **agent session name** (the
+   *   same shape that goes into `chat_channel_members.member_session`).
+   *   The dispatcher does NOT run them through the resolver — they're
+   *   matched directly against the huddle roster to set per-recipient
+   *   `responseMode` (`'required'` for mentioned members, `'optional'`
+   *   otherwise).
+   *
+   * - `type='dm'`: mentions are advisory only — DMs have a single
+   *   recipient already, and the dispatcher doesn't re-route based on
+   *   mentions.
    */
   mentions?: string[];
   /**

@@ -488,6 +488,21 @@ function rebuildChatChannelsForHuddleIfNeeded(db: ChatDatabase): boolean {
     )
     .all() as Array<{ name: string; sql: string }>;
 
+  // CRITICAL: `chat_messages.channel_id` is `REFERENCES chat_channels(id)
+  // ON DELETE CASCADE`. With `PRAGMA foreign_keys = ON` (set in
+  // openChatDatabase), `DROP TABLE chat_channels` would cascade-delete
+  // EVERY message in the database — wiping chat history on a real
+  // user's OSS install. SQLite's recommended 12-step ALTER TABLE
+  // procedure (https://www.sqlite.org/lang_altertable.html#otheralter)
+  // requires `foreign_keys = OFF` for the duration of the rebuild and a
+  // `foreign_key_check` afterward to assert no orphans remain.
+  //
+  // We capture the prior pragma state and restore it on exit so this
+  // function is safe to call against either a FK-enforcing or
+  // FK-disabled database.
+  const prevForeignKeys = (db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys;
+  db.exec('PRAGMA foreign_keys = OFF');
+
   // Wrap in a transaction so a crash mid-rebuild rolls back cleanly.
   db.exec('BEGIN');
   try {
@@ -529,7 +544,20 @@ function rebuildChatChannelsForHuddleIfNeeded(db: ChatDatabase): boolean {
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
+    db.exec(`PRAGMA foreign_keys = ${prevForeignKeys ? 'ON' : 'OFF'}`);
     throw err;
+  }
+  // Sanity check: no orphaned FK references after the rebuild. If any
+  // chat_messages.channel_id no longer points at a valid row we surface
+  // it as an error so the caller knows the DB needs operator attention
+  // — better than silently re-enabling FK enforcement and getting
+  // surprised at the next write.
+  const orphans = db.prepare(`PRAGMA foreign_key_check`).all() as unknown[];
+  db.exec(`PRAGMA foreign_keys = ${prevForeignKeys ? 'ON' : 'OFF'}`);
+  if (orphans.length > 0) {
+    throw new Error(
+      `chat-v2 migration: foreign_key_check found ${orphans.length} orphaned rows after chat_channels rebuild`,
+    );
   }
   return true;
 }
