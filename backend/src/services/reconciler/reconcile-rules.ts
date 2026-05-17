@@ -779,6 +779,16 @@ export function detectUnclaimedTasks(
 
     if (hasActiveAgent && waitTime < effectiveThreshold) continue;
 
+    // 2026-05-17 — never auto-wake for untargeted WIs. If a WorkItem
+    // doesn't name a `target`, the reconciler used to pick the
+    // "highest-score" wakable agent by skill match (developer-role +
+    // tag-keyword overlap). That meant a stale unassigned delegate WI
+    // queued days ago could spin a fresh agent back to life on every
+    // restart, racking up RAM with no actual work the agent could do
+    // (the WI is unowned). Strict policy: only wake when the WI
+    // explicitly names an offline target via `wi.target`.
+    if (!wi.target) continue;
+
     // Score each wakable agent for this WorkItem
     const bestAgent = selectBestAgent(wi, wakableAgents, waitTime, agentsToWake);
     if (!bestAgent) continue;
@@ -830,9 +840,22 @@ export function selectBestAgent(
   waitTimeMs: number,
   excludeAgents: Set<string> = new Set(),
 ): { agent: AgentHealth; score: number; breakdown: AgentScoreBreakdown } | null {
+  // 2026-05-17 — when a WorkItem has an explicit `target`, ONLY consider
+  // waking that exact agent. The previous "best-score across all agents"
+  // behaviour quietly substituted a different agent when the named target
+  // was offline (e.g. a queued `respond_to_user` WI for `crewly-orc` would
+  // wake Quinn / Reed / Victor based on skill score). That defeats the
+  // intent of the WI's target field — Quinn cannot respond to a Slack
+  // message addressed to orc. Honouring `target` strictly means: if the
+  // target isn't currently wakable, the WI stays queued and only its
+  // owning agent will pick it up when it comes back online.
+  const candidates = workItem.target
+    ? agents.filter((a) => a.sessionName === workItem.target)
+    : agents;
+
   let bestResult: { agent: AgentHealth; score: number; breakdown: AgentScoreBreakdown } | null = null;
 
-  for (const agent of agents) {
+  for (const agent of candidates) {
     if (excludeAgents.has(agent.sessionName)) continue;
 
     const breakdown = computeAgentScore(workItem, agent, waitTimeMs);

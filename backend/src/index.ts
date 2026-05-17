@@ -2402,7 +2402,7 @@ export class CrewlyServer {
 			// and auditor sessions when auditor is disabled
 			const isAuditorEnabled = process.env[AUDITOR_CONSTANTS.ENV_VAR]?.toLowerCase() === 'true'
 				|| (process.env[AUDITOR_CONSTANTS.ENV_VAR] === undefined && AUDITOR_CONSTANTS.ENABLED_BY_DEFAULT);
-			const agentSessions = state.sessions.filter(
+			const baselineSessions = state.sessions.filter(
 				(s) => {
 					if (s.role === ORCHESTRATOR_ROLE) return false;
 					if (!isAuditorEnabled && s.name === AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME) return false;
@@ -2410,8 +2410,53 @@ export class CrewlyServer {
 				}
 			);
 
+			// 2026-05-17 — gate by task-pool work. Pre-fix the boot path
+			// blindly resurrected every persisted session even when none had
+			// pending work, defeating the wake-gate philosophy (PR #574/#585)
+			// and bloating RAM until IdleDetection eventually drained them
+			// back. Now: only restore a session if the pool has at least one
+			// non-terminal WorkItem with `target === sessionName`. Idle
+			// agents stay dead until orc dispatches new work, at which point
+			// the dispatcher / wake path raises them on demand.
+			//
+			// Safety valve: if the pool lookup throws (e.g. SQLite not yet
+			// open during early boot), preserve the legacy behaviour rather
+			// than block all restores — better to over-restore than to
+			// silently strand work.
+			let agentSessions = baselineSessions;
+			try {
+				const pool = TaskPoolService.getInstance();
+				const allItems = await pool.getAllItems();
+				const targetedSessions = new Set<string>();
+				for (const wi of allItems) {
+					if (wi.status === 'done' || wi.status === 'cancelled') continue;
+					const t = (wi as { target?: string }).target;
+					if (typeof t === 'string' && t.length > 0) targetedSessions.add(t);
+				}
+				const filtered = baselineSessions.filter((s) => targetedSessions.has(s.name));
+				const skipped = baselineSessions
+					.filter((s) => !targetedSessions.has(s.name))
+					.map((s) => s.name);
+				if (skipped.length > 0) {
+					this.logger.info(
+						'Skipping auto-restore for sessions with no pending WorkItem (idle agents stay dead until dispatched work arrives)',
+						{
+							skippedCount: skipped.length,
+							skipped: skipped.slice(0, 20),
+							truncated: skipped.length > 20,
+						},
+					);
+				}
+				agentSessions = filtered;
+			} catch (poolErr) {
+				this.logger.warn(
+					'Auto-restore could not query task pool; falling back to restoring every persisted session',
+					{ error: poolErr instanceof Error ? poolErr.message : String(poolErr) },
+				);
+			}
+
 			if (agentSessions.length === 0) {
-				this.logger.debug('No non-orchestrator sessions to restore');
+				this.logger.info('No persisted agent sessions to restore (all idle, no pending WorkItems)');
 				return;
 			}
 
