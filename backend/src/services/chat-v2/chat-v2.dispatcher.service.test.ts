@@ -494,5 +494,151 @@ describe('ChatV2DispatcherService', () => {
         expect(capturedCtx).toEqual({ teamId: 'team-product' });
       });
     });
+
+    // ----------------------------------------------------------------
+    // Phase B-2 (2026-05-17) — huddle broadcast.
+    // ----------------------------------------------------------------
+
+    describe('huddle broadcast', () => {
+      /** Build a `type='huddle'` channel DTO fixture. */
+      function makeHuddle(overrides: Partial<ChatChannelDTO> = {}): ChatChannelDTO {
+        return {
+          id: 'huddle-1',
+          agentSession: '',
+          name: 'Q4 planning',
+          createdAt: 1,
+          archivedAt: null,
+          lastMessageAt: null,
+          agentPresence: { status: 'online', lastSeenAt: null },
+          type: 'huddle',
+          ...overrides,
+        };
+      }
+
+      it('skips when no huddleMembersFor resolver is wired', async () => {
+        const { sink, calls } = makeSink({ success: true });
+        const dispatcher = new ChatV2DispatcherService({ agentSink: sink });
+
+        const result = await dispatcher.dispatchMessage(
+          makeHuddle(),
+          makeMessage({ mentions: [] }),
+        );
+
+        expect(result.strategy).toBe('skip');
+        expect(result.dispatched).toBe(false);
+        expect(result.reason).toMatch(/huddleMembersFor/);
+        expect(calls).toHaveLength(0);
+      });
+
+      it('skips when the roster is empty', async () => {
+        const { sink, calls } = makeSink({ success: true });
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => [],
+        });
+
+        const result = await dispatcher.dispatchMessage(makeHuddle(), makeMessage());
+        expect(result.strategy).toBe('skip');
+        expect(result.reason).toMatch(/no members/);
+        expect(calls).toHaveLength(0);
+      });
+
+      it('broadcasts to EVERY member regardless of mentions', async () => {
+        const { sink, calls } = makeSink({ success: true });
+        const members = ['sess-a', 'sess-b', 'sess-c'];
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => members,
+        });
+
+        const result = await dispatcher.dispatchMessage(
+          makeHuddle(),
+          makeMessage({ mentions: [] }), // nobody @-mentioned
+        );
+
+        expect(result.strategy).toBe('huddle-broadcast');
+        expect(result.dispatched).toBe(true);
+        expect(result.huddleOutcomes).toHaveLength(3);
+        expect(calls.map((c) => c.sessionName).sort()).toEqual(['sess-a', 'sess-b', 'sess-c']);
+        // No one was @-mentioned → everyone is responseMode='optional'.
+        for (const o of result.huddleOutcomes!) {
+          expect(o.responseMode).toBe('optional');
+          expect(o.dispatched).toBe(true);
+        }
+      });
+
+      it('marks @-mentioned members as response-required, others as optional', async () => {
+        const { sink, calls } = makeSink({ success: true });
+        const members = ['sess-a', 'sess-b', 'sess-c'];
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => members,
+        });
+
+        const result = await dispatcher.dispatchMessage(
+          makeHuddle(),
+          makeMessage({ mentions: ['sess-b'] }),
+        );
+
+        expect(result.strategy).toBe('huddle-broadcast');
+        const byMember = new Map(result.huddleOutcomes!.map((o) => [o.sessionName, o]));
+        expect(byMember.get('sess-b')!.responseMode).toBe('required');
+        expect(byMember.get('sess-a')!.responseMode).toBe('optional');
+        expect(byMember.get('sess-c')!.responseMode).toBe('optional');
+
+        // Prompt body for sess-b uses the "required" reply hint;
+        // sess-a/c use the "optional" hint.
+        const calledForB = calls.find((c) => c.sessionName === 'sess-b')!;
+        expect(calledForB.message).toContain('reply-channel');
+        expect(calledForB.message).not.toMatch(/否则不回复也可以/);
+
+        const calledForA = calls.find((c) => c.sessionName === 'sess-a')!;
+        expect(calledForA.message).toMatch(/否则不回复也可以/);
+      });
+
+      it('captures per-member sink failures without short-circuiting the rest', async () => {
+        let n = 0;
+        const sink: AgentMessageSink = {
+          async sendMessageToAgent(sessionName) {
+            n += 1;
+            if (sessionName === 'sess-b') {
+              return { success: false, error: 'PTY closed' };
+            }
+            return { success: true };
+          },
+        };
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => ['sess-a', 'sess-b', 'sess-c'],
+        });
+
+        const result = await dispatcher.dispatchMessage(makeHuddle(), makeMessage());
+        expect(result.strategy).toBe('huddle-broadcast');
+        // Even though sess-b failed, sess-a and sess-c were attempted.
+        expect(n).toBe(3);
+        // At least one succeeded → dispatched=true.
+        expect(result.dispatched).toBe(true);
+        const failed = result.huddleOutcomes!.filter((o) => !o.dispatched);
+        expect(failed).toHaveLength(1);
+        expect(failed[0].sessionName).toBe('sess-b');
+        expect(failed[0].error).toContain('PTY closed');
+      });
+
+      it('skips agent-origin messages (no self-loopback)', async () => {
+        const { sink, calls } = makeSink({ success: true });
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => ['sess-a', 'sess-b'],
+        });
+
+        const result = await dispatcher.dispatchMessage(
+          makeHuddle(),
+          makeMessage({ senderType: 'agent', senderId: 'sess-a' }),
+        );
+        expect(result.strategy).toBe('skip');
+        expect(result.reason).toMatch(/not a user-origin/);
+        expect(calls).toHaveLength(0);
+      });
+    });
   });
 });

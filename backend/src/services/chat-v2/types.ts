@@ -36,7 +36,21 @@ export type ChatAgentPresenceStatus = 'online' | 'busy' | 'offline' | 'starting'
  * `idle` / `inactive` UI states via `@crewly/chat-ui`'s `ChatPresenceStatus`
  * union (the translation lives at the boundary, not here).
  */
-export type ChatChannelType = 'dm' | 'channel';
+/**
+ * Channel kind discriminator.
+ *
+ * - `'dm'`: legacy 1:1 user↔agent surface. `agent_session` is the wire
+ *   binding; `team_id` is null.
+ * - `'channel'`: Slack-like team-scoped surface. `team_id` is required;
+ *   membership is implicitly "everyone in the team".
+ * - `'huddle'` (Phase B-2 / 2026-05-17): ad-hoc multi-agent group.
+ *   Members are NOT derived from a team — they're stored explicitly in
+ *   `chat_channel_members`. Dispatcher fans the user's message out to
+ *   every member; agents decide whether to respond, but a member named
+ *   in `mentions[]` is told it MUST respond. See
+ *   `chat-v2.dispatcher.service.ts` for the prompt construction.
+ */
+export type ChatChannelType = 'dm' | 'channel' | 'huddle';
 
 /** Mention target kind — Phase B addition (SEALED design §7.1 chip pattern). */
 export type ChatMentionKind = 'team' | 'agent';
@@ -51,7 +65,7 @@ export const CHAT_CONTENT_TYPES: readonly ChatContentType[] = [
 ];
 
 /** Phase B — channel-type tuple for runtime validation in CreateChannelInput. */
-export const CHAT_CHANNEL_TYPES: readonly ChatChannelType[] = ['dm', 'channel'];
+export const CHAT_CHANNEL_TYPES: readonly ChatChannelType[] = ['dm', 'channel', 'huddle'];
 
 /** Phase B — mention-kind tuple for runtime validation in mention parsing. */
 export const CHAT_MENTION_KINDS: readonly ChatMentionKind[] = ['team', 'agent'];
@@ -189,6 +203,25 @@ export interface ChatChannelDTO {
    * (`@Sam`) rather than the session ID.
    */
   targetMemberId?: string;
+  /**
+   * Phase B-2 (2026-05-17) — for `type='huddle'` channels, the explicit
+   * member roster (agent session names). Populated by
+   * `ChatV2Service.listChannel` from `chat_channel_members`. Undefined
+   * for `'dm'` and `'channel'` rows.
+   */
+  members?: ChatHuddleMember[];
+}
+
+/**
+ * A single member of a huddle channel. Wire shape kept minimal — the
+ * frontend cross-references `sessionName` against the agent directory
+ * for human-readable name, role, presence, etc.
+ */
+export interface ChatHuddleMember {
+  /** Agent session name (matches `DirectoryAgent.agentSession`). */
+  sessionName: string;
+  /** ISO ms timestamp when this member was added to the huddle. */
+  joinedAt: number;
 }
 
 /** Outbound message shape for `GET /messages` / `POST /messages` / WS `message` frame. */

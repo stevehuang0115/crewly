@@ -1316,6 +1316,12 @@ export class CrewlyServer {
 				const chatDispatcher = new ChatV2DispatcherService({
 					agentSink: this.apiController.agentRegistrationService,
 					mentionResolver: chatMentionResolver,
+					// Phase B-2 — huddle roster lookup. ChatV2Service owns
+					// the chat_channel_members table; the dispatcher just
+					// needs the list of session names for a given channel
+					// to fan-out a user message to every huddle member.
+					huddleMembersFor: (channelId) =>
+						chatService.queryHuddleMembersForDispatch(channelId),
 				});
 				this.chatV2Gateway = chatGateway;
 				this.chatV2Dispatcher = chatDispatcher;

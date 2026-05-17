@@ -332,6 +332,122 @@ describe('openChatDatabase', () => {
       }
     });
 
+    // -------------------------------------------------------------------------
+    // Phase B-2 (2026-05-17) — chat_channels CHECK rebuild safety.
+    //
+    // The chat_channels.type CHECK constraint originally listed only
+    // ('dm','channel'). Adding 'huddle' requires a full table rebuild
+    // (SQLite has no ALTER ... DROP CHECK). The rebuild touches DROP
+    // TABLE + RENAME on a table that's the target of a CASCADE foreign
+    // key from chat_messages — if foreign_keys is left ON during the
+    // rebuild, the DROP cascades and wipes every message. These tests
+    // pin the safe path: messages survive across the migration.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Fresh-Phase-A DDL — what a database built between the Phase A merge
+     * and the huddle PR looks like. Crucially, the CHECK constraint lists
+     * only ('dm','channel') — `rebuildChatChannelsForHuddleIfNeeded` is
+     * supposed to detect that and rebuild.
+     */
+    const PHASE_A_BUT_PRE_HUDDLE_DDL = `
+      CREATE TABLE chat_channels (
+        id                TEXT PRIMARY KEY,
+        agent_session     TEXT NOT NULL,
+        owner_user_id     TEXT NOT NULL,
+        name              TEXT NOT NULL,
+        purpose           TEXT,
+        created_at        INTEGER NOT NULL,
+        archived_at       INTEGER,
+        last_message_at   INTEGER,
+        type              TEXT NOT NULL DEFAULT 'dm'
+                          CHECK(type IN ('dm','channel')),
+        team_id           TEXT,
+        project_id        TEXT,
+        target_member_id  TEXT
+      );
+      CREATE TABLE chat_messages (
+        id           TEXT PRIMARY KEY,
+        channel_id   TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+        seq          INTEGER NOT NULL,
+        sender_type  TEXT NOT NULL CHECK(sender_type IN ('user','agent','system')),
+        sender_id    TEXT NOT NULL,
+        content      TEXT NOT NULL,
+        content_type TEXT NOT NULL DEFAULT 'markdown',
+        created_at   INTEGER NOT NULL,
+        metadata     TEXT,
+        mentions     TEXT,
+        thread_id    TEXT
+      );
+    `;
+
+    function openPhaseAButPreHuddleDb() {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const Database = require('better-sqlite3');
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(PHASE_A_BUT_PRE_HUDDLE_DDL);
+      return db;
+    }
+
+    it('rebuilds chat_channels for huddle support WITHOUT wiping cascaded messages', () => {
+      const db = openPhaseAButPreHuddleDb();
+      try {
+        // Seed: one DM channel + three messages. With foreign_keys=ON the
+        // CASCADE FK from chat_messages.channel_id means a naive DROP TABLE
+        // chat_channels would erase all three rows. The migration must
+        // disable foreign_keys around the rebuild to keep them.
+        db.prepare(
+          `INSERT INTO chat_channels (id, agent_session, owner_user_id, name, created_at, type)
+           VALUES (?, ?, ?, ?, ?, 'dm')`,
+        ).run('ch-1', 'sess-a', 'user-1', 'Sam', 1);
+        for (let i = 0; i < 3; i++) {
+          db.prepare(
+            `INSERT INTO chat_messages (id, channel_id, seq, sender_type, sender_id, content, created_at)
+             VALUES (?, 'ch-1', ?, 'user', 'user-1', ?, ?)`,
+          ).run(`msg-${i}`, i + 1, `hello ${i}`, 100 + i);
+        }
+
+        const report = applyPhaseAColumnUpgrades(db);
+        expect(report.channelsCheckRebuilt).toBe(true);
+
+        // All messages survive.
+        const surviving = db
+          .prepare('SELECT id, channel_id, content FROM chat_messages ORDER BY seq ASC')
+          .all() as Array<{ id: string; channel_id: string; content: string }>;
+        expect(surviving).toHaveLength(3);
+        expect(surviving.map((r) => r.id)).toEqual(['msg-0', 'msg-1', 'msg-2']);
+
+        // Channel survives + can now accept type='huddle'.
+        db.prepare(
+          `INSERT INTO chat_channels (id, agent_session, owner_user_id, name, created_at, type)
+           VALUES (?, '', ?, ?, ?, 'huddle')`,
+        ).run('hd-1', 'user-1', 'My huddle', 2);
+        const huddle = db
+          .prepare("SELECT type FROM chat_channels WHERE id = 'hd-1'")
+          .get() as { type: string };
+        expect(huddle.type).toBe('huddle');
+
+        // foreign_keys pragma was restored after the rebuild.
+        const fk = db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number };
+        expect(fk.foreign_keys).toBe(1);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('skips the rebuild on a database whose chat_channels already accepts huddle (idempotent)', () => {
+      // Fresh openChatDatabase already bakes the new CHECK; running the
+      // upgrade twice must report channelsCheckRebuilt=false.
+      const db = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
+      try {
+        const report = applyPhaseAColumnUpgrades(db);
+        expect(report.channelsCheckRebuilt).toBe(false);
+      } finally {
+        db.close();
+      }
+    });
+
     it('is no-op idempotent: running the upgrade twice produces no changes the second time', () => {
       const db = openLegacyDb();
       try {

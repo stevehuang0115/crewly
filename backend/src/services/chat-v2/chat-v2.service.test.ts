@@ -1664,4 +1664,110 @@ describe('ChatV2Service', () => {
       expect(service.countChannelMessages(ch.id, owner)).toBe(2);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Phase B-2 (2026-05-17): createHuddle + listHuddleMembers + queryHuddleMembersForDispatch
+  // ---------------------------------------------------------------------------
+
+  describe('createHuddle', () => {
+    it('creates a type=huddle channel with the given roster', () => {
+      const dto = service.createHuddle({
+        name: 'Q4 planning',
+        memberSessions: ['sess-a', 'sess-b', 'sess-c'],
+        principal: owner,
+      });
+
+      expect(dto.type).toBe('huddle');
+      expect(dto.name).toBe('Q4 planning');
+      expect(dto.agentSession).toBe(''); // huddle is not 1:1-bound
+      expect(dto.teamId).toBeUndefined();
+      expect(dto.members?.map((m) => m.sessionName).sort()).toEqual(['sess-a', 'sess-b', 'sess-c']);
+      for (const m of dto.members!) {
+        expect(m.joinedAt).toBe(1000); // matches the test clock
+      }
+    });
+
+    it('dedupes and trims member sessions', () => {
+      const dto = service.createHuddle({
+        name: 'Dupes',
+        memberSessions: [' sess-a ', 'sess-a', 'sess-b', '', '   '],
+        principal: owner,
+      });
+      expect(dto.members?.map((m) => m.sessionName).sort()).toEqual(['sess-a', 'sess-b']);
+    });
+
+    it('rejects empty membership', () => {
+      expect(() =>
+        service.createHuddle({ name: 'Empty', memberSessions: [], principal: owner }),
+      ).toThrow(/at least one agent session/);
+      expect(() =>
+        service.createHuddle({ name: 'Whitespace', memberSessions: ['  ', ''], principal: owner }),
+      ).toThrow(/at least one agent session/);
+    });
+
+    it('rejects blank name', () => {
+      expect(() =>
+        service.createHuddle({ name: '   ', memberSessions: ['sess-a'], principal: owner }),
+      ).toThrow(/name is required/);
+    });
+
+    it('caps the roster size to 50', () => {
+      const fifty = Array.from({ length: 50 }, (_, i) => `sess-${i}`);
+      // 50 is fine
+      expect(() =>
+        service.createHuddle({ name: 'Big', memberSessions: fifty, principal: owner }),
+      ).not.toThrow();
+      // 51 throws
+      expect(() =>
+        service.createHuddle({
+          name: 'Bigger',
+          memberSessions: [...fifty, 'sess-51'],
+          principal: owner,
+        }),
+      ).toThrow(/50-member cap/);
+    });
+  });
+
+  describe('listHuddleMembers', () => {
+    it('returns the roster ordered by joined_at ASC', () => {
+      const huddle = service.createHuddle({
+        name: 'h',
+        memberSessions: ['sess-a', 'sess-b', 'sess-c'],
+        principal: owner,
+      });
+      const members = service.listHuddleMembers(huddle.id, owner);
+      expect(members.map((m) => m.sessionName).sort()).toEqual(['sess-a', 'sess-b', 'sess-c']);
+    });
+
+    it('returns an empty array for a non-huddle channel (instead of throwing)', () => {
+      const dm = createSam();
+      expect(service.listHuddleMembers(dm.id, owner)).toEqual([]);
+    });
+
+    it('refuses to expose a huddle owned by a different user', () => {
+      const huddle = service.createHuddle({
+        name: 'h',
+        memberSessions: ['sess-a'],
+        principal: owner,
+      });
+      expect(() => service.listHuddleMembers(huddle.id, otherUser)).toThrow();
+    });
+  });
+
+  describe('queryHuddleMembersForDispatch', () => {
+    it('returns just the session names (dispatcher-shaped)', () => {
+      const huddle = service.createHuddle({
+        name: 'h',
+        memberSessions: ['sess-a', 'sess-b'],
+        principal: owner,
+      });
+      const sessions = service.queryHuddleMembersForDispatch(huddle.id);
+      expect(sessions.sort()).toEqual(['sess-a', 'sess-b']);
+    });
+
+    it('returns empty for non-huddle channels', () => {
+      const dm = createSam();
+      expect(service.queryHuddleMembersForDispatch(dm.id)).toEqual([]);
+    });
+  });
 });
