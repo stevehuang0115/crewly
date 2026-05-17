@@ -1263,6 +1263,18 @@ export const CLOUD_SYNC_CONSTANTS = {
 	MESSAGE_POLL_INTERVAL_MS: 5_000,
 	/** Interval between device list poll requests (ms) */
 	DEVICE_POLL_INTERVAL_MS: 30_000,
+	/**
+	 * Interval between queue/register re-registrations (ms).
+	 *
+	 * The relay's auto-pair only matches devices in `pairingWait`. If a
+	 * Portal that was paired with this OSS closes uncleanly (closed tab,
+	 * hard crash), the relay leaves OSS wedged `state: paired` against
+	 * the dead session — and every fresh Portal that registers afterward
+	 * joins pairingWait alone with no peer to match. The relay's
+	 * register-time stale-pair eviction frees us, but only on the next
+	 * register. We re-register on this interval so recovery is bounded.
+	 */
+	REGISTER_INTERVAL_MS: 60_000,
 	/** Device considered offline after this threshold (ms) */
 	OFFLINE_THRESHOLD_MS: 60_000,
 	/** HTTP request timeout for sync API calls (ms) */
