@@ -289,6 +289,8 @@ export type ChatRpcMethod =
   | 'listChannels'
   | 'ensureDmChannel'
   | 'createChannel'
+  | 'createHuddle'
+  | 'listHuddleMembers'
   | 'listMessages'
   | 'sendMessage';
 
@@ -299,6 +301,8 @@ export const CHAT_RPC_METHODS: readonly ChatRpcMethod[] = [
   'listChannels',
   'ensureDmChannel',
   'createChannel',
+  'createHuddle',
+  'listHuddleMembers',
   'listMessages',
   'sendMessage',
 ] as const;

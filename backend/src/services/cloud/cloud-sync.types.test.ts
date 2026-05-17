@@ -239,6 +239,8 @@ describe('cloud-sync.types', () => {
         'listChannels',
         'ensureDmChannel',
         'createChannel',
+        'createHuddle',
+        'listHuddleMembers',
         'listMessages',
         'sendMessage',
       ]);

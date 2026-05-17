@@ -201,6 +201,73 @@ describe('ChatV2RelayAdapter', () => {
     expect((r.result as { channels: unknown[] }).channels).toEqual([]);
   });
 
+  // -------------------------------------------------------------------------
+  // 2026-05-17 Phase B-2 — huddle RPC plumbing
+  // -------------------------------------------------------------------------
+
+  it('createHuddle RPC creates a type=huddle channel with the given roster', async () => {
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-h1', {
+        id: 'r-h1',
+        method: 'createHuddle',
+        params: {
+          name: 'Q4 planning',
+          memberSessions: ['sess-a', 'sess-b', 'sess-c'],
+        },
+      }),
+    );
+    await flushMicrotasks();
+    const r = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect(r.error).toBeUndefined();
+    const ch = r.result as { type: string; name: string; members: Array<{ sessionName: string }> };
+    expect(ch.type).toBe('huddle');
+    expect(ch.name).toBe('Q4 planning');
+    expect(ch.members.map((m) => m.sessionName).sort()).toEqual(['sess-a', 'sess-b', 'sess-c']);
+  });
+
+  it('createHuddle RPC ignores non-string members in the input array', async () => {
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-h2', {
+        id: 'r-h2',
+        method: 'createHuddle',
+        params: {
+          name: 'h',
+          // Caller passes a junky array (mistake or hostile input).
+          // The adapter must filter out non-strings before calling
+          // the service so we never crash on `.trim()`.
+          memberSessions: ['sess-a', 42, null, 'sess-b'] as unknown as string[],
+        },
+      }),
+    );
+    await flushMicrotasks();
+    const r = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect(r.error).toBeUndefined();
+    const ch = r.result as { members: Array<{ sessionName: string }> };
+    expect(ch.members.map((m) => m.sessionName).sort()).toEqual(['sess-a', 'sess-b']);
+  });
+
+  it('listHuddleMembers RPC returns the roster for an existing huddle', async () => {
+    // First create a huddle so we have something to list.
+    const huddle = service.createHuddle({
+      name: 'h',
+      memberSessions: ['sess-x', 'sess-y'],
+      principal: { userId: 'dev-user-001', source: 'oss' },
+    });
+
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-h3', {
+        id: 'r-h3',
+        method: 'listHuddleMembers',
+        params: { channelId: huddle.id },
+      }),
+    );
+    await flushMicrotasks();
+    const r = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect(r.error).toBeUndefined();
+    const out = r.result as { members: Array<{ sessionName: string }> };
+    expect(out.members.map((m) => m.sessionName).sort()).toEqual(['sess-x', 'sess-y']);
+  });
+
   it('ensureDmChannel creates a channel and replies with the DTO', async () => {
     cloudSync.emitInbound(
       buildRequestMsg('portal-2', {

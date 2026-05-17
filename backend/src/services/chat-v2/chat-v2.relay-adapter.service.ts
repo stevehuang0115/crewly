@@ -419,12 +419,31 @@ export class ChatV2RelayAdapter {
           name: this.requireString(p, 'name'),
           purpose: this.optionalString(p, 'purpose'),
           principal,
-          type: p['type'] as 'dm' | 'channel' | undefined,
+          type: p['type'] as 'dm' | 'channel' | 'huddle' | undefined,
           teamId: this.optionalString(p, 'teamId'),
           projectId: this.optionalString(p, 'projectId'),
           targetMemberId: this.optionalString(p, 'targetMemberId'),
         });
         return this.serializeChannel(channel);
+      }
+      case 'createHuddle': {
+        const rawMembers = Array.isArray(p['memberSessions'])
+          ? (p['memberSessions'] as unknown[]).filter((m): m is string => typeof m === 'string')
+          : [];
+        const channel = this.service.createHuddle({
+          name: this.requireString(p, 'name'),
+          purpose: this.optionalString(p, 'purpose'),
+          memberSessions: rawMembers,
+          principal,
+        });
+        return this.serializeChannel(channel);
+      }
+      case 'listHuddleMembers': {
+        const members = this.service.listHuddleMembers(
+          this.requireString(p, 'channelId'),
+          principal,
+        );
+        return { members };
       }
       case 'listMessages': {
         const result = this.service.listMessages({
