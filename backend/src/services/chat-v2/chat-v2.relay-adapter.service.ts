@@ -103,6 +103,21 @@ export interface IChatV2GatewayLike {
   ): () => void;
 }
 
+/**
+ * Minimal ChatV2DispatcherService surface. Required for the
+ * `sendMessage` RPC method — when Portal sends a user message via the
+ * relay, the adapter persists it (via ChatV2Service) AND fires the
+ * dispatcher so the bound agent's PTY actually receives a
+ * `[CHAT:<id>]` prompt. The HTTP controller does the same thing for
+ * local /agents traffic; this brings the relay path to parity.
+ */
+export interface IChatV2DispatcherLike {
+  dispatchMessage(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+  ): Promise<unknown>;
+}
+
 /** Constructor options for {@link ChatV2RelayAdapter}. */
 export interface ChatV2RelayAdapterOptions {
   /** The chat service to dispatch RPC calls against. */
@@ -111,6 +126,14 @@ export interface ChatV2RelayAdapterOptions {
   gateway: IChatV2GatewayLike;
   /** Cloud sync — used both to listen for chat_request and to send replies. */
   cloudSync: ICloudSyncLike;
+  /**
+   * Optional ChatV2 dispatcher — fired after a Portal-sourced user
+   * `sendMessage` RPC so the bound agent's PTY receives the
+   * `[CHAT:<id>]` prompt (mirrors the HTTP controller's post-ack path).
+   * When omitted (REST-only tests), Portal messages persist but agents
+   * don't react — verify carefully before relying on this fallback.
+   */
+  dispatcher?: IChatV2DispatcherLike;
   /** Directory provider — backs the `listAgents` RPC method. */
   directory?: IAgentDirectoryProvider;
   /** Presence provider — backs the `getAgentPresence` RPC method. */
@@ -148,6 +171,7 @@ export class ChatV2RelayAdapter {
   private readonly service: ChatV2Service;
   private readonly gateway: IChatV2GatewayLike;
   private readonly cloudSync: ICloudSyncLike;
+  private readonly dispatcher?: IChatV2DispatcherLike;
   private readonly directory?: IAgentDirectoryProvider;
   private readonly presence?: IAgentPresenceProvider;
   private readonly portalIdleTtlMs: number;
@@ -165,6 +189,7 @@ export class ChatV2RelayAdapter {
     this.service = options.service;
     this.gateway = options.gateway;
     this.cloudSync = options.cloudSync;
+    this.dispatcher = options.dispatcher;
     this.directory = options.directory;
     this.presence = options.presence;
     this.portalIdleTtlMs = options.portalIdleTtlMs ?? DEFAULT_PORTAL_IDLE_TTL_MS;
@@ -424,6 +449,28 @@ export class ChatV2RelayAdapter {
             : undefined,
           threadId: this.optionalString(p, 'threadId'),
         });
+        // Fire-and-forget dispatch: mirror the HTTP controller's post-ack
+        // path so the bound agent's PTY receives a `[CHAT:<id>]` prompt.
+        // Without this, Portal-sent user messages persist but agents
+        // never react — the user sees nothing back.
+        if (this.dispatcher && message.senderType === 'user') {
+          try {
+            const channel = this.service.getChannel(message.channelId, principal);
+            void this.dispatcher
+              .dispatchMessage(channel, message)
+              .catch((err) => {
+                this.logger.warn('Portal-relay dispatch threw (non-fatal)', {
+                  channelId: message.channelId,
+                  error: formatError(err),
+                });
+              });
+          } catch (err) {
+            this.logger.warn('Portal-relay dispatch — getChannel failed (non-fatal)', {
+              channelId: message.channelId,
+              error: formatError(err),
+            });
+          }
+        }
         return this.serializeMessage(message, fromDevice);
       }
       default: {

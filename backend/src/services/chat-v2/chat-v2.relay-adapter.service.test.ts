@@ -13,6 +13,7 @@ import { ChatV2RelayAdapter } from './chat-v2.relay-adapter.service.js';
 import type {
   ICloudSyncLike,
   IChatV2GatewayLike,
+  IChatV2DispatcherLike,
 } from './chat-v2.relay-adapter.service.js';
 import type {
   IAgentDirectoryProvider,
@@ -61,6 +62,22 @@ class FakeCloudSync extends EventEmitter implements ICloudSyncLike {
 
   emitInbound(msg: IncomingMessage): void {
     this.emit('message', msg);
+  }
+}
+
+/**
+ * Fake ChatV2Dispatcher — records dispatchMessage calls and (optionally)
+ * rejects them. Lets tests assert that Portal-sourced sendMessage RPCs
+ * actually wake the bound agent in addition to persisting.
+ */
+class FakeDispatcher implements IChatV2DispatcherLike {
+  public calls: Array<{ channel: unknown; message: unknown }> = [];
+  public rejectWith: Error | null = null;
+
+  async dispatchMessage(channel: unknown, message: unknown): Promise<unknown> {
+    this.calls.push({ channel, message });
+    if (this.rejectWith) throw this.rejectWith;
+    return undefined;
   }
 }
 
@@ -228,6 +245,135 @@ describe('ChatV2RelayAdapter', () => {
     const msg = r.result as { senderType: string; content: string };
     expect(msg.senderType).toBe('user');
     expect(msg.content).toBe('hello relay');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 2026-05-17 dispatcher-wiring: Portal-sourced user `sendMessage` RPCs must
+  // also fire the ChatV2Dispatcher so the bound agent's PTY receives the
+  // `[CHAT:<id>]` prompt. Without this, Portal-sent messages persisted but
+  // agents never reacted (silent regression).
+  // ---------------------------------------------------------------------------
+
+  it('sendMessage fires the dispatcher on a Portal-sourced user message', async () => {
+    adapter.stop();
+    const dispatcher = new FakeDispatcher();
+    const dispatchAdapter = new ChatV2RelayAdapter({
+      service,
+      gateway,
+      cloudSync,
+      dispatcher,
+      directory,
+      presence,
+      now: () => 10_000,
+      portalIdleTtlMs: 60_000,
+    });
+    dispatchAdapter.start();
+
+    const ensure = service.ensureDmChannel({
+      agentSession: 'crewly-orc',
+      name: 'Orc',
+      principal: { userId: 'dev-user-001', source: 'oss' },
+    });
+
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-dispatch', {
+        id: 'r-dispatch',
+        method: 'sendMessage',
+        params: {
+          channelId: ensure.channel.id,
+          content: 'wake the agent',
+          clientMessageId: 'cmid-dispatch',
+        },
+      }),
+    );
+    await flushMicrotasks();
+
+    expect(dispatcher.calls).toHaveLength(1);
+    const dispatched = dispatcher.calls[0].message as {
+      senderType: string;
+      content: string;
+      channelId: string;
+    };
+    expect(dispatched.senderType).toBe('user');
+    expect(dispatched.content).toBe('wake the agent');
+    expect(dispatched.channelId).toBe(ensure.channel.id);
+
+    dispatchAdapter.stop();
+  });
+
+  it('sendMessage skips dispatcher when none is wired (back-compat)', async () => {
+    // Default adapter from beforeEach has no dispatcher — assert that a
+    // Portal sendMessage still persists + replies without throwing.
+    const ensure = service.ensureDmChannel({
+      agentSession: 'crewly-orc',
+      name: 'Orc',
+      principal: { userId: 'dev-user-001', source: 'oss' },
+    });
+
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-nodisp', {
+        id: 'r-nodisp',
+        method: 'sendMessage',
+        params: {
+          channelId: ensure.channel.id,
+          content: 'no dispatcher path',
+          clientMessageId: 'cmid-nodisp',
+        },
+      }),
+    );
+    await flushMicrotasks();
+
+    const reply = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect(reply.error).toBeUndefined();
+    expect((reply.result as { content: string }).content).toBe(
+      'no dispatcher path',
+    );
+  });
+
+  it('sendMessage swallows dispatcher rejection so the RPC still replies', async () => {
+    adapter.stop();
+    const dispatcher = new FakeDispatcher();
+    dispatcher.rejectWith = new Error('agent PTY closed');
+    const dispatchAdapter = new ChatV2RelayAdapter({
+      service,
+      gateway,
+      cloudSync,
+      dispatcher,
+      directory,
+      presence,
+      now: () => 10_000,
+      portalIdleTtlMs: 60_000,
+    });
+    dispatchAdapter.start();
+
+    const ensure = service.ensureDmChannel({
+      agentSession: 'crewly-orc',
+      name: 'Orc',
+      principal: { userId: 'dev-user-001', source: 'oss' },
+    });
+
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-rej', {
+        id: 'r-rej',
+        method: 'sendMessage',
+        params: {
+          channelId: ensure.channel.id,
+          content: 'dispatch will fail',
+          clientMessageId: 'cmid-rej',
+        },
+      }),
+    );
+    await flushMicrotasks();
+
+    // RPC reply must still land — dispatch is fire-and-forget.
+    const reply = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect(reply.error).toBeUndefined();
+    expect((reply.result as { content: string }).content).toBe(
+      'dispatch will fail',
+    );
+    expect(dispatcher.calls).toHaveLength(1);
+
+    dispatchAdapter.stop();
   });
 
   it('listAgents flattens the directory provider result', async () => {
