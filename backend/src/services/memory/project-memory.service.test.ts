@@ -231,7 +231,8 @@ describe('ProjectMemoryService', () => {
         expect(decisions[0].status).toBe('active');
       });
 
-      it('should return existing decision for same title', async () => {
+      it('should return existing decision when title AND decision content both match', async () => {
+        // P0-SEV: post-fix, dedup requires BOTH title and decision-content similarity.
         const firstId = await service.addDecision(testProjectPath, {
           title: 'Database Choice',
           decision: 'Use PostgreSQL',
@@ -241,8 +242,8 @@ describe('ProjectMemoryService', () => {
 
         const secondId = await service.addDecision(testProjectPath, {
           title: 'Database Choice',
-          decision: 'Different decision',
-          rationale: 'Different rationale',
+          decision: 'Use PostgreSQL',
+          rationale: 'Different rationale (ignored on dedup)',
           decidedBy: 'dev-001',
         });
 
@@ -593,6 +594,182 @@ describe('ProjectMemoryService', () => {
       expect(memory).not.toBeNull();
       expect(memory).toHaveProperty('projectId');
       expect(memory).toHaveProperty('projectPath');
+    });
+  });
+
+  /**
+   * Regression suite for the P0-SEV silent-success bug: rememberForProject
+   * collisions on default titles caused different content to be silently
+   * collapsed onto the same (stale) entry id.
+   *
+   * Pre-fix invariant (broken): same title OR similar content => dedup hit
+   * Post-fix invariant: same title AND similar content => dedup hit
+   *
+   * These tests FAIL on main and PASS on the fix branch.
+   */
+  describe('Silent-success regression (P0-SEV: dedup tightened to title AND content)', () => {
+    beforeEach(async () => {
+      await service.initializeProject(testProjectPath);
+    });
+
+    describe('Patterns', () => {
+      it('does NOT dedup two distinct contents that share the default title', async () => {
+        const firstId = await service.addPattern(testProjectPath, {
+          category: 'other',
+          title: 'Untitled Pattern',
+          description: 'first distinct pattern body — auth retry policy is 3x with jitter',
+          discoveredBy: 'dev-001',
+        });
+
+        const secondId = await service.addPattern(testProjectPath, {
+          category: 'other',
+          title: 'Untitled Pattern',
+          description: 'second distinct pattern body — DB pool size capped at 20',
+          discoveredBy: 'dev-002',
+        });
+
+        expect(firstId).not.toBe(secondId);
+        const patterns = await service.getPatterns(testProjectPath);
+        expect(patterns).toHaveLength(2);
+      });
+
+      it('STILL dedups identical content+title (legitimate dedup preserved)', async () => {
+        const firstId = await service.addPattern(testProjectPath, {
+          category: 'other',
+          title: 'Same Title',
+          description: 'identical content body',
+          discoveredBy: 'dev-001',
+        });
+        const secondId = await service.addPattern(testProjectPath, {
+          category: 'other',
+          title: 'Same Title',
+          description: 'identical content body',
+          discoveredBy: 'dev-002',
+        });
+
+        expect(firstId).toBe(secondId);
+        const patterns = await service.getPatterns(testProjectPath);
+        expect(patterns).toHaveLength(1);
+      });
+    });
+
+    describe('Decisions', () => {
+      it('does NOT dedup two distinct contents that share the default title', async () => {
+        const firstId = await service.addDecision(testProjectPath, {
+          title: 'Untitled Decision',
+          decision: 'first distinct decision — adopt Vitest for unit testing',
+          rationale: 'r1',
+          decidedBy: 'tech-lead',
+        });
+
+        const secondId = await service.addDecision(testProjectPath, {
+          title: 'Untitled Decision',
+          decision: 'second distinct decision — switch to pnpm for monorepo',
+          rationale: 'r2',
+          decidedBy: 'dev-001',
+        });
+
+        expect(firstId).not.toBe(secondId);
+        const decisions = await service.getDecisions(testProjectPath);
+        expect(decisions).toHaveLength(2);
+      });
+
+      it('STILL dedups identical content+title (legitimate dedup preserved)', async () => {
+        const firstId = await service.addDecision(testProjectPath, {
+          title: 'Pinned Decision',
+          decision: 'identical decision body',
+          rationale: 'r1',
+          decidedBy: 'tech-lead',
+        });
+        const secondId = await service.addDecision(testProjectPath, {
+          title: 'Pinned Decision',
+          decision: 'identical decision body',
+          rationale: 'r2',
+          decidedBy: 'dev-001',
+        });
+
+        expect(firstId).toBe(secondId);
+      });
+    });
+
+    describe('Gotchas', () => {
+      it('does NOT dedup two distinct contents that share the default title', async () => {
+        const firstId = await service.addGotcha(testProjectPath, {
+          title: 'Gotcha',
+          problem: 'first distinct gotcha problem — race in webhook retry queue',
+          solution: 's1',
+          severity: 'medium',
+          discoveredBy: 'dev-001',
+        });
+
+        const secondId = await service.addGotcha(testProjectPath, {
+          title: 'Gotcha',
+          problem: 'second distinct gotcha problem — float comparison in pricing module',
+          solution: 's2',
+          severity: 'medium',
+          discoveredBy: 'dev-002',
+        });
+
+        expect(firstId).not.toBe(secondId);
+        const gotchas = await service.getGotchas(testProjectPath);
+        expect(gotchas).toHaveLength(2);
+      });
+
+      it('STILL dedups identical content+title (legitimate dedup preserved)', async () => {
+        const firstId = await service.addGotcha(testProjectPath, {
+          title: 'Pinned Gotcha',
+          problem: 'identical gotcha body',
+          solution: 's1',
+          severity: 'medium',
+          discoveredBy: 'dev-001',
+        });
+        const secondId = await service.addGotcha(testProjectPath, {
+          title: 'Pinned Gotcha',
+          problem: 'identical gotcha body',
+          solution: 's1 (no longer)',
+          severity: 'medium',
+          discoveredBy: 'dev-002',
+        });
+
+        expect(firstId).toBe(secondId);
+      });
+    });
+
+    describe('Visibility', () => {
+      it('logs a WARN line when a dedup hit occurs (observable signal)', async () => {
+        // Spy on the service's logger to confirm WARN-level surfacing of dedup hits.
+        // This is the regression-detector for the silent-fail class of bugs:
+        // future dedup-predicate drift will be visible in observability instead of vanishing.
+        // We capture the logger from the service instance and watch for `.warn` calls.
+        const logger = (service as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger;
+        const warnSpy = jest.spyOn(logger, 'warn');
+
+        await service.addGotcha(testProjectPath, {
+          title: 'Pinned Gotcha',
+          problem: 'identical gotcha body',
+          solution: 's',
+          severity: 'medium',
+          discoveredBy: 'dev-001',
+        });
+        await service.addGotcha(testProjectPath, {
+          title: 'Pinned Gotcha',
+          problem: 'identical gotcha body',
+          solution: 's',
+          severity: 'medium',
+          discoveredBy: 'dev-002',
+        });
+
+        // First call: insert (no warn). Second call: dedup hit (warn).
+        const dedupWarns = warnSpy.mock.calls.filter(([msg]) =>
+          typeof msg === 'string' && msg.includes('dedup hit')
+        );
+        expect(dedupWarns.length).toBeGreaterThanOrEqual(1);
+        // Payload includes the colliding-id field for triage
+        const dedupCall = dedupWarns[0];
+        expect(dedupCall[1]).toHaveProperty('existingGotchaId');
+
+        warnSpy.mockRestore();
+      });
     });
   });
 });

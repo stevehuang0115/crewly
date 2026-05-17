@@ -354,6 +354,144 @@ describe('MemoryService', () => {
         scope: 'project',
       })).rejects.toThrow('not valid for project scope');
     });
+
+    /**
+     * P0-SEV silent-success regression suite:
+     *
+     * Pre-fix bug repro: caller omits metadata.title → service uses static
+     * default ('Gotcha' / 'Untitled Pattern' / 'Untitled Decision'), and the
+     * OR-clause dedup matches title-only, silently collapsing distinct payloads
+     * onto the same entry id.
+     *
+     * Post-fix invariant: omitting metadata.title MUST still produce distinct
+     * entries when the content differs.
+     *
+     * These tests FAIL on main and PASS on the fix branch.
+     */
+    describe('silent-success P0 fix — distinct content must persist when title is omitted', () => {
+      it('gotcha: two omitted-title calls with distinct content => two entries', async () => {
+        const id1 = await service.remember({
+          agentId: testAgentId,
+          projectPath: testProjectPath,
+          content: 'REPRO-A: webhook retry queue races on parent task completion',
+          category: 'gotcha',
+          scope: 'project',
+          // NB: NO metadata.title — this is the common-case caller path
+        });
+
+        const id2 = await service.remember({
+          agentId: testAgentId,
+          projectPath: testProjectPath,
+          content: 'REPRO-B: float comparison in pricing module returns wrong tier',
+          category: 'gotcha',
+          scope: 'project',
+        });
+
+        expect(id1).not.toBe(id2);
+
+        const projectService = service.getProjectMemoryService();
+        const gotchas = await projectService.getGotchas(testProjectPath);
+        const reproA = gotchas.find(g => g.problem.includes('REPRO-A'));
+        const reproB = gotchas.find(g => g.problem.includes('REPRO-B'));
+        expect(reproA).toBeDefined();
+        expect(reproB).toBeDefined();
+        expect(reproA?.id).not.toBe(reproB?.id);
+      });
+
+      it('decision: two omitted-title calls with distinct content => two entries', async () => {
+        const id1 = await service.remember({
+          agentId: testAgentId,
+          projectPath: testProjectPath,
+          content: 'REPRO-A: adopt Vitest for unit testing across packages',
+          category: 'decision',
+          scope: 'project',
+        });
+
+        const id2 = await service.remember({
+          agentId: testAgentId,
+          projectPath: testProjectPath,
+          content: 'REPRO-B: switch monorepo manager from npm to pnpm',
+          category: 'decision',
+          scope: 'project',
+        });
+
+        expect(id1).not.toBe(id2);
+
+        const projectService = service.getProjectMemoryService();
+        const decisions = await projectService.getDecisions(testProjectPath);
+        const reproA = decisions.find(d => d.decision.includes('REPRO-A'));
+        const reproB = decisions.find(d => d.decision.includes('REPRO-B'));
+        expect(reproA).toBeDefined();
+        expect(reproB).toBeDefined();
+      });
+
+      it('pattern: two omitted-title calls with distinct content => two entries', async () => {
+        const id1 = await service.remember({
+          agentId: testAgentId,
+          projectPath: testProjectPath,
+          content: 'REPRO-A: auth retry policy uses 3x exponential backoff with jitter',
+          category: 'pattern',
+          scope: 'project',
+        });
+
+        const id2 = await service.remember({
+          agentId: testAgentId,
+          projectPath: testProjectPath,
+          content: 'REPRO-B: DB connection pool size is capped at 20 per service instance',
+          category: 'pattern',
+          scope: 'project',
+        });
+
+        expect(id1).not.toBe(id2);
+
+        const projectService = service.getProjectMemoryService();
+        const patterns = await projectService.getPatterns(testProjectPath);
+        const reproA = patterns.find(p => p.description.includes('REPRO-A'));
+        const reproB = patterns.find(p => p.description.includes('REPRO-B'));
+        expect(reproA).toBeDefined();
+        expect(reproB).toBeDefined();
+      });
+
+      it('auto-derived title: omitted metadata.title falls back to content-derived title (not static default)', async () => {
+        const content = 'REPRO-content-derived-title: distinctive marker for assertion';
+        await service.remember({
+          agentId: testAgentId,
+          projectPath: testProjectPath,
+          content,
+          category: 'gotcha',
+          scope: 'project',
+        });
+
+        const projectService = service.getProjectMemoryService();
+        const gotchas = await projectService.getGotchas(testProjectPath);
+        const entry = gotchas.find(g => g.problem === content);
+        expect(entry).toBeDefined();
+        // Derived title should NOT be the static default 'Gotcha';
+        // it should start with the content prefix.
+        expect(entry?.title).not.toBe('Gotcha');
+        expect(entry?.title.startsWith('REPRO-content-derived-title')).toBe(true);
+      });
+
+      it('legitimate dedup preserved: identical omitted-title calls => one entry', async () => {
+        const content = 'identical gotcha content body for dedup verification';
+        const id1 = await service.remember({
+          agentId: testAgentId,
+          projectPath: testProjectPath,
+          content,
+          category: 'gotcha',
+          scope: 'project',
+        });
+        const id2 = await service.remember({
+          agentId: testAgentId,
+          projectPath: testProjectPath,
+          content,
+          category: 'gotcha',
+          scope: 'project',
+        });
+
+        expect(id1).toBe(id2);
+      });
+    });
   });
 
   describe('recall', () => {
