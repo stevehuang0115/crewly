@@ -130,6 +130,8 @@ export class CloudSyncService extends EventEmitter {
   private devicePollTimer: ReturnType<typeof setInterval> | null = null;
   /** Message poll timer handle */
   private messagePollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Queue re-register timer handle (lets relay evict stale Portal pairs). */
+  private registerTimer: ReturnType<typeof setInterval> | null = null;
 
   /** Consecutive heartbeat failure count */
   private heartbeatFailures = 0;
@@ -238,11 +240,19 @@ export class CloudSyncService extends EventEmitter {
       () => { this.pollMessages().catch(() => {}); },
       CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS
     );
+    // Periodic re-register lets the relay's stale-pair eviction kick in
+    // when a previously-paired Portal closes uncleanly. Without this,
+    // OSS would stay wedged against a dead Portal session until restart.
+    this.registerTimer = setInterval(
+      () => { this.registerQueue().catch(() => {}); },
+      CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS
+    );
 
     // Unref timers so they don't keep the process alive
     if (this.heartbeatTimer.unref) this.heartbeatTimer.unref();
     if (this.devicePollTimer.unref) this.devicePollTimer.unref();
     if (this.messagePollTimer.unref) this.messagePollTimer.unref();
+    if (this.registerTimer.unref) this.registerTimer.unref();
   }
 
   /**
@@ -258,6 +268,7 @@ export class CloudSyncService extends EventEmitter {
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     if (this.devicePollTimer) { clearInterval(this.devicePollTimer); this.devicePollTimer = null; }
     if (this.messagePollTimer) { clearInterval(this.messagePollTimer); this.messagePollTimer = null; }
+    if (this.registerTimer) { clearInterval(this.registerTimer); this.registerTimer = null; }
     if (this.errorRecoveryTimer) { clearInterval(this.errorRecoveryTimer); this.errorRecoveryTimer = null; }
 
     this.state = 'stopped';
@@ -1009,6 +1020,7 @@ export class CloudSyncService extends EventEmitter {
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     if (this.devicePollTimer) { clearInterval(this.devicePollTimer); this.devicePollTimer = null; }
     if (this.messagePollTimer) { clearInterval(this.messagePollTimer); this.messagePollTimer = null; }
+    if (this.registerTimer) { clearInterval(this.registerTimer); this.registerTimer = null; }
 
     this.state = 'auth_expired';
     this.emit('auth_expired');

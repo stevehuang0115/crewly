@@ -8,6 +8,7 @@
  */
 import {
   BROWSER_PROXY_CONSTANTS,
+  CLOUD_SYNC_CONSTANTS,
   GOOGLE_OAUTH_CONSTANTS,
 } from './constants.js';
 
@@ -88,5 +89,17 @@ describe('BROWSER_PROXY_CONSTANTS', () => {
     expect(BROWSER_PROXY_CONSTANTS.STALE_PURGE_THRESHOLD_MS).toBeGreaterThan(
       BROWSER_PROXY_CONSTANTS.SWEEP_INTERVAL_MS,
     );
+  });
+});
+
+describe('CLOUD_SYNC_CONSTANTS', () => {
+  it('REGISTER_INTERVAL_MS gives the relay a chance to evict stale Portal pairs within a minute', () => {
+    // The relay's stale-pair eviction only fires on register. If this
+    // interval grows too long, a Portal user who closes their tab and
+    // reopens in a new browser will sit `Cloud Active`-but-no-agents
+    // until OSS happens to re-register. One minute is the slow side of
+    // "tolerable" — keep it tight.
+    expect(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS).toBeGreaterThanOrEqual(30_000);
+    expect(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS).toBeLessThanOrEqual(120_000);
   });
 });
