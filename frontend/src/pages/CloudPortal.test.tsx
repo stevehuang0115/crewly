@@ -275,7 +275,7 @@ describe('CloudPortal', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2026-05-17 Connected-Devices role filter
+// 2026-05-17 Connected-Devices deviceName filter
 //
 // Exercising the filter via a full page render proved fragile (the
 // CloudPortal has additional cloud-connection gates around the device
@@ -283,11 +283,11 @@ describe('CloudPortal', () => {
 // directly is sharper and far more durable.
 // ---------------------------------------------------------------------------
 
-import { filterToOrchestrators } from './CloudPortal';
+import { filterToOssDevices } from './CloudPortal';
 import type { CloudDevice } from '../types/cloud.types';
 
-describe('filterToOrchestrators', () => {
-  it('keeps orchestrator-role entries and drops agent-role entries', () => {
+describe('filterToOssDevices', () => {
+  it('keeps entries that have a hostname (real OSS installations)', () => {
     const devices: CloudDevice[] = [
       { sessionId: 'oss-mac', deviceName: 'macbookpro.lan', role: 'orchestrator', state: 'paired' },
       { sessionId: 'oss-iris', deviceName: 'iriss-air.lan', role: 'orchestrator', state: 'paired' },
@@ -295,26 +295,40 @@ describe('filterToOrchestrators', () => {
       { sessionId: 'aad4cb2c', role: 'agent', state: 'paired' },
     ] as CloudDevice[];
 
-    const result = filterToOrchestrators(devices);
+    const result = filterToOssDevices(devices);
 
     expect(result).toHaveLength(2);
-    expect(result.map((d) => d.sessionId).sort()).toEqual(['oss-iris', 'oss-mac']);
+    expect(result.map((d) => d.deviceName).sort()).toEqual(['iriss-air.lan', 'macbookpro.lan']);
   });
 
-  it('returns an empty list when no orchestrators are present', () => {
+  it('drops entries that claim role=orchestrator but have no deviceName', () => {
+    // role is self-declared and unvalidated. A misbehaving client could
+    // register as `orchestrator` without a hostname — we still must not
+    // show it as if it were a real machine.
+    const devices: CloudDevice[] = [
+      { sessionId: 'fake-oss', role: 'orchestrator', state: 'paired' },
+      { sessionId: 'real-oss', deviceName: 'host.local', role: 'orchestrator', state: 'paired' },
+    ] as CloudDevice[];
+
+    const result = filterToOssDevices(devices);
+    expect(result.map((d) => d.sessionId)).toEqual(['real-oss']);
+  });
+
+  it('drops entries with an empty-string deviceName', () => {
+    const devices: CloudDevice[] = [
+      { sessionId: 'oss-empty', deviceName: '', role: 'orchestrator', state: 'paired' },
+      { sessionId: 'oss-named', deviceName: 'host.local', role: 'orchestrator', state: 'paired' },
+    ] as CloudDevice[];
+
+    expect(filterToOssDevices(devices).map((d) => d.sessionId)).toEqual(['oss-named']);
+  });
+
+  it('returns an empty list when no entry has a deviceName', () => {
     const devices: CloudDevice[] = [
       { sessionId: '85b41885', role: 'agent', state: 'waiting' },
       { sessionId: 'aad4cb2c', role: 'agent', state: 'paired' },
     ] as CloudDevice[];
 
-    expect(filterToOrchestrators(devices)).toEqual([]);
-  });
-
-  it('is a no-op for an already-pure orchestrator list', () => {
-    const devices: CloudDevice[] = [
-      { sessionId: 'oss-1', deviceName: 'host-a.local', role: 'orchestrator', state: 'paired' },
-    ] as CloudDevice[];
-
-    expect(filterToOrchestrators(devices)).toEqual(devices);
+    expect(filterToOssDevices(devices)).toEqual([]);
   });
 });

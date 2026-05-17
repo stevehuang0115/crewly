@@ -159,22 +159,29 @@ const DEVICE_STATE_COLORS: Record<string, string> = {
  * @returns Deduplicated device list
  */
 /**
- * Filter a relay device list down to OSS-class entries.
+ * Filter a relay device list down to "real machine" entries.
  *
  * The relay's `/devices` endpoint returns every session registered for
- * the user — including `role: 'agent'` Portal browser/mobile sessions.
- * Those are UI clients, not connected machines, and should not appear
- * in the "Connected Devices" list (a user shouldn't see their own phone
- * tab listed as if it were a separate Crewly OSS).
+ * the user — including Portal browser/mobile sessions, which are UI
+ * clients rather than connected machines. We want only the latter.
  *
- * Exported so the role filter can be unit-tested directly without
- * spinning up the full CloudPortal page render.
+ * We key off `deviceName` (the OS hostname) rather than `role`:
+ * `role` is self-declared at register time by the client and isn't
+ * validated by the relay, so it's a soft signal at best. `deviceName`
+ * is only set by clients that actually run on a host with a hostname
+ * — i.e., the Crewly OSS daemon. Portal browsers never set it because
+ * browsers don't know the machine's hostname. That makes
+ * "deviceName is present" the most truthful signal that a row
+ * represents a real OSS installation worth showing in this list.
  *
- * @param devices - Raw device list (possibly mixed roles)
- * @returns Only entries whose `role` is `'orchestrator'`
+ * Exported so the filter can be unit-tested directly without spinning
+ * up the full CloudPortal page render.
+ *
+ * @param devices - Raw device list from `/api/cloud/devices`
+ * @returns Only entries with a non-empty `deviceName`
  */
-export function filterToOrchestrators(devices: CloudDevice[]): CloudDevice[] {
-  return devices.filter((d) => d.role === 'orchestrator');
+export function filterToOssDevices(devices: CloudDevice[]): CloudDevice[] {
+  return devices.filter((d) => typeof d.deviceName === 'string' && d.deviceName.length > 0);
 }
 
 function deduplicateDevices(devices: CloudDevice[]): CloudDevice[] {
@@ -341,15 +348,11 @@ const DeviceListSection: React.FC = () => {
     fetchDevices();
   }, [fetchDevices]);
 
-  // Only show OSS-class devices in the "Connected Devices" list. The
-  // relay's `/devices` endpoint returns every session for the user —
-  // including `role: 'agent'` Portal browser/mobile sessions — which
-  // would otherwise appear here as opaque "Device <sessionId-prefix>"
-  // entries and confuse the user (they'd see their own phone's Portal
-  // tab listed as if it were a separate Crewly OSS). Portal sessions
-  // are a UI client, not a connected machine.
+  // Only show entries that represent a real machine (have a hostname).
+  // See `filterToOssDevices` for why we key off `deviceName` rather
+  // than the client-self-declared `role`.
   const uniqueDevices = useMemo(
-    () => filterToOrchestrators(deduplicateDevices(devices)),
+    () => filterToOssDevices(deduplicateDevices(devices)),
     [devices],
   );
 
