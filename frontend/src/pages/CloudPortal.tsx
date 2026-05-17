@@ -158,6 +158,25 @@ const DEVICE_STATE_COLORS: Record<string, string> = {
  * @param devices - Raw device list from the API
  * @returns Deduplicated device list
  */
+/**
+ * Filter a relay device list down to OSS-class entries.
+ *
+ * The relay's `/devices` endpoint returns every session registered for
+ * the user — including `role: 'agent'` Portal browser/mobile sessions.
+ * Those are UI clients, not connected machines, and should not appear
+ * in the "Connected Devices" list (a user shouldn't see their own phone
+ * tab listed as if it were a separate Crewly OSS).
+ *
+ * Exported so the role filter can be unit-tested directly without
+ * spinning up the full CloudPortal page render.
+ *
+ * @param devices - Raw device list (possibly mixed roles)
+ * @returns Only entries whose `role` is `'orchestrator'`
+ */
+export function filterToOrchestrators(devices: CloudDevice[]): CloudDevice[] {
+  return devices.filter((d) => d.role === 'orchestrator');
+}
+
 function deduplicateDevices(devices: CloudDevice[]): CloudDevice[] {
   const seen = new Map<string, CloudDevice>();
   for (const device of devices) {
@@ -322,7 +341,17 @@ const DeviceListSection: React.FC = () => {
     fetchDevices();
   }, [fetchDevices]);
 
-  const uniqueDevices = useMemo(() => deduplicateDevices(devices), [devices]);
+  // Only show OSS-class devices in the "Connected Devices" list. The
+  // relay's `/devices` endpoint returns every session for the user —
+  // including `role: 'agent'` Portal browser/mobile sessions — which
+  // would otherwise appear here as opaque "Device <sessionId-prefix>"
+  // entries and confuse the user (they'd see their own phone's Portal
+  // tab listed as if it were a separate Crewly OSS). Portal sessions
+  // are a UI client, not a connected machine.
+  const uniqueDevices = useMemo(
+    () => filterToOrchestrators(deduplicateDevices(devices)),
+    [devices],
+  );
 
   return (
     <div className="bg-surface-dark border border-border-dark rounded-xl p-6 space-y-3" data-testid="cloud-device-list-section">
