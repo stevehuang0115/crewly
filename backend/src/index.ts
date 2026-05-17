@@ -1352,6 +1352,11 @@ export class CrewlyServer {
 							service: chatService,
 							gateway: chatGateway,
 							cloudSync: sync,
+							// Wire the dispatcher so Portal-sent user messages also fire the
+							// agent-side prompt (parity with the HTTP controller path).
+							// Without this, Portal user-messages persist but the bound agent
+							// never receives the `[CHAT:<id>]` prompt — orc/etc. stay silent.
+							dispatcher: chatDispatcher,
 							directory: createOssAgentDirectoryProvider(this.storageService),
 							presence: createOssAgentPresenceProvider(this.storageService),
 						});
