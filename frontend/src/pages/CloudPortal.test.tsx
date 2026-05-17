@@ -271,4 +271,50 @@ describe('CloudPortal', () => {
       );
     });
   });
+
+});
+
+// ---------------------------------------------------------------------------
+// 2026-05-17 Connected-Devices role filter
+//
+// Exercising the filter via a full page render proved fragile (the
+// CloudPortal has additional cloud-connection gates around the device
+// list section). The filter itself is a pure function; testing it
+// directly is sharper and far more durable.
+// ---------------------------------------------------------------------------
+
+import { filterToOrchestrators } from './CloudPortal';
+import type { CloudDevice } from '../types/cloud.types';
+
+describe('filterToOrchestrators', () => {
+  it('keeps orchestrator-role entries and drops agent-role entries', () => {
+    const devices: CloudDevice[] = [
+      { sessionId: 'oss-mac', deviceName: 'macbookpro.lan', role: 'orchestrator', state: 'paired' },
+      { sessionId: 'oss-iris', deviceName: 'iriss-air.lan', role: 'orchestrator', state: 'paired' },
+      { sessionId: '85b41885', role: 'agent', state: 'waiting' },
+      { sessionId: 'aad4cb2c', role: 'agent', state: 'paired' },
+    ] as CloudDevice[];
+
+    const result = filterToOrchestrators(devices);
+
+    expect(result).toHaveLength(2);
+    expect(result.map((d) => d.sessionId).sort()).toEqual(['oss-iris', 'oss-mac']);
+  });
+
+  it('returns an empty list when no orchestrators are present', () => {
+    const devices: CloudDevice[] = [
+      { sessionId: '85b41885', role: 'agent', state: 'waiting' },
+      { sessionId: 'aad4cb2c', role: 'agent', state: 'paired' },
+    ] as CloudDevice[];
+
+    expect(filterToOrchestrators(devices)).toEqual([]);
+  });
+
+  it('is a no-op for an already-pure orchestrator list', () => {
+    const devices: CloudDevice[] = [
+      { sessionId: 'oss-1', deviceName: 'host-a.local', role: 'orchestrator', state: 'paired' },
+    ] as CloudDevice[];
+
+    expect(filterToOrchestrators(devices)).toEqual(devices);
+  });
 });
