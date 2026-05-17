@@ -660,9 +660,18 @@ export class CloudSyncService extends EventEmitter {
           d.state === 'waiting' ||
           (now - new Date(lastSeen).getTime() <= offlineThreshold);
 
+        // IMPORTANT: don't synthesize a fake `deviceName` like
+        // `Device ${prefix}` when the upstream is missing one. The
+        // frontend's Connected-Devices filter keys off whether
+        // `deviceName` is a real hostname to distinguish Crewly OSS
+        // installations (which always set it) from Portal browser
+        // sessions (which can't — browsers don't have a hostname).
+        // A synthesized placeholder defeats that filter and surfaces
+        // Portal sessions as fake "Device 85b41885" rows. The device
+        // card UI has its own display-time fallback for missing names.
         return {
           deviceId,
-          deviceName: d.deviceName || d.name || `Device ${deviceId.slice(0, 8)}`,
+          deviceName: d.deviceName || d.name || undefined,
           status: isOnline ? 'online' as const : 'offline' as const,
           lastHeartbeatAt: lastSeen,
           isLocal: deviceId === this.config!.deviceId,

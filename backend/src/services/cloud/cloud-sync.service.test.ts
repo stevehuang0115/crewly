@@ -270,6 +270,42 @@ describe('CloudSyncService', () => {
       expect(devices).toHaveLength(1);
       expect(devices[0].lastHeartbeatAt).toBe(newer);
     });
+
+    // -------------------------------------------------------------------------
+    // 2026-05-17 — Don't synthesize a fake deviceName.
+    //
+    // The frontend Connected-Devices filter relies on `deviceName`
+    // being present to distinguish real OSS installations from Portal
+    // browser sessions. If we fill in `Device ${prefix}` here when the
+    // upstream is empty, every Portal session shows up as a fake
+    // machine row. Leave it undefined and let the device card render
+    // its own display-time fallback.
+    // -------------------------------------------------------------------------
+
+    it('does NOT synthesize a deviceName when the upstream entry has none', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({
+          success: true,
+          devices: [
+            // Real OSS row — has hostname
+            { deviceId: 'oss-mac', deviceName: 'macbookpro.lan', status: 'online' },
+            // Portal session row — no deviceName, no name field
+            { deviceId: '85b41885-portal', sessionId: '85b41885-portal', status: 'online' },
+          ],
+        })
+      );
+
+      service.start(testConfig);
+      await flushPromises();
+
+      const devices = service.getDevices();
+      const oss = devices.find((d) => d.deviceId === 'oss-mac');
+      const portal = devices.find((d) => d.deviceId === '85b41885-portal');
+
+      expect(oss?.deviceName).toBe('macbookpro.lan');
+      // Crucial: the portal row stays `undefined`, not `Device 85b41885`.
+      expect(portal?.deviceName).toBeUndefined();
+    });
   });
 
   // ----- sendMessage --------------------------------------------------------
