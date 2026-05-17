@@ -138,8 +138,10 @@ CREATE TABLE IF NOT EXISTS chat_channels (
   last_message_at   INTEGER,
   -- Phase A (SEALED §3.1): channel-type discriminator. 'dm' preserves the
   -- Phase 1 1:1 user↔agent contract; 'channel' is the Slack-like team
-  -- surface. Existing rows backfill to 'dm' via applyPhaseAColumnUpgrades.
-  type              TEXT NOT NULL DEFAULT 'dm' CHECK(type IN ('dm','channel')),
+  -- surface. 'huddle' (Phase B-2, 2026-05-17) is ad-hoc multi-agent
+  -- groups with explicit membership in chat_channel_members.
+  -- Existing rows backfill to 'dm' via applyPhaseAColumnUpgrades.
+  type              TEXT NOT NULL DEFAULT 'dm' CHECK(type IN ('dm','channel','huddle')),
   -- Phase A (SEALED §3.1): team workspace link. Required at the service
   -- layer when type='channel'; null for type='dm'.
   team_id           TEXT,
@@ -215,6 +217,23 @@ CREATE TABLE IF NOT EXISTS chat_offline_queue (
 CREATE INDEX IF NOT EXISTS ix_queue_pending
   ON chat_offline_queue(agent_session, delivered_at)
   WHERE delivered_at IS NULL;
+
+-- Phase B-2 (2026-05-17): huddle membership roster. One row per
+-- (huddle_channel, agent_session_name). For type='huddle' channels
+-- only; 'dm' and 'channel' rows have no entries here.
+--
+-- Dispatcher uses this list to fan a user message out to every
+-- huddle member; the @-mention subset gets a "must respond" prompt
+-- variant while the rest get an "optional" one.
+CREATE TABLE IF NOT EXISTS chat_channel_members (
+  channel_id      TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+  member_session  TEXT NOT NULL,
+  joined_at       INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, member_session)
+);
+
+CREATE INDEX IF NOT EXISTS ix_channel_members_session
+  ON chat_channel_members(member_session);
 `;
 
 /**
@@ -332,6 +351,13 @@ export function applyPhaseAColumnUpgrades(db: ChatDatabase): {
   messagesAdded: string[];
   legacyIndexDropped: boolean;
   phaseADmIndexDropped: boolean;
+  /**
+   * Phase B-2: whether `chat_channels` was rebuilt to drop the legacy
+   * `CHECK(type IN ('dm','channel'))` constraint and allow `'huddle'`.
+   * `false` on fresh installs (the new CHECK is already in the
+   * baseline DDL) and on subsequent boots after the first rebuild.
+   */
+  channelsCheckRebuilt: boolean;
 } {
   const channelsAdded: string[] = [];
   for (const spec of CHAT_CHANNELS_PHASE_A_COLUMNS) {
@@ -392,7 +418,120 @@ export function applyPhaseAColumnUpgrades(db: ChatDatabase): {
   // EXISTS` makes this a no-op on subsequent boots.
   db.exec(CHAT_V2_PHASE_A_INDEX_SQL);
 
-  return { channelsAdded, messagesAdded, legacyIndexDropped, phaseADmIndexDropped };
+  // Phase B-2 (2026-05-17): relax the chat_channels.type CHECK so
+  // `'huddle'` is accepted. Older DBs were built with
+  // `CHECK(type IN ('dm','channel'))`; SQLite can't ALTER a CHECK in
+  // place, so we rebuild the table when the legacy constraint is
+  // detected. Skipped on fresh installs (the new CHECK is already in
+  // CHAT_V2_MIGRATION_SQL).
+  const channelsCheckRebuilt = rebuildChatChannelsForHuddleIfNeeded(db);
+
+  // Phase B-2: chat_channel_members may be missing on databases
+  // created before this migration. `CREATE TABLE IF NOT EXISTS` is
+  // idempotent — no-op on fresh installs since the table is also in
+  // CHAT_V2_MIGRATION_SQL.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_channel_members (
+      channel_id      TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+      member_session  TEXT NOT NULL,
+      joined_at       INTEGER NOT NULL,
+      PRIMARY KEY (channel_id, member_session)
+    );
+    CREATE INDEX IF NOT EXISTS ix_channel_members_session
+      ON chat_channel_members(member_session);
+  `);
+
+  return {
+    channelsAdded,
+    messagesAdded,
+    legacyIndexDropped,
+    phaseADmIndexDropped,
+    channelsCheckRebuilt,
+  };
+}
+
+/**
+ * Phase B-2: rebuild `chat_channels` if its `type` CHECK constraint
+ * doesn't list `'huddle'`. SQLite has no `ALTER ... DROP CHECK`, so the
+ * only path is the standard "create new table, INSERT...SELECT, drop
+ * old, rename new" dance.
+ *
+ * Idempotent: returns `false` (and does nothing) when the table
+ * already accepts `'huddle'`, which is the case on fresh installs and
+ * on subsequent boots after the first rebuild.
+ *
+ * @param db - The chat database handle
+ * @returns true when a rebuild happened, false when no-op
+ */
+function rebuildChatChannelsForHuddleIfNeeded(db: ChatDatabase): boolean {
+  const row = db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_channels'`,
+    )
+    .get() as { sql: string } | undefined;
+  if (!row || !row.sql) return false;
+  if (row.sql.includes("'huddle'")) {
+    // Constraint already permits 'huddle' — fresh install or
+    // already-migrated. No rebuild needed.
+    return false;
+  }
+
+  // Snapshot what indexes existed on the old table so we can re-create
+  // them after the rename. SQLite drops indexes attached to a renamed
+  // table when the original table is dropped.
+  const indexRows = db
+    .prepare(
+      `SELECT name, sql FROM sqlite_master
+       WHERE type = 'index'
+         AND tbl_name = 'chat_channels'
+         AND sql IS NOT NULL`,
+    )
+    .all() as Array<{ name: string; sql: string }>;
+
+  // Wrap in a transaction so a crash mid-rebuild rolls back cleanly.
+  db.exec('BEGIN');
+  try {
+    db.exec(`
+      CREATE TABLE chat_channels_new (
+        id                TEXT PRIMARY KEY,
+        agent_session     TEXT NOT NULL,
+        owner_user_id     TEXT NOT NULL,
+        name              TEXT NOT NULL,
+        purpose           TEXT,
+        created_at        INTEGER NOT NULL,
+        archived_at       INTEGER,
+        last_message_at   INTEGER,
+        type              TEXT NOT NULL DEFAULT 'dm'
+                          CHECK(type IN ('dm','channel','huddle')),
+        team_id           TEXT,
+        project_id        TEXT,
+        target_member_id  TEXT
+      );
+    `);
+    db.exec(`
+      INSERT INTO chat_channels_new (
+        id, agent_session, owner_user_id, name, purpose,
+        created_at, archived_at, last_message_at,
+        type, team_id, project_id, target_member_id
+      )
+      SELECT
+        id, agent_session, owner_user_id, name, purpose,
+        created_at, archived_at, last_message_at,
+        type, team_id, project_id, target_member_id
+      FROM chat_channels;
+    `);
+    db.exec(`DROP TABLE chat_channels;`);
+    db.exec(`ALTER TABLE chat_channels_new RENAME TO chat_channels;`);
+    // Re-create the pre-existing indexes against the new table.
+    for (const idx of indexRows) {
+      db.exec(idx.sql);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------

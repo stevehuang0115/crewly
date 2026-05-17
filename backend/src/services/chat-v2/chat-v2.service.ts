@@ -26,6 +26,7 @@ import {
   type ChatChannelRow,
   type ChatChannelType,
   type ChatContentType,
+  type ChatHuddleMember,
   type ChatMessageDTO,
   type ChatMessageListResult,
   type ChatMessageRow,
@@ -106,6 +107,23 @@ export interface CreateChannelArgs {
   projectId?: string;
   /** Phase A — optional when `type='dm'`. */
   targetMemberId?: string;
+}
+
+/** Arguments for `createHuddle` (Phase B-2). */
+export interface CreateHuddleArgs {
+  /** Display name shown in the channel list (e.g. "Q4 planning"). */
+  name: string;
+  /** Optional one-liner — purpose of the huddle. */
+  purpose?: string;
+  /**
+   * Agent session names (matches `DirectoryAgent.agentSession`) for
+   * every member of the huddle. Must contain at least one entry; the
+   * service rejects empty arrays so the dispatcher never has zero
+   * recipients to fan out to. Order is not significant — the store
+   * dedupes on insert.
+   */
+  memberSessions: string[];
+  principal: ChatPrincipal;
 }
 
 /** Arguments for `listChannels`. */
@@ -483,6 +501,150 @@ export class ChatV2Service extends EventEmitter {
       nowMs: this.now(),
     });
     return this.toChannelDTO(row);
+  }
+
+  /**
+   * Phase B-2 (2026-05-17) — create a huddle (ad-hoc multi-agent group
+   * channel). Creates a `type='huddle'` channel row with no team
+   * binding, then inserts one row per member into
+   * `chat_channel_members`. The dispatcher uses that roster to fan out
+   * subsequent user messages to every member; agents whose session is
+   * in the outgoing message's `mentions[]` get a "must respond"
+   * prompt, others get an "optional" one.
+   *
+   * @param args - name, optional purpose, member roster, owning principal
+   * @returns The created huddle channel as a DTO, with `members` populated
+   * @throws {ChatError} `validation_error` (400) when name is empty/too long,
+   *   purpose too long, or memberSessions is empty / has too many entries.
+   */
+  createHuddle(args: CreateHuddleArgs): ChatChannelDTO {
+    const name = (args.name ?? '').trim();
+    if (name.length === 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'name is required');
+    }
+    if (name.length > this.config.maxChannelNameChars) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `name exceeds ${this.config.maxChannelNameChars} characters`,
+      );
+    }
+    const purpose = args.purpose?.trim();
+    if (purpose && purpose.length > this.config.maxPurposeChars) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `purpose exceeds ${this.config.maxPurposeChars} characters`,
+      );
+    }
+
+    // Dedupe + trim member sessions. We accept any non-empty trimmed
+    // string here — actual agent existence is validated by the
+    // dispatcher when it tries to resolve the session at fan-out time.
+    const seen = new Set<string>();
+    const members: string[] = [];
+    for (const raw of args.memberSessions ?? []) {
+      const s = (raw ?? '').trim();
+      if (!s) continue;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      members.push(s);
+    }
+    if (members.length === 0) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'memberSessions must include at least one agent session',
+      );
+    }
+    // Defensive upper bound — a 200-member huddle would tax both the
+    // dispatcher fan-out and downstream rate limits. The cap can be
+    // raised when we have a real use case.
+    const MAX_HUDDLE_MEMBERS = 50;
+    if (members.length > MAX_HUDDLE_MEMBERS) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `huddle exceeds the ${MAX_HUDDLE_MEMBERS}-member cap`,
+      );
+    }
+
+    const nowMs = this.now();
+    const row = this.channels.create({
+      // Huddle isn't 1:1-bound — keep agent_session empty (same convention
+      // as type='channel'). No team_id either: huddles are ad-hoc groups,
+      // not team-scoped surfaces.
+      agentSession: '',
+      ownerUserId: args.principal.userId,
+      name,
+      purpose: purpose || null,
+      type: 'huddle',
+      teamId: null,
+      projectId: null,
+      targetMemberId: null,
+      nowMs,
+    });
+
+    // Insert membership rows. INSERT OR IGNORE is defensive against the
+    // dedupe above getting bypassed (e.g., when callers reuse this
+    // method via the relay adapter with raw input).
+    const memberStmt = this.db.prepare(
+      `INSERT OR IGNORE INTO chat_channel_members
+         (channel_id, member_session, joined_at)
+       VALUES (?, ?, ?)`,
+    );
+    const insertMany = this.db.transaction((rows: string[]) => {
+      for (const s of rows) memberStmt.run(row.id, s, nowMs);
+    });
+    insertMany(members);
+
+    return this.toChannelDTO(row);
+  }
+
+  /**
+   * Phase B-2 — list the members of a huddle channel. Returns an empty
+   * array (not an error) for non-huddle channels so consumers can call
+   * this unconditionally during channel rendering.
+   *
+   * @param channelId - The channel to enumerate
+   * @param principal - The caller; used to verify ownership
+   * @returns Array of `{ sessionName, joinedAt }` rows
+   * @throws {ChatError} `not_found` (404) when the channel doesn't exist or
+   *   isn't owned by `principal`.
+   */
+  listHuddleMembers(channelId: string, principal: ChatPrincipal): ChatHuddleMember[] {
+    const row = this.requireOwnedChannel(channelId, principal);
+    if (row.type !== 'huddle') return [];
+    return this.queryHuddleMembers(channelId);
+  }
+
+  /**
+   * Phase B-2 — dispatcher-facing roster lookup. Returns the session
+   * names of every member in a huddle, in `joined_at ASC` order.
+   * Unlike {@link listHuddleMembers} this is NOT principal-scoped:
+   * the dispatcher runs server-side and already holds the channel
+   * (it just persisted a message into it). Returns an empty array for
+   * non-huddle channels or unknown ids so the dispatcher's
+   * `members.length === 0` skip path stays clean.
+   *
+   * @param channelId - The huddle channel id
+   * @returns Array of agent session names
+   */
+  queryHuddleMembersForDispatch(channelId: string): string[] {
+    return this.queryHuddleMembers(channelId).map((m) => m.sessionName);
+  }
+
+  /** Internal: read members straight from the DB (no ownership check). */
+  private queryHuddleMembers(channelId: string): ChatHuddleMember[] {
+    const rows = this.db
+      .prepare(
+        `SELECT member_session AS sessionName, joined_at AS joinedAt
+           FROM chat_channel_members
+          WHERE channel_id = ?
+          ORDER BY joined_at ASC`,
+      )
+      .all(channelId) as Array<{ sessionName: string; joinedAt: number }>;
+    return rows.map((r) => ({ sessionName: r.sessionName, joinedAt: r.joinedAt }));
   }
 
   /**
@@ -1319,6 +1481,12 @@ export class ChatV2Service extends EventEmitter {
       teamId: row.team_id ?? undefined,
       projectId: row.project_id ?? undefined,
       targetMemberId: row.target_member_id ?? undefined,
+      // Phase B-2: huddle channels surface their roster inline so the
+      // Portal can render member avatars without a second round-trip.
+      // Non-huddle rows leave this undefined.
+      ...(channelType === 'huddle'
+        ? { members: this.queryHuddleMembers(row.id) }
+        : {}),
     };
   }
 
