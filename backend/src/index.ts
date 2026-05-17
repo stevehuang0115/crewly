@@ -1328,6 +1328,43 @@ export class CrewlyServer {
 					authMode: jwtSecret ? 'jwt' : 'dev-anonymous',
 				});
 
+				// Cloud Portal relay bridge — gives the Crewly Portal at
+				// crewlyai.com the same /agents experience by tunnelling chat-v2
+				// RPC calls through the Cloud relay queue + forwarding gateway
+				// broadcasts as `chat_event` messages. Only wired when Cloud Sync
+				// is running (BrowserRelayAdapter pattern).
+				try {
+					const { ChatV2RelayAdapter } = await import(
+						'./services/chat-v2/chat-v2.relay-adapter.service.js'
+					);
+					const { CloudSyncService } = await import(
+						'./services/cloud/cloud-sync.service.js'
+					);
+					const {
+						createOssAgentDirectoryProvider,
+						createOssAgentPresenceProvider,
+					} = await import(
+						'./services/chat-v2/chat-v2.providers.js'
+					);
+					const sync = CloudSyncService.getInstance();
+					if (sync) {
+						const chatRelayAdapter = new ChatV2RelayAdapter({
+							service: chatService,
+							gateway: chatGateway,
+							cloudSync: sync,
+							directory: createOssAgentDirectoryProvider(this.storageService),
+							presence: createOssAgentPresenceProvider(this.storageService),
+						});
+						chatRelayAdapter.start();
+						this.logger.info('ChatV2RelayAdapter started — Cloud Portal can now drive chat-v2 via relay');
+					}
+				} catch (err) {
+					// Adapter wiring failure is non-fatal — local OSS UI still works.
+					this.logger.warn('ChatV2RelayAdapter wiring skipped', {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+
 				// Onboarding v3 (B1) — wire the cold-start detector with the
 				// chat-v2 service we just stood up. The orc bootstrap path
 				// (CrewlyAgentRuntimeService.detectOnboardingMode) probes this
