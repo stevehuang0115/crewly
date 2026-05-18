@@ -22,7 +22,7 @@
  * @module services/agent/crewly-agent/in-process-runtime-registry
  */
 
-import type { CrewlyAgentRuntimeService } from './crewly-agent-runtime.service.js';
+import type { CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runtime.service.js';
 
 /**
  * Module-level registry of active in-process runtimes keyed by session name.
@@ -31,7 +31,7 @@ import type { CrewlyAgentRuntimeService } from './crewly-agent-runtime.service.j
  * in sync — `AgentRegistrationService` writes to this registry whenever it
  * registers/unregisters a runtime.
  */
-const registry: Map<string, CrewlyAgentRuntimeService> = new Map();
+const registry: Map<string, CrewlyAgentExternalRuntimeService> = new Map();
 
 /**
  * Register an in-process Crewly Agent runtime.
@@ -42,7 +42,7 @@ const registry: Map<string, CrewlyAgentRuntimeService> = new Map();
  * is responsible for the lifecycle).
  *
  * @param sessionName - Session name owning the runtime (e.g. 'crewly-orc')
- * @param runtime - The initialized CrewlyAgentRuntimeService instance
+ * @param runtime - The initialized CrewlyAgentExternalRuntimeService instance
  *
  * @example
  * ```typescript
@@ -51,7 +51,7 @@ const registry: Map<string, CrewlyAgentRuntimeService> = new Map();
  */
 export function registerInProcessRuntime(
   sessionName: string,
-  runtime: CrewlyAgentRuntimeService,
+  runtime: CrewlyAgentExternalRuntimeService,
 ): void {
   registry.set(sessionName, runtime);
 }
@@ -73,11 +73,11 @@ export function unregisterInProcessRuntime(sessionName: string): boolean {
  * Look up an in-process runtime by session name.
  *
  * @param sessionName - Session name to look up
- * @returns The CrewlyAgentRuntimeService if registered, undefined otherwise
+ * @returns The CrewlyAgentExternalRuntimeService if registered, undefined otherwise
  */
 export function getInProcessRuntime(
   sessionName: string,
-): CrewlyAgentRuntimeService | undefined {
+): CrewlyAgentExternalRuntimeService | undefined {
   return registry.get(sessionName);
 }
 
@@ -91,7 +91,7 @@ export function getInProcessRuntime(
  *
  * This is the function callers should use when answering "is this
  * session alive?" — it correctly handles both the worker-process and
- * direct in-process modes of `CrewlyAgentRuntimeService`.
+ * direct in-process modes of `CrewlyAgentExternalRuntimeService`.
  *
  * @param sessionName - Session name to check
  * @returns True when the runtime exists and is ready
