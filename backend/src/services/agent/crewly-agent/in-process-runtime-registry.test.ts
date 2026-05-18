@@ -13,16 +13,16 @@ import {
   _resetInProcessRuntimeRegistryForTesting,
   _getInProcessRuntimeRegistrySize,
 } from './in-process-runtime-registry.js';
-import type { CrewlyAgentRuntimeService } from './crewly-agent-runtime.service.js';
+import type { CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runtime.service.js';
 
 /**
- * Build a minimal CrewlyAgentRuntimeService stub for registry tests.
+ * Build a minimal CrewlyAgentExternalRuntimeService stub for registry tests.
  *
  * @param ready - Value `isReady()` should return
  * @param throws - When true, `isReady()` throws an error to exercise the
  *                 defensive try/catch path
  */
-function makeFakeRuntime(ready: boolean, throws = false): CrewlyAgentRuntimeService {
+function makeFakeRuntime(ready: boolean, throws = false): CrewlyAgentExternalRuntimeService {
   return {
     isReady: () => {
       if (throws) {
@@ -30,7 +30,7 @@ function makeFakeRuntime(ready: boolean, throws = false): CrewlyAgentRuntimeServ
       }
       return ready;
     },
-  } as unknown as CrewlyAgentRuntimeService;
+  } as unknown as CrewlyAgentExternalRuntimeService;
 }
 
 describe('in-process-runtime-registry', () => {
