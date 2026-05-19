@@ -609,6 +609,8 @@ export const MEMORY_CONSTANTS = {
     GOTCHAS: 'gotchas.json',
     /** Relationship entries */
     RELATIONSHIPS: 'relationships.json',
+    /** Completed-task ledger (TaskHistoryEntry[]) */
+    TASK_HISTORY: 'task-history.json',
     /** Human-readable learnings log */
     LEARNINGS: 'learnings.md',
   },
