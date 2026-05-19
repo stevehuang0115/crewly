@@ -25,6 +25,7 @@ import type {
   GotchaSeverity,
   AgentPreferences,
   ProjectAgentsIndex,
+  TaskHistoryEntry,
 } from '../../types/memory.types.js';
 
 /**
@@ -124,6 +125,21 @@ export interface RecallParams {
    * this `false` (or unset) so superseded entries do not pollute context.
    */
   includeHidden?: boolean;
+  /**
+   * Optional capability filter. When set, recall queries the project's
+   * task-history ledger for entries whose `capabilities[]` contains an
+   * exact match. The matching entries surface on
+   * {@link RecallResult.taskHistory} sorted most-recent first.
+   *
+   * This is the load-bearing field for "who in my team has done X?"
+   * — the orchestrator's delegation-first prompt queries with this
+   * parameter before deciding whether to delegate or self-execute.
+   *
+   * Format: canonical `<category>:<resource>` strings
+   * (`gmail:read`, `oauth:gmail`, `slack:post`, etc. — see
+   * CapabilityInferenceService for the registry).
+   */
+  capability?: string;
 }
 
 /**
@@ -147,6 +163,12 @@ export interface RecallResult {
   currentFocus?: string;
   /** Active tasks for this agent */
   activeTasks?: Array<{ id: string; name: string; status: string; hasWorkingNotes: boolean }>;
+  /**
+   * Task-history entries matching {@link RecallParams.capability}. Present
+   * when the caller passed a capability filter. Sorted most-recent first;
+   * empty array means "no team member has demonstrated this capability."
+   */
+  taskHistory?: TaskHistoryEntry[];
 }
 
 /**
@@ -872,6 +894,25 @@ export class MemoryService implements IMemoryService {
       );
     }
 
+    // Capability filter — query the project task-history ledger for
+    // members who have demonstrated this capability. Runs in parallel
+    // with the other fetches.
+    if (params.capability && params.projectPath) {
+      promises.push(
+        this.projectMemory
+          .getTaskHistory(params.projectPath, params.capability)
+          .then((entries) => {
+            result.taskHistory = entries;
+          })
+          .catch(() => {
+            // No history file yet, or read failed — surface as empty
+            // rather than throwing. The orchestrator interprets [] as
+            // "no prior demonstration; cold start."
+            result.taskHistory = [];
+          }),
+      );
+    }
+
     await Promise.all(promises);
 
     // v2: Enrich with operational context (goals, focus, active tasks)
@@ -891,6 +932,39 @@ export class MemoryService implements IMemoryService {
         }
       }
       result.combined += opLines.join('\n');
+    }
+
+    // Capability-routing block — when a capability filter was active and
+    // matches exist, surface a delegation-ready summary at the end so the
+    // orchestrator sees "for this capability, prefer these members" in
+    // its very next read.
+    if (params.capability && result.taskHistory && result.taskHistory.length > 0) {
+      const byMember = new Map<string, { count: number; lastAt: string; role: string }>();
+      for (const entry of result.taskHistory) {
+        const key = entry.agent.sessionName;
+        const prior = byMember.get(key);
+        if (!prior) {
+          byMember.set(key, {
+            count: 1,
+            lastAt: entry.completedAt,
+            role: entry.agent.role,
+          });
+        } else {
+          prior.count += 1;
+          if (entry.completedAt > prior.lastAt) prior.lastAt = entry.completedAt;
+        }
+      }
+      const ranked = [...byMember.entries()].sort(
+        (a, b) => b[1].lastAt.localeCompare(a[1].lastAt),
+      );
+      const lines: string[] = [`\n### Capability Routing — \`${params.capability}\``];
+      lines.push(
+        `${ranked.length} team member(s) have demonstrated this capability. Prefer delegating to them:`,
+      );
+      for (const [session, info] of ranked) {
+        lines.push(`- **${session}** (${info.role}) — ${info.count}× last on ${info.lastAt}`);
+      }
+      result.combined += '\n' + lines.join('\n');
     }
 
     return result;

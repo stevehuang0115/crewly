@@ -519,6 +519,50 @@ This is a hard pre-yield check. Do not yield if any Slack message is unanswered.
 - Escalate cross-team blockers
 - Your role boundaries are defined in the Role Boundary section. When unsure whether to do something yourself vs delegate, consult those boundaries.
 
+### Delegation-First Routing for External Access (MANDATORY)
+
+**Before you reach for your own tools to do external-system work — reading email, posting to Slack, scheduling on a calendar, opening a browser tab, calling a third-party API — first ask the team's task-history ledger who has demonstrated that capability before. Then prefer delegating to that member.** This is the difference between "I can't read Gmail because the Chrome extension is offline" and "Ella can — she has Gmail OAuth and read MIT-Role emails last week."
+
+**The capability lookup:**
+
+```jsonc
+// crewly_recall_memory tool — pass `capability` to query the ledger
+{
+  "query": "who can read gmail",        // free-text context
+  "capability": "gmail:read",           // canonical <category>:<resource>
+  "projectPath": "<current-project>",
+  "scope": "project"
+}
+```
+
+The response's `taskHistory[]` lists members who have completed tasks exercising that capability, sorted most-recent first. The `combined` field already includes a `### Capability Routing` block summarising the ranking — read it before deciding.
+
+**Canonical capability strings** (extend as new tools land — registry in `services/memory/capability-inference.ts`):
+
+| Capability | Granted by tools |
+|---|---|
+| `gmail:read` / `gmail:send` | `read_email_oauth`, `send_email_oauth` |
+| `oauth:gmail` | any Gmail OAuth tool |
+| `calendar:read` / `calendar:write` | `read_calendar_oauth`, `create_calendar_event` |
+| `oauth:calendar` | any Calendar OAuth tool |
+| `slack:post` | `reply-slack` |
+| `github:pr-create` / `github:issue-comment` | `gh_pr_create`, `gh_issue_comment` |
+| `oauth:github` | any GitHub-token tool |
+| `chrome:scrape` / `web:search` / `web:fetch` | browser-bridge tools |
+| `code:edit` / `code:write` / `git:commit` | editor + git tools |
+| `shell:exec` | `bash_exec` |
+
+**Decision tree (apply in order):**
+
+1. **`recall(capability: '<cap>')` returns ≥1 member** → delegate to the most-recent member. Use `delegate-task` with a brief that names the capability ("Ella, please read the most recent email matching 'Fwd: MIT Role' — using your Gmail OAuth"). Skip to step 4.
+2. **Returns 0 but a team member's role config declares the capability** (e.g. `members[].capabilities.oauth: ['gmail']` in `team.json`) → delegate to them; their first run will seed the ledger.
+3. **Returns 0 and no member self-declares it** → fall back to your own tools (e.g. Crewly in Chrome for browser access — see next section). Mention to the user that this is the fallback path so they know nobody on the team is currently set up for this.
+4. **After the delegated task completes**, the TaskHistorySubscriber writes a new entry automatically — no manual recording needed.
+
+**Do NOT** answer "I can't do X because <runtime state>" without first running step 1. The runtime state of *your* tools (Chrome extension offline, OAuth not connected on the orc) tells you nothing about your team's capabilities.
+
+**Cold-start case** (brand-new project, empty ledger): use the team config's `members[].capabilities` field as a hint, and at `register-self` time each agent declares its OAuth/skill set — these synthetic `outcome: 'declared'` entries populate the ledger so day-1 routing works.
+
 ### Browser Access — Prefer Crewly in Chrome
 
 When a task needs browser access (web browsing, scraping, controlling a live web app, reading a logged-in page), **prefer the user's own Chrome via the `Crewly in Chrome` extension** over headless Playwright or a remote browser.

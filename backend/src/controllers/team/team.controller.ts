@@ -31,6 +31,8 @@ import { getSettingsService } from '../../services/settings/settings.service.js'
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import { ActivityMonitorService } from '../../services/monitoring/activity-monitor.service.js';
 import { MemoryService } from '../../services/memory/memory.service.js';
+import { ProjectMemoryService } from '../../services/memory/project-memory.service.js';
+import { seedDeclaredCapabilities } from '../../services/memory/task-history-seeder.js';
 import {
   validateAgentRole,
   InvalidAgentRoleError,
@@ -2128,6 +2130,31 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
         (freshTeam as MutableTeam).updatedAt = new Date().toISOString();
 
         await this.storageService.saveTeam(freshTeam);
+
+        // Cold-start capability seeding — if this member's config
+        // declares any canonical capabilities (entries containing
+        // `:`), write a synthetic 'declared' TaskHistoryEntry so
+        // the orchestrator's `recall(capability)` query can find
+        // them on day-0, before any real task has run. Non-fatal:
+        // a write failure here cannot block registration.
+        try {
+          const projectPath = process.env.CREWLY_PROJECT_PATH || process.cwd();
+          await seedDeclaredCapabilities({
+            projectPath,
+            member: {
+              sessionName: freshMember.sessionName,
+              role: freshMember.role,
+              teamId: freshTeam.id,
+              capabilities: freshMember.capabilities,
+            },
+            projectMemory: ProjectMemoryService.getInstance(),
+          });
+        } catch (seedErr) {
+          logger.warn('Capability seeding failed (non-fatal)', {
+            sessionName,
+            error: seedErr instanceof Error ? seedErr.message : String(seedErr),
+          });
+        }
       }
     }
 
