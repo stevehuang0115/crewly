@@ -99,6 +99,20 @@ export const EVENT_TYPES = [
   // reconciler emits with built-in throttling (no more than once per
   // sustained pressure episode + a re-fire cap) so this never floods.
   'system:memory_pressure',
+
+  // Stuck-WI escalation (2026-05-20 follow-up): emitted by the reconciler
+  // when a WorkItem has been in `queued` past the staleness threshold
+  // (default 1h, lower per dispatch cadence) AND the existing recovery
+  // chain (DispatchSubscriber, AgentAutoClaim, wake-under-pressure)
+  // hasn't transitioned it. This is the missing actionable signal for
+  // the 2026-05-20 ESTestNode incident: Sora's WI sat queued for 53min
+  // because all three recovery paths require the target to be already
+  // suspended/inactive, but Sora was `active-but-idle` and silently
+  // dropped the message. ORC subscribes (filtered to `owner === self`)
+  // so it can re-deliver, re-target, or fail-fast the stuck work.
+  // The reconciler emits with per-WI dedup so a long-stuck WI doesn't
+  // re-fire every reconcile tick — see ReconcilerDataProvider.broadcastStaleQueuedWIs.
+  'task:queued_too_long',
 ] as const;
 
 /**
@@ -156,6 +170,10 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   // Debouncing here would defeat the purpose; the reconciler already
   // throttles the emission rate at the source.
   'system:memory_pressure',
+  // Stuck WI escalation — orc needs the actionable signal that one of
+  // its delegations has been silently dropped. The reconciler dedups
+  // per-WI so this never floods even when many WIs are stuck.
+  'task:queued_too_long',
 ]);
 
 /**

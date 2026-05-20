@@ -755,4 +755,128 @@ describe('ReconcilerService', () => {
       expect(result.agentsWoken).toBe(1);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Self-heal fix #2 (2026-05-20): stale-queued WI broadcast
+  // ---------------------------------------------------------------------------
+  describe('stale-queued broadcast (task:queued_too_long)', () => {
+    it('invokes broadcastStaleQueuedWIs for each WI past the staleness threshold', async () => {
+      // Two stale WIs (>1h queued) and one fresh WI (just enqueued).
+      const stale1 = makeWorkItem({
+        id: 'wi-stale-1',
+        status: 'queued',
+        target: 'crewly-product-ella',
+        owner: 'orchestrator',
+        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      });
+      const stale2 = makeWorkItem({
+        id: 'wi-stale-2',
+        status: 'queued',
+        target: 'crewly-support-sora',
+        owner: 'orchestrator',
+        createdAt: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
+      });
+      const fresh = makeWorkItem({
+        id: 'wi-fresh',
+        status: 'queued',
+        target: 'crewly-product-ella',
+        owner: 'orchestrator',
+        createdAt: new Date().toISOString(),
+      });
+
+      const broadcastStaleQueuedWIs = jest.fn();
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([stale1, stale2, fresh]),
+        broadcastStaleQueuedWIs,
+      });
+      service = new ReconcilerService(provider);
+
+      await service.runFull();
+
+      expect(broadcastStaleQueuedWIs).toHaveBeenCalledTimes(1);
+      const broadcastArg = broadcastStaleQueuedWIs.mock.calls[0]![0] as Array<{
+        id: string;
+        target?: string;
+        owner?: string;
+        createdAt: string;
+      }>;
+      // Both stale WIs are included; fresh is not.
+      const ids = broadcastArg.map((w) => w.id).sort();
+      expect(ids).toEqual(['wi-stale-1', 'wi-stale-2']);
+      // Target + owner are propagated so the subscriber can route.
+      const stale1Entry = broadcastArg.find((w) => w.id === 'wi-stale-1');
+      expect(stale1Entry?.target).toBe('crewly-product-ella');
+      expect(stale1Entry?.owner).toBe('orchestrator');
+    });
+
+    it('skips broadcast when no WIs are stale', async () => {
+      const fresh = makeWorkItem({
+        id: 'wi-fresh',
+        status: 'queued',
+        target: 'agent-1',
+        createdAt: new Date().toISOString(),
+      });
+
+      const broadcastStaleQueuedWIs = jest.fn();
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([fresh]),
+        broadcastStaleQueuedWIs,
+      });
+      service = new ReconcilerService(provider);
+
+      await service.runFull();
+
+      expect(broadcastStaleQueuedWIs).not.toHaveBeenCalled();
+    });
+
+    it('calls clearResolvedStuckWiDedup with the current queued-WI id set', async () => {
+      const stale = makeWorkItem({
+        id: 'wi-stale',
+        status: 'queued',
+        target: 'agent-1',
+        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      });
+      const running = makeWorkItem({
+        id: 'wi-running',
+        status: 'running',
+        target: 'agent-2',
+        createdAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      });
+
+      const clearResolvedStuckWiDedup = jest.fn();
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([stale, running]),
+        broadcastStaleQueuedWIs: jest.fn(),
+        clearResolvedStuckWiDedup,
+      });
+      service = new ReconcilerService(provider);
+
+      await service.runFull();
+
+      expect(clearResolvedStuckWiDedup).toHaveBeenCalledTimes(1);
+      const queuedIds = clearResolvedStuckWiDedup.mock.calls[0]![0] as Set<string>;
+      expect(queuedIds.has('wi-stale')).toBe(true);
+      // Running WI is NOT in the queued set — its presence would falsely
+      // keep stuck-WI dedup state alive.
+      expect(queuedIds.has('wi-running')).toBe(false);
+    });
+
+    it('falls back gracefully when the provider does not implement broadcast hooks', async () => {
+      const stale = makeWorkItem({
+        id: 'wi-stale',
+        status: 'queued',
+        target: 'agent-1',
+        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      });
+
+      // No broadcastStaleQueuedWIs / clearResolvedStuckWiDedup on the provider.
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([stale]),
+      });
+      service = new ReconcilerService(provider);
+
+      // Must not throw.
+      await expect(service.runFull()).resolves.toBeDefined();
+    });
+  });
 });

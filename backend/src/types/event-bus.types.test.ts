@@ -66,6 +66,11 @@ describe('Event Bus Types', () => {
         'hierarchy:report_up',
         // B0 (interim) trigger-persistence-bug freshness signal
         'system:backend_restarted',
+        // Memory pressure broadcast (2026-05-14)
+        'system:memory_pressure',
+        // Self-heal fix #2 (2026-05-20): reconciler-emitted escalation
+        // for WIs stuck in `queued` past the staleness threshold.
+        'task:queued_too_long',
       ]);
     });
   });
