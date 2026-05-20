@@ -25,11 +25,24 @@ jest.mock('../task-pool/task-pool.service.js', () => {
     markClaimExpiring: jest.fn().mockResolvedValue(undefined),
     releaseBack: jest.fn().mockResolvedValue(undefined),
     revokeAndRelease: jest.fn().mockResolvedValue(undefined),
+    findWorkItem: jest.fn().mockResolvedValue(null),
   };
   return {
     TaskPoolService: {
       getInstance: () => mockInstance,
       _mockInstance: mockInstance,
+    },
+  };
+});
+
+jest.mock('../v3/workitem-dispatch.subscriber.js', () => {
+  const mockSubscriber = {
+    redispatch: jest.fn().mockResolvedValue(true),
+  };
+  return {
+    WorkItemDispatchSubscriber: {
+      getInstance: () => mockSubscriber,
+      _mockSubscriber: mockSubscriber,
     },
   };
 });
@@ -89,6 +102,7 @@ import { LiveReconcilerDataProvider } from './reconciler-data-provider.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
+import { WorkItemDispatchSubscriber } from '../v3/workitem-dispatch.subscriber.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { TaskClaim } from '../../types/v2/claim.types.js';
 import type { WakeAction } from '../../types/v2/reconcile.types.js';
@@ -97,6 +111,7 @@ import type { WakeAction } from '../../types/v2/reconcile.types.js';
 const mockPool = (TaskPoolService as any)._mockInstance;
 const mockStorage = (StorageService as any)._mockStorage;
 const mockSuspend = (AgentSuspendService as any)._mockSuspend;
+const mockSubscriber = (WorkItemDispatchSubscriber as any)._mockSubscriber;
 
 describe('LiveReconcilerDataProvider', () => {
   let provider: LiveReconcilerDataProvider;
@@ -781,6 +796,95 @@ describe('LiveReconcilerDataProvider', () => {
       expect(result).toBe(false);
 
       globalThis.fetch = originalFetch;
+    });
+
+    // 2026-05-20 follow-up — redeliver strategy for active-but-idle targets
+    describe('redeliver strategy', () => {
+      const buildAction = (): WakeAction => ({
+        workItemId: 'wi-sora-1',
+        agentSessionName: 'sora',
+        strategy: 'redeliver',
+        score: 0,
+        scoreBreakdown: { skillMatch: 0, urgency: 0, contextFamiliarity: 0, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      });
+
+      const queuedWi: WorkItem = {
+        id: 'wi-sora-1',
+        type: 'delegate',
+        status: 'queued',
+        target: 'sora',
+        owner: 'orc',
+        priority: 'normal',
+        createdAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+        title: 'redeliver case',
+        description: 'redeliver case',
+      } as unknown as WorkItem;
+
+      beforeEach(() => {
+        mockSubscriber.redispatch.mockReset();
+        mockSubscriber.redispatch.mockResolvedValue(true);
+      });
+
+      it('redelivers a queued WI via WorkItemDispatchSubscriber', async () => {
+        mockPool.findWorkItem.mockResolvedValueOnce(queuedWi);
+
+        const result = await provider.executeWakeAction(buildAction());
+
+        expect(result).toBe(true);
+        expect(mockPool.findWorkItem).toHaveBeenCalledWith('wi-sora-1');
+        expect(mockSubscriber.redispatch).toHaveBeenCalledWith(queuedWi);
+      });
+
+      it('skips redeliver when the WI has moved past queued', async () => {
+        mockPool.findWorkItem.mockResolvedValueOnce({ ...queuedWi, status: 'running' });
+
+        const result = await provider.executeWakeAction(buildAction());
+
+        expect(result).toBe(false);
+        expect(mockSubscriber.redispatch).not.toHaveBeenCalled();
+      });
+
+      it('returns false when the WI no longer exists', async () => {
+        mockPool.findWorkItem.mockResolvedValueOnce(null);
+
+        const result = await provider.executeWakeAction(buildAction());
+
+        expect(result).toBe(false);
+        expect(mockSubscriber.redispatch).not.toHaveBeenCalled();
+      });
+
+      it('bypasses the memory-pressure gate (cheap repost to live agent)', async () => {
+        // 95% used — would block rehydrate/start at the floor, but redeliver
+        // adds no new agent so it must proceed.
+        mockTotalmem.mockReturnValue(16_000_000_000);
+        mockFreemem.mockReturnValue(800_000_000);
+        mockStorage.getTeams.mockResolvedValue([
+          {
+            id: 't1',
+            members: [
+              { id: 'm1', sessionName: 's1', agentStatus: 'active', role: 'dev', updatedAt: '' },
+              { id: 'm2', sessionName: 's2', agentStatus: 'active', role: 'dev', updatedAt: '' },
+              { id: 'm3', sessionName: 's3', agentStatus: 'active', role: 'dev', updatedAt: '' },
+            ],
+          },
+        ]);
+        mockPool.findWorkItem.mockResolvedValueOnce(queuedWi);
+
+        const result = await provider.executeWakeAction(buildAction());
+
+        expect(result).toBe(true);
+        expect(mockSubscriber.redispatch).toHaveBeenCalledWith(queuedWi);
+      });
+
+      it('returns false when redispatch itself fails', async () => {
+        mockPool.findWorkItem.mockResolvedValueOnce(queuedWi);
+        mockSubscriber.redispatch.mockResolvedValueOnce(false);
+
+        const result = await provider.executeWakeAction(buildAction());
+
+        expect(result).toBe(false);
+      });
     });
 
     // 2026-05-13 dogfood: previously this gate UNCONDITIONALLY blocked

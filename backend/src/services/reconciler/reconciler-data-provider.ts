@@ -26,6 +26,7 @@ import { PoolStorage } from '../task-pool/pool-storage.js';
 import { StorageService } from '../core/storage.service.js';
 import { RequestService } from '../v3/request.service.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
+import { WorkItemDispatchSubscriber } from '../v3/workitem-dispatch.subscriber.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
@@ -952,6 +953,46 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   async executeWakeAction(action: WakeAction): Promise<boolean> {
     const { agentSessionName, strategy } = action;
 
+    // Redeliver is a cheap repost to an already-alive agent — no new session
+    // is created, no extra RAM is consumed. It must bypass the memory-
+    // pressure gate; otherwise the very stuckness the pressure gate is
+    // designed to prevent would block its own primary remediation path.
+    if (strategy === 'redeliver') {
+      this.logger.info('Executing wake action', {
+        agent: agentSessionName,
+        strategy,
+        workItemId: action.workItemId,
+      });
+      try {
+        const pool = TaskPoolService.getInstance();
+        const wi = await pool.findWorkItem(action.workItemId);
+        if (!wi || wi.status !== 'queued') {
+          this.logger.info('Redeliver skipped — WI no longer queued', {
+            agent: agentSessionName,
+            workItemId: action.workItemId,
+            currentStatus: wi?.status,
+          });
+          return false;
+        }
+        const subscriber = WorkItemDispatchSubscriber.getInstance();
+        const delivered = await subscriber.redispatch(wi);
+        if (delivered) {
+          this.logger.info('Redelivered WorkItem brief to active-but-idle agent', {
+            agent: agentSessionName,
+            workItemId: action.workItemId,
+          });
+        }
+        return delivered;
+      } catch (error) {
+        this.logger.error('Redeliver wake action failed', {
+          agent: agentSessionName,
+          workItemId: action.workItemId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    }
+
     // Memory-pressure gate with a concurrency floor.
     //
     // Previous behaviour (unconditional skip on >=90% used) wedged the
@@ -1112,6 +1153,9 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         });
         return true;
       } else {
+        // `redeliver` is handled by the early-return path above, before
+        // the memory-pressure gate. Reaching here means an unrecognised
+        // strategy was supplied.
         this.logger.warn('Unknown wake strategy', { strategy, agent: agentSessionName });
         return false;
       }
