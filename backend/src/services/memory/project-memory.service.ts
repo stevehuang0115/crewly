@@ -18,6 +18,7 @@ import {
   DecisionEntry,
   GotchaEntry,
   RelationshipEntry,
+  TaskHistoryEntry,
   DEFAULT_PROJECT_MEMORY,
   type PatternCategory,
   type GotchaSeverity,
@@ -56,6 +57,8 @@ export interface IProjectMemoryService {
   generateProjectContext(projectPath: string): Promise<string>;
   searchAll(projectPath: string, query: string): Promise<SearchResults>;
   getProjectMemory(projectPath: string): Promise<ProjectMemory | null>;
+  addTaskHistory(projectPath: string, entry: TaskHistoryEntry): Promise<string>;
+  getTaskHistory(projectPath: string, capability?: string): Promise<TaskHistoryEntry[]>;
 }
 
 /**
@@ -203,6 +206,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
       MEMORY_CONSTANTS.PROJECT_FILES.DECISIONS,
       MEMORY_CONSTANTS.PROJECT_FILES.GOTCHAS,
       MEMORY_CONSTANTS.PROJECT_FILES.RELATIONSHIPS,
+      MEMORY_CONSTANTS.PROJECT_FILES.TASK_HISTORY,
     ];
 
     for (const file of jsonFiles) {
@@ -587,6 +591,59 @@ export class ProjectMemoryService implements IProjectMemoryService {
   private async saveRelationships(projectPath: string, relationships: RelationshipEntry[]): Promise<void> {
     const filePath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.RELATIONSHIPS);
     await atomicWriteJson(filePath, relationships);
+    this.invalidateCache(projectPath);
+  }
+
+  /**
+   * Append a task-history entry. Dedup on `id`; if an existing entry
+   * with the same id is found, this is a no-op (subscriber emits a
+   * stable id per workitem so a redelivered event collapses cleanly).
+   *
+   * @param projectPath - Project path
+   * @param entry - The TaskHistoryEntry to record
+   * @returns The id of the recorded entry (echoes input.id)
+   */
+  public async addTaskHistory(
+    projectPath: string,
+    entry: TaskHistoryEntry,
+  ): Promise<string> {
+    const existing = await this.getTaskHistory(projectPath);
+    if (existing.some((e) => e.id === entry.id)) {
+      return entry.id;
+    }
+    existing.push(entry);
+    await this.saveTaskHistory(projectPath, existing);
+    return entry.id;
+  }
+
+  /**
+   * Get the full task-history ledger for a project. Optionally filter
+   * by canonical capability string (e.g. `'gmail:read'`); when filter
+   * is set, only entries whose `capabilities[]` contains an exact
+   * match are returned, sorted most-recent first.
+   *
+   * @param projectPath - Project path
+   * @param capability - Optional capability string filter
+   * @returns Array of entries (most recent first when filtered)
+   */
+  public async getTaskHistory(
+    projectPath: string,
+    capability?: string,
+  ): Promise<TaskHistoryEntry[]> {
+    const filePath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.TASK_HISTORY);
+    const all = await safeReadJson<TaskHistoryEntry[]>(filePath, []);
+    if (!capability) return all;
+    const matches = all.filter((e) => e.capabilities.includes(capability));
+    matches.sort((a, b) => b.completedAt.localeCompare(a.completedAt));
+    return matches;
+  }
+
+  private async saveTaskHistory(
+    projectPath: string,
+    entries: TaskHistoryEntry[],
+  ): Promise<void> {
+    const filePath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.TASK_HISTORY);
+    await atomicWriteJson(filePath, entries);
     this.invalidateCache(projectPath);
   }
 

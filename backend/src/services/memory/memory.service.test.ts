@@ -853,4 +853,114 @@ describe('MemoryService', () => {
       );
     });
   });
+
+  describe('recall.capability — task-history routing', () => {
+    beforeEach(async () => {
+      await service.initializeForSession(testAgentId, testRole, testProjectPath);
+    });
+
+    it('returns empty taskHistory when ledger has no matching capability', async () => {
+      const result = await service.recall({
+        agentId: testAgentId,
+        projectPath: testProjectPath,
+        context: 'gmail',
+        scope: 'project',
+        capability: 'gmail:read',
+      });
+      expect(result.taskHistory).toEqual([]);
+      // No "### Capability Routing" block appended when there are no matches.
+      expect(result.combined).not.toContain('### Capability Routing');
+    });
+
+    it('surfaces matching entries and appends Capability Routing block', async () => {
+      const projectMemory = service.getProjectMemoryService();
+      await projectMemory.addTaskHistory(testProjectPath, {
+        id: 'th-ella-1',
+        completedAt: '2026-05-18T14:00:00Z',
+        agent: {
+          sessionName: 'crewly-product-ella',
+          role: 'fullstack-dev',
+        },
+        task: { description: 'Read MIT Role email', outcome: 'success' },
+        capabilities: ['gmail:read', 'oauth:gmail'],
+        toolsUsed: ['read_email_oauth'],
+      });
+
+      const result = await service.recall({
+        agentId: testAgentId,
+        projectPath: testProjectPath,
+        context: 'gmail',
+        scope: 'project',
+        capability: 'gmail:read',
+      });
+
+      expect(result.taskHistory).toHaveLength(1);
+      expect(result.taskHistory![0]!.agent.sessionName).toBe(
+        'crewly-product-ella',
+      );
+      expect(result.combined).toContain('### Capability Routing — `gmail:read`');
+      expect(result.combined).toContain('crewly-product-ella');
+      expect(result.combined).toContain('fullstack-dev');
+    });
+
+    it('ranks members by most-recent activity and aggregates per-member count', async () => {
+      const projectMemory = service.getProjectMemoryService();
+      // Ella did it once, on an earlier date.
+      await projectMemory.addTaskHistory(testProjectPath, {
+        id: 'th-old-ella',
+        completedAt: '2026-04-01T00:00:00Z',
+        agent: { sessionName: 'crewly-product-ella', role: 'fullstack-dev' },
+        task: { description: 'old gmail read', outcome: 'success' },
+        capabilities: ['gmail:read'],
+        toolsUsed: ['read_email_oauth'],
+      });
+      // Sam did it twice, both more recent than Ella's.
+      await projectMemory.addTaskHistory(testProjectPath, {
+        id: 'th-sam-1',
+        completedAt: '2026-05-10T00:00:00Z',
+        agent: { sessionName: 'crewly-product-sam', role: 'fullstack-dev' },
+        task: { description: 'gmail read A', outcome: 'success' },
+        capabilities: ['gmail:read'],
+        toolsUsed: ['read_email_oauth'],
+      });
+      await projectMemory.addTaskHistory(testProjectPath, {
+        id: 'th-sam-2',
+        completedAt: '2026-05-18T00:00:00Z',
+        agent: { sessionName: 'crewly-product-sam', role: 'fullstack-dev' },
+        task: { description: 'gmail read B', outcome: 'success' },
+        capabilities: ['gmail:read'],
+        toolsUsed: ['read_email_oauth'],
+      });
+
+      const result = await service.recall({
+        agentId: testAgentId,
+        projectPath: testProjectPath,
+        context: 'gmail',
+        scope: 'project',
+        capability: 'gmail:read',
+      });
+
+      // The capability-routing block lists Sam first (more recent) with
+      // count=2, then Ella with count=1.
+      const block = result.combined.split('### Capability Routing')[1] ?? '';
+      const samIdx = block.indexOf('crewly-product-sam');
+      const ellaIdx = block.indexOf('crewly-product-ella');
+      expect(samIdx).toBeGreaterThan(-1);
+      expect(ellaIdx).toBeGreaterThan(-1);
+      expect(samIdx).toBeLessThan(ellaIdx);
+      expect(block).toMatch(/crewly-product-sam.*2×/);
+      expect(block).toMatch(/crewly-product-ella.*1×/);
+    });
+
+    it('is omitted entirely when projectPath is not provided', async () => {
+      const result = await service.recall({
+        agentId: testAgentId,
+        context: 'gmail',
+        scope: 'agent',
+        capability: 'gmail:read',
+      });
+      // No projectPath → no query at all → field absent.
+      expect(result.taskHistory).toBeUndefined();
+    });
+  });
 });

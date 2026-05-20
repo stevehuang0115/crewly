@@ -32,7 +32,8 @@ export type MemoryType =
   | 'risk'          // Failures, anti-patterns, prohibitions
   | 'preference'    // Style, approach, team convention preferences
   | 'domain'        // Business facts, architecture knowledge
-  | 'performance';  // Agent capability assessment (for scheduling, not self-use)
+  | 'performance'   // Agent capability assessment (for scheduling, not self-use)
+  | 'task-history'; // Record of completed tasks — who did what, which capabilities
 
 /**
  * A single piece of role-specific knowledge learned by an agent
@@ -532,8 +533,105 @@ export interface ProjectMemory {
   gotchas: GotchaEntry[];
   /** Component/service relationships */
   relationships: RelationshipEntry[];
+  /**
+   * Completed-task ledger keyed by capability. Append-only at the
+   * subscriber level; the orchestrator queries this via
+   * `recall_memory({ capability: 'gmail:read' })` before delegating
+   * external-access work, so "who in my team has done X" is a fact
+   * rather than a guess. See {@link TaskHistoryEntry}.
+   */
+  taskHistory?: TaskHistoryEntry[];
   /** Schema version for migration support */
   schemaVersion?: number;
+}
+
+// ========================= TASK HISTORY =========================
+
+/**
+ * Outcome of a recorded task — used by recall queries to weight
+ * "this member can do X" against "they tried and failed."
+ *
+ * - `success`: task completed cleanly (reported via complete_task)
+ * - `failure`: task failed with an error the agent surfaced
+ * - `partial`: task ended in a partially-completed state (blocked /
+ *   handed off / abandoned with progress)
+ * - `declared`: synthetic entry — agent self-declared capability at
+ *   `register_self` time, no real task ran. Treated as low-weight
+ *   evidence; real entries supersede it.
+ */
+export type TaskOutcome = 'success' | 'failure' | 'partial' | 'declared';
+
+/**
+ * A single completed-task record. Written by TaskHistorySubscriber
+ * when the eventBus emits `v3:task_completed` / `v3:task_failed`, or
+ * synthetically at `register_self` time as a cold-start seed.
+ *
+ * The load-bearing field for routing decisions is `capabilities` —
+ * canonical strings of the form `<category>:<resource>` (e.g.
+ * `gmail:read`, `slack:post`, `oauth:gmail`). The orchestrator's
+ * delegation-first prompt queries by these strings.
+ *
+ * @example
+ * ```typescript
+ * const entry: TaskHistoryEntry = {
+ *   id: 'th-7f3a2b',
+ *   completedAt: '2026-05-18T14:32:11Z',
+ *   agent: { sessionName: 'crewly-product-ella', role: 'fullstack-dev' },
+ *   task: { description: 'Read MIT Role email from inbox', outcome: 'success', durationSec: 12 },
+ *   capabilities: ['gmail:read', 'oauth:gmail'],
+ *   toolsUsed: ['read_email_oauth'],
+ *   taskId: 'task-1747575131-742',
+ * };
+ * ```
+ */
+export interface TaskHistoryEntry {
+  /** Stable identifier for dedup and back-references */
+  id: string;
+  /** ISO timestamp of completion (or declaration time, for synthetic seeds) */
+  completedAt: string;
+  /** Agent that did the work */
+  agent: {
+    /** Session name, e.g. `crewly-product-ella` */
+    sessionName: string;
+    /** Role name from the team template, e.g. `fullstack-dev` */
+    role: string;
+    /** Optional team association — present when invoked through a team */
+    teamId?: string;
+  };
+  /** Task metadata */
+  task: {
+    /** Human-readable summary. Should be brief — full body lives in chat history. */
+    description: string;
+    /** Outcome — see {@link TaskOutcome} */
+    outcome: TaskOutcome;
+    /** Wall-clock duration in seconds, if known */
+    durationSec?: number;
+  };
+  /**
+   * Canonical capability strings derived from the tool trace. Format:
+   * `<category>:<resource>`. Mapping table lives in CapabilityInferenceService.
+   *
+   * Examples:
+   *   gmail:read, gmail:send
+   *   slack:post, slack:dm
+   *   github:pr-create, github:issue-comment
+   *   oauth:gmail, oauth:slack, oauth:github
+   *   chrome:scrape (web-search via browser)
+   *   code:edit, code:read
+   */
+  capabilities: string[];
+  /** Tool names called during the task — raw audit trace, drives inference */
+  toolsUsed: string[];
+  /** Optional link to the originating WorkItem id */
+  taskId?: string;
+  /** Optional link to the chat-v2 conversation id */
+  conversationId?: string;
+  /**
+   * Optional redacted version of `task.description` for privacy-sensitive
+   * contexts. If set, recall results SHOULD surface this instead of the raw
+   * description when leaving the originating agent's trust boundary.
+   */
+  redactedDescription?: string;
 }
 
 // ========================= SHARED USER PROFILE =========================

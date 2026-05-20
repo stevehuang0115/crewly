@@ -121,7 +121,11 @@ export const TOOL_DEFINITIONS = [
     description:
       'Search team memory and knowledge base for relevant information. ' +
       'Uses keyword and semantic matching to find stored learnings, ' +
-      'patterns, decisions, and documents.',
+      'patterns, decisions, and documents. Pass `capability` to ask ' +
+      'specifically "which team members have demonstrated <capability>?" ' +
+      '(e.g. `gmail:read`, `oauth:gmail`, `slack:post`) — the answer is ' +
+      'returned both as structured `taskHistory[]` and as a ' +
+      '"### Capability Routing" section in `combined`, ranked by recency.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -141,6 +145,14 @@ export const TOOL_DEFINITIONS = [
           type: 'string',
           enum: ['agent', 'project', 'both'],
           description: 'Memory scope to search (default: both)',
+        },
+        capability: {
+          type: 'string',
+          description:
+            'Optional: canonical capability string (`<category>:<resource>`, ' +
+            'e.g. `gmail:read`) to query the task-history ledger. When set, ' +
+            'recall returns the members who have completed tasks exercising ' +
+            'this capability, sorted most-recent first.',
         },
       },
       required: ['query'],

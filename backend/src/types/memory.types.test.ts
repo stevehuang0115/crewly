@@ -26,6 +26,9 @@ import {
   type LearningCategory,
   type VerbosityLevel,
   type BreakdownSize,
+  type MemoryType,
+  type TaskHistoryEntry,
+  type TaskOutcome,
 } from './memory.types.js';
 
 describe('Memory Types', () => {
@@ -394,6 +397,132 @@ describe('Memory Types', () => {
       };
 
       expect(entry.shouldInjectByDefault).toBe(false);
+    });
+  });
+
+  describe('TaskHistoryEntry — type-level constraints', () => {
+    it('accepts a minimal real-task entry shaped like the JSDoc example', () => {
+      const entry: TaskHistoryEntry = {
+        id: 'th-7f3a2b',
+        completedAt: '2026-05-18T14:32:11Z',
+        agent: { sessionName: 'crewly-product-ella', role: 'fullstack-dev' },
+        task: { description: 'Read MIT Role email from inbox', outcome: 'success', durationSec: 12 },
+        capabilities: ['gmail:read', 'oauth:gmail'],
+        toolsUsed: ['read_email_oauth'],
+        taskId: 'task-1747575131-742',
+      };
+
+      expect(entry.task.outcome).toBe('success');
+      expect(entry.capabilities).toContain('gmail:read');
+      expect(entry.agent.teamId).toBeUndefined();
+    });
+
+    it('accepts a synthetic register_self declaration with outcome=declared', () => {
+      const entry: TaskHistoryEntry = {
+        id: 'th-decl-001',
+        completedAt: '2026-05-18T10:00:00Z',
+        agent: { sessionName: 'crewly-product-ella', role: 'fullstack-dev', teamId: 'team-mit' },
+        task: {
+          description: 'Self-declared capabilities at register_self',
+          outcome: 'declared',
+        },
+        capabilities: ['oauth:gmail', 'oauth:calendar'],
+        toolsUsed: [],
+      };
+
+      expect(entry.task.outcome).toBe('declared');
+      expect(entry.toolsUsed).toEqual([]);
+    });
+
+    it('accepts a redactedDescription for privacy-sensitive entries', () => {
+      const entry: TaskHistoryEntry = {
+        id: 'th-redacted',
+        completedAt: '2026-05-18T14:00:00Z',
+        agent: { sessionName: 'crewly-finance-bob', role: 'analyst' },
+        task: {
+          description: 'Pulled card statements for user steve@example.com, total $4,231.22',
+          outcome: 'success',
+        },
+        capabilities: ['plaid:read'],
+        toolsUsed: ['fetch_transactions'],
+        redactedDescription: 'Pulled card statements for current user',
+      };
+
+      expect(entry.redactedDescription).toBeDefined();
+      expect(entry.redactedDescription).not.toContain('steve@example.com');
+    });
+
+    it('every TaskOutcome member is assignable to task.outcome', () => {
+      // Compile-time check — the array literal forces TS to verify each value
+      // is a valid TaskOutcome. Run-time assertion is just for coverage.
+      const outcomes: TaskOutcome[] = ['success', 'failure', 'partial', 'declared'];
+      for (const outcome of outcomes) {
+        const entry: TaskHistoryEntry = {
+          id: `th-${outcome}`,
+          completedAt: '2026-05-18T00:00:00Z',
+          agent: { sessionName: 's', role: 'r' },
+          task: { description: 'x', outcome },
+          capabilities: [],
+          toolsUsed: [],
+        };
+        expect(entry.task.outcome).toBe(outcome);
+      }
+    });
+  });
+
+  describe('MemoryType — task-history admission', () => {
+    it("includes 'task-history' alongside the five prior values", () => {
+      const expected: MemoryType[] = [
+        'procedural',
+        'risk',
+        'preference',
+        'domain',
+        'performance',
+        'task-history',
+      ];
+
+      // Each value is assignable to MemoryType (compile-time).
+      for (const t of expected) {
+        const x: MemoryType = t;
+        expect(typeof x).toBe('string');
+      }
+    });
+  });
+
+  describe('ProjectMemory.taskHistory — optional ledger', () => {
+    it('allows ProjectMemory to carry a taskHistory array', () => {
+      const project: ProjectMemory = {
+        ...DEFAULT_PROJECT_MEMORY,
+        projectId: 'proj-1',
+        projectPath: '/tmp/proj',
+        createdAt: '2026-05-18T00:00:00Z',
+        updatedAt: '2026-05-18T00:00:00Z',
+        taskHistory: [
+          {
+            id: 'th-1',
+            completedAt: '2026-05-18T01:00:00Z',
+            agent: { sessionName: 'crewly-orc', role: 'orchestrator' },
+            task: { description: 'Bootstrap memory', outcome: 'success' },
+            capabilities: ['code:read'],
+            toolsUsed: ['read_file'],
+          },
+        ],
+      };
+
+      expect(project.taskHistory).toHaveLength(1);
+      expect(project.taskHistory![0]!.capabilities).toEqual(['code:read']);
+    });
+
+    it('is omittable for backwards compatibility with older project memory files', () => {
+      const legacy: ProjectMemory = {
+        ...DEFAULT_PROJECT_MEMORY,
+        projectId: 'proj-legacy',
+        projectPath: '/tmp/legacy',
+        createdAt: '2026-04-01T00:00:00Z',
+        updatedAt: '2026-04-01T00:00:00Z',
+      };
+
+      expect(legacy.taskHistory).toBeUndefined();
     });
   });
 });

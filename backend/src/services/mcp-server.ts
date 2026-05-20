@@ -525,12 +525,15 @@ export class CrewlyMcpServer {
     const agentId = (args.agentId as string) || 'mcp-client';
     const projectPath = args.projectPath as string | undefined;
     const scope = (args.scope as 'agent' | 'project' | 'both') || 'both';
+    const capability =
+      typeof args['capability'] === 'string' ? (args['capability'] as string) : undefined;
 
     const result = await this.memory.recall({
       agentId,
       context: query,
       scope,
       projectPath,
+      capability,
     });
 
     return this.successResult({
@@ -543,6 +546,9 @@ export class CrewlyMcpServer {
         category: doc.category,
         preview: doc.preview,
       })),
+      // taskHistory present only when caller passed `capability` — the
+      // orchestrator reads this to decide who to delegate to.
+      taskHistory: result.taskHistory,
       combined: result.combined,
     });
   }

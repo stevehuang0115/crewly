@@ -116,6 +116,8 @@ import { setReconcilerService } from './controllers/reconciler/reconciler.contro
 import { FissionGuardService, type FissionDataProvider } from './services/fission/fission-guard.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
+import { ProjectMemoryService } from './services/memory/project-memory.service.js';
+import { TaskHistorySubscriber } from './services/memory/task-history.subscriber.js';
 import {
 	TeamHealthWatchdogService,
 	LiveTeamHealthDataProvider,
@@ -366,6 +368,20 @@ export class CrewlyServer {
 		// triggers addToPool — the slack listener / TaskPool router below both
 		// depend on this for the auto-close path b chain. Idempotent.
 		TaskPoolService.getInstance().setEventBusService(this.eventBusService);
+
+		// Memory: TaskHistorySubscriber listens on the bus for
+		// task:done_by_worker / task:rejected / task:cancelled and writes
+		// the resulting TaskHistoryEntry into ProjectMemory. This is the
+		// load-bearing write path behind "who in my team has done X?" —
+		// the orchestrator queries via recall(capability:...). Must run
+		// AFTER TaskPoolService is wired to the bus (above) so the events
+		// it publishes have a subscriber to consume them.
+		const taskHistorySubscriber = new TaskHistorySubscriber({
+			eventBus: this.eventBusService,
+			projectMemoryService: ProjectMemoryService.getInstance(),
+			taskPoolService: TaskPoolService.getInstance(),
+		});
+		taskHistorySubscriber.start();
 
 		// P1 Bug B (Pool umbrella WI 72ca743a): Wire RequestService into the
 		// TaskPool singleton so addToPool intrinsically links new WIs into
