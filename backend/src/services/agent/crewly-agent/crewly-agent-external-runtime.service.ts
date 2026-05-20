@@ -23,6 +23,7 @@ import { updateAgentHeartbeat } from '../agent-heartbeat.service.js';
 import { PtyActivityTrackerService } from '../pty-activity-tracker.service.js';
 import { TokenUsageService } from '../../monitoring/token-usage.service.js';
 import { getSettingsService } from '../../settings/settings.service.js';
+import { LoggerService } from '../../core/logger.service.js';
 import {
   ADDON_CONSTANTS,
   CREWLY_CONSTANTS,
@@ -65,6 +66,12 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
   private pendingInitResolve: (() => void) | null = null;
   private pendingInitReject: ((error: Error) => void) | null = null;
   private storedConfig: CrewlyAgentConfig | null = null;
+  /**
+   * Bound signal forwarder so we can register it on parent SIGINT/
+   * SIGTERM/SIGHUP and detach the same identity on shutdown. Null
+   * when no child is currently attached.
+   */
+  private signalForwarder: ((signal: NodeJS.Signals) => void) | null = null;
 
   constructor(sessionHelper: SessionCommandHelper, projectRoot: string) {
     super(sessionHelper, projectRoot);
@@ -175,6 +182,7 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     this.initialized = false;
     this.ready = false;
     this.stopHeartbeat();
+    this.detachSignalForwarders();
 
     if (this.currentSessionName) {
       this.logBuffer.append(this.currentSessionName, 'info', 'Crewly Agent shutting down');
@@ -186,7 +194,20 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
       } catch {
         // Ignore shutdown send failures.
       }
-      this.child.kill();
+      // Give the child a brief grace window to drain stdout + exit
+      // cleanly after receiving the shutdown message, then SIGTERM,
+      // then SIGKILL. All three are no-ops on an already-exited child.
+      const child = this.child;
+      setTimeout(() => {
+        if (!child.killed) {
+          try { child.kill('SIGTERM'); } catch { /* gone */ }
+        }
+        setTimeout(() => {
+          if (!child.killed) {
+            try { child.kill('SIGKILL'); } catch { /* gone */ }
+          }
+        }, 2000).unref();
+      }, 500).unref();
     }
 
     if (this.currentSessionName) {
@@ -204,8 +225,7 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
   }
 
   private async spawnAgentProcess(config: CrewlyAgentConfig): Promise<void> {
-    const command = await this.resolveRuntimeCommand();
-    const shell = process.env.SHELL || '/bin/bash';
+    const { command, useShell } = await this.resolveRuntimeCommand();
     const env = {
       ...process.env,
       [ENV_CONSTANTS.CREWLY_SESSION_NAME]: config.sessionName,
@@ -215,11 +235,47 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
       [ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
     };
 
-    this.child = spawn(shell, ['-lc', command], {
-      cwd: config.projectPath || this.projectRoot,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    // Pre-flight check: when running the default `crewly-agent` binary
+    // (no shell, no custom user command), confirm it resolves on PATH
+    // BEFORE spawn so we can return a clear error instead of a cryptic
+    // exit-code-127 a few hundred milliseconds later. Skip the check
+    // when the user supplied a custom shell command — they own that
+    // path resolution.
+    if (!useShell) {
+      const found = await this.lookupOnPath(command, process.env.PATH);
+      if (!found) {
+        throw new Error(
+          `crewly-agent binary not found on PATH. Either:\n` +
+          `  • install crewly-agent (npm i crewly-agent / npm i -g crewly-agent),\n` +
+          `  • make sure the install directory is on the engine's PATH (e.g. PM2 ecosystem env), or\n` +
+          `  • point settings.general.runtimeCommands['crewly-agent'] at the absolute path of an alternate binary.\n` +
+          `Engine PATH at spawn time: ${process.env.PATH ?? '(unset)'}`,
+        );
+      }
+    }
+
+    if (useShell) {
+      // Custom command path: the user explicitly set
+      // settings.general.runtimeCommands['crewly-agent'] to a shell-ready
+      // string. Validated against a strict allow-list (see
+      // resolveRuntimeCommand) before reaching here.
+      const shell = process.env.SHELL || '/bin/bash';
+      this.child = spawn(shell, ['-lc', command], {
+        cwd: config.projectPath || this.projectRoot,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } else {
+      // Default path: spawn the binary directly, no shell. Removes
+      // any shell-injection surface area (the command string is
+      // argv[0], not interpreted).
+      this.child = spawn(command, [], {
+        cwd: config.projectPath || this.projectRoot,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+      });
+    }
 
     this.child.stdout.setEncoding('utf8');
     this.child.stderr.setEncoding('utf8');
@@ -228,6 +284,12 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     this.child.on('exit', (code, signal) => this.handleExit(code, signal));
     this.child.on('error', (error) => this.handleProcessError(error));
 
+    // Forward parent termination signals to the child so PM2 restarts /
+    // SIGINT / SIGTERM don't leave the agent process orphaned and
+    // reparented to PID 1 (regression of the zombie fix tracked in
+    // user-memory session_zombie_fix_progress).
+    this.attachSignalForwarders();
+
     await new Promise<void>((resolve, reject) => {
       this.pendingInitResolve = resolve;
       this.pendingInitReject = reject;
@@ -235,17 +297,115 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     });
   }
 
-  private async resolveRuntimeCommand(): Promise<string> {
+  /**
+   * Resolve the runtime command. Returns the bare binary name (no shell)
+   * by default, or, if the user has configured a custom shell command in
+   * settings, returns it with `useShell=true` after validating it against
+   * a strict allow-list.
+   *
+   * Allow-list rationale: a shell-ready command is anything matching the
+   * shape `<word>[ <flag-or-arg>]*` — no shell metacharacters like
+   * `;` `|` `&` `$` backticks. Anything richer is suspicious and is
+   * silently dropped (we fall back to the default binary). Settings are
+   * user-controlled in principle but flow through HTTP APIs, so we
+   * treat the value as semi-trusted input.
+   */
+  private async resolveRuntimeCommand(): Promise<{ command: string; useShell: boolean }> {
     try {
       const settings = await getSettingsService().getSettings();
       const configured = settings.general.runtimeCommands?.['crewly-agent'];
       if (configured && configured.trim()) {
-        return configured.trim();
+        const trimmed = configured.trim();
+        if (CrewlyAgentExternalRuntimeService.SAFE_SHELL_COMMAND_RE.test(trimmed)) {
+          return { command: trimmed, useShell: true };
+        }
+        // Suspicious shell metacharacters — drop silently and use the
+        // default. Logging the raw value would echo whatever a malicious
+        // settings write tried to plant; log a fingerprint instead.
+        const log = LoggerService.getInstance().createComponentLogger(
+          'CrewlyAgentExternalRuntimeService',
+        );
+        log.warn('settings.runtimeCommands["crewly-agent"] rejected — shell metacharacters detected; falling back to default binary');
       }
     } catch {
       // Fall through to default command.
     }
-    return 'crewly-agent';
+    return { command: 'crewly-agent', useShell: false };
+  }
+
+  /**
+   * Allow-list for custom runtime commands. Matches an executable path or
+   * name followed by space-separated flags/args, where each token is a
+   * combination of letters, digits, and the path-safe punctuation
+   * (`. _ / - = :`). Rejects anything containing shell control characters
+   * (`; | & $ \` < > ( ) { } [ ]`), newlines, or quotes.
+   */
+  private static readonly SAFE_SHELL_COMMAND_RE = /^[A-Za-z0-9._\/\-]+( +[A-Za-z0-9._\/\-=:]+)*$/;
+
+  /**
+   * Find an executable on the engine's PATH. Returns the absolute path
+   * when found, or null when not. Async so we never block the event
+   * loop on slow disks. Exported behavior is "is `name` runnable?";
+   * we don't care which exact entry won the search.
+   */
+  private async lookupOnPath(name: string, pathEnv: string | undefined): Promise<string | null> {
+    // Absolute or relative path — skip the search, just check existence.
+    if (name.includes('/')) {
+      try {
+        const stat = await fs.stat(name);
+        if (stat.isFile()) return name;
+      } catch {
+        return null;
+      }
+      return null;
+    }
+    const dirs = (pathEnv ?? '').split(path.delimiter).filter(Boolean);
+    for (const dir of dirs) {
+      const candidate = path.join(dir, name);
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.isFile()) return candidate;
+      } catch {
+        // Not in this dir, keep searching.
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Forward parent SIGINT/SIGTERM/SIGHUP to the spawned child so it gets
+   * a chance to flush + exit instead of being orphaned. Idempotent —
+   * calling more than once just replaces the previous listeners.
+   *
+   * Removes its own listeners on `handleExit` so old callbacks don't
+   * fire against a recycled `this.child` reference after a restart.
+   */
+  private attachSignalForwarders(): void {
+    if (this.signalForwarder) {
+      // Belt-and-braces: shouldn't happen, but clean previous wiring.
+      this.detachSignalForwarders();
+    }
+    const forwarder = (signal: NodeJS.Signals) => {
+      if (this.child && !this.child.killed) {
+        try {
+          this.child.kill(signal);
+        } catch {
+          // Process already gone — handleExit will run.
+        }
+      }
+    };
+    this.signalForwarder = forwarder;
+    process.on('SIGINT', forwarder);
+    process.on('SIGTERM', forwarder);
+    process.on('SIGHUP', forwarder);
+  }
+
+  private detachSignalForwarders(): void {
+    if (!this.signalForwarder) return;
+    process.off('SIGINT', this.signalForwarder);
+    process.off('SIGTERM', this.signalForwarder);
+    process.off('SIGHUP', this.signalForwarder);
+    this.signalForwarder = null;
   }
 
   private sendMessage(message: ParentMessage): void {
@@ -334,7 +494,13 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
   }
 
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+    // Clear initialized + detach signal handlers — the child is gone,
+    // any tick-aligned work (heartbeat, signal forwarding) referring
+    // to it would be writing to a corpse.
+    this.initialized = false;
     this.ready = false;
+    this.stopHeartbeat();
+    this.detachSignalForwarders();
     const error = new Error(`Crewly Agent process exited (${code ?? 'null'}${signal ? `, ${signal}` : ''})`);
     if (this.pendingInitReject) this.pendingInitReject(error);
     if (this.pendingRunReject) this.pendingRunReject(error);

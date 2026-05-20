@@ -2,7 +2,7 @@ import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { ClaudeRuntimeService } from './claude-runtime.service.js';
 import { GeminiRuntimeService } from './gemini-runtime.service.js';
 import { CodexRuntimeService } from './codex-runtime.service.js';
-import { CrewlyAgentRuntimeService } from './crewly-agent/crewly-agent-runtime.service.js';
+import { CrewlyAgentExternalRuntimeService } from './crewly-agent/crewly-agent-external-runtime.service.js';
 import { RUNTIME_TYPES } from '../../constants.js';
 import type { SessionCommandHelper } from '../session/index.js';
 
@@ -74,14 +74,14 @@ describe('RuntimeServiceFactory', () => {
 			expect(service).toBeInstanceOf(CodexRuntimeService);
 		});
 
-		it('should create CrewlyAgentRuntimeService for CREWLY_AGENT runtime type', () => {
+		it('should create CrewlyAgentExternalRuntimeService for CREWLY_AGENT runtime type', () => {
 			const service = RuntimeServiceFactory.create(
 				RUNTIME_TYPES.CREWLY_AGENT,
 				null,
 				testProjectRoot
 			);
 
-			expect(service).toBeInstanceOf(CrewlyAgentRuntimeService);
+			expect(service).toBeInstanceOf(CrewlyAgentExternalRuntimeService);
 		});
 
 		it('should fallback to ClaudeRuntimeService for unknown runtime type', () => {

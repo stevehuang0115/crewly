@@ -10,7 +10,14 @@
 import type { ModelMessage } from 'ai';
 import type { z } from 'zod';
 import type { McpServerConfig } from '../../mcp-client.js';
-import type { McpSensitivityOverrides } from './mcp-tool-bridge.js';
+
+/**
+ * Sensitivity overrides for MCP tools. Inlined after the in-process
+ * crewly-agent runtime was extracted to the standalone package — OSS
+ * only needs the type now, to thread overrides through CrewlyAgentConfig
+ * when spawning the subprocess.
+ */
+export type McpSensitivityOverrides = Record<string, 'safe' | 'sensitive' | 'destructive'>;
 
 /**
  * Supported model providers for Crewly Agent.

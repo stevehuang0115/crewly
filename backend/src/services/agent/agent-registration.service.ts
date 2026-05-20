@@ -12,7 +12,7 @@ import {
 } from '../session/index.js';
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { RuntimeServiceFactory } from './runtime-service.factory.js';
-import { CrewlyAgentRuntimeService } from './crewly-agent/crewly-agent-runtime.service.js';
+import { CrewlyAgentExternalRuntimeService } from './crewly-agent/crewly-agent-external-runtime.service.js';
 import {
 	registerInProcessRuntime,
 	unregisterInProcessRuntime,
@@ -173,7 +173,7 @@ export class AgentRegistrationService {
 
 	// In-process Crewly Agent runtimes (sessionName → runtime instance).
 	// Used for crewly-agent runtimeType agents that run without PTY sessions.
-	private inProcessRuntimes = new Map<string, CrewlyAgentRuntimeService>();
+	private inProcessRuntimes = new Map<string, CrewlyAgentExternalRuntimeService>();
 
 	/** #167: Optional scheduler service for DLQ drain on agent activation. */
 	private schedulerService: { drainDeadLetterQueue(sessionName: string): Promise<number> } | null = null;
@@ -688,9 +688,9 @@ export class AgentRegistrationService {
 	 * Used by the terminal controller for force-delivery to in-process agents.
 	 *
 	 * @param sessionName - Session name to look up
-	 * @returns The CrewlyAgentRuntimeService if it exists, undefined otherwise
+	 * @returns The CrewlyAgentExternalRuntimeService if it exists, undefined otherwise
 	 */
-	getInProcessRuntime(sessionName: string): CrewlyAgentRuntimeService | undefined {
+	getInProcessRuntime(sessionName: string): CrewlyAgentExternalRuntimeService | undefined {
 		return this.inProcessRuntimes.get(sessionName);
 	}
 
@@ -2753,7 +2753,7 @@ Loop until done, blocked, or explicitly reassigned:
 			if (runtimeType === RUNTIME_TYPES.CREWLY_AGENT) {
 				this.logger.info('Starting in-process Crewly Agent runtime', { sessionName, role });
 
-				const crewlyRuntime = this.createRuntimeService(runtimeType) as CrewlyAgentRuntimeService;
+				const crewlyRuntime = this.createRuntimeService(runtimeType) as CrewlyAgentExternalRuntimeService;
 
 				// Look up modelId for this session.
 				//
