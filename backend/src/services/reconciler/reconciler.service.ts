@@ -79,6 +79,27 @@ export interface ReconcilerDataProvider {
   executeWakeAction?(action: WakeAction): Promise<boolean>;
   /** Backfill token usage data on completed WorkItems that have 0 tokens */
   backfillTokenUsage?(): Promise<number>;
+  /**
+   * Emit `task:queued_too_long` events for WIs that have crossed the
+   * staleness threshold. Per-WI dedup is the provider's responsibility.
+   * Self-heal fix #2 (2026-05-20).
+   */
+  broadcastStaleQueuedWIs?(
+    staleWorkItems: ReadonlyArray<{
+      id: string;
+      target?: string;
+      owner?: string;
+      createdAt: string;
+    }>,
+  ): void;
+  /**
+   * Release the dedup entry for any WI in the provider's internal map
+   * that is no longer in the currently-queued set. Called by the
+   * reconciler each pass so a WI that became un-stuck (claimed,
+   * completed, cancelled) and later re-becomes stuck gets a fresh
+   * first-fire instead of being silenced by stale dedup state.
+   */
+  clearResolvedStuckWiDedup?(currentlyQueuedIds: ReadonlySet<string>): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +237,42 @@ export class ReconcilerService {
             staleIds: pruning.staleQueuedIds.slice(0, 20),
             truncated: pruning.staleQueuedIds.length > 20,
           });
+
+        // Self-heal fix #2 (2026-05-20): emit an actionable
+        // `task:queued_too_long` event so the owner (typically ORC)
+        // can re-deliver / re-target / fail-fast. Resolves the
+        // 2026-05-20 ESTestNode incident pattern where the WI sat
+        // queued for 53min because the recovery chain quietly
+        // skipped active-but-idle agents.
+        if (this.dataProvider.broadcastStaleQueuedWIs) {
+          const staleWithMeta: Array<{
+            id: string;
+            target?: string;
+            owner?: string;
+            createdAt: string;
+          }> = [];
+          for (const wiId of pruning.staleQueuedIds) {
+            const wi = workItems.find((w) => w.id === wiId);
+            if (!wi) continue;
+            staleWithMeta.push({
+              id: wi.id,
+              target: wi.target,
+              owner: wi.owner,
+              createdAt: wi.createdAt,
+            });
+          }
+          this.dataProvider.broadcastStaleQueuedWIs(staleWithMeta);
+        }
+      }
+
+      // Clear dedup entries for WIs that are no longer queued — a WI
+      // that was claimed/completed/cancelled since the last reconcile
+      // should get a fresh first-fire if it ever re-enters stuck state.
+      if (this.dataProvider.clearResolvedStuckWiDedup) {
+        const currentlyQueued = new Set(
+          workItems.filter((w) => w.status === 'queued').map((w) => w.id),
+        );
+        this.dataProvider.clearResolvedStuckWiDedup(currentlyQueued);
       }
 
       // 5. Reconcile Request statuses

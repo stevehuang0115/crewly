@@ -696,6 +696,110 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   }
 
   /**
+   * Per-WI dedup of `task:queued_too_long` broadcasts. Maps WI id to the
+   * ISO timestamp at which we last fired. A WI is only re-broadcast
+   * after {@link STUCK_WI_REBROADCAST_MS} has elapsed since the last
+   * fire — keeps the orc terminal sane when many WIs accumulate.
+   *
+   * Cleaned on every reconcile pass that observes the WI is no longer
+   * `queued`, so a successful resume cancels the dedup naturally.
+   */
+  private lastStuckWiNotifiedAt: Map<string, number> = new Map();
+
+  /**
+   * Re-broadcast window for the same WI. Picked to roughly match the
+   * reconciler's own staleness threshold so a long-stuck WI gets a
+   * follow-up reminder ~hourly without flooding.
+   */
+  private static readonly STUCK_WI_REBROADCAST_MS = 60 * 60 * 1000;
+
+  /**
+   * Broadcast `task:queued_too_long` for WIs the reconciler has just
+   * detected as stale-queued past the threshold. Public so the
+   * reconciler service can call it after the existing log line at
+   * reconciler.service.ts:213.
+   *
+   * Per-WI dedup ensures a long-stuck WI fires at most once per
+   * {@link STUCK_WI_REBROADCAST_MS}. Missing target/owner is fine — the
+   * subscription filter side handles defaults.
+   *
+   * @param staleWorkItems - List of `{id, target, owner, createdAt}` for
+   *   each WI past the staleness threshold. The reconciler resolves
+   *   these from {@link getTaskPoolService}.findWorkItem before calling.
+   */
+  broadcastStaleQueuedWIs(
+    staleWorkItems: ReadonlyArray<{
+      id: string;
+      target?: string;
+      owner?: string;
+      createdAt: string;
+    }>,
+  ): void {
+    if (!this.eventBus || staleWorkItems.length === 0) return;
+
+    const now = Date.now();
+    for (const wi of staleWorkItems) {
+      const last = this.lastStuckWiNotifiedAt.get(wi.id) ?? 0;
+      if (now - last < LiveReconcilerDataProvider.STUCK_WI_REBROADCAST_MS) {
+        continue;
+      }
+
+      try {
+        const ageMs = now - new Date(wi.createdAt).getTime();
+        this.eventBus.publish({
+          // Composite id makes redelivery dedup-friendly without
+          // colliding across re-fires (the timestamp segment changes).
+          id: `task-queued-too-long-${wi.id}-${now}`,
+          type: 'task:queued_too_long',
+          timestamp: new Date(now).toISOString(),
+          // teamId/teamName/memberId/memberName are conventionally empty
+          // for pool-level events; subscriber routing uses workItemId.
+          teamId: '',
+          teamName: '',
+          memberId: '',
+          memberName: 'reconciler',
+          sessionName: wi.target ?? '',
+          previousValue: 'queued',
+          newValue: 'queued_stale',
+          changedField: 'taskStatus',
+          workItemId: wi.id,
+          // Carry the owner (typically 'orchestrator' or a team-lead
+          // session) so a subscriber can filter `owner === self` to
+          // catch ONLY its own stuck delegations.
+          ...(wi.owner ? { owner: wi.owner } : {}),
+          // Age in seconds so the orc can decide between re-deliver
+          // (short stuck) and re-target / fail (long stuck).
+          ...(ageMs > 0 ? { ageSeconds: Math.floor(ageMs / 1000) } : {}),
+        } as Parameters<EventBusService['publish']>[0]);
+        this.lastStuckWiNotifiedAt.set(wi.id, now);
+      } catch (err) {
+        // Failure isolation — telemetry failures must not break the
+        // reconciler's primary control flow.
+        this.logger.warn('Failed to broadcast task:queued_too_long (non-fatal)', {
+          workItemId: wi.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  /**
+   * Drop dedup entries for WIs that are no longer stuck. Called by the
+   * reconciler each pass with the current set of `queued` WI ids — any
+   * id in our map that is NOT in the current set has been resolved
+   * (claimed, completed, cancelled) and its dedup window should be
+   * released so a future re-stale gets a fresh first-fire.
+   */
+  clearResolvedStuckWiDedup(currentlyQueuedIds: ReadonlySet<string>): void {
+    if (this.lastStuckWiNotifiedAt.size === 0) return;
+    for (const id of [...this.lastStuckWiNotifiedAt.keys()]) {
+      if (!currentlyQueuedIds.has(id)) {
+        this.lastStuckWiNotifiedAt.delete(id);
+      }
+    }
+  }
+
+  /**
    * Find one idle, evictable agent that can be terminated to free a wake
    * slot under memory pressure.
    *

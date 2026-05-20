@@ -17,6 +17,16 @@ TASK_TYPE="general"
 TEAM_ID=""
 FORCE_CROSS_TEAM="false"
 REQUEST_ID=""
+# Self-heal fix #3 (2026-05-20): default fallback timer at 30min. Per
+# the orchestrator prompt §3.0 the orc is supposed to set 2× ETA
+# manually for every dispatch, but the convention was unenforced —
+# observable in the 2026-05-20 ESTestNode incident where the orc set
+# only the idle subscription and not the fallback timer, leaving the
+# orc clueless when Sora never started. Auto-creating a 30min fallback
+# at dispatch time guarantees the dual-signal contract is honored.
+# Caller can override via --fallback-minutes N, or disable with
+# --fallback-minutes 0.
+FALLBACK_MINUTES="30"
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -36,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --team|-g)       TEAM_ID="$2";          shift 2 ;;
     --request-id|-R) REQUEST_ID="$2";       shift 2 ;;
     --force-cross-team) FORCE_CROSS_TEAM="true"; shift ;;
+    --fallback-minutes) FALLBACK_MINUTES="$2"; shift 2 ;;
     --json|-j)       INPUT_JSON="$2";       shift 2 ;;
     --help|-h)
       echo "Usage: execute.sh --to agent-session --task 'implement feature' --priority high --project /path [--team teamId] [--context 'extra info']"
@@ -241,11 +252,99 @@ if [ "$POOL_OK" != "true" ]; then
   exit 1
 fi
 
+# --- Immediate claim transition (self-heal fix #1) ---
+# Force `queued → running` at dispatch time so the WI doesn't rot in
+# queued waiting for a pull that may never come. The 2026-05-20 ESTestNode
+# incident (WI d705bfe0) revealed the gap: addToPool succeeded, the
+# message was delivered to Sora's PTY, but the WI stayed `queued` for
+# >1h because no caller transitioned the status. The Reconciler logged
+# it as stale but its eviction path only handles `suspended/inactive`
+# agents (not `active-but-idle`), so the work never made progress.
+#
+# Mirrors what `index.ts:queueProcessorService.setTaskPoolRouter` does
+# for [TASK]-prefixed message dispatch — claimFromPool runs immediately
+# after addToPool. The skill path now matches that contract.
+#
+# Failure is non-fatal: if claim fails (race, target locked, etc.) the
+# WI stays queued and the Reconciler + AutoClaim will retry the legacy
+# way. We log the failure so it's grep-able but don't block dispatch.
+if [ -n "$WI_ID" ] && [ -n "$TO" ]; then
+  CLAIM_BODY=$(jq -n --arg agentId "$TO" --arg workItemId "$WI_ID" \
+    '{agentId: $agentId, workItemId: $workItemId}')
+  CLAIM_RESULT=$(api_call POST "/task-pool/claim" "$CLAIM_BODY" 2>/dev/null || echo '{"success":false}')
+  CLAIM_OK=$(echo "$CLAIM_RESULT" | jq -r '.success // "false"' 2>/dev/null)
+  if [ "$CLAIM_OK" != "true" ]; then
+    echo "warn: WorkItem $WI_ID created but immediate claim for $TO failed — falling back to async claim path" >&2
+  fi
+fi
+
+# --- Fallback trigger (self-heal fix #3) ---
+# Per orchestrator prompt §3.0 every dispatch must close the loop with
+# BOTH signals: (a) idle-event subscription, AND (b) fallback timer at
+# 2× ETA. The agent:idle subscription is set elsewhere (tool-registry
+# delegate_task auto-attach); this block enforces the timer half.
+#
+# Encoded as a /triggers POST that creates a self-targeted delegate WI
+# at fire time, which surfaces "WI <id> dispatched to <target> N min
+# ago — verify status" back into orc's pool. orc's normal dispatch loop
+# then handles it like any other inbound task.
+#
+# Caller can override via --fallback-minutes N or disable with
+# --fallback-minutes 0.
+FALLBACK_TRIGGER_ID=""
+if [ -n "$WI_ID" ] && [ "${FALLBACK_MINUTES:-0}" -gt 0 ] 2>/dev/null; then
+  # Compute the fireAt timestamp = now + FALLBACK_MINUTES.
+  # `date -v+Xm` on macOS, `date -d "+X minutes"` on GNU. Try both;
+  # silently skip the fallback if neither shape works rather than
+  # blocking the dispatch on a date-format quirk.
+  FIRE_AT=""
+  FIRE_AT=$(date -u -v+"${FALLBACK_MINUTES}"M +'%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || \
+             date -u -d "+${FALLBACK_MINUTES} minutes" +'%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || \
+             echo "")
+
+  if [ -n "$FIRE_AT" ]; then
+    FALLBACK_SESSION="${CREWLY_SESSION_NAME:-crewly-orc}"
+    TRIGGER_BODY=$(jq -n \
+      --arg type "time" \
+      --arg fireAt "$FIRE_AT" \
+      --arg target "$FALLBACK_SESSION" \
+      --arg createdBy "delegate-task" \
+      --arg name "fallback-${TO}-${WI_ID:0:8}" \
+      --arg title "Fallback check on ${TO} for task ${WI_ID:0:8}" \
+      --arg description "Per §3.0: ${FALLBACK_MINUTES}min fallback after dispatch to ${TO}. Check whether ${WI_ID} is making progress — if running but no output, re-prompt; if still queued, re-target or fail-fast." \
+      '{
+        type: $type,
+        config: {type: "time", fireAt: $fireAt},
+        action: {createWorkItem: {type: "delegate", owner: "system", target: $target, title: $title, description: $description}},
+        createdBy: $createdBy,
+        name: $name,
+        maxFires: 1
+      }')
+    TRIGGER_RESULT=$(api_call POST "/triggers" "$TRIGGER_BODY" 2>/dev/null || echo '{"success":false}')
+    TRIGGER_OK=$(echo "$TRIGGER_RESULT" | jq -r '.success // "false"' 2>/dev/null)
+    if [ "$TRIGGER_OK" = "true" ]; then
+      FALLBACK_TRIGGER_ID=$(echo "$TRIGGER_RESULT" | jq -r '.data.id // .triggerId // empty' 2>/dev/null || echo "")
+    else
+      echo "warn: WorkItem $WI_ID dispatched but fallback timer creation failed — orc's idle subscription is the only safety net" >&2
+    fi
+  fi
+fi
+
 # Output result
+CLAIM_STATE=$([ "${CLAIM_OK:-false}" = "true" ] && echo "running" || echo "queued")
+if [ "$CLAIM_STATE" = "running" ]; then
+  RESULT_MESSAGE="WorkItem created in TaskPool and immediately claimed by target."
+else
+  RESULT_MESSAGE="WorkItem created in TaskPool (immediate claim failed — Reconciler will retry)."
+fi
 jq -n \
-  --arg success "true" \
   --arg workItemId "${WI_ID:-}" \
   --arg target "$TO" \
   --arg priority "$WI_PRIORITY" \
   --arg title "$WI_TITLE" \
-  '{success: true, workItemId: $workItemId, target: $target, priority: $priority, title: $title, message: "WorkItem created in TaskPool. Reconciler will wake the agent when resources are available."}'
+  --arg state "$CLAIM_STATE" \
+  --arg message "$RESULT_MESSAGE" \
+  --arg fallbackTriggerId "${FALLBACK_TRIGGER_ID:-}" \
+  --arg fallbackMinutes "${FALLBACK_MINUTES:-0}" \
+  '{success: true, workItemId: $workItemId, target: $target, priority: $priority, title: $title, state: $state, message: $message}
+   + (if $fallbackTriggerId != "" then {fallbackTriggerId: $fallbackTriggerId, fallbackMinutes: ($fallbackMinutes|tonumber)} else {} end)'
