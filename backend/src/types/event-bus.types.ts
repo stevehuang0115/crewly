@@ -19,6 +19,25 @@ export const EVENT_TYPES = [
   // Agent lifecycle events
   'agent:status_changed',
   'agent:idle',
+  // 2026-05-20 follow-up to the Sora stuck-WI incident — split idle into
+  // two semantically distinct events so subscriptions that mean "tell me
+  // when the agent FINISHED a task" stop getting woken by the unrelated
+  // "agent just registered and has nothing to do yet" transition.
+  //
+  // - agent:idle_after_registration: fires once when an agent first
+  //   transitions to idle after registration, without having been
+  //   workingStatus=in_progress at any point. Useful for fleet-monitoring
+  //   dashboards. NOT useful for delegation-complete signalling — a
+  //   peer-watch trigger keyed on this would consume the wake-up event
+  //   before the delegatee has even claimed the WI.
+  // - agent:idle_after_task: fires when an agent returns to idle after
+  //   having been busy. This is the event delegation-watchers want.
+  //
+  // `agent:idle` continues to fire alongside both (back-compat for
+  // existing subscribers). New subscribers should prefer the precise
+  // variant.
+  'agent:idle_after_registration',
+  'agent:idle_after_task',
   'agent:busy',
   'agent:active',
   'agent:inactive',
@@ -138,6 +157,8 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   'task:cancelled',
   'task:input_required',
   'agent:idle',
+  'agent:idle_after_registration',
+  'agent:idle_after_task',
   'agent:inactive',
   'agent:context_critical',
   'hierarchy:escalation',

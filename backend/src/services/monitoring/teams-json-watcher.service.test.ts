@@ -361,6 +361,66 @@ describe('TeamsJsonWatcherService', () => {
     });
   });
 
+  // 2026-05-20 follow-up — precise idle taxonomy. The watcher must emit
+  // `agent:idle_after_task` when prev was `in_progress`, and
+  // `agent:idle_after_registration` when prev was unset (fresh row).
+  // The generic `agent:idle` still fires for back-compat.
+  describe('idle taxonomy (agent:idle_after_task vs agent:idle_after_registration)', () => {
+    const mkTeam = (memberOverrides: Record<string, unknown>) => ({
+      id: 't1',
+      name: 'Team One',
+      members: [{
+        id: 'm1',
+        name: 'Member One',
+        sessionName: 'sora',
+        agentStatus: 'active',
+        ...memberOverrides,
+      }],
+    } as any);
+
+    const callPublish = (oldTeams: any[], newTeams: any[]) => {
+      const events: any[] = [];
+      const mockBus = { publish: (e: any) => events.push(e) } as any;
+      service.setEventBusService(mockBus);
+      (service as any).publishAgentEvents(oldTeams, newTeams);
+      return events;
+    };
+
+    it('emits agent:idle_after_task when prev workingStatus was in_progress', () => {
+      const events = callPublish(
+        [mkTeam({ workingStatus: 'in_progress' })],
+        [mkTeam({ workingStatus: 'idle' })],
+      );
+      const types = events.map(e => e.type);
+      expect(types).toContain('agent:idle');
+      expect(types).toContain('agent:idle_after_task');
+      expect(types).not.toContain('agent:idle_after_registration');
+    });
+
+    it('emits agent:idle_after_registration when prev workingStatus was unset', () => {
+      const events = callPublish(
+        [mkTeam({})], // no workingStatus on the old row
+        [mkTeam({ workingStatus: 'idle' })],
+      );
+      const types = events.map(e => e.type);
+      expect(types).toContain('agent:idle');
+      expect(types).toContain('agent:idle_after_registration');
+      expect(types).not.toContain('agent:idle_after_task');
+    });
+
+    it('does not emit any idle taxonomy event when transitioning idle → busy', () => {
+      const events = callPublish(
+        [mkTeam({ workingStatus: 'idle' })],
+        [mkTeam({ workingStatus: 'in_progress' })],
+      );
+      const types = events.map(e => e.type);
+      expect(types).toContain('agent:busy');
+      expect(types).not.toContain('agent:idle');
+      expect(types).not.toContain('agent:idle_after_task');
+      expect(types).not.toContain('agent:idle_after_registration');
+    });
+  });
+
   describe('cleanup', () => {
     it('should clean up on process signals', () => {
       const stopSpy = jest.spyOn(service, 'stop');

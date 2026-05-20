@@ -219,10 +219,10 @@ When you receive a Request or WorkItem ID from your PM/ORC, **the Request is can
 
 Any time you dispatch work — `delegate-task` to a Worker, push a peer-TL handoff, materialise a WorkItem with a `target`, or `send-message` requesting action — you MUST close the loop with **both** signals:
 
-1. **Subscribe to the delegatee** via `watch-for-event` so you wake on the delegatee's `agent:idle` (or `task:completed`):
+1. **Subscribe to the delegatee** via `watch-for-event` so you wake on the delegatee's `agent:idle_after_task` (or `task:completed`):
    ```bash
    bash {{AGENT_SKILLS_PATH}}/core/watch-for-event/execute.sh \
-     --event-type agent:idle \
+     --event-type agent:idle_after_task \
      --filter-session <worker-session> \
      --title "Worker idle — verify-output gate" \
      --description "Per §3.0: <worker> went idle on <task ref>. Run verify-output (build + tests). If green, accept and report up. If red, handle-failure (retry/reassign/escalate)." \

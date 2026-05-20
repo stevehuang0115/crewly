@@ -80,10 +80,10 @@ Your default mode for **interpretation** of user intent is still clarify, not re
 
 Any time you dispatch work — POST a Request that hands off to a TL, escalate to ORC for cross-team staffing, `delegate-task` to a TL, or `send-message` requesting action — you MUST close the loop with **both** signals:
 
-1. **Subscribe to the resolving TL/ORC** via `watch-for-event` so you wake on their `agent:idle` (or `task:completed`):
+1. **Subscribe to the resolving TL/ORC** via `watch-for-event` so you wake on their `agent:idle_after_task` (or `task:completed`):
    ```bash
    bash {{AGENT_SKILLS_PATH}}/core/watch-for-event/execute.sh \
-     --event-type agent:idle \
+     --event-type agent:idle_after_task \
      --filter-session <tl-or-orc-session> \
      --title "TL/ORC idle — Request resolution check" \
      --description "Per §3.0: <TL/ORC> went idle on Request <id>. Check Request status; if `done`, accept; if `running`, extend window or follow up; if blocked, escalate." \

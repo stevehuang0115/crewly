@@ -98,16 +98,19 @@ Do **not** silently expand scope inside one WorkItem. The pipeline is how recurs
 
 When you create a child WorkItem for a peer Worker, hand off via `send-message` for clarification (e.g. dev→architect, dev→qa), or chain a downstream worker via `delegate-task`, you MUST close the loop with **both** signals:
 
-1. **Subscribe to the peer** via `watch-for-event` so you wake on their `agent:idle` (or `task:completed`):
+1. **Subscribe to the peer** via `watch-for-event` so you wake on their `agent:idle_after_task` (or `task:completed`):
    ```bash
    bash {{AGENT_SKILLS_PATH}}/core/watch-for-event/execute.sh \
-     --event-type agent:idle \
+     --event-type agent:idle_after_task \
      --filter-session <peer-session> \
      --title "Peer idle — child WorkItem check" \
      --description "Per §3.0: <peer> went idle on <child workitem id / message ref>. Check whether their reply landed in your inbox or whether the child WorkItem flipped to done." \
      --max-fires 3 \
      --max-idle-fires 3
    ```
+   > Use `agent:idle_after_task` (not the generic `agent:idle`) so the
+   > subscription is NOT consumed by the peer's registration-idle event
+   > if they were just started for this delegation.
 
 2. **Schedule a fallback** at roughly **2× expected ETA** via `schedule-followup` — `agent:idle` is best-effort, not a guarantee, and stalled peers never transition:
    ```bash

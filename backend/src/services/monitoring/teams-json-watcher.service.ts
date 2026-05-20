@@ -453,6 +453,31 @@ export class TeamsJsonWatcherService extends EventEmitter {
           };
 
           this.eventBusService.publish(workingEvent);
+
+          // 2026-05-20 follow-up — disambiguate idle transitions for
+          // peer-watch triggers. The file-watcher sees raw `oldValue →
+          // newValue` transitions; we can distinguish:
+          //   - prev was `in_progress` → this is `agent:idle_after_task`
+          //   - prev was unset/null/empty (fresh-registration row) →
+          //     `agent:idle_after_registration`
+          // We do NOT emit the precise variant when we can't tell
+          // (e.g. prev='idle', new='idle' — that case is filtered out
+          // by the outer guard anyway).
+          if (newMember.workingStatus === 'idle') {
+            const wasBusy = oldMember.workingStatus === 'in_progress';
+            const wasUnset = !oldMember.workingStatus;
+            const preciseType: 'agent:idle_after_task' | 'agent:idle_after_registration' | null =
+              wasBusy ? 'agent:idle_after_task'
+              : wasUnset ? 'agent:idle_after_registration'
+              : null;
+            if (preciseType) {
+              this.eventBusService.publish({
+                ...workingEvent,
+                id: crypto.randomUUID(),
+                type: preciseType,
+              });
+            }
+          }
         }
       }
     }
