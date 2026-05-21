@@ -301,6 +301,14 @@ export const VERIFIED_REPLY_REASONS: ReadonlySet<string> = new Set<string>([
   // reason, so it must be in the verified set to pass the
   // {@link RequestSlaSubscriber.maybeCloseRequest} defense gate.
   'orc_reply_recheck',
+  // 2026-05-21 closie incident: orc replied directly AFTER decomposition
+  // already cleared the SLA indexes. The fallback path in
+  // {@link RequestSlaSubscriber.resolveOrphanedRequestByThread} /
+  // {@link RequestSlaSubscriber.resolveOrphanedRequestByChatV2}
+  // re-enters {@link RequestSlaSubscriber.maybeCloseRequest} with these
+  // tags; both must pass the verified-reply gate.
+  'orc_reply_after_decompose',
+  'chatv2_reply_after_decompose',
 ]);
 
 /**
@@ -658,13 +666,32 @@ export class RequestSlaSubscriber {
     // Index miss — schedule a single retry after the
     // `request:created` handler has had time to populate the index.
     // 250ms covers in-memory getById + microtask scheduling + a margin.
-    const retry = setTimeout(() => {
+    const retry = setTimeout(async () => {
       const retryRequestId = this.threadIndex.get(threadTs);
-      if (!retryRequestId) {
-        this.logger.debug('markResolvedByThread retry still missed', { threadTs });
+      if (retryRequestId) {
+        void this.markResolved(retryRequestId, 'orc_reply');
         return;
       }
-      void this.markResolved(retryRequestId, 'orc_reply');
+      // Retry still missed. The most common reason isn't a race — it's
+      // that the Request was already decomposed (workitem_decompose),
+      // which clears `threadIndex` even though the Request is still
+      // open with non-terminal child WIs. Orc just replied directly
+      // anyway (e.g. the question turned out to be a one-shot answer),
+      // so those child WIs are now orphaned and would otherwise sit
+      // queued/blocked forever.
+      //
+      // 2026-05-21 closie incident: Request 2adc23a3 decomposed into
+      // Plan/Execute/Review, orc replied at 04:01 directly, but the 3
+      // children stayed queued/blocked for 8+ hours until manual
+      // cleanup. The status-check skill kept reporting "0/3 done".
+      try {
+        await this.resolveOrphanedRequestByThread(threadTs);
+      } catch (err) {
+        this.logger.warn('Orphaned-Request fallback failed (non-fatal)', {
+          threadTs,
+          error: formatError(err),
+        });
+      }
     }, MARK_RESOLVED_RETRY_MS);
     retry.unref?.();
   }
@@ -689,15 +716,137 @@ export class RequestSlaSubscriber {
     // Mirror the markResolvedByThread retry. Same race shape applies on
     // chat-v2: an agent reply may land before the `request:created`
     // handler has populated `chatV2Index`.
-    const retry = setTimeout(() => {
+    const retry = setTimeout(async () => {
       const retryRequestId = this.chatV2Index.get(channelId);
-      if (!retryRequestId) {
-        this.logger.debug('markResolvedByChatV2 retry still missed', { channelId });
+      if (retryRequestId) {
+        void this.markResolved(retryRequestId, 'chatv2_reply');
         return;
       }
-      void this.markResolved(retryRequestId, 'chatv2_reply');
+      // Retry still missed — same orphan-after-decompose path as the
+      // Slack case in {@link markResolvedByThread}. Look up the Request
+      // by source convo id directly and clean up.
+      try {
+        await this.resolveOrphanedRequestByChatV2(channelId);
+      } catch (err) {
+        this.logger.warn('Orphaned-Request fallback failed (non-fatal)', {
+          channelId,
+          error: formatError(err),
+        });
+      }
     }, MARK_RESOLVED_RETRY_MS);
     retry.unref?.();
+  }
+
+  /**
+   * Orphan-cleanup path for the Slack case in {@link markResolvedByThread}.
+   *
+   * The threadIndex / chatV2Index are populated when an SLA tracker is
+   * registered for the Request and cleared whenever {@link markResolved}
+   * runs — including the `workitem_decompose` resolve. After decomposition,
+   * the Request stays open with non-terminal child WIs while the SLA
+   * indexes are empty. If the orc then replies directly in the original
+   * thread, neither the primary `threadIndex` lookup nor the 250ms retry
+   * will find anything, and the orphan child WIs sit queued/blocked
+   * indefinitely (closie incident, 2026-05-21).
+   *
+   * This fallback authoritatively scans `RequestService.listAll()` for an
+   * open Request whose `sourceConversationItemId` references `threadTs`,
+   * then force-removes any non-terminal child WIs from the pool and
+   * cascades the close. We bypass the index because the index is the
+   * very thing that's stale.
+   *
+   * @param threadTs - The Slack message timestamp the orc replied to
+   */
+  private async resolveOrphanedRequestByThread(threadTs: string): Promise<void> {
+    const all = await this.requestService.listAll();
+    const match = all.find(
+      (r) =>
+        !TERMINAL_REQUEST_STATUSES.has(r.status) &&
+        extractSlackThreadTs(r.sourceConversationItemId) === threadTs,
+    );
+    if (!match) {
+      this.logger.debug('No open Request matches threadTs — nothing to clean up', { threadTs });
+      return;
+    }
+    await this.cancelOrphansAndCloseRequest(match.id, 'orc_reply_after_decompose');
+  }
+
+  /**
+   * Orphan-cleanup path for the chat-v2 case in
+   * {@link markResolvedByChatV2}. Mirrors {@link resolveOrphanedRequestByThread}
+   * but matches on `chatV2-` source id shape.
+   *
+   * @param channelId - The chat-v2 channel id where the agent replied
+   */
+  private async resolveOrphanedRequestByChatV2(channelId: string): Promise<void> {
+    const all = await this.requestService.listAll();
+    const match = all.find(
+      (r) =>
+        !TERMINAL_REQUEST_STATUSES.has(r.status) &&
+        extractChatV2ChannelId(r.sourceConversationItemId) === channelId,
+    );
+    if (!match) {
+      this.logger.debug('No open Request matches channelId — nothing to clean up', { channelId });
+      return;
+    }
+    await this.cancelOrphansAndCloseRequest(match.id, 'chatv2_reply_after_decompose');
+  }
+
+  /**
+   * Cancel all non-terminal WorkItems belonging to a Request, then cascade
+   * the Request to `done`. Shared tail of
+   * {@link resolveOrphanedRequestByThread} and
+   * {@link resolveOrphanedRequestByChatV2}.
+   *
+   * Each WI is transitioned individually so a single failure (illegal
+   * transition, stale claim) does not block the others — the cascade
+   * close at the end only fires if at least one WI flipped to terminal
+   * (otherwise `countOtherActiveWorkItems` will keep the Request open
+   * via {@link maybeCloseRequest}'s sibling-count gate).
+   *
+   * @param requestId - The Request to clean up
+   * @param reason    - Diagnostic tag recorded on each cancelled WI's
+   *   metadata and on the Request's `result` field
+   */
+  private async cancelOrphansAndCloseRequest(requestId: string, reason: string): Promise<void> {
+    const all = await this.taskPool.getAllItems();
+    let cancelled = 0;
+    for (const wi of all) {
+      if (wi.requestId !== requestId) continue;
+      if (TERMINAL_WI_STATUSES.has(wi.status)) continue;
+      try {
+        await this.taskPool.transitionStatus(
+          wi.id,
+          'cancelled',
+          'system',
+          (item) => {
+            item.metadata = {
+              ...(item.metadata ?? {}),
+              slaResolvedReason: reason,
+              slaResolvedAt: new Date().toISOString(),
+            };
+          },
+          `SLA auto-resolved: ${reason}`,
+        );
+        cancelled += 1;
+      } catch (err) {
+        // Most likely cause: a transition we can't satisfy in the state
+        // machine (e.g. a status we didn't anticipate). Log + skip — the
+        // cascade close's sibling-count gate will keep the Request open
+        // if any WIs remain non-terminal, which is the safer outcome.
+        this.logger.warn('Could not cancel orphan WI; leaving in current state', {
+          workItemId: wi.id,
+          status: wi.status,
+          error: formatError(err),
+        });
+      }
+    }
+    this.logger.info('Orphaned-Request cleanup: cancelled non-terminal child WIs', {
+      requestId,
+      reason,
+      cancelled,
+    });
+    await this.maybeCloseRequest(requestId, reason);
   }
 
   /**

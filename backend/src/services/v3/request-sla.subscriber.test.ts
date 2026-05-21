@@ -171,6 +171,7 @@ function buildFakeRequestService(initial: Request[] = []): {
   const linkCalls: Array<{ requestId: string; workItemId: string }> = [];
   const service = {
     getById: jest.fn(async (id: string) => registry.get(id) ?? null),
+    listAll: jest.fn(async () => Array.from(registry.values())),
     update: jest.fn(async (id: string, updates: Partial<Request>) => {
       const r = registry.get(id);
       if (!r) throw new Error(`Request not found: ${id}`);
@@ -1021,6 +1022,158 @@ describe('RequestSlaSubscriber', () => {
       expect(pool.transitionCalls).toHaveLength(0);
       // …but Request still cascades to done.
       expect(svc.registry.get(r.id)?.status).toBe('done');
+    });
+
+    // -----------------------------------------------------------------------
+    // 2026-05-21 closie incident — orphan-Request fallback
+    //
+    // When `RequestDecomposeSubscriber` decomposes a Request before the orc
+    // replies, it calls `markResolved(req, 'workitem_decompose')` which
+    // CLEARS the SLA `threadIndex`. If the orc then replies directly in the
+    // same Slack thread, the primary lookup AND the 250ms retry both miss.
+    // The fallback path scans `RequestService.listAll()` for an open
+    // Request whose sourceConversationItemId references the threadTs, then
+    // cancels all non-terminal child WIs and cascades the close.
+    // -----------------------------------------------------------------------
+    describe('orphan-Request fallback after workitem_decompose race', () => {
+      it('cancels non-terminal child WIs and cascades the Request to done', async () => {
+        // Simulate the post-decompose state directly: a 'ready' Request,
+        // orphan child WIs in the pool, and empty SLA indexes (since the
+        // decompose subscriber's markResolved cleared them in production).
+        // We bypass the request:created handler so the test doesn't have
+        // to navigate the maybeCloseRequest cascade that would have run
+        // synchronously when no children existed yet.
+        const r = buildRequest({ status: 'ready' });
+        svc.registry.set(r.id, r);
+
+        pool.taskPool.addToPool({
+          id: 'wi-plan',
+          requestId: r.id,
+          type: 'delegate',
+          owner: 'orchestrator',
+          status: 'queued',
+          title: 'Plan',
+          description: 'plan',
+          createdAt: new Date().toISOString(),
+          retryCount: 0,
+          maxRetries: 3,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+        } as unknown as WorkItem);
+        pool.taskPool.addToPool({
+          id: 'wi-execute',
+          requestId: r.id,
+          type: 'delegate',
+          owner: 'orchestrator',
+          status: 'blocked',
+          title: 'Execute',
+          description: 'execute',
+          createdAt: new Date().toISOString(),
+          retryCount: 0,
+          maxRetries: 3,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+        } as unknown as WorkItem);
+
+        // Sanity: threadIndex is empty (mirrors post-decompose state).
+        expect((sub as any).threadIndex.get('1772899923.865659')).toBeUndefined();
+
+        // Orc replies directly in the original Slack thread.
+        await sub.markResolvedByThread('1772899923.865659');
+        // Primary + retry both miss → setTimeout schedules the fallback.
+        jest.advanceTimersByTime(MARK_RESOLVED_RETRY_MS + 1);
+        // Flush microtasks queued by the async fallback handler (listAll,
+        // getAllItems, two transitionStatus, maybeCloseRequest chain).
+        for (let i = 0; i < 20; i += 1) await Promise.resolve();
+
+        // Both child WIs transitioned to cancelled with the new reason tag.
+        const cancelTransitions = pool.transitionCalls.filter(
+          (c) => c.status === 'cancelled' && (c.id === 'wi-plan' || c.id === 'wi-execute'),
+        );
+        expect(cancelTransitions).toHaveLength(2);
+
+        // Request cascade closed to done.
+        expect(svc.registry.get(r.id)?.status).toBe('done');
+      });
+
+      it('skips closure when no Request matches the threadTs', async () => {
+        // Nothing registered for this thread — fallback is a no-op.
+        await sub.markResolvedByThread('5555555555.000000');
+        jest.advanceTimersByTime(MARK_RESOLVED_RETRY_MS + 1);
+        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+        expect(pool.transitionCalls).toHaveLength(0);
+      });
+
+      it('skips closure when the matched Request is already terminal', async () => {
+        const r = buildRequest({ status: 'done' });
+        svc.registry.set(r.id, r);
+
+        // Add an orphan child WI to verify the fallback doesn't touch
+        // children when the Request is already terminal.
+        pool.taskPool.addToPool({
+          id: 'wi-after-close',
+          requestId: r.id,
+          type: 'delegate',
+          owner: 'orchestrator',
+          status: 'queued',
+          title: 'Orphan',
+          description: 'orphan',
+          createdAt: new Date().toISOString(),
+          retryCount: 0,
+          maxRetries: 3,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+        } as unknown as WorkItem);
+
+        await sub.markResolvedByThread('1772899923.865659');
+        jest.advanceTimersByTime(MARK_RESOLVED_RETRY_MS + 1);
+        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+        // No transitions: TERMINAL gate stops the cleanup.
+        expect(pool.transitionCalls.filter((c) => c.id === 'wi-after-close')).toHaveLength(0);
+      });
+
+      it('chat-v2 case: cancels orphans and closes Request on direct reply after decompose', async () => {
+        const r = buildRequest({
+          status: 'ready',
+          tags: ['chat-v2'],
+          sourceConversationItemId: 'chatv2-CHAN__123',
+        });
+        svc.registry.set(r.id, r);
+
+        pool.taskPool.addToPool({
+          id: 'wi-chatv2-plan',
+          requestId: r.id,
+          type: 'delegate',
+          owner: 'orchestrator',
+          status: 'queued',
+          title: 'Plan',
+          description: 'plan',
+          createdAt: new Date().toISOString(),
+          retryCount: 0,
+          maxRetries: 3,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+        } as unknown as WorkItem);
+
+        expect((sub as any).chatV2Index.get('CHAN')).toBeUndefined();
+
+        await sub.markResolvedByChatV2('CHAN');
+        jest.advanceTimersByTime(MARK_RESOLVED_RETRY_MS + 1);
+        for (let i = 0; i < 20; i += 1) await Promise.resolve();
+
+        expect(
+          pool.transitionCalls.filter(
+            (c) => c.id === 'wi-chatv2-plan' && c.status === 'cancelled',
+          ),
+        ).toHaveLength(1);
+        expect(svc.registry.get(r.id)?.status).toBe('done');
+      });
     });
 
     // -------------------------------------------------------------------------
