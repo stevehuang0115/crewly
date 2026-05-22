@@ -426,9 +426,26 @@ export class V3DataService {
   }
 
   /**
-   * Handles task:failed — updates the matching WorkItem to 'failed'.
+   * Handles task:failed — first failure triggers `failItem`, then we
+   * decide retry-vs-escalate based on the WI's own `retryCount` budget.
    *
-   * Uses the same two-tier matching strategy as onTaskCompleted.
+   * Two-stage flow:
+   *   1. Always flip running → failed via taskPool.failItem (records the
+   *      error, releases the claim). This is the ground truth state.
+   *   2. If `retryCount < maxRetries` → requeueAfterFailure (failed →
+   *      queued, retryCount++). The original target keeps the WI.
+   *   3. Otherwise → leave it in failed AND escalate to ORC so it can
+   *      surface the failure to the user and ask for a new plan.
+   *
+   * Cascade-to-parent-Request happens ONLY on the terminal path
+   * (exhausted retries). A retry-eligible WI doesn't cascade, since
+   * the Request might still complete on the next attempt.
+   *
+   * Steve 2026-05-22: prior to this fix the system treated every
+   * `task:failed` as terminal — retryCount/maxRetries were dead fields,
+   * Mission/Request would cascade-fail on a single transient failure,
+   * and the user only learned about it by digging in the Work Items
+   * UI. New behaviour: retry up to `maxRetries`, then escalate.
    *
    * @param event - Task failure event payload
    */
@@ -438,15 +455,58 @@ export class V3DataService {
       if (!match) return;
 
       const taskPool = TaskPoolService.getInstance();
-      await taskPool.failItem(match.id, `Task failed for session ${event.sessionName}`);
+      const reason = `Task failed for session ${event.sessionName}`;
 
-      this.logger.info('WorkItem auto-failed', {
-        workItemId: match.id,
+      // Step 1 — flip to failed (ground truth, releases claim).
+      await taskPool.failItem(match.id, reason);
+
+      // Step 2 — decide retry vs escalate based on the freshly-failed
+      // WI's retry budget (we re-fetch to get the canonical record).
+      const failed = await taskPool.findWorkItem(match.id);
+      if (!failed) {
+        this.logger.warn('Failed WorkItem disappeared after failItem', {
+          workItemId: match.id,
+        });
+        return;
+      }
+
+      if (failed.retryCount < failed.maxRetries) {
+        await taskPool.requeueAfterFailure(failed.id, reason);
+        this.logger.info('WorkItem auto-retry scheduled', {
+          workItemId: failed.id,
+          retryCount: failed.retryCount + 1,
+          maxRetries: failed.maxRetries,
+          sessionName: event.sessionName,
+        });
+        // Don't cascade — the WI is back in queued; the Request stays
+        // alive in the hope the retry succeeds.
+        return;
+      }
+
+      // Retry budget exhausted → terminal failure path.
+      this.logger.info('WorkItem failed after retries exhausted, escalating', {
+        workItemId: failed.id,
+        retryCount: failed.retryCount,
+        maxRetries: failed.maxRetries,
         sessionName: event.sessionName,
-        taskId: event.taskId,
       });
 
-      // Cascade: update parent Request status
+      try {
+        // Lazy-import to avoid a hard dep cycle: v3-data is loaded very
+        // early during bootstrap; escalation-router has its own init
+        // dependencies (filesystem dirs, etc).
+        const { EscalationRouterService } = await import('./escalation-router.service.js');
+        await EscalationRouterService.getInstance().escalateFailedWorkItem(failed, reason);
+      } catch (err) {
+        // Escalation is best-effort — a routing failure mustn't strand
+        // the original failure handler; the cascade below still runs.
+        this.logger.warn('escalateFailedWorkItem threw (non-fatal)', {
+          workItemId: failed.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      // Cascade only on terminal failure — Request reflects final state.
       await this.cascadeRequestStatus(match.requestId);
     } catch (err) {
       this.logger.warn('V3DataService.onTaskFailed failed (non-fatal)', {

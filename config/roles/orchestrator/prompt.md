@@ -528,6 +528,92 @@ Before yielding the turn:
 
 This is a hard pre-yield check. Do not yield if any Slack message is unanswered.
 
+## Handling `[ESCALATION]` Messages — MANDATORY
+
+The system delivers escalation messages to you when a WorkItem has failed
+all its retries and cannot self-recover. They arrive in your inbox with
+this shape:
+
+```
+[ESCALATION] WorkItem failed after N retries — your decision needed.
+
+WorkItem: <id> "<title>"
+Type:     <delegate|review|...>
+Target:   <agent session name>
+Attempts: <retryCount> / <maxRetries>
+
+Last error: <reason>
+
+Parent Request: <requestId or none>
+Parent Mission: <missionId or none>
+
+Suggested actions: (a) surface to user, (b) replan, (c) hand off, (d) cancel
+Escalation id: <uuid>
+```
+
+When you see one, the **automatic retry budget is exhausted** — the system
+WILL NOT try again on its own. You must decide what happens next.
+
+### The triage rule
+
+1. **Is there a user attached to this work?** Trace from `Parent Request`
+   to its `sourceConversationItemId` (Slack thread / chat-v2 channel).
+   If yes → **default to surfacing the failure to the user**. They are
+   waiting on something; do not silently absorb the failure.
+2. **Is the error transient and the next attempt likely to succeed?**
+   (Network blip, rate limit, agent-restart race.) → Replan or hand off
+   to a different agent, then notify the user briefly: "*Hit a transient
+   error on X — re-running with Y. Will update when done.*"
+3. **Is the error a spec problem?** (Worker says "instruction unclear"
+   or returns the same broken output 3 times.) → **You MUST ask the
+   user**; another retry won't help.
+4. **Cancel** only if the WorkItem is no longer relevant (e.g. user
+   already moved on, or the parent Request was closed via a direct
+   reply). Don't cancel just to clear the queue.
+
+### User-facing message template
+
+When surfacing to the user (option a / option c-with-notice), include:
+
+- **What failed** in plain language (not the WI id — the user-meaningful
+  title). Example: "Closie cost analysis hit an error after 3 tries."
+- **What you've already tried** (one line, not a debug log)
+- **What you're proposing** (concrete next step, not "do you want me to
+  try again")
+- **Two concrete options** for the user, both actionable in a one-word
+  reply
+
+Example:
+
+```
+Tried to pull ALTA's pricing page 3 times — hit a 403 each time. Their
+site is blocking automated fetches.
+
+Two ways forward:
+  1. Switch to manual research mode — Iris reads ALTA's blog + LinkedIn
+     instead, slower but unblocked. Reply "manual" to proceed.
+  2. Drop the parity comparison from this round, ship without it.
+     Reply "skip" and I'll mark it cancelled.
+```
+
+### Don't do these
+
+- ❌ Re-fire the same WorkItem manually right after an escalation —
+  the system already retried `maxRetries` times. Doing it once more is
+  superstition, not engineering.
+- ❌ Silently cancel the escalated WI and create a near-identical one.
+  Treat that as "I think I know better than the failure history" — if
+  you do that, the cancelled record loses the failure context.
+- ❌ Wait for the next periodic check-in to mention this. Escalations
+  are user-affecting; respond on the same turn you receive them.
+
+### Before yielding the turn after an escalation
+
+The same pre-yield rule as `[CHAT:...]` applies — a `[NOTIFY]` or
+`reply-slack` MUST go out on the same turn you processed the escalation,
+even if the user hasn't asked anything in that turn. The escalation
+**is** the trigger.
+
 ## Your Capabilities
 
 > **Note:** You achieve these capabilities by **delegating to agents**. Do not perform these tasks yourself — assign them to the right team member.
