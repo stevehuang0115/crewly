@@ -12,7 +12,10 @@ const mockClaimFromPool = jest.fn().mockResolvedValue({ workItem: { id: 'claimed
 const mockGetAllItems = jest.fn().mockResolvedValue([]);
 const mockCompleteItem = jest.fn().mockResolvedValue(undefined);
 const mockFailItem = jest.fn().mockResolvedValue(undefined);
+const mockRequeueAfterFailure = jest.fn().mockResolvedValue(undefined);
+const mockFindWorkItem = jest.fn().mockResolvedValue(null);
 const mockUpdateItemStatus = jest.fn().mockResolvedValue(undefined);
+const mockEscalateFailedWorkItem = jest.fn().mockResolvedValue('escalation-id-mock');
 const mockRequestCreate = jest.fn().mockResolvedValue({ id: 'req-123', title: 'test' });
 const mockRequestGetById = jest.fn().mockResolvedValue(null);
 const mockRequestUpdate = jest.fn().mockResolvedValue(undefined);
@@ -43,7 +46,17 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
       claimFromPool: mockClaimFromPool,
       completeItem: mockCompleteItem,
       failItem: mockFailItem,
+      requeueAfterFailure: mockRequeueAfterFailure,
+      findWorkItem: mockFindWorkItem,
       updateItemStatus: mockUpdateItemStatus,
+    }),
+  },
+}));
+
+jest.mock('./escalation-router.service.js', () => ({
+  EscalationRouterService: {
+    getInstance: () => ({
+      escalateFailedWorkItem: mockEscalateFailedWorkItem,
     }),
   },
 }));
@@ -438,10 +451,21 @@ describe('V3DataService', () => {
   });
 
   describe('onTaskFailed', () => {
+    beforeEach(() => {
+      mockRequeueAfterFailure.mockClear();
+      mockFindWorkItem.mockClear();
+      mockEscalateFailedWorkItem.mockClear();
+    });
+
     it('should transition queued → running before failing (Bug 1 fix)', async () => {
       mockGetAllItems.mockResolvedValueOnce([
         { id: 'wi-qf', target: 'agent-max', status: 'queued' },
       ]);
+      // After failItem, the WI exists with retryCount=0/max=3 — retry path.
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: 'wi-qf', target: 'agent-max', status: 'failed',
+        retryCount: 0, maxRetries: 3,
+      });
 
       eventBus.emit('v3:task_failed', {
         type: 'task:failed',
@@ -455,33 +479,209 @@ describe('V3DataService', () => {
       expect(mockFailItem).toHaveBeenCalledWith('wi-qf', expect.stringContaining('agent-max'));
     });
 
-    it('should mark running WorkItem as failed and cascade', async () => {
-      mockGetAllItems
-        .mockResolvedValueOnce([
-          { id: 'wi-2', target: 'agent-max', status: 'running', requestId: 'req-f1' },
-        ])
-        .mockResolvedValueOnce([
-          { id: 'wi-2', target: 'agent-max', status: 'failed', requestId: 'req-f1' },
-        ]);
+    // ─────────────────────────────────────────────────────────────────────
+    // 2026-05-22 auto-retry: retryCount < maxRetries → requeue, no cascade
+    // ─────────────────────────────────────────────────────────────────────
 
-      mockRequestGetById.mockResolvedValueOnce({
-        id: 'req-f1',
-        status: 'running',
-        workItemIds: ['wi-2'],
+    it('auto-retries when retryCount < maxRetries (no cascade, no escalation)', async () => {
+      mockGetAllItems.mockResolvedValueOnce([
+        { id: 'wi-retry', target: 'agent-leo', status: 'running', requestId: 'req-r1' },
+      ]);
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: 'wi-retry', target: 'agent-leo', status: 'failed', requestId: 'req-r1',
+        retryCount: 1, maxRetries: 3,
       });
 
-      const event: TaskCompletedEvent = {
+      eventBus.emit('v3:task_failed', {
+        type: 'task:failed',
+        sessionName: 'agent-leo',
+        newValue: 'failed',
+        timestamp: new Date().toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockFailItem).toHaveBeenCalledWith('wi-retry', expect.stringContaining('agent-leo'));
+      expect(mockRequeueAfterFailure).toHaveBeenCalledWith('wi-retry', expect.stringContaining('agent-leo'));
+      // Crucially NOT escalated — retries still available.
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+      // Crucially NOT cascaded — parent Request stays alive.
+      expect(mockRequestUpdate).not.toHaveBeenCalled();
+    });
+
+    it('escalates to ORC + cascades when retryCount >= maxRetries', async () => {
+      mockGetAllItems
+        // findMatchingWorkItem reads the pool first
+        .mockResolvedValueOnce([
+          { id: 'wi-done', target: 'agent-max', status: 'running', requestId: 'req-d1' },
+        ])
+        // cascadeRequestStatus reads pool again to count children
+        .mockResolvedValueOnce([
+          { id: 'wi-done', target: 'agent-max', status: 'failed', requestId: 'req-d1' },
+        ]);
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: 'wi-done',
+        title: 'Closie cost analysis',
+        type: 'delegate',
+        target: 'agent-max',
+        status: 'failed',
+        requestId: 'req-d1',
+        retryCount: 3,
+        maxRetries: 3,
+        error: 'agent crashed 3 times',
+      });
+      mockRequestGetById.mockResolvedValueOnce({
+        id: 'req-d1', status: 'running', workItemIds: ['wi-done'],
+      });
+
+      eventBus.emit('v3:task_failed', {
         type: 'task:failed',
         sessionName: 'agent-max',
         newValue: 'failed',
         timestamp: new Date().toISOString(),
-      };
-
-      eventBus.emit('v3:task_failed', event);
+      });
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(mockFailItem).toHaveBeenCalledWith('wi-2', expect.stringContaining('agent-max'));
-      expect(mockRequestUpdate).toHaveBeenCalledWith('req-f1', { status: 'cancelled' });
+      // Path: failItem (always) → NO requeue → escalate → cascade.
+      expect(mockFailItem).toHaveBeenCalledWith('wi-done', expect.any(String));
+      expect(mockRequeueAfterFailure).not.toHaveBeenCalled();
+      expect(mockEscalateFailedWorkItem).toHaveBeenCalledTimes(1);
+      const escalateArgs = mockEscalateFailedWorkItem.mock.calls[0];
+      expect(escalateArgs[0]).toMatchObject({ id: 'wi-done', retryCount: 3, maxRetries: 3 });
+      expect(mockRequestUpdate).toHaveBeenCalledWith('req-d1', { status: 'cancelled' });
+    });
+
+    it('proceeds with cascade even if escalation throws (escalation is best-effort)', async () => {
+      mockGetAllItems
+        .mockResolvedValueOnce([
+          { id: 'wi-esc-fail', target: 'agent-max', status: 'running', requestId: 'req-e1' },
+        ])
+        .mockResolvedValueOnce([
+          { id: 'wi-esc-fail', target: 'agent-max', status: 'failed', requestId: 'req-e1' },
+        ]);
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: 'wi-esc-fail', target: 'agent-max', status: 'failed', requestId: 'req-e1',
+        retryCount: 3, maxRetries: 3, title: 'x', type: 'delegate',
+      });
+      mockEscalateFailedWorkItem.mockRejectedValueOnce(new Error('message queue down'));
+      mockRequestGetById.mockResolvedValueOnce({
+        id: 'req-e1', status: 'running', workItemIds: ['wi-esc-fail'],
+      });
+
+      eventBus.emit('v3:task_failed', {
+        type: 'task:failed',
+        sessionName: 'agent-max',
+        newValue: 'failed',
+        timestamp: new Date().toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Cascade still ran despite the escalation throw.
+      expect(mockRequestUpdate).toHaveBeenCalledWith('req-e1', { status: 'cancelled' });
+    });
+
+    it('bails out when the WI disappears between failItem and re-fetch (race)', async () => {
+      mockGetAllItems.mockResolvedValueOnce([
+        { id: 'wi-gone', target: 'agent-max', status: 'running', requestId: 'req-g' },
+      ]);
+      mockFindWorkItem.mockResolvedValueOnce(null);
+
+      eventBus.emit('v3:task_failed', {
+        type: 'task:failed',
+        sessionName: 'agent-max',
+        newValue: 'failed',
+        timestamp: new Date().toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockFailItem).toHaveBeenCalled();
+      expect(mockRequeueAfterFailure).not.toHaveBeenCalled();
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+    });
+
+    // ── Boundary integration test (Section 8d of review) ─────────────
+    // Walks a single WI through 3 successive task:failed events with
+    // maxRetries=2. Expectation: 2 requeues, then 1 escalation on the
+    // 3rd failure. Catches regressions in the retry-budget arithmetic
+    // and the requeue↔escalate switch.
+    it('boundary: 3 successive failures on maxRetries=2 → 2 requeues + 1 escalation', async () => {
+      const wiId = 'wi-boundary';
+      const reqId = 'req-boundary';
+
+      // Each `task:failed` event triggers:
+      //   1. findMatchingWorkItem reads from getAllItems
+      //   2. (sometimes) updateItemStatus to running
+      //   3. failItem
+      //   4. findWorkItem re-fetch to read retryCount
+      //   5. requeueAfterFailure OR escalateFailedWorkItem
+      //
+      // Mocking each fire's findWorkItem return value with the
+      // post-failItem snapshot (retryCount reflects the count BEFORE
+      // requeueAfterFailure bumps it). After the 3rd failure the
+      // retry budget is exhausted.
+
+      // Fire 1: retryCount=0/max=2 → requeue, new count = 1
+      mockGetAllItems.mockResolvedValueOnce([
+        { id: wiId, target: 'agent-leo', status: 'running', requestId: reqId },
+      ]);
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: wiId, status: 'failed', retryCount: 0, maxRetries: 2,
+        title: 'boundary', type: 'delegate', requestId: reqId,
+      });
+
+      eventBus.emit('v3:task_failed', {
+        type: 'task:failed', sessionName: 'agent-leo',
+        newValue: 'failed', timestamp: new Date().toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockRequeueAfterFailure).toHaveBeenCalledTimes(1);
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+
+      // Fire 2: retryCount=1/max=2 → requeue, new count = 2
+      mockGetAllItems.mockResolvedValueOnce([
+        { id: wiId, target: 'agent-leo', status: 'running', requestId: reqId },
+      ]);
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: wiId, status: 'failed', retryCount: 1, maxRetries: 2,
+        title: 'boundary', type: 'delegate', requestId: reqId,
+      });
+
+      eventBus.emit('v3:task_failed', {
+        type: 'task:failed', sessionName: 'agent-leo',
+        newValue: 'failed', timestamp: new Date().toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockRequeueAfterFailure).toHaveBeenCalledTimes(2);
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+
+      // Fire 3: retryCount=2/max=2 → budget exhausted, escalate + cascade
+      mockGetAllItems
+        .mockResolvedValueOnce([
+          { id: wiId, target: 'agent-leo', status: 'running', requestId: reqId },
+        ])
+        .mockResolvedValueOnce([
+          { id: wiId, target: 'agent-leo', status: 'failed', requestId: reqId },
+        ]);
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: wiId, status: 'failed', retryCount: 2, maxRetries: 2,
+        title: 'boundary', type: 'delegate', requestId: reqId,
+      });
+      mockRequestGetById.mockResolvedValueOnce({
+        id: reqId, status: 'running', workItemIds: [wiId],
+      });
+
+      eventBus.emit('v3:task_failed', {
+        type: 'task:failed', sessionName: 'agent-leo',
+        newValue: 'failed', timestamp: new Date().toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Still 2 requeues (no new ones on the 3rd fire), exactly 1
+      // escalation, and the Request finally cascades to cancelled.
+      expect(mockRequeueAfterFailure).toHaveBeenCalledTimes(2);
+      expect(mockEscalateFailedWorkItem).toHaveBeenCalledTimes(1);
+      expect(mockRequestUpdate).toHaveBeenCalledWith(reqId, { status: 'cancelled' });
     });
   });
 

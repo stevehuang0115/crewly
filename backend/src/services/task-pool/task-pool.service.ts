@@ -1238,6 +1238,72 @@ export class TaskPoolService {
     this.logger.info('WorkItem failed', { workItemId, error });
   }
 
+  /**
+   * Requeue a failed WorkItem back to `queued` for another attempt.
+   *
+   * Path: `failed → queued` (legal in WORK_ITEM_TRANSITIONS but previously
+   * unused — the system never auto-retried, every failure was terminal).
+   * Increments `retryCount`, clears `startedAt`, preserves `target` so
+   * the same agent gets a second shot, and records the previous error
+   * on the WI's metadata for postmortem visibility.
+   *
+   * Caller must have ALREADY confirmed `retryCount < maxRetries` — this
+   * method does NOT enforce the cap, on the assumption that the caller
+   * (v3-data.onTaskFailed) handles the exhausted-retries branch with
+   * escalation to ORC.
+   *
+   * @param workItemId - The failed WI to retry
+   * @param reason     - Why the previous attempt failed (recorded on
+   *   metadata.lastFailureReason; surfaces in the activity timeline)
+   * @throws if the WI doesn't exist or isn't in `failed` status
+   */
+  async requeueAfterFailure(workItemId: string, reason: string): Promise<void> {
+    const workItem = await this.storage.findWorkItem(workItemId);
+    if (!workItem) {
+      throw new Error(`WorkItem not found: ${workItemId}`);
+    }
+    if (workItem.status !== 'failed') {
+      throw new Error(
+        `Cannot requeue WorkItem after failure: status must be 'failed', got '${workItem.status}'`,
+      );
+    }
+
+    await this.transitionStatus(workItemId, 'queued', 'system', (wi) => {
+      wi.retryCount += 1;
+      wi.startedAt = undefined;
+      wi.completedAt = undefined;
+      // Keep `target` — the original agent should get the retry.
+      // APPEND to failureHistory so postmortems see all attempts, not
+      // just the most recent. `lastFailureReason` / `lastFailureAt`
+      // are retained for back-compat with dashboards that already
+      // read those scalar fields. Cap history at 10 entries so a
+      // pathological retry loop can't bloat the metadata indefinitely.
+      const now = new Date().toISOString();
+      const priorHistory = (wi.metadata?.failureHistory as Array<Record<string, unknown>>) ?? [];
+      wi.metadata = {
+        ...(wi.metadata ?? {}),
+        failureHistory: [
+          ...priorHistory,
+          { at: now, reason, retryAttempt: wi.retryCount },
+        ].slice(-10),
+        lastFailureReason: reason,
+        lastFailureAt: now,
+        retryAttempt: wi.retryCount,
+      };
+      // Clear the error field so a successful retry doesn't surface a
+      // stale error message; the metadata above keeps the history.
+      wi.error = undefined;
+    });
+
+    await this.storage.flush();
+    this.logger.info('WorkItem requeued after failure', {
+      workItemId,
+      retryCount: workItem.retryCount + 1,
+      maxRetries: workItem.maxRetries,
+      reason,
+    });
+  }
+
   // -----------------------------------------------------------------------
   // Claim Lifecycle (delegated to ClaimService)
   // -----------------------------------------------------------------------

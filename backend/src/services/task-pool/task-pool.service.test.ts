@@ -1358,6 +1358,139 @@ describe('TaskPoolService', () => {
   });
 
   // -----------------------------------------------------------------------
+  // requeueAfterFailure (auto-retry path — 2026-05-22)
+  // -----------------------------------------------------------------------
+
+  describe('requeueAfterFailure', () => {
+    /** Walk a fresh WI through queued → running → failed so the next step
+     *  has a `failed` record to retry. Returns the WI id. */
+    async function failOne(target?: string): Promise<string> {
+      const wi = makeWorkItem({ target });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      await service.failItem(wi.id, 'agent crashed mid-task');
+      return wi.id;
+    }
+
+    it('flips failed → queued, bumps retryCount, clears startedAt/completedAt', async () => {
+      const id = await failOne('agent-leo');
+      await service.requeueAfterFailure(id, 'agent crashed mid-task');
+
+      const items = await service.getAllItems();
+      const wi = items.find((x) => x.id === id)!;
+      expect(wi.status).toBe('queued');
+      expect(wi.retryCount).toBe(1);
+      expect(wi.startedAt).toBeUndefined();
+      expect(wi.completedAt).toBeUndefined();
+    });
+
+    it('preserves target so the same agent gets the retry', async () => {
+      const id = await failOne('agent-leo');
+      await service.requeueAfterFailure(id, 'transient timeout');
+
+      const items = await service.getAllItems();
+      const wi = items.find((x) => x.id === id)!;
+      expect(wi.target).toBe('agent-leo');
+    });
+
+    it('stashes the failure reason + attempt number on metadata for postmortem', async () => {
+      const id = await failOne('agent-leo');
+      await service.requeueAfterFailure(id, 'fetch returned 503');
+
+      const items = await service.getAllItems();
+      const wi = items.find((x) => x.id === id)!;
+      expect(wi.metadata?.lastFailureReason).toBe('fetch returned 503');
+      expect(wi.metadata?.retryAttempt).toBe(1);
+      expect(typeof wi.metadata?.lastFailureAt).toBe('string');
+    });
+
+    it('APPENDS to failureHistory across multiple retries (not overwrite)', async () => {
+      // Postmortem needs ALL failure reasons, not just the latest —
+      // each retry could fail for a different reason and that signal
+      // matters when ORC decides surface-vs-replan.
+      const id = await failOne('agent-leo');
+      await service.requeueAfterFailure(id, 'fetch 503');
+      // Cycle through running → failed → queued twice more.
+      await service.claimFromPool('agent-leo');
+      await service.failItem(id, 'parse error');
+      await service.requeueAfterFailure(id, 'parse error');
+      await service.claimFromPool('agent-leo');
+      await service.failItem(id, 'rate limit');
+      await service.requeueAfterFailure(id, 'rate limit');
+
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      const history = wi.metadata?.failureHistory as Array<{ reason: string; retryAttempt: number }>;
+      expect(history).toHaveLength(3);
+      expect(history.map((h) => h.reason)).toEqual(['fetch 503', 'parse error', 'rate limit']);
+      expect(history.map((h) => h.retryAttempt)).toEqual([1, 2, 3]);
+    });
+
+    it('caps failureHistory at 10 entries (FIFO) to bound metadata growth', async () => {
+      // A pathological retry loop should not bloat metadata
+      // indefinitely. After 12 retries we keep only the most recent
+      // 10 — the oldest two drop off.
+      const id = await failOne('agent-leo');
+      for (let i = 1; i <= 12; i += 1) {
+        await service.requeueAfterFailure(id, `attempt ${i}`);
+        if (i < 12) {
+          await service.claimFromPool('agent-leo');
+          await service.failItem(id, `attempt ${i}`);
+        }
+      }
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      const history = wi.metadata?.failureHistory as Array<{ reason: string }>;
+      expect(history).toHaveLength(10);
+      // Oldest entries dropped — first kept is attempt 3.
+      expect(history[0].reason).toBe('attempt 3');
+      expect(history[9].reason).toBe('attempt 12');
+    });
+
+    it('clears `error` field so a successful retry does not surface stale text', async () => {
+      const id = await failOne();
+      await service.requeueAfterFailure(id, 'will retry');
+
+      const items = await service.getAllItems();
+      const wi = items.find((x) => x.id === id)!;
+      expect(wi.error).toBeUndefined();
+    });
+
+    it('throws when WI is not in failed status (caller must call failItem first)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      // queued, not failed
+      await expect(service.requeueAfterFailure(wi.id, 'noop')).rejects.toThrow(
+        /must be 'failed'/,
+      );
+    });
+
+    it('throws when WI is missing', async () => {
+      await expect(service.requeueAfterFailure('ghost', 'noop')).rejects.toThrow(
+        'WorkItem not found',
+      );
+    });
+
+    it('does NOT enforce maxRetries — caller (v3-data.onTaskFailed) is responsible', async () => {
+      // Defensive: requeueAfterFailure is a low-level state-machine
+      // primitive. If the caller calls it past maxRetries, the WI gets
+      // a retryCount > maxRetries record. That's the caller's bug, not
+      // this method's contract.
+      const id = await failOne();
+      await service.requeueAfterFailure(id, 'attempt 1');
+      // Fail again to simulate a retry that also broke.
+      await service.claimFromPool('agent-leo');
+      await service.failItem(id, 'still broken');
+      await service.requeueAfterFailure(id, 'attempt 2');
+      await service.claimFromPool('agent-leo');
+      await service.failItem(id, 'still broken');
+      await service.requeueAfterFailure(id, 'attempt 3');
+
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      expect(wi.retryCount).toBe(3);
+      expect(wi.status).toBe('queued');
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // getPoolStatus
   // -----------------------------------------------------------------------
 

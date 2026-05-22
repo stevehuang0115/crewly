@@ -29,12 +29,32 @@ import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.
 /** Status of a pending human escalation. */
 export type EscalationStatus = 'pending' | 'resolved' | 'expired';
 
+/**
+ * Minimal WorkItem shape `escalateFailedWorkItem` needs. Defined locally
+ * (rather than importing the full WorkItem type) to keep this service's
+ * dependency surface narrow — escalation only reads, never writes,
+ * fields it doesn't recognise.
+ */
+export interface WorkItemForEscalation {
+  id: string;
+  title: string;
+  type: string;
+  target?: string | null;
+  retryCount: number;
+  maxRetries: number;
+  error?: string | null;
+  requestId?: string | null;
+  missionId?: string | null;
+  parentWorkItemId?: string | null;
+  priority?: string | null;
+}
+
 /** A persisted escalation record awaiting human resolution. */
 export interface PendingEscalation {
   id: string;
   status: EscalationStatus;
   /** What triggered this escalation */
-  source: 'alignment_request' | 'policy_rule' | 'tl_verification' | 'manual';
+  source: 'alignment_request' | 'policy_rule' | 'tl_verification' | 'manual' | 'workitem_failed';
   /** Who needs to resolve it */
   target: 'human' | 'team_lead' | 'orchestrator';
   /** The escalation content */
@@ -277,6 +297,136 @@ export class EscalationRouterService {
     });
 
     return escalation;
+  }
+
+  /**
+   * Escalate a WorkItem that exhausted its retry budget to the
+   * orchestrator. The orchestrator receives a structured message via
+   * the same MessageQueue used by `target='team_lead'` escalations,
+   * decides whether to (a) surface to the user, (b) replan, (c) hand
+   * off to a different agent. Also persists a `PendingEscalation`
+   * record for the dashboard / API.
+   *
+   * Called from `V3DataService.onTaskFailed` once `retryCount >=
+   * maxRetries`. Best-effort — exceptions are caught and logged so a
+   * messaging blip doesn't strand the upstream failure handler.
+   *
+   * @param wi      - The failed WorkItem (post-`failItem`, with retryCount
+   *                  and maxRetries reflecting the exhausted budget)
+   * @param reason  - Final failure reason (same string written to wi.error)
+   * @returns The persisted escalation id, or null on persistence failure
+   */
+  async escalateFailedWorkItem(wi: WorkItemForEscalation, reason: string): Promise<string | null> {
+    const escalationId = uuidv4();
+    const escalation: PendingEscalation = {
+      id: escalationId,
+      status: 'pending',
+      source: 'workitem_failed',
+      target: 'orchestrator',
+      summary: `WorkItem "${wi.title}" failed after ${wi.maxRetries} retries`,
+      details: {
+        workItemId: wi.id,
+        title: wi.title,
+        type: wi.type,
+        target: wi.target ?? null,
+        retryCount: wi.retryCount,
+        maxRetries: wi.maxRetries,
+        lastError: wi.error ?? reason,
+        requestId: wi.requestId ?? null,
+        missionId: wi.missionId ?? null,
+        priority: wi.priority ?? null,
+      },
+      workItemId: wi.id,
+      missionId: wi.missionId ?? undefined,
+      taskId: wi.parentWorkItemId ?? undefined,
+      raisedBy: wi.target ?? 'system',
+      raisedAt: new Date().toISOString(),
+    };
+
+    try {
+      await this.saveEscalation(escalation);
+    } catch (err) {
+      this.logger.warn('Failed to persist workitem_failed escalation (non-fatal)', {
+        workItemId: wi.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // Continue — even if persistence fails the orc message below
+      // still has value (orc will surface to user).
+    }
+
+    // Build the orc-facing message. Designed to be self-contained so orc
+    // can act without going back to the activity log to reconstruct
+    // context. Sanitization is REQUIRED because `wi.title` flows from
+    // user-derived Slack/Request text and `wi.error` from worker output
+    // — both can contain newlines, ANSI escapes, or strings that would
+    // collide with the [CHAT:] / [NOTIFY:] markers ORC parses in its
+    // own outbound message protocol. We:
+    //   - strip ANSI escape codes
+    //   - flatten newlines so a multi-line error can't open a fake
+    //     marker line
+    //   - defuse the four ORC-recognized marker prefixes by inserting
+    //     a zero-width space — visible to neither ORC nor humans, but
+    //     prevents the marker from parsing
+    //   - hard-cap each user-derived field so a giant stack trace
+    //     can't blow past ORC's context budget
+    const sanitize = (raw: string, maxLen: number): string =>
+      String(raw)
+        .replace(/\[[0-9;]*m/g, '') // strip ANSI color escapes
+        .replace(/[\r\n]+/g, ' ')         // flatten newlines
+        .replace(/\[(CHAT|NOTIFY|EVENT|ESCALATION)/gi, '[​$1') // defuse markers
+        .slice(0, maxLen);
+
+    const safeTitle = sanitize(wi.title, 200);
+    const safeError = sanitize(wi.error ?? reason, 2_000);
+
+    const lines = [
+      `[ESCALATION] WorkItem failed after ${wi.maxRetries} retries — your decision needed.`,
+      '',
+      `WorkItem: ${wi.id} "${safeTitle}"`,
+      `Type:     ${wi.type}`,
+      `Target:   ${wi.target ?? '(unassigned)'}`,
+      `Attempts: ${wi.retryCount} / ${wi.maxRetries}`,
+      '',
+      `Last error: ${safeError}`,
+      '',
+      `Parent Request: ${wi.requestId ?? '(none)'}`,
+      `Parent Mission: ${wi.missionId ?? '(none)'}`,
+      '',
+      'Suggested actions (per Escalation SOP in your prompt):',
+      '  (a) Surface to the user with the failure reason + concrete options',
+      '  (b) Replan: break the task differently and re-delegate',
+      '  (c) Hand off to a different agent better suited to the task',
+      '  (d) Cancel with a "blocked — needs spec clarification" note',
+      '',
+      `Escalation id: ${escalationId}`,
+    ];
+
+    try {
+      const { MessageQueueService } = await import('../messaging/message-queue.service.js');
+      const mq = new MessageQueueService(process.cwd());
+      mq.enqueue({
+        content: lines.join('\n'),
+        conversationId: `escalation-${wi.id}-${Date.now()}`,
+        source: 'system_event',
+        sourceMetadata: {
+          type: 'escalation',
+          subtype: 'workitem_failed',
+          workItemId: wi.id,
+          escalationId,
+        },
+      });
+      this.logger.info('Routed workitem_failed escalation to ORC via MessageQueue', {
+        workItemId: wi.id,
+        escalationId,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to enqueue workitem_failed message for ORC (non-fatal)', {
+        workItemId: wi.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return escalationId;
   }
 
   /**
