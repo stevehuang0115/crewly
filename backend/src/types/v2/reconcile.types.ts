@@ -99,8 +99,13 @@ export interface ReconcileCorrection {
  * Strategy for waking an agent based on its current status.
  * - rehydrate: Agent is suspended → call AgentSuspendService.rehydrateAgent()
  * - start: Agent is inactive → call start-agent API
+ * - redeliver: Agent is active-but-idle and was already targeted with a
+ *   pool message that they silently dropped (2026-05-20 Sora case). Don't
+ *   restart their session; re-POST the WorkItem brief to their PTY so the
+ *   message lands again in case the first one was lost in claude-code
+ *   startup output or otherwise unprocessed.
  */
-export type WakeStrategy = 'rehydrate' | 'start';
+export type WakeStrategy = 'rehydrate' | 'start' | 'redeliver';
 
 /**
  * A wake action to bring a dormant agent online for unclaimed work.

@@ -893,6 +893,20 @@ describe('ActivityMonitorService', () => {
         (c: any[]) => c[0].type === 'agent:idle' && c[0].sessionName === 'test-session-1'
       );
       expect(idleEvents).toHaveLength(1);
+
+      // 2026-05-20 follow-up — the precise post-task variant must fire
+      // alongside the generic event so peer-watch triggers can filter on
+      // `agent:idle_after_task` and avoid registration-idle false wakes.
+      const idleAfterTaskEvents = mockEventBus.publish.mock.calls.filter(
+        (c: any[]) => c[0].type === 'agent:idle_after_task' && c[0].sessionName === 'test-session-1'
+      );
+      expect(idleAfterTaskEvents).toHaveLength(1);
+      // ...and crucially, NOT the registration variant — the agent was
+      // observed in_progress before reaching this idle transition.
+      const idleAfterRegEvents = mockEventBus.publish.mock.calls.filter(
+        (c: any[]) => c[0].type === 'agent:idle_after_registration' && c[0].sessionName === 'test-session-1'
+      );
+      expect(idleAfterRegEvents).toHaveLength(0);
     });
   });
 

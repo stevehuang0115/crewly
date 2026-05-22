@@ -26,6 +26,8 @@ describe('Event Bus Types', () => {
         // Agent lifecycle events
         'agent:status_changed',
         'agent:idle',
+        'agent:idle_after_registration',
+        'agent:idle_after_task',
         'agent:busy',
         'agent:active',
         'agent:inactive',

@@ -1077,4 +1077,146 @@ describe('detectUnclaimedTasks', () => {
     expect(wakeActions[0].scoreBreakdown.urgency).toBeGreaterThanOrEqual(0);
     expect(wakeActions[0].score).toBeGreaterThan(0);
   });
+
+  // -----------------------------------------------------------------------
+  // 2026-05-20 Sora case — redeliver strategy for active-but-idle targets
+  // -----------------------------------------------------------------------
+
+  describe('redeliver strategy (active-but-idle target)', () => {
+    // Active-but-idle agents only act AFTER the 5-min effective threshold
+    // when any active agent is in the map. Make WIs ~7min old.
+    const SEVEN_MIN_AGO = new Date(Date.now() - 7 * 60_000).toISOString();
+
+    it('emits redeliver when WI target is active with no active claims', () => {
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: SEVEN_MIN_AGO,
+        type: 'delegate',
+        target: 'sora',
+      });
+      const agentMap = makeAgentMap([
+        ['sora', { status: 'active', role: 'developer', activeWorkItemCount: 0 }],
+      ]);
+
+      const { wakeActions, unclaimedWorkItemIds } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(1);
+      expect(wakeActions[0].strategy).toBe('redeliver');
+      expect(wakeActions[0].agentSessionName).toBe('sora');
+      expect(wakeActions[0].workItemId).toBe(wi.id);
+      expect(wakeActions[0].score).toBe(0);
+      expect(unclaimedWorkItemIds).toContain(wi.id);
+    });
+
+    it('does NOT redeliver when target is active but has active claims', () => {
+      // active-but-busy: the agent already has work and presumably saw
+      // the WI; not a banner-drop scenario.
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: SEVEN_MIN_AGO,
+        type: 'delegate',
+        target: 'sora',
+      });
+      const agentMap = makeAgentMap([
+        ['sora', { status: 'active', role: 'developer', activeWorkItemCount: 2 }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(0);
+    });
+
+    it('does NOT redeliver when WI has no target', () => {
+      // Untargeted WIs never trigger ANY wake (2026-05-17 strict policy).
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: SEVEN_MIN_AGO,
+        type: 'delegate',
+        target: undefined,
+      });
+      const agentMap = makeAgentMap([
+        ['sora', { status: 'active', role: 'developer', activeWorkItemCount: 0 }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(0);
+    });
+
+    it('does NOT redeliver before the effective threshold', () => {
+      // 4min old < 5min effective threshold when an active agent exists.
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+        type: 'delegate',
+        target: 'sora',
+      });
+      const agentMap = makeAgentMap([
+        ['sora', { status: 'active', role: 'developer', activeWorkItemCount: 0 }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(0);
+    });
+
+    it('prefers redeliver over start when target is active-but-idle and another inactive agent exists', () => {
+      // The target should ALWAYS get the work — never substitute by score
+      // (2026-05-17 strict-target policy). Verifies redeliver takes
+      // precedence over best-score search.
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: SEVEN_MIN_AGO,
+        type: 'delegate',
+        target: 'sora',
+      });
+      const agentMap = makeAgentMap([
+        ['sora', { status: 'active', role: 'developer', activeWorkItemCount: 0 }],
+        // Another developer is inactive — the OLD behaviour would have
+        // tried to start them. The new behaviour must redeliver to sora.
+        ['other-dev', { status: 'inactive', role: 'developer' }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(1);
+      expect(wakeActions[0].strategy).toBe('redeliver');
+      expect(wakeActions[0].agentSessionName).toBe('sora');
+    });
+
+    it('does NOT redeliver to the same agent twice in a single pass', () => {
+      const wi1 = makeWorkItem({
+        status: 'queued',
+        createdAt: SEVEN_MIN_AGO,
+        type: 'delegate',
+        target: 'sora',
+      });
+      const wi2 = makeWorkItem({
+        status: 'queued',
+        createdAt: SEVEN_MIN_AGO,
+        type: 'delegate',
+        target: 'sora',
+      });
+      const agentMap = makeAgentMap([
+        ['sora', { status: 'active', role: 'developer', activeWorkItemCount: 0 }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi1, wi2], agentMap);
+      // One redeliver per pass per agent; the oldest WI wins.
+      expect(wakeActions).toHaveLength(1);
+      expect(wakeActions[0].strategy).toBe('redeliver');
+    });
+
+    it('returns empty when only active-but-idle agents exist but no targeted WIs match', () => {
+      // Defensive — verifies the early-return path doesn't skip the
+      // active-idle bucket. WI targets a different (absent) agent.
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: SEVEN_MIN_AGO,
+        type: 'delegate',
+        target: 'someone-else',
+      });
+      const agentMap = makeAgentMap([
+        ['sora', { status: 'active', role: 'developer', activeWorkItemCount: 0 }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(0);
+    });
+  });
 });

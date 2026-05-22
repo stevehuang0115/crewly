@@ -189,7 +189,14 @@ export class ActivityMonitorService {
         }
       } else {
         if (elapsed >= PTY_CONSTANTS.MIN_BUSY_DURATION_MS && this.busyEventEmitted.has(key) && this.eventBusService) {
+          // Generic event (back-compat for fleet dashboards / auto-claim / etc.)
           this.eventBusService.publish(this.buildAgentEvent('agent:idle', now, identity, previousStatus, newStatus));
+          // 2026-05-20 follow-up: the in-process busy guard above (`busyEventEmitted`)
+          // guarantees we only reach this branch when the agent was actually
+          // observed busy first — so this transition is unambiguously
+          // post-task. Emit the precise variant so peer-watch triggers
+          // can filter on it without being woken by registration-idle.
+          this.eventBusService.publish(this.buildAgentEvent('agent:idle_after_task', now, identity, previousStatus, newStatus));
         }
         this.busyTransitionTimestamps.delete(key);
         this.busyEventEmitted.delete(key);

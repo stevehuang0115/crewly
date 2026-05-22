@@ -728,15 +728,30 @@ export function detectUnclaimedTasks(
   const unclaimedWorkItemIds: string[] = [];
   const now = Date.now();
 
-  // Find agents that can be woken (suspended or inactive)
+  // Find agents that can be woken.
+  //   - suspended → rehydrate (resume the paused session)
+  //   - inactive  → start     (spin a fresh agent session)
+  //   - active + activeWorkItemCount===0 → redeliver (re-POST WI brief to PTY)
+  //
+  // The `redeliver` bucket targets the 2026-05-20 Sora case: a WorkItem was
+  // queued with explicit `target=crewly-test-sora`, the agent was alive at
+  // the prompt, but the original /api/terminal/:session/write landed inside
+  // claude-code's startup banner and was silently dropped. The WI sat in
+  // queued for ~53 minutes until manual /task-pool/claim. We can't catch
+  // the drop at dispatch time (it looks like a successful 200 OK), so the
+  // reconciler is the safety net: if a targeted, queued WI ages past
+  // threshold AND its target is alive-but-empty, re-push the brief.
   const wakableAgents: AgentHealth[] = [];
+  const activeIdleByTarget = new Map<string, AgentHealth>();
   for (const agent of agentHealthMap.values()) {
     if (agent.status === 'suspended' || agent.status === 'inactive') {
       wakableAgents.push(agent);
+    } else if (agent.status === 'active' && (agent.activeWorkItemCount ?? 0) === 0) {
+      activeIdleByTarget.set(agent.sessionName, agent);
     }
   }
 
-  if (wakableAgents.length === 0) {
+  if (wakableAgents.length === 0 && activeIdleByTarget.size === 0) {
     return { wakeActions, unclaimedWorkItemIds };
   }
 
@@ -788,6 +803,29 @@ export function detectUnclaimedTasks(
     // (the WI is unowned). Strict policy: only wake when the WI
     // explicitly names an offline target via `wi.target`.
     if (!wi.target) continue;
+
+    // First chance: if the explicit target is active-but-idle, the original
+    // dispatch likely vanished into a startup banner — schedule a redeliver
+    // instead of waking some other agent that doesn't own this WI.
+    const idleTarget = activeIdleByTarget.get(wi.target);
+    if (idleTarget && !agentsToWake.has(idleTarget.sessionName)) {
+      wakeActions.push({
+        workItemId: wi.id,
+        agentSessionName: idleTarget.sessionName,
+        strategy: 'redeliver',
+        // Redeliver is target-driven, not score-driven — scoring would be
+        // misleading. We use a sentinel score of 0 and an all-zero breakdown
+        // so audit consumers can filter on `strategy === 'redeliver'`.
+        score: 0,
+        scoreBreakdown: { skillMatch: 0, urgency: 0, contextFamiliarity: 0, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+        teamId: idleTarget.teamId,
+        memberId: idleTarget.memberId,
+      });
+      unclaimedWorkItemIds.push(wi.id);
+      agentsToWake.add(idleTarget.sessionName);
+      continue;
+    }
 
     // Score each wakable agent for this WorkItem
     const bestAgent = selectBestAgent(wi, wakableAgents, waitTime, agentsToWake);

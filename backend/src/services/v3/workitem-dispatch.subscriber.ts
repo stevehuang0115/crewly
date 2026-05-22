@@ -225,6 +225,27 @@ export class WorkItemDispatchSubscriber {
     }
   }
 
+  /**
+   * Force-redeliver a WorkItem brief to its target, bypassing the in-process
+   * dedup cache. Used by Hybrid Wake's `redeliver` strategy (2026-05-20):
+   * when a queued WI lingers past threshold but its target is `active` and
+   * `activeWorkItemCount === 0`, the original `dispatchTo` write likely
+   * landed during claude-code's startup banner and was silently dropped.
+   * Resetting the dedup key and reposting the brief gives the now-idle
+   * agent a second chance to see it.
+   *
+   * Returns true if the redelivered write succeeded.
+   *
+   * @param workItem - WorkItem whose brief should be re-pushed
+   * @returns Whether the redelivery write succeeded
+   */
+  async redispatch(workItem: WorkItem): Promise<boolean> {
+    if (!workItem.target) return false;
+    const key = this.dispatchKey(workItem.id, workItem.target);
+    this.dispatched.delete(key);
+    return this.dispatchTo(workItem);
+  }
+
   // -------------------------------------------------------------------------
   // Internal — workitem:queued event path
   // -------------------------------------------------------------------------
