@@ -1273,12 +1273,21 @@ export class TaskPoolService {
       wi.startedAt = undefined;
       wi.completedAt = undefined;
       // Keep `target` — the original agent should get the retry.
-      // Stash the failure reason for forensic visibility; preserve any
-      // existing metadata.
+      // APPEND to failureHistory so postmortems see all attempts, not
+      // just the most recent. `lastFailureReason` / `lastFailureAt`
+      // are retained for back-compat with dashboards that already
+      // read those scalar fields. Cap history at 10 entries so a
+      // pathological retry loop can't bloat the metadata indefinitely.
+      const now = new Date().toISOString();
+      const priorHistory = (wi.metadata?.failureHistory as Array<Record<string, unknown>>) ?? [];
       wi.metadata = {
         ...(wi.metadata ?? {}),
+        failureHistory: [
+          ...priorHistory,
+          { at: now, reason, retryAttempt: wi.retryCount },
+        ].slice(-10),
         lastFailureReason: reason,
-        lastFailureAt: new Date().toISOString(),
+        lastFailureAt: now,
         retryAttempt: wi.retryCount,
       };
       // Clear the error field so a successful retry doesn't surface a

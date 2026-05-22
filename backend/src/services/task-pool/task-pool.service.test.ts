@@ -1404,6 +1404,47 @@ describe('TaskPoolService', () => {
       expect(typeof wi.metadata?.lastFailureAt).toBe('string');
     });
 
+    it('APPENDS to failureHistory across multiple retries (not overwrite)', async () => {
+      // Postmortem needs ALL failure reasons, not just the latest —
+      // each retry could fail for a different reason and that signal
+      // matters when ORC decides surface-vs-replan.
+      const id = await failOne('agent-leo');
+      await service.requeueAfterFailure(id, 'fetch 503');
+      // Cycle through running → failed → queued twice more.
+      await service.claimFromPool('agent-leo');
+      await service.failItem(id, 'parse error');
+      await service.requeueAfterFailure(id, 'parse error');
+      await service.claimFromPool('agent-leo');
+      await service.failItem(id, 'rate limit');
+      await service.requeueAfterFailure(id, 'rate limit');
+
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      const history = wi.metadata?.failureHistory as Array<{ reason: string; retryAttempt: number }>;
+      expect(history).toHaveLength(3);
+      expect(history.map((h) => h.reason)).toEqual(['fetch 503', 'parse error', 'rate limit']);
+      expect(history.map((h) => h.retryAttempt)).toEqual([1, 2, 3]);
+    });
+
+    it('caps failureHistory at 10 entries (FIFO) to bound metadata growth', async () => {
+      // A pathological retry loop should not bloat metadata
+      // indefinitely. After 12 retries we keep only the most recent
+      // 10 — the oldest two drop off.
+      const id = await failOne('agent-leo');
+      for (let i = 1; i <= 12; i += 1) {
+        await service.requeueAfterFailure(id, `attempt ${i}`);
+        if (i < 12) {
+          await service.claimFromPool('agent-leo');
+          await service.failItem(id, `attempt ${i}`);
+        }
+      }
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      const history = wi.metadata?.failureHistory as Array<{ reason: string }>;
+      expect(history).toHaveLength(10);
+      // Oldest entries dropped — first kept is attempt 3.
+      expect(history[0].reason).toBe('attempt 3');
+      expect(history[9].reason).toBe('attempt 12');
+    });
+
     it('clears `error` field so a successful retry does not surface stale text', async () => {
       const id = await failOne();
       await service.requeueAfterFailure(id, 'will retry');

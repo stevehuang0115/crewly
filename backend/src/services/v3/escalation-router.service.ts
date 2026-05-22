@@ -356,16 +356,38 @@ export class EscalationRouterService {
 
     // Build the orc-facing message. Designed to be self-contained so orc
     // can act without going back to the activity log to reconstruct
-    // context.
+    // context. Sanitization is REQUIRED because `wi.title` flows from
+    // user-derived Slack/Request text and `wi.error` from worker output
+    // — both can contain newlines, ANSI escapes, or strings that would
+    // collide with the [CHAT:] / [NOTIFY:] markers ORC parses in its
+    // own outbound message protocol. We:
+    //   - strip ANSI escape codes
+    //   - flatten newlines so a multi-line error can't open a fake
+    //     marker line
+    //   - defuse the four ORC-recognized marker prefixes by inserting
+    //     a zero-width space — visible to neither ORC nor humans, but
+    //     prevents the marker from parsing
+    //   - hard-cap each user-derived field so a giant stack trace
+    //     can't blow past ORC's context budget
+    const sanitize = (raw: string, maxLen: number): string =>
+      String(raw)
+        .replace(/\[[0-9;]*m/g, '') // strip ANSI color escapes
+        .replace(/[\r\n]+/g, ' ')         // flatten newlines
+        .replace(/\[(CHAT|NOTIFY|EVENT|ESCALATION)/gi, '[​$1') // defuse markers
+        .slice(0, maxLen);
+
+    const safeTitle = sanitize(wi.title, 200);
+    const safeError = sanitize(wi.error ?? reason, 2_000);
+
     const lines = [
       `[ESCALATION] WorkItem failed after ${wi.maxRetries} retries — your decision needed.`,
       '',
-      `WorkItem: ${wi.id} "${wi.title}"`,
+      `WorkItem: ${wi.id} "${safeTitle}"`,
       `Type:     ${wi.type}`,
       `Target:   ${wi.target ?? '(unassigned)'}`,
       `Attempts: ${wi.retryCount} / ${wi.maxRetries}`,
       '',
-      `Last error: ${wi.error ?? reason}`,
+      `Last error: ${safeError}`,
       '',
       `Parent Request: ${wi.requestId ?? '(none)'}`,
       `Parent Mission: ${wi.missionId ?? '(none)'}`,

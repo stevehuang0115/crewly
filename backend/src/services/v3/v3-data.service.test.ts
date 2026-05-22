@@ -597,6 +597,92 @@ describe('V3DataService', () => {
       expect(mockRequeueAfterFailure).not.toHaveBeenCalled();
       expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
     });
+
+    // ── Boundary integration test (Section 8d of review) ─────────────
+    // Walks a single WI through 3 successive task:failed events with
+    // maxRetries=2. Expectation: 2 requeues, then 1 escalation on the
+    // 3rd failure. Catches regressions in the retry-budget arithmetic
+    // and the requeue↔escalate switch.
+    it('boundary: 3 successive failures on maxRetries=2 → 2 requeues + 1 escalation', async () => {
+      const wiId = 'wi-boundary';
+      const reqId = 'req-boundary';
+
+      // Each `task:failed` event triggers:
+      //   1. findMatchingWorkItem reads from getAllItems
+      //   2. (sometimes) updateItemStatus to running
+      //   3. failItem
+      //   4. findWorkItem re-fetch to read retryCount
+      //   5. requeueAfterFailure OR escalateFailedWorkItem
+      //
+      // Mocking each fire's findWorkItem return value with the
+      // post-failItem snapshot (retryCount reflects the count BEFORE
+      // requeueAfterFailure bumps it). After the 3rd failure the
+      // retry budget is exhausted.
+
+      // Fire 1: retryCount=0/max=2 → requeue, new count = 1
+      mockGetAllItems.mockResolvedValueOnce([
+        { id: wiId, target: 'agent-leo', status: 'running', requestId: reqId },
+      ]);
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: wiId, status: 'failed', retryCount: 0, maxRetries: 2,
+        title: 'boundary', type: 'delegate', requestId: reqId,
+      });
+
+      eventBus.emit('v3:task_failed', {
+        type: 'task:failed', sessionName: 'agent-leo',
+        newValue: 'failed', timestamp: new Date().toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockRequeueAfterFailure).toHaveBeenCalledTimes(1);
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+
+      // Fire 2: retryCount=1/max=2 → requeue, new count = 2
+      mockGetAllItems.mockResolvedValueOnce([
+        { id: wiId, target: 'agent-leo', status: 'running', requestId: reqId },
+      ]);
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: wiId, status: 'failed', retryCount: 1, maxRetries: 2,
+        title: 'boundary', type: 'delegate', requestId: reqId,
+      });
+
+      eventBus.emit('v3:task_failed', {
+        type: 'task:failed', sessionName: 'agent-leo',
+        newValue: 'failed', timestamp: new Date().toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockRequeueAfterFailure).toHaveBeenCalledTimes(2);
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+
+      // Fire 3: retryCount=2/max=2 → budget exhausted, escalate + cascade
+      mockGetAllItems
+        .mockResolvedValueOnce([
+          { id: wiId, target: 'agent-leo', status: 'running', requestId: reqId },
+        ])
+        .mockResolvedValueOnce([
+          { id: wiId, target: 'agent-leo', status: 'failed', requestId: reqId },
+        ]);
+      mockFindWorkItem.mockResolvedValueOnce({
+        id: wiId, status: 'failed', retryCount: 2, maxRetries: 2,
+        title: 'boundary', type: 'delegate', requestId: reqId,
+      });
+      mockRequestGetById.mockResolvedValueOnce({
+        id: reqId, status: 'running', workItemIds: [wiId],
+      });
+
+      eventBus.emit('v3:task_failed', {
+        type: 'task:failed', sessionName: 'agent-leo',
+        newValue: 'failed', timestamp: new Date().toISOString(),
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Still 2 requeues (no new ones on the 3rd fire), exactly 1
+      // escalation, and the Request finally cascades to cancelled.
+      expect(mockRequeueAfterFailure).toHaveBeenCalledTimes(2);
+      expect(mockEscalateFailedWorkItem).toHaveBeenCalledTimes(1);
+      expect(mockRequestUpdate).toHaveBeenCalledWith(reqId, { status: 'cancelled' });
+    });
   });
 
   describe('onTaskBlocked', () => {
