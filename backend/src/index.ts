@@ -427,6 +427,40 @@ export class CrewlyServer {
 		setChatThreadStatusQueueService(this.threadStatusQueueService);
 		setMessagingControllerQueueService(this.messageQueueService);
 
+		// LLM-wiki bookkeep trigger (Steve 2026-05-22 design point #5):
+		// every 30 minutes (configurable via CREWLY_WIKI_BOOKKEEP_INTERVAL_MS),
+		// scan every known vault. When recentMd ≥ threshold OR there are
+		// duplicate clusters, enqueue a [BOOKKEEP] message to ORC so it can
+		// run wiki-bookkeep + decide which pages to consolidate.
+void (async () => {
+			try {
+				const { WikiBookkeepTriggerService } = await import(
+					'./services/wiki/wiki-bookkeep-trigger.service.js'
+				);
+				const intervalMs = Number(process.env['CREWLY_WIKI_BOOKKEEP_INTERVAL_MS'] ?? 30 * 60 * 1000);
+				const debounceMs = Number(process.env['CREWLY_WIKI_BOOKKEEP_DEBOUNCE_MS'] ?? 6 * 3600 * 1000);
+				const trigger = new WikiBookkeepTriggerService({
+					intervalMs,
+					debounceMs,
+					fireFn: async (vaultPath, report) => {
+						if (!this.messageQueueService) return;
+						const summary = `[BOOKKEEP] vault=${vaultPath} | ${report.recentMdCount} new md(s) in last ${report.windowDays}d (threshold ${report.threshold}) | duplicates=${report.duplicateCandidates.length} | pending-queue=${report.queue.pending}. Run wiki-bookkeep to drain.`;
+						this.messageQueueService.enqueue({
+							content: summary,
+							conversationId: 'system:wiki-bookkeep',
+							source: 'system_event',
+						});
+					},
+				});
+				WikiBookkeepTriggerService.setInstance(trigger);
+				trigger.start();
+			} catch (bookkeepErr) {
+				this.logger.warn('Wiki bookkeep trigger failed to start (non-fatal)', {
+					error: (bookkeepErr as Error).message,
+				});
+			}
+		})();
+
 		// Initialize system resource alert service for proactive monitoring
 		this.systemResourceAlertService = new SystemResourceAlertService();
 		this.teamsJsonWatcherService.setEventBusService(this.eventBusService);
@@ -1349,6 +1383,13 @@ export class CrewlyServer {
 					path: '/ws/chat',
 					authMode: jwtSecret ? 'jwt' : 'dev-anonymous',
 				});
+
+				// LLM-wiki Phase 1 (redesign 2026-05-22): the prior auto-write
+				// subscriber was REMOVED. Steve's direction: agents decide what
+				// is wiki-worthy from inside the conversation and call the
+				// `wiki-queue-add` skill explicitly. No keyword routing, no
+				// blanket "every chat → log.md." See WikiQueueService for the
+				// queue + the orchestrator system prompt for the agent rule.
 
 				// Cloud Portal relay bridge — gives the Crewly Portal at
 				// crewlyai.com the same /agents experience by tunnelling chat-v2

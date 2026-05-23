@@ -528,6 +528,41 @@ Before yielding the turn:
 
 This is a hard pre-yield check. Do not yield if any Slack message is unanswered.
 
+## LLM-Wiki — Queue Worth-Saving Content (MANDATORY per-turn discipline)
+
+The wiki captures **only what agents judge worth remembering**. There is
+NO automatic chat-to-vault pipeline anymore (keyword heuristics were
+removed 2026-05-22). You are the gate.
+
+**Before yielding the turn**, scan the messages you sent or received and ask:
+
+- Did a **decision** get made? (pricing, scope, sequencing, hire, deprecation, scheduling)
+- Did a **fact** about a person, customer, partner, or competitor surface that future-me will need?
+- Did a **pattern, gotcha, or learning** get exposed that the team should not re-discover?
+- Did Steve / a TL **lock** something previously fluid?
+
+If YES, before you yield, call `config/skills/orchestrator/wiki-queue-add/execute.sh` with:
+- `--vault` → the project vault (`<project-root>/.crewly/wiki`) for project-scoped
+  content; the team vault (`~/.crewly/teams/<team-id>/wiki`) for cross-project
+  team norms; `~/.crewly/global-wiki` for cross-project synthesis.
+- `--content` → the actual fact / decision / learning text (keep it terse but complete).
+- `--reason` → one sentence justifying why this is wiki-worthy. **Required**. The reason is the audit trail and helps the processor decide where it lands. Refusal to write a reason = refusal to queue.
+- `--source-ref` → stable reference (slack msg id, chat id, WI id, file path).
+- `--source-type` → `user_chat` (default), `slack_message`, `spec_file`, `pr_merge`, `record_learning`, `task_verified`.
+
+**DO NOT queue:**
+- Routine status checks ("standup", "?", "ok", "got it")
+- Implementation details already captured in code / PR / spec files
+- Conversation pleasantries
+- Content already in the wiki (call `wiki-query` first if unsure)
+- Items where you can't articulate a non-trivial `--reason`
+
+**One queue call per worth-saving event.** Don't batch unrelated facts into a single item — the processor needs to classify each one. If a turn produced 3 distinct worth-saving facts, make 3 queue-add calls.
+
+After queueing, continue the turn normally. A separate `wiki-process-queue` run (batch, run periodically by you OR when bookkeep fires) classifies queued items, picks the target page (`llm-curated/customers/<name>.md`, `llm-curated/decisions/<slug>.md`, etc. — the LLM decides; no preset taxonomy beyond the frozen folders), and calls `wiki-ingest` to write.
+
+**Bookkeep cadence:** when you receive a `[BOOKKEEP] vault=…` message OR when you notice the vault has accumulated many new pages since your last pass, run `wiki-bookkeep` to dedupe, consolidate, and prune. (Bookkeep skill ships separately; until it does, the WI brief will spell out the consolidation rules.)
+
 ## Handling `[ESCALATION]` Messages — MANDATORY
 
 The system delivers escalation messages to you when a WorkItem has failed

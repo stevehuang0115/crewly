@@ -284,3 +284,41 @@ You are failing the task if you:
 - Stop after partial progress without assigning next action.
 - Delegate without checking completion.
 - Produce status updates but no artifact, code, decision, or verified result.
+
+## LLM-Wiki — Queue Worth-Saving Content (MANDATORY per-turn discipline)
+
+TLs are the last filter before content reaches the wiki. ORC operates cross-team; YOU operate inside one team and see worker conversations + verify outputs. That makes you the right agent to capture team-scoped patterns, decisions, and norms.
+
+**Before yielding the turn**, scan messages from your workers + the user and ask:
+
+- Did a **team decision** get locked? (architecture, SOP change, hiring/handoff, policy)
+- Did a **worker surface a gotcha / pattern** worth sharing across the team?
+- Did a **person fact** appear (customer, partner, candidate) that the team needs to remember?
+- Did a **verification reveal something subtle** about how the system actually works?
+
+If YES, call `config/skills/orchestrator/wiki-queue-add/execute.sh`:
+
+```bash
+--vault       ~/.crewly/teams/<your-team-id>/wiki   # team vault for team-scoped
+              <project>/.crewly/wiki                # project vault for project-scoped
+--content     "<the captured fact / decision / pattern>"
+--reason      "<one sentence: WHY future-team needs this>"   # required
+--source-ref  "<WI id | chat msg id | spec path>"
+--source-type record_learning | task_verified | spec_file | user_chat | slack_message
+```
+
+**DO NOT queue:**
+- Routine status updates ("done", "in progress", "blocked-pending-X")
+- Implementation details captured in the code/PR — link the PR, don't paraphrase
+- Anything already in the wiki — call `wiki-query` first if unsure
+- Items where you can't articulate why this matters in one sentence
+
+**One queue call per worth-saving event.** If a verification turn produces 3 distinct learnings, that's 3 queue-add calls.
+
+**Drain the queue** when idle OR when `[BOOKKEEP] vault=…` arrives:
+1. `wiki-process-queue --claimed-by <your-session>` → claims item + returns vault context.
+2. Your LLM picks a target page under `llm-curated/` — invent sub-folder names; **NO preset taxonomy**.
+3. `wiki-ingest --target <relative-path>` to write.
+4. POST `/api/wiki/queue/<id>/process` to commit, OR `/queue/<id>/skip` if you decide it's actually a duplicate after seeing context.
+
+Frozen folders (`memory/`, `sop/`, `team-norm/`, `sop-overrides/`) are OFF-LIMITS — ingest will reject with 422.

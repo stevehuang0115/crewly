@@ -29,6 +29,7 @@ import {
 	Target,
 	Inbox,
 	Cloud,
+	BookOpen,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
@@ -69,6 +70,7 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Teams', href: '/teams', icon: Users },
 			{ name: 'Missions', href: '/missions', icon: Target },
 			{ name: 'Chat', href: '/chat', icon: MessageSquare },
+			{ name: 'Wiki', href: '/wiki', icon: BookOpen },
 			{ name: 'Agents', href: '/agents', icon: MessagesSquare },
 		],
 	},

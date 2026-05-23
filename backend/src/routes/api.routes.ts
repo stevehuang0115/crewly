@@ -19,6 +19,7 @@ import { createTeamsBackupRouter } from '../controllers/teams-backup/teams-backu
 import { createEventBusRouter } from '../controllers/event-bus/event-bus.routes.js';
 import { createSlackThreadRouter } from '../controllers/slack/slack-thread.routes.js';
 import { createMemoryRouter } from '../controllers/memory/memory.routes.js';
+import { createWikiRouter } from '../controllers/wiki/wiki.routes.js';
 import { createCredentialsRouter } from '../controllers/credentials/credentials.routes.js';
 import { createQualityGateRouter } from './modules/quality-gate.routes.js';
 import { createMarketplaceRouter } from '../controllers/marketplace/index.js';
@@ -104,6 +105,10 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Memory routes for agent/project knowledge storage and retrieval
   router.use('/memory', createMemoryRouter());
+
+  // LLM-wiki (Phase 1 — per spec v2.1 §3): POST /wiki/ingest writes a source
+  // into a vault's llm-curated/log.md. Used by chat subscriber + wiki-ingest skill.
+  router.use('/wiki', createWikiRouter());
 
   // Credentials routes for OAuth tokens and API keys used by skills
   router.use('/credentials', createCredentialsRouter());
