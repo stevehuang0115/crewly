@@ -368,6 +368,23 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       threadTs,
     });
 
+    // 2026-05-23 incident fix: ORC successfully delivered to a slack
+    // thread — clear any pending-delivery reminder the enforcer was
+    // tracking for that thread. Best-effort; never blocks the response.
+    if (threadTs) {
+      try {
+        const { OrcDeliveryEnforcerService } = await import(
+          '../../services/orc/orc-delivery-enforcer.service.js'
+        );
+        OrcDeliveryEnforcerService.getInstance()?.markDelivered({
+          channelId,
+          threadTs,
+        });
+      } catch {
+        // ignore — enforcer not wired (e.g. headless mode) shouldn't block send
+      }
+    }
+
     // F14: record `agent.action` with actionType='send_slack' on
     // successful Slack send. Source `agent` from senderSessionName
     // already on the request body. Best-effort — never blocks the

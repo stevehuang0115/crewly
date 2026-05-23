@@ -422,6 +422,28 @@ export async function agentResponse(
         preview: content.substring(0, 80),
       });
 
+      // 2026-05-23 incident fix: agent-originating [DONE] / [COMPLETED]
+      // / [DELIVERED] markers in a slack conversation are a delivery
+      // signal — Steve is waiting for ORC to forward the result via
+      // reply-slack. Record a pending delivery; if ORC doesn't reply
+      // within the cadence, the enforcer will nudge it with
+      // [DELIVER_REQUIRED]. The service no-ops on non-slack conversations
+      // and on non-delivery markers (e.g. [IN_PROGRESS]).
+      try {
+        const { OrcDeliveryEnforcerService } = await import(
+          '../../services/orc/orc-delivery-enforcer.service.js'
+        );
+        OrcDeliveryEnforcerService.getInstance()?.markPendingDelivery({
+          conversationId: resolvedConversationId,
+          agentSender: senderName,
+          text: content,
+        });
+      } catch (enforcerErr) {
+        logger.warn('OrcDeliveryEnforcer.markPendingDelivery threw (swallowed)', {
+          error: enforcerErr instanceof Error ? enforcerErr.message : String(enforcerErr),
+        });
+      }
+
       try {
         // 1. Enqueue notification to orchestrator via MessageQueueService
         if (messageQueueService) {

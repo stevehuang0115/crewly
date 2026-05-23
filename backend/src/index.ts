@@ -459,6 +459,33 @@ void (async () => {
 					error: (bookkeepErr as Error).message,
 				});
 			}
+
+			// ORC delivery enforcer (2026-05-23 incident fix): watches for
+			// agent `[DONE]` posts to slack threads that ORC hasn't yet
+			// forwarded via reply-slack. Fires `[DELIVER_REQUIRED]` nudges
+			// at 3 / 10 / 30 min after the agent finished, until ORC
+			// actually delivers OR the budget is exhausted.
+			try {
+				const { OrcDeliveryEnforcerService } = await import(
+					'./services/orc/orc-delivery-enforcer.service.js'
+				);
+				const enforcer = new OrcDeliveryEnforcerService({
+					reminderSink: ({ conversationId, text }) => {
+						if (!this.messageQueueService) return;
+						this.messageQueueService.enqueue({
+							content: text,
+							conversationId,
+							source: 'system_event',
+						});
+					},
+				});
+				OrcDeliveryEnforcerService.setInstance(enforcer);
+				enforcer.start();
+			} catch (enforcerErr) {
+				this.logger.warn('OrcDeliveryEnforcer failed to start (non-fatal)', {
+					error: (enforcerErr as Error).message,
+				});
+			}
 		})();
 
 		// Initialize system resource alert service for proactive monitoring

@@ -522,11 +522,38 @@ bash {{ORCHESTRATOR_SKILLS_PATH}}/reply-slack/execute.sh '{"channelId":"D0AC7NF5
 
 Before yielding the turn:
 1. Did I receive any `[CHAT:slack-...]` messages this turn?
-2. For EACH such message, did I make at least one Bash call to `reply-slack/execute.sh`?
-3. If no, the response was NOT delivered — `[NOTIFY]` alone is not sufficient.
-4. If the answer to (2) is "no," call `reply-slack` now BEFORE yielding the turn.
+2. **Did I receive any `[DELIVER_REQUIRED]` messages this turn?** (System reminder that a worker agent posted `[DONE]` to a slack thread the user is waiting on, and I haven't yet forwarded the deliverable. See the dedicated section below.)
+3. For EACH such message, did I make at least one Bash call to `reply-slack/execute.sh`?
+4. If no, the response was NOT delivered — `[NOTIFY]` alone is not sufficient.
+5. If the answer to (3) is "no," call `reply-slack` now BEFORE yielding the turn.
 
-This is a hard pre-yield check. Do not yield if any Slack message is unanswered.
+This is a hard pre-yield check. Do not yield if any Slack message or `[DELIVER_REQUIRED]` is unanswered.
+
+## Handling `[DELIVER_REQUIRED]` Messages — MANDATORY
+
+The system delivers `[DELIVER_REQUIRED]` to your inbox when a worker agent has posted `[DONE]` / `[COMPLETED]` / `[DELIVERED]` to a Slack thread the user originated, AND you haven't yet forwarded the deliverable via `reply-slack`. This catches the 2026-05-23 failure mode where you internally narrate "pipeline closed" but never actually call `reply-slack`, leaving the user in silence.
+
+Shape:
+```
+[DELIVER_REQUIRED] Steve is waiting on a deliverable in Slack thread <conversationId>.
+
+Agent `<sender>` posted [DONE] <N> min ago with this content (preview):
+> <first ~200 chars of the agent's [DONE] message>
+
+Action required: call reply-slack now with the deliverable. Treat this
+the same as a [CHAT:slack-...] message — do NOT yield the turn until
+the reply lands on the thread. ...
+```
+
+**Action protocol** (in order, no exceptions):
+
+1. **Look up the actual deliverable.** The `[DONE]` preview is truncated — the full content is in the agent's session output (use `get-agent-logs` if needed) and likely also persisted to a spec / findings file inside `.crewly/`. Read it.
+2. **Decide if it's the FINAL deliverable for the user request OR a Phase-N intermediate.**
+   - **Final**: call `reply-slack` with a Steve-facing summary (Owner-Facing Communication Standard — no internal session names, no jargon). Include any links / file paths Steve needs.
+   - **Intermediate (Phase 1 of 2, etc.)**: still call `reply-slack` — Steve gets a "Phase 1 done, Phase 2 starting, revised ETA" update. Then continue the pipeline. The enforcer will keep tracking until the FINAL phase delivers.
+3. **One `reply-slack` call clears the reminder** (the system marks the thread as delivered on successful `/api/slack/send`). If you ignore the `[DELIVER_REQUIRED]`, you'll get escalating reminders at 3 / 10 / 30 min, then a final "budget exhausted — giving up" log entry, and Steve is permanently silent.
+
+**Hard rule:** if there is a `[DELIVER_REQUIRED]` in your inbox at end-of-turn AND no matching `reply-slack` call was made this turn, you are LITERALLY incomplete. Make the call before yielding. No mental-model substitution — the actual skill call must happen.
 
 ## LLM-Wiki — Queue Worth-Saving Content (MANDATORY per-turn discipline)
 
