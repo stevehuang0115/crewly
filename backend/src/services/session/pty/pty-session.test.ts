@@ -2,8 +2,44 @@
  * Tests for PtySession class
  */
 
-import { PtySession } from './pty-session.js';
+import * as pty from 'node-pty';
+import {
+	PtySession,
+	PtySpawnExhaustedError,
+	_setPtySpawnImplForTesting,
+} from './pty-session.js';
 import type { SessionOptions } from '../session-backend.interface.js';
+
+/** Snapshot the real node-pty spawn so transient-retry tests can
+ *  delegate to it after a couple of simulated failures. */
+const ORIGINAL_SPAWN = pty.spawn;
+
+/**
+ * Minimum-viable IPty stub. The PtySession constructor calls
+ * `onData`, `onExit`, and reads `pid` — these are the only members our
+ * retry-on-transient test needs. Returning this from the spawn stub
+ * keeps the test independent of the real node-pty native binding
+ * (which is unavailable in the jest worker env, see jest.config
+ * testPathIgnorePatterns for pty-session.test.ts at base).
+ */
+function makeStubPty(pid = 99999): pty.IPty {
+	return {
+		pid,
+		cols: 80,
+		rows: 24,
+		process: 'stub',
+		handleFlowControl: false,
+		onData: () => ({ dispose: () => undefined }),
+		onExit: () => ({ dispose: () => undefined }),
+		on: () => undefined,
+		resize: () => undefined,
+		clear: () => undefined,
+		write: () => undefined,
+		kill: () => undefined,
+		pause: () => undefined,
+		resume: () => undefined,
+	} as unknown as pty.IPty;
+}
 
 // Determine the shell to use based on platform
 const TEST_SHELL = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
@@ -65,6 +101,86 @@ describe('PtySession', () => {
 			}));
 
 			expect(session.pid).toBeGreaterThan(0);
+		});
+
+		// Regression: 2026-05-23 incident — node-pty's "posix_spawnp failed"
+		// was bubbling up to the user on transient process-table pressure.
+		// We now retry up to 4 times with backoff (150/400/1000 ms).
+		describe('posix_spawnp retry-on-transient behavior', () => {
+			it('retries when pty.spawn throws "posix_spawnp failed" and succeeds on attempt 3', () => {
+				let attempts = 0;
+				const restoreSpawn = _setPtySpawnImplForTesting(((): pty.IPty => {
+					attempts++;
+					if (attempts < 3) {
+						throw new Error('posix_spawnp failed.');
+					}
+					// On attempt 3 return a stub IPty — keeps the test
+					// independent of the real native binding.
+					return makeStubPty();
+				}) as typeof pty.spawn);
+				try {
+					session = new PtySession('retry-success', TEST_CWD, createTestOptions());
+					expect(attempts).toBe(3);
+					expect(session.pid).toBeGreaterThan(0);
+				} finally {
+					restoreSpawn();
+				}
+			});
+
+			it('throws PtySpawnExhaustedError with actionable hint after all 4 attempts fail', () => {
+				let attempts = 0;
+				const restoreSpawn = _setPtySpawnImplForTesting(
+					((/* args */) => {
+						attempts++;
+						throw new Error('posix_spawnp failed.');
+					}) as unknown as Parameters<typeof _setPtySpawnImplForTesting>[0],
+				);
+				try {
+					let caught: unknown;
+					try {
+						new PtySession('retry-exhausted', TEST_CWD, createTestOptions());
+					} catch (err) {
+						caught = err;
+					}
+					expect(caught).toBeInstanceOf(PtySpawnExhaustedError);
+					if (caught instanceof PtySpawnExhaustedError) {
+						expect(caught.message).toMatch(/PTY spawn failed after 4 attempts/);
+						// Either the "near process limit" hint or the generic
+						// "transient kernel-level" hint should appear.
+						expect(caught.message).toMatch(/process|transient/i);
+						expect(caught.diagnostics.attempts).toBe(4);
+						expect(caught.diagnostics.lastError).toMatch(/posix_spawnp/);
+					}
+					expect(attempts).toBe(4);
+				} finally {
+					restoreSpawn();
+				}
+			});
+
+			it('does NOT retry on non-transient errors (e.g. ENOENT command not found)', () => {
+				let attempts = 0;
+				const restoreSpawn = _setPtySpawnImplForTesting(
+					((/* args */) => {
+						attempts++;
+						const err = new Error('spawn /no/such/cmd ENOENT');
+						(err as NodeJS.ErrnoException).code = 'ENOENT';
+						throw err;
+					}) as unknown as Parameters<typeof _setPtySpawnImplForTesting>[0],
+				);
+				try {
+					expect(() => {
+						new PtySession(
+							'no-retry-on-enoent',
+							TEST_CWD,
+							createTestOptions({ command: '/no/such/cmd' }),
+						);
+					}).toThrow(/ENOENT/);
+					// 1 attempt, no retries — ENOENT isn't transient.
+					expect(attempts).toBe(1);
+				} finally {
+					restoreSpawn();
+				}
+			});
 		});
 	});
 

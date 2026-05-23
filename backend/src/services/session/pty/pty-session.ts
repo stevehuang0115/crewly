@@ -18,6 +18,174 @@ import { PTY_CONSTANTS } from '../../../constants.js';
 import { LoggerService, ComponentLogger } from '../../core/logger.service.js';
 
 /**
+ * Test affordance: lets `pty-session.test.ts` swap in a stub instead of
+ * calling the real `pty.spawn`. Production code path is identical.
+ */
+let ptySpawnImpl: typeof pty.spawn = pty.spawn;
+export function _setPtySpawnImplForTesting(
+	impl: typeof pty.spawn,
+): () => void {
+	const previous = ptySpawnImpl;
+	ptySpawnImpl = impl;
+	return () => {
+		ptySpawnImpl = previous;
+	};
+}
+
+/**
+ * Retry policy for transient `pty.spawn` failures. The native node-pty
+ * binding throws a generic `Error("posix_spawnp failed.")` with no errno
+ * detail — on macOS this is usually EAGAIN (process table briefly
+ * saturated by Chrome helpers / VS Code extensions / build spawns) and
+ * retrying after a short pause succeeds. We give up after the 4th
+ * attempt and throw a richer diagnostic.
+ *
+ * Sync sleep uses `Atomics.wait` on an ephemeral SharedArrayBuffer —
+ * blocks the thread without spawning a `sleep(1)` subprocess (which
+ * would compound the very problem we're working around).
+ */
+const PTY_SPAWN_RETRY_BACKOFFS_MS = [0, 150, 400, 1000] as const;
+const PTY_TRANSIENT_ERROR_MARKERS = [
+	'posix_spawnp',
+	'EAGAIN',
+	'ENOMEM',
+	'EMFILE',
+	'ENFILE',
+];
+
+function isTransientSpawnError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return PTY_TRANSIENT_ERROR_MARKERS.some((m) => msg.includes(m));
+}
+
+function syncSleepMs(ms: number): void {
+	if (ms <= 0) return;
+	const buf = new SharedArrayBuffer(4);
+	const view = new Int32Array(buf);
+	// Wait returns 'timed-out' after `ms` regardless of view[0] (which
+	// nobody writes to). This is the modern synchronous sleep pattern
+	// recommended for situations where a busy-wait would burn CPU.
+	Atomics.wait(view, 0, 0, ms);
+}
+
+/**
+ * Read current user process count cheaply. Used in the spawn-failure
+ * diagnostic to tell the user if they're near macOS `kern.maxprocperuid`.
+ */
+function readUserProcessCount(): number | null {
+	try {
+		const out = execSync('ps -u "$(id -un)" 2>/dev/null | wc -l', {
+			encoding: 'utf8',
+			timeout: 800,
+		});
+		const n = parseInt(out.trim(), 10);
+		return Number.isFinite(n) ? n : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Read kern.maxprocperuid. macOS-specific; returns null on non-Darwin. */
+function readMaxProcPerUid(): number | null {
+	if (process.platform !== 'darwin') return null;
+	try {
+		const out = execSync('sysctl -n kern.maxprocperuid', {
+			encoding: 'utf8',
+			timeout: 500,
+		});
+		const n = parseInt(out.trim(), 10);
+		return Number.isFinite(n) ? n : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Wraps `pty.spawn` with retry-on-transient + actionable error.
+ *
+ * On the 4th and final failure, throws `PtySpawnExhaustedError` with a
+ * human-readable message + machine-readable diagnostics. Callers should
+ * surface the .message to the user (e.g. ORC → Slack).
+ */
+class PtySpawnExhaustedError extends Error {
+	constructor(
+		message: string,
+		public readonly diagnostics: {
+			attempts: number;
+			lastError: string;
+			userProcessCount: number | null;
+			maxProcPerUid: number | null;
+			command: string;
+			platform: string;
+		},
+	) {
+		super(message);
+		this.name = 'PtySpawnExhaustedError';
+	}
+}
+
+function spawnPtyWithRetry(
+	command: string,
+	args: string[],
+	options: Parameters<typeof pty.spawn>[2],
+	logger: ComponentLogger,
+): pty.IPty {
+	let lastError: unknown = null;
+	for (let attempt = 0; attempt < PTY_SPAWN_RETRY_BACKOFFS_MS.length; attempt++) {
+		const backoffMs = PTY_SPAWN_RETRY_BACKOFFS_MS[attempt];
+		if (backoffMs > 0) {
+			logger.warn('PTY spawn retry — sleeping then retrying', {
+				attempt,
+				backoffMs,
+				command,
+			});
+			syncSleepMs(backoffMs);
+		}
+		try {
+			return ptySpawnImpl(command, args, options);
+		} catch (err) {
+			lastError = err;
+			if (!isTransientSpawnError(err)) {
+				// Non-transient (e.g. ENOENT — command not found): fail fast.
+				throw err;
+			}
+			// Else loop — backoff already happened next iter.
+		}
+	}
+
+	// Exhausted retries — build an actionable message.
+	const userProcessCount = readUserProcessCount();
+	const maxProcPerUid = readMaxProcPerUid();
+	const errMsg = lastError instanceof Error ? lastError.message : String(lastError);
+
+	let humanHint = '';
+	if (
+		userProcessCount !== null &&
+		maxProcPerUid !== null &&
+		userProcessCount > maxProcPerUid * 0.75
+	) {
+		humanHint = ` Your user process count is ${userProcessCount} / ${maxProcPerUid} (>75% of limit). Close some Chrome tabs / VS Code windows / other agent sessions and retry.`;
+	} else if (process.platform === 'darwin') {
+		humanHint =
+			' Likely a transient kernel-level process-table spike (Chrome / VS Code / build tools spawning many helpers). Wait ~30 s and the next attempt should succeed; the OSS will auto-retry on the next user trigger.';
+	} else {
+		humanHint = ' Transient spawn failure — retry shortly.';
+	}
+
+	const message = `PTY spawn failed after ${PTY_SPAWN_RETRY_BACKOFFS_MS.length} attempts (${errMsg}).${humanHint}`;
+	throw new PtySpawnExhaustedError(message, {
+		attempts: PTY_SPAWN_RETRY_BACKOFFS_MS.length,
+		lastError: errMsg,
+		userProcessCount,
+		maxProcPerUid,
+		command,
+		platform: process.platform,
+	});
+}
+
+export { PtySpawnExhaustedError };
+
+/**
  * PTY Session implementation using node-pty.
  *
  * Provides a direct PTY-based terminal session with the following capabilities:
@@ -111,14 +279,23 @@ export class PtySession implements ISession {
 		};
 
 		try {
-			// Spawn the PTY process
-			this.ptyProcess = pty.spawn(options.command, options.args ?? [], {
-				name: 'xterm-256color',
-				cols: options.cols ?? DEFAULT_TERMINAL_COLS,
-				rows: options.rows ?? DEFAULT_TERMINAL_ROWS,
-				cwd: options.cwd,
-				env: sessionEnv,
-			});
+			// Spawn the PTY process — wrapped in retry-with-backoff so that
+			// transient `posix_spawnp failed` errors (typical on macOS when
+			// Chrome / VS Code briefly saturate the process table) don't
+			// turn into user-visible spawn failures. See spawnPtyWithRetry
+			// for the policy + sync sleep pattern.
+			this.ptyProcess = spawnPtyWithRetry(
+				options.command,
+				options.args ?? [],
+				{
+					name: 'xterm-256color',
+					cols: options.cols ?? DEFAULT_TERMINAL_COLS,
+					rows: options.rows ?? DEFAULT_TERMINAL_ROWS,
+					cwd: options.cwd,
+					env: sessionEnv,
+				},
+				this.logger,
+			);
 
 			this.logger.info('PTY process spawned successfully', {
 				name,
@@ -126,11 +303,20 @@ export class PtySession implements ISession {
 				command: options.command,
 			});
 		} catch (spawnError) {
+			// `PtySpawnExhaustedError` carries the actionable hint already
+			// in its .message; other errors (e.g. ENOENT — command not
+			// found) propagate as-is. Either way we log richer context.
+			const errMsg = spawnError instanceof Error ? spawnError.message : String(spawnError);
+			const diagnostics =
+				spawnError instanceof PtySpawnExhaustedError
+					? spawnError.diagnostics
+					: undefined;
 			this.logger.error('Failed to spawn PTY process', {
 				name,
 				command: options.command,
 				cwd: options.cwd,
-				error: spawnError instanceof Error ? spawnError.message : String(spawnError),
+				error: errMsg,
+				diagnostics,
 				stack: spawnError instanceof Error ? spawnError.stack : undefined,
 			});
 			throw spawnError;
