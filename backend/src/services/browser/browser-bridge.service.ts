@@ -380,15 +380,35 @@ export class BrowserBridgeService {
 	): Promise<BrowserCommandResponse> {
 		const client = this.getActiveClient();
 
-		// Fallback to Cloud relay if no direct WS client connected
+		// Fallback when no direct WS client is connected.
+		//
+		// Preferred path: BrowserProxyService.sendCommand — this routes through
+		// the proxy's own WS to the Cloud relay's addressed-messaging channel
+		// (relay_to), which is the channel the extension actually pushes its
+		// presence and listens on. This is the path that worked on 5/20 when
+		// pairing was healthy.
+		//
+		// Legacy fallback: BrowserRelayAdapter.sendViaRelay — routes through
+		// CloudSyncService.sendMessage(deviceId). Current production keeps the
+		// adapter wired but Sync only tracks orchestrator-role devices, so
+		// the adapter cannot actually deliver to a browser even when its
+		// `isAvailable()` returns true (the 2026-05-23 bug). Keep this branch
+		// as a hedge for any deployment that still bridges browser presence
+		// through Sync; in practice it should be unreachable now.
 		if (!client) {
+			const { BrowserProxyService } = await import('./browser-proxy.service.js');
+			const proxy = BrowserProxyService.getInstance();
+			if (proxy.isAvailable()) {
+				this.logger.info('No direct WS client, routing via BrowserProxy', { tool });
+				return proxy.sendCommand(tool, params, undefined, timeoutMs, agentName);
+			}
 			const { BrowserRelayAdapter } = await import('./browser-relay-adapter.service.js');
 			const relayAdapter = BrowserRelayAdapter.getInstance();
 			if (relayAdapter.isAvailable()) {
-				this.logger.info('No direct WS client, routing via Cloud relay', { tool });
+				this.logger.info('No direct WS client and no proxy, routing via legacy adapter', { tool });
 				return relayAdapter.sendViaRelay(tool, params, timeoutMs, agentName);
 			}
-			throw new Error('No Chrome Extension connected (direct WS or Cloud relay)');
+			throw new Error('No Chrome Extension connected (direct WS, BrowserProxy, or Cloud relay)');
 		}
 
 		const id = `cmd-${++this.commandCounter}-${Date.now()}`;
@@ -791,19 +811,41 @@ export class BrowserBridgeService {
 		let relayAvailable = false;
 		let relayDeviceId: string | null = null;
 
+		// Primary: BrowserProxy. The proxy talks directly to the Cloud
+		// relay's browser channel (browser_list / browser_event) and is the
+		// canonical source of truth for extension presence since 2026-05-23.
+		// Lazy-require via getStaticProxy() so we don't introduce an
+		// import-time circular dep — BrowserBridge is the entry point for
+		// browser dispatch and other services already reach back into it.
 		try {
-			// Static-imported BrowserRelayAdapter (see file header NOTE).
-			// The try/catch handles "adapter exists but not yet initialised"
-			// gracefully — getInstance returning a partially-built adapter,
-			// or isAvailable/getExtensionDeviceId throwing during boot.
-			const adapter = BrowserRelayAdapter.getInstance() as unknown as {
-				isAvailable: () => boolean;
-				getExtensionDeviceId: () => string | null;
-			};
-			relayAvailable = adapter.isAvailable();
-			relayDeviceId = adapter.getExtensionDeviceId();
+			const proxy = this.tryGetProxyInstance();
+			if (proxy) {
+				const proxyAvailable = proxy.isAvailable();
+				if (proxyAvailable) {
+					relayAvailable = true;
+					const first = proxy.getInstances()[0];
+					if (first) relayDeviceId = first.instanceId;
+				}
+			}
 		} catch {
-			// Relay adapter not available
+			// Proxy not yet wired — fall through to adapter.
+		}
+
+		// Fallback: legacy adapter (CloudSync-driven). Kept so any
+		// deployment still using the Sync-broadcast model keeps working.
+		// In current production this branch reports `false` because Sync
+		// doesn't carry browser-role devices.
+		if (!relayAvailable) {
+			try {
+				const adapter = BrowserRelayAdapter.getInstance() as unknown as {
+					isAvailable: () => boolean;
+					getExtensionDeviceId: () => string | null;
+				};
+				relayAvailable = adapter.isAvailable();
+				relayDeviceId = adapter.getExtensionDeviceId();
+			} catch {
+				// Relay adapter not available
+			}
 		}
 
 		return {
@@ -817,6 +859,28 @@ export class BrowserBridgeService {
 	}
 
 	/**
+	 * Best-effort getter for the BrowserProxyService singleton, hidden behind
+	 * a try/require so importing it eagerly never deadlocks BrowserBridge's
+	 * boot path. Returns null if the proxy module isn't present (test
+	 * fixtures) or hasn't been instantiated yet.
+	 */
+	private tryGetProxyInstance(): {
+		isAvailable: () => boolean;
+		getInstances: () => Array<{ instanceId: string; instanceName: string }>;
+	} | null {
+		try {
+			// require() is fine here: BrowserProxyService also lives under
+			// backend/src/services/browser, so the resolution is local and
+			// doesn't trip the dynamic-import + ESM treadmill.
+			// eslint-disable-next-line @typescript-eslint/no-require-imports
+			const mod = require('./browser-proxy.service.js');
+			return mod?.BrowserProxyService?.getInstance?.() ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
 	 * Check if a Chrome Extension is reachable (direct WS or Cloud relay).
 	 *
 	 * @returns True if connected via direct WS or relay is available
@@ -826,7 +890,15 @@ export class BrowserBridgeService {
 		// because stale clients with readyState !== OPEN can linger briefly.
 		if (this.getActiveClient() !== null) return true;
 
-		// Check relay fallback (static-imported — see file header NOTE).
+		// Primary fallback: BrowserProxy direct-relay channel.
+		try {
+			const proxy = this.tryGetProxyInstance();
+			if (proxy?.isAvailable()) return true;
+		} catch {
+			// Proxy not yet wired
+		}
+
+		// Legacy fallback: CloudSync-driven adapter.
 		try {
 			const adapter = BrowserRelayAdapter.getInstance() as unknown as {
 				isAvailable: () => boolean;

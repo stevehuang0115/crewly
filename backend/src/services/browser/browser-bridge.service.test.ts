@@ -137,6 +137,141 @@ describe('BrowserBridgeService', () => {
 		});
 	});
 
+	// -----------------------------------------------------------------------
+	// Fallback ordering when there is no direct WS client (2026-05-23 fix)
+	//
+	// Before: bridge → BrowserRelayAdapter.sendViaRelay → CloudSync.sendMessage.
+	// Sync didn't know the extension's deviceId so dispatch was a no-op.
+	//
+	// After: bridge prefers BrowserProxyService.sendCommand (the proxy's
+	// direct relay channel — the path that actually delivered work on 5/20).
+	// The legacy adapter is kept only as a last-resort hedge.
+	// -----------------------------------------------------------------------
+
+	describe('sendCommand — fallback ordering', () => {
+		it('routes through BrowserProxy when proxy reports available (preferred path)', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			const { BrowserProxyService } = await import('./browser-proxy.service.js');
+			const { BrowserRelayAdapter } = await import('./browser-relay-adapter.service.js');
+			const proxy = BrowserProxyService.getInstance();
+			const adapter = BrowserRelayAdapter.getInstance();
+
+			const proxySpy = jest
+				.spyOn(proxy, 'sendCommand')
+				.mockResolvedValue({ id: 'p-1', success: true, result: { ok: true } });
+			const proxyAvailableSpy = jest.spyOn(proxy, 'isAvailable').mockReturnValue(true);
+			const adapterSpy = jest
+				.spyOn(adapter, 'sendViaRelay')
+				.mockResolvedValue({ id: 'a-1', success: true });
+
+			const resp = await bridge.sendCommand('navigate', { url: 'https://example.com' });
+
+			expect(resp.id).toBe('p-1');
+			expect(proxySpy).toHaveBeenCalledTimes(1);
+			expect(adapterSpy).not.toHaveBeenCalled();
+
+			proxySpy.mockRestore();
+			proxyAvailableSpy.mockRestore();
+			adapterSpy.mockRestore();
+		});
+
+		it('falls back to adapter only when proxy is NOT available', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			const { BrowserProxyService } = await import('./browser-proxy.service.js');
+			const { BrowserRelayAdapter } = await import('./browser-relay-adapter.service.js');
+			const proxy = BrowserProxyService.getInstance();
+			const adapter = BrowserRelayAdapter.getInstance();
+
+			const proxyAvailableSpy = jest.spyOn(proxy, 'isAvailable').mockReturnValue(false);
+			const proxySpy = jest.spyOn(proxy, 'sendCommand');
+			const adapterAvailableSpy = jest.spyOn(adapter, 'isAvailable').mockReturnValue(true);
+			const adapterSpy = jest
+				.spyOn(adapter, 'sendViaRelay')
+				.mockResolvedValue({ id: 'a-2', success: true });
+
+			const resp = await bridge.sendCommand('navigate', { url: 'https://example.com' });
+
+			expect(resp.id).toBe('a-2');
+			expect(proxySpy).not.toHaveBeenCalled();
+			expect(adapterSpy).toHaveBeenCalledTimes(1);
+
+			proxySpy.mockRestore();
+			proxyAvailableSpy.mockRestore();
+			adapterAvailableSpy.mockRestore();
+			adapterSpy.mockRestore();
+		});
+
+		it('throws when neither proxy nor adapter is available', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			const { BrowserProxyService } = await import('./browser-proxy.service.js');
+			const { BrowserRelayAdapter } = await import('./browser-relay-adapter.service.js');
+			const proxy = BrowserProxyService.getInstance();
+			const adapter = BrowserRelayAdapter.getInstance();
+
+			const proxyAvailableSpy = jest.spyOn(proxy, 'isAvailable').mockReturnValue(false);
+			const adapterAvailableSpy = jest.spyOn(adapter, 'isAvailable').mockReturnValue(false);
+
+			await expect(bridge.sendCommand('navigate', { url: 'https://example.com' })).rejects.toThrow(
+				/No Chrome Extension connected/,
+			);
+
+			proxyAvailableSpy.mockRestore();
+			adapterAvailableSpy.mockRestore();
+		});
+	});
+
+	describe('getStatus + isConnected — proxy primary, adapter fallback', () => {
+		it('reports relayAvailable=true and relayDeviceId from proxy when proxy has an instance', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			const { BrowserProxyService } = await import('./browser-proxy.service.js');
+			const proxy = BrowserProxyService.getInstance();
+
+			const proxyAvailableSpy = jest.spyOn(proxy, 'isAvailable').mockReturnValue(true);
+			const proxyInstancesSpy = jest.spyOn(proxy, 'getInstances').mockReturnValue([
+				{
+					instanceId: 'ext-64025449',
+					instanceName: 'Chrome (macOS)',
+					sessionId: 'sess-1',
+					lastSeenAt: new Date().toISOString(),
+				},
+			]);
+
+			const status = bridge.getStatus();
+			expect(status.relayAvailable).toBe(true);
+			expect(status.relayDeviceId).toBe('ext-64025449');
+			expect(bridge.isConnected()).toBe(true);
+
+			proxyAvailableSpy.mockRestore();
+			proxyInstancesSpy.mockRestore();
+		});
+
+		it('does not consult adapter when proxy already reports availability', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			const { BrowserProxyService } = await import('./browser-proxy.service.js');
+			const { BrowserRelayAdapter } = await import('./browser-relay-adapter.service.js');
+			const proxy = BrowserProxyService.getInstance();
+			const adapter = BrowserRelayAdapter.getInstance();
+
+			const proxyAvailableSpy = jest.spyOn(proxy, 'isAvailable').mockReturnValue(true);
+			const proxyInstancesSpy = jest.spyOn(proxy, 'getInstances').mockReturnValue([
+				{
+					instanceId: 'ext-1',
+					instanceName: 'Chrome',
+					sessionId: 's1',
+					lastSeenAt: new Date().toISOString(),
+				},
+			]);
+			const adapterAvailableSpy = jest.spyOn(adapter, 'isAvailable');
+
+			bridge.getStatus();
+			expect(adapterAvailableSpy).not.toHaveBeenCalled();
+
+			proxyAvailableSpy.mockRestore();
+			proxyInstancesSpy.mockRestore();
+			adapterAvailableSpy.mockRestore();
+		});
+	});
+
 	describe('attach', () => {
 		it('should attach without error', () => {
 			const bridge = BrowserBridgeService.getInstance();
