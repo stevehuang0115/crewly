@@ -658,6 +658,25 @@ describe('TaskPoolService', () => {
       expect(snapshot.byStatus.queued ?? 0).toBe(1);
       expect(snapshot.byStatus.running ?? 0).toBe(0);
     });
+
+    it('claimSpecificItem refuses when probe throws (defensive — fail closed)', async () => {
+      // Mirrors the claimFromPool probe-throws test. Without this, the
+      // identical defensive .catch(() => false) on claimSpecificItem's
+      // gate path is uncovered and could regress.
+      const wi = makeWorkItem({ title: 'task', target: 'agent-leo' });
+      await service.addToPool(wi);
+
+      service.setIsAgentActive(async () => {
+        throw new Error('probe boom');
+      });
+
+      const result = await service.claimSpecificItem('agent-leo', wi.id);
+      expect(result).toBeNull();
+
+      const snapshot = await service.getPoolStatus();
+      expect(snapshot.byStatus.queued ?? 0).toBe(1);
+      expect(snapshot.byStatus.running ?? 0).toBe(0);
+    });
   });
 
   // -----------------------------------------------------------------------

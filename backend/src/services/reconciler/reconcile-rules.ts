@@ -765,20 +765,20 @@ export function detectUnclaimedTasks(
   }
 
   // Set of agent session-names that can be woken right now (inactive +
-   // suspended). Used to exempt "explicit-target-is-dead" WIs from both
-   // the per-WI age threshold and the hasActiveAgent 5-min upgrade.
-   //
-   // Why exempt: the unclaimedThresholdMs default of 2 min — and the
-   // 5-min upgrade when *other* agents are alive — exists for untargeted
-   // (skill-match) wakes, so a freshly-queued WI isn't claimed by an
-   // active agent that would have picked it up in the next reconcile
-   // pass. That gating doesn't apply when the WI names an explicit
-   // target and that named target is provably dead — no active agent is
-   // going to come along and claim a WI targeted at someone else. Atlas
-   // case on 2026-05-23: 3 RESEARCH BRIEF WIs sat blocked for 30 min+
-   // because the immediate pre-claim by delegate-task pushed them to
-   // `running` before any spawn was attempted, and the wake-rule was
-   // gated by both thresholds.
+  // suspended). Used to exempt "explicit-target-is-dead" WIs from both
+  // the per-WI age threshold and the hasActiveAgent 5-min upgrade.
+  //
+  // Why exempt: the unclaimedThresholdMs default of 2 min — and the
+  // 5-min upgrade when *other* agents are alive — exists for untargeted
+  // (skill-match) wakes, so a freshly-queued WI isn't claimed by an
+  // active agent that would have picked it up in the next reconcile
+  // pass. That gating doesn't apply when the WI names an explicit
+  // target and that named target is provably dead — no active agent is
+  // going to come along and claim a WI targeted at someone else. Atlas
+  // case on 2026-05-23: 3 RESEARCH BRIEF WIs sat blocked for 30 min+
+  // because the immediate pre-claim by delegate-task pushed them to
+  // `running` before any spawn was attempted, and the wake-rule was
+  // gated by both thresholds.
   const wakableSessionNames = new Set(wakableAgents.map((a) => a.sessionName));
 
   // Find unclaimed queued WorkItems eligible for wake. Either:
