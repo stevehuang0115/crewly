@@ -71,6 +71,22 @@ export class BrowserRelayAdapter {
   private boundDeviceOnlineHandler: ((device: SyncDevice) => void) | null = null;
   private boundDeviceOfflineHandler: ((device: SyncDevice) => void) | null = null;
   private boundDevicesUpdatedHandler: ((devices: SyncDevice[]) => void) | null = null;
+  /**
+   * Bound handlers for the BrowserProxy event channel — the primary
+   * signal source after 2026-05-23. The Sync handlers above remain wired
+   * as a belt-and-suspenders fallback for legacy code paths that still
+   * push browser devices through Sync, but in current production those
+   * events never fire (CloudSyncService only tracks orchestrator-role
+   * devices). The proxy listens directly to the Cloud relay's browser_list
+   * / browser_event channel, which is the canonical source of truth for
+   * extension presence.
+   */
+  private boundProxyConnectedHandler:
+    | ((evt: { instanceId: string; instanceName?: string; sessionId?: string }) => void)
+    | null = null;
+  private boundProxyDisconnectedHandler:
+    | ((evt: { instanceId: string; instanceName?: string }) => void)
+    | null = null;
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('BrowserRelayAdapter');
@@ -235,38 +251,113 @@ export class BrowserRelayAdapter {
     if (this.discoveryActive) return;
 
     try {
+      // ---- Primary signal source: BrowserProxy events (2026-05-23) ----
+      // The proxy listens directly to the Cloud relay's browser channel
+      // (browser_list / browser_event). It's the only path that reliably
+      // sees the extension; the Sync-driven path below is kept for
+      // backward compat but typically observes nothing.
+      // Dynamic import to avoid circular-dep at module load (proxy and
+      // adapter both live under backend/src/services/browser/).
+      void (async () => {
+        try {
+          const { BrowserProxyService } = await import('./browser-proxy.service.js');
+          const proxy = BrowserProxyService.getInstance();
+
+          this.boundProxyConnectedHandler = (evt) => {
+            this.onProxyInstanceConnected(evt);
+          };
+          this.boundProxyDisconnectedHandler = (evt) => {
+            this.onProxyInstanceDisconnected(evt);
+          };
+          proxy.events.on('instance_connected', this.boundProxyConnectedHandler);
+          proxy.events.on('instance_disconnected', this.boundProxyDisconnectedHandler);
+
+          // Catch-up scan: if the proxy already has instances at the time
+          // we subscribe (e.g. boot ordering or adapter restart), seed our
+          // target now so we don't wait for the next browser_event.
+          const seed = proxy.getInstances();
+          if (seed.length > 0 && this.extensionDeviceId === null) {
+            const first = seed[0];
+            this.extensionDeviceId = first.instanceId;
+            this.logger.info('Browser extension seeded from existing proxy instances', {
+              instanceId: first.instanceId,
+              instanceName: first.instanceName,
+            });
+          }
+        } catch (err) {
+          this.logger.warn('Failed to subscribe to BrowserProxy events', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
+
+      // ---- Fallback signal source: CloudSyncService device events ----
+      // Kept for compat with any deployment that still routes browser
+      // device announcements through Sync; harmless when Sync omits them.
       const sync = CloudSyncService.getInstance();
       if (!sync.isStarted()) {
-        this.logger.debug('CloudSync not started — deferring auto-discovery');
-        return;
+        this.logger.debug('CloudSync not started — proxy events only');
+      } else {
+        this.boundDeviceOnlineHandler = (device: SyncDevice) => {
+          this.onDeviceOnline(device);
+        };
+        this.boundDeviceOfflineHandler = (device: SyncDevice) => {
+          this.onDeviceOffline(device);
+        };
+        this.boundDevicesUpdatedHandler = (devices: SyncDevice[]) => {
+          this.onDevicesUpdated(devices);
+        };
+
+        sync.on('device_online', this.boundDeviceOnlineHandler);
+        sync.on('device_offline', this.boundDeviceOfflineHandler);
+        sync.on('devices_updated', this.boundDevicesUpdatedHandler);
+
+        // Scan existing device list for already-online browser extensions
+        const existingDevices = sync.getDevices();
+        this.scanForBrowserDevice(existingDevices);
       }
 
-      // Bind event handlers
-      this.boundDeviceOnlineHandler = (device: SyncDevice) => {
-        this.onDeviceOnline(device);
-      };
-      this.boundDeviceOfflineHandler = (device: SyncDevice) => {
-        this.onDeviceOffline(device);
-      };
-      this.boundDevicesUpdatedHandler = (devices: SyncDevice[]) => {
-        this.onDevicesUpdated(devices);
-      };
-
-      sync.on('device_online', this.boundDeviceOnlineHandler);
-      sync.on('device_offline', this.boundDeviceOfflineHandler);
-      sync.on('devices_updated', this.boundDevicesUpdatedHandler);
       this.discoveryActive = true;
-
-      // Scan existing device list for already-online browser extensions
-      const existingDevices = sync.getDevices();
-      this.scanForBrowserDevice(existingDevices);
-
       this.logger.info('Browser extension auto-discovery started');
     } catch (err) {
       this.logger.warn('Failed to start auto-discovery', {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  /**
+   * Handle `instance_connected` from BrowserProxy — adopt as the relay
+   * target if we don't already have one (or if the existing one is gone).
+   *
+   * @param evt - Connected instance info
+   */
+  private onProxyInstanceConnected(evt: {
+    instanceId: string;
+    instanceName?: string;
+    sessionId?: string;
+  }): void {
+    if (this.extensionDeviceId === evt.instanceId) return;
+    this.extensionDeviceId = evt.instanceId;
+    this.logger.info('Browser extension auto-discovered (proxy event)', {
+      instanceId: evt.instanceId,
+      instanceName: evt.instanceName,
+    });
+  }
+
+  /**
+   * Handle `instance_disconnected` from BrowserProxy — clear the relay
+   * target only if it matches the disconnecting instance.
+   *
+   * @param evt - Disconnected instance info
+   */
+  private onProxyInstanceDisconnected(evt: { instanceId: string; instanceName?: string }): void {
+    if (this.extensionDeviceId !== evt.instanceId) return;
+    this.logger.info('Browser extension disconnected (proxy event), clearing relay target', {
+      instanceId: evt.instanceId,
+      instanceName: evt.instanceName,
+    });
+    this.extensionDeviceId = null;
   }
 
   /**
@@ -289,6 +380,27 @@ export class BrowserRelayAdapter {
     } catch {
       // CloudSync may already be destroyed
     }
+
+    // Unsubscribe from BrowserProxy events (best-effort dynamic import to
+    // match the subscribe path; if the proxy module already collapsed
+    // during shutdown, the listeners die with it anyway).
+    void (async () => {
+      try {
+        const { BrowserProxyService } = await import('./browser-proxy.service.js');
+        const proxy = BrowserProxyService.getInstance();
+        if (this.boundProxyConnectedHandler) {
+          proxy.events.removeListener('instance_connected', this.boundProxyConnectedHandler);
+        }
+        if (this.boundProxyDisconnectedHandler) {
+          proxy.events.removeListener('instance_disconnected', this.boundProxyDisconnectedHandler);
+        }
+      } catch {
+        // proxy may already be destroyed
+      } finally {
+        this.boundProxyConnectedHandler = null;
+        this.boundProxyDisconnectedHandler = null;
+      }
+    })();
 
     this.boundDeviceOnlineHandler = null;
     this.boundDeviceOfflineHandler = null;

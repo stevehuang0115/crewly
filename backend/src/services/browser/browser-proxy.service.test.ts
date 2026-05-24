@@ -1688,4 +1688,164 @@ describe('BrowserProxyService', () => {
       void proxy;
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Instance lifecycle events (2026-05-23 — BrowserBridge wiring fix)
+  //
+  // BrowserRelayAdapter mirrors the proxy's instances Map via these events.
+  // Previously the adapter relied on CloudSyncService device events, but
+  // Sync only tracks orchestrator-role devices in current production. With
+  // these events wired, the adapter learns about extensions directly from
+  // the relay's browser_list / browser_event channel.
+  // -----------------------------------------------------------------------
+
+  describe('instance lifecycle events', () => {
+    function connectAndRegister(): void {
+      const proxy = BrowserProxyService.getInstance();
+      proxy.connect('test-token');
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-1' }),
+      );
+    }
+
+    it('emits instance_connected on browser_event:connected for a new instance', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+      const connected: Array<{ instanceId: string; instanceName?: string }> = [];
+      proxy.events.on('instance_connected', (e) => connected.push(e));
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_event',
+          event: 'connected',
+          instanceId: 'ext-1',
+          instanceName: 'Chrome (macOS)',
+        }),
+      );
+
+      expect(connected).toHaveLength(1);
+      expect(connected[0].instanceId).toBe('ext-1');
+      expect(connected[0].instanceName).toBe('Chrome (macOS)');
+    });
+
+    it('emits instance_disconnected on browser_event:disconnected for a tracked instance', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // First seed an instance via browser_list.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            { instanceId: 'ext-1', instanceName: 'Chrome', sessionId: 'sb-1', lastSeenAt: new Date().toISOString() },
+          ],
+        }),
+      );
+
+      const disconnected: Array<{ instanceId: string }> = [];
+      proxy.events.on('instance_disconnected', (e) => disconnected.push(e));
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_event',
+          event: 'disconnected',
+          instanceId: 'ext-1',
+          instanceName: 'Chrome',
+        }),
+      );
+
+      expect(disconnected).toHaveLength(1);
+      expect(disconnected[0].instanceId).toBe('ext-1');
+    });
+
+    it('does NOT emit instance_disconnected for an unknown instance', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+      const disconnected: Array<{ instanceId: string }> = [];
+      proxy.events.on('instance_disconnected', (e) => disconnected.push(e));
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_event',
+          event: 'disconnected',
+          instanceId: 'ext-never-seen',
+        }),
+      );
+
+      expect(disconnected).toHaveLength(0);
+    });
+
+    it('emits add/remove deltas on browser_list (relay-rebuild case)', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // Initial state: ext-a present.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            { instanceId: 'ext-a', instanceName: 'A', sessionId: 'sa', lastSeenAt: new Date().toISOString() },
+          ],
+        }),
+      );
+
+      const connected: string[] = [];
+      const disconnected: string[] = [];
+      proxy.events.on('instance_connected', (e: { instanceId: string }) => connected.push(e.instanceId));
+      proxy.events.on('instance_disconnected', (e: { instanceId: string }) => disconnected.push(e.instanceId));
+
+      // Relay rebuild: ext-a gone, ext-b new.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [
+            { instanceId: 'ext-b', instanceName: 'B', sessionId: 'sb', lastSeenAt: new Date().toISOString() },
+          ],
+        }),
+      );
+
+      expect(connected).toEqual(['ext-b']);
+      expect(disconnected).toEqual(['ext-a']);
+    });
+
+    it('does NOT emit duplicate instance_connected for a re-announce on browser_event', () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      // First connect event.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_event',
+          event: 'connected',
+          instanceId: 'ext-1',
+          instanceName: 'Chrome',
+        }),
+      );
+
+      const connected: string[] = [];
+      proxy.events.on('instance_connected', (e: { instanceId: string }) => connected.push(e.instanceId));
+
+      // Same instance re-announces (relay glitch / reconnect noise).
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_event',
+          event: 'connected',
+          instanceId: 'ext-1',
+          instanceName: 'Chrome',
+        }),
+      );
+
+      expect(connected).toEqual([]);
+    });
+  });
 });

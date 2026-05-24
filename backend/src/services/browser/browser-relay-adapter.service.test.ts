@@ -190,4 +190,91 @@ describe('BrowserRelayAdapter', () => {
 			expect(adapter.getExtensionDeviceId()).toBeNull();
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// BrowserProxy event integration (2026-05-23 fix)
+	//
+	// Background: CloudSyncService device events used to be the sole signal
+	// path for extension presence, but Sync only tracks orchestrator-role
+	// devices in current production. As a result the adapter's
+	// extensionDeviceId stayed null even when the BrowserProxy was actively
+	// talking to a paired extension, and BrowserBridge.getStatus() reported
+	// relayAvailable=false → dispatch silently failed. The adapter now also
+	// subscribes to BrowserProxy's instance_connected / instance_disconnected
+	// events. These tests exercise that path directly via the adapter's
+	// private handler methods (the dynamic-import wiring of the subscribe
+	// path itself is integration-tested in production logs).
+	// -----------------------------------------------------------------------
+
+	describe('BrowserProxy event handlers', () => {
+		it('adopts the connected instanceId as the relay target', () => {
+			const adapter = BrowserRelayAdapter.getInstance();
+			expect(adapter.getExtensionDeviceId()).toBeNull();
+
+			// Invoke the private handler directly — exercised via dynamic-
+			// import subscription in production; here we pin its semantics.
+			(adapter as unknown as {
+				onProxyInstanceConnected: (e: { instanceId: string; instanceName?: string }) => void;
+			}).onProxyInstanceConnected({
+				instanceId: '64025449-a653-4d7a-87cc-ae6c42676ee3',
+				instanceName: 'Chrome (macOS)',
+			});
+
+			expect(adapter.getExtensionDeviceId()).toBe('64025449-a653-4d7a-87cc-ae6c42676ee3');
+		});
+
+		it('clears the relay target on matching disconnect', () => {
+			const adapter = BrowserRelayAdapter.getInstance();
+			(adapter as unknown as {
+				onProxyInstanceConnected: (e: { instanceId: string; instanceName?: string }) => void;
+				onProxyInstanceDisconnected: (e: { instanceId: string; instanceName?: string }) => void;
+			}).onProxyInstanceConnected({ instanceId: 'ext-abc' });
+			expect(adapter.getExtensionDeviceId()).toBe('ext-abc');
+
+			(adapter as unknown as {
+				onProxyInstanceDisconnected: (e: { instanceId: string; instanceName?: string }) => void;
+			}).onProxyInstanceDisconnected({ instanceId: 'ext-abc' });
+
+			expect(adapter.getExtensionDeviceId()).toBeNull();
+		});
+
+		it('ignores disconnects for non-matching instances (multi-browser future-proof)', () => {
+			const adapter = BrowserRelayAdapter.getInstance();
+			(adapter as unknown as {
+				onProxyInstanceConnected: (e: { instanceId: string; instanceName?: string }) => void;
+				onProxyInstanceDisconnected: (e: { instanceId: string; instanceName?: string }) => void;
+			}).onProxyInstanceConnected({ instanceId: 'ext-current' });
+
+			(adapter as unknown as {
+				onProxyInstanceDisconnected: (e: { instanceId: string; instanceName?: string }) => void;
+			}).onProxyInstanceDisconnected({ instanceId: 'ext-some-other' });
+
+			expect(adapter.getExtensionDeviceId()).toBe('ext-current');
+		});
+
+		it('is idempotent — repeated connects of the same instance do not re-log', () => {
+			const adapter = BrowserRelayAdapter.getInstance();
+			const connect = (adapter as unknown as {
+				onProxyInstanceConnected: (e: { instanceId: string }) => void;
+			}).onProxyInstanceConnected.bind(adapter);
+
+			connect({ instanceId: 'ext-1' });
+			connect({ instanceId: 'ext-1' });
+			connect({ instanceId: 'ext-1' });
+
+			expect(adapter.getExtensionDeviceId()).toBe('ext-1');
+		});
+
+		it('replaces the target when a different instance connects', () => {
+			const adapter = BrowserRelayAdapter.getInstance();
+			const connect = (adapter as unknown as {
+				onProxyInstanceConnected: (e: { instanceId: string }) => void;
+			}).onProxyInstanceConnected.bind(adapter);
+
+			connect({ instanceId: 'ext-a' });
+			expect(adapter.getExtensionDeviceId()).toBe('ext-a');
+			connect({ instanceId: 'ext-b' });
+			expect(adapter.getExtensionDeviceId()).toBe('ext-b');
+		});
+	});
 });

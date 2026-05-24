@@ -12,6 +12,7 @@
  * @module services/browser/browser-proxy.service
  */
 
+import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { BrowserCommandResponse } from './browser-bridge.service.js';
@@ -130,8 +131,37 @@ export class BrowserProxyService {
   /** Callback to resolve a fresh token on reconnect (avoids stale JWT) */
   private tokenResolver: TokenResolver | null = null;
 
+  /**
+   * Event bus for browser-instance lifecycle. Subscribers (currently the
+   * BrowserRelayAdapter) listen here for `instance_connected` and
+   * `instance_disconnected` so they can mirror the proxy's instances Map
+   * without re-implementing the relay listener.
+   *
+   * Why this exists (2026-05-23): the adapter previously listened to
+   * CloudSyncService device events to learn about extensions, but Sync
+   * only tracks orchestrators — never browser-role devices. As a result
+   * BrowserBridge.getStatus() reported `relayDeviceId: null` even when the
+   * proxy was actively talking to a paired extension, and agent dispatch
+   * via the bridge silently failed. Routing through this emitter lets the
+   * adapter learn from the proxy's direct relay channel (the canonical
+   * source of truth for browser presence) instead of from Sync.
+   *
+   * Events:
+   *   - `instance_connected({ instanceId, instanceName, sessionId? })`
+   *   - `instance_disconnected({ instanceId, instanceName? })`
+   *
+   * Both events fire from `handleBrowserEvent` and from `handleBrowserList`
+   * diff (in case the relay drops a `browser_event` push and only resends
+   * the full list).
+   */
+  public readonly events = new EventEmitter();
+
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('BrowserProxy');
+    // Avoid noisy `MaxListenersExceededWarning` under aggressive reconnect /
+    // adapter rebind cycles. Realistic subscriber count is 1–2 (adapter +
+    // possible future telemetry); 20 is comfortable headroom.
+    this.events.setMaxListeners(20);
   }
 
   /**
@@ -611,12 +641,40 @@ export class BrowserProxyService {
    */
   private handleBrowserList(instances: BrowserInstanceInfo[]): void {
     const now = new Date().toISOString();
+    // Capture the prior snapshot so we can compute connect/disconnect deltas
+    // for the event emitter — needed because relay sometimes resends the full
+    // list instead of (or in addition to) browser_event push messages, and
+    // subscribers like BrowserRelayAdapter need to see those transitions.
+    const previousIds = new Set(this.instances.keys());
+    const previousInfo = new Map(this.instances);
     this.instances.clear();
     for (const inst of instances) {
       this.instances.set(inst.instanceId, {
         ...inst,
         lastSeenAt: inst.lastSeenAt || now,
       });
+    }
+
+    // Emit add/remove transitions so the BrowserRelayAdapter (and any future
+    // subscribers) can mirror the proxy's view without re-implementing the
+    // relay listener. Same source of truth, single channel.
+    for (const inst of this.instances.values()) {
+      if (!previousIds.has(inst.instanceId)) {
+        this.events.emit('instance_connected', {
+          instanceId: inst.instanceId,
+          instanceName: inst.instanceName,
+          sessionId: inst.sessionId,
+        });
+      }
+    }
+    for (const oldId of previousIds) {
+      if (!this.instances.has(oldId)) {
+        const prev = previousInfo.get(oldId);
+        this.events.emit('instance_disconnected', {
+          instanceId: oldId,
+          instanceName: prev?.instanceName,
+        });
+      }
     }
 
     // Dedup pass: for each fingerprint group with >1 entries, keep the
@@ -680,6 +738,7 @@ export class BrowserProxyService {
 
     switch (event) {
       case 'connected': {
+        const isNew = !this.instances.has(instanceId);
         const incoming: BrowserInstanceInfo = {
           instanceId,
           instanceName,
@@ -694,15 +753,26 @@ export class BrowserProxyService {
           instanceName,
           hasFingerprint: deviceFingerprint !== undefined,
         });
+        if (isNew) {
+          this.events.emit('instance_connected', {
+            instanceId,
+            instanceName,
+            sessionId: '',
+          });
+        }
         // Refresh full list to get sessionId
         this.sendRaw({ type: 'list_browsers' });
         break;
       }
 
-      case 'disconnected':
-        this.instances.delete(instanceId);
+      case 'disconnected': {
+        const existed = this.instances.delete(instanceId);
         this.logger.info('Browser instance disconnected', { instanceId, instanceName });
+        if (existed) {
+          this.events.emit('instance_disconnected', { instanceId, instanceName });
+        }
         break;
+      }
 
       case 'updated': {
         // Update name and lastSeenAt
@@ -838,6 +908,10 @@ export class BrowserProxyService {
           // Bad timestamp — treat as stale to drain garbage rather than keep
           // a row we cannot reason about.
           this.instances.delete(instanceId);
+          this.events.emit('instance_disconnected', {
+            instanceId,
+            instanceName: info.instanceName,
+          });
           this.logger.info('Purged browser instance with unparseable lastSeenAt', {
             instanceId,
             instanceName: info.instanceName,
@@ -847,6 +921,10 @@ export class BrowserProxyService {
         }
         if (now - lastSeenMs > BROWSER_PROXY_CONSTANTS.STALE_PURGE_THRESHOLD_MS) {
           this.instances.delete(instanceId);
+          this.events.emit('instance_disconnected', {
+            instanceId,
+            instanceName: info.instanceName,
+          });
           this.logger.info('Purged stale browser instance', {
             instanceId,
             instanceName: info.instanceName,
