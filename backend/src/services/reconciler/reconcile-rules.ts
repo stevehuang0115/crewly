@@ -764,12 +764,35 @@ export function detectUnclaimedTasks(
     }
   }
 
-  // Find unclaimed queued WorkItems past the threshold
+  // Set of agent session-names that can be woken right now (inactive +
+   // suspended). Used to exempt "explicit-target-is-dead" WIs from both
+   // the per-WI age threshold and the hasActiveAgent 5-min upgrade.
+   //
+   // Why exempt: the unclaimedThresholdMs default of 2 min — and the
+   // 5-min upgrade when *other* agents are alive — exists for untargeted
+   // (skill-match) wakes, so a freshly-queued WI isn't claimed by an
+   // active agent that would have picked it up in the next reconcile
+   // pass. That gating doesn't apply when the WI names an explicit
+   // target and that named target is provably dead — no active agent is
+   // going to come along and claim a WI targeted at someone else. Atlas
+   // case on 2026-05-23: 3 RESEARCH BRIEF WIs sat blocked for 30 min+
+   // because the immediate pre-claim by delegate-task pushed them to
+   // `running` before any spawn was attempted, and the wake-rule was
+   // gated by both thresholds.
+  const wakableSessionNames = new Set(wakableAgents.map((a) => a.sessionName));
+
+  // Find unclaimed queued WorkItems eligible for wake. Either:
+  //   - The WI has aged past the unclaimed threshold (original behavior), or
+  //   - The WI has an explicit `target` that is in wakableSessionNames —
+  //     i.e. the named target is inactive or suspended. No reason to wait;
+  //     no other agent is going to claim it.
   const unclaimedItems = workItems
     .filter(wi => {
       if (wi.status !== 'queued') return false;
       const createdAt = new Date(wi.createdAt).getTime();
-      return (now - createdAt) > unclaimedThresholdMs;
+      const pastThreshold = (now - createdAt) > unclaimedThresholdMs;
+      const targetIsWakable = !!wi.target && wakableSessionNames.has(wi.target);
+      return pastThreshold || targetIsWakable;
     })
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
@@ -792,7 +815,12 @@ export function detectUnclaimedTasks(
     const createdAt = new Date(wi.createdAt).getTime();
     const waitTime = now - createdAt;
 
-    if (hasActiveAgent && waitTime < effectiveThreshold) continue;
+    // Same exemption as the filter above: if the explicit target is in the
+    // wakable set, bypass the active-agent 5-min upgrade. The threshold
+    // was meant to give live skill-match candidates a chance; that's
+    // irrelevant when the target is named and dead.
+    const targetIsWakable = !!wi.target && wakableSessionNames.has(wi.target);
+    if (hasActiveAgent && waitTime < effectiveThreshold && !targetIsWakable) continue;
 
     // 2026-05-17 — never auto-wake for untargeted WIs. If a WorkItem
     // doesn't name a `target`, the reconciler used to pick the

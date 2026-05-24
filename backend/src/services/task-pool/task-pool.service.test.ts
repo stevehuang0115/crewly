@@ -579,6 +579,88 @@ describe('TaskPoolService', () => {
   });
 
   // -----------------------------------------------------------------------
+  // Agent-liveness gate — prevents `running` WIs owned by dead agents
+  //
+  // Background: the orchestrator's `delegate-task` skill pre-claims a
+  // fresh WI for its target before the target session is actually
+  // spawned. Previously this flipped the WI to `running` while the
+  // target was still inactive; ~5 s later the reconciler's
+  // detectStuckWorkItems rule marked it `blocked` (and the wake-rule
+  // only handles `queued`, so the agent never got spawned). Atlas was
+  // observed stuck on 3 successive RESEARCH BRIEF delegations on
+  // 2026-05-23 with no progress because of this.
+  //
+  // Fix: setIsAgentActive wires a liveness probe; the claim path
+  // rejects when the requesting agent isn't alive. The WI stays in
+  // `queued`, the reconciler's wake-rule fires, the agent starts, and
+  // claims the WI normally on registration.
+  // -----------------------------------------------------------------------
+
+  describe('claimFromPool — agent-liveness gate', () => {
+    it('refuses claim when isAgentActive probe returns false (target dead at delegate time)', async () => {
+      const wi = makeWorkItem({ title: "Atlas's brief", target: 'think-tank-atlas' });
+      await service.addToPool(wi);
+
+      service.setIsAgentActive(async () => false);
+
+      const result = await service.claimFromPool('think-tank-atlas');
+      expect(result).toBeNull();
+
+      // WI must still be queued — the wake-rule needs to see it.
+      const snapshot = await service.getPoolStatus();
+      expect(snapshot.byStatus.queued ?? 0).toBe(1);
+      expect(snapshot.byStatus.running ?? 0).toBe(0);
+      expect(snapshot.claimed).toBe(0);
+    });
+
+    it('allows claim when isAgentActive probe returns true', async () => {
+      const wi = makeWorkItem({ title: 'Live agent task', target: 'agent-leo' });
+      await service.addToPool(wi);
+
+      service.setIsAgentActive(async () => true);
+
+      const result = await service.claimFromPool('agent-leo');
+      expect(result).not.toBeNull();
+      expect(result!.workItem.status).toBe('running');
+    });
+
+    it('refuses when probe throws (defensive — treat as not active)', async () => {
+      const wi = makeWorkItem({ title: 'task', target: 'agent-leo' });
+      await service.addToPool(wi);
+
+      service.setIsAgentActive(async () => {
+        throw new Error('probe boom');
+      });
+
+      const result = await service.claimFromPool('agent-leo');
+      expect(result).toBeNull();
+    });
+
+    it('passes through when no probe is wired (backwards-compat for tests/CLI)', async () => {
+      const wi = makeWorkItem({ title: 'task' });
+      await service.addToPool(wi);
+
+      // No setIsAgentActive call — current default behavior.
+      const result = await service.claimFromPool('agent-leo');
+      expect(result).not.toBeNull();
+    });
+
+    it('claimSpecificItem also honors the liveness gate', async () => {
+      const wi = makeWorkItem({ title: "Atlas brief", target: 'think-tank-atlas' });
+      await service.addToPool(wi);
+
+      service.setIsAgentActive(async () => false);
+
+      const result = await service.claimSpecificItem('think-tank-atlas', wi.id);
+      expect(result).toBeNull();
+
+      const snapshot = await service.getPoolStatus();
+      expect(snapshot.byStatus.queued ?? 0).toBe(1);
+      expect(snapshot.byStatus.running ?? 0).toBe(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Hygiene #3 — target-respect (target rotation regression)
   //
   // Before fix: claimFromPool/claimSpecificItem unconditionally rewrote

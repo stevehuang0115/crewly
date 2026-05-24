@@ -213,6 +213,33 @@ export class TaskPoolService {
   private requestService: IRequestWorkItemLinker | null = null;
 
   /**
+   * Optional agent-liveness probe — wired via {@link setIsAgentActive} from
+   * the boot path. When set, {@link claimFromPool} and {@link claimSpecificItem}
+   * refuse to issue a claim if the requesting agent's PTY session is not alive.
+   *
+   * Why: the invariant is that a WI in `running` status is being executed by
+   * a live agent. The orchestrator's `delegate-task` skill pre-claims a fresh
+   * WI for its target before the target session is actually spawned (see
+   * `config/skills/orchestrator/delegate-task/execute.sh` "self-heal fix #1"
+   * 2026-04). That pushes the WI from `queued` to `running` while the target
+   * is still inactive. 5 s later the reconciler's `detectStuckWorkItems`
+   * rule sees `running` + dead agent and marks the WI `blocked` — and the
+   * reconciler's `detectUnclaimedTasks` wake-rule only handles `queued`
+   * items, so the agent never gets spawned and the WI is stuck forever.
+   *
+   * Rejecting the claim at the source keeps the WI in `queued`, letting the
+   * wake-rule do its job (start the agent → agent auto-claims when it boots).
+   * delegate-task's existing fallback path (line 277 of execute.sh — "if
+   * claim fails (race, target locked, etc.) the work proceeds via the
+   * async path") already handles a rejected pre-claim gracefully.
+   *
+   * Optional because singleton callers (tests, CLI) bring up the pool
+   * before any agent-registration plumbing exists; missing probe = "trust
+   * the caller" (current behavior preserved for those code paths).
+   */
+  private isAgentActive: ((agentId: string) => Promise<boolean>) | null = null;
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -254,6 +281,20 @@ export class TaskPoolService {
    */
   setRequestService(svc: IRequestWorkItemLinker | null): void {
     this.requestService = svc;
+  }
+
+  /**
+   * Wire the agent-liveness probe used by {@link claimFromPool} and
+   * {@link claimSpecificItem} to refuse claims for dead/missing target
+   * sessions. Called from the backend boot path after the agent runtime
+   * exists. Idempotent and may be called with `null` to disable the gate
+   * (testing or single-process CLI).
+   *
+   * @param probe - Async function returning whether the named session is
+   *   currently alive (PTY exists + child runtime running), or null to clear
+   */
+  setIsAgentActive(probe: ((agentId: string) => Promise<boolean>) | null): void {
+    this.isAgentActive = probe;
   }
 
   /**
@@ -640,6 +681,18 @@ export class TaskPoolService {
     }
 
     return this.withClaimLock(async () => {
+      // Agent-liveness gate — see {@link isAgentActive} field doc for full
+      // rationale. Reject before doing any pool work if the requesting
+      // agent's session isn't alive; the reconciler's wake-rule will
+      // spawn it and the agent will re-attempt the claim once registered.
+      if (this.isAgentActive) {
+        const alive = await this.isAgentActive(agentId).catch(() => false);
+        if (!alive) {
+          this.logger.info('claimFromPool refused — agent session not active', { agentId });
+          return null;
+        }
+      }
+
       // Check if agent already has an active claim
       const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
       if (existingClaim) {
@@ -774,6 +827,18 @@ export class TaskPoolService {
     }
 
     return this.withClaimLock(async () => {
+      // Agent-liveness gate — same rationale as claimFromPool.
+      if (this.isAgentActive) {
+        const alive = await this.isAgentActive(agentId).catch(() => false);
+        if (!alive) {
+          this.logger.info('claimSpecificItem refused — agent session not active', {
+            agentId,
+            workItemId,
+          });
+          return null;
+        }
+      }
+
       const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
       if (existingClaim) return null;
 

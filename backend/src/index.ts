@@ -402,6 +402,21 @@ export class CrewlyServer {
 		// neither side needs a static import of the other.
 		RequestService.getInstance().setTaskPoolService(TaskPoolService.getInstance());
 
+		// Atlas 2026-05-23 fix: wire the agent-liveness gate so claimFromPool /
+		// claimSpecificItem refuse to put a WI into `running` when the requesting
+		// agent's session is dead. delegate-task's "self-heal fix #1" used to
+		// pre-claim WIs for inactive targets, which short-circuited the
+		// reconciler's wake-rule and left WIs blocked indefinitely. With this
+		// probe wired, rejected pre-claims leave the WI in `queued` so the
+		// reconciler can fire detectUnclaimedTasks → start-agent → the agent
+		// auto-claims when it boots. The probe is the same lightweight check
+		// (PTY session exists + child process alive) used by chat-v2 and slack.
+		// Wrapped in async-IIFE because initializeServices() is sync.
+		void (async () => {
+			const { isAgentActive } = await import('./services/orchestrator/orchestrator-status.service.js');
+			TaskPoolService.getInstance().setIsAgentActive(isAgentActive);
+		})();
+
 		// Wire Task Pool router so [TASK]-prefixed messages route through the pool
 		this.queueProcessorService.setTaskPoolRouter(async (messageContent: string, targetSession: string) => {
 			const { createWorkItem } = await import('./types/v2/work-item.types.js');

@@ -1060,6 +1060,94 @@ describe('detectUnclaimedTasks', () => {
     expect(wakeActions).toHaveLength(0);
   });
 
+  // -----------------------------------------------------------------------
+  // 2026-05-23 Atlas case — explicit-target + target-inactive bypass threshold
+  //
+  // Background: 3 RESEARCH BRIEF WIs created by orchestrator with
+  // target=think-tank-atlas sat stuck for 30 min+ each. The
+  // delegate-task skill pre-claims the WI before atlas is spawned,
+  // pushing it to `running`. detectStuckWorkItems then marks it
+  // `blocked`. The wake-rule never fires because the WI is no longer
+  // `queued`. Fix #1 (task-pool agent-liveness gate) keeps the WI in
+  // `queued`. Fix #2 (here) ensures the wake-rule fires *immediately*
+  // for that case — not after a 2- or 5-min wait — since the named
+  // target is provably dead and no live agent is going to claim it.
+  // -----------------------------------------------------------------------
+
+  describe('explicit-target-inactive bypasses threshold (Atlas 2026-05-23)', () => {
+    const JUST_NOW_ISO = new Date(Date.now() - 5_000).toISOString(); // 5s old, well under any threshold
+
+    it('wakes immediately when WI target is inactive and other agents are active', () => {
+      // The Atlas scenario: ORC is active, Atlas is inactive, WI just queued.
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: JUST_NOW_ISO,
+        type: 'delegate',
+        target: 'atlas',
+      });
+      const agentMap = makeAgentMap([
+        ['orc', { status: 'active', role: 'orchestrator' }],
+        ['atlas', { status: 'inactive', role: 'developer' }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(1);
+      expect(wakeActions[0].agentSessionName).toBe('atlas');
+      expect(wakeActions[0].strategy).toBe('start');
+    });
+
+    it('wakes immediately when WI target is suspended', () => {
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: JUST_NOW_ISO,
+        type: 'delegate',
+        target: 'paused-agent',
+      });
+      const agentMap = makeAgentMap([
+        ['paused-agent', { status: 'suspended', role: 'developer' }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(1);
+      expect(wakeActions[0].agentSessionName).toBe('paused-agent');
+      expect(wakeActions[0].strategy).toBe('rehydrate');
+    });
+
+    it('does NOT bypass threshold when target is active (redeliver path waits)', () => {
+      // Active-but-idle targets still wait for the full threshold —
+      // they might be mid-startup-banner; redeliver after 2 min is fine.
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: JUST_NOW_ISO,
+        type: 'delegate',
+        target: 'live-agent',
+      });
+      const agentMap = makeAgentMap([
+        ['live-agent', { status: 'active', role: 'developer', activeWorkItemCount: 0 }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(0);
+    });
+
+    it('does NOT bypass threshold for untargeted WI even if dormant agents exist', () => {
+      // Strict target-only policy (2026-05-17) still holds — never wake
+      // for untargeted WIs, regardless of dormant-agent presence.
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: JUST_NOW_ISO,
+        type: 'delegate',
+        // no target
+      });
+      const agentMap = makeAgentMap([
+        ['atlas', { status: 'inactive', role: 'developer' }],
+      ]);
+
+      const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+      expect(wakeActions).toHaveLength(0);
+    });
+  });
+
   it('should include score breakdown in wake actions', () => {
     const wi = makeWorkItem({
       status: 'queued',
