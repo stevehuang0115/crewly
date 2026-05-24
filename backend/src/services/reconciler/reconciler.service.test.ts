@@ -516,10 +516,14 @@ describe('ReconcilerService', () => {
     const THREE_MIN_AGO = new Date(Date.now() - 3 * 60_000).toISOString();
 
     it('should execute wake actions for unclaimed tasks with dormant agents', async () => {
+      // 2026-05-17 strict-target policy: wake only when wi.target matches a
+      // wakable agent. Override the makeWorkItem default ('agent-1') to
+      // point at the actual suspended agent in the map.
       const wi = makeWorkItem({
         status: 'queued',
         createdAt: THREE_MIN_AGO,
         type: 'delegate',
+        target: 'agent-suspended',
       });
       const agentMap = new Map<string, AgentHealth>([
         ['agent-suspended', {
@@ -572,10 +576,12 @@ describe('ReconcilerService', () => {
     });
 
     it('should use getAvailablePoolItems when provided', async () => {
+      // target-strict policy: WI must explicitly name the wakable agent.
       const poolItem = makeWorkItem({
         status: 'queued',
         createdAt: THREE_MIN_AGO,
         type: 'delegate',
+        target: 'agent-off',
       });
       const agentMap = new Map<string, AgentHealth>([
         ['agent-off', {

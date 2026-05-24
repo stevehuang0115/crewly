@@ -15,6 +15,42 @@ jest.mock('os', () => ({
   freemem: () => mockFreemem(),
 }));
 
+// Mock the platform-aware memory probe so the test's mockTotalmem/mockFreemem
+// fully control isUnderMemoryPressure(). Without this jest.mock, on Darwin
+// the production code routes through `readMacFreeMemBytes` (spawnSync vm_stat)
+// instead of os.freemem, leaving the test mocks ineffective and these
+// memory-pressure suites silently failing on Mac dev machines.
+jest.mock('../core/system-health.util.js', () => {
+  const os = jest.requireActual('os');
+  const total = () => mockTotalmem();
+  const free = () => mockFreemem();
+  return {
+    // Same constants as production (avoid magic numbers diverging).
+    MEMORY_PRESSURE_SPAWN_THRESHOLD: 90,
+    MEMORY_PRESSURE_MIN_FREE_MB: 300,
+    getAvailableMemoryBytes: () => free(),
+    isUnderMemoryPressure: () => {
+      const t = total();
+      const f = free();
+      if (t === 0) return false;
+      const usedPercent = ((t - f) / t) * 100;
+      const freeMB = f / 1024 / 1024;
+      return usedPercent >= 90 && freeMB < 300;
+    },
+    getMemoryStats: () => {
+      const t = total();
+      const f = free();
+      return {
+        totalMB: t / 1024 / 1024,
+        freeMB: f / 1024 / 1024,
+        usedPercent: t === 0 ? 0 : ((t - f) / t) * 100,
+        // Best-effort fields the production stats object also carries.
+        platform: os.platform(),
+      };
+    },
+  };
+});
+
 // Mock all service dependencies before importing
 jest.mock('../task-pool/task-pool.service.js', () => {
   const mockInstance = {
@@ -545,7 +581,14 @@ describe('LiveReconcilerDataProvider', () => {
         correctedAt: new Date().toISOString(),
       });
 
-      expect(mockPool.updateItemStatus).toHaveBeenCalledWith('wi-1', 'blocked');
+      // updateItemStatus now carries actor + reason for the audit trail
+      // (system-initiated correction during reconcile).
+      expect(mockPool.updateItemStatus).toHaveBeenCalledWith(
+        'wi-1',
+        'blocked',
+        'system',
+        expect.stringContaining('Agent dead'),
+      );
     });
 
     it('updates request status via RequestService', async () => {
@@ -763,13 +806,19 @@ describe('LiveReconcilerDataProvider', () => {
       const result = await provider.executeWakeAction(action);
 
       expect(result).toBe(true);
+      // Wake request now also carries workItemId so the wake gate on the
+      // server can match the call back to the queued WI it's intended to
+      // fulfil (avoids the "orphan wake" failure mode where the server
+      // refuses because pool has no matching WI).
       expect(globalThis.fetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/teams/members/start'),
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ sessionName: 'agent-idle' }),
+          body: expect.stringContaining('"sessionName":"agent-idle"'),
         }),
       );
+      const bodyArg = (globalThis.fetch as jest.Mock).mock.calls[0][1].body as string;
+      expect(JSON.parse(bodyArg)).toMatchObject({ sessionName: 'agent-idle', workItemId: 'wi-1' });
 
       globalThis.fetch = originalFetch;
     });
@@ -858,7 +907,7 @@ describe('LiveReconcilerDataProvider', () => {
         // 95% used — would block rehydrate/start at the floor, but redeliver
         // adds no new agent so it must proceed.
         mockTotalmem.mockReturnValue(16_000_000_000);
-        mockFreemem.mockReturnValue(800_000_000);
+        mockFreemem.mockReturnValue(200_000_000);
         mockStorage.getTeams.mockResolvedValue([
           {
             id: 't1',
@@ -897,7 +946,7 @@ describe('LiveReconcilerDataProvider', () => {
     it('skips wake under memory pressure when active-agent count is at/above the floor', async () => {
       // 95% used
       mockTotalmem.mockReturnValue(16_000_000_000);
-      mockFreemem.mockReturnValue(800_000_000);
+      mockFreemem.mockReturnValue(200_000_000);
 
       // 3 active agents = floor reached
       mockStorage.getTeams.mockResolvedValue([
@@ -932,7 +981,7 @@ describe('LiveReconcilerDataProvider', () => {
     it('allows wake under memory pressure when active-agent count is BELOW the floor', async () => {
       // 95% used (would have skipped pre-fix)
       mockTotalmem.mockReturnValue(16_000_000_000);
-      mockFreemem.mockReturnValue(800_000_000);
+      mockFreemem.mockReturnValue(200_000_000);
 
       // Only 1 active agent → 2 slots under floor → wake should go through
       mockStorage.getTeams.mockResolvedValue([
@@ -966,7 +1015,7 @@ describe('LiveReconcilerDataProvider', () => {
 
     it('counts `starting` and `started` toward the floor (in-flight wakes consume RAM too)', async () => {
       mockTotalmem.mockReturnValue(16_000_000_000);
-      mockFreemem.mockReturnValue(800_000_000);
+      mockFreemem.mockReturnValue(200_000_000);
 
       // 3 in-flight = floor reached even though none are fully active yet
       mockStorage.getTeams.mockResolvedValue([
@@ -1231,7 +1280,7 @@ describe('LiveReconcilerDataProvider', () => {
 
       it('does NOT publish on the first few skips (transient pressure is silenced)', async () => {
         mockTotalmem.mockReturnValue(16_000_000_000);
-        mockFreemem.mockReturnValue(800_000_000); // 95% used
+        mockFreemem.mockReturnValue(200_000_000); // 95% used
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
 
         const publish = jest.fn();
@@ -1247,7 +1296,7 @@ describe('LiveReconcilerDataProvider', () => {
 
       it('publishes once sustained pressure crosses the threshold', async () => {
         mockTotalmem.mockReturnValue(16_000_000_000);
-        mockFreemem.mockReturnValue(800_000_000);
+        mockFreemem.mockReturnValue(200_000_000);
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
 
         const publish = jest.fn();
@@ -1266,7 +1315,7 @@ describe('LiveReconcilerDataProvider', () => {
 
       it('throttles re-fire — does not republish within the refire window', async () => {
         mockTotalmem.mockReturnValue(16_000_000_000);
-        mockFreemem.mockReturnValue(800_000_000);
+        mockFreemem.mockReturnValue(200_000_000);
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
 
         const publish = jest.fn();
@@ -1286,7 +1335,7 @@ describe('LiveReconcilerDataProvider', () => {
 
         // Episode 1: pressure on, cross threshold → one event
         mockTotalmem.mockReturnValue(16_000_000_000);
-        mockFreemem.mockReturnValue(800_000_000);
+        mockFreemem.mockReturnValue(200_000_000);
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
         for (let i = 0; i < 5; i++) {
           await provider.executeWakeAction(buildAction());
@@ -1299,7 +1348,7 @@ describe('LiveReconcilerDataProvider', () => {
         await provider.executeWakeAction(buildAction());
 
         // Episode 2: pressure returns, must cross threshold again before firing
-        mockFreemem.mockReturnValue(800_000_000);
+        mockFreemem.mockReturnValue(200_000_000);
         for (let i = 0; i < 4; i++) {
           await provider.executeWakeAction(buildAction());
         }
@@ -1311,7 +1360,7 @@ describe('LiveReconcilerDataProvider', () => {
 
       it('is a no-op when no EventBus has been wired', async () => {
         mockTotalmem.mockReturnValue(16_000_000_000);
-        mockFreemem.mockReturnValue(800_000_000);
+        mockFreemem.mockReturnValue(200_000_000);
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
 
         // No setEventBus call
@@ -1333,7 +1382,7 @@ describe('LiveReconcilerDataProvider', () => {
         provider.setEventBus({ publish } as any);
 
         mockTotalmem.mockReturnValue(16_000_000_000);
-        mockFreemem.mockReturnValue(800_000_000);
+        mockFreemem.mockReturnValue(200_000_000);
 
         // Phase 1: 4 skips at floor — below threshold, no fire yet.
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
@@ -1372,7 +1421,7 @@ describe('LiveReconcilerDataProvider', () => {
 
       it('survives an EventBus publish failure without breaking the reconciler', async () => {
         mockTotalmem.mockReturnValue(16_000_000_000);
-        mockFreemem.mockReturnValue(800_000_000);
+        mockFreemem.mockReturnValue(200_000_000);
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
 
         const publish = jest.fn(() => {
