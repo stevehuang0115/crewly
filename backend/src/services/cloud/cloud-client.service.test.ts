@@ -4,7 +4,11 @@
  * @module services/cloud/cloud-client.service.test
  */
 
-import { CloudClientService, type PersistedCloudConfig } from './cloud-client.service.js';
+import {
+  CloudClientService,
+  decodeJwtExp,
+  type PersistedCloudConfig,
+} from './cloud-client.service.js';
 import { CLOUD_CONSTANTS } from '../../constants.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -65,6 +69,19 @@ function mockResponse(body: unknown, status = 200): Response {
     json: jest.fn().mockResolvedValue(body),
     text: jest.fn().mockResolvedValue(JSON.stringify(body)),
   } as unknown as Response;
+}
+
+/**
+ * Build an unsigned JWT (header.payload.signature) carrying the given exp
+ * (seconds since epoch). Signature is a dummy — these tests only read the
+ * payload, never verify the signature.
+ */
+function makeJwt(expSeconds: number): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ exp: expSeconds, type: 'access' })).toString(
+    'base64url',
+  );
+  return `${header}.${payload}.sig`;
 }
 
 // ---------------------------------------------------------------------------
@@ -722,9 +739,12 @@ describe('CloudClientService', () => {
         mockResponse({ success: true, data: { plan: 'pro', relayToken: 'test-relay-jwt' } }),
       );
 
-      // Register a tokenRefreshCallback before connecting
+      // Register a RELAY-token refresh callback before connecting. Relay
+      // tokens are delivered on the dedicated onRelayTokenRefresh channel —
+      // NOT onTokenRefresh (RELAY-TOKEN-TYPE invariant: the access-token
+      // channel must never receive a relay token).
       const callbackFn = jest.fn();
-      service.onTokenRefresh(callbackFn);
+      service.onRelayTokenRefresh(callbackFn);
 
       const result = await service.connect(CLOUD_URL, TOKEN);
 
@@ -735,6 +755,21 @@ describe('CloudClientService', () => {
       // Verify the callback was called with the relay token
       expect(callbackFn).toHaveBeenCalledTimes(1);
       expect(callbackFn).toHaveBeenCalledWith('test-relay-jwt');
+      // And the relay token is now a first-class, stored credential.
+      expect(service.getRelayToken()).toBe('test-relay-jwt');
+    });
+
+    it('should NOT deliver the relay token on the access-token channel', () => {
+      // REGRESSION (2026-05-28): the relay token must never be pushed to
+      // onTokenRefresh subscribers — doing so let the BrowserProxy register
+      // with the wrong token type and churn the socket.
+      const accessChannelCb = jest.fn();
+      service.onTokenRefresh(accessChannelCb);
+      // (connect tested above) — here we only assert channel isolation:
+      // onRelayTokenRefresh is a distinct array from onTokenRefresh.
+      const relayChannelCb = jest.fn();
+      service.onRelayTokenRefresh(relayChannelCb);
+      expect(accessChannelCb).not.toBe(relayChannelCb);
     });
 
     it('should handle missing relayToken gracefully', async () => {
@@ -777,8 +812,8 @@ describe('CloudClientService', () => {
 
       const callback1 = jest.fn();
       const callback2 = jest.fn();
-      service.onTokenRefresh(callback1);
-      service.onTokenRefresh(callback2);
+      service.onRelayTokenRefresh(callback1);
+      service.onRelayTokenRefresh(callback2);
 
       await service.connect(CLOUD_URL, TOKEN);
 
@@ -796,6 +831,127 @@ describe('CloudClientService', () => {
 
       // data.plan should win
       expect(result.tier).toBe('enterprise');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Relay token as a first-class, durable, self-refreshing credential
+  // (2026-05-28 long-term browser-relay fix)
+  // -------------------------------------------------------------------------
+
+  describe('relay token credential lifecycle', () => {
+    describe('decodeJwtExp', () => {
+      it('returns the exp claim from a well-formed JWT', () => {
+        expect(decodeJwtExp(makeJwt(1_900_000_000))).toBe(1_900_000_000);
+      });
+
+      it('returns null for null / malformed / exp-less tokens', () => {
+        expect(decodeJwtExp(null)).toBeNull();
+        expect(decodeJwtExp('not-a-jwt')).toBeNull();
+        expect(decodeJwtExp('a.b')).toBeNull();
+        const noExp = `x.${Buffer.from(JSON.stringify({ type: 'access' })).toString('base64url')}.s`;
+        expect(decodeJwtExp(noExp)).toBeNull();
+      });
+    });
+
+    it('stores the relay token as a first-class credential (getRelayToken)', async () => {
+      // RELAY-TOKEN-TYPE / DURABLE-CREDENTIAL: getRelayToken() must return the
+      // relay-signed token, distinct from getToken() (the access token).
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, data: { plan: 'pro', relayToken: 'relay-jwt-xyz' } }),
+      );
+
+      await service.connect(CLOUD_URL, TOKEN);
+
+      expect(service.getRelayToken()).toBe('relay-jwt-xyz');
+      // getToken() still returns the ACCESS token, never the relay token.
+      expect(service.getToken()).toBe(TOKEN);
+      expect(service.getToken()).not.toBe(service.getRelayToken());
+    });
+
+    it('persists the relay token alongside the access token', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, data: { plan: 'pro', relayToken: 'relay-jwt-persist' } }),
+      );
+
+      await service.connect(CLOUD_URL, TOKEN);
+
+      // The persisted config must include the relay token so the proxy can
+      // re-register on restart without a fresh validate round-trip.
+      const writes = mockWriteFile.mock.calls.map((c) => String(c[1]));
+      const persisted = writes
+        .map((w) => {
+          try {
+            return JSON.parse(w) as PersistedCloudConfig;
+          } catch {
+            return null;
+          }
+        })
+        .filter((c): c is PersistedCloudConfig => c !== null);
+      expect(persisted.some((c) => c.relayToken === 'relay-jwt-persist')).toBe(true);
+    });
+
+    it('restores a persisted relay token on loadPersistedConfig', async () => {
+      const cfg: PersistedCloudConfig = {
+        cloudUrl: CLOUD_URL,
+        token: TOKEN,
+        tier: 'pro',
+        connectedAt: new Date().toISOString(),
+        relayToken: makeJwt(Math.floor(Date.now() / 1000) + 3600),
+      };
+      mockReadFile.mockResolvedValueOnce(JSON.stringify(cfg) as never);
+
+      const loaded = await service.loadPersistedConfig();
+
+      expect(loaded?.relayToken).toBe(cfg.relayToken);
+      // Restored into memory so BrowserProxy can register immediately on boot.
+      expect(service.getRelayToken()).toBe(cfg.relayToken);
+    });
+
+    it('schedules a proactive relay-token refresh before the JWT exp', async () => {
+      jest.useFakeTimers();
+      try {
+        const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+        // Relay token expiring in 1 hour → refresh should be scheduled ~55 min
+        // out (exp - 300s skew), NOT a wall-clock heuristic.
+        const exp = Math.floor(Date.now() / 1000) + 3600;
+        mockFetch.mockResolvedValueOnce(
+          mockResponse({ success: true, data: { plan: 'pro', relayToken: makeJwt(exp) } }),
+        );
+
+        await service.connect(CLOUD_URL, TOKEN);
+
+        // A timer must have been armed for the relay-token refresh with a
+        // positive delay strictly less than the full 1h TTL (proves it fires
+        // BEFORE exp — the DURABLE-CREDENTIAL invariant).
+        const delays = setTimeoutSpy.mock.calls.map((c) => c[1] as number);
+        const relayDelay = delays.find((d) => d > 0 && d < 3600_000);
+        expect(relayDelay).toBeDefined();
+        expect(relayDelay!).toBeGreaterThan(3000_000); // ~> 50 min
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('does NOT clobber the stored relay token when a refresh returns none', async () => {
+      // First mint a relay token via connect.
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, data: { plan: 'pro', relayToken: 'relay-original' } }),
+      );
+      await service.connect(CLOUD_URL, TOKEN);
+      expect(service.getRelayToken()).toBe('relay-original');
+
+      // Now a refresh that returns a new ACCESS token but NO relay token. The
+      // stored relay token must survive (never overwritten by the access
+      // token — RELAY-TOKEN-TYPE invariant).
+      service.setRefreshToken('refresh-tok');
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ success: true, accessToken: 'new-access', /* no relayToken */ }),
+      );
+      const ok = await service.tryRefreshToken();
+
+      expect(ok).toBe(true);
+      expect(service.getRelayToken()).toBe('relay-original');
     });
   });
 });

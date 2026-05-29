@@ -33,6 +33,36 @@ export interface PersistedCloudConfig {
   connectedAt: string;
   /** Refresh token for auto-renewing expired access tokens */
   refreshToken?: string;
+  /**
+   * Relay-signed access JWT (distinct from the access `token`). Persisted so
+   * the BrowserProxy can re-register on backend restart without waiting for a
+   * fresh validate round-trip. Never the Google/Supabase token — see the
+   * RELAY-TOKEN-TYPE invariant in the long-term browser-relay fix design.
+   */
+  relayToken?: string;
+}
+
+/**
+ * Decode the `exp` (expiry, seconds since epoch) claim from a JWT without
+ * verifying its signature. Returns null when the token is malformed or has
+ * no `exp`. Used to schedule proactive relay-token refresh before expiry so
+ * a continuously-open relay socket never carries an expired token.
+ *
+ * @param token - JWT string (may be null)
+ * @returns The `exp` claim in seconds, or null when unavailable
+ */
+export function decodeJwtExp(token: string | null): number | null {
+  if (!token) return null;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8')) as {
+      exp?: number;
+    };
+    return typeof payload.exp === 'number' ? payload.exp : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +168,19 @@ export class CloudClientService {
   private refreshInProgress = false;
   /** Callbacks invoked when the access token is refreshed */
   private tokenRefreshCallbacks: Array<(newToken: string) => void> = [];
+  /**
+   * Relay-signed access JWT used by BrowserProxyService to register with the
+   * Cloud Relay as role 'agent'. First-class, stored credential — distinct
+   * from the access `token` and decoupled from socket lifetime. NEVER the
+   * Google/Supabase access token (RELAY-TOKEN-TYPE invariant).
+   */
+  private relayToken: string | null = null;
+  /** Parsed `exp` (seconds) of {@link relayToken}, for proactive refresh. */
+  private relayTokenExp: number | null = null;
+  /** Timer for proactive relay-token refresh (fires SKEW before exp). */
+  private relayRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Callbacks invoked when the relay token is refreshed (distinct channel). */
+  private relayTokenRefreshCallbacks: Array<(newRelayToken: string) => void> = [];
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('CloudClientService');
@@ -218,13 +261,12 @@ export class CloudClientService {
     this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.CONNECTED;
     this.lastSyncAt = new Date().toISOString();
 
-    // Use relay token from Cloud validate response for BrowserProxyService
+    // Use relay token from Cloud validate response for BrowserProxyService.
+    // Store it as a first-class credential (not a transient callback arg) so
+    // it can be persisted, refreshed proactively, and re-fed on restart.
     if (data.data?.relayToken) {
       this.logger.info('Relay token received from Cloud');
-      // Notify BrowserProxyService via token refresh callbacks
-      for (const callback of this.tokenRefreshCallbacks) {
-        callback(data.data.relayToken);
-      }
+      this.storeRelayToken(data.data.relayToken);
     }
 
     this.logger.info('Connected to CrewlyAI Cloud', { tier: this.tier, hasRelayToken: !!data.data?.relayToken });
@@ -296,7 +338,10 @@ export class CloudClientService {
     this.connectionStatus = CLOUD_CONSTANTS.CONNECTION_STATUS.DISCONNECTED;
     this.tier = CLOUD_CONSTANTS.TIERS.FREE;
     this.lastSyncAt = null;
+    this.relayToken = null;
+    this.relayTokenExp = null;
     if (this.refreshTimer) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+    if (this.relayRefreshTimer) { clearTimeout(this.relayRefreshTimer); this.relayRefreshTimer = null; }
 
     // Remove persisted config
     this.removePersistedConfig().catch((err) => {
@@ -326,6 +371,16 @@ export class CloudClientService {
       const data = await readFile(CloudClientService.getConfigPath(), 'utf-8');
       const config = JSON.parse(data) as PersistedCloudConfig;
       if (config.cloudUrl && config.token && config.tier) {
+        // Restore the persisted relay token immediately so BrowserProxy can
+        // re-register on restart without waiting for a fresh validate
+        // round-trip. fetchRelayTokenFromValidate (kicked off by connectLocal)
+        // will refresh it shortly after. Do not broadcast here — connect/
+        // connectLocal own the wiring of subscribers; this just primes state.
+        if (config.relayToken) {
+          this.relayToken = config.relayToken;
+          this.relayTokenExp = decodeJwtExp(config.relayToken);
+          this.scheduleRelayTokenRefresh();
+        }
         return config;
       }
       return null;
@@ -346,6 +401,7 @@ export class CloudClientService {
       tier: this.tier,
       connectedAt: new Date().toISOString(),
       ...(this.refreshToken && { refreshToken: this.refreshToken }),
+      ...(this.relayToken && { relayToken: this.relayToken }),
     };
 
     const configPath = CloudClientService.getConfigPath();
@@ -596,6 +652,65 @@ export class CloudClientService {
   }
 
   /**
+   * Get the current relay-signed token (for BrowserProxyService registration).
+   *
+   * This is DISTINCT from {@link getToken} (the access/HTTP token). The
+   * BrowserProxy must register with the relay token, never the access token —
+   * see the RELAY-TOKEN-TYPE invariant. Returns null until a relay token has
+   * been minted by the Cloud validate/refresh endpoint.
+   *
+   * @returns Current relay token or null
+   */
+  getRelayToken(): string | null {
+    return this.relayToken;
+  }
+
+  /**
+   * Register a callback invoked whenever the relay token is refreshed.
+   *
+   * Distinct subscription channel from {@link onTokenRefresh}: subscribers
+   * here (BrowserProxyService) receive the relay-signed token, never the
+   * access token. Decoupling the channels prevents the proxy from ever being
+   * fed the wrong token type on refresh.
+   *
+   * @param callback - Function receiving the new relay token string
+   */
+  onRelayTokenRefresh(callback: (newRelayToken: string) => void): void {
+    this.relayTokenRefreshCallbacks.push(callback);
+  }
+
+  /**
+   * Store a freshly-minted relay token as a first-class credential, parse its
+   * expiry, schedule proactive refresh, persist it, and notify subscribers.
+   *
+   * Centralizes relay-token handling so every code path that obtains one
+   * (connect, refresh, validate) treats it identically. Persistence is
+   * fire-and-forget; a persist failure must not break the refresh chain.
+   *
+   * @param relayToken - The relay-signed access JWT from Cloud
+   */
+  private storeRelayToken(relayToken: string): void {
+    this.relayToken = relayToken;
+    this.relayTokenExp = decodeJwtExp(relayToken);
+
+    // Schedule proactive refresh before this relay token's real exp so a
+    // continuously-open relay socket never carries an expired token.
+    this.scheduleRelayTokenRefresh();
+
+    // Persist alongside the access token for restart resilience.
+    this.persistConfig().catch(() => {});
+
+    // Notify subscribers (BrowserProxyService) on the relay-token channel.
+    for (const callback of this.relayTokenRefreshCallbacks) {
+      try {
+        callback(relayToken);
+      } catch {
+        // Non-fatal — one bad callback must not break the refresh chain.
+      }
+    }
+  }
+
+  /**
    * Attempt to refresh the access token using the stored refresh token.
    *
    * Issues a new access token locally (since both access and refresh tokens
@@ -701,15 +816,26 @@ export class CloudClientService {
         // CloudSyncService may not be available — non-fatal
       }
 
-      // Notify token refresh subscribers (e.g. BrowserProxyService)
-      // Use relay token from Cloud refresh if available, otherwise use access token
-      const tokenForCallbacks = relayToken || newAccessToken;
+      // Notify access-token refresh subscribers with the ACCESS token only.
+      // The relay token has its own channel (storeRelayToken below) — never
+      // substitute the access token for the relay token (RELAY-TOKEN-TYPE
+      // invariant). Subscribers on this channel that need the relay token
+      // should subscribe via onRelayTokenRefresh instead.
       for (const callback of this.tokenRefreshCallbacks) {
         try {
-          callback(tokenForCallbacks);
+          callback(newAccessToken);
         } catch {
           // Non-fatal — don't let one bad callback break the refresh chain
         }
+      }
+
+      // Store the relay token as a first-class credential when the refresh
+      // returned one. If none was returned, keep the existing stored relay
+      // token rather than clobbering it with the access token — a continuing
+      // socket keeps working on its still-valid relay token until its own
+      // proactive refresh fires.
+      if (relayToken) {
+        this.storeRelayToken(relayToken);
       }
 
       this.logger.info('Access token auto-refreshed successfully', { hasRelayToken: !!relayToken });
@@ -776,6 +902,49 @@ export class CloudClientService {
     }
   }
 
+  /**
+   * Schedule a proactive relay-token refresh `RELAY_REFRESH_SKEW_S` seconds
+   * before the relay token's real `exp`.
+   *
+   * The relay token (~60min TTL) is decoupled from the access token, so it
+   * needs its own refresh schedule. When the timer fires it calls
+   * {@link fetchRelayTokenFromValidate}, which re-mints a relay token and
+   * stores it (re-arming this timer). This keeps a continuously-open relay
+   * socket from ever carrying an expired token — the DURABLE-CREDENTIAL
+   * invariant. Driven by the JWT `exp` claim, not a wall-clock heuristic.
+   */
+  private scheduleRelayTokenRefresh(): void {
+    if (this.relayRefreshTimer) {
+      clearTimeout(this.relayRefreshTimer);
+      this.relayRefreshTimer = null;
+    }
+
+    if (!this.relayTokenExp) return;
+
+    const now = Math.floor(Date.now() / 1000);
+    // Refresh 5 minutes (300s) before expiry — same skew as the access token.
+    const refreshAt = this.relayTokenExp - 300;
+    const delayMs = Math.max(0, (refreshAt - now) * 1000);
+
+    if (delayMs <= 0) {
+      // Already near expiry — refresh immediately.
+      this.logger.info('Relay token near expiry, refreshing immediately');
+      this.fetchRelayTokenFromValidate().catch(() => {});
+      return;
+    }
+
+    this.relayRefreshTimer = setTimeout(() => {
+      this.logger.info('Proactive relay-token refresh triggered');
+      this.fetchRelayTokenFromValidate().catch(() => {});
+    }, delayMs);
+
+    // Unref so the timer doesn't keep the process alive.
+    if (this.relayRefreshTimer.unref) this.relayRefreshTimer.unref();
+
+    const minutesUntilRefresh = Math.round(delayMs / 60_000);
+    this.logger.debug('Relay token refresh scheduled', { minutesUntilRefresh });
+  }
+
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
@@ -808,9 +977,7 @@ export class CloudClientService {
     const data = await response.json() as { data?: { relayToken?: string } };
     if (data.data?.relayToken) {
       this.logger.info('Relay token received from Cloud validate (after connectLocal)');
-      for (const callback of this.tokenRefreshCallbacks) {
-        callback(data.data.relayToken);
-      }
+      this.storeRelayToken(data.data.relayToken);
     }
   }
 

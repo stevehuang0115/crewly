@@ -475,6 +475,86 @@ void (async () => {
 				});
 			}
 
+			// LLM-wiki reflect trigger (2026-05-24): if a vault has had zero
+			// wiki-queue-add fires in the last `quietWindowMs`, ping ORC with
+			// a `[REFLECT-WIKI]` message so it sweeps recent conversation
+			// for worth-saving content. Solves the "the queue is never used"
+			// problem found during the 2026-05-24 audit.
+			try {
+				const { WikiReflectTriggerService } = await import(
+					'./services/wiki/wiki-reflect-trigger.service.js'
+				);
+				const reflectInterval = Number(
+					process.env['CREWLY_WIKI_REFLECT_INTERVAL_MS'] ?? 60 * 60 * 1000,
+				);
+				const reflectQuiet = Number(
+					process.env['CREWLY_WIKI_REFLECT_QUIET_WINDOW_MS'] ?? 4 * 60 * 60 * 1000,
+				);
+				const reflectDebounce = Number(
+					process.env['CREWLY_WIKI_REFLECT_DEBOUNCE_MS'] ?? 4 * 60 * 60 * 1000,
+				);
+				const reflectTrigger = new WikiReflectTriggerService({
+					intervalMs: reflectInterval,
+					quietWindowMs: reflectQuiet,
+					debounceMs: reflectDebounce,
+					fireFn: async (meta) => {
+						if (!this.messageQueueService) return;
+						const lastAddText =
+							meta.msSinceLastQueueAdd === Number.POSITIVE_INFINITY
+								? 'never'
+								: `${Math.floor(meta.msSinceLastQueueAdd / (60 * 60 * 1000))}h ago`;
+						const summary = `[REFLECT-WIKI] vault=${meta.vaultPath} | last wiki-queue-add: ${lastAddText} | total queue items: ${meta.totalQueueItems}. Sweep the recent conversation for worth-saving content (decisions, customer facts, learnings) and call wiki-queue-add for each, OR reply "nothing this period" if there genuinely is nothing.`;
+						this.messageQueueService.enqueue({
+							content: summary,
+							conversationId: 'system:wiki-reflect',
+							source: 'system_event',
+						});
+					},
+				});
+				WikiReflectTriggerService.setInstance(reflectTrigger);
+				reflectTrigger.start();
+			} catch (reflectErr) {
+				this.logger.warn('Wiki reflect trigger failed to start (non-fatal)', {
+					error: (reflectErr as Error).message,
+				});
+			}
+
+			// LLM-wiki → WorkItem bridge (2026-05-27): pending wiki queue
+			// items + legacy migration candidates become claimable
+			// WorkItems in the V3 pool. Replaces the bookkeep/reflect
+			// "shouldFire ≥ threshold" model — even 1 pending item now
+			// surfaces in /work-items and idle agents drain it through the
+			// standard claim loop. PR-1: target=crewly-orc for both kinds
+			// because the wiki-process-queue / wiki-migrate skills live
+			// under `config/skills/orchestrator/` today.
+			try {
+				const { WikiWorkItemBridgeService } = await import(
+					'./services/wiki/wiki-workitem-bridge.service.js'
+				);
+				const intervalMs = Number(
+					process.env['CREWLY_WIKI_BRIDGE_INTERVAL_MS'] ?? 10 * 60 * 1000,
+				);
+				const targetAgent = process.env['CREWLY_WIKI_BRIDGE_TARGET'] ?? 'crewly-orc';
+				const maxCreatesPerTick = Number(
+					process.env['CREWLY_WIKI_BRIDGE_MAX_PER_TICK'] ?? 2,
+				);
+				const cooldownMs = Number(
+					process.env['CREWLY_WIKI_BRIDGE_COOLDOWN_MS'] ?? 30 * 60 * 1000,
+				);
+				const bridge = new WikiWorkItemBridgeService({
+					intervalMs,
+					targetAgent,
+					maxCreatesPerTick,
+					cooldownMs,
+				});
+				WikiWorkItemBridgeService.setInstance(bridge);
+				bridge.start();
+			} catch (bridgeErr) {
+				this.logger.warn('Wiki work-item bridge failed to start (non-fatal)', {
+					error: (bridgeErr as Error).message,
+				});
+			}
+
 			// ORC delivery enforcer (2026-05-23 incident fix): watches for
 			// agent `[DONE]` posts to slack threads that ORC hasn't yet
 			// forwarded via reply-slack. Fires `[DELIVER_REQUIRED]` nudges
@@ -1526,19 +1606,27 @@ void (async () => {
 				const browserProxy = BrowserProxyService.getInstance();
 
 				// Wire up token resolver so reconnects always use the freshest JWT
-				browserProxy.setTokenResolver(() => cloudClient.getToken());
+				// Reconnects must use the freshest RELAY token (NOT the access token,
+				// per the RELAY-TOKEN-TYPE invariant). The relay only accepts a relay-
+				// signed access JWT; the access token churns the socket.
+				browserProxy.setTokenResolver(() => cloudClient.getRelayToken());
 
-				// Subscribe to token refresh events so the proxy updates in real-time
-				cloudClient.onTokenRefresh((newToken: string) => {
-					browserProxy.updateToken(newToken);
+				// Subscribe to RELAY-token refresh events (distinct channel from the
+				// access-token refresh) so the proxy re-registers in place with the
+				// fresh relay token before its exp.
+				cloudClient.onRelayTokenRefresh((newRelayToken: string) => {
+					browserProxy.updateToken(newRelayToken);
 				});
 
-				const relayToken = cloudClient.getToken();
+				const relayToken = cloudClient.getRelayToken();
 				if (relayToken) {
 					browserProxy.connect(relayToken);
 					this.logger.info('BrowserProxyService connecting to Cloud Relay');
 				} else {
-					this.logger.debug('BrowserProxyService skipped — no cloud token available');
+					// No relay token yet (connectLocal mints it asynchronously). Defer
+				// connect to the onRelayTokenRefresh callback above rather than
+				// connecting with the wrong (access) token.
+				this.logger.debug('BrowserProxyService deferred — no relay token yet, will connect on relay-token refresh');
 				}
 			} catch (error) {
 				this.logger.warn('Failed to initialize BrowserProxyService (non-critical)', {

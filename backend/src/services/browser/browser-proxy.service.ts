@@ -38,6 +38,13 @@ export interface BrowserInstanceInfo {
    * Spec: `.crewly/specs/browser-ext-stale-status-fix-2026-04-30.md`.
    */
   deviceFingerprint?: string;
+  /**
+   * Optional observability tag from the relay registry: the device the
+   * BROWSER (extension) registered from. Surfaced in /api/browser/status so
+   * the UI can render "drivable from device X". Observability only — never a
+   * routing input (DEVICE-OBSERVABILITY-NOT-ROUTING invariant).
+   */
+  deviceId?: string;
 }
 
 /** Pending command waiting for a relay response. */
@@ -55,6 +62,29 @@ export type ProxyConnectionState = 'disconnected' | 'connecting' | 'connected';
 
 /** Default relay WebSocket URL. */
 const DEFAULT_RELAY_URL = 'wss://api.crewlyai.com/relay';
+
+/**
+ * Decode the `sub` (account id) claim from a JWT WITHOUT verifying the
+ * signature — used only to derive a stable load-balancer stickiness key
+ * (`?rk=`), never for any auth decision. Stable across token refreshes
+ * (the `sub` doesn't change when the token rotates), which is exactly what
+ * the sticky-by-account routing needs.
+ *
+ * @param token - a JWT (relay-signed access token), or null
+ * @returns the `sub` string, or null if absent/unparseable
+ */
+export function decodeJwtSub(token: string | null): string | null {
+  if (!token) return null;
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const json = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const sub = (JSON.parse(json) as { sub?: unknown }).sub;
+    return typeof sub === 'string' && sub.length > 0 ? sub : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Heartbeat interval to keep the relay connection alive (ms). */
 const HEARTBEAT_INTERVAL_MS = 25_000;
@@ -130,6 +160,23 @@ export class BrowserProxyService {
   private reconnectAttempts = 0;
   /** Callback to resolve a fresh token on reconnect (avoids stale JWT) */
   private tokenResolver: TokenResolver | null = null;
+  /**
+   * Stable device identity tag attached to register frames for OBSERVABILITY
+   * only (so the relay/UI can render "drivable from: macbookpro.lan"). Never
+   * used for routing — DEVICE-OBSERVABILITY-NOT-ROUTING invariant. Loaded
+   * lazily from DeviceIdentityService on first connect; falls back to a
+   * synthesized id if identity lookup fails.
+   */
+  private deviceId: string | null = null;
+  /**
+   * Heartbeat-ack watchdog timer. Armed when a `heartbeat` is sent and cleared
+   * when the matching `heartbeat_ack` arrives. If it fires (no ack within
+   * {@link BROWSER_PROXY_CONSTANTS.HEARTBEAT_ACK_DEADLINE_MS}) the relay socket
+   * is treated as dead/half-open and the proxy reconnects proactively rather
+   * than riding the socket until the relay's 180s 4002 eviction. LIVENESS
+   * invariant — see the long-term browser-relay fix design.
+   */
+  private heartbeatAckTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Event bus for browser-instance lifecycle. Subscribers (currently the
@@ -197,6 +244,48 @@ export class BrowserProxyService {
   }
 
   /**
+   * Build the relay register frame for role 'agent'.
+   *
+   * Attaches the stable {@link deviceId} for observability (so the relay and
+   * UI can show which device a backend is reachable from) and a `pairingCode`
+   * derived from the deviceId rather than a throwaway `Date.now()` value, so
+   * the same backend presents a consistent identity across re-registers.
+   *
+   * @returns The register message object to send to the relay
+   */
+  private buildRegisterFrame(): Record<string, unknown> {
+    const pairingCode = this.deviceId
+      ? `backend-proxy-${this.deviceId}`
+      : `backend-proxy-${Date.now()}`;
+    return {
+      type: 'register',
+      role: 'agent',
+      pairingCode,
+      token: this.authToken,
+      // OBSERVABILITY ONLY — never consulted for routing (the relay scopes by
+      // userId). See DEVICE-OBSERVABILITY-NOT-ROUTING invariant.
+      ...(this.deviceId ? { deviceId: this.deviceId } : {}),
+    };
+  }
+
+  /**
+   * Lazily resolve and cache the stable device id from DeviceIdentityService.
+   * Best-effort: on failure leaves {@link deviceId} null and register frames
+   * simply omit the observability tag (backward compatible).
+   */
+  private async ensureDeviceId(): Promise<void> {
+    if (this.deviceId) return;
+    try {
+      const { DeviceIdentityService } = await import('../cloud/device-identity.service.js');
+      this.deviceId = await DeviceIdentityService.getInstance().getDeviceId();
+    } catch (err) {
+      this.logger.debug('Could not resolve deviceId for relay register (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
    * Called externally when the auth token has been refreshed (e.g., by CloudClientService).
    * Updates the stored token so the next heartbeat/reconnect uses the fresh one.
    *
@@ -223,12 +312,7 @@ export class BrowserProxyService {
     // The relay should respond with a new 'registered' message without dropping
     // the existing session, but if it does close, handleDisconnect will auto-reconnect.
     if (this.state === 'connected' && this.ws?.readyState === WebSocket.OPEN) {
-      this.sendRaw({
-        type: 'register',
-        role: 'agent',
-        pairingCode: `backend-proxy-${Date.now()}`,
-        token: this.authToken,
-      });
+      this.sendRaw(this.buildRegisterFrame());
       return;
     }
 
@@ -251,6 +335,30 @@ export class BrowserProxyService {
    * @param token - JWT auth token for relay registration
    * @param relayUrl - Optional relay URL override
    */
+  /**
+   * Append the account-stickiness key (`?rk=<userId>`) to the relay URL.
+   *
+   * The cloud relay runs as 2+ nodes behind an nginx `hash $arg_rk consistent`
+   * upstream. browserRegistry is per-process in-memory (no cross-node sharing),
+   * so a backend agent and its account's browser MUST land on the SAME node to
+   * pair. We pin by account: derive the userId from the relay JWT's `sub` claim
+   * (stable across token refreshes — unlike the rotating token itself) and pass
+   * it as `?rk=`. The Chrome extension passes the SAME key, so both pin to one
+   * node. If the token can't be decoded, we omit `rk` (nginx hashes empty → all
+   * keyless clients co-locate, still consistent). The `ws` lib strips the query
+   * before matching path '/relay', so this is transparent to the relay server.
+   *
+   * @param baseUrl - the relay wss URL (e.g. wss://api.crewlyai.com/relay)
+   * @param token - the relay-signed JWT whose `sub` is the account id
+   * @returns the URL with `?rk=<sub>` appended when derivable, else baseUrl
+   */
+  private buildStickyRelayUrl(baseUrl: string, token: string | null): string {
+    const rk = decodeJwtSub(token);
+    if (!rk) return baseUrl;
+    const sep = baseUrl.includes('?') ? '&' : '?';
+    return `${baseUrl}${sep}rk=${encodeURIComponent(rk)}`;
+  }
+
   connect(token: string, relayUrl?: string): void {
     if (this.state !== 'disconnected') {
       this.logger.warn('Already connected or connecting to relay');
@@ -279,16 +387,17 @@ export class BrowserProxyService {
       this.ws = null;
     }
 
-    this.ws = new WebSocket(this.relayUrl);
+    this.ws = new WebSocket(this.buildStickyRelayUrl(this.relayUrl, this.authToken));
 
     this.ws.on('open', () => {
       this.logger.info('Relay WebSocket connected, registering as agent');
-      this.sendRaw({
-        type: 'register',
-        role: 'agent',
-        pairingCode: `backend-proxy-${Date.now()}`,
-        token: this.authToken,
-      });
+      // Register synchronously so liveness/registration is not delayed by the
+      // (async) device-identity lookup. The deviceId observability tag is
+      // included if already cached; otherwise the frame omits it (backward
+      // compatible) and a background ensureDeviceId() primes it so subsequent
+      // re-registers (token refresh / reconnect) carry the tag.
+      this.sendRaw(this.buildRegisterFrame());
+      void this.ensureDeviceId();
     });
 
     this.ws.on('message', (data: Buffer | string) => {
@@ -350,6 +459,18 @@ export class BrowserProxyService {
    */
   getInstances(): BrowserInstanceInfo[] {
     return Array.from(this.instances.values());
+  }
+
+  /**
+   * Get this backend's stable device id, when resolved.
+   *
+   * Observability only — surfaced in /api/browser/status so the UI can show
+   * which device a browser is "drivable from". Never a routing input.
+   *
+   * @returns The device id, or null if not yet resolved
+   */
+  getDeviceId(): string | null {
+    return this.deviceId;
   }
 
   /**
@@ -566,7 +687,9 @@ export class BrowserProxyService {
       }
 
       case 'heartbeat_ack':
-        // Heartbeat acknowledged — connection is healthy
+        // Heartbeat acknowledged — connection is healthy. Clear the watchdog
+        // so it does not fire a false reconnect. (LIVENESS invariant.)
+        this.clearHeartbeatAckWatchdog();
         break;
 
       case 'error':
@@ -733,6 +856,9 @@ export class BrowserProxyService {
       typeof rawFingerprint === 'string' && rawFingerprint.length > 0
         ? rawFingerprint
         : undefined;
+    const rawDeviceId = msg.deviceId;
+    const deviceId =
+      typeof rawDeviceId === 'string' && rawDeviceId.length > 0 ? rawDeviceId : undefined;
 
     const now = new Date().toISOString();
 
@@ -745,6 +871,7 @@ export class BrowserProxyService {
           sessionId: '', // Will be populated by next list_browsers
           lastSeenAt: now,
           deviceFingerprint,
+          deviceId,
         };
         this.instances.set(instanceId, incoming);
         this.dedupByFingerprint(incoming);
@@ -854,6 +981,11 @@ export class BrowserProxyService {
       }
 
       this.sendRaw({ type: 'heartbeat' });
+      // Arm the ack watchdog: the relay must reply with heartbeat_ack within
+      // HEARTBEAT_ACK_DEADLINE_MS or we treat the socket as half-open and
+      // reconnect proactively (instead of riding it until the relay's 180s
+      // 4002 eviction, which produced the observed ~3min churn loop).
+      this.armHeartbeatAckWatchdog();
       this.heartbeatTickCounter += 1;
 
       if (
@@ -872,12 +1004,49 @@ export class BrowserProxyService {
   }
 
   /**
-   * Stop heartbeat interval.
+   * Stop heartbeat interval and disarm the ack watchdog.
    */
   private stopHeartbeat(): void {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+    this.clearHeartbeatAckWatchdog();
+  }
+
+  /**
+   * Arm the heartbeat-ack watchdog if it is not already armed.
+   *
+   * Crucially, this does NOT reset an already-running watchdog: the deadline
+   * is anchored to the FIRST un-acked heartbeat. If it reset on every
+   * heartbeat send, a half-open socket (where sends silently succeed into the
+   * void) would keep pushing the deadline forward and the watchdog would never
+   * fire — re-opening the exact half-open-socket churn this guards against.
+   * A received `heartbeat_ack` clears the watchdog, after which the next
+   * heartbeat re-arms it fresh.
+   */
+  private armHeartbeatAckWatchdog(): void {
+    if (this.heartbeatAckTimer) return;
+    this.heartbeatAckTimer = setTimeout(() => {
+      this.heartbeatAckTimer = null;
+      this.logger.warn(
+        'No heartbeat_ack within deadline — relay socket presumed half-open, reconnecting',
+        { deadlineMs: BROWSER_PROXY_CONSTANTS.HEARTBEAT_ACK_DEADLINE_MS },
+      );
+      this.stopHeartbeat();
+      this.handleDisconnect();
+    }, BROWSER_PROXY_CONSTANTS.HEARTBEAT_ACK_DEADLINE_MS);
+    if (this.heartbeatAckTimer.unref) this.heartbeatAckTimer.unref();
+  }
+
+  /**
+   * Clear the heartbeat-ack watchdog timer if armed. Safe to call when no
+   * timer is running (null guard).
+   */
+  private clearHeartbeatAckWatchdog(): void {
+    if (this.heartbeatAckTimer) {
+      clearTimeout(this.heartbeatAckTimer);
+      this.heartbeatAckTimer = null;
     }
   }
 

@@ -130,6 +130,18 @@ export const BROWSER_PROXY_CONSTANTS = {
 	 *  Boundary math: register@T0 → first refresh@T0+200s → next sweep
 	 *  evaluates lastSeenAt at most 200s old → far below 300s threshold. */
 	LIST_REFRESH_EVERY_N_HEARTBEATS: 8,
+	/**
+	 * Deadline (ms) for receiving a `heartbeat_ack` from the relay after a
+	 * `heartbeat` is sent. If no ack arrives within this window the relay
+	 * socket is treated as dead/half-open and the proxy reconnects proactively
+	 * rather than riding the socket until the relay's 180s `4002` eviction.
+	 *
+	 * Set to 2x the 25s heartbeat interval (50s): comfortably above one RTT on
+	 * slow networks (avoids false reconnects) yet well under the relay's 180s
+	 * timeout (so the backend never churns drop→re-register→count:0 every
+	 * ~3min). Liveness invariant — see the long-term browser-relay fix design.
+	 */
+	HEARTBEAT_ACK_DEADLINE_MS: 50_000,
 } as const;
 
 // Agent runtime types

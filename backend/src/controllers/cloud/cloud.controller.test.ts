@@ -359,10 +359,33 @@ describe('Cloud Controller', () => {
 
       await getCloudStatus(req, res, mockNext);
 
+      // STATUS-DISTINCTION invariant (2026-05-28 browser-relay fix): the cloud
+      // status is tagged transport: 'config-socket' so "cloud connected" can
+      // never be confused with "browser drivable" (which /api/browser/status
+      // reports as transport: 'cloud-relay-ws', drivable: proxy.isAvailable()).
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        data: status,
+        data: { ...status, transport: 'config-socket' },
       });
+    });
+
+    it('tags the config-socket transport so it is distinct from browser drivability', async () => {
+      mockGetStatus.mockReturnValue({
+        connectionStatus: 'connected',
+        cloudUrl: 'https://cloud.test.com',
+        tier: 'pro',
+        lastSyncAt: null,
+      });
+      const req = mockReq();
+      const res = mockRes();
+
+      await getCloudStatus(req, res, mockNext);
+
+      const payload = (res.json as jest.Mock).mock.calls[0][0];
+      expect(payload.data.transport).toBe('config-socket');
+      // It must NOT advertise a browser-drivable transport.
+      expect(payload.data.transport).not.toBe('cloud-relay-ws');
+      expect(payload.data.drivable).toBeUndefined();
     });
   });
 

@@ -267,7 +267,14 @@ export async function getCloudStatus(req: Request, res: Response, next: NextFunc
     const client = CloudClientService.getInstance();
     const status = client.getStatus();
 
-    res.json({ success: true, data: status });
+    // STATUS-DISTINCTION invariant: tag this as the CONFIG socket transport so
+    // a caller can never read "cloud connected" as "a browser is drivable".
+    // Browser drivability is reported separately by GET /api/browser/status
+    // (transport: 'cloud-relay-ws', drivable: proxy.isAvailable()).
+    res.json({
+      success: true,
+      data: { ...status, transport: 'config-socket' },
+    });
   } catch (error) {
     logger.error('Failed to get cloud status', {
       error: error instanceof Error ? error.message : String(error),
