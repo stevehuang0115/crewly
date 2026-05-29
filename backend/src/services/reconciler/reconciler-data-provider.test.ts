@@ -62,6 +62,7 @@ jest.mock('../task-pool/task-pool.service.js', () => {
     releaseBack: jest.fn().mockResolvedValue(undefined),
     revokeAndRelease: jest.fn().mockResolvedValue(undefined),
     findWorkItem: jest.fn().mockResolvedValue(null),
+    requeueAfterFailure: jest.fn().mockResolvedValue(undefined),
   };
   return {
     TaskPoolService: {
@@ -131,6 +132,17 @@ const mockRequestService = {
 jest.mock('../v3/request.service.js', () => ({
   RequestService: {
     getInstance: () => mockRequestService,
+  },
+}));
+
+// Mock the escalation router so applyCorrection's reconciler-driven failure
+// hook (lazy-imported) can be asserted against without filesystem side effects.
+const mockEscalationRouter = {
+  escalateFailedWorkItem: jest.fn().mockResolvedValue('esc-1'),
+};
+jest.mock('../v3/escalation-router.service.js', () => ({
+  EscalationRouterService: {
+    getInstance: () => mockEscalationRouter,
   },
 }));
 
@@ -603,6 +615,112 @@ describe('LiveReconcilerDataProvider', () => {
       });
 
       expect(mockRequestService.update).toHaveBeenCalledWith('req-1', { status: 'done' });
+    });
+
+    it('escalates reconciler-driven work_item failures', async () => {
+      // Reconciler flips a stuck WI to failed → applyCorrection must
+      // route through EscalationRouter so ORC/the user are told. Without
+      // this hook the failure was silent (see Closie GA4 incident
+      // 2026-05-27, WI 8087d8e5).
+      const failedWi: Partial<WorkItem> = {
+        id: 'wi-stuck-1',
+        title: 'Stuck WI',
+        type: 'delegate',
+        status: 'failed',
+        retryCount: 0,
+        maxRetries: 0,
+      };
+      mockEscalationRouter.escalateFailedWorkItem.mockClear();
+      (TaskPoolService as unknown as { _mockInstance: { findWorkItem: jest.Mock } })._mockInstance.findWorkItem.mockResolvedValueOnce(failedWi);
+
+      await provider.applyCorrection({
+        entityType: 'work_item',
+        entityId: 'wi-stuck-1',
+        previousState: 'running',
+        newState: 'failed',
+        reason: 'Agent crewly-orc is inactive',
+        evidence: 'lastSeen=10m_ago',
+        correctedAt: new Date().toISOString(),
+      });
+
+      expect(mockEscalationRouter.escalateFailedWorkItem).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'wi-stuck-1' }),
+        expect.stringContaining('Agent crewly-orc is inactive'),
+      );
+    });
+
+    it('does not escalate when work_item transitions to a non-failed state', async () => {
+      // blocked / cancelled / queued corrections must NOT trip escalation;
+      // they're not terminal failures and have their own surfacing paths.
+      mockEscalationRouter.escalateFailedWorkItem.mockClear();
+
+      await provider.applyCorrection({
+        entityType: 'work_item',
+        entityId: 'wi-1',
+        previousState: 'running',
+        newState: 'blocked',
+        reason: 'Agent dead',
+        evidence: 'status=inactive',
+        correctedAt: new Date().toISOString(),
+      });
+
+      expect(mockEscalationRouter.escalateFailedWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('routes failed → queued through requeueAfterFailure (NOT updateItemStatus) — #607 regression', async () => {
+      // The reconciler's `detectRetryableFailedWorkItems` rule generates
+      // `failed → queued` corrections for WIs whose `retryCount < maxRetries`.
+      // The plain `updateItemStatus` path leaves retryCount untouched →
+      // the cap never trips → indefinite loop (observed 2026-05-23 with
+      // 4 misrouted WIs). The correction MUST flow through
+      // `requeueAfterFailure`, which bumps retryCount.
+      const poolMock = (TaskPoolService as unknown as {
+        _mockInstance: { updateItemStatus: jest.Mock; requeueAfterFailure: jest.Mock };
+      })._mockInstance;
+      poolMock.updateItemStatus.mockClear();
+      poolMock.requeueAfterFailure.mockClear();
+
+      await provider.applyCorrection({
+        entityType: 'work_item',
+        entityId: 'wi-retry-1',
+        previousState: 'failed',
+        newState: 'queued',
+        reason: 'Auto-retry failed WorkItem (attempt 1/3)',
+        evidence: 'status=failed, retryCount=0, maxRetries=3',
+        correctedAt: new Date().toISOString(),
+      });
+
+      expect(poolMock.requeueAfterFailure).toHaveBeenCalledWith(
+        'wi-retry-1',
+        expect.stringContaining('Auto-retry failed WorkItem'),
+      );
+      // The plain status setter MUST NOT be called for failed→queued —
+      // it would leave retryCount frozen and re-introduce the loop.
+      expect(poolMock.updateItemStatus).not.toHaveBeenCalled();
+    });
+
+    it('still uses updateItemStatus for non-retry transitions (queued → blocked etc.)', async () => {
+      // Regression guard for the prior test: only the specific
+      // `failed → queued` path should divert to requeueAfterFailure.
+      // Everything else stays on the generic setter.
+      const poolMock = (TaskPoolService as unknown as {
+        _mockInstance: { updateItemStatus: jest.Mock; requeueAfterFailure: jest.Mock };
+      })._mockInstance;
+      poolMock.updateItemStatus.mockClear();
+      poolMock.requeueAfterFailure.mockClear();
+
+      await provider.applyCorrection({
+        entityType: 'work_item',
+        entityId: 'wi-1',
+        previousState: 'queued',
+        newState: 'blocked',
+        reason: 'Dep stuck',
+        evidence: 'parent failed',
+        correctedAt: new Date().toISOString(),
+      });
+
+      expect(poolMock.updateItemStatus).toHaveBeenCalled();
+      expect(poolMock.requeueAfterFailure).not.toHaveBeenCalled();
     });
   });
 
