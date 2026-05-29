@@ -428,13 +428,13 @@ export class WikiWorkItemBridgeService {
           const scan = await this.migrate.scan({ projectRoot });
           if (!scan.ok) continue;
           if (!scan.legacyDetected) continue;
-          // Count NET-NEW pages only. `proposedPages` retains entries that are
-          // already migrated (skipReason 'already migrated') or otherwise
-          // un-migratable (write_failed / render_cache_miss). Counting the raw
-          // length means a fully-migrated vault still reports proposed > 0, so
-          // the gate below never trips and the bridge re-creates a no-op migrate
-          // WI every cooldown cycle (churn loop). Only pages with no skipReason
-          // represent genuine new work for the migrate agent to apply.
+          // Count NET-NEW pages only. A scan keeps already-migrated entries in
+          // `proposedPages` tagged with skipReason 'already migrated' (apply-only
+          // reasons like write_failed never appear on a scan result). Counting
+          // the raw length means a fully-migrated vault still reports
+          // proposed > 0, so the gate below never trips and the bridge re-creates
+          // a no-op migrate WI every cooldown cycle (churn loop). Only pages with
+          // no skipReason represent genuine new work for the migrate agent.
           const proposed = scan.proposedPages.filter((p) => !p.skipReason).length;
           if (proposed === 0) continue;
           if (createdThisTick >= this.maxCreatesPerTick) {

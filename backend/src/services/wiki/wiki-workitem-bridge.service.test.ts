@@ -272,8 +272,11 @@ describe('WikiWorkItemBridgeService', () => {
 
     it('skips when every proposed page is already migrated (no net-new) — churn-loop guard', async () => {
       // Regression: a fully-migrated vault keeps already-migrated entries in
-      // proposedPages (tagged skipReason). The gate must count net-new only,
-      // otherwise the bridge re-creates a no-op migrate WI every cooldown.
+      // proposedPages (tagged skipReason 'already migrated'). The gate must count
+      // net-new only, otherwise the bridge re-creates a no-op migrate WI every
+      // cooldown. The third entry uses an apply-only reason (write_failed) to
+      // assert the gate excludes ANY skipReason, not just 'already migrated' —
+      // even though a real scan never emits write_failed (apply-phase only).
       const projectRoot = '/Users/me/projects/fully-migrated';
       const { bridge, addedItems } = makeBridge({
         projects: [projectRoot],
