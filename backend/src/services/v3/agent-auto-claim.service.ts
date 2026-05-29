@@ -22,6 +22,15 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { computeAgentScore, type AgentHealth } from '../reconciler/reconcile-rules.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { SLA_TRACKER_ID_PATTERN } from './workitem-dispatch.subscriber.js';
+import { CREWLY_CONSTANTS } from '../../constants.js';
+
+/**
+ * The orchestrator's own session name. Used to short-circuit the wake +
+ * escalation paths — those paths are agent-to-agent recovery; firing
+ * them with the orc as both source and target creates a self-referential
+ * loop ("ORC escalates to ORC", observed 2026-05-27).
+ */
+const ORCHESTRATOR_SESSION_NAME = CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -403,7 +412,7 @@ export class AgentAutoClaimService {
     }
 
     const agentsToWake = new Set<string>();
-    const orphanedItems: typeof targetedItems = [];
+    let orphanedItems: typeof targetedItems = [];
     const activeTargetedItems: typeof targetedItems = [];
 
     for (const wi of targetedItems) {
@@ -456,6 +465,24 @@ export class AgentAutoClaimService {
 
     // Wake known offline agents via correct team member start endpoint
     for (const session of agentsToWake) {
+      // The orchestrator manages its own lifecycle (heartbeat-respawn
+      // from the service wrapper / supervisor) — it is NOT a regular
+      // team-member and the `POST /api/teams/:teamId/members/:memberId/start`
+      // endpoint returns 400 for it. Pre-fix, that 400 routed the WI into
+      // `orphanedItems` and then the escalation path "Escalated to
+      // Orchestrator" — but the orchestrator IS the orchestrator, so the
+      // escalation closed the loop into itself ("ORC escalates to ORC",
+      // observed 2026-05-27 22:29:06 / 23:22:28). Skip both the wake
+      // attempt and the escalation; the orc's supervisor will respawn it
+      // and the dispatch subscriber will re-deliver targeted WIs once
+      // the session is back.
+      if (session === ORCHESTRATOR_SESSION_NAME) {
+        this.logger.debug(
+          'Skipping wake for orchestrator session — supervisor handles its respawn',
+          { sessionName: session, pendingWiCount: targetedItems.filter((wi) => wi.target === session).length },
+        );
+        continue;
+      }
       try {
         // Find team and member ID for this session
         const axios = (await import('axios')).default;
@@ -489,6 +516,20 @@ export class AgentAutoClaimService {
         orphanedItems.push(...targetedItems.filter((wi) => wi.target === session));
       }
     }
+
+    // Belt-and-suspenders: a WI whose target IS the orchestrator must
+    // never enter the escalation path — the path delivers via
+    // [RECOVERY] alerts that route back to the orc, which is the same
+    // session that "owns" the WI. Filter them out and log so ops sees
+    // why no alert fired for orc-targeted tasks.
+    const orcOrphans = orphanedItems.filter((wi) => wi.target === ORCHESTRATOR_SESSION_NAME);
+    if (orcOrphans.length > 0) {
+      this.logger.debug(
+        'Dropping orchestrator-targeted items from escalation list (would create self-loop)',
+        { count: orcOrphans.length, workItemIds: orcOrphans.map((wi) => wi.id) },
+      );
+    }
+    orphanedItems = orphanedItems.filter((wi) => wi.target !== ORCHESTRATOR_SESSION_NAME);
 
     // Escalate orphaned tasks — notify Orchestrator via Slack (reliable delivery)
     if (orphanedItems.length > 0) {

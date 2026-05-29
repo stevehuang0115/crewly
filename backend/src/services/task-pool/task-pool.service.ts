@@ -1304,6 +1304,54 @@ export class TaskPoolService {
   }
 
   /**
+   * Cancel a WorkItem that is currently `queued` or `blocked` (i.e. has
+   * NOT been claimed yet).
+   *
+   * Closes the 2026-05-25 #609 incident: a fallback delegate WI targeted
+   * at `crewly-orc` got stuck `queued` and kept re-dispatching every
+   * minute. The available APIs were either inappropriate (`fail` requires
+   * `running`, `complete` requires `running`) or destructive (`DELETE
+   * /api/task-pool/:id?force=1` is a hard delete with no audit trail).
+   * This method provides the clean `queued → cancelled` transition with
+   * a reason captured in `cancelReason` for the activity timeline.
+   *
+   * @param workItemId - Target WI id
+   * @param reason     - Human-readable explanation; persisted on
+   *                     `cancelReason` and surfaces in the UI badge.
+   * @throws if the WI doesn't exist, has an active claim, or is in a
+   *         non-cancellable terminal state.
+   */
+  async cancelQueued(workItemId: string, reason: string): Promise<void> {
+    const workItem = await this.storage.findWorkItem(workItemId);
+    if (!workItem) {
+      throw new Error(`WorkItem not found: ${workItemId}`);
+    }
+    if (workItem.status !== 'queued' && workItem.status !== 'blocked' && workItem.status !== 'scheduled') {
+      throw new Error(
+        `cancelQueued: WorkItem status must be 'queued', 'blocked', or 'scheduled' (got '${workItem.status}'). Use a status-appropriate API for other states — e.g. failItem for running, or DELETE for terminal-state cleanup.`,
+      );
+    }
+    const activeClaim = await this.storage.findActiveClaimByWorkItem(workItemId);
+    if (activeClaim) {
+      // Defensive: queued items shouldn't have active claims, but if
+      // some race produced one (e.g. claim got revoked but not cleaned
+      // up), release it cleanly before flipping to cancelled.
+      await this.storage.updateClaim(activeClaim.id, (c) => {
+        c.status = 'released';
+        c.endedAt = new Date().toISOString();
+        c.endReason = `cancelQueued: ${reason}`;
+      });
+    }
+    await this.transitionStatus(workItemId, 'cancelled', 'system', undefined, reason);
+    await this.storage.flush();
+    this.logger.info('WorkItem cancelled (queued → cancelled)', {
+      workItemId,
+      reason,
+      previousStatus: workItem.status,
+    });
+  }
+
+  /**
    * Requeue a failed WorkItem back to `queued` for another attempt.
    *
    * Path: `failed → queued` (legal in WORK_ITEM_TRANSITIONS but previously

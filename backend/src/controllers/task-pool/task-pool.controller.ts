@@ -651,6 +651,70 @@ export async function failItemHandler(req: Request, res: Response): Promise<void
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/task-pool/items/:workItemId/cancel — Cancel a queued/blocked WI
+// ---------------------------------------------------------------------------
+
+/**
+ * Cleanly cancel a WorkItem that is `queued`, `blocked`, or `scheduled`
+ * (i.e. has not been claimed yet). Closes the #609 gap where no
+ * non-destructive API existed for retiring a stuck queued WI — the only
+ * options were `complete` (requires running) or `DELETE ?force=1` (hard
+ * delete with no audit trail).
+ *
+ * Request body: `{ "reason": "short human-readable why" }`
+ *   `reason` is required. It's persisted on `cancelReason` and surfaces
+ *   in the activity timeline so the cancellation isn't an opaque event.
+ *
+ * Responses:
+ *   - 200 `{ success: true, workItemId, cancelledFrom }`
+ *   - 400 `{ success: false, error: 'reason is required' }`
+ *   - 400 `{ success: false, error: 'WorkItem status must be queued|blocked|scheduled', currentStatus }`
+ *   - 404 `{ success: false, error: 'WorkItem not found' }`
+ */
+export async function cancelQueuedItem(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'workItemId param is required' });
+      return;
+    }
+    if (!reason) {
+      res
+        .status(400)
+        .json({ success: false, error: 'reason is required (string, non-empty)' });
+      return;
+    }
+    const before = await getService().findWorkItem(workItemId);
+    if (!before) {
+      res.status(404).json({ success: false, error: 'WorkItem not found' });
+      return;
+    }
+    // Snapshot the pre-cancel status BEFORE calling the service —
+    // transitionStatus mutates the pool's cached object in place, so
+    // `before.status` will read as `'cancelled'` after the await
+    // otherwise (caught live 2026-05-28).
+    const cancelledFrom = before.status;
+    await getService().cancelQueued(workItemId, reason);
+    res.json({
+      success: true,
+      workItemId,
+      cancelledFrom,
+      reason,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    // The service throws a friendly message for wrong-state cases;
+    // surface it as 400 so callers can branch.
+    if (/status must be 'queued', 'blocked', or 'scheduled'/.test(msg)) {
+      res.status(400).json({ success: false, error: msg });
+      return;
+    }
+    handleServiceError(res, error);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/task-pool/stats — Pool statistics
 // ---------------------------------------------------------------------------
 

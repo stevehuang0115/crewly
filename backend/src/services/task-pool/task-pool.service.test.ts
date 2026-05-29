@@ -1459,6 +1459,67 @@ describe('TaskPoolService', () => {
   });
 
   // -----------------------------------------------------------------------
+  // cancelQueued (#609 — clean queued/blocked → cancelled transition)
+  // -----------------------------------------------------------------------
+
+  describe('cancelQueued', () => {
+    it('transitions queued → cancelled with the supplied reason on cancelReason', async () => {
+      const wi = makeWorkItem({ target: 'crewly-orc' });
+      await service.addToPool(wi);
+
+      await service.cancelQueued(wi.id, 'stuck delegate fallback');
+
+      const items = await service.getAllItems();
+      const after = items.find((w) => w.id === wi.id)!;
+      expect(after.status).toBe('cancelled');
+      expect(after.cancelReason).toBe('stuck delegate fallback');
+    });
+
+    it('also accepts a blocked WI (queued/blocked/scheduled all valid)', async () => {
+      // Blocked is the dep-resolver landing state; we want it cleanable
+      // too, otherwise dep-cycles spam dispatches forever.
+      const wi = makeWorkItem({ dependsOn: ['dep-1'] });
+      await service.addToPool(wi);
+      // makeWorkItem with dependsOn lands in 'blocked' per createWorkItem.
+
+      await service.cancelQueued(wi.id, 'parent abandoned');
+
+      const after = (await service.getAllItems()).find((w) => w.id === wi.id)!;
+      expect(after.status).toBe('cancelled');
+      expect(after.cancelReason).toBe('parent abandoned');
+    });
+
+    it('refuses to cancel a running WI (caller should use failItem)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+
+      await expect(service.cancelQueued(wi.id, 'oops')).rejects.toThrow(
+        /status must be 'queued', 'blocked', or 'scheduled'/,
+      );
+      // And the WI is NOT mutated — still running.
+      const after = (await service.getAllItems()).find((w) => w.id === wi.id)!;
+      expect(after.status).toBe('running');
+    });
+
+    it('refuses to cancel a terminal WI (cancelled/done/failed/verified)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.cancelQueued(wi.id, 'first cancel'); // queued → cancelled
+
+      await expect(service.cancelQueued(wi.id, 'second cancel')).rejects.toThrow(
+        /status must be 'queued', 'blocked', or 'scheduled'/,
+      );
+    });
+
+    it('throws when the WI does not exist', async () => {
+      await expect(service.cancelQueued('ghost-id', 'reason')).rejects.toThrow(
+        'WorkItem not found',
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // requeueAfterFailure (auto-retry path — 2026-05-22)
   // -----------------------------------------------------------------------
 

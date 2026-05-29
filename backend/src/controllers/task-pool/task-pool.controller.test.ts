@@ -16,6 +16,7 @@ import {
   deleteItem,
   completeItem,
   addItem,
+  cancelQueuedItem,
 } from './task-pool.controller.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 // Express types used for mock helpers below
@@ -51,6 +52,7 @@ const mockService = {
   setOutput: jest.fn(),
   addToPool: jest.fn(),
   getAllItems: jest.fn().mockResolvedValue([]),
+  cancelQueued: jest.fn(),
 };
 
 (TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
@@ -1017,6 +1019,79 @@ describe('TaskPoolController', () => {
       const addedWI = mockService.addToPool.mock.calls[0][0];
       expect(addedWI.status).toBe('blocked');
       expect(addedWI.dependsOn).toEqual(['wi-upstream-1', 'wi-upstream-2']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/task-pool/items/:workItemId/cancel (#609 explicit cancel)
+  // -------------------------------------------------------------------------
+
+  describe('cancelQueuedItem (#609)', () => {
+    beforeEach(() => {
+      mockService.cancelQueued.mockReset();
+      mockService.findWorkItem.mockReset();
+    });
+
+    it('returns 200 + cancelledFrom on a successful queued cancel', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-1', status: 'queued' });
+      mockService.cancelQueued.mockResolvedValue(undefined);
+
+      const req = mockReq({ params: { workItemId: 'wi-1' }, body: { reason: 'stuck fallback' } });
+      const res = mockRes();
+      await cancelQueuedItem(req, res);
+
+      expect(mockService.cancelQueued).toHaveBeenCalledWith('wi-1', 'stuck fallback');
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true, workItemId: 'wi-1', cancelledFrom: 'queued', reason: 'stuck fallback' }),
+      );
+    });
+
+    it('returns 400 when reason is missing or empty', async () => {
+      const req = mockReq({ params: { workItemId: 'wi-1' }, body: {} });
+      const res = mockRes();
+      await cancelQueuedItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: expect.stringMatching(/reason is required/) }),
+      );
+      expect(mockService.cancelQueued).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when reason is only whitespace', async () => {
+      const req = mockReq({ params: { workItemId: 'wi-1' }, body: { reason: '   ' } });
+      const res = mockRes();
+      await cancelQueuedItem(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockService.cancelQueued).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when WI does not exist', async () => {
+      mockService.findWorkItem.mockResolvedValue(null);
+      const req = mockReq({ params: { workItemId: 'ghost' }, body: { reason: 'why' } });
+      const res = mockRes();
+      await cancelQueuedItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(mockService.cancelQueued).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 with the service error message when WI is in a non-cancellable state', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-2', status: 'running' });
+      mockService.cancelQueued.mockRejectedValue(
+        new Error(
+          "cancelQueued: WorkItem status must be 'queued', 'blocked', or 'scheduled' (got 'running'). Use a status-appropriate API for other states — e.g. failItem for running, or DELETE for terminal-state cleanup.",
+        ),
+      );
+
+      const req = mockReq({ params: { workItemId: 'wi-2' }, body: { reason: 'oops' } });
+      const res = mockRes();
+      await cancelQueuedItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: expect.stringMatching(/status must be 'queued'/) }),
+      );
     });
   });
 });
