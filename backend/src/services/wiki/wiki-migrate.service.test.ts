@@ -1,0 +1,364 @@
+/**
+ * Tests for WikiMigrateService.
+ *
+ * Uses scratch temp dirs for both project + home. Covers detection,
+ * scan, idempotent apply, bootstrap, and collision handling.
+ *
+ * @module services/wiki/wiki-migrate.service.test
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
+import {
+  WikiMigrateService,
+  WIKI_MIGRATE_MANIFEST_FILENAME,
+} from './wiki-migrate.service.js';
+
+let projectRoot: string;
+let homeDir: string;
+let svc: WikiMigrateService;
+
+async function write(rel: string, content: string, root: string = projectRoot): Promise<void> {
+  const abs = path.join(root, rel);
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.writeFile(abs, content, 'utf8');
+}
+
+beforeEach(async () => {
+  projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-migrate-project-'));
+  homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-migrate-home-'));
+  WikiMigrateService.resetInstance();
+  svc = WikiMigrateService.getInstance();
+});
+
+afterEach(async () => {
+  await fs.rm(projectRoot, { recursive: true, force: true });
+  await fs.rm(homeDir, { recursive: true, force: true });
+});
+
+describe('WikiMigrateService input validation', () => {
+  it('rejects relative projectRoot', async () => {
+    const out = await svc.scan({ projectRoot: 'relative/path' });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toBe('invalid_input');
+  });
+
+  it('returns project_root_missing for non-existent dir', async () => {
+    const out = await svc.scan({
+      projectRoot: path.join(os.tmpdir(), 'definitely-not-here-migrate'),
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toBe('project_root_missing');
+  });
+});
+
+describe('WikiMigrateService.scan', () => {
+  it('reports legacyDetected=false for a virgin project', async () => {
+    const out = await svc.scan({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.legacyDetected).toBe(false);
+    expect(out.proposedPages).toEqual([]);
+    expect(out.bootstrapNeeded.project).toBe(true);
+    expect(out.bootstrapNeeded.global).toBe(true);
+  });
+
+  it('proposes a decision page from decisions.json', async () => {
+    await write(
+      '.crewly/knowledge/decisions.json',
+      JSON.stringify([
+        {
+          id: 'd-1',
+          title: 'Locked SMB pricing at $799/mo',
+          decision: 'After the Anthropic pilot, lock SMB tier at $799 setup + $799/mo.',
+          rationale: 'Anthropic pilot data + margin floor.',
+          decidedBy: 'crewly-orc',
+          decidedAt: '2026-05-22T16:00:00Z',
+          status: 'active',
+        },
+      ]),
+    );
+    const out = await svc.scan({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.legacyDetected).toBe(true);
+    expect(out.summary.decisions).toBe(1);
+    expect(out.proposedPages).toHaveLength(1);
+    const p = out.proposedPages[0];
+    expect(p.sourceType).toBe('decision');
+    expect(p.targetRelativePath).toMatch(
+      /^llm-curated\/decisions\/2026-05-22-locked-smb-pricing-at-799-mo\.md$/,
+    );
+    expect(p.title).toBe('Locked SMB pricing at $799/mo');
+    expect(p.skipReason).toBeUndefined();
+  });
+
+  it('proposes patterns + gotchas into llm-curated/patterns/', async () => {
+    await write(
+      '.crewly/knowledge/patterns.json',
+      JSON.stringify([
+        {
+          id: 'p-1',
+          category: 'other',
+          title: 'AsyncIterator backpressure pattern',
+          description: 'Pull-only consumers avoid memory growth.',
+          discoveredBy: 'crewly-product-leo',
+          createdAt: '2026-04-01T00:00:00Z',
+        },
+      ]),
+    );
+    await write(
+      '.crewly/knowledge/gotchas.json',
+      JSON.stringify([
+        {
+          id: 'g-1',
+          title: 'WS keepalive collision',
+          problem: 'Connect storm fires when alarm + manual reconnect race.',
+          solution: 'Single ConnectionManager state machine.',
+          severity: 'high',
+          discoveredBy: 'crewly-arch',
+          createdAt: '2026-05-23T00:00:00Z',
+        },
+      ]),
+    );
+    const out = await svc.scan({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.summary.patterns).toBe(1);
+    expect(out.summary.gotchas).toBe(1);
+    const paths = out.proposedPages.map((p) => p.targetRelativePath);
+    expect(paths.some((p) => p.startsWith('llm-curated/patterns/'))).toBe(true);
+  });
+
+  it('proposes a single learnings.md log import', async () => {
+    await write(
+      '.crewly/knowledge/learnings.md',
+      '## 2026-04-01 — note 1\n\n## 2026-04-02 — note 2\n',
+    );
+    const out = await svc.scan({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.summary.learnings).toBe(1);
+    const log = out.proposedPages.find((p) => p.sourceType === 'learning-log');
+    expect(log?.targetRelativePath).toBe('llm-curated/log.md');
+  });
+
+  it('proposes loose .md files into llm-curated/decisions/', async () => {
+    await write('.crewly/knowledge/2026-05-04-runbook.md', '# Runbook\n\nDeploy steps.\n');
+    const out = await svc.scan({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.summary.looseMd).toBe(1);
+    const md = out.proposedPages.find((p) => p.sourceType === 'loose-md');
+    expect(md?.targetRelativePath).toMatch(
+      /^llm-curated\/decisions\/2026-05-04-runbook\.md$/,
+    );
+  });
+
+  it('proposes agent memory.json roleKnowledge as memory-entry pages', async () => {
+    await write(
+      `.crewly/agents/crewly-product-leo-xxx/memory.json`,
+      JSON.stringify({
+        agentId: 'crewly-product-leo-xxx',
+        roleKnowledge: [
+          {
+            id: 'mem-1',
+            category: 'best-practice',
+            content: 'Atomic writes guard against state-corruption collapse.',
+            createdAt: '2026-05-04T00:00:00Z',
+            confidence: 0.3,
+          },
+          {
+            id: 'mem-2',
+            category: 'gotcha',
+            content: 'jest --forceExit needed when LoggerService.startLogFlusher is live.',
+            createdAt: '2026-05-04T00:00:00Z',
+          },
+        ],
+      }),
+      homeDir,
+    );
+    const out = await svc.scan({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.summary.memoryEntries).toBe(2);
+    expect(
+      out.proposedPages.every(
+        (p) => p.sourceType !== 'memory-entry' || p.targetRelativePath.startsWith('llm-curated/patterns/'),
+      ),
+    ).toBe(true);
+  });
+
+  it('respects includeAgentMemory=false', async () => {
+    await write(
+      `.crewly/agents/x/memory.json`,
+      JSON.stringify({ roleKnowledge: [{ id: 'a', content: 'x', category: 'pattern' }] }),
+      homeDir,
+    );
+    const out = await svc.scan({ projectRoot, homeDir, includeAgentMemory: false });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.summary.memoryEntries).toBe(0);
+  });
+
+  it('tags routing_uncertain when content mentions cross-project signals', async () => {
+    await write(
+      '.crewly/knowledge/decisions.json',
+      JSON.stringify([
+        {
+          id: 'd-cp',
+          title: 'OKR rewrite Q3',
+          decision: 'Re-anchor company-wide OKR to growth metrics.',
+          decidedAt: '2026-05-22T00:00:00Z',
+        },
+      ]),
+    );
+    const out = await svc.scan({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.proposedPages[0].routingUncertain).toBe(true);
+  });
+});
+
+describe('WikiMigrateService.apply', () => {
+  it('bootstraps missing vaults', async () => {
+    await fs.mkdir(path.join(homeDir, '.crewly', 'teams', 'uuid-1'), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(homeDir, '.crewly', 'teams', 'uuid-1', 'config.json'),
+      JSON.stringify({ name: 'Test Team' }),
+      'utf8',
+    );
+    const out = await svc.apply({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok || !('applied' in out)) return;
+    expect(out.bootstrapped.length).toBeGreaterThanOrEqual(3); // project + global + team
+    // verify schema files actually exist
+    const projectSchema = path.join(projectRoot, '.crewly/wiki/SCHEMA.md');
+    const globalSchema = path.join(homeDir, '.crewly/global-wiki/SCHEMA.md');
+    const teamSchema = path.join(homeDir, '.crewly/teams/uuid-1/wiki/SCHEMA.md');
+    for (const p of [projectSchema, globalSchema, teamSchema]) {
+      const raw = await fs.readFile(p, 'utf8');
+      expect(raw).toContain('vault_scope:');
+    }
+    const teamMd = await fs.readFile(teamSchema, 'utf8');
+    expect(teamMd).toContain('Test Team');
+  });
+
+  it('writes a decision page and records it in the manifest', async () => {
+    await write(
+      '.crewly/knowledge/decisions.json',
+      JSON.stringify([
+        {
+          id: 'd-write-1',
+          title: 'Adopt v2.1',
+          decision: 'Three-scope vault + hybrid folders + skill-not-agent.',
+          decidedAt: '2026-05-22T00:00:00Z',
+        },
+      ]),
+    );
+    const out = await svc.apply({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok || !('applied' in out)) return;
+    expect(out.applied).toBe(1);
+    expect(out.skipped).toBe(0);
+    const targetAbs = path.join(projectRoot, '.crewly/wiki', out.proposedPages[0].targetRelativePath);
+    const body = await fs.readFile(targetAbs, 'utf8');
+    expect(body).toContain('# Adopt v2.1');
+    expect(body).toContain('migrated_from:');
+    expect(body).toContain('Three-scope vault + hybrid folders');
+    const manifestRaw = await fs.readFile(
+      path.join(projectRoot, '.crewly/wiki', WIKI_MIGRATE_MANIFEST_FILENAME),
+      'utf8',
+    );
+    const manifest = JSON.parse(manifestRaw) as { entries: { sourceId: string }[] };
+    expect(manifest.entries.map((e) => e.sourceId)).toContain('d-write-1');
+  });
+
+  it('is idempotent — second apply does nothing new', async () => {
+    await write(
+      '.crewly/knowledge/decisions.json',
+      JSON.stringify([
+        { id: 'd-idem-1', title: 'X', decision: 'Y.', decidedAt: '2026-05-22T00:00:00Z' },
+      ]),
+    );
+    const first = await svc.apply({ projectRoot, homeDir });
+    expect(first.ok).toBe(true);
+    if (!first.ok || !('applied' in first)) return;
+    expect(first.applied).toBe(1);
+
+    const second = await svc.apply({ projectRoot, homeDir });
+    expect(second.ok).toBe(true);
+    if (!second.ok || !('applied' in second)) return;
+    expect(second.applied).toBe(0);
+    expect(second.skipped).toBe(1);
+    expect(second.proposedPages[0].skipReason).toBe('already migrated');
+  });
+
+  it('appends learnings.md to log.md instead of overwriting', async () => {
+    await write('.crewly/knowledge/learnings.md', '## learning 1\n');
+    // Pre-populate log.md (as if previous wiki activity).
+    await write('.crewly/wiki/llm-curated/log.md', '# Activity log\n\nExisting line.\n');
+    await write('.crewly/wiki/SCHEMA.md', 'vault_scope: project\nvault_id: x\nhardcoded: []\n');
+    const out = await svc.apply({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok || !('applied' in out)) return;
+    const log = await fs.readFile(
+      path.join(projectRoot, '.crewly/wiki/llm-curated/log.md'),
+      'utf8',
+    );
+    expect(log).toContain('Existing line.');
+    expect(log).toContain('learning 1');
+  });
+
+  it('resolves filename collisions with -<n> suffix', async () => {
+    // Existing page with the slug we'd produce.
+    await write('.crewly/wiki/SCHEMA.md', 'vault_scope: project\nvault_id: x\nhardcoded: []\n');
+    await write(
+      '.crewly/wiki/llm-curated/decisions/2026-05-22-existing.md',
+      '# existing — different content\n',
+    );
+    await write(
+      '.crewly/knowledge/decisions.json',
+      JSON.stringify([
+        {
+          id: 'd-coll-1',
+          title: 'existing',
+          decision: 'New different decision body.',
+          decidedAt: '2026-05-22T00:00:00Z',
+        },
+      ]),
+    );
+    const out = await svc.apply({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok || !('applied' in out)) return;
+    expect(out.applied).toBe(1);
+    const manifestRaw = await fs.readFile(
+      path.join(projectRoot, '.crewly/wiki', WIKI_MIGRATE_MANIFEST_FILENAME),
+      'utf8',
+    );
+    const manifest = JSON.parse(manifestRaw) as {
+      entries: { targetRelativePath: string }[];
+    };
+    const target = manifest.entries[0].targetRelativePath;
+    expect(target).toMatch(/2026-05-22-existing-1\.md$/);
+  });
+
+  it('preserves legacy files (never deletes)', async () => {
+    await write(
+      '.crewly/knowledge/decisions.json',
+      JSON.stringify([
+        { id: 'd-keep', title: 'x', decision: 'y.', decidedAt: '2026-05-22T00:00:00Z' },
+      ]),
+    );
+    await svc.apply({ projectRoot, homeDir });
+    const legacyStill = await fs.readFile(
+      path.join(projectRoot, '.crewly/knowledge/decisions.json'),
+      'utf8',
+    );
+    expect(legacyStill).toContain('d-keep');
+  });
+});

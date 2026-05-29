@@ -20,6 +20,16 @@ import {
   listVaults,
   getVaultTree,
   getPage,
+  searchVault,
+  getBacklinks,
+  lintVault,
+  getRecent,
+  reflectTriggerNow,
+  migrateScan,
+  migrateApply,
+  migrateOssSops,
+  cleanupScan,
+  cleanupApply,
 } from './wiki.controller.js';
 
 /**
@@ -51,9 +61,19 @@ export function createWikiRouter(): Router {
   router.post('/queue/:id/skip', queueSkip);
   router.post('/bookkeep', bookkeep);
   router.post('/bookkeep/trigger-now', bookkeepTriggerNow);
+  router.post('/reflect/trigger-now', reflectTriggerNow);
+  router.post('/lint', lintVault);
   // Browse endpoints — power the /wiki UI.
   router.get('/vaults', listVaults);
   router.get('/tree', getVaultTree);
   router.get('/page', getPage);
+  router.get('/search', searchVault);
+  router.get('/backlinks', getBacklinks);
+  router.get('/recent', getRecent);
+  router.post('/migrate/scan', migrateScan);
+  router.post('/migrate/apply', migrateApply);
+  router.post('/migrate/oss-sops', migrateOssSops);
+  router.post('/cleanup/scan', cleanupScan);
+  router.post('/cleanup/apply', cleanupApply);
   return router;
 }

@@ -102,8 +102,9 @@ Use when: You need to follow up on worker progress later. Validates hierarchy �
 When you receive a task brief from the orchestrator (or any upstream delegator):
 
 1. **Verify** that **Goal**, **Expected Outcome**, and **Eval Criteria** are present in the brief.
-2. **Push back** if any of the three is missing — do not proceed, do not start decomposition, do not fan out work. Reply to the delegator naming the missing field(s) and request the contract be completed.
-3. **Propagate verbatim** when sub-delegating to a worker — copy Goal + Expected Outcome + Eval Criteria from the parent brief into every child task. Workers should never have to ask you what success looks like.
+2. **Wiki-query first (2026-05-26):** before decomposing, run `wiki-query` against your team vault (`~/.crewly/teams/<your-team-id>/wiki`) AND the project vault (`<project>/.crewly/wiki`) for the brief's topic. The team vault tells you "have we done this before / does this conflict with team-norm / did Steve lock a position here". Skip ONLY for trivial briefs (typo fix, single-file rename).
+3. **Push back** if any of Goal/Outcome/Eval is missing — do not proceed, do not start decomposition, do not fan out work. Reply to the delegator naming the missing field(s) and request the contract be completed.
+4. **Propagate verbatim** when sub-delegating to a worker — copy Goal + Expected Outcome + Eval Criteria from the parent brief into every child task. Workers should never have to ask you what success looks like. If wiki-query surfaced relevant prior art, attach the page paths in the brief so workers don't re-discover.
 
 The `delegate-task` skill emits a stderr WARNING when a brief is missing G/O/E markers — treat that warning as a hard signal that the brief is malformed.
 
@@ -322,3 +323,17 @@ If YES, call `config/skills/orchestrator/wiki-queue-add/execute.sh`:
 4. POST `/api/wiki/queue/<id>/process` to commit, OR `/queue/<id>/skip` if you decide it's actually a duplicate after seeing context.
 
 Frozen folders (`memory/`, `sop/`, `team-norm/`, `sop-overrides/`) are OFF-LIMITS — ingest will reject with 422.
+
+**`[REFLECT-WIKI]` messages (2026-05-24):** the backend pings you (and ORC) when no `wiki-queue-add` has fired against a vault in the last 4h. When you see `[REFLECT-WIKI] vault=…`, sweep your verify-task history for the period and queue worth-saving items. If genuinely nothing is wiki-worthy, reply with `nothing this period: <one-sentence justification>` rather than ignoring — silence reads as forgotten, not deliberate.
+
+## Turn-end "idle-drain" checklist (2026-05-26) — MANDATORY
+
+Before yielding the turn, run this 5-step check. **Task work always wins** — only drain wiki when you're genuinely idle, never block a verify or worker reply on wiki maintenance.
+
+1. **Inbox check** — any unread `[TASK]`, `[CHAT]`, `[ESCALATION]` you haven't responded to? → YES = stop, handle that first.
+2. **Active worker check** — any worker currently waiting on your verify or dispatch? → YES = work on it.
+3. **Queue drain** — `wiki-process-queue --claimed-by self`. If queue has pending items for **your team vault** or the project vault, claim the oldest and process it (read context → pick target page → `wiki-ingest` → POST `/queue/<id>/process`). **At most 3 items per idle window**; remaining drain next idle.
+4. **Bookkeep check** — last `[BOOKKEEP]` for your team vault was acted on? If shouldFire is true and you haven't done a consolidation pass: run `wiki-bookkeep` and act on duplicate clusters.
+5. **Lint check** (lower priority) — every ~3 days run `wiki-lint --vault <your-team-vault>`, surface `missingEntities` / `orphanPages` to chat.
+
+**"Idle" is a soft signal — your judgment.** If verify queue is empty, no active dispatch, no pending chat: that's idle. If you're mid-verify or chat is active: NOT idle.

@@ -73,9 +73,9 @@ You have bash skills that let you store and retrieve knowledge that persists acr
   bash {{AGENT_SKILLS_PATH}}/core/record-learning/execute.sh '{"agentId":"{{SESSION_NAME}}","agentRole":"{{ROLE}}","projectPath":"{{PROJECT_PATH}}","learning":"what you learned"}'
   ```
 
-- **`query-knowledge`** — Search company knowledge base for SOPs, runbooks, architecture docs
+- **`wiki-query`** — Search the LLM-wiki (v2.1) for SOPs, runbooks, decisions, patterns, people/customer pages (replaces the retired `query-knowledge`)
   ```bash
-  bash {{AGENT_SKILLS_PATH}}/core/query-knowledge/execute.sh '{"query":"deployment process","scope":"global"}'
+  bash {{AGENT_SKILLS_PATH}}/core/wiki-query/execute.sh --vault ~/.crewly/global-wiki --query "deployment process" --top-k 5
   ```
 
 ### When to Use Memory Tools

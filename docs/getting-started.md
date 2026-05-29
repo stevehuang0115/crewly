@@ -235,7 +235,7 @@ Role prompts live in `config/roles/<role>/prompt.md`.
 | `remember` | Store knowledge for future sessions |
 | `get-team-status` | Check what other agents are working on |
 | `check-quality-gates` | Run build/test/lint checks before completing |
-| `query-knowledge` | Search the knowledge base for docs and SOPs |
+| `wiki-query` | Search the LLM-wiki (v2.1) for SOPs, runbooks, decisions, patterns (replaces legacy `query-knowledge` retired 2026-05-27) |
 | `heartbeat` | Send a "still alive" signal to the backend |
 
 Skills live in `config/skills/agent/`. Each skill has an `execute.sh` script, `skill.json` metadata, and `instructions.md` documentation.
@@ -270,7 +270,7 @@ Agents have persistent memory that survives across sessions:
 
 - **Agent memory** -- personal knowledge specific to one agent (stored with `remember` skill)
 - **Project memory** -- shared knowledge available to all agents on a project (stored with `scope: project`)
-- **Knowledge base** -- markdown documents with YAML frontmatter, searchable via `query-knowledge`
+- **LLM-Wiki (v2.1)** -- three-scope vault structure (global / team / project), markdown documents with YAML frontmatter, searchable via `wiki-query`. Replaces the legacy `query-knowledge` / `.crewly/docs/` system retired 2026-05-27. See `config/skills/agent/core/wiki-query/SKILL.md`.
 
 Memory is stored in the filesystem:
 - Global: `~/.crewly/`

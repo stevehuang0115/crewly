@@ -16,9 +16,10 @@ You have MCP tools that let you store and retrieve knowledge that persists acros
   - Required: `learning` (what you learned)
   - **Always pass**: `teamMemberId` (your Session Name) and `projectPath` (your Project Path from the Identity section)
 
-- **`query-knowledge`** — Search company knowledge base for SOPs, runbooks, architecture docs
-  - Required: `query` (what to search for)
-  - Optional: `scope` (`global` or `project`), `category`, `projectPath`
+- **`wiki-query`** — Search the LLM-wiki (v2.1) for SOPs, runbooks, decisions, patterns, customer/people pages
+  - Required: `vault` (absolute path; see `wiki-instructions.md` for the per-topic vault picker), `query`
+  - Optional: `topK` (default 5)
+  - **Replaces the legacy `query-knowledge` skill (retired 2026-05-27)** — the OSS migration script moved every doc, SOP, runbook into the appropriate wiki vault; query the wiki, not the old `.crewly/docs/` / `.crewly/knowledge/` stores
 
 ### When to Use Memory Tools
 
@@ -36,8 +37,8 @@ You have MCP tools that let you store and retrieve knowledge that persists acros
 - Note cross-agent user preferences (category: `user_preference`, scope: `project`)
 
 **Before process-oriented tasks** (deployment, setup, incident response):
-- **Query global knowledge** for SOPs and runbooks: `query-knowledge` with the relevant topic
-- These documents contain step-by-step procedures your team has documented
+- **Query the wiki** with `wiki-query` against the right vault (global vault for cross-team SOPs, team vault for team-norms, project vault for project-specific runbooks — see `wiki-instructions.md`)
+- These documents contain step-by-step procedures your team has documented; the LLM-wiki has fully replaced the legacy `query-knowledge`/`.crewly/docs/` storage as of 2026-05-27
 
 **Before answering questions** about deployment, architecture, past decisions, or infrastructure:
 - **Always call `recall` first** to check stored knowledge before answering from scratch
