@@ -1143,7 +1143,7 @@ You are the orchestrator. Use **orchestrator-namespaced** bash skills at \`${thi
 - \`broadcast\` / \`broadcast-to-org\` (orc-namespaced) — multi-agent fan-out
 - \`reply-chat\` / \`reply-slack\` / \`reply-gchat\` / \`reply-remote\` (orc-namespaced) — owner-facing replies on the channel the user wrote on
 - \`schedule-check\` / \`create-cron\` / \`cancel-schedule\` (orc-namespaced) — orc-side scheduling primitives
-- Memory access: orc reads cross-agent memory via the internal service-layer \`recallFromAllAgents()\` rather than the agent-side \`recall\` skill (which is gated to worker roles). Use \`query-knowledge\` (orc-namespaced) for SOP/runbook lookups.
+- Memory access: orc reads cross-agent memory via the internal service-layer \`recallFromAllAgents()\` rather than the agent-side \`recall\` skill (which is gated to worker roles). Use \`wiki-query\` (v2.1 LLM-wiki; **replaces the retired \`query-knowledge\` skill as of 2026-05-27**) for SOP / runbook / doc lookups. Vault picker: \`~/.crewly/global-wiki\` for cross-team SOPs, team vault for team norms, project vault for project runbooks.
 
 **IMPORTANT — namespace gate:** the agent-side skills under \`${this.agentSkillsPath}/core/\` exclude orchestrator from \`assignableRoles\` for a reason. Reaching for them from this orchestrator session bypasses the orc-routing layer:
 

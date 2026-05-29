@@ -54,7 +54,10 @@ const DEFAULT_DEBOUNCE_MS = 6 * 3600 * 1000;
 /**
  * Discover absolute vault paths by walking the well-known Crewly roots:
  *   - `<env CREWLY_PROJECT_VAULT_PATH>` (single explicit override)
- *   - `<process.cwd>/.crewly/wiki` (current project vault)
+ *   - `<process.cwd>/.crewly/wiki` (current project vault — the OSS's own dir)
+ *   - `~/.crewly/projects.json` → every registered project's `.crewly/wiki`
+ *     (Closie, Flopost, CE, etc. — each team manages a project, and that
+ *      project gets its own vault per v2.1 spec §1)
  *   - `~/.crewly/teams/<uuid>/wiki` (every team vault)
  *   - `~/.crewly/global-wiki` (ORC cross-project vault, if present)
  *
@@ -68,6 +71,26 @@ export async function discoverWikiVaults(): Promise<string[]> {
   if (fromEnv && path.isAbsolute(fromEnv)) candidates.push(fromEnv);
   candidates.push(path.join(process.cwd(), '.crewly/wiki'));
   candidates.push(path.join(os.homedir(), '.crewly/global-wiki'));
+
+  // (NEW 2026-05-27) Every registered project's wiki. Without this, only
+  // the OSS's own cwd project (Crewly itself) surfaces — Closie/Flopost/CE
+  // managed by their teams stay invisible despite being real projects.
+  const projectsJsonPath = path.join(os.homedir(), '.crewly/projects.json');
+  if (existsSync(projectsJsonPath)) {
+    try {
+      const raw = await fs.readFile(projectsJsonPath, 'utf8');
+      const parsed = JSON.parse(raw) as Array<{ path?: string }>;
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          if (entry && typeof entry.path === 'string' && path.isAbsolute(entry.path)) {
+            candidates.push(path.join(entry.path, '.crewly/wiki'));
+          }
+        }
+      }
+    } catch {
+      // malformed projects.json — skip; partial discovery is fine
+    }
+  }
 
   const teamsRoot = path.join(os.homedir(), '.crewly/teams');
   if (existsSync(teamsRoot)) {
