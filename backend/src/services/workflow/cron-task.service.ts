@@ -43,6 +43,29 @@ const CRON_AUTO_START_READY_TIMEOUT_MS = 15_000;
 /** How often to re-check the agent's status during the readiness wait. */
 const CRON_AUTO_START_READY_POLL_MS = 500;
 
+/**
+ * #611 transient-skip retry budget. When an auto-start fails because the
+ * PTY spawn momentarily can't acquire a slot (`posix_spawnp failed.` —
+ * observed 2026-05-28 when the user proc count hit 353 against a
+ * `maxProcPerUid` of 1333 → kernel briefly rejected new spawns), the
+ * cron-eval path used to permanently skip the slot. The error itself is
+ * transient ("Wait ~30 s and the next attempt should succeed") so we
+ * instead push `nextRunAt` forward by a short backoff and let the cron
+ * loop retry the same slot up to {@link CRON_TRANSIENT_SKIP_MAX_ATTEMPTS}
+ * times before permanently skipping.
+ */
+const CRON_TRANSIENT_SKIP_MAX_ATTEMPTS = 3;
+
+/**
+ * Base backoff for transient skip retries (#611). Total time waited
+ * across all attempts ≈ BACKOFF × (1 + 2 + 3) = 60 s with the default
+ * 10s base — enough for the PTY spawn limit to clear without unduly
+ * delaying tasks. Multiplied by `transientSkipAttempts` for a linear
+ * backoff (a multi-process spike clears in a small handful of seconds,
+ * exponential would over-delay).
+ */
+const CRON_TRANSIENT_SKIP_BACKOFF_MS = 10_000;
+
 /** Name of the per-team cron task file */
 const CRON_TASKS_FILENAME = 'cron-tasks.json';
 
@@ -814,6 +837,43 @@ export class CronTaskService {
 		}
 
 		if (!agentOnline) {
+			// #611: transient-skip retry budget. The reasons that fire here
+			// (`agent_offline_not_ready` / `agent_offline_start_failed`) can
+			// be caused by short-lived PTY spawn failures that clear in
+			// seconds (observed 2026-05-28: kernel briefly rejected
+			// posix_spawnp at user-proc-count 353/1333). Push `nextRunAt`
+			// forward by a small linear backoff and retry the SAME slot up
+			// to CRON_TRANSIENT_SKIP_MAX_ATTEMPTS before surrendering to the
+			// old "advance + mark skipped" path. Surplus skip reasons
+			// (`agent_offline_no_callback`) are NOT transient — they go
+			// straight to permanent skip.
+			const isTransient =
+				skipReason === 'agent_offline_not_ready' ||
+				skipReason === 'agent_offline_start_failed';
+			if (isTransient) {
+				const attempts = (task.transientSkipAttempts ?? 0) + 1;
+				if (attempts < CRON_TRANSIENT_SKIP_MAX_ATTEMPTS) {
+					const backoffMs = CRON_TRANSIENT_SKIP_BACKOFF_MS * attempts;
+					task.transientSkipAttempts = attempts;
+					task.nextRunAt = new Date(Date.now() + backoffMs).toISOString();
+					this.logger.warn('Cron transient-skip — retrying slot after backoff', {
+						id: task.id,
+						target: task.targetAgent,
+						skipReason,
+						attempt: attempts,
+						maxAttempts: CRON_TRANSIENT_SKIP_MAX_ATTEMPTS,
+						backoffMs,
+						nextRunAt: task.nextRunAt,
+					});
+					return true;
+				}
+				// Budget exhausted — fall through to permanent skip with a
+				// distinct reason so dashboards can tell "we tried" vs "gave
+				// up first round". Reset the counter so the next regular
+				// firing starts fresh.
+				skipReason = 'agent_offline_retries_exhausted';
+				task.transientSkipAttempts = 0;
+			}
 			this.logger.warn('Skipping cron task — agent offline and auto-start unavailable', {
 				id: task.id,
 				target: task.targetAgent,
@@ -848,6 +908,14 @@ export class CronTaskService {
 		// Update run times regardless of execution success
 		task.lastRunAt = now.toISOString();
 		task.nextRunAt = getNextRunTime(task.cronExpression, task.timezone, now);
+		// #611: a successful (or attempted) execution clears the
+		// transient-skip retry counter so the NEXT slot starts with a
+		// fresh budget. Without this reset, a string of bad-luck runs
+		// would carry attempt-counts across firings and exhaust the
+		// budget prematurely.
+		if ((task.transientSkipAttempts ?? 0) > 0) {
+			task.transientSkipAttempts = 0;
+		}
 		return true;
 	}
 

@@ -47,9 +47,24 @@ export interface CronTask {
 	 *   - `agent_offline_start_failed` — callback threw or returned false
 	 *   - `agent_offline_not_ready` — callback succeeded but agent
 	 *     didn't come online within the wait window
-	 * Issue #305.
+	 *   - `agent_offline_retries_exhausted` — transient retries (#611) ran
+	 *     out; equivalent terminal-skip for the consumer
+	 * Issue #305 / #611.
 	 */
 	lastSkipReason?: string;
+	/**
+	 * Transient-skip retry counter (#611, 2026-05-28). Incremented every
+	 * time `agent_offline_not_ready` / `agent_offline_start_failed` would
+	 * have produced a permanent skip; reset to 0 on any successful run.
+	 * The cron-eval loop reads this to decide whether to push `nextRunAt`
+	 * out by a short backoff (retry) vs. permanently skip the slot.
+	 *
+	 * Why a stored counter and not an in-memory one: cron eval can fire
+	 * on a fresh process (restart) and we still want the retry budget to
+	 * survive — otherwise a transient OS spike that happens to coincide
+	 * with a backend bounce would defeat the retry mechanism entirely.
+	 */
+	transientSkipAttempts?: number;
 }
 
 /**
