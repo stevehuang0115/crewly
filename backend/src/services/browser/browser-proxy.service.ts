@@ -63,6 +63,29 @@ export type ProxyConnectionState = 'disconnected' | 'connecting' | 'connected';
 /** Default relay WebSocket URL. */
 const DEFAULT_RELAY_URL = 'wss://api.crewlyai.com/relay';
 
+/**
+ * Decode the `sub` (account id) claim from a JWT WITHOUT verifying the
+ * signature — used only to derive a stable load-balancer stickiness key
+ * (`?rk=`), never for any auth decision. Stable across token refreshes
+ * (the `sub` doesn't change when the token rotates), which is exactly what
+ * the sticky-by-account routing needs.
+ *
+ * @param token - a JWT (relay-signed access token), or null
+ * @returns the `sub` string, or null if absent/unparseable
+ */
+export function decodeJwtSub(token: string | null): string | null {
+  if (!token) return null;
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const json = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const sub = (JSON.parse(json) as { sub?: unknown }).sub;
+    return typeof sub === 'string' && sub.length > 0 ? sub : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Heartbeat interval to keep the relay connection alive (ms). */
 const HEARTBEAT_INTERVAL_MS = 25_000;
 
@@ -312,6 +335,30 @@ export class BrowserProxyService {
    * @param token - JWT auth token for relay registration
    * @param relayUrl - Optional relay URL override
    */
+  /**
+   * Append the account-stickiness key (`?rk=<userId>`) to the relay URL.
+   *
+   * The cloud relay runs as 2+ nodes behind an nginx `hash $arg_rk consistent`
+   * upstream. browserRegistry is per-process in-memory (no cross-node sharing),
+   * so a backend agent and its account's browser MUST land on the SAME node to
+   * pair. We pin by account: derive the userId from the relay JWT's `sub` claim
+   * (stable across token refreshes — unlike the rotating token itself) and pass
+   * it as `?rk=`. The Chrome extension passes the SAME key, so both pin to one
+   * node. If the token can't be decoded, we omit `rk` (nginx hashes empty → all
+   * keyless clients co-locate, still consistent). The `ws` lib strips the query
+   * before matching path '/relay', so this is transparent to the relay server.
+   *
+   * @param baseUrl - the relay wss URL (e.g. wss://api.crewlyai.com/relay)
+   * @param token - the relay-signed JWT whose `sub` is the account id
+   * @returns the URL with `?rk=<sub>` appended when derivable, else baseUrl
+   */
+  private buildStickyRelayUrl(baseUrl: string, token: string | null): string {
+    const rk = decodeJwtSub(token);
+    if (!rk) return baseUrl;
+    const sep = baseUrl.includes('?') ? '&' : '?';
+    return `${baseUrl}${sep}rk=${encodeURIComponent(rk)}`;
+  }
+
   connect(token: string, relayUrl?: string): void {
     if (this.state !== 'disconnected') {
       this.logger.warn('Already connected or connecting to relay');
@@ -340,7 +387,7 @@ export class BrowserProxyService {
       this.ws = null;
     }
 
-    this.ws = new WebSocket(this.relayUrl);
+    this.ws = new WebSocket(this.buildStickyRelayUrl(this.relayUrl, this.authToken));
 
     this.ws.on('open', () => {
       this.logger.info('Relay WebSocket connected, registering as agent');

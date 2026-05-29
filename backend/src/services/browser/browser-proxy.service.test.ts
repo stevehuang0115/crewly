@@ -4,8 +4,36 @@
  * @module services/browser/browser-proxy.service.test
  */
 
-import { BrowserProxyService } from './browser-proxy.service.js';
+import { BrowserProxyService, decodeJwtSub } from './browser-proxy.service.js';
 import { BROWSER_PROXY_CONSTANTS } from '../../constants.js';
+
+// Sticky-by-account routing: the relay JWT `sub` becomes the nginx `?rk=`
+// hash key so a backend agent + its account's browser pin to the same relay
+// node (per-process in-memory registry, no cross-node sharing).
+describe('decodeJwtSub (relay stickiness key)', () => {
+  function jwt(payload: Record<string, unknown>): string {
+    const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    return `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64(payload)}.sig`;
+  }
+
+  it('extracts sub from a well-formed relay JWT', () => {
+    expect(decodeJwtSub(jwt({ sub: 'user-abc-123', type: 'access' }))).toBe('user-abc-123');
+  });
+
+  it('is stable across token rotation (same sub, different exp/sig)', () => {
+    const a = jwt({ sub: 'acct-9', type: 'access', exp: 1 });
+    const b = jwt({ sub: 'acct-9', type: 'access', exp: 999999 });
+    expect(decodeJwtSub(a)).toBe(decodeJwtSub(b)); // → same relay node on every refresh
+  });
+
+  it('returns null for null / empty / malformed / sub-less tokens', () => {
+    expect(decodeJwtSub(null)).toBeNull();
+    expect(decodeJwtSub('')).toBeNull();
+    expect(decodeJwtSub('onlyonepart')).toBeNull();
+    const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    expect(decodeJwtSub(`${b64({})}.${b64({ type: 'access' })}.sig`)).toBeNull(); // no sub claim
+  });
+});
 
 // Capture event handlers registered on mock WebSocket instances
 type WsHandler = (...args: unknown[]) => void;
