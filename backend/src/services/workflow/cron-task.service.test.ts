@@ -402,7 +402,15 @@ describe('CronTaskService', () => {
 		// window, the task must be skipped with `lastSkippedAt` set and
 		// a `lastSkipReason` distinguishable from "never ran" — not
 		// silently dropped.
-		it('skips with lastSkipReason="agent_offline_not_ready" when readiness wait expires', async () => {
+		//
+		// Updated 2026-05-28 (#611): a single readiness failure is now a
+		// TRANSIENT skip — `nextRunAt` is pushed forward and the slot
+		// retries up to 3x. Only after the budget is exhausted does the
+		// task receive the permanent `agent_offline_retries_exhausted`
+		// skip mark. This test now seeds `transientSkipAttempts: 2` so
+		// the next failure IS the third attempt, exercising the
+		// permanent-skip path.
+		it('skips with lastSkipReason="agent_offline_retries_exhausted" after the 3rd transient failure', async () => {
 			const executedTasks: CronTask[] = [];
 			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
 
@@ -419,6 +427,9 @@ describe('CronTaskService', () => {
 						targetAgent: 'a1', targetTeamId: 'team-a', taskDescription: 'Run',
 						enabled: true, lastRunAt: null, nextRunAt: pastTime,
 						createdBy: 'user', createdAt: '2026-01-01',
+						// Seed the retry counter so THIS failure is the
+						// budget-exhausting third attempt.
+						transientSkipAttempts: 2,
 					}] });
 				}
 				throw new Error('ENOENT');
@@ -453,8 +464,139 @@ describe('CronTaskService', () => {
 			expect(writeCall).toBeDefined();
 			const written = JSON.parse(writeCall![1] as string);
 			expect(written.tasks[0].lastSkippedAt).toBeTruthy();
-			expect(written.tasks[0].lastSkipReason).toBe('agent_offline_not_ready');
+			expect(written.tasks[0].lastSkipReason).toBe('agent_offline_retries_exhausted');
 			expect(written.tasks[0].lastRunAt).toBeNull();
+			// Counter resets to 0 so the next slot starts with a fresh budget.
+			expect(written.tasks[0].transientSkipAttempts).toBe(0);
+		});
+
+		// #611 — first attempt at agent_offline_not_ready: TRANSIENT skip.
+		// nextRunAt is pushed forward by the linear backoff and the slot
+		// will retry. `lastSkippedAt` / `lastSkipReason` must NOT be set
+		// because nothing has been permanently skipped yet.
+		it('first agent_offline_not_ready is TRANSIENT — pushes nextRunAt, bumps transientSkipAttempts, no lastSkip mutation (#611)', async () => {
+			const executedTasks: CronTask[] = [];
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+			service.setAgentStatusCallback(async () => false);
+			service.setAgentStartCallback(async () => true);
+
+			setupTeamDirs(['team-a']);
+			const pastTime = new Date(Date.now() - 60000).toISOString();
+			const originalNextRun = pastTime;
+			mockReadFile.mockImplementation(async (path: any) => {
+				if (String(path).includes('team-a')) {
+					return JSON.stringify({ tasks: [{
+						id: 'cron-retry-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+						targetAgent: 'a1', targetTeamId: 'team-a', taskDescription: 'Run',
+						enabled: true, lastRunAt: null, nextRunAt: originalNextRun,
+						createdBy: 'user', createdAt: '2026-01-01',
+					}] });
+				}
+				throw new Error('ENOENT');
+			});
+
+			const realNow = Date.now;
+			let fakeNow = realNow();
+			jest.spyOn(Date, 'now').mockImplementation(() => fakeNow);
+			const origSetTimeout = global.setTimeout;
+			(global as any).setTimeout = (cb: () => void) => {
+				fakeNow += 500;
+				cb();
+				return 0 as any;
+			};
+
+			try {
+				await service.evaluateTasks();
+			} finally {
+				(global as any).setTimeout = origSetTimeout;
+				(Date.now as jest.Mock).mockRestore();
+			}
+
+			expect(executedTasks).toHaveLength(0);
+			const writeCall = mockWriteFile.mock.calls.find(c => String(c[0]).includes('team-a'));
+			expect(writeCall).toBeDefined();
+			const written = JSON.parse(writeCall![1] as string);
+			expect(written.tasks[0].transientSkipAttempts).toBe(1);
+			// Critical: NO permanent-skip mutation on the first attempt.
+			expect(written.tasks[0].lastSkippedAt).toBeFalsy();
+			expect(written.tasks[0].lastSkipReason).toBeFalsy();
+			expect(written.tasks[0].lastRunAt).toBeNull();
+			// nextRunAt moved forward (transient retry) — NOT back to the
+			// original past time. We don't assert exact ms since clocks
+			// drift, but it must be in the future relative to pastTime.
+			expect(new Date(written.tasks[0].nextRunAt).getTime()).toBeGreaterThan(
+				new Date(originalNextRun).getTime(),
+			);
+		});
+
+		// #611 — counter resets on successful execution so the next slot
+		// starts with a fresh retry budget. Without this reset, a string
+		// of bad-luck runs would chain attempt-counts across firings.
+		it('resets transientSkipAttempts to 0 after a successful execution (#611)', async () => {
+			const executedTasks: CronTask[] = [];
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+			service.setAgentStatusCallback(async () => true); // agent IS online
+
+			setupTeamDirs(['team-a']);
+			const pastTime = new Date(Date.now() - 60000).toISOString();
+			mockReadFile.mockImplementation(async (path: any) => {
+				if (String(path).includes('team-a')) {
+					return JSON.stringify({ tasks: [{
+						id: 'cron-ran-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+						targetAgent: 'a1', targetTeamId: 'team-a', taskDescription: 'Run',
+						enabled: true, lastRunAt: null, nextRunAt: pastTime,
+						createdBy: 'user', createdAt: '2026-01-01',
+						// Seed a non-zero counter — must end at 0 after the run.
+						transientSkipAttempts: 2,
+					}] });
+				}
+				throw new Error('ENOENT');
+			});
+
+			await service.evaluateTasks();
+
+			expect(executedTasks).toHaveLength(1);
+			const writeCall = mockWriteFile.mock.calls.find(c => String(c[0]).includes('team-a'));
+			expect(writeCall).toBeDefined();
+			const written = JSON.parse(writeCall![1] as string);
+			expect(written.tasks[0].lastRunAt).toBeTruthy();
+			expect(written.tasks[0].transientSkipAttempts).toBe(0);
+		});
+
+		// #611 — non-transient skip reasons (no callback wired) MUST go
+		// straight to permanent skip with no retry-counter bump. We don't
+		// want to delay "you literally cannot start this agent" with a
+		// retry budget that will exhaust to the same outcome.
+		it('agent_offline_no_callback is NOT a transient skip — permanent immediately (#611)', async () => {
+			const executedTasks: CronTask[] = [];
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+			service.setAgentStatusCallback(async () => false);
+			// Deliberately NO setAgentStartCallback → triggers agent_offline_no_callback.
+
+			setupTeamDirs(['team-a']);
+			const pastTime = new Date(Date.now() - 60000).toISOString();
+			mockReadFile.mockImplementation(async (path: any) => {
+				if (String(path).includes('team-a')) {
+					return JSON.stringify({ tasks: [{
+						id: 'cron-nocb-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+						targetAgent: 'a1', targetTeamId: 'team-a', taskDescription: 'Run',
+						enabled: true, lastRunAt: null, nextRunAt: pastTime,
+						createdBy: 'user', createdAt: '2026-01-01',
+					}] });
+				}
+				throw new Error('ENOENT');
+			});
+
+			await service.evaluateTasks();
+
+			expect(executedTasks).toHaveLength(0);
+			const writeCall = mockWriteFile.mock.calls.find(c => String(c[0]).includes('team-a'));
+			expect(writeCall).toBeDefined();
+			const written = JSON.parse(writeCall![1] as string);
+			expect(written.tasks[0].lastSkipReason).toBe('agent_offline_no_callback');
+			expect(written.tasks[0].lastSkippedAt).toBeTruthy();
+			// No transient-retry pathway means no counter bump.
+			expect(written.tasks[0].transientSkipAttempts ?? 0).toBe(0);
 		});
 	});
 
