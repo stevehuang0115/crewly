@@ -16,6 +16,7 @@ import {
   completeItem,
   blockItem,
   failItemHandler,
+  cancelQueuedItem,
   getStats,
   heartbeat,
   extendLease,
@@ -91,6 +92,10 @@ export function createTaskPoolRouter(): Router {
   router.post('/items/:workItemId/output', setItemOutput);
   router.post('/items/:workItemId/handoff', handoffItem);
   router.post('/items/:workItemId/notes', appendItemNote);
+  // #609: clean queued→cancelled transition for stuck WIs. Uses
+  // `cancelQueued` (queued/blocked/scheduled → cancelled). Distinct
+  // from DELETE which is a hard purge.
+  router.post('/items/:workItemId/cancel', cancelQueuedItem);
 
   return router;
 }
