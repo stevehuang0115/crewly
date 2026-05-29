@@ -416,6 +416,28 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     try {
       if (correction.entityType === 'work_item') {
         const pool = TaskPoolService.getInstance();
+        // #607 (2026-05-28): the `failed → queued` retry path MUST go
+        // through `requeueAfterFailure`, NOT `updateItemStatus`. The
+        // generic status setter doesn't bump `retryCount` — so without
+        // this branch, `detectRetryableFailedWorkItems` would correct
+        // `failed → queued` keeping retryCount frozen at its prior
+        // value, the next failure flips it back to `failed`, the
+        // reconciler retries again with the same retryCount, and the
+        // `maxRetries=3` ceiling never trips. Observed 2026-05-23 with
+        // 4 misrouted WIs that looped indefinitely.
+        if (
+          correction.previousState === 'failed' &&
+          correction.newState === 'queued'
+        ) {
+          await pool.requeueAfterFailure(correction.entityId, correction.reason);
+          this.logger.info('Applied work item correction (failed → queued via requeueAfterFailure)', {
+            workItemId: correction.entityId,
+            from: correction.previousState,
+            to: correction.newState,
+            reason: correction.reason,
+          });
+          return;
+        }
         // Forward the reconciler's reason (e.g. "queued for 61 minutes
         // without pickup", "Cascade cancel: ancestor failed") through
         // to the WorkItem so it persists alongside the status flip.
@@ -432,6 +454,39 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           to: correction.newState,
           reason: correction.reason,
         });
+
+        // Reconciler-driven failures bypass the canonical task:failed
+        // event path (which lives in V3DataService.onTaskFailed and is
+        // wired to agent-reported failures). Without this hook, a
+        // reconciler-cancelled "agent inactive" WI silently flips to
+        // failed and the user is never told. Escalate directly here so
+        // the failure surfaces through the same EscalationRouter path
+        // an agent-reported terminal failure would take. By definition
+        // these are terminal (the reconciler only fails a WI after its
+        // retry/grace policies have run out), so we skip retry logic.
+        if (correction.newState === 'failed') {
+          try {
+            const failed = await pool.findWorkItem(correction.entityId);
+            if (failed) {
+              const { EscalationRouterService } = await import('../v3/escalation-router.service.js');
+              await EscalationRouterService.getInstance().escalateFailedWorkItem(
+                failed,
+                correction.reason,
+              );
+              this.logger.info('Escalated reconciler-driven failure', {
+                workItemId: correction.entityId,
+                reason: correction.reason,
+              });
+            }
+          } catch (escErr) {
+            // Best-effort — never strand applyCorrection on an
+            // escalation glitch (parallels v3-data.service.ts:500).
+            this.logger.warn('escalateFailedWorkItem from reconciler threw (non-fatal)', {
+              workItemId: correction.entityId,
+              error: escErr instanceof Error ? escErr.message : String(escErr),
+            });
+          }
+        }
       } else if (correction.entityType === 'request') {
         const service = RequestService.getInstance();
         await service.update(correction.entityId, {
