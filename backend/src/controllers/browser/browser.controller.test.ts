@@ -63,6 +63,23 @@ describe('Browser Controller', () => {
 				wsPath: '/ws/browser',
 			});
 		});
+
+		// REGRESSION (2026-05-28 browser-relay fix): TRANSPORT-HONESTY +
+		// STATUS-DISTINCTION invariants. The status payload must name the
+		// browser transport ('cloud-relay-ws') and report a single canonical
+		// `drivable` predicate, so a caller can never read "cloud connected"
+		// as "a browser is drivable". With no browser registered, drivable is
+		// false even though the response is otherwise well-formed.
+		it('reports transport-tagged, honest drivability (drivable=false with no browser)', async () => {
+			const res = await request(app).get('/api/browser/status');
+			expect(res.status).toBe(200);
+			expect(res.body.transport).toBe('cloud-relay-ws');
+			expect(res.body.drivable).toBe(false);
+			// drivable must mirror proxy.available — one source of truth.
+			expect(res.body.drivable).toBe(res.body.proxy.available);
+			// No browser → no instances surfaced.
+			expect(res.body.instances).toEqual([]);
+		});
 	});
 
 	describe('POST /api/browser/navigate', () => {

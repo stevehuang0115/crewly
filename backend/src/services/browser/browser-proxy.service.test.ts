@@ -73,6 +73,16 @@ jest.mock('../core/logger.service.js', () => ({
   },
 }));
 
+// jest.Mock DeviceIdentityService — provides the stable deviceId observability
+// tag attached to relay register frames (2026-05-28 browser-relay fix).
+jest.mock('../cloud/device-identity.service.js', () => ({
+  DeviceIdentityService: {
+    getInstance: () => ({
+      getDeviceId: jest.fn().mockResolvedValue('device-macbookpro'),
+    }),
+  },
+}));
+
 describe('BrowserProxyService', () => {
   beforeEach(() => {
     jest.useFakeTimers();
@@ -124,6 +134,42 @@ describe('BrowserProxyService', () => {
       expect(sent.type).toBe('register');
       expect(sent.role).toBe('agent');
       expect(sent.token).toBe('test-token');
+    });
+
+    // REGRESSION (2026-05-28 browser-relay fix): the register frame carries a
+    // stable deviceId observability tag (resolved from DeviceIdentityService),
+    // never a throwaway `pairingCode: backend-proxy-${Date.now()}`. The tag is
+    // for "drivable from device X" UI only and must NEVER gate routing.
+    it('attaches the stable deviceId to a re-register frame for observability', async () => {
+      const proxy = BrowserProxyService.getInstance();
+      proxy.connect('test-token');
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-dev' }),
+      );
+
+      // Let the async ensureDeviceId() (a dynamic import + awaited getDeviceId)
+      // settle. Dynamic-import resolution needs real macrotask turns, so flush
+      // under real timers briefly before re-arming fake timers.
+      jest.useRealTimers();
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      jest.useFakeTimers();
+
+      // Force a re-register (in place) via updateToken — this frame must now
+      // carry the resolved deviceId and a deviceId-derived pairingCode.
+      proxy.updateToken('fresh-relay-token');
+
+      const reRegister = latestMockWs!.send.mock.calls
+        .map((c) => JSON.parse(c[0] as string) as Record<string, unknown>)
+        .reverse()
+        .find((m) => m.type === 'register');
+
+      expect(reRegister).toBeDefined();
+      expect(reRegister!.deviceId).toBe('device-macbookpro');
+      expect(reRegister!.pairingCode).toBe('backend-proxy-device-macbookpro');
+      expect(reRegister!.token).toBe('fresh-relay-token');
     });
 
     it('should not reconnect if already connecting', () => {
@@ -646,6 +692,61 @@ describe('BrowserProxyService', () => {
     it('should return empty array before connection', () => {
       const proxy = BrowserProxyService.getInstance();
       expect(proxy.getInstances()).toEqual([]);
+    });
+  });
+
+  // REGRESSION (2026-05-28 browser-relay fix): heartbeat-ack watchdog.
+  // Previously `heartbeat_ack` was a no-op and the only liveness check was
+  // ws.readyState at the next 25s tick — which reports OPEN on a half-open
+  // socket. The backend therefore rode dead sockets until the relay's 180s
+  // 4002 eviction, churning drop→re-register→count:0 every ~3min. The
+  // watchdog must detect a missing ack within HEARTBEAT_ACK_DEADLINE_MS and
+  // reconnect proactively (LIVENESS invariant).
+  describe('heartbeat-ack watchdog', () => {
+    /** Drive the proxy to a registered/connected state. */
+    function connectAndRegister(): BrowserProxyService {
+      const proxy = BrowserProxyService.getInstance();
+      proxy.connect('test-token');
+      latestMockWs!._trigger('open');
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'registered', sessionId: 'sess-hb' }),
+      );
+      return proxy;
+    }
+
+    it('reconnects when no heartbeat_ack arrives within the deadline', () => {
+      const proxy = connectAndRegister();
+      const firstWs = latestMockWs!;
+      expect(proxy.getState()).toBe('connected');
+
+      // Fire one heartbeat tick (arms the ack watchdog) — no ack sent back.
+      jest.advanceTimersByTime(25_000);
+
+      // Before the deadline elapses we are still connected.
+      expect(proxy.getState()).toBe('connected');
+
+      // Let the ack deadline elapse with no heartbeat_ack → watchdog fires,
+      // forcing a disconnect/reconnect of the (presumed half-open) socket.
+      jest.advanceTimersByTime(BROWSER_PROXY_CONSTANTS.HEARTBEAT_ACK_DEADLINE_MS);
+
+      expect(proxy.getState()).toBe('disconnected');
+      expect(firstWs.close).toHaveBeenCalled();
+    });
+
+    it('stays connected when heartbeat_ack arrives before the deadline', () => {
+      const proxy = connectAndRegister();
+
+      // Heartbeat tick arms the watchdog...
+      jest.advanceTimersByTime(25_000);
+      // ...and the relay acks in time.
+      latestMockWs!._trigger('message', JSON.stringify({ type: 'heartbeat_ack' }));
+
+      // Now let the would-be deadline pass — no reconnect because the ack
+      // cleared the watchdog.
+      jest.advanceTimersByTime(BROWSER_PROXY_CONSTANTS.HEARTBEAT_ACK_DEADLINE_MS);
+
+      expect(proxy.getState()).toBe('connected');
     });
   });
 
@@ -1448,6 +1549,22 @@ describe('BrowserProxyService', () => {
       // (browser-proxy.service.ts:461). Tests in this block assert
       // ADDITIONAL refreshes beyond that initial call.
       const ws = latestMockWs!;
+
+      // Mirror a LIVE relay: auto-ack every heartbeat the proxy sends. Without
+      // this the heartbeat-ack watchdog (2026-05-28 fix) would (correctly)
+      // treat the socket as half-open after HEARTBEAT_ACK_DEADLINE_MS and
+      // reconnect — which is exactly the behavior its own tests cover, but it
+      // would derail these list_browsers-cadence tests. Acking keeps the
+      // socket alive so the periodic resync logic can run, matching prod.
+      ws.send.mockImplementation((raw: unknown) => {
+        try {
+          if ((JSON.parse(raw as string) as { type?: string }).type === 'heartbeat') {
+            ws._trigger('message', JSON.stringify({ type: 'heartbeat_ack' }));
+          }
+        } catch {
+          // non-JSON send — ignore
+        }
+      });
       const countListBrowsers = (): number =>
         ws.send.mock.calls.filter((args) => {
           try {
@@ -1639,6 +1756,20 @@ describe('BrowserProxyService', () => {
 
       // Wait for reconnect timer (RECONNECT_DELAY_MS = 5_000).
       jest.advanceTimersByTime(5_000);
+
+      // The reconnect created a FRESH mock WS — re-install the live-relay
+      // auto-ack on it so the heartbeat-ack watchdog (2026-05-28 fix) keeps
+      // the reconnected socket alive across the 7/8-tick advance below.
+      const reconnectedWs = latestMockWs!;
+      reconnectedWs.send.mockImplementation((raw: unknown) => {
+        try {
+          if ((JSON.parse(raw as string) as { type?: string }).type === 'heartbeat') {
+            reconnectedWs._trigger('message', JSON.stringify({ type: 'heartbeat_ack' }));
+          }
+        } catch {
+          // non-JSON send — ignore
+        }
+      });
 
       // After reconnect: re-register and re-establish baseline.
       latestMockWs!._trigger('open');

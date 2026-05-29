@@ -27,13 +27,31 @@ export function getStatus(_req: Request, res: Response): void {
 	const proxy = BrowserProxyService.getInstance();
 	const bridgeStatus = bridge.getStatus();
 
+	// Transport-honest status (TRANSPORT-HONESTY + STATUS-DISTINCTION
+	// invariants): `drivable` is the single canonical predicate
+	// `proxy.isAvailable()` (relay socket connected AND >=1 browser in the
+	// account's relay registry). `transport` names the only browser-drivable
+	// transport so a caller can never mistake "cloud config socket connected"
+	// for "a browser is drivable". `instances[].deviceId` is observability
+	// only — it shows which device a browser is reachable from, never gating
+	// routing.
+	const instances = proxy.getInstances().map((i) => ({
+		instanceId: i.instanceId,
+		instanceName: i.instanceName,
+		...(i.deviceId ? { deviceId: i.deviceId } : {}),
+	}));
+
 	res.json({
 		...bridgeStatus,
+		transport: 'cloud-relay-ws',
+		drivable: proxy.isAvailable(),
 		proxy: {
 			state: proxy.getState(),
 			available: proxy.isAvailable(),
+			deviceId: proxy.getDeviceId(),
 			instances: proxy.getInstances(),
 		},
+		instances,
 	});
 }
 

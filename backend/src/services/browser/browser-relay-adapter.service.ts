@@ -135,16 +135,30 @@ export class BrowserRelayAdapter {
   }
 
   /**
-   * Whether the relay adapter is ready to send commands.
-   * Requires an Extension device ID and an active CloudSyncService.
+   * Whether the relay adapter has a known extension target via the
+   * BrowserProxy event channel.
    *
-   * @returns True if relay is available
+   * Single liveness definition (2026-05-28 browser-relay fix): availability is
+   * derived from the BrowserProxy — the canonical source of truth for browser
+   * presence on the Cloud relay — NOT from the CloudSyncService state. The
+   * former CloudSync `getState() === 'syncing'` gate was dead in production
+   * (Sync only tracks orchestrator-role devices, never browser-role), so it
+   * reported a liveness that disagreed with `proxy.isAvailable()`. Collapsing
+   * to the proxy removes that disagreement (REGISTRY-TRUTH invariant).
+   *
+   * @returns True if the proxy reports a drivable browser and we have a target
    */
   isAvailable(): boolean {
     if (!this.extensionDeviceId) return false;
     try {
-      const sync = CloudSyncService.getInstance();
-      return sync.getState() === 'syncing';
+      // Lazy require to avoid an import-time circular dep — proxy and adapter
+      // both live under backend/src/services/browser/.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require('./browser-proxy.service.js') as {
+        BrowserProxyService?: { getInstance?: () => { isAvailable: () => boolean } };
+      };
+      const proxy = mod?.BrowserProxyService?.getInstance?.();
+      return proxy ? proxy.isAvailable() : false;
     } catch {
       return false;
     }

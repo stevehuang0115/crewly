@@ -33,11 +33,30 @@ jest.mock('../cloud/cloud-sync.service.js', () => ({
 	},
 }));
 
+// Mock BrowserProxyService — the single source of truth for browser presence
+// after the 2026-05-28 browser-relay fix. The adapter's `isAvailable()` now
+// derives from `proxy.isAvailable()` instead of CloudSync state.
+const mockProxyIsAvailable = jest.fn().mockReturnValue(true);
+const mockProxyGetInstances = jest.fn().mockReturnValue([]);
+const mockProxyEvents = { on: jest.fn(), removeListener: jest.fn() };
+
+jest.mock('./browser-proxy.service.js', () => ({
+	BrowserProxyService: {
+		getInstance: () => ({
+			isAvailable: mockProxyIsAvailable,
+			getInstances: mockProxyGetInstances,
+			events: mockProxyEvents,
+		}),
+	},
+}));
+
 describe('BrowserRelayAdapter', () => {
 	beforeEach(() => {
 		BrowserRelayAdapter.resetInstance();
 		jest.clearAllMocks();
 		mockGetState.mockReturnValue('syncing');
+		mockProxyIsAvailable.mockReturnValue(true);
+		mockProxyGetInstances.mockReturnValue([]);
 	});
 
 	describe('singleton', () => {
@@ -54,17 +73,35 @@ describe('BrowserRelayAdapter', () => {
 			expect(adapter.isAvailable()).toBe(false);
 		});
 
-		it('should return false when CloudSync is not syncing', () => {
+		// REGRESSION (2026-05-28 browser-relay fix): liveness is now derived
+		// from the BrowserProxy registry, NOT CloudSync state. A device target
+		// alone is not enough — the proxy must report a drivable browser. This
+		// guards against the regression where the adapter reported a liveness
+		// that disagreed with proxy.isAvailable() (the empty-registry bug).
+		it('should return false when proxy reports no drivable browser', () => {
 			const adapter = BrowserRelayAdapter.getInstance();
 			adapter.setExtensionDeviceId('ext-123');
-			mockGetState.mockReturnValue('idle');
+			mockProxyIsAvailable.mockReturnValue(false);
 			expect(adapter.isAvailable()).toBe(false);
 		});
 
-		it('should return true when device ID set and CloudSync is syncing', () => {
+		it('should return true when device ID set and proxy reports drivable', () => {
 			const adapter = BrowserRelayAdapter.getInstance();
 			adapter.setExtensionDeviceId('ext-123');
+			mockProxyIsAvailable.mockReturnValue(true);
 			expect(adapter.isAvailable()).toBe(true);
+		});
+
+		// TRANSPORT-HONESTY: CloudSync 'syncing' state must NOT make the adapter
+		// report available when the proxy registry is empty — the two used to
+		// disagree and produced the {cloud connected, browser unavailable}
+		// contradiction.
+		it('should not report available from CloudSync state when proxy is empty', () => {
+			const adapter = BrowserRelayAdapter.getInstance();
+			adapter.setExtensionDeviceId('ext-123');
+			mockGetState.mockReturnValue('syncing');
+			mockProxyIsAvailable.mockReturnValue(false);
+			expect(adapter.isAvailable()).toBe(false);
 		});
 	});
 

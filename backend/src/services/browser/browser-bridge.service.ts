@@ -811,41 +811,24 @@ export class BrowserBridgeService {
 		let relayAvailable = false;
 		let relayDeviceId: string | null = null;
 
-		// Primary: BrowserProxy. The proxy talks directly to the Cloud
-		// relay's browser channel (browser_list / browser_event) and is the
-		// canonical source of truth for extension presence since 2026-05-23.
-		// Lazy-require via getStaticProxy() so we don't introduce an
-		// import-time circular dep — BrowserBridge is the entry point for
-		// browser dispatch and other services already reach back into it.
+		// SINGLE SOURCE OF TRUTH (2026-05-28 browser-relay fix): the
+		// BrowserProxy. It talks directly to the Cloud relay's browser channel
+		// (browser_list / browser_event), which is the canonical record of
+		// "is a browser in the registry for this account" — exactly
+		// proxy.isAvailable(). The former legacy adapter.isAvailable() fallback
+		// was removed: it derived from CloudSync state, which never carries
+		// browser-role devices, so it produced a second, disagreeing liveness
+		// definition. relayAvailable now has ONE definition (REGISTRY-TRUTH
+		// invariant). Lazy-require avoids an import-time circular dep.
 		try {
 			const proxy = this.tryGetProxyInstance();
-			if (proxy) {
-				const proxyAvailable = proxy.isAvailable();
-				if (proxyAvailable) {
-					relayAvailable = true;
-					const first = proxy.getInstances()[0];
-					if (first) relayDeviceId = first.instanceId;
-				}
+			if (proxy?.isAvailable()) {
+				relayAvailable = true;
+				const first = proxy.getInstances()[0];
+				if (first) relayDeviceId = first.instanceId;
 			}
 		} catch {
-			// Proxy not yet wired — fall through to adapter.
-		}
-
-		// Fallback: legacy adapter (CloudSync-driven). Kept so any
-		// deployment still using the Sync-broadcast model keeps working.
-		// In current production this branch reports `false` because Sync
-		// doesn't carry browser-role devices.
-		if (!relayAvailable) {
-			try {
-				const adapter = BrowserRelayAdapter.getInstance() as unknown as {
-					isAvailable: () => boolean;
-					getExtensionDeviceId: () => string | null;
-				};
-				relayAvailable = adapter.isAvailable();
-				relayDeviceId = adapter.getExtensionDeviceId();
-			} catch {
-				// Relay adapter not available
-			}
+			// Proxy not yet wired — relayAvailable stays false (honest).
 		}
 
 		return {
