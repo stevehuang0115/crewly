@@ -41,9 +41,9 @@ vi.mock('./pages/Missions', () => ({ Missions: () => <div>Missions Page</div> })
 vi.mock('./pages/MissionDetail', () => ({ MissionDetail: () => <div>Mission Detail Page</div> }));
 vi.mock('./pages/RequestDetail', () => ({ RequestDetail: () => <div>Request Detail Page</div> }));
 
-// Phase B Slack-like multi-team chat — mounted at /team-chat.
-vi.mock('./components/Chat-team', () => ({
-  default: () => <div data-testid="team-chat-route">Team Chat Page</div>,
+// Consolidated multi-team chat — mounted live at /team-chat via TeamChatRoute.
+vi.mock('./components/Chat-team/TeamChatRoute', () => ({
+  TeamChatRoute: () => <div data-testid="team-chat-route">Team Chat Page</div>,
 }));
 
 describe('App routes', () => {
@@ -56,7 +56,7 @@ describe('App routes', () => {
     expect(window.location.pathname).toBe('/scheduled-checkins');
   });
 
-  it('mounts TeamChatPage at /team-chat', async () => {
+  it('mounts the live TeamChatRoute at /team-chat', async () => {
     window.history.pushState({}, '', '/team-chat');
 
     render(<App />);

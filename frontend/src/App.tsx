@@ -11,7 +11,7 @@ import { Triggers } from './pages/Triggers';
 import { Factory } from './pages/Factory';
 import { Settings } from './pages/Settings';
 import { Chat } from './pages/Chat';
-import TeamChatPage from './components/Chat-team';
+import { TeamChatRoute } from './components/Chat-team/TeamChatRoute';
 import { Agents } from './pages/Agents';
 import Marketplace from './pages/Marketplace';
 import MarketplaceDetail from './pages/MarketplaceDetail';
@@ -108,14 +108,15 @@ function App() {
               />
 
               {/*
-                Team Chat: Phase B FE shell — Slack-like multi-team chat
-                (Mia + Ava sealed design 2026-04-25). Mounts the additive
-                @crewly/chat-ui surfaces (WorkspaceRail / ConversationListPanel
-                / MentionComposer) in a 3-panel layout. Phase B is mock-only;
-                Phase A backend wire lands once Sam ships the BE migration
-                (target 2026-04-27 EOD).
+                Team Chat: the consolidated multi-team chat surface — a
+                Slack-like 3-panel shell (WorkspaceRail / ConversationListPanel
+                / MentionComposer) wired live to the chat-v2 backend via
+                TeamChatRoute (resolves backend URL + injects team directory).
+                Deep-linkable from /teams via `?team=<id>`. The mock-only
+                `TeamChatPage` remains exported from ./components/Chat-team for
+                Storybook/tests.
               */}
-              <Route path="team-chat" element={<TeamChatPage />} />
+              <Route path="team-chat" element={<TeamChatRoute />} />
 
               {/*
                 Agents: Phase 1 user↔agent direct chat (Sam tech spec
