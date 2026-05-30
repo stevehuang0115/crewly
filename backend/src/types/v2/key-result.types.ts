@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import type { MissionLevel } from './mission.types.js';
 
 // ---------------------------------------------------------------------------
 // Core Enums & Constants
@@ -161,6 +162,32 @@ export interface MissionOKRSummary {
 }
 
 /**
+ * Cross-level (cascade) roll-up of OKR progress for a Mission and its approved
+ * children, walking the `Mission.parentMissionId` tree (company → team →
+ * project).
+ *
+ * Extends {@link MissionOKRSummary} with the recursive subtree so a parent's
+ * progress reflects its children's progress. Only approved children are
+ * included (draft/pending_approval/rejected children are excluded from the
+ * roll-up per spec §4.2).
+ */
+export interface CascadeOKRSummary extends MissionOKRSummary {
+  /** Cascade tier of this mission within company → team → project. */
+  level: MissionLevel;
+  /** Number of approved children that contributed to the roll-up. */
+  childMissionCount: number;
+  /**
+   * Rolled-up progress (0-100). Equal-weight average of this mission's own
+   * `overallProgress` and each approved child's `rolledUpProgress`. For a leaf
+   * (no approved children) this equals `overallProgress`. See
+   * {@link computeRolledUpProgress}.
+   */
+  rolledUpProgress: number;
+  /** Recursive roll-up summaries for each approved child mission. */
+  children: CascadeOKRSummary[];
+}
+
+/**
  * Result of an OKR review cycle.
  */
 export interface OKRReviewResult {
@@ -276,6 +303,19 @@ export function computeKRProgress(kr: Pick<KeyResult, 'baseline' | 'target' | 'c
 }
 
 /**
+ * Progress thresholds (0-100) that delimit the KR status bands. A progress at or
+ * above a threshold maps to the associated status (checked high → low).
+ */
+export const KR_STATUS_THRESHOLDS = {
+  /** At/above this progress the KR is fully achieved. */
+  ACHIEVED: 100,
+  /** At/above this progress the KR is healthy / on track. */
+  ON_TRACK: 50,
+  /** At/above this progress the KR is at risk (but not off track). */
+  AT_RISK: 25,
+} as const;
+
+/**
  * Derive KR status from progress percentage.
  *
  * - achieved: progress >= 100%
@@ -285,11 +325,68 @@ export function computeKRProgress(kr: Pick<KeyResult, 'baseline' | 'target' | 'c
  * - not_started: progress === 0% and current === baseline
  */
 export function deriveKRStatus(progress: number, current: number, baseline: number): KRStatus {
-  if (progress >= 100) return 'achieved';
+  if (progress >= KR_STATUS_THRESHOLDS.ACHIEVED) return 'achieved';
   if (current === baseline) return 'not_started';
-  if (progress >= 50) return 'on_track';
-  if (progress >= 25) return 'at_risk';
+  if (progress >= KR_STATUS_THRESHOLDS.ON_TRACK) return 'on_track';
+  if (progress >= KR_STATUS_THRESHOLDS.AT_RISK) return 'at_risk';
   return 'off_track';
+}
+
+/**
+ * Map a cascade child's rolled-up progress to a single synthetic KR status used
+ * to fold the child into its parent's roll-up recommendation.
+ *
+ * Unlike {@link deriveKRStatus}, this mapper deliberately has NO
+ * `current === baseline` short-circuit: a child stalled at `0` progress is a
+ * genuine "in trouble" signal (`off_track`), NOT `not_started`. Treating an
+ * all-children-at-zero parent as `not_started` would suppress the
+ * escalate/replan recommendation the cascade is meant to surface (spec §4.2).
+ *
+ * Banding mirrors {@link deriveKRStatus}:
+ * - achieved: progress >= 100%
+ * - on_track: progress >= 50%
+ * - at_risk: progress >= 25%
+ * - off_track: progress < 25% (including exactly 0%)
+ *
+ * @param rolledUpProgress - The child's rolled-up progress (0-100)
+ * @returns The synthetic {@link KRStatus} for the child
+ *
+ * @example
+ * ```ts
+ * deriveCascadeChildStatus(0);  // 'off_track' (a stalled child escalates)
+ * deriveCascadeChildStatus(75); // 'on_track'
+ * ```
+ */
+export function deriveCascadeChildStatus(rolledUpProgress: number): KRStatus {
+  if (rolledUpProgress >= KR_STATUS_THRESHOLDS.ACHIEVED) return 'achieved';
+  if (rolledUpProgress >= KR_STATUS_THRESHOLDS.ON_TRACK) return 'on_track';
+  if (rolledUpProgress >= KR_STATUS_THRESHOLDS.AT_RISK) return 'at_risk';
+  return 'off_track';
+}
+
+/**
+ * Compute an equal-weight rolled-up progress for a cascade node.
+ *
+ * v1 weighting is intentionally equal-weight: the node's own progress counts
+ * the same as each approved child's rolled-up progress. Future ownership /
+ * complexity weighting is a documented hook (spec §4.2) — pass per-input
+ * weights here when that lands; do NOT implement weighting now.
+ *
+ * @param ownProgress - This mission's own `overallProgress` (0-100)
+ * @param childProgresses - Each approved child's `rolledUpProgress` (0-100)
+ * @returns Equal-weight average rounded to an integer 0-100; for a leaf
+ *   (no children) this equals `ownProgress` (rounded)
+ *
+ * @example
+ * ```ts
+ * computeRolledUpProgress(40, [80, 60]); // round((40 + 80 + 60) / 3) = 60
+ * computeRolledUpProgress(40, []);       // 40 (leaf)
+ * ```
+ */
+export function computeRolledUpProgress(ownProgress: number, childProgresses: number[]): number {
+  const values = [ownProgress, ...childProgresses];
+  const total = values.reduce((sum, v) => sum + v, 0);
+  return Math.round(total / values.length);
 }
 
 /**

@@ -122,3 +122,18 @@ export async function getOKRSummary(req: Request, res: Response, next: NextFunct
     res.json({ success: true, data: summary });
   } catch (err) { next(err); }
 }
+
+/**
+ * GET /api/missions/:id/okr-summary/cascade — Cross-level cascade roll-up.
+ *
+ * Walks the `parentMissionId` tree so the mission's progress aggregates its
+ * approved children's roll-up (company → team → project). Returns a recursive
+ * {@link CascadeOKRSummary}.
+ */
+export async function getCascadeOKRSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const service = KRTrackingService.getInstance();
+    const summary = await service.computeCascadeOKRProgress(req.params.id);
+    res.json({ success: true, data: summary });
+  } catch (err) { next(err); }
+}

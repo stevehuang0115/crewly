@@ -21,6 +21,7 @@ import type {
   OKRReviewResult,
   ReviewDecision,
   MissionOKRSummary,
+  CascadeOKRSummary,
 } from '../../types/v2/key-result.types.js';
 import type { Mission } from '../../types/v2/mission.types.js';
 import { getEffectiveCadence } from '../../types/v2/mission.types.js';
@@ -31,6 +32,19 @@ import { getEffectiveCadence } from '../../types/v2/mission.types.js';
 
 function getMissionsDir(): string {
   return path.join(process.cwd(), '.crewly', 'missions');
+}
+
+/**
+ * Build the one-line review summary string persisted on a mission. Kept in one
+ * place so the on-demand parent roll-up refresh and the self-review write stay
+ * consistent and machine-parseable (see {@link OKRReviewService}).
+ */
+function formatCascadeSummary(summary: CascadeOKRSummary): string {
+  return (
+    `Roll-up: ${summary.rolledUpProgress}% ` +
+    `(own ${summary.overallProgress}%, ${summary.childMissionCount} child OKR(s)) | ` +
+    `Recommendation: ${summary.recommendation}`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +147,11 @@ export class OKRReviewService {
       staleCycles: newStaleCycles,
       lastReviewAt: result.reviewedAt,
     });
+
+    // Cross-level roll-up: on-demand at review time, refresh this mission's
+    // parent so the parent's lastReviewSummary reflects the (now-updated) child.
+    // Event-driven refresh on every child measurement is a follow-up (spec §4.3).
+    await this.refreshParentRollup(mission.parentMissionId);
 
     this.logger.info('OKR review completed', {
       missionId,
@@ -248,6 +267,40 @@ export class OKRReviewService {
     const merged = { ...mission, ...updates, updatedAt: new Date().toISOString() };
     const filePath = path.join(getMissionsDir(), `${missionId}.json`);
     await fs.writeFile(filePath, JSON.stringify(merged, null, 2));
+  }
+
+  /**
+   * Refresh a parent mission's `lastReviewSummary` using the cascade roll-up.
+   *
+   * Called on-demand after a child review so the parent reflects its children's
+   * latest progress without a separate scheduled review. No-op when the
+   * reviewed mission has no parent or the parent has vanished. Errors are
+   * swallowed and logged — a roll-up refresh must never fail the child review.
+   *
+   * @param parentMissionId - The reviewed mission's parent (may be undefined)
+   */
+  private async refreshParentRollup(parentMissionId?: string): Promise<void> {
+    if (!parentMissionId) return;
+    const parent = await this.loadMission(parentMissionId);
+    if (!parent) return;
+    try {
+      const krService = KRTrackingService.getInstance();
+      const rollup = await krService.computeCascadeOKRProgress(parentMissionId);
+      await this.updateMissionReview(parentMissionId, {
+        lastReviewSummary: formatCascadeSummary(rollup),
+        lastReviewAt: new Date().toISOString(),
+      });
+      this.logger.info('Refreshed parent roll-up summary', {
+        parentMissionId,
+        rolledUpProgress: rollup.rolledUpProgress,
+        childMissionCount: rollup.childMissionCount,
+      });
+    } catch (err) {
+      this.logger.warn('Parent roll-up refresh failed', {
+        parentMissionId,
+        error: (err as Error).message,
+      });
+    }
   }
 
   /**

@@ -40,6 +40,29 @@ export const WIKI_MIGRATE_MANIFEST_VERSION = 1;
 /** Hard cap on loose .md files we walk (defensive). */
 export const WIKI_MIGRATE_MAX_LOOSE_MD = 200;
 
+/**
+ * Name of the frozen `okr/` folder added to TEAM + PROJECT vaults for the
+ * OKR cascade (spec okr-cascade.md §5). Holds AUTHORED OKR narrative only —
+ * runtime Mission/KeyResult entities remain the cascade source-of-truth; this
+ * folder optionally mirrors approved Missions and is read-only to agents.
+ */
+export const WIKI_OKR_FOLDER = 'okr';
+
+/**
+ * Service reference recorded in the `okr/` frozen-folder schema block's
+ * `referenced_by` list. Lets the schema-loader / referenced-by resolver link
+ * the folder back to the cascade service that owns its mirrored content.
+ */
+export const WIKI_OKR_REFERENCED_BY = 'service:okr-cascade.service';
+
+/** Human-readable description for the TEAM-scope `okr/` frozen-folder block. */
+export const WIKI_OKR_TEAM_DESCRIPTION =
+  'Authored OKR narrative for this team. Mirrors approved Missions; agents read-only, Steve authors.';
+
+/** Human-readable description for the PROJECT-scope `okr/` frozen-folder block. */
+export const WIKI_OKR_PROJECT_DESCRIPTION =
+  'Authored OKR narrative for this project. Mirrors approved Missions; agents read-only, Steve authors.';
+
 // ---------------------------------------------------------------------------
 // Input / output types
 // ---------------------------------------------------------------------------
@@ -106,6 +129,38 @@ export interface WikiMigrateBootstrapNeeded {
   global: boolean;
   /** UUIDs of team vaults missing their SCHEMA.md. */
   teams: string[];
+}
+
+/**
+ * Per-vault outcome of an `okr/` frozen-folder backfill (OKR cascade spec §5).
+ * One entry per existing vault we inspected; `changed` is true only when this
+ * run actually created the folder and/or injected the schema block.
+ */
+export interface WikiOkrFolderResult {
+  /** Vault scope this entry describes. */
+  scope: 'team' | 'project';
+  /** Absolute path to the vault root (the dir containing `SCHEMA.md`). */
+  vaultPath: string;
+  /** True when the `okr/` directory was created this run. */
+  folderCreated: boolean;
+  /** True when the `okr/` block was injected into `SCHEMA.md` this run. */
+  schemaUpdated: boolean;
+  /** Convenience: folderCreated || schemaUpdated. */
+  changed: boolean;
+}
+
+/**
+ * Aggregate result of {@link WikiMigrateService.ensureOkrFolders}. Lists every
+ * existing TEAM/PROJECT vault that was inspected and whether it changed.
+ */
+export interface WikiEnsureOkrResult {
+  ok: true;
+  /** When false (default), describes what WOULD change without writing. */
+  applied: boolean;
+  /** One entry per existing vault inspected. */
+  vaults: WikiOkrFolderResult[];
+  /** Count of vaults that changed (or would change) this run. */
+  changedCount: number;
 }
 
 export interface WikiMigrateScanResult {
@@ -734,6 +789,7 @@ export class WikiMigrateService {
   private async writeProjectVaultSkeleton(vaultDir: string): Promise<void> {
     await fs.mkdir(path.join(vaultDir, 'memory'), { recursive: true });
     await fs.mkdir(path.join(vaultDir, 'sop-overrides'), { recursive: true });
+    await fs.mkdir(path.join(vaultDir, WIKI_OKR_FOLDER), { recursive: true });
     await fs.mkdir(path.join(vaultDir, 'llm-curated'), { recursive: true });
     await fs.writeFile(
       path.join(vaultDir, 'SCHEMA.md'),
@@ -760,6 +816,7 @@ export class WikiMigrateService {
   ): Promise<void> {
     await fs.mkdir(path.join(vaultDir, 'sop'), { recursive: true });
     await fs.mkdir(path.join(vaultDir, 'team-norm'), { recursive: true });
+    await fs.mkdir(path.join(vaultDir, WIKI_OKR_FOLDER), { recursive: true });
     await fs.mkdir(path.join(vaultDir, 'llm-curated'), { recursive: true });
     const schema = teamVaultSchemaMd(teamUuid, teamName);
     await fs.writeFile(path.join(vaultDir, 'SCHEMA.md'), schema, 'utf8');
@@ -1447,6 +1504,145 @@ export class WikiMigrateService {
     }
     return s;
   }
+
+  // ---------------------------------------------------------------------------
+  // OKR cascade — `okr/` frozen-folder backfill for EXISTING vaults (spec §5)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Idempotently add the frozen `okr/` folder + SCHEMA.md block to EXISTING
+   * team and project vaults that predate the OKR cascade.
+   *
+   * New vaults already seed `okr/` via the skeleton writers; this method covers
+   * vaults already on disk. It is the analogue of {@link bootstrapMissingVaults}
+   * for a single added frozen folder: only vaults whose `SCHEMA.md` already
+   * exists are touched (a fully-missing vault is bootstrapped elsewhere).
+   *
+   * Detection is idempotent — a vault that already declares `okr/` in its
+   * SCHEMA.md and has the directory on disk is reported as `changed: false`.
+   * The cascade source-of-truth stays the runtime Mission tree; this folder
+   * holds authored narrative only.
+   *
+   * @param input.projectRoot - Absolute path to the project root (dir holding
+   *   `.crewly/wiki/`). Its project vault is backfilled when present.
+   * @param input.homeDir - Override for `~`; team vaults live under
+   *   `<homeDir>/.crewly/teams/<uuid>/wiki/`. Tests pass a scratch dir.
+   * @param input.apply - false (default) for a dry-run preview; true to write.
+   * @returns Per-vault results and a changed-vault count.
+   * @example
+   * ```typescript
+   * const res = await WikiMigrateService.getInstance().ensureOkrFolders({
+   *   projectRoot, homeDir, apply: true,
+   * });
+   * ```
+   */
+  async ensureOkrFolders(input: {
+    projectRoot?: string;
+    homeDir?: string;
+    apply?: boolean;
+  }): Promise<WikiEnsureOkrResult> {
+    const apply = input.apply ?? false;
+    const homeDir = input.homeDir ?? os.homedir();
+    const vaults: WikiOkrFolderResult[] = [];
+
+    // Project vault (only when its SCHEMA.md already exists on disk).
+    if (input.projectRoot) {
+      const projectVault = path.join(input.projectRoot, '.crewly', 'wiki');
+      if (existsSync(path.join(projectVault, 'SCHEMA.md'))) {
+        vaults.push(
+          await this.ensureOkrForVault(
+            projectVault,
+            'project',
+            WIKI_OKR_PROJECT_DESCRIPTION,
+            apply,
+          ),
+        );
+      }
+    }
+
+    // Team vaults under <home>/.crewly/teams/<uuid>/wiki/.
+    const teamsRoot = path.join(homeDir, '.crewly', 'teams');
+    if (existsSync(teamsRoot)) {
+      let entries: import('fs').Dirent[] = [];
+      try {
+        entries = await fs.readdir(teamsRoot, { withFileTypes: true });
+      } catch {
+        entries = [];
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name === 'orchestrator') continue;
+        const teamVault = path.join(teamsRoot, entry.name, 'wiki');
+        if (!existsSync(path.join(teamVault, 'SCHEMA.md'))) continue;
+        vaults.push(
+          await this.ensureOkrForVault(
+            teamVault,
+            'team',
+            WIKI_OKR_TEAM_DESCRIPTION,
+            apply,
+          ),
+        );
+      }
+    }
+
+    return {
+      ok: true,
+      applied: apply,
+      vaults,
+      changedCount: vaults.filter((v) => v.changed).length,
+    };
+  }
+
+  /**
+   * Backfill a single existing vault with the frozen `okr/` folder + schema
+   * block. Idempotent: a no-op (changed=false) when the folder and the schema
+   * block are both already present.
+   *
+   * @param vaultDir - Absolute path to the vault root (contains `SCHEMA.md`).
+   * @param scope - Vault scope, used to pick the schema description copy.
+   * @param description - Description string for the injected `okr/` block.
+   * @param apply - When false, only reports what would change.
+   * @returns The per-vault outcome.
+   */
+  private async ensureOkrForVault(
+    vaultDir: string,
+    scope: 'team' | 'project',
+    description: string,
+    apply: boolean,
+  ): Promise<WikiOkrFolderResult> {
+    const okrDir = path.join(vaultDir, WIKI_OKR_FOLDER);
+    const schemaPath = path.join(vaultDir, 'SCHEMA.md');
+
+    const folderMissing = !existsSync(okrDir);
+
+    let schema = '';
+    try {
+      schema = await fs.readFile(schemaPath, 'utf8');
+    } catch {
+      schema = '';
+    }
+    const schemaMissingBlock = !schemaDeclaresOkr(schema);
+
+    if (apply) {
+      if (folderMissing) {
+        await fs.mkdir(okrDir, { recursive: true });
+      }
+      if (schemaMissingBlock && schema) {
+        const next = injectOkrBlock(schema, description);
+        if (next !== schema) {
+          await fs.writeFile(schemaPath, next, 'utf8');
+        }
+      }
+    }
+
+    return {
+      scope,
+      vaultPath: vaultDir,
+      folderCreated: folderMissing,
+      schemaUpdated: schemaMissingBlock && schema.length > 0,
+      changed: folderMissing || (schemaMissingBlock && schema.length > 0),
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1672,6 +1868,47 @@ function frontmatter(
   return lines.join('\n') + '\n\n';
 }
 
+/**
+ * True when a SCHEMA.md already declares the frozen `okr/` folder. Cheap
+ * line-scan for a `- path: okr/` hardcoded entry; used to keep the OKR
+ * backfill idempotent without parsing the full YAML.
+ *
+ * @param schema - Raw SCHEMA.md contents.
+ * @returns true when an `okr/` path block is present.
+ */
+function schemaDeclaresOkr(schema: string): boolean {
+  return new RegExp(`(^|\\n)\\s*-\\s*path:\\s*${WIKI_OKR_FOLDER}/\\s*(\\n|$)`).test(schema);
+}
+
+/**
+ * Inject an `okr/` frozen-folder block into an existing SCHEMA.md, immediately
+ * before the `llm_curated:` section (so it sits with the other `hardcoded:`
+ * entries). Falls back to appending the block at end-of-file when no
+ * `llm_curated:` marker exists. Returns the input unchanged when `okr/` is
+ * already declared (defensive double-check).
+ *
+ * @param schema - Raw SCHEMA.md contents to mutate.
+ * @param description - Description copy for the injected block.
+ * @returns The updated SCHEMA.md contents.
+ */
+function injectOkrBlock(schema: string, description: string): string {
+  if (schemaDeclaresOkr(schema)) return schema;
+  const block =
+    `  - path: ${WIKI_OKR_FOLDER}/\n` +
+    `    frozen: true\n` +
+    `    description: "${description.replace(/"/g, '\\"')}"\n` +
+    `    referenced_by:\n` +
+    `      - ${WIKI_OKR_REFERENCED_BY}\n\n`;
+
+  const marker = '\nllm_curated:';
+  const idx = schema.indexOf(marker);
+  if (idx === -1) {
+    const sep = schema.endsWith('\n') ? '' : '\n';
+    return `${schema}${sep}\n${block}`;
+  }
+  return schema.slice(0, idx + 1) + block + schema.slice(idx + 1);
+}
+
 // ---------------------------------------------------------------------------
 // SCHEMA.md skeletons
 // ---------------------------------------------------------------------------
@@ -1695,6 +1932,12 @@ hardcoded:
     description: "Project-specific SOP deltas. get-sops reads team-vault sop/ first, then this override layer."
     referenced_by:
       - skill:get-sops
+
+  - path: ${WIKI_OKR_FOLDER}/
+    frozen: true
+    description: "${WIKI_OKR_PROJECT_DESCRIPTION}"
+    referenced_by:
+      - ${WIKI_OKR_REFERENCED_BY}
 
 llm_curated:
   - path: llm-curated/
@@ -1783,6 +2026,12 @@ hardcoded:
     description: "Team norms (canDelegate, role conventions, ROE). Maps from config/sops/<role>/team-norm/ over Phase 2 migration."
     referenced_by:
       - skill:get-team-norms
+
+  - path: ${WIKI_OKR_FOLDER}/
+    frozen: true
+    description: "${WIKI_OKR_TEAM_DESCRIPTION}"
+    referenced_by:
+      - ${WIKI_OKR_REFERENCED_BY}
 
 llm_curated:
   - path: llm-curated/

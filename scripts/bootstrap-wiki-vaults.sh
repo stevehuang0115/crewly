@@ -91,6 +91,7 @@ bootstrap_team_vault() {
 
   mkdir -p "${vault_dir}/sop"
   mkdir -p "${vault_dir}/team-norm"
+  mkdir -p "${vault_dir}/okr"
   mkdir -p "${vault_dir}/llm-curated"
 
   # Escape literal slashes/quotes from the team name so the heredoc YAML is valid.
@@ -118,6 +119,12 @@ hardcoded:
     description: "Team norms (canDelegate, role conventions, ROE). Maps from config/sops/<role>/team-norm/ over Phase 2 migration."
     referenced_by:
       - skill:get-team-norms
+
+  - path: okr/
+    frozen: true
+    description: "Authored OKR narrative for this team. Mirrors approved Missions; agents read-only, Steve authors."
+    referenced_by:
+      - service:okr-cascade.service
 
 llm_curated:
   - path: llm-curated/
@@ -190,6 +197,7 @@ if [[ -f "${projects_json}" ]]; then
     fi
     mkdir -p "${vault_dir}/memory"
     mkdir -p "${vault_dir}/sop-overrides"
+    mkdir -p "${vault_dir}/okr"
     mkdir -p "${vault_dir}/llm-curated"
     project_name="$(node -e "try { const ps = require('${projects_json}'); const p = ps.find(p => p.path === '${project_root}'); process.stdout.write(p?.name || ''); } catch (e) {}" 2>/dev/null || true)"
     [[ -z "${project_name}" ]] && project_name="$(basename "${project_root}")"
@@ -215,6 +223,12 @@ hardcoded:
     description: "Project-specific SOP deltas. get-sops reads team-vault sop/ first, then this override layer."
     referenced_by:
       - skill:get-sops
+
+  - path: okr/
+    frozen: true
+    description: "Authored OKR narrative for this project. Mirrors approved Missions; agents read-only, Steve authors."
+    referenced_by:
+      - service:okr-cascade.service
 
 llm_curated:
   - path: llm-curated/

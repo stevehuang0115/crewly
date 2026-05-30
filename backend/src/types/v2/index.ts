@@ -145,10 +145,14 @@ export type {
   PolicyDecision,
   EscalationContext,
   CreateMissionInput,
+  UpdateMissionInput,
   UpdatePolicyInput,
   PhaseGateApproval,
   WorkHoursWindow,
   ExecutionCadence,
+  MissionLevel,
+  ProposalState,
+  ApprovalState,
 } from './mission.types.js';
 
 export {
@@ -179,6 +183,17 @@ export {
   createMission,
   getEffectiveCadence,
   mergeExecutionCadence,
+  MISSION_LEVELS,
+  MISSION_LEVEL_DEPTH,
+  PROJECT_LEVEL_DEPTH,
+  PROPOSAL_STATES,
+  PROPOSAL_TRANSITIONS,
+  isValidMissionLevel,
+  validateLevelLink,
+  deriveLevel,
+  isValidProposalState,
+  isValidProposalTransition,
+  validateCascadeLink,
 } from './mission.types.js';
 
 // Key Result types (OKR)
@@ -192,6 +207,7 @@ export type {
   CreateKeyResultInput,
   UpdateKeyResultInput,
   MissionOKRSummary,
+  CascadeOKRSummary,
   OKRRecommendation,
   OKRReviewResult,
   ReviewDecision,
@@ -211,6 +227,7 @@ export {
   computeKRProgress,
   deriveKRStatus,
   deriveOKRRecommendation,
+  computeRolledUpProgress,
 } from './key-result.types.js';
 
 // Workspace types

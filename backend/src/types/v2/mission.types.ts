@@ -51,6 +51,178 @@ export const MISSION_TRANSITIONS: Record<MissionStatus, ReadonlySet<MissionStatu
 };
 
 // ---------------------------------------------------------------------------
+// Mission Level (OKR cascade tier)
+// ---------------------------------------------------------------------------
+
+/**
+ * Organizational tier of a Mission within the OKR cascade.
+ *
+ * The cascade is the Mission tree expressed via `Mission.parentMissionId`:
+ *   company → team → project (3 levels).
+ *
+ * - `company`: root of the cascade; has no parent Mission.
+ * - `team`: decomposes a company Mission; parent must be `company`.
+ * - `project`: decomposes a team Mission; parent must be `team`; `projectId` set.
+ */
+export type MissionLevel = 'company' | 'team' | 'project';
+
+/** All valid MissionLevel values, ordered top → bottom of the cascade. */
+export const MISSION_LEVELS: readonly MissionLevel[] = ['company', 'team', 'project'] as const;
+
+/**
+ * Numeric depth of each cascade tier (company = 0, team = 1, project = 2).
+ * Used to enforce the "child is exactly one tier below parent" rule.
+ */
+export const MISSION_LEVEL_DEPTH: Record<MissionLevel, number> = {
+  company: 0,
+  team: 1,
+  project: 2,
+};
+
+/** Depth threshold at or beyond which a mission is treated as `project` level. */
+export const PROJECT_LEVEL_DEPTH = 2;
+
+/**
+ * Checks whether a string is a valid MissionLevel.
+ *
+ * @param value - Candidate string
+ * @returns `true` if `value` is one of `company` | `team` | `project`
+ */
+export function isValidMissionLevel(value: string): value is MissionLevel {
+  return (MISSION_LEVELS as readonly string[]).includes(value);
+}
+
+/**
+ * Validates a single downward cascade step: a child level may only sit exactly
+ * one tier below its parent, and `company` must be a root (no parent).
+ *
+ * Adjacency matrix:
+ * | child   | required parent | parentMissionId   |
+ * |---------|-----------------|-------------------|
+ * | company | —               | must be undefined |
+ * | team    | company         | required          |
+ * | project | team            | required          |
+ *
+ * @param childLevel - The level of the child mission
+ * @param parentLevel - The level of the parent mission, or `undefined` if no parent
+ * @returns `null` if the pairing is legal, otherwise a human-readable reason
+ *
+ * @example
+ * ```ts
+ * validateLevelLink('team', 'company'); // null
+ * validateLevelLink('company', 'team'); // "A company mission cannot have a parent"
+ * ```
+ */
+export function validateLevelLink(
+  childLevel: MissionLevel,
+  parentLevel: MissionLevel | undefined,
+): string | null {
+  if (childLevel === 'company') {
+    return parentLevel === undefined
+      ? null
+      : 'A company mission cannot have a parent';
+  }
+  if (parentLevel === undefined) {
+    return `A ${childLevel} mission requires a parent mission`;
+  }
+  const expectedDepth = MISSION_LEVEL_DEPTH[childLevel] - 1;
+  if (MISSION_LEVEL_DEPTH[parentLevel] !== expectedDepth) {
+    return `A ${childLevel} mission must have a ${
+      MISSION_LEVELS[expectedDepth]
+    } parent, not a ${parentLevel} parent`;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Proposal / Approval Governance
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle state of a decomposition proposal.
+ *
+ * A team-leader/PM agent drafts a child OKR decomposition as a proposal; it is
+ * NOT cascade-active until the human owner approves. Reject carries a reason.
+ *
+ * - `draft`: agent is still composing the proposal.
+ * - `pending_approval`: submitted, awaiting the human owner's decision.
+ * - `approved`: owner accepted; mission is now cascade-active (terminal).
+ * - `rejected`: owner declined with a reason; owner may request a redraft.
+ */
+export type ProposalState = 'draft' | 'pending_approval' | 'approved' | 'rejected';
+
+/** All valid ProposalState values. */
+export const PROPOSAL_STATES: readonly ProposalState[] = [
+  'draft',
+  'pending_approval',
+  'approved',
+  'rejected',
+] as const;
+
+/**
+ * Legal proposal-state transitions.
+ *
+ * - draft → pending_approval
+ * - pending_approval → approved | rejected
+ * - approved → (terminal)
+ * - rejected → draft (owner can ask for a redraft)
+ */
+export const PROPOSAL_TRANSITIONS: Record<ProposalState, ReadonlySet<ProposalState>> = {
+  draft: new Set(['pending_approval']),
+  pending_approval: new Set(['approved', 'rejected']),
+  approved: new Set<ProposalState>(),
+  rejected: new Set(['draft']),
+};
+
+/**
+ * Checks whether a string is a valid ProposalState.
+ *
+ * @param value - Candidate string
+ * @returns `true` if `value` is one of the four proposal states
+ */
+export function isValidProposalState(value: string): value is ProposalState {
+  return (PROPOSAL_STATES as readonly string[]).includes(value);
+}
+
+/**
+ * Checks whether a proposal-state transition is legal.
+ *
+ * @param from - Current proposal state
+ * @param to - Proposed next proposal state
+ * @returns `true` if `from → to` is an allowed transition
+ *
+ * @example
+ * ```ts
+ * isValidProposalTransition('pending_approval', 'approved'); // true
+ * isValidProposalTransition('approved', 'draft');            // false
+ * ```
+ */
+export function isValidProposalTransition(from: ProposalState, to: ProposalState): boolean {
+  return PROPOSAL_TRANSITIONS[from].has(to);
+}
+
+/**
+ * Governance metadata attached to a Mission that arose from a decomposition
+ * proposal. Kept small and self-contained so the approval *workflow* layer can
+ * be relocated to `crewly-pro` later without touching `Mission` core (see
+ * spec §2.5 FLAG).
+ */
+export interface ApprovalState {
+  /** Current proposal lifecycle state. */
+  state: ProposalState;
+  /** Agent session that drafted the decomposition. */
+  proposedBy?: string;
+  /** ISO8601 timestamp the proposal was submitted. */
+  proposedAt?: string;
+  /** Human owner who decided (e.g. "steve"). */
+  decidedBy?: string;
+  /** ISO8601 timestamp of the decision. */
+  decidedAt?: string;
+  /** Required when `state === 'rejected'`. */
+  rejectionReason?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Mission Priority
 // ---------------------------------------------------------------------------
 
@@ -343,6 +515,21 @@ export interface Mission {
    * Must not be self, and the resulting chain must not form a cycle.
    */
   parentMissionId?: string;
+  /**
+   * Cascade tier of this mission. When absent (legacy missions), it is resolved
+   * via {@link resolveMissionLevel}, which falls back to {@link deriveLevel}:
+   * a parentless legacy mission resolves to `company`, a one-parent chain to
+   * `team`, and a two-or-more-parent chain to `project`.
+   */
+  level?: MissionLevel;
+  /** Project this mission belongs to. REQUIRED when `level === 'project'`. */
+  projectId?: string;
+  /**
+   * Decomposition governance. Absent ⇒ treat as already-active (legacy
+   * missions). A mission is cascade-active iff `approval` is absent OR
+   * `approval.state === 'approved'`.
+   */
+  approval?: ApprovalState;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +633,34 @@ export interface CreateMissionInput {
   ownerId?: string;
   /** Optional parent Mission ID (validated to avoid self-ref and cycles). */
   parentMissionId?: string;
+  /** Cascade tier. Inferred from the parent chain when omitted. */
+  level?: MissionLevel;
+  /** Project this mission belongs to. Required when `level === 'project'`. */
+  projectId?: string;
+  /** Decomposition governance state (set when created via a proposal). */
+  approval?: ApprovalState;
+}
+
+/**
+ * Input for updating an existing Mission (general updater).
+ *
+ * Excludes the immutable `id` and `createdAt`. Every field is optional so a
+ * caller may PATCH any subset. `approval.state` transitions are NOT enforced
+ * here — they must flow through the dedicated approve/reject workflow so there
+ * is a single source of transition enforcement (spec §3.3).
+ */
+export interface UpdateMissionInput {
+  objective?: string;
+  currentStrategy?: string;
+  successCriteria?: string[];
+  status?: MissionStatus;
+  priority?: MissionPriority;
+  period?: MissionPeriod;
+  keyResultIds?: string[];
+  parentMissionId?: string;
+  level?: MissionLevel;
+  projectId?: string;
+  approval?: ApprovalState;
 }
 
 /**
@@ -743,6 +958,11 @@ export function createMission(input: CreateMissionInput): Mission {
     updatedAt: now,
     learnings: [],
     period: input.period,
+    parentMissionId: input.parentMissionId,
+    level: input.level ?? (input.parentMissionId ? undefined : 'company'),
+    projectId: input.projectId,
+    approval: input.approval,
+    priority: input.priority,
   };
 }
 
@@ -812,6 +1032,36 @@ export function isPeriodFuture(period: MissionPeriod, now: Date = new Date()): b
   return now < new Date(period.startDate);
 }
 
+/**
+ * Build a `monthly` MissionPeriod for a given calendar month.
+ *
+ * The period is half-open `[first day of month, first day of next month)`,
+ * matching the `now >= start && now < end` convention used by
+ * {@link isPeriodActive}. Dates are UTC so the boundaries are deterministic
+ * regardless of server timezone. Handles December → January year rollover.
+ *
+ * @param year - Full year, e.g. `2026`.
+ * @param month - 1-based month (`1` = January … `12` = December).
+ * @returns A `monthly` MissionPeriod with ISO8601 start/end and a `YYYY-MM` label.
+ *
+ * @example
+ * ```typescript
+ * createMonthlyPeriod(2026, 3); // March 2026: 2026-03-01 → 2026-04-01, label "2026-03"
+ * ```
+ */
+export function createMonthlyPeriod(year: number, month: number): MissionPeriod {
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  // month is 1-based, so passing it as the 0-based Date month index yields the
+  // first day of the *next* month (Date normalizes 12 → January of year+1).
+  const end = new Date(Date.UTC(year, month, 1));
+  return {
+    type: 'monthly',
+    startDate: start.toISOString(),
+    endDate: end.toISOString(),
+    label: `${year}-${String(month).padStart(2, '0')}`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Mission Hierarchy Helpers
 // ---------------------------------------------------------------------------
@@ -852,6 +1102,107 @@ export function validateParentLink(
     cursor = byId.get(cursor)?.parentMissionId;
   }
   return null;
+}
+
+/**
+ * Derives a Mission's cascade level by walking its `parentMissionId` chain.
+ *
+ * Depth 0 (no parent) ⇒ `company`, depth 1 ⇒ `team`, depth ≥ 2 ⇒ `project`.
+ * Used to backfill `level` for legacy missions persisted before the cascade
+ * fields existed. Guards against cycles defensively (returns the level computed
+ * at the point a repeat is detected rather than looping forever).
+ *
+ * @param missionId - The mission whose level to derive
+ * @param byId - All missions indexed by ID (need only `id` + `parentMissionId`)
+ * @returns The derived MissionLevel
+ *
+ * @example
+ * ```ts
+ * deriveLevel('teamM', new Map([['teamM', { id: 'teamM', parentMissionId: 'co' }], ['co', { id: 'co' }]])); // 'team'
+ * ```
+ */
+export function deriveLevel(
+  missionId: string,
+  byId: ReadonlyMap<string, Pick<Mission, 'id' | 'parentMissionId'>>,
+): MissionLevel {
+  let depth = 0;
+  const seen = new Set<string>();
+  let cursor: string | undefined = byId.get(missionId)?.parentMissionId;
+  while (cursor && depth < PROJECT_LEVEL_DEPTH) {
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+    depth += 1;
+    cursor = byId.get(cursor)?.parentMissionId;
+  }
+  if (depth === 0) return 'company';
+  if (depth === 1) return 'team';
+  return 'project';
+}
+
+/**
+ * Resolve a mission's effective cascade level through a SINGLE canonical rule,
+ * shared by every read path (cascade service, mission routes' read-migration).
+ *
+ * Prefers the mission's explicit `level`; when absent (legacy missions persisted
+ * before the cascade fields existed) it falls back to {@link deriveLevel}, which
+ * walks the `parentMissionId` chain (no parent ⇒ `company`, one parent ⇒ `team`,
+ * two-or-more ⇒ `project`). Centralising the fallback here guarantees the same
+ * document resolves to the same level no matter which code path reads it.
+ *
+ * @param mission - The mission whose level to resolve (needs `id`, optional
+ *   `level` + `parentMissionId`)
+ * @param byId - All missions indexed by ID for the parent-chain walk
+ * @returns The resolved {@link MissionLevel}
+ *
+ * @example
+ * ```ts
+ * resolveMissionLevel({ id: 'co', }, byId);                 // 'company' (no parent)
+ * resolveMissionLevel({ id: 't', parentMissionId: 'co' }, byId); // 'team'
+ * ```
+ */
+export function resolveMissionLevel(
+  mission: Pick<Mission, 'id' | 'level' | 'parentMissionId'>,
+  byId: ReadonlyMap<string, Pick<Mission, 'id' | 'parentMissionId'>>,
+): MissionLevel {
+  if (mission.level) return mission.level;
+  return deriveLevel(mission.id, byId);
+}
+
+/**
+ * Combined cascade-link guard: runs the raw cycle/self-ref check
+ * ({@link validateParentLink}) AND the level-adjacency check
+ * ({@link validateLevelLink}). The parent's level is read from `byId` (its own
+ * `level` field, falling back to {@link deriveLevel} when absent).
+ *
+ * `validateParentLink` keeps its original signature for callers that only need
+ * the cycle check.
+ *
+ * @param childId - The mission that would acquire the parent
+ * @param childLevel - The proposed level of the child mission
+ * @param parentId - The proposed parent mission ID, or `undefined` for a root
+ * @param byId - All existing missions indexed by ID
+ * @returns `null` if the link is valid, otherwise a human-readable reason
+ *
+ * @example
+ * ```ts
+ * const reason = validateCascadeLink('p1', 'project', 't1', byId);
+ * if (reason) throw new Error(reason);
+ * ```
+ */
+export function validateCascadeLink(
+  childId: string,
+  childLevel: MissionLevel,
+  parentId: string | undefined,
+  byId: ReadonlyMap<string, Pick<Mission, 'id' | 'parentMissionId' | 'level'>>,
+): string | null {
+  if (parentId === undefined) {
+    return validateLevelLink(childLevel, undefined);
+  }
+  const cycleReason = validateParentLink(childId, parentId, byId);
+  if (cycleReason) return cycleReason;
+  const parent = byId.get(parentId);
+  const parentLevel = parent?.level ?? deriveLevel(parentId, byId);
+  return validateLevelLink(childLevel, parentLevel);
 }
 
 /**

@@ -5,6 +5,7 @@
  */
 
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import { MissionPeriodService } from './mission-period.service.js';
 import { createMission, createMonthlyPeriod } from '../../types/v2/mission.types.js';
@@ -14,8 +15,12 @@ import type { Mission } from '../../types/v2/mission.types.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Resolve the same store the service uses. beforeEach points CREWLY_MISSIONS_DIR
+// at a temp dir so these tests NEVER read or delete the real
+// <cwd>/.crewly/missions store — otherwise cleanMissionsDir() would wipe
+// production missions.
 function getMissionsDir(): string {
-  return path.join(process.cwd(), '.crewly', 'missions');
+  return process.env['CREWLY_MISSIONS_DIR'] || path.join(process.cwd(), '.crewly', 'missions');
 }
 
 async function writeMission(mission: Mission): Promise<void> {
@@ -44,13 +49,23 @@ async function cleanMissionsDir(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 describe('MissionPeriodService', () => {
+  let testMissionsDir: string;
+
   beforeEach(async () => {
     MissionPeriodService.resetInstance();
-    await cleanMissionsDir();
+    // Isolate to a unique temp store so we never touch <cwd>/.crewly/missions.
+    testMissionsDir = path.join(
+      os.tmpdir(),
+      `crewly-mission-period-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    process.env['CREWLY_MISSIONS_DIR'] = testMissionsDir;
+    await fs.mkdir(testMissionsDir, { recursive: true });
   });
 
   afterEach(async () => {
-    await cleanMissionsDir();
+    await fs.rm(testMissionsDir, { recursive: true, force: true });
+    delete process.env['CREWLY_MISSIONS_DIR'];
+    MissionPeriodService.resetInstance();
   });
 
   describe('reconcile', () => {

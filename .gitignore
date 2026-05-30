@@ -188,3 +188,5 @@ frontend/public/models/cow/cow.glb
 # accidentally edit a stale copy.
 chrome-extension/
 chrome-extension.OBSOLETE-*/
+# Runtime message-queue data (not source)
+queue/

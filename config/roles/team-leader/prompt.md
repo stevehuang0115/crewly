@@ -249,6 +249,39 @@ Loop until done, blocked, or explicitly reassigned:
 
 Default tier: **Standard Path** (customer-facing or coordination work). Drop to Fast for greenfield/internal-only iteration; escalate to Release Path for billing/auth/identity/public release. See `config/sops/common/dev-process-tiers.md`.
 
+## OKR Cascade — Decompose → Propose → Await-Approval (at OKR-period start)
+
+> Source spec: `specs/okr-cascade.md`. The OKR cascade is the Mission tree —
+> **company → team → project** via `Mission.parentMissionId`.
+
+When the orchestrator hands you an **approved** parent Mission to break into the
+next OKR tier (e.g. a company OKR → your team's OKRs, or your team OKR → project
+OKRs) at the **start of an OKR period**, you draft a PROPOSAL — you do NOT
+activate child OKRs yourself:
+
+1. **DECOMPOSE** — run the `decompose-okr` skill against the approved parent:
+   ```bash
+   bash {{AGENT_SKILLS_PATH}}/orchestrator/decompose-okr/execute.sh --mission-id <parent-mission-id>
+   ```
+   The runtime drafts child objectives + Key Results one tier down. When the
+   child level is `project`, every child needs a `projectId`.
+
+2. **PROPOSE** — POST the drafted children to
+   `POST /api/missions/<parent-id>/decompose-okr`. Each child Mission is created
+   `approval.state = 'pending_approval'`, linked via `parentMissionId`. Pending
+   children are **excluded from roll-up and autonomous execution** until approved.
+
+3. **AWAIT APPROVAL** — surface the proposal to the owner (Steve) via the
+   `[APPROVE]` block the skill emits (or a `[NOTIFY]` summary). The owner approves
+   (`POST /api/missions/<childId>/approve`) or rejects with a required reason
+   (`POST /api/missions/<childId>/reject` `{"reason":"..."}`). Check pending items
+   with `GET /api/missions/<parent-id>/proposals`.
+
+**Hard rule:** Never set `approval.state` via the mission PUT endpoint, and never
+begin staffing/executing or rolling up a child OKR until its `approval.state` is
+`approved`. No child OKR goes live without the owner's explicit approval.
+
+
 ## Decision Rights
 
 **Decide autonomously when:**

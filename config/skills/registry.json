@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-04-25T00:15:10.000Z",
+  "lastUpdated": "2026-05-30T00:00:00.000Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -498,7 +498,7 @@
       "id": "gmail",
       "type": "skill",
       "name": "Gmail Suite",
-      "description": "Multi-action Gmail skill for agents — list/read/search/send messages, manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope.",
+      "description": "Multi-action Gmail skill for agents \u2014 list/read/search/send messages, manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope.",
       "author": "Crewly Team",
       "version": "1.1.0",
       "category": "communication",
@@ -784,8 +784,8 @@
     {
       "id": "rednote-reader",
       "type": "skill",
-      "name": "RedNote (小红书) Reader",
-      "description": "Read content from the 小红书 (RedNote) macOS iPad app via Accessibility API. Extracts feed posts, titles, authors, like counts, and navigation structure without screenshots.",
+      "name": "RedNote (\u5c0f\u7ea2\u4e66) Reader",
+      "description": "Read content from the \u5c0f\u7ea2\u4e66 (RedNote) macOS iPad app via Accessibility API. Extracts feed posts, titles, authors, like counts, and navigation structure without screenshots.",
       "author": "Crewly Team",
       "version": "1.0.0",
       "category": "automation",
@@ -816,7 +816,7 @@
         ],
         "triggers": [
           "rednote",
-          "小红书",
+          "\u5c0f\u7ea2\u4e66",
           "xiaohongshu",
           "red note",
           "discover app",
@@ -966,7 +966,7 @@
       "id": "browse-stealth",
       "type": "skill",
       "name": "Stealth Browser (Patchright + CDP)",
-      "description": "Anti-detection browser automation using Patchright (Playwright fork) connected to a real Chrome instance via CDP. Bypasses navigator.webdriver checks, fingerprint anomalies, and headless detection used by platforms like 小红书, X/Twitter, and LinkedIn.",
+      "description": "Anti-detection browser automation using Patchright (Playwright fork) connected to a real Chrome instance via CDP. Bypasses navigator.webdriver checks, fingerprint anomalies, and headless detection used by platforms like \u5c0f\u7ea2\u4e66, X/Twitter, and LinkedIn.",
       "author": "Crewly Team",
       "version": "1.0.0",
       "category": "automation",
@@ -1160,6 +1160,52 @@
           "test runner",
           "execute tests",
           "check tests"
+        ]
+      }
+    },
+    {
+      "id": "decompose-okr",
+      "type": "skill",
+      "name": "Decompose OKR",
+      "description": "Decompose a parent Mission (OKR) into child OKRs one cascade tier down (company\u2192team\u2192project) as a proposal. Children are created as pending_approval and are NOT active until the human owner approves. Emits an [APPROVE] block for the owner's decision.",
+      "author": "Crewly Team",
+      "version": "1.0.0",
+      "category": "planning",
+      "tags": [
+        "okr",
+        "cascade",
+        "mission",
+        "planning",
+        "proposal",
+        "approval"
+      ],
+      "license": "MIT",
+      "downloads": 0,
+      "rating": 0,
+      "createdAt": "2026-05-30T00:00:00.000Z",
+      "updatedAt": "2026-05-30T00:00:00.000Z",
+      "source": "config/skills/orchestrator/decompose-okr",
+      "assets": {
+        "archive": "config/skills/orchestrator/decompose-okr",
+        "checksum": "",
+        "sizeBytes": 6000
+      },
+      "metadata": {
+        "skillType": "claude-skill",
+        "assignableRoles": [
+          "orchestrator",
+          "team-leader"
+        ],
+        "triggers": [
+          "decompose okr",
+          "cascade okr",
+          "propose child okrs",
+          "break okr into team okrs",
+          "okr decomposition"
+        ],
+        "files": [
+          "SKILL.md",
+          "execute.sh"
         ]
       }
     }

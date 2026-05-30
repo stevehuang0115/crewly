@@ -16,17 +16,25 @@ import { existsSync, mkdirSync } from 'fs';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import {
+  deriveLevel,
+  type Mission,
+  type MissionLevel,
+} from '../../types/v2/mission.types.js';
+import {
   type KeyResult,
   type KRMeasurement,
   type KRStatus,
   type CreateKeyResultInput,
   type UpdateKeyResultInput,
   type MissionOKRSummary,
+  type CascadeOKRSummary,
   type OKRRecommendation,
   createKeyResult,
   computeKRProgress,
   deriveKRStatus,
+  deriveCascadeChildStatus,
   deriveOKRRecommendation,
+  computeRolledUpProgress,
   MAX_MEASUREMENT_HISTORY,
   validateCreateKeyResultInput,
 } from '../../types/v2/key-result.types.js';
@@ -49,6 +57,13 @@ function getKRDir(missionId: string): string {
 function getKRPath(missionId: string, krId: string): string {
   return path.join(getKRDir(missionId), `${krId}.json`);
 }
+
+
+/** Proposal state that marks an approved (cascade-active) mission. */
+const APPROVED_STATE = 'approved' as const;
+
+/** Stale-cycle fallback when a mission has no persisted `staleCycles`. */
+const NO_STALE_CYCLES = 0;
 
 // ---------------------------------------------------------------------------
 // Service
@@ -353,6 +368,201 @@ export class KRTrackingService {
       overallProgress,
       recommendation,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Cross-Level Roll-Up (cascade)
+  // -------------------------------------------------------------------------
+
+  /**
+   * List the cascade-active direct children of a mission.
+   *
+   * Reads every mission document and keeps those whose `parentMissionId`
+   * equals `parentId` AND that are cascade-active. A mission is cascade-active
+   * iff its `approval` is absent (legacy missions) OR
+   * `approval.state === 'approved'`. Draft / pending_approval / rejected
+   * children are excluded from the roll-up per spec §4.2.
+   *
+   * @param parentId - Parent mission ID
+   * @returns The approved direct-child missions (empty if none / on read error)
+   *
+   * @example
+   * ```ts
+   * const children = await KRTrackingService.getInstance().listChildMissions('team-1');
+   * ```
+   */
+  async listChildMissions(parentId: string): Promise<Mission[]> {
+    const all = await this.loadAllMissions();
+    return all.filter((m) => m.parentMissionId === parentId && this.isCascadeActive(m));
+  }
+
+  /**
+   * Compute cross-level cascade roll-up of OKR progress for a mission and its
+   * approved descendants (company → team → project).
+   *
+   * Recursively walks the `parentMissionId` tree. At each node it reuses
+   * {@link computeMissionOKRProgress} for that node's OWN KRs, then folds in the
+   * `rolledUpProgress` of each approved child:
+   *
+   * - `rolledUpProgress` = equal-weight average of this node's own
+   *   `overallProgress` and each approved child's `rolledUpProgress`
+   *   (see {@link computeRolledUpProgress}); a leaf equals its own progress.
+   * - The roll-up recommendation is derived over this node's own KR statuses
+   *   PLUS one synthetic status per child mapped from the child's
+   *   `rolledUpProgress` via {@link deriveCascadeChildStatus} — so "all children
+   *   off_track ⇒ parent escalates/replans" falls out naturally (including when
+   *   children are stalled at 0% progress).
+   *
+   * Orphans (a mission whose `parentMissionId` points at a missing or
+   * non-approved parent) are treated as roots of their own subtree and never
+   * crash. A `visited` set guards against cycles defensively (create/update
+   * already reject cycles).
+   *
+   * @param missionId - Root mission of the subtree to roll up
+   * @param staleCycles - Consecutive stale review cycles for the root node. When
+   *   omitted, the root's PERSISTED `staleCycles` is used so staleness-driven
+   *   replan/escalate is not silently suppressed at the queried node (spec §4.2).
+   *   Pass an explicit number to override the persisted value.
+   * @returns The recursive {@link CascadeOKRSummary} for the subtree
+   *
+   * @example
+   * ```ts
+   * const summary = await KRTrackingService.getInstance().computeCascadeOKRProgress('co-1');
+   * console.log(summary.rolledUpProgress, summary.children.length);
+   * ```
+   */
+  async computeCascadeOKRProgress(
+    missionId: string,
+    staleCycles?: number,
+  ): Promise<CascadeOKRSummary> {
+    const all = await this.loadAllMissions();
+    const byId = new Map<string, Mission>(all.map((m) => [m.id, m] as const));
+    const linkById = new Map<string, Pick<Mission, 'id' | 'parentMissionId'>>(
+      all.map((m) => [m.id, { id: m.id, parentMissionId: m.parentMissionId }] as const),
+    );
+    // Seed the root's stale cycles from its persisted value unless the caller
+    // explicitly overrides it. Children read their own persisted value below.
+    const rootStaleCycles =
+      staleCycles ?? byId.get(missionId)?.staleCycles ?? NO_STALE_CYCLES;
+    return this.rollUp(missionId, rootStaleCycles, byId, linkById, new Set<string>());
+  }
+
+  /**
+   * Recursive worker for {@link computeCascadeOKRProgress}.
+   *
+   * @param missionId - Current node
+   * @param staleCycles - Stale cycles applied to the current node only
+   * @param byId - All missions indexed by ID
+   * @param linkById - Lightweight parent-link map for level derivation
+   * @param visited - Cycle-guard set of already-walked mission IDs
+   * @returns The {@link CascadeOKRSummary} for this node's subtree
+   */
+  private async rollUp(
+    missionId: string,
+    staleCycles: number,
+    byId: ReadonlyMap<string, Mission>,
+    linkById: ReadonlyMap<string, Pick<Mission, 'id' | 'parentMissionId'>>,
+    visited: Set<string>,
+  ): Promise<CascadeOKRSummary> {
+    visited.add(missionId);
+
+    const own = await this.computeMissionOKRProgress(missionId, staleCycles);
+    const level = this.resolveLevel(missionId, byId, linkById);
+
+    // Approved direct children that have not already been visited (cycle guard).
+    const approvedChildren = [...byId.values()].filter(
+      (m) =>
+        m.parentMissionId === missionId &&
+        this.isCascadeActive(m) &&
+        !visited.has(m.id),
+    );
+
+    const children: CascadeOKRSummary[] = [];
+    for (const child of approvedChildren) {
+      // Child stale cycles read from its own persisted value (independent node).
+      children.push(
+        await this.rollUp(child.id, child.staleCycles ?? NO_STALE_CYCLES, byId, linkById, visited),
+      );
+    }
+
+    const childProgresses = children.map((c) => c.rolledUpProgress);
+    const rolledUpProgress = computeRolledUpProgress(own.overallProgress, childProgresses);
+
+    // Roll-up recommendation: own KR statuses + one synthetic status per child
+    // mapped from its rolled-up progress. Uses deriveCascadeChildStatus (no
+    // baseline-equality short-circuit) so a child stalled at 0% reads as
+    // off_track rather than not_started — otherwise an all-stalled parent would
+    // never escalate/replan (spec §4.2).
+    const ownStatuses = (await this.listByMission(missionId)).map((kr) => kr.status);
+    const childStatuses = children.map((c) => deriveCascadeChildStatus(c.rolledUpProgress));
+    const recommendation = deriveOKRRecommendation([...ownStatuses, ...childStatuses], staleCycles);
+
+    return {
+      ...own,
+      recommendation,
+      level,
+      childMissionCount: children.length,
+      rolledUpProgress,
+      children,
+    };
+  }
+
+  /**
+   * Whether a mission counts as cascade-active: approval absent (legacy) or
+   * explicitly approved.
+   *
+   * @param mission - Mission to test
+   * @returns `true` if the mission participates in the cascade roll-up
+   */
+  private isCascadeActive(mission: Mission): boolean {
+    return mission.approval === undefined || mission.approval.state === APPROVED_STATE;
+  }
+
+  /**
+   * Resolve a mission's cascade level: prefer its explicit `level`, else derive
+   * it from the parent chain via {@link deriveLevel}. Missing/orphan missions
+   * fall back to `company` (treated as a root).
+   *
+   * @param missionId - Mission whose level to resolve
+   * @param byId - All missions indexed by ID
+   * @param linkById - Lightweight parent-link map for derivation
+   * @returns The resolved {@link MissionLevel}
+   */
+  private resolveLevel(
+    missionId: string,
+    byId: ReadonlyMap<string, Mission>,
+    linkById: ReadonlyMap<string, Pick<Mission, 'id' | 'parentMissionId'>>,
+  ): MissionLevel {
+    const mission = byId.get(missionId);
+    if (mission?.level) return mission.level;
+    if (!mission) return 'company';
+    return deriveLevel(missionId, linkById);
+  }
+
+  /**
+   * Load all mission documents from disk, skipping unreadable files.
+   *
+   * @returns Array of missions (empty on a missing directory)
+   */
+  private async loadAllMissions(): Promise<Mission[]> {
+    const dir = getMissionsDir();
+    let files: string[] = [];
+    try {
+      files = (await fs.readdir(dir)).filter((f) => f.endsWith('.json'));
+    } catch {
+      return [];
+    }
+    const missions = await Promise.all(
+      files.map(async (f) => {
+        try {
+          const raw = await fs.readFile(path.join(dir, f), 'utf-8');
+          return JSON.parse(raw) as Mission;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return missions.filter((m): m is Mission => m !== null);
   }
 
   // -------------------------------------------------------------------------

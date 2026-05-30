@@ -32,8 +32,14 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve the mission store directory. Defaults to `<cwd>/.crewly/missions`
+ * (the production store). Honors the `CREWLY_MISSIONS_DIR` env override so tests
+ * can isolate to a temp directory and never read/delete the real store — without
+ * this override a test's cleanup would wipe production missions.
+ */
 function getMissionsDir(): string {
-  return path.join(process.cwd(), '.crewly', 'missions');
+  return process.env['CREWLY_MISSIONS_DIR'] || path.join(process.cwd(), '.crewly', 'missions');
 }
 
 // ---------------------------------------------------------------------------
