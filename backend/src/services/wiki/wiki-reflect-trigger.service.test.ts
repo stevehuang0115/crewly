@@ -7,6 +7,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as os from 'os';
+import * as path from 'path';
+import * as fsp from 'fs/promises';
 import { WikiReflectTriggerService, WikiReflectFireMeta } from './wiki-reflect-trigger.service.js';
 import type { WikiQueueService, WikiQueueItem } from './wiki-queue.service.js';
 import type { WikiSourceType } from './wiki-ingest.service.js';
@@ -58,6 +61,7 @@ afterEach(() => {
 describe('WikiReflectTriggerService.tick', () => {
   it('fires for a vault with zero queue items', async () => {
     trigger = new WikiReflectTriggerService({
+      statePath: null,
       fireFn,
       discoverRoots: async () => [VAULT_A],
       queueService: makeFakeQueueService([]),
@@ -76,6 +80,7 @@ describe('WikiReflectTriggerService.tick', () => {
   it('skips a vault that had a queue-add within the quiet window', async () => {
     const recent = new Date(now - 30 * 60 * 1000).toISOString(); // 30m ago
     trigger = new WikiReflectTriggerService({
+      statePath: null,
       fireFn,
       quietWindowMs: 4 * 60 * 60 * 1000,
       discoverRoots: async () => [VAULT_A],
@@ -91,6 +96,7 @@ describe('WikiReflectTriggerService.tick', () => {
   it('fires when the last queue-add is older than the quiet window', async () => {
     const old = new Date(now - 5 * 60 * 60 * 1000).toISOString(); // 5h ago
     trigger = new WikiReflectTriggerService({
+      statePath: null,
       fireFn,
       quietWindowMs: 4 * 60 * 60 * 1000,
       discoverRoots: async () => [VAULT_A],
@@ -104,8 +110,28 @@ describe('WikiReflectTriggerService.tick', () => {
     expect(Math.round(meta.msSinceLastQueueAdd / (60 * 60 * 1000))).toBe(5);
   });
 
+  it('tick({ ignoreDebounce: true }) fires even within the debounce window (manual trigger-now)', async () => {
+    trigger = new WikiReflectTriggerService({
+      statePath: null,
+      fireFn,
+      debounceMs: 4 * 60 * 60 * 1000,
+      discoverRoots: async () => [VAULT_A],
+      queueService: makeFakeQueueService([]),
+      now: () => now,
+    });
+    await trigger.tick(); // fire 1, sets lastFiredAt
+    expect(fireFn).toHaveBeenCalledTimes(1);
+    // Only 1h later — inside debounce — but ignoreDebounce forces it.
+    now += 60 * 60 * 1000;
+    const res = await trigger.tick({ ignoreDebounce: true });
+    expect(res.fired).toEqual([VAULT_A]);
+    expect(res.skippedByDebounce).toEqual([]);
+    expect(fireFn).toHaveBeenCalledTimes(2);
+  });
+
   it('debounces — does not refire within the debounce window', async () => {
     trigger = new WikiReflectTriggerService({
+      statePath: null,
       fireFn,
       debounceMs: 4 * 60 * 60 * 1000,
       discoverRoots: async () => [VAULT_A],
@@ -125,6 +151,7 @@ describe('WikiReflectTriggerService.tick', () => {
 
   it('refires after the debounce window elapses', async () => {
     trigger = new WikiReflectTriggerService({
+      statePath: null,
       fireFn,
       debounceMs: 4 * 60 * 60 * 1000,
       discoverRoots: async () => [VAULT_A],
@@ -141,6 +168,7 @@ describe('WikiReflectTriggerService.tick', () => {
   it('scans multiple vaults independently', async () => {
     const recent = new Date(now - 10 * 60 * 1000).toISOString(); // 10m ago in vault B
     trigger = new WikiReflectTriggerService({
+      statePath: null,
       fireFn,
       discoverRoots: async () => [VAULT_A, VAULT_B],
       queueService: makeFakeQueueService([makeItem(VAULT_B, recent)]),
@@ -156,6 +184,7 @@ describe('WikiReflectTriggerService.tick', () => {
       throw new Error('fireFn boom');
     });
     trigger = new WikiReflectTriggerService({
+      statePath: null,
       fireFn,
       discoverRoots: async () => [VAULT_A, VAULT_B],
       queueService: makeFakeQueueService([]),
@@ -172,6 +201,7 @@ describe('WikiReflectTriggerService.tick', () => {
 describe('WikiReflectTriggerService lifecycle', () => {
   it('start/stop is idempotent', () => {
     trigger = new WikiReflectTriggerService({
+      statePath: null,
       fireFn,
       intervalMs: 60_000,
       discoverRoots: async () => [],
@@ -186,6 +216,7 @@ describe('WikiReflectTriggerService lifecycle', () => {
 
   it('setInstance + getInstance singleton wiring', () => {
     trigger = new WikiReflectTriggerService({
+      statePath: null,
       fireFn,
       discoverRoots: async () => [],
       queueService: makeFakeQueueService([]),
@@ -194,5 +225,43 @@ describe('WikiReflectTriggerService lifecycle', () => {
     expect(WikiReflectTriggerService.getInstance()).toBe(trigger);
     WikiReflectTriggerService.setInstance(null);
     expect(WikiReflectTriggerService.getInstance()).toBeNull();
+  });
+});
+
+describe('WikiReflectTriggerService persistence (survives restart)', () => {
+  it('a new instance loads the debounce ledger and does not re-burst within the window', async () => {
+    const t0 = Date.UTC(2026, 4, 24, 12, 0, 0);
+    const statePath = path.join(
+      await fsp.mkdtemp(path.join(os.tmpdir(), 'crewly-reflect-state-')),
+      'reflect-state.json',
+    );
+    const fire1 = vi.fn();
+    const t1 = new WikiReflectTriggerService({
+      statePath,
+      debounceMs: 4 * 60 * 60 * 1000,
+      fireFn: fire1,
+      discoverRoots: async () => [VAULT_A],
+      queueService: makeFakeQueueService([]),
+      now: () => t0,
+    });
+    const r1 = await t1.tick();
+    expect(r1.fired).toEqual([VAULT_A]);
+    t1.stop();
+
+    // Simulate a restart 1h later (still inside the 4h debounce): a brand-new
+    // instance must read the persisted lastFiredAt and NOT re-fire.
+    const fire2 = vi.fn();
+    const t2 = new WikiReflectTriggerService({
+      statePath,
+      debounceMs: 4 * 60 * 60 * 1000,
+      fireFn: fire2,
+      discoverRoots: async () => [VAULT_A],
+      queueService: makeFakeQueueService([]),
+      now: () => t0 + 60 * 60 * 1000,
+    });
+    const r2 = await t2.tick();
+    expect(r2.skippedByDebounce).toEqual([VAULT_A]);
+    expect(fire2).not.toHaveBeenCalled();
+    t2.stop();
   });
 });

@@ -29,6 +29,18 @@ import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { WikiBookkeepService, WikiBookkeepReport } from './wiki-bookkeep.service.js';
+import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+
+const STATE_FILE_NAME = 'wiki-bookkeep-trigger-state.json';
+
+/** Persisted per-vault state: the consolidation high-water mark + last fire. */
+interface VaultBookkeepState {
+  /** Total md count we last established as the baseline (high-water mark). */
+  baselineMdCount: number;
+  /** Last time we fired a bookkeep notification for this vault (ms epoch). */
+  lastFiredAt: number;
+}
 
 export type WikiBookkeepFireFn = (
   vaultPath: string,
@@ -46,6 +58,12 @@ export interface WikiBookkeepTriggerOptions {
   discoverRoots?: () => Promise<string[]>;
   /** Optional override of the bookkeep service (tests). */
   bookkeepService?: WikiBookkeepService;
+  /**
+   * Where to persist per-vault baseline + debounce state. Defaults to
+   * `~/.crewly/wiki-bookkeep-trigger-state.json`. Pass `null` to disable
+   * persistence (tests) so the trigger keeps state in-memory only.
+   */
+  statePath?: string | null;
 }
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000;
@@ -125,10 +143,12 @@ export class WikiBookkeepTriggerService {
   private readonly discoverRoots: () => Promise<string[]>;
   private readonly bookkeepService: WikiBookkeepService;
   private timer: NodeJS.Timeout | null = null;
-  /** vaultPath → last fired timestamp (ms). */
-  private readonly lastFiredAt = new Map<string, number>();
+  /** vaultPath → persisted baseline + last-fired state. */
+  private readonly state = new Map<string, VaultBookkeepState>();
   /** Per-vault locks so two overlapping ticks don't double-fire. */
   private inflight = new Set<string>();
+  private readonly statePath: string | null;
+  private stateLoaded = false;
 
   constructor(opts: WikiBookkeepTriggerOptions) {
     this.logger = LoggerService.getInstance().createComponentLogger('WikiBookkeepTrigger');
@@ -137,6 +157,65 @@ export class WikiBookkeepTriggerService {
     this.fireFn = opts.fireFn;
     this.discoverRoots = opts.discoverRoots ?? discoverWikiVaults;
     this.bookkeepService = opts.bookkeepService ?? WikiBookkeepService.getInstance();
+    if (opts.statePath === null) {
+      this.statePath = null;
+    } else if (typeof opts.statePath === 'string') {
+      this.statePath = opts.statePath;
+    } else {
+      this.statePath = path.join(getCrewlyHomePath(), STATE_FILE_NAME);
+    }
+  }
+
+  /**
+   * Load per-vault baseline + debounce state from disk (once). Without this,
+   * the in-memory ledger resets on every backend restart, so the next tick
+   * re-fires for every eligible vault — the "noise burst after a restart".
+   */
+  private async loadStateFromDisk(): Promise<void> {
+    if (this.stateLoaded) return;
+    this.stateLoaded = true;
+    if (!this.statePath) return;
+    try {
+      const data = await safeReadJson<Record<string, VaultBookkeepState> | null>(this.statePath, null);
+      if (data && typeof data === 'object') {
+        for (const [vault, entry] of Object.entries(data)) {
+          if (
+            entry &&
+            typeof entry.baselineMdCount === 'number' &&
+            typeof entry.lastFiredAt === 'number'
+          ) {
+            this.state.set(vault, entry);
+          }
+        }
+        this.logger.info('WikiBookkeepTrigger loaded persisted state', {
+          statePath: this.statePath,
+          vaults: this.state.size,
+        });
+      }
+    } catch (err) {
+      // A transient read error (e.g. EACCES) must not abort the tick — start
+      // with an empty ledger this run; a later tick re-establishes baselines.
+      this.logger.warn('WikiBookkeepTrigger: failed to load state (non-fatal)', {
+        statePath: this.statePath,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /** Persist the per-vault state map (best-effort; failures are logged, not thrown). */
+  private async saveStateToDisk(): Promise<void> {
+    if (!this.statePath) return;
+    try {
+      const payload: Record<string, VaultBookkeepState> = {};
+      for (const [vault, entry] of this.state) payload[vault] = entry;
+      await ensureDir(path.dirname(this.statePath));
+      await atomicWriteJson(this.statePath, payload);
+    } catch (err) {
+      this.logger.warn('WikiBookkeepTrigger: failed to persist state (non-fatal)', {
+        statePath: this.statePath,
+        error: (err as Error).message,
+      });
+    }
   }
 
   static getInstance(): WikiBookkeepTriggerService | null {
@@ -180,6 +259,7 @@ export class WikiBookkeepTriggerService {
     skippedByDebounce: string[];
     quietVaults: string[];
   }> {
+    await this.loadStateFromDisk();
     const vaults = await this.discoverRoots();
     const result = {
       scanned: [...vaults],
@@ -187,11 +267,16 @@ export class WikiBookkeepTriggerService {
       skippedByDebounce: [] as string[],
       quietVaults: [] as string[],
     };
+    let stateDirty = false;
     for (const v of vaults) {
       if (this.inflight.has(v)) continue;
       this.inflight.add(v);
       try {
-        const outcome = await this.bookkeepService.generate({ vaultPath: v });
+        const prior = this.state.get(v);
+        const outcome = await this.bookkeepService.generate({
+          vaultPath: v,
+          baselineMdCount: prior?.baselineMdCount,
+        });
         if (!outcome.ok) {
           this.logger.warn('WikiBookkeepTrigger: bookkeep failed for vault', {
             vault: v,
@@ -199,22 +284,45 @@ export class WikiBookkeepTriggerService {
           });
           continue;
         }
+        const total = outcome.report.totalMdCount;
+
+        // First sight of a vault: establish the baseline at the current count
+        // and DON'T fire. This is what stops a freshly-migrated vault (every
+        // file mtime-recent) from firing on its entire backlog — only pages
+        // added AFTER this point count toward the next threshold.
+        if (!prior) {
+          this.state.set(v, { baselineMdCount: total, lastFiredAt: 0 });
+          stateDirty = true;
+          result.quietVaults.push(v);
+          continue;
+        }
+
+        // A vault that shrank (cleanup deleted pages) lowers the baseline so
+        // future adds are measured from the new floor — keep it persisted.
+        if (total < prior.baselineMdCount) {
+          prior.baselineMdCount = total;
+          stateDirty = true;
+        }
+
         if (!outcome.report.shouldFire) {
           result.quietVaults.push(v);
           continue;
         }
-        const last = this.lastFiredAt.get(v) ?? 0;
-        if (Date.now() - last < this.debounceMs) {
+        if (Date.now() - prior.lastFiredAt < this.debounceMs) {
           result.skippedByDebounce.push(v);
           continue;
         }
-        this.lastFiredAt.set(v, Date.now());
+        // Fire, then advance the baseline to the current count so we don't
+        // re-fire until another `threshold` net-new pages accumulate.
+        prior.lastFiredAt = Date.now();
+        prior.baselineMdCount = total;
+        stateDirty = true;
         try {
           await this.fireFn(v, outcome.report);
           result.fired.push(v);
           this.logger.info('WikiBookkeepTrigger fired', {
             vault: v,
-            recentMd: outcome.report.recentMdCount,
+            netNewMd: outcome.report.netNewMdCount,
             threshold: outcome.report.threshold,
             duplicates: outcome.report.duplicateCandidates.length,
           });
@@ -228,11 +336,16 @@ export class WikiBookkeepTriggerService {
         this.inflight.delete(v);
       }
     }
+    if (stateDirty) await this.saveStateToDisk();
     return result;
   }
 
-  /** Test affordance: clear the debounce ledger. */
+  /**
+   * Test affordance: clear the in-memory baseline + debounce ledger. Leaves
+   * `stateLoaded` set so a subsequent `tick()` does NOT reload persisted state
+   * (which would undo the clear).
+   */
   _resetDebounceForTesting(): void {
-    this.lastFiredAt.clear();
+    this.state.clear();
   }
 }
