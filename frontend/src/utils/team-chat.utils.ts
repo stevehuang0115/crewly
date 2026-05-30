@@ -17,6 +17,15 @@ import type { Team } from '../types';
 import type { ChatPresenceStatus, MentionTarget } from '@crewly/chat-ui';
 
 /**
+ * Query-param key used to scope a route to a specific team.
+ *
+ * Shared contract between the link producers (the /teams Chat & Wiki buttons)
+ * and the consumers (`TeamChatRoute` for `/team-chat`, `Wiki` for `/wiki`) so
+ * a typo can't silently break the deep-link.
+ */
+export const TEAM_QUERY_PARAM = 'team';
+
+/**
  * Map every team to a `teamId → name` label entry for the WorkspaceRail.
  *
  * Teams missing a non-empty name are skipped so the rail falls back to the

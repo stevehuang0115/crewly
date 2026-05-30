@@ -19,6 +19,7 @@ import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
 import { usePinnedFavorites } from '../hooks/usePinnedFavorites';
 import { useAuth } from '../contexts/AuthContext';
 import { assignDefaultAvatars } from '../utils/team.utils';
+import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
 
 export const Teams: React.FC = () => {
   const navigate = useNavigate();
@@ -377,6 +378,8 @@ export const Teams: React.FC = () => {
                   onEditTeam={(teamId) => navigate(`/teams/${teamId}?edit=true`)}
                   onStartTeam={handleStartTeam}
                   onStopTeam={handleStopTeam}
+                  onOpenChat={(teamId) => navigate(`/team-chat?${TEAM_QUERY_PARAM}=${teamId}`)}
+                  onOpenWiki={(teamId) => navigate(`/wiki?${TEAM_QUERY_PARAM}=${teamId}`)}
                   isPinned={isPinned(team.id)}
                   onTogglePin={() => togglePin({ id: team.id, name: team.name, type: 'team' })}
                 />
@@ -399,6 +402,8 @@ export const Teams: React.FC = () => {
                   onClick={() => handleTeamClick(team)}
                   onViewTeam={(teamId) => navigate(`/teams/${teamId}`)}
                   onEditTeam={(teamId) => navigate(`/teams/${teamId}?edit=true`)}
+                  onOpenChat={(teamId) => navigate(`/team-chat?${TEAM_QUERY_PARAM}=${teamId}`)}
+                  onOpenWiki={(teamId) => navigate(`/wiki?${TEAM_QUERY_PARAM}=${teamId}`)}
                   onDeleteTeam={async (teamId) => {
                     if (window.confirm('Are you sure you want to delete this team?')) {
                       try {

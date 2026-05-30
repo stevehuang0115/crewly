@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { resolveWikilink } from './Wiki';
+import { resolveWikilink, pickInitialVault, type WikiVault } from './Wiki';
 
 const VAULT = [
   'log.md',
@@ -69,5 +69,49 @@ describe('resolveWikilink', () => {
 
   it('returns null for an empty vault', () => {
     expect(resolveWikilink('anthropic', [])).toBeNull();
+  });
+});
+
+describe('pickInitialVault', () => {
+  const mk = (scope: WikiVault['scope'], vaultId: string): WikiVault => ({
+    vaultPath: `/${scope}/${vaultId}`,
+    scope,
+    vaultId,
+    label: vaultId,
+    stats: null,
+  });
+
+  const VAULTS: WikiVault[] = [
+    mk('global', 'global'),
+    mk('project', 'closie'),
+    mk('team', 'team-abc'),
+    mk('team', 'team-xyz'),
+  ];
+
+  it('returns null when there are no vaults', () => {
+    expect(pickInitialVault([], 'team-abc')).toBeNull();
+  });
+
+  it('selects the matching team vault when ?team= matches a team vaultId', () => {
+    expect(pickInitialVault(VAULTS, 'team-xyz')?.vaultId).toBe('team-xyz');
+  });
+
+  it('falls back to the project vault when ?team= is absent', () => {
+    expect(pickInitialVault(VAULTS, null)?.scope).toBe('project');
+  });
+
+  it('falls back to the project vault when ?team= matches no team vault', () => {
+    expect(pickInitialVault(VAULTS, 'nonexistent')?.scope).toBe('project');
+  });
+
+  it('does not match a non-team vault that happens to share the id', () => {
+    const vaults: WikiVault[] = [mk('global', 'team-abc'), mk('project', 'p')];
+    // 'team-abc' here is a global vault's id, not a team vault — must not match.
+    expect(pickInitialVault(vaults, 'team-abc')?.scope).toBe('project');
+  });
+
+  it('falls back to the first vault when there is no project vault', () => {
+    const vaults: WikiVault[] = [mk('global', 'g'), mk('team', 't1')];
+    expect(pickInitialVault(vaults, null)?.vaultId).toBe('g');
   });
 });

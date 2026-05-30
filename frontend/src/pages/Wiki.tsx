@@ -15,6 +15,8 @@
  */
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
 import {
   BookOpen,
   Folder,
@@ -48,12 +50,34 @@ interface WikiVaultStats {
   };
 }
 
-interface WikiVault {
+export interface WikiVault {
   vaultPath: string;
   scope: 'global' | 'team' | 'project' | 'unknown';
   vaultId: string;
   label: string;
   stats: WikiVaultStats | null;
+}
+
+/**
+ * Choose which vault to auto-select on first load.
+ *
+ * Precedence: a `?team=<id>` deep-link (matched against the team vault whose
+ * `vaultId` equals the id) wins; otherwise the project vault; otherwise the
+ * first vault. Returns `null` only when there are no vaults.
+ *
+ * @param vaults - The (sorted) list of discovered vaults.
+ * @param teamParam - The `team` query-param value, or null when absent.
+ * @returns The vault to select initially, or null when `vaults` is empty.
+ */
+export function pickInitialVault(
+  vaults: WikiVault[],
+  teamParam: string | null,
+): WikiVault | null {
+  if (vaults.length === 0) return null;
+  const teamMatch = teamParam
+    ? vaults.find((v) => v.scope === 'team' && v.vaultId === teamParam)
+    : undefined;
+  return teamMatch ?? vaults.find((v) => v.scope === 'project') ?? vaults[0];
 }
 
 interface WikiTreeNode {
@@ -181,6 +205,12 @@ const SCOPE_ORDER: Record<WikiVault['scope'], number> = {
 };
 
 export function Wiki(): JSX.Element {
+  // Deep-link from /teams: `?team=<id>` pre-selects that team's vault.
+  // For team-scoped vaults the backend sets `vaultId` to the team id
+  // (see wiki.controller listVaults), so we match on it directly.
+  const [searchParams] = useSearchParams();
+  const teamParam = searchParams.get(TEAM_QUERY_PARAM);
+
   const [vaults, setVaults] = useState<WikiVault[]>([]);
   const [vaultsLoading, setVaultsLoading] = useState(true);
   const [vaultsError, setVaultsError] = useState<string | null>(null);
@@ -285,17 +315,17 @@ export function Wiki(): JSX.Element {
         return a.label.localeCompare(b.label);
       });
       setVaults(sorted);
-      // Auto-select the project vault if no selection yet.
+      // Auto-select if no selection yet. A `?team=` deep-link wins; otherwise
+      // fall back to the project vault, then the first vault.
       if (sorted.length > 0 && !selectedVault) {
-        const initial = sorted.find((v) => v.scope === 'project') ?? sorted[0];
-        setSelectedVault(initial);
+        setSelectedVault(pickInitialVault(sorted, teamParam));
       }
     } catch (err) {
       setVaultsError(err instanceof Error ? err.message : String(err));
     } finally {
       setVaultsLoading(false);
     }
-  }, [selectedVault]);
+  }, [selectedVault, teamParam]);
 
   const loadTree = useCallback(async (vaultPath: string) => {
     setTreeLoading(true);

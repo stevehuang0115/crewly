@@ -22,13 +22,11 @@ import { useSearchParams } from 'react-router-dom';
 import { LiveTeamChatPage } from './LiveTeamChatPage';
 import { useTeams } from '../../hooks/useTeams';
 import { resolveBackendURL, resolveChatMode } from '../../utils/chat-backend';
-import { buildTeamLabels, buildMentionables } from '../../utils/team-chat.utils';
-
-/**
- * Query-param key used to deep-link into a specific team's workspace.
- * Shared with the /teams navigation buttons so the contract lives in one spot.
- */
-export const TEAM_QUERY_PARAM = 'team';
+import {
+  buildTeamLabels,
+  buildMentionables,
+  TEAM_QUERY_PARAM,
+} from '../../utils/team-chat.utils';
 
 /**
  * Live route wrapper for `/team-chat`.

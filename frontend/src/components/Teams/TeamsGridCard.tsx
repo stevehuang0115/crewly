@@ -25,6 +25,10 @@ export interface TeamsGridCardProps {
   onDeleteTeam?: (teamId: string) => void;
   onStartTeam?: (teamId: string) => void;
   onStopTeam?: (teamId: string) => void;
+  /** Open this team's conversation in the consolidated chat. */
+  onOpenChat?: (teamId: string) => void;
+  /** Open this team's wiki vault. */
+  onOpenWiki?: (teamId: string) => void;
   /** Whether this team is currently pinned as a favorite */
   isPinned?: boolean;
   /** Callback to toggle pin state. If undefined, pin button is not shown. */
@@ -37,6 +41,7 @@ export interface TeamsGridCardProps {
 export const TeamsGridCard: React.FC<TeamsGridCardProps> = ({
   team, projectName, subTeamCount, onClick,
   onViewTeam, onEditTeam, onDeleteTeam, onStartTeam, onStopTeam,
+  onOpenChat, onOpenWiki,
   isPinned, onTogglePin,
 }) => {
   const [showStopConfirm, setShowStopConfirm] = useState(false);
@@ -101,6 +106,8 @@ export const TeamsGridCard: React.FC<TeamsGridCardProps> = ({
             <OverflowMenu align="bottom-right" items={[
               { label: 'Edit Team', onClick: () => onEditTeam?.(team.id) },
               { label: 'View Team', onClick: () => onViewTeam?.(team.id) },
+              ...(onOpenChat ? [{ label: 'Open Chat', onClick: () => onOpenChat(team.id) }] : []),
+              ...(onOpenWiki ? [{ label: 'Open Wiki', onClick: () => onOpenWiki(team.id) }] : []),
               ...(onDeleteTeam ? [{ label: 'Delete Team', danger: true, onClick: () => onDeleteTeam(team.id) }] : []),
             ]} />
           </div>
