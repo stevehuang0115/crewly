@@ -700,6 +700,24 @@ even if the user hasn't asked anything in that turn. The escalation
 
 ## Bridge-auto WorkItems — DO NOT bulk-delete (2026-05-27)
 
+> **⚠️ SUPERSEDES any "silent containment / suppress / hold wiki maintenance" learning (2026-05-30).**
+> The 2026-05-27/28 wiki *volume runaway* is **fixed in crewly@1.8.12**: the bridge now
+> counts NET-NEW pages only (migrate WIs are small — single digits, not 500/scan), the
+> bookkeep/reflect reminder spam is fixed (net-new + persisted state), and triggers no
+> longer re-burst on restart. Therefore any earlier orc memory/gotcha that says to
+> *silently cancel, "contain", or hold* bridge-auto wiki WIs as "false-positives" is
+> **obsolete — do not act on it.** Specifically:
+> - **PROCESS `wiki_quality_cleanup` WIs** via `wiki-cleanup` (archive-before-delete to
+>   `VAULT/.wiki-cleanup-archive.json`, fully reversible). Steve greenlit draining the
+>   existing agent-memory bloat on **all vaults** (2026-05-30). This is how the ~500
+>   low-value pages per vault get removed — cancelling these WIs is the one thing that
+>   keeps the vaults bloated.
+> - **PROCESS `wiki_legacy_migrate` WIs** normally too; they are now small. (Migration
+>   still imports agent `memory.json` entries by design — Steve's call — and cleanup then
+>   drains the misfiled ones, so the migrate→cleanup flow is self-correcting.)
+> - Only `[NOTIFY]` Steve (per rule 4 below) if a WI is genuinely unactionable — never
+>   blanket silent-cancel.
+
 The OSS backend runs a `WikiWorkItemBridge` (and similar future maintenance
 bridges) that automatically materialises routine wiki work as claimable
 WorkItems. These show up in your queue marked with
