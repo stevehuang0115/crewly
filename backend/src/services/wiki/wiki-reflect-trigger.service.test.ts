@@ -110,6 +110,25 @@ describe('WikiReflectTriggerService.tick', () => {
     expect(Math.round(meta.msSinceLastQueueAdd / (60 * 60 * 1000))).toBe(5);
   });
 
+  it('tick({ ignoreDebounce: true }) fires even within the debounce window (manual trigger-now)', async () => {
+    trigger = new WikiReflectTriggerService({
+      statePath: null,
+      fireFn,
+      debounceMs: 4 * 60 * 60 * 1000,
+      discoverRoots: async () => [VAULT_A],
+      queueService: makeFakeQueueService([]),
+      now: () => now,
+    });
+    await trigger.tick(); // fire 1, sets lastFiredAt
+    expect(fireFn).toHaveBeenCalledTimes(1);
+    // Only 1h later — inside debounce — but ignoreDebounce forces it.
+    now += 60 * 60 * 1000;
+    const res = await trigger.tick({ ignoreDebounce: true });
+    expect(res.fired).toEqual([VAULT_A]);
+    expect(res.skippedByDebounce).toEqual([]);
+    expect(fireFn).toHaveBeenCalledTimes(2);
+  });
+
   it('debounces — does not refire within the debounce window', async () => {
     trigger = new WikiReflectTriggerService({
       statePath: null,

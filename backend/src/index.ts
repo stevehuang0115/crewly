@@ -452,14 +452,21 @@ void (async () => {
 				const { WikiBookkeepTriggerService } = await import(
 					'./services/wiki/wiki-bookkeep-trigger.service.js'
 				);
-				const intervalMs = Number(process.env['CREWLY_WIKI_BOOKKEEP_INTERVAL_MS'] ?? 30 * 60 * 1000);
-				const debounceMs = Number(process.env['CREWLY_WIKI_BOOKKEEP_DEBOUNCE_MS'] ?? 6 * 3600 * 1000);
+				// Parse a positive-integer ms env override; fall back to the default
+				// when the value is missing or malformed (a NaN would coerce to a
+				// 0ms setInterval — a hot loop).
+				const posIntMs = (raw: string | undefined, fallback: number): number => {
+					const n = Number(raw);
+					return Number.isFinite(n) && n > 0 ? n : fallback;
+				};
+				const intervalMs = posIntMs(process.env['CREWLY_WIKI_BOOKKEEP_INTERVAL_MS'], 30 * 60 * 1000);
+				const debounceMs = posIntMs(process.env['CREWLY_WIKI_BOOKKEEP_DEBOUNCE_MS'], 6 * 3600 * 1000);
 				const trigger = new WikiBookkeepTriggerService({
 					intervalMs,
 					debounceMs,
 					fireFn: async (vaultPath, report) => {
 						if (!this.messageQueueService) return;
-						const summary = `[BOOKKEEP] vault=${vaultPath} | ${report.recentMdCount} new md(s) in last ${report.windowDays}d (threshold ${report.threshold}) | duplicates=${report.duplicateCandidates.length} | pending-queue=${report.queue.pending}. Run wiki-bookkeep to drain.`;
+						const summary = `[BOOKKEEP] vault=${vaultPath} | ${report.netNewMdCount} net-new md(s) since last pass (threshold ${report.threshold}) | duplicates=${report.duplicateCandidates.length} | pending-queue=${report.queue.pending}. Run wiki-bookkeep to drain.`;
 						this.messageQueueService.enqueue({
 							content: summary,
 							conversationId: 'system:wiki-bookkeep',
@@ -484,15 +491,13 @@ void (async () => {
 				const { WikiReflectTriggerService } = await import(
 					'./services/wiki/wiki-reflect-trigger.service.js'
 				);
-				const reflectInterval = Number(
-					process.env['CREWLY_WIKI_REFLECT_INTERVAL_MS'] ?? 60 * 60 * 1000,
-				);
-				const reflectQuiet = Number(
-					process.env['CREWLY_WIKI_REFLECT_QUIET_WINDOW_MS'] ?? 4 * 60 * 60 * 1000,
-				);
-				const reflectDebounce = Number(
-					process.env['CREWLY_WIKI_REFLECT_DEBOUNCE_MS'] ?? 4 * 60 * 60 * 1000,
-				);
+				const posIntMs = (raw: string | undefined, fallback: number): number => {
+					const n = Number(raw);
+					return Number.isFinite(n) && n > 0 ? n : fallback;
+				};
+				const reflectInterval = posIntMs(process.env['CREWLY_WIKI_REFLECT_INTERVAL_MS'], 60 * 60 * 1000);
+				const reflectQuiet = posIntMs(process.env['CREWLY_WIKI_REFLECT_QUIET_WINDOW_MS'], 4 * 60 * 60 * 1000);
+				const reflectDebounce = posIntMs(process.env['CREWLY_WIKI_REFLECT_DEBOUNCE_MS'], 4 * 60 * 60 * 1000);
 				const reflectTrigger = new WikiReflectTriggerService({
 					intervalMs: reflectInterval,
 					quietWindowMs: reflectQuiet,

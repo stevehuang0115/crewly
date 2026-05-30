@@ -175,20 +175,29 @@ export class WikiBookkeepTriggerService {
     if (this.stateLoaded) return;
     this.stateLoaded = true;
     if (!this.statePath) return;
-    const data = await safeReadJson<Record<string, VaultBookkeepState> | null>(this.statePath, null);
-    if (data && typeof data === 'object') {
-      for (const [vault, entry] of Object.entries(data)) {
-        if (
-          entry &&
-          typeof entry.baselineMdCount === 'number' &&
-          typeof entry.lastFiredAt === 'number'
-        ) {
-          this.state.set(vault, entry);
+    try {
+      const data = await safeReadJson<Record<string, VaultBookkeepState> | null>(this.statePath, null);
+      if (data && typeof data === 'object') {
+        for (const [vault, entry] of Object.entries(data)) {
+          if (
+            entry &&
+            typeof entry.baselineMdCount === 'number' &&
+            typeof entry.lastFiredAt === 'number'
+          ) {
+            this.state.set(vault, entry);
+          }
         }
+        this.logger.info('WikiBookkeepTrigger loaded persisted state', {
+          statePath: this.statePath,
+          vaults: this.state.size,
+        });
       }
-      this.logger.info('WikiBookkeepTrigger loaded persisted state', {
+    } catch (err) {
+      // A transient read error (e.g. EACCES) must not abort the tick — start
+      // with an empty ledger this run; a later tick re-establishes baselines.
+      this.logger.warn('WikiBookkeepTrigger: failed to load state (non-fatal)', {
         statePath: this.statePath,
-        vaults: this.state.size,
+        error: (err as Error).message,
       });
     }
   }
@@ -331,9 +340,12 @@ export class WikiBookkeepTriggerService {
     return result;
   }
 
-  /** Test affordance: clear the in-memory state ledger. */
+  /**
+   * Test affordance: clear the in-memory baseline + debounce ledger. Leaves
+   * `stateLoaded` set so a subsequent `tick()` does NOT reload persisted state
+   * (which would undo the clear).
+   */
   _resetDebounceForTesting(): void {
     this.state.clear();
-    this.stateLoaded = false;
   }
 }

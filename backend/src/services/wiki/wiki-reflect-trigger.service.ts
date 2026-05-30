@@ -116,14 +116,23 @@ export class WikiReflectTriggerService {
     if (this.stateLoaded) return;
     this.stateLoaded = true;
     if (!this.statePath) return;
-    const data = await safeReadJson<Record<string, number> | null>(this.statePath, null);
-    if (data && typeof data === 'object') {
-      for (const [vault, ts] of Object.entries(data)) {
-        if (typeof ts === 'number') this.lastFiredAt.set(vault, ts);
+    try {
+      const data = await safeReadJson<Record<string, number> | null>(this.statePath, null);
+      if (data && typeof data === 'object') {
+        for (const [vault, ts] of Object.entries(data)) {
+          if (typeof ts === 'number') this.lastFiredAt.set(vault, ts);
+        }
+        this.logger.info('WikiReflectTrigger loaded persisted state', {
+          statePath: this.statePath,
+          vaults: this.lastFiredAt.size,
+        });
       }
-      this.logger.info('WikiReflectTrigger loaded persisted state', {
+    } catch (err) {
+      // A transient read error must not abort the tick — proceed with an empty
+      // ledger this run (worst case: one extra fire, then it re-persists).
+      this.logger.warn('WikiReflectTrigger: failed to load state (non-fatal)', {
         statePath: this.statePath,
-        vaults: this.lastFiredAt.size,
+        error: (err as Error).message,
       });
     }
   }
@@ -175,13 +184,14 @@ export class WikiReflectTriggerService {
   /**
    * Run one scan. Returns the per-vault outcome for observability + tests.
    */
-  async tick(): Promise<{
+  async tick(opts?: { ignoreDebounce?: boolean }): Promise<{
     scanned: string[];
     fired: string[];
     skippedByActivity: string[];
     skippedByDebounce: string[];
   }> {
     await this.loadStateFromDisk();
+    const ignoreDebounce = opts?.ignoreDebounce === true;
     const vaults = await this.discoverRoots();
     const result = {
       scanned: [...vaults],
@@ -215,7 +225,7 @@ export class WikiReflectTriggerService {
           continue;
         }
         const last = this.lastFiredAt.get(v) ?? 0;
-        if (now - last < this.debounceMs) {
+        if (!ignoreDebounce && now - last < this.debounceMs) {
           result.skippedByDebounce.push(v);
           continue;
         }
@@ -254,9 +264,13 @@ export class WikiReflectTriggerService {
     return result;
   }
 
-  /** Test affordance — clear debounce ledger. */
+  /**
+   * Test affordance — clear the in-memory debounce ledger. Leaves `stateLoaded`
+   * set so a subsequent `tick()` does NOT reload the persisted ledger (which
+   * would undo the clear). To force a real fire past debounce in production,
+   * use `tick({ ignoreDebounce: true })` instead of this.
+   */
   _resetDebounceForTesting(): void {
     this.lastFiredAt.clear();
-    this.stateLoaded = false;
   }
 }

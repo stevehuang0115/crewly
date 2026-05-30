@@ -1175,10 +1175,11 @@ export async function reflectTriggerNow(
       });
       return;
     }
-    // Clear the debounce ledger so a manual fire is never silently
-    // suppressed by an earlier scheduled tick.
-    trigger._resetDebounceForTesting();
-    const result = await trigger.tick();
+    // Force a fire past the debounce window so a manual trigger is never
+    // silently suppressed by an earlier scheduled tick. Unlike clearing the
+    // ledger, this leaves other vaults' debounce + the persisted state intact,
+    // so the next scheduled tick won't re-burst.
+    const result = await trigger.tick({ ignoreDebounce: true });
     res.status(200).json({ success: true, result });
   } catch (err) {
     logger.error('wiki/reflect/trigger-now threw', { error: (err as Error).message });
