@@ -14,6 +14,7 @@ import * as os from 'os';
 import {
   WikiMigrateService,
   WIKI_MIGRATE_MANIFEST_FILENAME,
+  WIKI_OKR_FOLDER,
 } from './wiki-migrate.service.js';
 
 let projectRoot: string;
@@ -360,5 +361,181 @@ describe('WikiMigrateService.apply', () => {
       'utf8',
     );
     expect(legacyStill).toContain('d-keep');
+  });
+});
+describe('WikiMigrateService OKR schema (spec okr-cascade.md §5)', () => {
+  it('seeds okr/ in a freshly bootstrapped PROJECT vault schema + dir', async () => {
+    const out = await svc.apply({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const schema = await fs.readFile(
+      path.join(projectRoot, '.crewly/wiki/SCHEMA.md'),
+      'utf8',
+    );
+    expect(schema).toContain(`- path: ${WIKI_OKR_FOLDER}/`);
+    expect(schema).toContain('service:okr-cascade.service');
+    expect(schema).toContain('agents read-only');
+    // okr/ block must precede llm_curated: (lives under hardcoded:).
+    expect(schema.indexOf(`- path: ${WIKI_OKR_FOLDER}/`)).toBeLessThan(
+      schema.indexOf('llm_curated:'),
+    );
+    const stat = await fs.stat(path.join(projectRoot, '.crewly/wiki', WIKI_OKR_FOLDER));
+    expect(stat.isDirectory()).toBe(true);
+  });
+
+  it('seeds okr/ in a freshly bootstrapped TEAM vault schema + dir', async () => {
+    await fs.mkdir(path.join(homeDir, '.crewly', 'teams', 'team-okr'), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(homeDir, '.crewly', 'teams', 'team-okr', 'config.json'),
+      JSON.stringify({ name: 'OKR Team' }),
+      'utf8',
+    );
+    const out = await svc.apply({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const teamVault = path.join(homeDir, '.crewly/teams/team-okr/wiki');
+    const schema = await fs.readFile(path.join(teamVault, 'SCHEMA.md'), 'utf8');
+    expect(schema).toContain(`- path: ${WIKI_OKR_FOLDER}/`);
+    expect(schema).toContain('service:okr-cascade.service');
+    const stat = await fs.stat(path.join(teamVault, WIKI_OKR_FOLDER));
+    expect(stat.isDirectory()).toBe(true);
+  });
+});
+
+describe('WikiMigrateService.ensureOkrFolders (backfill existing vaults)', () => {
+  /** Write a legacy PROJECT SCHEMA.md WITHOUT an okr/ block. */
+  async function seedLegacyProjectVault(): Promise<string> {
+    const vault = path.join(projectRoot, '.crewly', 'wiki');
+    await fs.mkdir(path.join(vault, 'memory'), { recursive: true });
+    await fs.mkdir(path.join(vault, 'sop-overrides'), { recursive: true });
+    await fs.mkdir(path.join(vault, 'llm-curated'), { recursive: true });
+    await fs.writeFile(
+      path.join(vault, 'SCHEMA.md'),
+      [
+        'vault_scope: project',
+        'vault_id: project',
+        '',
+        'hardcoded:',
+        '  - path: memory/',
+        '    frozen: true',
+        '    description: "facts"',
+        '',
+        '  - path: sop-overrides/',
+        '    frozen: true',
+        '    description: "deltas"',
+        '',
+        'llm_curated:',
+        '  - path: llm-curated/',
+        '    frozen: false',
+        '',
+        'write_policy:',
+        '  canonical:',
+        '    - team-leader',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    return vault;
+  }
+
+  /** Write a legacy TEAM SCHEMA.md WITHOUT an okr/ block. */
+  async function seedLegacyTeamVault(uuid: string): Promise<string> {
+    const vault = path.join(homeDir, '.crewly', 'teams', uuid, 'wiki');
+    await fs.mkdir(path.join(vault, 'sop'), { recursive: true });
+    await fs.mkdir(path.join(vault, 'team-norm'), { recursive: true });
+    await fs.mkdir(path.join(vault, 'llm-curated'), { recursive: true });
+    await fs.writeFile(
+      path.join(vault, 'SCHEMA.md'),
+      [
+        'vault_scope: team',
+        `vault_id: ${uuid}`,
+        '',
+        'hardcoded:',
+        '  - path: sop/',
+        '    frozen: true',
+        '    description: "sops"',
+        '',
+        '  - path: team-norm/',
+        '    frozen: true',
+        '    description: "norms"',
+        '',
+        'llm_curated:',
+        '  - path: llm-curated/',
+        '    frozen: false',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    return vault;
+  }
+
+  it('dry-run reports the missing okr/ block without writing', async () => {
+    const vault = await seedLegacyProjectVault();
+    const out = await svc.ensureOkrFolders({ projectRoot, homeDir, apply: false });
+    expect(out.ok).toBe(true);
+    expect(out.changedCount).toBe(1);
+    const entry = out.vaults.find((v) => v.scope === 'project');
+    expect(entry?.changed).toBe(true);
+    // Nothing written in dry-run.
+    const schema = await fs.readFile(path.join(vault, 'SCHEMA.md'), 'utf8');
+    expect(schema).not.toContain(`- path: ${WIKI_OKR_FOLDER}/`);
+    await expect(fs.stat(path.join(vault, WIKI_OKR_FOLDER))).rejects.toThrow();
+  });
+
+  it('adds okr/ to an existing PROJECT vault missing it', async () => {
+    const vault = await seedLegacyProjectVault();
+    const out = await svc.ensureOkrFolders({ projectRoot, homeDir, apply: true });
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+    expect(out.changedCount).toBe(1);
+    const schema = await fs.readFile(path.join(vault, 'SCHEMA.md'), 'utf8');
+    expect(schema).toContain(`- path: ${WIKI_OKR_FOLDER}/`);
+    expect(schema).toContain('service:okr-cascade.service');
+    // injected under hardcoded:, before llm_curated:
+    expect(schema.indexOf(`- path: ${WIKI_OKR_FOLDER}/`)).toBeLessThan(
+      schema.indexOf('llm_curated:'),
+    );
+    const stat = await fs.stat(path.join(vault, WIKI_OKR_FOLDER));
+    expect(stat.isDirectory()).toBe(true);
+  });
+
+  it('adds okr/ to an existing TEAM vault missing it', async () => {
+    const vault = await seedLegacyTeamVault('legacy-team');
+    const out = await svc.ensureOkrFolders({ projectRoot, homeDir, apply: true });
+    expect(out.ok).toBe(true);
+    const teamEntry = out.vaults.find((v) => v.scope === 'team');
+    expect(teamEntry?.changed).toBe(true);
+    const schema = await fs.readFile(path.join(vault, 'SCHEMA.md'), 'utf8');
+    expect(schema).toContain(`- path: ${WIKI_OKR_FOLDER}/`);
+    const stat = await fs.stat(path.join(vault, WIKI_OKR_FOLDER));
+    expect(stat.isDirectory()).toBe(true);
+  });
+
+  it('is idempotent — a vault already declaring okr/ is unchanged', async () => {
+    await seedLegacyProjectVault();
+    const first = await svc.ensureOkrFolders({ projectRoot, homeDir, apply: true });
+    expect(first.changedCount).toBe(1);
+    const vault = path.join(projectRoot, '.crewly', 'wiki');
+    const afterFirst = await fs.readFile(path.join(vault, 'SCHEMA.md'), 'utf8');
+
+    const second = await svc.ensureOkrFolders({ projectRoot, homeDir, apply: true });
+    expect(second.changedCount).toBe(0);
+    const projEntry = second.vaults.find((v) => v.scope === 'project');
+    expect(projEntry?.changed).toBe(false);
+    const afterSecond = await fs.readFile(path.join(vault, 'SCHEMA.md'), 'utf8');
+    expect(afterSecond).toBe(afterFirst);
+    // Exactly one okr/ block (no duplication).
+    const occurrences = afterSecond.split(`- path: ${WIKI_OKR_FOLDER}/`).length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it('skips vaults that have no SCHEMA.md on disk (bootstrap owns those)', async () => {
+    // No project vault created at all.
+    const out = await svc.ensureOkrFolders({ projectRoot, homeDir, apply: true });
+    expect(out.ok).toBe(true);
+    expect(out.vaults).toEqual([]);
+    expect(out.changedCount).toBe(0);
   });
 });

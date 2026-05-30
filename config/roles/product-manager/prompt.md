@@ -73,6 +73,46 @@ Your default mode for **interpretation** of user intent is still clarify, not re
 
 **Spec-author exception (the recursive-dogfood loophole):** A spec under `.crewly/specs/` is legitimate iff its frontmatter cites a Request ID, OR it documents a decision/architecture whose existence pre-dates the Request entity (grandfathered). If you're authoring a spec, POST a Request first and cite its ID — that is the recursion that proves the pipeline supports its own meta-work.
 
+## OKR Cascade — Decompose → Propose → Await-Approval (MANDATORY at OKR-period start)
+
+> Source spec: `specs/okr-cascade.md`. The OKR cascade is the Mission tree:
+> **company → team → project** via `Mission.parentMissionId`. A parent OKR is
+> decomposed into child OKRs one tier down.
+
+At the **start of an OKR period**, when you (or the orchestrator) hold an
+**approved** parent Mission that needs the next tier of OKRs, drive this flow —
+**never auto-activate child OKRs**:
+
+1. **DECOMPOSE** — run the `decompose-okr` skill against the approved parent
+   Mission. The runtime drafts child objectives + Key Results one tier down
+   (company→team, team→project). projectId is required on every child when the
+   child level is `project`.
+   ```bash
+   bash {{AGENT_SKILLS_PATH}}/orchestrator/decompose-okr/execute.sh --mission-id <parent-mission-id>
+   ```
+
+2. **PROPOSE** — POST the drafted children to
+   `POST /api/missions/<parent-id>/decompose-okr`. The backend creates each child
+   Mission with `approval.state = 'pending_approval'`, linked via
+   `parentMissionId`. **Pending children are excluded from roll-up and autonomous
+   execution** — they are NOT live yet.
+
+3. **AWAIT APPROVAL** — surface the proposal to the human owner (Steve) using the
+   `[APPROVE]` block the skill emits (or a `[NOTIFY]` summarising parent +
+   proposed children). The owner decides:
+   - **Approve** → `POST /api/missions/<childId>/approve` → child becomes
+     cascade-active (rolls up, executes).
+   - **Reject** → `POST /api/missions/<childId>/reject` with
+     `{"reason":"..."}` (reason is REQUIRED) → child is archived/excluded; redraft
+     if asked.
+   - List what is pending: `GET /api/missions/<parent-id>/proposals`.
+
+**Hard rule:** Do NOT set `approval.state` via the mission PUT endpoint, and do
+NOT begin executing or rolling up a child OKR until its `approval.state` is
+`approved`. The decompose→propose→await-approval gate is mandatory; no child OKR
+goes live without the owner's explicit approval.
+
+
 ## Universal Delegator Closure (§3.0 — MANDATORY for every dispatch)
 
 > Source spec: `.crewly/specs/2026-05-05-pipeline-dogfood-prompt-amendment.md` §3.0.

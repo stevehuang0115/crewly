@@ -35,8 +35,30 @@ import {
   getEffectiveCadence,
   mergeExecutionCadence,
   validateParentLink,
+  MISSION_LEVELS,
+  MISSION_LEVEL_DEPTH,
+  PROPOSAL_STATES,
+  PROPOSAL_TRANSITIONS,
+  isValidMissionLevel,
+  validateLevelLink,
+  deriveLevel,
+  isValidProposalState,
+  isValidProposalTransition,
+  validateCascadeLink,
+  createMonthlyPeriod,
+  isPeriodActive,
 } from './mission.types.js';
-import type { Mission, MissionPolicy, EscalationRule, CreateMissionInput, ExecutionCadence } from './mission.types.js';
+import type {
+  Mission,
+  MissionPolicy,
+  EscalationRule,
+  CreateMissionInput,
+  ExecutionCadence,
+  MissionLevel,
+  ProposalState,
+  ApprovalState,
+  UpdateMissionInput,
+} from './mission.types.js';
 
 describe('Mission Types', () => {
   // -----------------------------------------------------------------------
@@ -663,6 +685,311 @@ describe('Mission Types', () => {
       m.lastReminderAt = new Date().toISOString();
 
       expect(typeof m.lastReminderAt).toBe('string');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // OKR Cascade: MissionLevel
+  // -----------------------------------------------------------------------
+  describe('MissionLevel', () => {
+    it('MISSION_LEVELS contains exactly company, team, project in order', () => {
+      expect(MISSION_LEVELS).toEqual(['company', 'team', 'project']);
+    });
+
+    it('MISSION_LEVEL_DEPTH assigns ascending depths', () => {
+      expect(MISSION_LEVEL_DEPTH).toEqual({ company: 0, team: 1, project: 2 });
+    });
+
+    it('isValidMissionLevel accepts valid levels', () => {
+      for (const lvl of MISSION_LEVELS) {
+        expect(isValidMissionLevel(lvl)).toBe(true);
+      }
+    });
+
+    it('isValidMissionLevel rejects unknown strings', () => {
+      expect(isValidMissionLevel('individual')).toBe(false);
+      expect(isValidMissionLevel('')).toBe(false);
+    });
+  });
+
+  describe('validateLevelLink (adjacency matrix)', () => {
+    it('company with no parent is valid', () => {
+      expect(validateLevelLink('company', undefined)).toBeNull();
+    });
+
+    it('company with a parent is invalid', () => {
+      expect(validateLevelLink('company', 'team')).not.toBeNull();
+      expect(validateLevelLink('company', 'company')).not.toBeNull();
+    });
+
+    it('team requires a company parent', () => {
+      expect(validateLevelLink('team', 'company')).toBeNull();
+      expect(validateLevelLink('team', undefined)).not.toBeNull();
+      expect(validateLevelLink('team', 'team')).not.toBeNull();
+      expect(validateLevelLink('team', 'project')).not.toBeNull();
+    });
+
+    it('project requires a team parent', () => {
+      expect(validateLevelLink('project', 'team')).toBeNull();
+      expect(validateLevelLink('project', undefined)).not.toBeNull();
+      expect(validateLevelLink('project', 'company')).not.toBeNull();
+      expect(validateLevelLink('project', 'project')).not.toBeNull();
+    });
+
+    it('covers the full child x parent matrix exactly once-legal-per-child', () => {
+      const parents: Array<MissionLevel | undefined> = [undefined, 'company', 'team', 'project'];
+      const legal: Record<MissionLevel, MissionLevel | undefined> = {
+        company: undefined,
+        team: 'company',
+        project: 'team',
+      };
+      for (const child of MISSION_LEVELS) {
+        for (const parent of parents) {
+          const result = validateLevelLink(child, parent);
+          if (parent === legal[child]) {
+            expect(result).toBeNull();
+          } else {
+            expect(result).not.toBeNull();
+          }
+        }
+      }
+    });
+  });
+
+  describe('deriveLevel', () => {
+    const byId = new Map<string, Pick<Mission, 'id' | 'parentMissionId'>>([
+      ['co', { id: 'co' }],
+      ['team', { id: 'team', parentMissionId: 'co' }],
+      ['proj', { id: 'proj', parentMissionId: 'team' }],
+      ['deep', { id: 'deep', parentMissionId: 'proj' }],
+    ]);
+
+    it('depth 0 (no parent) ⇒ company', () => {
+      expect(deriveLevel('co', byId)).toBe('company');
+    });
+
+    it('depth 1 ⇒ team', () => {
+      expect(deriveLevel('team', byId)).toBe('team');
+    });
+
+    it('depth 2 ⇒ project', () => {
+      expect(deriveLevel('proj', byId)).toBe('project');
+    });
+
+    it('depth >= 2 stays project', () => {
+      expect(deriveLevel('deep', byId)).toBe('project');
+    });
+
+    it('handles a cycle without infinite looping', () => {
+      const cyclic = new Map<string, Pick<Mission, 'id' | 'parentMissionId'>>([
+        ['a', { id: 'a', parentMissionId: 'b' }],
+        ['b', { id: 'b', parentMissionId: 'a' }],
+      ]);
+      const level = deriveLevel('a', cyclic);
+      expect(MISSION_LEVELS).toContain(level);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // OKR Cascade: Proposal / Approval governance
+  // -----------------------------------------------------------------------
+  describe('ProposalState', () => {
+    it('PROPOSAL_STATES lists the four states', () => {
+      expect(PROPOSAL_STATES).toEqual(['draft', 'pending_approval', 'approved', 'rejected']);
+    });
+
+    it('isValidProposalState validates membership', () => {
+      for (const s of PROPOSAL_STATES) {
+        expect(isValidProposalState(s)).toBe(true);
+      }
+      expect(isValidProposalState('active')).toBe(false);
+    });
+  });
+
+  describe('isValidProposalTransition', () => {
+    it('draft only advances to pending_approval', () => {
+      expect(isValidProposalTransition('draft', 'pending_approval')).toBe(true);
+      expect(isValidProposalTransition('draft', 'approved')).toBe(false);
+      expect(isValidProposalTransition('draft', 'rejected')).toBe(false);
+    });
+
+    it('pending_approval advances to approved or rejected', () => {
+      expect(isValidProposalTransition('pending_approval', 'approved')).toBe(true);
+      expect(isValidProposalTransition('pending_approval', 'rejected')).toBe(true);
+      expect(isValidProposalTransition('pending_approval', 'draft')).toBe(false);
+    });
+
+    it('approved is terminal', () => {
+      for (const to of PROPOSAL_STATES) {
+        expect(isValidProposalTransition('approved', to)).toBe(false);
+      }
+    });
+
+    it('rejected can return to draft for a redraft', () => {
+      expect(isValidProposalTransition('rejected', 'draft')).toBe(true);
+      expect(isValidProposalTransition('rejected', 'approved')).toBe(false);
+    });
+
+    it('PROPOSAL_TRANSITIONS matches the guard', () => {
+      for (const from of PROPOSAL_STATES) {
+        for (const to of PROPOSAL_STATES) {
+          expect(isValidProposalTransition(from, to)).toBe(PROPOSAL_TRANSITIONS[from].has(to));
+        }
+      }
+    });
+
+    it('ApprovalState shape is assignable', () => {
+      const a: ApprovalState = {
+        state: 'rejected',
+        proposedBy: 'agent-1',
+        proposedAt: new Date().toISOString(),
+        decidedBy: 'steve',
+        decidedAt: new Date().toISOString(),
+        rejectionReason: 'scope too broad',
+      };
+      expect(a.state).toBe('rejected');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // OKR Cascade: validateCascadeLink
+  // -----------------------------------------------------------------------
+  describe('validateCascadeLink', () => {
+    const byId = new Map<string, Pick<Mission, 'id' | 'parentMissionId' | 'level'>>([
+      ['co', { id: 'co', level: 'company' }],
+      ['team', { id: 'team', parentMissionId: 'co', level: 'team' }],
+    ]);
+
+    it('company root with no parent is valid', () => {
+      expect(validateCascadeLink('co2', 'company', undefined, byId)).toBeNull();
+    });
+
+    it('rejects company with a parent', () => {
+      expect(validateCascadeLink('co2', 'company', 'co', byId)).not.toBeNull();
+    });
+
+    it('valid team under company', () => {
+      expect(validateCascadeLink('team2', 'team', 'co', byId)).toBeNull();
+    });
+
+    it('valid project under team', () => {
+      expect(validateCascadeLink('proj1', 'project', 'team', byId)).toBeNull();
+    });
+
+    it('rejects project under company (level mismatch)', () => {
+      expect(validateCascadeLink('proj1', 'project', 'co', byId)).not.toBeNull();
+    });
+
+    it('rejects a self-referential link (cycle check still runs)', () => {
+      expect(validateCascadeLink('team', 'team', 'team', byId)).not.toBeNull();
+    });
+
+    it('rejects link to a missing parent', () => {
+      expect(validateCascadeLink('team2', 'team', 'ghost', byId)).not.toBeNull();
+    });
+
+    it('derives parent level when parent.level is absent', () => {
+      const derivedById = new Map<string, Pick<Mission, 'id' | 'parentMissionId' | 'level'>>([
+        ['co', { id: 'co' }],
+        ['team', { id: 'team', parentMissionId: 'co' }],
+      ]);
+      // team's parent 'co' has no explicit level; deriveLevel ⇒ company, so a
+      // project child of 'team' is valid.
+      expect(validateCascadeLink('proj', 'project', 'team', derivedById)).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // OKR Cascade: Mission / Input field additions (backward compatible)
+  // -----------------------------------------------------------------------
+  describe('Cascade field additions', () => {
+    it('isMission still passes for a legacy mission without new fields', () => {
+      const legacy = {
+        id: 'm1',
+        objective: 'legacy',
+        ownerTeamId: 't1',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        successCriteria: [],
+        activeProjectTaskIds: [],
+      };
+      expect(isMission(legacy)).toBe(true);
+    });
+
+    it('createMission defaults a parentless mission to company level', () => {
+      const m = createMission({
+        objective: 'O',
+        ownerTeamId: 't1',
+        successCriteria: [],
+        currentStrategy: '',
+      });
+      expect(m.level).toBe('company');
+      expect(m.approval).toBeUndefined();
+    });
+
+    it('createMission honours explicit level/projectId/approval input', () => {
+      const input: CreateMissionInput = {
+        objective: 'O',
+        ownerTeamId: 't1',
+        successCriteria: [],
+        currentStrategy: '',
+        parentMissionId: 'team-1',
+        level: 'project',
+        projectId: 'proj-1',
+        approval: { state: 'pending_approval', proposedBy: 'agent-1' },
+      };
+      const m = createMission(input);
+      expect(m.level).toBe('project');
+      expect(m.projectId).toBe('proj-1');
+      expect(m.approval?.state).toBe('pending_approval');
+      expect(m.parentMissionId).toBe('team-1');
+    });
+
+    it('UpdateMissionInput accepts cascade fields and excludes id/createdAt', () => {
+      const patch: UpdateMissionInput = {
+        objective: 'next',
+        level: 'team',
+        projectId: 'p2',
+        parentMissionId: 'co-1',
+        approval: { state: 'approved' },
+        status: 'paused',
+      };
+      expect(patch.level).toBe('team');
+      // @ts-expect-error id is immutable and not part of UpdateMissionInput
+      patch.id = 'x';
+    });
+  });
+
+  describe('createMonthlyPeriod', () => {
+    it('builds a half-open monthly period with UTC bounds and a YYYY-MM label', () => {
+      const p = createMonthlyPeriod(2026, 3); // March (1-based)
+      expect(p.type).toBe('monthly');
+      expect(p.startDate).toBe('2026-03-01T00:00:00.000Z');
+      expect(p.endDate).toBe('2026-04-01T00:00:00.000Z'); // first day of next month, exclusive
+      expect(p.label).toBe('2026-03');
+      expect(isPeriodActive(p, new Date('2026-03-15T12:00:00.000Z'))).toBe(true);
+      // end is exclusive
+      expect(isPeriodActive(p, new Date('2026-04-01T00:00:00.000Z'))).toBe(false);
+    });
+
+    it('rolls December over into the next January', () => {
+      const p = createMonthlyPeriod(2026, 12);
+      expect(p.startDate).toBe('2026-12-01T00:00:00.000Z');
+      expect(p.endDate).toBe('2027-01-01T00:00:00.000Z');
+      expect(p.label).toBe('2026-12');
+    });
+  });
+
+  describe('createMission priority', () => {
+    it('copies the priority from input onto the mission', () => {
+      const m = createMission({
+        objective: 'O',
+        ownerTeamId: 't',
+        successCriteria: [],
+        currentStrategy: '',
+        priority: 'high',
+      });
+      expect(m.priority).toBe('high');
     });
   });
 });

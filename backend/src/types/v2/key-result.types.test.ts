@@ -13,8 +13,11 @@ import {
   createKeyResult,
   computeKRProgress,
   deriveKRStatus,
+  deriveCascadeChildStatus,
   deriveOKRRecommendation,
+  computeRolledUpProgress,
 } from './key-result.types.js';
+import type { CascadeOKRSummary, MissionOKRSummary } from './key-result.types.js';
 
 // ---------------------------------------------------------------------------
 // Validators
@@ -233,6 +236,26 @@ describe('deriveKRStatus', () => {
 });
 
 // ---------------------------------------------------------------------------
+// deriveCascadeChildStatus (finding 1: no baseline-equality short-circuit)
+// ---------------------------------------------------------------------------
+
+describe('deriveCascadeChildStatus', () => {
+  it('maps a stalled 0% child to off_track (NOT not_started)', () => {
+    // The crux of finding 1: deriveKRStatus(0, 0, 0) is not_started, but a
+    // cascade child stalled at 0% is a genuine off_track signal.
+    expect(deriveCascadeChildStatus(0)).toBe('off_track');
+    expect(deriveKRStatus(0, 0, 0)).toBe('not_started');
+  });
+
+  it('mirrors the deriveKRStatus banding for non-zero progress', () => {
+    expect(deriveCascadeChildStatus(100)).toBe('achieved');
+    expect(deriveCascadeChildStatus(50)).toBe('on_track');
+    expect(deriveCascadeChildStatus(25)).toBe('at_risk');
+    expect(deriveCascadeChildStatus(24)).toBe('off_track');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // deriveOKRRecommendation
 // ---------------------------------------------------------------------------
 
@@ -256,5 +279,77 @@ describe('deriveOKRRecommendation', () => {
 
   it('should return continue for empty KR list', () => {
     expect(deriveOKRRecommendation([])).toBe('continue');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeRolledUpProgress (cascade roll-up math)
+// ---------------------------------------------------------------------------
+
+describe('computeRolledUpProgress', () => {
+  it('returns own progress (rounded) for a leaf with no children', () => {
+    expect(computeRolledUpProgress(40, [])).toBe(40);
+    expect(computeRolledUpProgress(40.4, [])).toBe(40);
+    expect(computeRolledUpProgress(0, [])).toBe(0);
+  });
+
+  it('equal-weights own progress with each child progress', () => {
+    // (40 + 80 + 60) / 3 = 60
+    expect(computeRolledUpProgress(40, [80, 60])).toBe(60);
+  });
+
+  it('rounds the average to an integer', () => {
+    // (50 + 51) / 2 = 50.5 -> 51
+    expect(computeRolledUpProgress(50, [51])).toBe(51);
+  });
+
+  it('treats a single child as equal weight with the parent', () => {
+    // (100 + 0) / 2 = 50
+    expect(computeRolledUpProgress(100, [0])).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CascadeOKRSummary type shape
+// ---------------------------------------------------------------------------
+
+describe('CascadeOKRSummary', () => {
+  it('extends MissionOKRSummary with cascade fields', () => {
+    const leaf: CascadeOKRSummary = {
+      missionId: 'proj-1',
+      totalKRs: 1,
+      achieved: 0,
+      onTrack: 1,
+      atRisk: 0,
+      offTrack: 0,
+      notStarted: 0,
+      overallProgress: 70,
+      recommendation: 'continue',
+      level: 'project',
+      childMissionCount: 0,
+      rolledUpProgress: 70,
+      children: [],
+    };
+    const parent: CascadeOKRSummary = {
+      missionId: 'team-1',
+      totalKRs: 0,
+      achieved: 0,
+      onTrack: 0,
+      atRisk: 0,
+      offTrack: 0,
+      notStarted: 0,
+      overallProgress: 0,
+      recommendation: 'continue',
+      level: 'team',
+      childMissionCount: 1,
+      rolledUpProgress: 35,
+      children: [leaf],
+    };
+    // A CascadeOKRSummary is assignable to a MissionOKRSummary (it extends it).
+    const base: MissionOKRSummary = parent;
+    expect(base.missionId).toBe('team-1');
+    expect(parent.children).toHaveLength(1);
+    expect(parent.children[0].level).toBe('project');
+    expect(parent.childMissionCount).toBe(1);
   });
 });
