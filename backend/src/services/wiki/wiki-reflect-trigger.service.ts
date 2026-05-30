@@ -19,12 +19,17 @@
  * @module services/wiki/wiki-reflect-trigger.service
  */
 
+import * as path from 'path';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import {
   WikiQueueService,
   WikiQueueItem,
 } from './wiki-queue.service.js';
 import { discoverWikiVaults } from './wiki-bookkeep-trigger.service.js';
+import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+
+const STATE_FILE_NAME = 'wiki-reflect-trigger-state.json';
 
 export interface WikiReflectFireMeta {
   /** vault path being nudged. */
@@ -54,6 +59,13 @@ export interface WikiReflectTriggerOptions {
   queueService?: WikiQueueService;
   /** Optional time override (tests). */
   now?: () => number;
+  /**
+   * Where to persist the per-vault debounce ledger. Defaults to
+   * `~/.crewly/wiki-reflect-trigger-state.json`. Pass `null` to disable
+   * persistence (tests). Without persistence the ledger resets on every
+   * restart, so the next tick re-fires for every idle vault at once.
+   */
+  statePath?: string | null;
 }
 
 const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
@@ -78,6 +90,8 @@ export class WikiReflectTriggerService {
   private readonly lastFiredAt = new Map<string, number>();
   /** Per-vault locks so overlapping ticks don't double-fire. */
   private readonly inflight = new Set<string>();
+  private readonly statePath: string | null;
+  private stateLoaded = false;
 
   constructor(opts: WikiReflectTriggerOptions) {
     this.logger = LoggerService.getInstance().createComponentLogger('WikiReflectTrigger');
@@ -88,6 +102,46 @@ export class WikiReflectTriggerService {
     this.discoverRoots = opts.discoverRoots ?? discoverWikiVaults;
     this.queueService = opts.queueService ?? WikiQueueService.getInstance();
     this.nowFn = opts.now ?? (() => Date.now());
+    if (opts.statePath === null) {
+      this.statePath = null;
+    } else if (typeof opts.statePath === 'string') {
+      this.statePath = opts.statePath;
+    } else {
+      this.statePath = path.join(getCrewlyHomePath(), STATE_FILE_NAME);
+    }
+  }
+
+  /** Load the persisted debounce ledger (once) so restarts don't re-burst. */
+  private async loadStateFromDisk(): Promise<void> {
+    if (this.stateLoaded) return;
+    this.stateLoaded = true;
+    if (!this.statePath) return;
+    const data = await safeReadJson<Record<string, number> | null>(this.statePath, null);
+    if (data && typeof data === 'object') {
+      for (const [vault, ts] of Object.entries(data)) {
+        if (typeof ts === 'number') this.lastFiredAt.set(vault, ts);
+      }
+      this.logger.info('WikiReflectTrigger loaded persisted state', {
+        statePath: this.statePath,
+        vaults: this.lastFiredAt.size,
+      });
+    }
+  }
+
+  /** Persist the debounce ledger (best-effort; failures logged, not thrown). */
+  private async saveStateToDisk(): Promise<void> {
+    if (!this.statePath) return;
+    try {
+      const payload: Record<string, number> = {};
+      for (const [vault, ts] of this.lastFiredAt) payload[vault] = ts;
+      await ensureDir(path.dirname(this.statePath));
+      await atomicWriteJson(this.statePath, payload);
+    } catch (err) {
+      this.logger.warn('WikiReflectTrigger: failed to persist state (non-fatal)', {
+        statePath: this.statePath,
+        error: (err as Error).message,
+      });
+    }
   }
 
   static getInstance(): WikiReflectTriggerService | null {
@@ -127,6 +181,7 @@ export class WikiReflectTriggerService {
     skippedByActivity: string[];
     skippedByDebounce: string[];
   }> {
+    await this.loadStateFromDisk();
     const vaults = await this.discoverRoots();
     const result = {
       scanned: [...vaults],
@@ -137,6 +192,7 @@ export class WikiReflectTriggerService {
 
     const now = this.nowFn();
     const cutoff = now - this.quietWindowMs;
+    let stateDirty = false;
 
     for (const v of vaults) {
       if (this.inflight.has(v)) continue;
@@ -165,6 +221,7 @@ export class WikiReflectTriggerService {
         }
 
         this.lastFiredAt.set(v, now);
+        stateDirty = true;
         const msSinceLastQueueAdd =
           lastAddMs === -Infinity ? Number.POSITIVE_INFINITY : now - lastAddMs;
         try {
@@ -193,11 +250,13 @@ export class WikiReflectTriggerService {
         this.inflight.delete(v);
       }
     }
+    if (stateDirty) await this.saveStateToDisk();
     return result;
   }
 
   /** Test affordance — clear debounce ledger. */
   _resetDebounceForTesting(): void {
     this.lastFiredAt.clear();
+    this.stateLoaded = false;
   }
 }

@@ -40,6 +40,17 @@ export interface WikiBookkeepInput {
   windowDays?: number;
   /** Md-count threshold used by `shouldFire` (default 10). */
   threshold?: number;
+  /**
+   * Total md count the caller last acted on for this vault (its persisted
+   * baseline / high-water mark). When provided, `shouldFire` is driven by
+   * NET-NEW pages since the baseline (`totalMdCount - baselineMdCount`)
+   * rather than by mtime-recency. This is the robust signal: an mtime
+   * window counts every file a bulk operation (e.g. a vault migration that
+   * writes 500 pages at once) just touched as "recent", so it fires forever;
+   * net-new only counts genuinely-added pages. Omit for a stateless report
+   * (falls back to the mtime-window `recentMdCount`).
+   */
+  baselineMdCount?: number;
 }
 
 export interface WikiPageRef {
@@ -64,8 +75,14 @@ export interface WikiBookkeepReport {
   shouldFire: boolean;
   /** Total md files under the vault (recursive). */
   totalMdCount: number;
-  /** Newly created/touched mds within `windowDays`. */
+  /** Newly created/touched mds within `windowDays` (mtime-based; informational). */
   recentMdCount: number;
+  /**
+   * Net-new pages since the caller's baseline (`max(0, total - baseline)`).
+   * Equals `recentMdCount` when no baseline was supplied. This is what
+   * `shouldFire` is computed from.
+   */
+  netNewMdCount: number;
   /** Per-folder counts under llm-curated/<x>/. */
   countsByFolder: Record<string, number>;
   /** Likely-duplicate clusters by filename Jaccard. */
@@ -181,11 +198,20 @@ export class WikiBookkeepService {
     const duplicateCandidates = this.findDuplicateClusters(pages);
     const queueStats = await this.queue.getStats(input.vaultPath);
 
-    const shouldFire = recentMdCount >= threshold || duplicateCandidates.length > 0;
+    // Net-new is the robust fire signal. When a baseline is supplied, count
+    // only pages added since it; otherwise fall back to the mtime window.
+    // NOTE: duplicate clusters are surfaced in `recommendations` but no longer
+    // force `shouldFire` — a standing set of filename clusters is not "new
+    // activity", so OR-ing it in made every non-trivial vault fire forever.
+    const netNewMdCount =
+      input.baselineMdCount != null
+        ? Math.max(0, totalMdCount - input.baselineMdCount)
+        : recentMdCount;
+    const shouldFire = netNewMdCount >= threshold;
 
     const recommendations = this.buildRecommendations({
       shouldFire,
-      recentMdCount,
+      netNewMdCount,
       threshold,
       duplicates: duplicateCandidates,
       countsByFolder,
@@ -205,6 +231,7 @@ export class WikiBookkeepService {
       shouldFire,
       totalMdCount,
       recentMdCount,
+      netNewMdCount,
       countsByFolder,
       duplicateCandidates,
       staleCount,
@@ -216,6 +243,8 @@ export class WikiBookkeepService {
       vault: input.vaultPath,
       totalMd: totalMdCount,
       recentMd: recentMdCount,
+      netNewMd: netNewMdCount,
+      baseline: input.baselineMdCount ?? null,
       duplicates: duplicateCandidates.length,
       shouldFire,
     });
@@ -336,7 +365,7 @@ export class WikiBookkeepService {
 
   private buildRecommendations(args: {
     shouldFire: boolean;
-    recentMdCount: number;
+    netNewMdCount: number;
     threshold: number;
     duplicates: WikiDuplicateCluster[];
     countsByFolder: Record<string, number>;
@@ -346,11 +375,11 @@ export class WikiBookkeepService {
     const recs: string[] = [];
     if (!args.shouldFire) {
       recs.push(
-        `Quiet vault — only ${args.recentMdCount} new md(s) in the window (threshold ${args.threshold}). No action required.`,
+        `Quiet vault — only ${args.netNewMdCount} net-new md(s) since the last pass (threshold ${args.threshold}). No action required.`,
       );
     } else {
       recs.push(
-        `Window has ${args.recentMdCount} new md(s) — at or above threshold (${args.threshold}). Consider a consolidation pass.`,
+        `${args.netNewMdCount} net-new md(s) since the last pass — at or above threshold (${args.threshold}). Consider a consolidation pass.`,
       );
     }
     if (args.duplicates.length > 0) {

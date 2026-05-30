@@ -56,22 +56,29 @@ describe('WikiBookkeepTriggerService', () => {
     WikiBookkeepTriggerService.setInstance(null);
   });
 
-  const makeTrigger = (overrides: { intervalMs?: number; debounceMs?: number; threshold?: number } = {}) =>
+  const makeTrigger = (overrides: { intervalMs?: number; debounceMs?: number; statePath?: string | null } = {}) =>
     new WikiBookkeepTriggerService({
       intervalMs: overrides.intervalMs ?? 60_000,
       debounceMs: overrides.debounceMs ?? 1_000_000,
+      statePath: overrides.statePath ?? null,
       bookkeepService: bookkeep,
       discoverRoots: async () => [vault],
       fireFn: async (vaultPath, report) => {
         fired.push({
           vault: vaultPath,
           threshold: report.threshold,
-          recent: report.recentMdCount,
+          recent: report.netNewMdCount,
         });
       },
     });
 
-  describe('tick (single-pass behavior)', () => {
+  const writeMds = async (n: number, prefix = 'p') => {
+    for (let i = 0; i < n; i++) {
+      await fs.writeFile(path.join(vault, `llm-curated/${prefix}-${i}.md`), `# ${prefix} ${i}`, 'utf8');
+    }
+  };
+
+  describe('tick (net-new baseline behavior)', () => {
     it('does NOT fire for an empty vault', async () => {
       const trigger = makeTrigger();
       const res = await trigger.tick();
@@ -80,54 +87,60 @@ describe('WikiBookkeepTriggerService', () => {
       expect(res.fired).toEqual([]);
     });
 
-    it('FIRES when recentMdCount meets threshold (default 10) and the per-vault override is set lower in service.generate', async () => {
-      // We can't pass threshold via the trigger directly — the trigger
-      // delegates to WikiBookkeepService which defaults threshold=10.
-      // Drop 10 new mds → cross threshold.
-      for (let i = 0; i < 10; i++) {
-        await fs.writeFile(
-          path.join(vault, `llm-curated/p-${i}.md`),
-          `# p ${i}`,
-          'utf8',
-        );
-      }
+    it('first sight establishes a baseline and does NOT fire — even with a large backlog', async () => {
+      // Mirrors a freshly-migrated vault: many files, all mtime-recent. The
+      // old mtime-window logic would fire on the whole backlog; net-new does not.
+      await writeMds(15);
       const trigger = makeTrigger();
       const res = await trigger.tick();
-      expect(fired).toHaveLength(1);
-      expect(fired[0].vault).toBe(vault);
-      expect(fired[0].recent).toBeGreaterThanOrEqual(10);
-      expect(res.fired).toEqual([vault]);
+      expect(fired).toHaveLength(0);
+      expect(res.quietVaults).toEqual([vault]);
     });
 
-    it('FIRES when duplicate clusters exist even if recent count is below threshold', async () => {
+    it('FIRES when >= threshold NET-NEW mds are added after the baseline', async () => {
+      const trigger = makeTrigger();
+      await trigger.tick(); // establish baseline at 0
+      expect(fired).toHaveLength(0);
+      await writeMds(10); // 10 net-new (default threshold 10)
+      const res = await trigger.tick();
+      expect(res.fired).toEqual([vault]);
+      expect(fired).toHaveLength(1);
+      expect(fired[0].vault).toBe(vault);
+      expect(fired[0].recent).toBeGreaterThanOrEqual(10); // netNewMdCount
+    });
+
+    it('does NOT fire on duplicate clusters alone (below net-new threshold)', async () => {
+      const trigger = makeTrigger();
+      await trigger.tick(); // baseline
       await fs.writeFile(path.join(vault, 'llm-curated/anthropic-pricing.md'), '#', 'utf8');
       await fs.writeFile(path.join(vault, 'llm-curated/anthropic-pricing-v2.md'), '#', 'utf8');
-      const trigger = makeTrigger();
-      await trigger.tick();
-      expect(fired).toHaveLength(1);
+      await trigger.tick(); // 2 net-new < 10, duplicates present
+      expect(fired).toHaveLength(0);
     });
   });
 
-  describe('debounce ledger', () => {
-    it('does NOT fire twice for the same vault within debounceMs', async () => {
-      for (let i = 0; i < 10; i++) {
-        await fs.writeFile(path.join(vault, `llm-curated/p-${i}.md`), '#', 'utf8');
-      }
-      const trigger = makeTrigger({ debounceMs: 1_000_000 });
-      await trigger.tick();
-      await trigger.tick();
+  describe('debounce + baseline advance', () => {
+    it('does NOT refire until another threshold of net-new accumulates', async () => {
+      const trigger = makeTrigger();
+      await trigger.tick(); // baseline 0
+      await writeMds(10);
+      await trigger.tick(); // fire 1; baseline advances to 10
+      expect(fired).toHaveLength(1);
+      await trigger.tick(); // no new files → netNew 0
       expect(fired).toHaveLength(1);
     });
 
-    it('refires after _resetDebounceForTesting()', async () => {
-      for (let i = 0; i < 10; i++) {
-        await fs.writeFile(path.join(vault, `llm-curated/p-${i}.md`), '#', 'utf8');
-      }
-      const trigger = makeTrigger();
-      await trigger.tick();
-      trigger._resetDebounceForTesting();
-      await trigger.tick();
-      expect(fired).toHaveLength(2);
+    it('debounces a second fire even when net-new is still >= threshold', async () => {
+      const trigger = makeTrigger({ debounceMs: 1_000_000 });
+      await trigger.tick(); // baseline 0
+      await writeMds(10, 'a');
+      await trigger.tick(); // fire 1; baseline → 10
+      expect(fired).toHaveLength(1);
+      // Add 10 MORE so net-new is again >= threshold, but stay inside debounce.
+      await writeMds(10, 'b');
+      const res = await trigger.tick();
+      expect(res.skippedByDebounce).toEqual([vault]);
+      expect(fired).toHaveLength(1);
     });
 
     it('does not fire on subsequent ticks when the vault stays quiet', async () => {
@@ -136,6 +149,21 @@ describe('WikiBookkeepTriggerService', () => {
       await trigger.tick();
       await trigger.tick();
       expect(fired).toHaveLength(0);
+    });
+  });
+
+  describe('persistence (survives restart)', () => {
+    it('persists the baseline so a new instance does not re-fire the backlog', async () => {
+      const statePath = path.join(queueRoot, 'bookkeep-state.json');
+      await writeMds(15);
+      const t1 = makeTrigger({ statePath });
+      await t1.tick(); // baseline = 15, no fire
+      expect(fired).toHaveLength(0);
+      // Simulate a restart: a brand-new instance reading the same state file.
+      const t2 = makeTrigger({ statePath });
+      const res = await t2.tick();
+      expect(fired).toHaveLength(0); // backlog already baselined — no burst
+      expect(res.quietVaults).toEqual([vault]);
     });
   });
 
@@ -151,19 +179,21 @@ describe('WikiBookkeepTriggerService', () => {
     });
 
     it('swallows fireFn errors so one bad vault does not break the scan', async () => {
-      for (let i = 0; i < 10; i++) {
-        await fs.writeFile(path.join(vault, `llm-curated/p-${i}.md`), '#', 'utf8');
-      }
       const trigger = new WikiBookkeepTriggerService({
         intervalMs: 60_000,
         debounceMs: 1_000_000,
+        statePath: null,
         bookkeepService: bookkeep,
         discoverRoots: async () => [vault],
         fireFn: async () => {
           throw new Error('boom');
         },
       });
-      // Should not throw.
+      await trigger.tick(); // establish baseline at 0
+      for (let i = 0; i < 10; i++) {
+        await fs.writeFile(path.join(vault, `llm-curated/p-${i}.md`), '#', 'utf8');
+      }
+      // Net-new now crosses threshold → fireFn fires and throws; must not throw out.
       await expect(trigger.tick()).resolves.toBeDefined();
     });
   });

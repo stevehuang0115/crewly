@@ -111,6 +111,54 @@ describe('WikiBookkeepService', () => {
     });
   });
 
+  describe('net-new baseline (shouldFire driven by baselineMdCount)', () => {
+    const writeMds = async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        await fs.writeFile(path.join(vault, `llm-curated/n-${i}.md`), `# n ${i}`, 'utf8');
+      }
+    };
+
+    it('does NOT fire when the whole vault is already baselined (migration scenario)', async () => {
+      // 12 mtime-recent files but baseline == total → 0 net-new. The old
+      // mtime-window logic would have fired; net-new must not.
+      await writeMds(12);
+      const r = await svc.generate({ vaultPath: vault, threshold: 10, baselineMdCount: 12 });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.report.recentMdCount).toBe(12); // window still counts them
+      expect(r.report.netNewMdCount).toBe(0); // but net-new is 0
+      expect(r.report.shouldFire).toBe(false);
+    });
+
+    it('fires when net-new since the baseline reaches the threshold', async () => {
+      await writeMds(12);
+      const r = await svc.generate({ vaultPath: vault, threshold: 10, baselineMdCount: 2 });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.report.netNewMdCount).toBe(10); // 12 - 2
+      expect(r.report.shouldFire).toBe(true);
+    });
+
+    it('clamps net-new to 0 when the vault shrank below the baseline', async () => {
+      await writeMds(3);
+      const r = await svc.generate({ vaultPath: vault, threshold: 1, baselineMdCount: 50 });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.report.netNewMdCount).toBe(0);
+      expect(r.report.shouldFire).toBe(false);
+    });
+
+    it('duplicate clusters alone do NOT force a fire under net-new', async () => {
+      await fs.writeFile(path.join(vault, 'llm-curated/anthropic-pricing.md'), '#', 'utf8');
+      await fs.writeFile(path.join(vault, 'llm-curated/anthropic-pricing-v2.md'), '#', 'utf8');
+      const r = await svc.generate({ vaultPath: vault, threshold: 10, baselineMdCount: 2 });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.report.duplicateCandidates.length).toBeGreaterThan(0);
+      expect(r.report.shouldFire).toBe(false);
+    });
+  });
+
   describe('duplicate detection', () => {
     it('flags near-duplicate filenames as a cluster', async () => {
       await fs.mkdir(path.join(vault, 'llm-curated/customers'), { recursive: true });
