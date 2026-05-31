@@ -553,29 +553,85 @@ export class SOPService implements ISOPService {
    */
   public async generateSOPContext(params: SOPMatchParams): Promise<string> {
     const sops = await this.findRelevantSOPs(params);
+    // Surface the team's own installed/custom SOPs (written to the team library
+    // by the wiki editor / update-sop skill) — the read path historically only
+    // read the global store, so team SOPs were invisible to get-sops.
+    const teamSops = params.teamId ? await this.readTeamSOPs(params.teamId) : [];
 
-    if (sops.length === 0) {
+    if (sops.length === 0 && teamSops.length === 0) {
       return '';
     }
 
+    const render = (title: string, category: string, priority: string | number, raw: string): string => {
+      const content =
+        raw.length > SOP_CONSTANTS.LIMITS.MAX_SOP_CONTENT_LENGTH
+          ? raw.substring(0, SOP_CONSTANTS.LIMITS.MAX_SOP_CONTENT_LENGTH) + '\n\n*[Content truncated]*'
+          : raw;
+      return `### ${title}\n\n*Category: ${category} | Priority: ${priority}*\n\n${content}\n\n---\n\n`;
+    };
+
     let context = '## Relevant Standard Operating Procedures\n\n';
     context += 'Follow these procedures for your current work:\n\n';
-
     for (const sop of sops) {
-      // Truncate content if too long
-      const content =
-        sop.content.length > SOP_CONSTANTS.LIMITS.MAX_SOP_CONTENT_LENGTH
-          ? sop.content.substring(0, SOP_CONSTANTS.LIMITS.MAX_SOP_CONTENT_LENGTH) +
-            '\n\n*[Content truncated]*'
-          : sop.content;
+      context += render(sop.title, sop.category, sop.priority, sop.content);
+    }
 
-      context += `### ${sop.title}\n\n`;
-      context += `*Category: ${sop.category} | Priority: ${sop.priority}*\n\n`;
-      context += content;
-      context += '\n\n---\n\n';
+    if (teamSops.length > 0) {
+      context += '## Team SOPs\n\n';
+      context += "Your team's own SOPs:\n\n";
+      for (const sop of teamSops) {
+        context += render(sop.title, sop.category, 'team', sop.content);
+      }
     }
 
     return context;
+  }
+
+  /**
+   * Read a team's installed/custom SOP library from
+   * `~/.crewly/teams/<teamId>/sops/` (recursively). Each `.md` file becomes a
+   * SOP entry with its frontmatter `title`/`category` (falling back to the
+   * filename / parent folder). Read-only; tolerant of a missing directory.
+   *
+   * @param teamId - The team whose SOP library to read.
+   * @returns Team SOP entries (possibly empty).
+   */
+  private async readTeamSOPs(
+    teamId: string,
+  ): Promise<Array<{ title: string; category: string; content: string }>> {
+    const root = path.join(this.getCrewlyHome(), 'teams', teamId, 'sops');
+    const out: Array<{ title: string; category: string; content: string }> = [];
+    const walk = async (dir: string, categoryHint: string): Promise<void> => {
+      let entries: import('fs').Dirent[];
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(abs, entry.name);
+        } else if (entry.isFile() && entry.name.endsWith('.md')) {
+          try {
+            const raw = await fs.readFile(abs, 'utf-8');
+            const titleMatch = raw.match(/^\s*title:\s*(.+?)\s*$/m);
+            const catMatch = raw.match(/^\s*category:\s*(.+?)\s*$/m);
+            const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
+            out.push({
+              title: titleMatch ? titleMatch[1].replace(/^["']|["']$/g, '') : path.basename(entry.name, '.md'),
+              category: catMatch ? catMatch[1].trim() : categoryHint || 'team',
+              content: body || raw,
+            });
+          } catch {
+            // skip unreadable file
+          }
+        }
+      }
+    };
+    await walk(root, '');
+    return out;
   }
 
   /**
@@ -739,6 +795,10 @@ export class SOPService implements ISOPService {
    * Save the index to disk
    */
   private async saveIndex(): Promise<void> {
+    // Ensure the store dir exists — on a fresh machine ~/.crewly/sops may not
+    // exist yet, and the first query rebuilds the index before initialize()
+    // has created it (otherwise saveIndex throws ENOENT → 500 on first call).
+    await fs.mkdir(path.dirname(this.indexPath), { recursive: true });
     await fs.writeFile(this.indexPath, JSON.stringify(this.index, null, 2), 'utf-8');
   }
 

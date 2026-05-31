@@ -394,7 +394,7 @@ export async function querySOPs(
   res: Response
 ): Promise<void> {
   try {
-    const { context, category, role } = req.body;
+    const { context, category, role, teamId } = req.body;
 
     if (!context) {
       res.status(400).json({
@@ -409,6 +409,7 @@ export async function querySOPs(
       role: role || 'developer',
       taskContext: context,
       taskType: category,
+      teamId: typeof teamId === 'string' && teamId ? teamId : undefined,
     });
 
     res.json({

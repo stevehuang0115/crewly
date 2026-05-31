@@ -168,6 +168,13 @@ export interface SOPMatchParams {
   filePatterns?: string[];
   /** Maximum number of SOPs to return */
   limit?: number;
+  /**
+   * Team whose installed/custom SOP library should also be surfaced. When set,
+   * SOPs under `~/.crewly/teams/<teamId>/sops/` (written by the wiki `+ SOP`
+   * editor / `update-sop` skill) are merged into the result — closing the
+   * write-to-team-library / read-from-global-store mismatch.
+   */
+  teamId?: string;
 }
 
 /**

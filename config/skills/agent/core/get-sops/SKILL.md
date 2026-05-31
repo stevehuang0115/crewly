@@ -47,13 +47,17 @@ Query standard operating procedures (SOPs) relevant to your current context or t
 | `context` | Yes | Description of what you need SOPs for (e.g., `"deploying to production"`) |
 | `category` | No | Filter by SOP category (e.g., `"deployment"`, `"testing"`, `"code-review"`) |
 | `role` | No | Filter by role relevance (e.g., `"developer"`, `"qa"`) |
+| `sessionName` | No | Your session name. Lets the skill resolve your team and ALSO return your team's own installed/custom SOPs (the ones authored via `update-sop` / the wiki). |
+| `teamId` | No | Explicit team id (skips the sessionName lookup). |
+
+The result includes both the global SOPs and — when your team is resolved — a **Team SOPs** section from your team's library (`~/.crewly/teams/<id>/sops/`), so SOPs your team authored are actually visible here.
 
 ## Example
 
 ```bash
-bash config/skills/agent/get-sops/execute.sh '{"context":"deploying a new backend service","category":"deployment","role":"developer"}'
+bash config/skills/agent/core/get-sops/execute.sh '{"context":"publishing an XHS post","category":"marketing","sessionName":"crewly-marketing-ella"}'
 ```
 
 ## Output
 
-JSON with matching SOPs including their titles, content, and applicability metadata.
+JSON with matching SOPs including their titles, content, and applicability metadata, plus a Team SOPs section when a team is resolved.
