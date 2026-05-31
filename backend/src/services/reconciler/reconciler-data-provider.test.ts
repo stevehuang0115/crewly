@@ -1012,6 +1012,21 @@ describe('LiveReconcilerDataProvider', () => {
         expect(mockSubscriber.redispatch).not.toHaveBeenCalled();
       });
 
+      it('redelivers a queued WI once, then suppresses repeats within the cooldown (anti-flood)', async () => {
+        // The fast loop re-emits redeliver every ~10s; the per-WI cooldown
+        // must cap re-POSTs so a queued-but-unclaimed WI cannot flood the PTY.
+        mockPool.findWorkItem.mockResolvedValue(queuedWi);
+
+        const first = await provider.executeWakeAction(buildAction());
+        const second = await provider.executeWakeAction(buildAction());
+        const third = await provider.executeWakeAction(buildAction());
+
+        expect(first).toBe(true);
+        expect(second).toBe(false);
+        expect(third).toBe(false);
+        expect(mockSubscriber.redispatch).toHaveBeenCalledTimes(1);
+      });
+
       it('returns false when the WI no longer exists', async () => {
         mockPool.findWorkItem.mockResolvedValueOnce(null);
 
