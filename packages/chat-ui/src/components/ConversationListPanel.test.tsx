@@ -147,4 +147,29 @@ describe('ConversationListPanel', () => {
     expect(screen.getByText('Channels')).toBeInTheDocument();
     expect(screen.queryByText('Direct Messages')).not.toBeInTheDocument();
   });
+
+  it('collapses and expands a section when its header is clicked', async () => {
+    window.localStorage.clear();
+    renderPanel();
+    expect(screen.getByTestId('conv-row-c-general')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('conv-group-toggle-channels'));
+    expect(screen.queryByTestId('conv-row-c-general')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('conv-group-toggle-channels'));
+    expect(screen.getByTestId('conv-row-c-general')).toBeInTheDocument();
+  });
+
+  it('renders a pin toggle per row that fires onTogglePin without selecting', async () => {
+    window.localStorage.clear();
+    const onTogglePin = vi.fn();
+    const onSelectConversation = vi.fn();
+    renderPanel({ onTogglePin, isPinned: () => false, onSelectConversation });
+    await userEvent.click(screen.getByTestId('conv-pin-dm-sam'));
+    expect(onTogglePin).toHaveBeenCalledTimes(1);
+    expect(onSelectConversation).not.toHaveBeenCalled();
+  });
+
+  it('omits pin toggles when onTogglePin is not provided', () => {
+    renderPanel();
+    expect(screen.queryByTestId('conv-pin-dm-sam')).not.toBeInTheDocument();
+  });
 });

@@ -81,7 +81,7 @@ export function buildConversationGroups(
   // the Group Chats group is safe — it only shows once a huddle exists.
   return [
     { id: 'channels', label: 'Channels', rows: channelRows },
-    { id: 'huddles', label: 'Group Chats', rows: huddleRows },
+    { id: 'huddles', label: 'Huddles', rows: huddleRows },
     { id: 'dms', label: 'Direct Messages', rows: dmRows },
   ];
 }

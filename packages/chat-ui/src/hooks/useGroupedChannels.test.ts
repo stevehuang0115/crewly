@@ -67,7 +67,7 @@ describe('buildConversationGroups', () => {
     expect(groups[0].id).toBe('channels');
     expect(groups[0].label).toBe('Channels');
     expect(groups[1].id).toBe('huddles');
-    expect(groups[1].label).toBe('Group Chats');
+    expect(groups[1].label).toBe('Huddles');
     expect(groups[2].id).toBe('dms');
     expect(groups[2].label).toBe('Direct Messages');
   });
