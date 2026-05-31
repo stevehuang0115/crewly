@@ -121,7 +121,7 @@ describe('WorkspaceRail', () => {
   });
 
 
-  it('renders labels beside icons in showLabels mode (wider column)', () => {
+  it('renders icon-with-caption labels in showLabels mode', () => {
     render(
       <WorkspaceRail
         workspaces={[{ id: 'team-x', name: 'Customer Engineering', initials: 'CE' }]}
@@ -130,7 +130,7 @@ describe('WorkspaceRail', () => {
     );
     const rail = screen.getByTestId('workspace-rail');
     expect(rail).toHaveAttribute('data-labelled', 'true');
-    expect(rail.className).toContain('w-56');
+    expect(rail.className).toContain('w-24');
     // The full team name is visible (not just the initials).
     expect(screen.getByText('Customer Engineering')).toBeInTheDocument();
   });
