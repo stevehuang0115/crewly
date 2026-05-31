@@ -10,18 +10,15 @@ import { overlayRootFor, resolveOverlayFilePath } from './wiki-overlay.resolver'
 describe('overlayRootFor', () => {
   const vault = '/home/u/.crewly/teams/abc/wiki';
 
-  afterEach(() => {
-    delete process.env.CREWLY_CONFIG_DIR;
-  });
-
   it('returns null for non-overlay folders', () => {
     expect(overlayRootFor(vault, 'llm-curated')).toBeNull();
     expect(overlayRootFor(vault, 'memory')).toBeNull();
   });
 
-  it('maps sop/ to <configDir>/sops', () => {
-    process.env.CREWLY_CONFIG_DIR = '/opt/crewly/config';
-    expect(overlayRootFor(vault, 'sop')).toBe(path.join('/opt/crewly/config', 'sops'));
+  it('maps sop/ to the per-team installed sops sibling dir', () => {
+    expect(overlayRootFor(vault, 'sop')).toBe(
+      path.resolve('/home/u/.crewly/teams/abc/sops'),
+    );
   });
 
   it('maps team-norm/ to the sibling norms dir', () => {
@@ -34,21 +31,14 @@ describe('overlayRootFor', () => {
 describe('resolveOverlayFilePath', () => {
   const vault = '/home/u/.crewly/teams/abc/wiki';
 
-  beforeEach(() => {
-    process.env.CREWLY_CONFIG_DIR = '/opt/crewly/config';
-  });
-  afterEach(() => {
-    delete process.env.CREWLY_CONFIG_DIR;
-  });
-
   it('returns null when the path is not under an overlay folder', () => {
     expect(resolveOverlayFilePath(vault, 'llm-curated/log.md')).toBeNull();
     expect(resolveOverlayFilePath(vault, 'SCHEMA.md')).toBeNull();
   });
 
-  it('resolves a sop/ page to the real config file', () => {
+  it('resolves a sop/ page to the per-team installed file', () => {
     expect(resolveOverlayFilePath(vault, 'sop/pm/progress-tracking.md')).toBe(
-      path.resolve('/opt/crewly/config/sops', 'pm/progress-tracking.md'),
+      path.resolve('/home/u/.crewly/teams/abc/sops', 'pm/progress-tracking.md'),
     );
   });
 

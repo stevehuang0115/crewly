@@ -328,6 +328,28 @@
   padding-top: 4px;
 }
 
+.wiki-tree-group-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-primary, #818cf8);
+  background: transparent;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.14));
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.wiki-tree-group-action:hover {
+  background: var(--color-surface-raised, rgba(255, 255, 255, 0.06));
+  color: var(--color-text-primary, #e8eaee);
+}
+
 /* Search */
 
 .wiki-search-bar {
