@@ -145,6 +145,13 @@ export interface ListChannelsArgs {
    * team_id) drop out of the result.
    */
   teamId?: string;
+  /**
+   * Include "bridged" channels (Slack inbound, owned by `'system'`) in the
+   * result. Defaults to true. Only applies to the unfiltered list (no
+   * `type`/`teamId` filter) — bridged threads are surfaced alongside the
+   * user's own DMs/channels in the consolidated chat list.
+   */
+  includeBridged?: boolean;
 }
 
 /** Arguments for `sendMessage`. */
@@ -1026,6 +1033,19 @@ export class ChatV2Service extends EventEmitter {
       type: args.type,
       teamId: teamIdFilter,
     });
+
+    // Surface bridged (Slack) threads alongside the user's own channels on
+    // the unfiltered list. They are owned by `'system'`, so listByOwner
+    // never returns them; merge + dedupe by id (the user's own row wins).
+    const includeBridged =
+      (args.includeBridged ?? true) && args.type === undefined && teamIdFilter === undefined;
+    if (includeBridged) {
+      const seen = new Set(rows.map((r) => r.id));
+      const bridged = this.channels
+        .listBridged({ includeArchived: args.includeArchived, limit: args.limit })
+        .filter((r) => !seen.has(r.id));
+      return [...rows, ...bridged].map((r) => this.toChannelDTO(r));
+    }
     return rows.map((r) => this.toChannelDTO(r));
   }
 

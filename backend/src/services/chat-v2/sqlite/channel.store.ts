@@ -306,6 +306,32 @@ export class ChannelStore {
   }
 
   /**
+   * List active "bridged" channels — inbound conversations from external
+   * surfaces (currently Slack), persisted by the bridge under the synthetic
+   * `'system'` owner and keyed by a `slack-…` id. These belong to no single
+   * Crewly user, so they are surfaced in the consolidated chat list across
+   * the (single-user OSS) account rather than via `listByOwner`.
+   *
+   * @param options.includeArchived - Include archived rows (default false).
+   * @param options.limit - Max rows (capped at 200).
+   * @returns Bridged channel rows, most-recent first.
+   */
+  listBridged(options?: { includeArchived?: boolean; limit?: number }): ChatChannelRow[] {
+    const includeArchived = options?.includeArchived ?? false;
+    const limit = Math.min(options?.limit ?? 100, 200);
+    const where: string[] = ["id LIKE 'slack-%'"];
+    if (!includeArchived) where.push('archived_at IS NULL');
+    const sql = `
+      SELECT ${CHANNEL_SELECT_COLUMNS}
+      FROM chat_channels
+      WHERE ${where.join(' AND ')}
+      ORDER BY COALESCE(last_message_at, created_at) DESC
+      LIMIT ?
+    `;
+    return this.db.prepare(sql).all(limit) as ChatChannelRow[];
+  }
+
+  /**
    * Mark a channel as archived (soft-delete). No-op if already archived.
    *
    * @param id - The channel id
