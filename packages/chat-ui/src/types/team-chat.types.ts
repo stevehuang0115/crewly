@@ -114,6 +114,12 @@ export interface ConversationGroup {
   /** Section heading copy, e.g. "Direct Messages". */
   label: string;
   rows: ConversationRow[];
+  /**
+   * Optional nested sub-sections rendered (and independently collapsible)
+   * under this group's header — e.g. a "Teams" group whose sub-groups are
+   * the per-team conversation lists. One level of nesting only.
+   */
+  subGroups?: ConversationGroup[];
 }
 
 // =============================================================================

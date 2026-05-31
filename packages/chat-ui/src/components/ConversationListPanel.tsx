@@ -84,7 +84,7 @@ export function ConversationListPanel({
   className = '',
 }: ConversationListPanelProps): JSX.Element {
   const totalRows = useMemo(
-    () => groups.reduce((acc, g) => acc + g.rows.length, 0),
+    () => groups.reduce((acc, g) => acc + countRows(g), 0),
     [groups],
   );
 
@@ -126,14 +126,14 @@ export function ConversationListPanel({
           </div>
         ) : (
           groups.map((group) =>
-            group.rows.length > 0 ? (
+            groupHasContent(group) ? (
               <ConversationGroupSection
                 key={group.id}
                 group={group}
                 activeConversationId={activeConversationId}
                 onSelectConversation={onSelectConversation}
-                collapsed={collapsed.has(group.id)}
-                onToggleCollapse={() => toggleCollapse(group.id)}
+                collapsed={collapsed}
+                onToggleCollapse={toggleCollapse}
                 isPinned={isPinned}
                 onTogglePin={onTogglePin}
               />
@@ -145,6 +145,18 @@ export function ConversationListPanel({
   );
 }
 
+/** Total rows in a group, including nested sub-groups. */
+function countRows(group: ConversationGroup): number {
+  return (
+    group.rows.length + (group.subGroups?.reduce((acc, g) => acc + countRows(g), 0) ?? 0)
+  );
+}
+
+/** Whether a group has any conversation to render (own rows or nested). */
+function groupHasContent(group: ConversationGroup): boolean {
+  return countRows(group) > 0;
+}
+
 function ConversationGroupSection({
   group,
   activeConversationId,
@@ -153,18 +165,25 @@ function ConversationGroupSection({
   onToggleCollapse,
   isPinned,
   onTogglePin,
+  depth = 0,
 }: {
   group: ConversationGroup;
   activeConversationId: string | null;
   onSelectConversation?: (row: ConversationRow) => void;
-  collapsed: boolean;
-  onToggleCollapse: () => void;
+  /** The set of collapsed group ids, so nested sections manage themselves. */
+  collapsed: Set<string>;
+  onToggleCollapse: (id: string) => void;
   isPinned?: (row: ConversationRow) => boolean;
   onTogglePin?: (row: ConversationRow) => void;
+  /** Nesting depth — drives header indentation for sub-groups. */
+  depth?: number;
 }): JSX.Element {
+  const isCollapsed = collapsed.has(group.id);
+  const subGroups = (group.subGroups ?? []).filter(groupHasContent);
+
   return (
     <section
-      className="border-b border-slate-200 py-2 last:border-b-0 dark:border-slate-800"
+      className={depth === 0 ? 'border-b border-slate-200 py-2 last:border-b-0 dark:border-slate-800' : ''}
       aria-labelledby={`conv-group-${group.id}`}
       data-testid={`conv-group-${group.id}`}
     >
@@ -172,29 +191,47 @@ function ConversationGroupSection({
       <button
         type="button"
         id={`conv-group-${group.id}`}
-        onClick={onToggleCollapse}
-        aria-expanded={!collapsed}
+        onClick={() => onToggleCollapse(group.id)}
+        aria-expanded={!isCollapsed}
         data-testid={`conv-group-toggle-${group.id}`}
-        className="flex w-full items-center gap-1 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+        className="flex w-full items-center gap-1 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+        style={{ paddingLeft: `${0.75 + depth * 0.75}rem`, paddingRight: '0.75rem' }}
       >
-        <Chevron collapsed={collapsed} />
+        <Chevron collapsed={isCollapsed} />
         <span className="truncate">{group.label}</span>
-        <span className="ml-auto text-slate-400 dark:text-slate-500">{group.rows.length}</span>
+        <span className="ml-auto text-slate-400 dark:text-slate-500">{countRows(group)}</span>
       </button>
-      {!collapsed && (
-        <ul role="list" className="flex flex-col">
-          {group.rows.map((row) => (
-            <li key={row.id}>
-              <ConversationRowItem
-                row={row}
-                isActive={activeConversationId === row.id}
-                onSelect={onSelectConversation}
-                pinned={isPinned?.(row) ?? false}
-                onTogglePin={onTogglePin}
-              />
-            </li>
+      {!isCollapsed && (
+        <>
+          {group.rows.length > 0 && (
+            <ul role="list" className="flex flex-col">
+              {group.rows.map((row) => (
+                <li key={row.id}>
+                  <ConversationRowItem
+                    row={row}
+                    isActive={activeConversationId === row.id}
+                    onSelect={onSelectConversation}
+                    pinned={isPinned?.(row) ?? false}
+                    onTogglePin={onTogglePin}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+          {subGroups.map((sub) => (
+            <ConversationGroupSection
+              key={sub.id}
+              group={sub}
+              activeConversationId={activeConversationId}
+              onSelectConversation={onSelectConversation}
+              collapsed={collapsed}
+              onToggleCollapse={onToggleCollapse}
+              isPinned={isPinned}
+              onTogglePin={onTogglePin}
+              depth={depth + 1}
+            />
           ))}
-        </ul>
+        </>
       )}
     </section>
   );

@@ -484,8 +484,9 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
         onEnsureDm={async () => 'real-chan'}
       />,
     );
-    // Team section headers, with their agents underneath.
-    expect(await screen.findByText('Content')).toBeInTheDocument();
+    // Team sections nest under a "Teams" parent, each with its agents.
+    expect(await screen.findByText('Teams')).toBeInTheDocument();
+    expect(screen.getByText('Content')).toBeInTheDocument();
     expect(screen.getByText('Sales')).toBeInTheDocument();
     expect(screen.getByText('Ella')).toBeInTheDocument();
     expect(screen.getByText('Luna')).toBeInTheDocument();

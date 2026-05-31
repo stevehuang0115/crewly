@@ -172,4 +172,30 @@ describe('ConversationListPanel', () => {
     renderPanel();
     expect(screen.queryByTestId('conv-pin-dm-sam')).not.toBeInTheDocument();
   });
+
+  it('renders nested sub-groups; collapsing the parent hides its children', async () => {
+    window.localStorage.clear();
+    renderPanel({
+      groups: [
+        {
+          id: 'teams',
+          label: 'Teams',
+          rows: [],
+          subGroups: [
+            { id: 'dm-team:Content', label: 'Content', rows: [
+              { id: 'dm-ella', kind: 'dm', title: 'Ella' },
+            ] },
+          ],
+        },
+      ],
+    });
+    expect(screen.getByText('Teams')).toBeInTheDocument();
+    expect(screen.getByText('Content')).toBeInTheDocument();
+    expect(screen.getByTestId('conv-row-dm-ella')).toBeInTheDocument();
+
+    // Collapse the Teams parent → nested team + member disappear.
+    await userEvent.click(screen.getByTestId('conv-group-toggle-teams'));
+    expect(screen.queryByText('Content')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('conv-row-dm-ella')).not.toBeInTheDocument();
+  });
 });
