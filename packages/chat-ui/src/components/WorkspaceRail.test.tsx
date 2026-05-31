@@ -120,4 +120,39 @@ describe('WorkspaceRail', () => {
     expect(screen.getByTestId('workspace-row-orc')).toHaveTextContent('\u{1F9ED}');
   });
 
+
+  it('renders labels beside icons in showLabels mode (wider column)', () => {
+    render(
+      <WorkspaceRail
+        workspaces={[{ id: 'team-x', name: 'Customer Engineering', initials: 'CE' }]}
+        showLabels
+      />,
+    );
+    const rail = screen.getByTestId('workspace-rail');
+    expect(rail).toHaveAttribute('data-labelled', 'true');
+    expect(rail.className).toContain('w-56');
+    // The full team name is visible (not just the initials).
+    expect(screen.getByText('Customer Engineering')).toBeInTheDocument();
+  });
+
+  it('renders a host-injected icon node over avatar/initials', () => {
+    render(
+      <WorkspaceRail
+        workspaces={[
+          {
+            id: 'home',
+            name: 'Home',
+            kind: 'home',
+            icon: <svg data-testid="home-icon" />,
+            avatar: '\u{1F3E0}',
+          },
+        ]}
+        showLabels
+      />,
+    );
+    // The vector icon renders; the emoji avatar is NOT used when icon is present.
+    expect(screen.getByTestId('home-icon')).toBeInTheDocument();
+    expect(screen.getByTestId('workspace-row-home')).not.toHaveTextContent('\u{1F3E0}');
+  });
+
 });
