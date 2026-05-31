@@ -76,10 +76,11 @@ export function WorkspaceRail({
   // grouping in §6.1 ("Crewly" parent contains Product, Marketing).
   const ordered = useMemo(() => orderByParent(workspaces), [workspaces]);
 
-  // Labels show in either the tablet `expanded` mode or the host `showLabels`
-  // long-list mode; the latter uses a wider column for full names.
-  const labelled = expanded || showLabels;
-  const width = expanded ? 'w-48' : showLabels ? 'w-56' : 'w-16';
+  // Three layouts: `beside` (tablet `expanded`, label to the right, wide),
+  // `caption` (host `showLabels` — Slack-style icon with a small label beneath,
+  // narrow), or `icon` (default icon-only). `caption` is the chat default.
+  const layout: RailLayout = expanded ? 'beside' : showLabels ? 'caption' : 'icon';
+  const width = layout === 'beside' ? 'w-48' : layout === 'caption' ? 'w-24' : 'w-16';
 
   return (
     <nav
@@ -87,7 +88,8 @@ export function WorkspaceRail({
       aria-label="Workspace rail"
       data-testid="workspace-rail"
       data-expanded={expanded ? 'true' : 'false'}
-      data-labelled={labelled ? 'true' : 'false'}
+      data-labelled={layout !== 'icon' ? 'true' : 'false'}
+      data-layout={layout}
     >
       {ordered.map((ws) => (
         <WorkspaceRow
@@ -95,7 +97,7 @@ export function WorkspaceRail({
           workspace={ws}
           isActive={activeWorkspaceId === ws.id}
           isNested={!!ws.parentId}
-          showLabel={labelled}
+          layout={layout}
           onSelect={onSelectWorkspace}
         />
       ))}
@@ -104,17 +106,20 @@ export function WorkspaceRail({
   );
 }
 
+/** Visual layout of a rail row. */
+type RailLayout = 'icon' | 'beside' | 'caption';
+
 function WorkspaceRow({
   workspace,
   isActive,
   isNested,
-  showLabel,
+  layout,
   onSelect,
 }: {
   workspace: Workspace;
   isActive: boolean;
   isNested: boolean;
-  showLabel: boolean;
+  layout: RailLayout;
   onSelect?: (w: Workspace) => void;
 }): JSX.Element {
   const initials = workspace.initials ?? deriveInitials(workspace.name);
@@ -123,6 +128,31 @@ function WorkspaceRow({
   const hasUnread = (workspace.unreadCount ?? 0) > 0;
   // Glyph precedence: host-injected vector icon → emoji avatar → derived initials.
   const hasGlyph = workspace.icon != null || workspace.avatar != null;
+  const caption = layout === 'caption';
+  const beside = layout === 'beside';
+
+  // Indicator dot — mention > unread > presence (§8.2). Positioned on the glyph.
+  const dot = workspace.hasMentions ? (
+    <span
+      aria-hidden="true"
+      className="absolute -right-0.5 -top-0.5 inline-block h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-slate-900"
+      data-testid={`workspace-mention-${workspace.id}`}
+    />
+  ) : hasUnread ? (
+    <span
+      aria-hidden="true"
+      className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 rounded-full bg-blue-400 ring-2 ring-slate-900"
+      data-testid={`workspace-unread-${workspace.id}`}
+    />
+  ) : workspace.presence ? (
+    <span
+      aria-hidden="true"
+      className={`absolute -right-0.5 -top-0.5 inline-block h-1.5 w-1.5 rounded-full ring-2 ring-slate-900 ${
+        PRESENCE_DOT[workspace.presence]
+      }`}
+      data-testid={`workspace-presence-${workspace.id}`}
+    />
+  ) : null;
 
   return (
     <button
@@ -132,73 +162,54 @@ function WorkspaceRow({
       data-active={isActive ? 'true' : 'false'}
       data-nested={isNested ? 'true' : 'false'}
       data-kind={workspace.kind ?? 'team'}
-      // Hover tooltip — the rail is icon-only when collapsed, so the 2-letter
-      // initials are otherwise opaque. Title reveals the name (or a richer
-      // tooltip override when provided).
+      // Hover tooltip — reveals the full name (esp. for icon-only mode + when a
+      // caption truncates), or a richer tooltip override when provided.
       title={workspace.tooltip ?? workspace.name}
       className={[
-        'group relative mx-2 flex items-center gap-3 rounded-lg px-2 py-2 pr-4 text-left transition',
-        // Active state is full-width per §6.1, not just a tint.
+        'group relative rounded-lg transition',
+        caption
+          ? 'mx-1.5 flex flex-col items-center gap-1 px-1 py-1.5 text-center'
+          : 'mx-2 flex items-center gap-3 px-2 py-2 pr-4 text-left',
         isActive
           ? 'bg-blue-600/20 text-white ring-1 ring-blue-400/40'
           : 'text-slate-200 hover:bg-slate-800',
-        // Indent nested children one notch.
-        isNested ? 'ml-4' : '',
+        // Indent nested children one notch (beside layout only).
+        isNested && !caption ? 'ml-4' : '',
       ].join(' ')}
       aria-current={isActive ? 'page' : undefined}
       aria-label={
-        hasUnread
-          ? `${workspace.name}, ${workspace.unreadCount} unread`
-          : workspace.name
+        hasUnread ? `${workspace.name}, ${workspace.unreadCount} unread` : workspace.name
       }
     >
-      <span
-        aria-hidden="true"
-        className={[
-          'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-semibold',
-          // A vector icon / emoji glyph is not uppercased; initials are.
-          hasGlyph ? 'text-lg' : 'text-sm uppercase',
-          isHome
-            ? 'bg-slate-700 text-white ring-1 ring-slate-500'
-            : isActivity
-              ? 'bg-slate-700 text-slate-100'
-              : 'bg-gradient-to-br from-indigo-500 to-purple-600 text-white',
-        ].join(' ')}
-      >
-        {workspace.icon ?? workspace.avatar ?? initials}
+      <span className="relative shrink-0">
+        <span
+          aria-hidden="true"
+          className={[
+            'flex h-9 w-9 items-center justify-center rounded-lg font-semibold',
+            // A vector icon / emoji glyph is not uppercased; initials are.
+            hasGlyph ? 'text-lg' : 'text-sm uppercase',
+            isHome
+              ? 'bg-slate-700 text-white ring-1 ring-slate-500'
+              : isActivity
+                ? 'bg-slate-700 text-slate-100'
+                : 'bg-gradient-to-br from-indigo-500 to-purple-600 text-white',
+          ].join(' ')}
+        >
+          {workspace.icon ?? workspace.avatar ?? initials}
+        </span>
+        {dot}
       </span>
 
-      {showLabel && (
+      {caption && (
+        <span className="w-full truncate text-[11px] font-medium leading-tight">
+          {workspace.name}
+        </span>
+      )}
+      {beside && (
         <span className="min-w-0 flex-1 truncate text-sm font-medium leading-9">
           {workspace.name}
         </span>
       )}
-
-      {/*
-        Indicator stack — unread takes priority over presence per §8.2.
-        Mention dot is the strongest visual signal and pre-empts both.
-      */}
-      {workspace.hasMentions ? (
-        <span
-          aria-hidden="true"
-          className="absolute right-1 top-1 inline-block h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-slate-900"
-          data-testid={`workspace-mention-${workspace.id}`}
-        />
-      ) : hasUnread ? (
-        <span
-          aria-hidden="true"
-          className="absolute right-1 top-1 inline-block h-2 w-2 rounded-full bg-blue-400 ring-2 ring-slate-900"
-          data-testid={`workspace-unread-${workspace.id}`}
-        />
-      ) : workspace.presence ? (
-        <span
-          aria-hidden="true"
-          className={`absolute right-1 top-1 inline-block h-1.5 w-1.5 rounded-full ring-2 ring-slate-900 ${
-            PRESENCE_DOT[workspace.presence]
-          }`}
-          data-testid={`workspace-presence-${workspace.id}`}
-        />
-      ) : null}
     </button>
   );
 }
