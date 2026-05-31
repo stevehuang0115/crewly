@@ -30,6 +30,23 @@ export interface WikiMarkdownProps {
 }
 
 /**
+ * Split a leading YAML frontmatter block (`---\n…\n---`) off the content.
+ * Without this, files written with frontmatter (team norms / SOPs) render the
+ * raw `key: value` lines as body — and the closing `---` turns them into a
+ * giant setext heading. We strip the block and surface its `title` separately.
+ *
+ * @param raw - Raw page markdown.
+ * @returns `{ title, body }` — title is the frontmatter `title:` if present.
+ */
+export function splitFrontmatter(raw: string): { title: string | null; body: string } {
+  const m = /^﻿?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n)*/.exec(raw);
+  if (!m) return { title: null, body: raw };
+  const titleMatch = /^title:\s*(.+?)\s*$/m.exec(m[1]);
+  const title = titleMatch ? titleMatch[1].replace(/^["']|["']$/g, '').trim() : null;
+  return { title, body: raw.slice(m[0].length) };
+}
+
+/**
  * Render markdown with GFM + syntax highlighting + wikilink navigation.
  *
  * @example
@@ -52,8 +69,11 @@ export function WikiMarkdown({ content, onWikilinkClick }: WikiMarkdownProps): J
     [onWikilinkClick],
   );
 
+  const { title, body } = splitFrontmatter(content);
+
   return (
     <div className="wiki-md">
+      {title && <h1 className="wiki-md-title">{title}</h1>}
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkWikilink()]}
         rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
@@ -88,7 +108,7 @@ export function WikiMarkdown({ content, onWikilinkClick }: WikiMarkdownProps): J
           },
         }}
       >
-        {content}
+        {body}
       </ReactMarkdown>
     </div>
   );

@@ -31,6 +31,8 @@ import {
   Upload,
   Download,
   Pencil,
+  Layers,
+  LayoutGrid,
   CheckCircle2,
   Lightbulb,
   ChevronRight,
@@ -868,28 +870,32 @@ export function Wiki(): JSX.Element {
                 <X size={13} />
               </button>
             )}
-          </div>
-          <div className="wiki-search-scope" role="tablist" aria-label="Search scope">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={!searchAll}
-              className={`wiki-search-scope-btn${!searchAll ? ' active' : ''}`}
-              onClick={() => setSearchAll(false)}
-              data-testid="search-scope-this"
-            >
-              This vault
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={searchAll}
-              className={`wiki-search-scope-btn${searchAll ? ' active' : ''}`}
-              onClick={() => setSearchAll(true)}
-              data-testid="search-scope-all"
-            >
-              All vaults
-            </button>
+            <div className="wiki-search-scope" role="radiogroup" aria-label="Search scope">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={!searchAll}
+                aria-label="Search this vault"
+                title="This vault"
+                className={`wiki-search-scope-btn${!searchAll ? ' active' : ''}`}
+                onClick={() => setSearchAll(false)}
+                data-testid="search-scope-this"
+              >
+                <Layers size={13} />
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={searchAll}
+                aria-label="Search all vaults"
+                title="All vaults"
+                className={`wiki-search-scope-btn${searchAll ? ' active' : ''}`}
+                onClick={() => setSearchAll(true)}
+                data-testid="search-scope-all"
+              >
+                <LayoutGrid size={13} />
+              </button>
+            </div>
           </div>
           {searchError && (
             <div className="wiki-error">

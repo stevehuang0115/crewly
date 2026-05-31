@@ -10,7 +10,38 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { WikiMarkdown } from './WikiMarkdown';
+import { WikiMarkdown, splitFrontmatter } from './WikiMarkdown';
+
+describe('splitFrontmatter', () => {
+  it('extracts the title and strips the frontmatter block', () => {
+    const raw = '---\ntitle: Lifecycle Norm\ntrigger: idle\nupdatedBy: Ella\n---\n\n# Rule\nbody text';
+    const { title, body } = splitFrontmatter(raw);
+    expect(title).toBe('Lifecycle Norm');
+    expect(body).toBe('# Rule\nbody text');
+    expect(body).not.toContain('trigger:');
+    expect(body).not.toContain('updatedBy:');
+  });
+
+  it('returns the content unchanged when there is no frontmatter', () => {
+    const raw = '# Just markdown\nno frontmatter here';
+    expect(splitFrontmatter(raw)).toEqual({ title: null, body: raw });
+  });
+
+  it('handles frontmatter with no title key', () => {
+    const { title, body } = splitFrontmatter('---\ntrigger: idle\n---\nbody');
+    expect(title).toBeNull();
+    expect(body).toBe('body');
+  });
+
+  it('does not render frontmatter keys as a heading (the reported bug)', () => {
+    render(
+      <WikiMarkdown content={'---\ntitle: My Norm\ntrigger: idle\nupdatedBy: Ella\n---\n\nReal body.'} />,
+    );
+    expect(screen.getByText('My Norm')).toBeInTheDocument();
+    expect(screen.queryByText(/updatedBy/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/trigger:/)).not.toBeInTheDocument();
+  });
+});
 
 describe('WikiMarkdown', () => {
   it('renders a paragraph as a <p>', () => {
