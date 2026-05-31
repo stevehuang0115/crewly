@@ -123,6 +123,7 @@ describe('Teams Handlers', () => {
       saveProject: jest.fn<any>(),
       getOrchestratorStatus: jest.fn<any>(),
       updateOrchestratorStatus: jest.fn<any>(),
+      findMemberBySessionName: jest.fn<any>(),
     };
 
     mockTmuxService = {
@@ -181,6 +182,15 @@ describe('Teams Handlers', () => {
 
   afterEach(() => {
     jest.resetAllMocks();
+  });
+
+  describe('activateAgentBySession', () => {
+    it('returns an error when no member matches the session', async () => {
+      mockStorageService.findMemberBySessionName.mockResolvedValue(null);
+      const res = await teamsHandlers.activateAgentBySession(mockApiContext, 'ghost-session');
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/No team member/);
+    });
   });
 
   describe('createTeam', () => {

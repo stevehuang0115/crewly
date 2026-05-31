@@ -479,6 +479,41 @@ function resolveAgentStatus(
 }
 
 /**
+ * Activate (start) a single agent by its session name — the user-initiated
+ * path used by chat "activate-on-send" (messaging an offline agent wakes it).
+ *
+ * Unlike the {@link startTeamMember} HTTP handler, this intentionally skips
+ * the orchestrator wake-gate: a human directly messaging the agent IS the
+ * authorization. Resolves the member's team + current project, then runs the
+ * shared start core. Idempotent — returns success if already active.
+ *
+ * @param context - API context (storage / registration / tmux services).
+ * @param sessionName - The agent session to activate.
+ * @returns `{ success, error? }`.
+ */
+export async function activateAgentBySession(
+  context: ApiContext,
+  sessionName: string,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const found = await context.storageService.findMemberBySessionName(sessionName);
+    if (!found) {
+      return { success: false, error: `No team member found for session '${sessionName}'` };
+    }
+    const { team, member } = found;
+    let projectPath: string | undefined;
+    if (team.projectIds[0]) {
+      const projects = await context.storageService.getProjects();
+      projectPath = projects.find((p) => p.id === team.projectIds[0])?.path;
+    }
+    const result = await _startTeamMemberCore(context, team, member, projectPath);
+    return { success: result.success, error: result.error };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
  * Core logic for starting a single team member
  * @param context - API context with services
  * @param team - The team containing the member

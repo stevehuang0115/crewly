@@ -150,8 +150,8 @@ export function NoMessagesEmptyState({
 
 /**
  * §9.4 — Active DM but the agent is currently inactive/offline. NOT a
- * dead end — the composer stays available, the banner explains the
- * queueing behavior so the user knows what happens next.
+ * dead end — the composer stays available. Sending activates the agent and
+ * delivers the message; the banner sets that expectation.
  */
 export function AgentOfflineBanner({ agentName }: { agentName: string }): JSX.Element {
   return (
@@ -160,8 +160,8 @@ export function AgentOfflineBanner({ agentName }: { agentName: string }): JSX.El
       data-testid="banner-agent-offline"
       className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:border-amber-600/40 dark:bg-amber-900/20 dark:text-amber-100"
     >
-      <strong>{agentName} is currently inactive.</strong> Your message will be delivered to the
-      private queue and surfaced when {agentName} resumes the session.
+      <strong>{agentName} is currently inactive.</strong> Sending a message will activate{' '}
+      {agentName} and deliver it once the session is up.
     </div>
   );
 }

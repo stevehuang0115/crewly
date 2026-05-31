@@ -1499,6 +1499,16 @@ void (async () => {
 					// to fan-out a user message to every huddle member.
 					huddleMembersFor: (channelId) =>
 						chatService.queryHuddleMembersForDispatch(channelId),
+					// Activate-on-send: messaging an offline agent wakes it, then
+					// the dispatcher retries delivery. User-initiated, so it uses
+					// the wake-gate-free activation path.
+					activateAgent: async (agentSession: string) => {
+						const { activateAgentBySession } = await import(
+							'./controllers/team/team.controller.js'
+						);
+						const res = await activateAgentBySession(this.apiController, agentSession);
+						return res.success;
+					},
 				});
 				this.chatV2Gateway = chatGateway;
 				this.chatV2Dispatcher = chatDispatcher;
