@@ -9,8 +9,11 @@
  * @module pages/Wiki.test
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import {
+  Wiki,
   resolveWikilink,
   pickInitialVault,
   partitionVaultTree,
@@ -177,5 +180,53 @@ describe('allCanonicalFoldersEmpty', () => {
       children: [{ name: 'a.md', relativePath: 'sop/a.md', type: 'file' as const }],
     };
     expect(allCanonicalFoldersEmpty([filled, emptyDir('team-norm')])).toBe(false);
+  });
+});
+
+describe('Wiki global search (page-level header)', () => {
+  const okJson = (body: Record<string, unknown>) =>
+    ({ ok: true, status: 200, json: async () => ({ success: true, ...body }) }) as Response;
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/api/wiki/vaults')) return okJson({ vaults: [] });
+        if (u.includes('/api/wiki/search-all')) return okJson({ hits: [], truncated: false, vaultPath: '', query: 'q' });
+        if (u.includes('/api/wiki/migrate/scan')) return okJson({ legacyDetected: false, proposedPages: [] });
+        return okJson({});
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const renderWiki = () => render(<MemoryRouter><Wiki /></MemoryRouter>);
+
+  it('renders the global search in the header (not the column)', async () => {
+    renderWiki();
+    expect(await screen.findByLabelText('Search wiki')).toBeInTheDocument();
+  });
+
+  it('opens the results overlay on type and closes on Escape', async () => {
+    renderWiki();
+    const input = await screen.findByLabelText('Search wiki');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'pricing' } });
+    // Overlay (with the scope control) appears as soon as there's a query.
+    await waitFor(() => expect(screen.getByTestId('search-scope-all')).toBeInTheDocument());
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('search-scope-all')).not.toBeInTheDocument());
+  });
+
+  it('defaults the scope to all vaults', async () => {
+    renderWiki();
+    const input = await screen.findByLabelText('Search wiki');
+    fireEvent.change(input, { target: { value: 'x' } });
+    await waitFor(() => expect(screen.getByTestId('search-scope-all')).toHaveAttribute('aria-checked', 'true'));
+    expect(screen.getByTestId('search-scope-this')).toHaveAttribute('aria-checked', 'false');
   });
 });
