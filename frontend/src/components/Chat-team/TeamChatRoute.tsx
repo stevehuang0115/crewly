@@ -9,16 +9,19 @@
  *   - teamLabels          ← `useTeams()` → `buildTeamLabels`
  *   - mentionables        ← `useTeams()` → `buildMentionables`
  *   - initialWorkspaceId  ← `?team=<id>` query param (deep-link from /teams)
+ *   - directMessagesWorkspace ← the always-present "Direct Messages" rail entry
  *
- * When arriving via a `?team=<id>` deep-link, it first POSTs
- * `/channels/team/ensure` so a team that never created a channel still has
- * one to land on (the workspace rail derives from channel rows). The page
- * render is gated on that call settling so `useChannels` picks up the
- * freshly-ensured channel on its initial load rather than racing it.
+ * Consolidation host: before mounting the page it ensures the channels the
+ * page needs exist, so `useChannels` picks them up on its initial load
+ * (rather than racing a later refetch):
+ *   - Always ensures the **orchestrator DM** (`crewly-orc`) so talking to the
+ *     orchestrator lives on this one page (the old `/chat` pipe folds in here).
+ *   - When deep-linked via `?team=<id>`, also ensures that team's channel so
+ *     the workspace isn't empty.
  *
- * Keeping this glue in a thin route component lets `LiveTeamChatPage` stay
- * host-agnostic (Portal injects its own labels/mentionables) and keeps the
- * `?team=` deep-link contract in one place.
+ * Default landing (no `?team=`): the Direct Messages workspace with the
+ * orchestrator conversation selected — preserving the old `/chat` behavior of
+ * opening straight onto the orchestrator.
  *
  * @module components/Chat-team/TeamChatRoute
  */
@@ -32,7 +35,28 @@ import {
   buildTeamLabels,
   buildMentionables,
   TEAM_QUERY_PARAM,
+  ORCHESTRATOR_SESSION,
+  ORCHESTRATOR_LABEL,
+  DM_WORKSPACE_ID,
+  DM_WORKSPACE_LABEL,
 } from '../../utils/team-chat.utils';
+
+/** POST a chat-v2 ensure endpoint and return the resolved channel id, or null. */
+async function ensureChannel(url: string, body: Record<string, unknown>): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as { success?: boolean; data?: { id?: string } };
+    return json?.data?.id ?? null;
+  } catch {
+    // Non-fatal: the page still renders its own empty states. Never block the
+    // UI on a transient ensure failure.
+    return null;
+  }
+}
 
 /**
  * Live route wrapper for `/team-chat`.
@@ -49,47 +73,55 @@ export function TeamChatRoute(): JSX.Element {
   const teamLabels = useMemo(() => buildTeamLabels(teams), [teams]);
   const mentionables = useMemo(() => buildMentionables(teams), [teams]);
 
-  const initialWorkspaceId = searchParams.get(TEAM_QUERY_PARAM) || null;
+  const teamParam = searchParams.get(TEAM_QUERY_PARAM) || null;
 
-  // Ensure the deep-linked team has a channel before mounting the page.
-  // Tracks the team id we've already ensured so re-renders don't re-fire,
-  // and so switching teams re-ensures for the new one.
-  const [ensuredTeamId, setEnsuredTeamId] = useState<string | null>(null);
-  const needsEnsure =
-    mode === 'real' && initialWorkspaceId !== null && ensuredTeamId !== initialWorkspaceId;
+  // Ensure the channels the page needs exist before mounting it. `readyKey`
+  // tracks the team we've prepared for (or `__none__`) so a team switch
+  // re-runs the ensure and the loading gate shows again.
+  const targetKey = teamParam ?? '__none__';
+  const [readyKey, setReadyKey] = useState<string | null>(null);
+  const [orcChannelId, setOrcChannelId] = useState<string | null>(null);
+  const ready = mode !== 'real' || readyKey === targetKey;
 
   useEffect(() => {
-    if (mode !== 'real' || !initialWorkspaceId) return;
+    if (mode !== 'real') return;
     let cancelled = false;
     void (async () => {
-      try {
-        await fetch('/api/chat/channels/team/ensure', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ teamId: initialWorkspaceId }),
-        });
-      } catch {
-        // Non-fatal: the page still renders (it shows an empty-state when the
-        // team has no channel). Don't block the UI on a transient ensure error.
-      } finally {
-        if (!cancelled) setEnsuredTeamId(initialWorkspaceId);
+      // Always make the orchestrator reachable on this page.
+      const orcId = await ensureChannel('/api/chat/channels/dm/ensure', {
+        agentSession: ORCHESTRATOR_SESSION,
+        name: ORCHESTRATOR_LABEL,
+        purpose: 'Talk to the orchestrator',
+      });
+      // When deep-linked to a team, make sure that team has a channel too.
+      if (teamParam) {
+        await ensureChannel('/api/chat/channels/team/ensure', { teamId: teamParam });
+      }
+      if (!cancelled) {
+        if (orcId) setOrcChannelId(orcId);
+        setReadyKey(targetKey);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [mode, initialWorkspaceId]);
+  }, [mode, teamParam, targetKey]);
 
-  if (needsEnsure) {
+  if (!ready) {
     return (
       <div
         className="flex h-full items-center justify-center text-sm text-text-secondary-dark"
         role="status"
       >
-        Opening team chat…
+        Opening chat…
       </div>
     );
   }
+
+  // Default landing is the orchestrator (in the Direct Messages workspace);
+  // a `?team=` deep-link overrides both to focus that team.
+  const initialWorkspaceId = teamParam ?? DM_WORKSPACE_ID;
+  const initialConversationId = teamParam ? null : orcChannelId;
 
   return (
     <LiveTeamChatPage
@@ -97,6 +129,8 @@ export function TeamChatRoute(): JSX.Element {
       teamLabels={teamLabels}
       mentionables={mentionables}
       initialWorkspaceId={initialWorkspaceId}
+      initialConversationId={initialConversationId}
+      directMessagesWorkspace={{ id: DM_WORKSPACE_ID, name: DM_WORKSPACE_LABEL }}
     />
   );
 }

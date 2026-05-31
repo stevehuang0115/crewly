@@ -8,6 +8,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Team } from '../../types';
+import { DM_WORKSPACE_ID, ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
 
 // Capture the props LiveTeamChatPage is rendered with.
 const liveProps = vi.fn();
@@ -45,6 +46,11 @@ function renderAt(path: string): void {
   );
 }
 
+/** Parse the body of the Nth fetch call as JSON. */
+function bodyOf(call: unknown[]): Record<string, unknown> {
+  return JSON.parse((call[1] as RequestInit).body as string);
+}
+
 let fetchMock: ReturnType<typeof vi.fn>;
 
 describe('TeamChatRoute', () => {
@@ -54,7 +60,7 @@ describe('TeamChatRoute', () => {
     vi.unstubAllEnvs();
     fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ success: true, data: { id: 'chan-1' } }),
+      json: async () => ({ success: true, data: { id: 'orc-chan' } }),
     });
     vi.stubGlobal('fetch', fetchMock);
   });
@@ -63,37 +69,49 @@ describe('TeamChatRoute', () => {
     vi.unstubAllGlobals();
   });
 
-  it('ensures the team channel then passes ?team= through as initialWorkspaceId', async () => {
-    renderAt('/team-chat?team=t2');
+  it('ensures the orchestrator DM and defaults to it in the DM workspace (no ?team=)', async () => {
+    renderAt('/team-chat');
 
-    // POSTs team/ensure with the deep-linked team id.
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('/api/chat/channels/team/ensure');
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ teamId: 't2' });
+    // Orchestrator DM is ensured.
+    const dmCall = fetchMock.mock.calls.find((c) => c[0] === '/api/chat/channels/dm/ensure');
+    expect(dmCall).toBeTruthy();
+    expect(bodyOf(dmCall!)).toMatchObject({ agentSession: ORCHESTRATOR_SESSION });
+    // No team ensure when there's no ?team=.
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat/channels/team/ensure')).toBe(false);
 
-    // After the ensure settles, the page mounts with the workspace selected.
     await screen.findByTestId('live-team-chat');
     expect(liveProps).toHaveBeenCalledWith(
-      expect.objectContaining({ initialWorkspaceId: 't2' }),
+      expect.objectContaining({
+        initialWorkspaceId: DM_WORKSPACE_ID,
+        initialConversationId: 'orc-chan',
+        directMessagesWorkspace: { id: DM_WORKSPACE_ID, name: expect.any(String) },
+      }),
     );
   });
 
-  it('renders immediately and does not ensure when no ?team= is present', async () => {
+  it('ensures both the orchestrator DM and the team channel for a ?team= deep-link', async () => {
+    renderAt('/team-chat?team=t2');
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat/channels/team/ensure')).toBe(true),
+    );
+    const teamCall = fetchMock.mock.calls.find((c) => c[0] === '/api/chat/channels/team/ensure');
+    expect(bodyOf(teamCall!)).toEqual({ teamId: 't2' });
+
+    await screen.findByTestId('live-team-chat');
+    // Deep-link focuses the team; conversation auto-selects within it.
+    expect(liveProps).toHaveBeenCalledWith(
+      expect.objectContaining({ initialWorkspaceId: 't2', initialConversationId: null }),
+    );
+  });
+
+  it('still renders the page when the ensure calls fail', async () => {
+    fetchMock.mockRejectedValue(new Error('network'));
     renderAt('/team-chat');
     await screen.findByTestId('live-team-chat');
-    expect(fetchMock).not.toHaveBeenCalled();
     expect(liveProps).toHaveBeenCalledWith(
-      expect.objectContaining({ initialWorkspaceId: null }),
-    );
-  });
-
-  it('still renders the page when the ensure call fails', async () => {
-    fetchMock.mockRejectedValueOnce(new Error('network'));
-    renderAt('/team-chat?team=t2');
-    await screen.findByTestId('live-team-chat');
-    expect(liveProps).toHaveBeenCalledWith(
-      expect.objectContaining({ initialWorkspaceId: 't2' }),
+      expect.objectContaining({ initialWorkspaceId: DM_WORKSPACE_ID }),
     );
   });
 

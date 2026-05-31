@@ -408,6 +408,61 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
       expect(screen.getByTestId('empty-no-teams')).toBeInTheDocument(),
     );
   });
+
+  it('injects a Direct Messages workspace so DMs show without any team channels', async () => {
+    const channels: Channel[] = [
+      {
+        id: 'orc-dm',
+        agentSession: 'crewly-orc',
+        name: 'Orchestrator',
+        createdAt: ISO,
+        type: 'dm',
+        presence: 'online',
+      },
+    ];
+    const { client } = makeStubClient(channels);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-row-__direct__')).toBeInTheDocument();
+    });
+    // Not the no-teams dead-end, and the orchestrator DM is listed (it also
+    // appears in the right-panel header once auto-selected — hence getAllByText).
+    expect(screen.queryByTestId('empty-no-teams')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Orchestrator').length).toBeGreaterThan(0);
+  });
+
+  it('does not inject the DM workspace when the user has no DM channels', async () => {
+    const channels: Channel[] = [
+      {
+        id: 'ch-x',
+        agentSession: '',
+        name: 'general',
+        createdAt: ISO,
+        type: 'channel',
+        teamId: 'team-x',
+      },
+    ];
+    const { client } = makeStubClient(channels);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('workspace-row-team-x')).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId('workspace-row-__direct__')).not.toBeInTheDocument();
+  });
 });
 
 // ---------------------------------------------------------------------------

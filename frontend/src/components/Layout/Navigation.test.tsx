@@ -72,10 +72,16 @@ describe('Navigation', () => {
     expect(screen.getByRole('link', { name: /teams/i })).toHaveAttribute('href', '/teams');
   });
 
-  it('renders Communicate group items: Chat', () => {
+  it('renders Communicate group items: Chat (consolidated /team-chat)', () => {
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByRole('link', { name: /chat/i })).toHaveAttribute('href', '/chat');
+    expect(screen.getByRole('link', { name: /chat/i })).toHaveAttribute('href', '/team-chat');
+  });
+
+  it('no longer renders a separate Agents item (folded into Chat)', () => {
+    renderWithProviders(<Navigation />);
+
+    expect(screen.queryByRole('link', { name: /^agents$/i })).not.toBeInTheDocument();
   });
 
   it('renders Tools group items: Marketplace, Schedules', () => {

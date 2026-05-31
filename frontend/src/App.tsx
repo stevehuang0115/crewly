@@ -10,9 +10,7 @@ import { ScheduledCheckins } from './pages/ScheduledCheckins';
 import { Triggers } from './pages/Triggers';
 import { Factory } from './pages/Factory';
 import { Settings } from './pages/Settings';
-import { Chat } from './pages/Chat';
 import { TeamChatRoute } from './components/Chat-team/TeamChatRoute';
-import { Agents } from './pages/Agents';
 import Marketplace from './pages/Marketplace';
 import MarketplaceDetail from './pages/MarketplaceDetail';
 import { Knowledge } from './pages/Knowledge';
@@ -21,7 +19,6 @@ import { SecurityOverview } from './pages/SecurityOverview';
 import { CostDashboard } from './pages/CostDashboard';
 import { TerminalProvider } from './contexts/TerminalContext';
 import { SidebarProvider } from './contexts/SidebarContext';
-import { ChatProvider } from './contexts/ChatContext';
 import { AuthProvider } from './contexts/AuthContext';
 import { PaymentWallProvider } from './contexts/PaymentWallContext';
 import { AuthCallback } from './pages/AuthCallback';
@@ -98,33 +95,22 @@ function App() {
               <Route path="workitems" element={<WorkItems />} />
               <Route path="workitems/:id" element={<WorkItemDetail />} />
 
-              <Route
-                path="chat"
-                element={
-                  <ChatProvider>
-                    <Chat />
-                  </ChatProvider>
-                }
-              />
-
               {/*
-                Team Chat: the consolidated multi-team chat surface — a
-                Slack-like 3-panel shell (WorkspaceRail / ConversationListPanel
-                / MentionComposer) wired live to the chat-v2 backend via
-                TeamChatRoute (resolves backend URL + injects team directory).
-                Deep-linkable from /teams via `?team=<id>`. The mock-only
-                `TeamChatPage` remains exported from ./components/Chat-team for
-                Storybook/tests.
+                Team Chat: the single consolidated chat surface — a Slack-like
+                3-panel shell (WorkspaceRail / ConversationListPanel /
+                MentionComposer) wired live to chat-v2 via TeamChatRoute. Holds
+                the orchestrator + agent DMs + team channels in one place.
+                Deep-linkable from /teams via `?team=<id>`.
               */}
               <Route path="team-chat" element={<TeamChatRoute />} />
 
               {/*
-                Agents: Phase 1 user↔agent direct chat (Sam tech spec
-                2026-04-24). Mounts the shared `@crewly/chat-ui` package and
-                talks to `/api/chat/channels/*`. Distinct from the
-                orchestrator-pipe `/chat` above — see spec §1.
+                The former separate chat surfaces now redirect into the
+                consolidated page: /chat (orchestrator pipe) and /agents
+                (direct agent DMs) both fold into /team-chat.
               */}
-              <Route path="agents" element={<Agents />} />
+              <Route path="chat" element={<Navigate to="/team-chat" replace />} />
+              <Route path="agents" element={<Navigate to="/team-chat" replace />} />
             </Route>
           </Routes>
         </Router>

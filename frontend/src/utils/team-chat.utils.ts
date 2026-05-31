@@ -26,6 +26,29 @@ import type { ChatPresenceStatus, MentionTarget } from '@crewly/chat-ui';
 export const TEAM_QUERY_PARAM = 'team';
 
 /**
+ * Orchestrator agent session name. Mirrors
+ * `CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME` (`config/constants.ts`); the
+ * frontend bundle doesn't import the shared config, so it's restated here
+ * (same value other FE surfaces hardcode, e.g. TerminalPanel).
+ */
+export const ORCHESTRATOR_SESSION = 'crewly-orc';
+
+/** Display name for the orchestrator conversation in the chat surfaces. */
+export const ORCHESTRATOR_LABEL = 'Orchestrator';
+
+/**
+ * Synthetic workspace id for the always-present "Direct Messages" entry in
+ * the consolidated chat. It is NOT a real team id — `useGroupedChannels`
+ * scopes team channels by `teamId`, so no `type='channel'` row matches this
+ * id and the workspace shows only DMs (orchestrator + agents). The `__`
+ * prefix keeps it collision-free against UUID team ids.
+ */
+export const DM_WORKSPACE_ID = '__direct__';
+
+/** Display name for the synthetic Direct Messages workspace. */
+export const DM_WORKSPACE_LABEL = 'Direct Messages';
+
+/**
  * Map every team to a `teamId → name` label entry for the WorkspaceRail.
  *
  * Teams missing a non-empty name are skipped so the rail falls back to the

@@ -1,11 +1,10 @@
 /**
  * Shared resolution helpers for the `@crewly/chat-ui` HTTP client.
  *
- * Both the `/agents` direct-chat surface and the consolidated `/team-chat`
- * surface mount the same chat-ui provider and therefore need the same
- * backend-URL and mode resolution. These helpers were previously inlined in
- * `pages/Agents.tsx`; they are extracted here so both surfaces share a single
- * implementation rather than drifting apart.
+ * The consolidated `/team-chat` surface mounts the chat-ui provider and needs
+ * backend-URL + mode resolution. These helpers were originally inlined in the
+ * (now-removed) `/agents` page; they live here so any chat surface shares a
+ * single implementation rather than drifting apart.
  *
  * @module utils/chat-backend
  */

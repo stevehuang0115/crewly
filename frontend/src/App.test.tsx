@@ -24,7 +24,6 @@ vi.mock('./pages/Assignments', () => ({ Assignments: () => <div>Assignments Page
 vi.mock('./pages/ScheduledCheckins', () => ({ ScheduledCheckins: () => <div>Schedules & Cron Page</div> }));
 vi.mock('./pages/Factory', () => ({ Factory: () => <div>Factory Page</div> }));
 vi.mock('./pages/Settings', () => ({ Settings: () => <div>Settings Page</div> }));
-vi.mock('./pages/Chat', () => ({ Chat: () => <div>Chat Page</div> }));
 vi.mock('./pages/Marketplace', () => ({ default: () => <div>Marketplace Page</div> }));
 vi.mock('./pages/MarketplaceDetail', () => ({ default: () => <div>Marketplace Detail Page</div> }));
 vi.mock('./pages/Knowledge', () => ({ Knowledge: () => <div>Knowledge Page</div> }));
@@ -62,6 +61,24 @@ describe('App routes', () => {
     render(<App />);
 
     expect(await screen.findByTestId('team-chat-route')).toBeInTheDocument();
+  });
+
+  it('redirects the former /chat to the consolidated /team-chat', async () => {
+    window.history.pushState({}, '', '/chat');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('team-chat-route')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/team-chat');
+  });
+
+  it('redirects the former /agents to the consolidated /team-chat', async () => {
+    window.history.pushState({}, '', '/agents');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('team-chat-route')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/team-chat');
   });
 
   it('mounts WorkItemDetail (not the list) at /workitems/:id', async () => {
