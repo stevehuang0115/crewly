@@ -30,6 +30,7 @@ import {
   X,
   Upload,
   Download,
+  Pencil,
   CheckCircle2,
   Lightbulb,
   ChevronRight,
@@ -37,6 +38,7 @@ import {
 } from 'lucide-react';
 import { WikiMarkdown } from '../components/Wiki/WikiMarkdown.js';
 import { SopCatalogModal } from '../components/Wiki/SopCatalogModal.js';
+import { WikiPageEditor, type OverlayFolder } from '../components/Wiki/WikiPageEditor.js';
 import './Wiki.css';
 
 /** Debounce delay (ms) between keystrokes and firing the search. */
@@ -282,6 +284,10 @@ export function Wiki(): JSX.Element {
   const [focusApplied, setFocusApplied] = useState<string | null>(null);
   // Whether the SOP catalog (install/uninstall) modal is open.
   const [catalogOpen, setCatalogOpen] = useState(false);
+  // Open overlay-page editor (team norm / custom SOP), or null when closed.
+  const [editor, setEditor] = useState<
+    { folder: OverlayFolder; mode: 'create' | 'edit'; path?: string; content?: string } | null
+  >(null);
   const [pageContent, setPageContent] = useState<PagePayload | null>(null);
   const [pageLoading, setPageLoading] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -882,7 +888,9 @@ export function Wiki(): JSX.Element {
                 <>
                   <div className="wiki-tree-group-label" title="Schema-frozen folders — the source of truth referenced by the engine. Agents can't overwrite these via the wiki.">
                     <Lock size={11} /> Canonical · source of truth
-                    {canonicalNodes.some((n) => n.name === 'sop') && (
+                  </div>
+                  {canonicalNodes.some((n) => n.name === 'sop' || n.name === 'team-norm') && (
+                    <div className="wiki-canonical-actions">
                       <button
                         type="button"
                         className="wiki-tree-group-action"
@@ -890,10 +898,28 @@ export function Wiki(): JSX.Element {
                         data-testid="open-sop-catalog"
                         title="Browse the SOP catalog and install SOPs into this team"
                       >
-                        <Download size={11} /> SOPs
+                        <Download size={11} /> Install SOP
                       </button>
-                    )}
-                  </div>
+                      <button
+                        type="button"
+                        className="wiki-tree-group-action"
+                        onClick={() => setEditor({ folder: 'sop', mode: 'create' })}
+                        data-testid="new-sop"
+                        title="Author a custom SOP for this team"
+                      >
+                        + SOP
+                      </button>
+                      <button
+                        type="button"
+                        className="wiki-tree-group-action"
+                        onClick={() => setEditor({ folder: 'team-norm', mode: 'create' })}
+                        data-testid="new-norm"
+                        title="Author a team norm"
+                      >
+                        + Norm
+                      </button>
+                    </div>
+                  )}
                   {allCanonicalFoldersEmpty(canonicalNodes) && (
                     <p className="wiki-tree-canonical-note">
                       Reserved folders. Team SOPs &amp; norms are currently
@@ -938,6 +964,24 @@ export function Wiki(): JSX.Element {
         <main className="wiki-page-pane">
           <div className="wiki-pane-header">
             <span>{selectedPage ?? 'Pick a page'}</span>
+            {pageContent && selectedPage &&
+              (selectedPage.startsWith('sop/') || selectedPage.startsWith('team-norm/')) && (
+                <button
+                  type="button"
+                  className="wiki-tree-group-action"
+                  data-testid="edit-overlay-page"
+                  onClick={() =>
+                    setEditor({
+                      folder: selectedPage.startsWith('team-norm/') ? 'team-norm' : 'sop',
+                      mode: 'edit',
+                      path: selectedPage,
+                      content: pageContent.content,
+                    })
+                  }
+                >
+                  <Pencil size={11} /> Edit
+                </button>
+              )}
             {pageContent && (
               <span className="wiki-page-meta">
                 {pageContent.bytes} B · modified{' '}
@@ -996,6 +1040,23 @@ export function Wiki(): JSX.Element {
           vaultPath={selectedVault.vaultPath}
           onClose={() => setCatalogOpen(false)}
           onChanged={() => loadTree(selectedVault.vaultPath)}
+        />
+      )}
+
+      {editor && selectedVault && (
+        <WikiPageEditor
+          vaultPath={selectedVault.vaultPath}
+          folder={editor.folder}
+          mode={editor.mode}
+          initialPath={editor.path}
+          initialContent={editor.content}
+          onClose={() => setEditor(null)}
+          onSaved={(relativePath) => {
+            setEditor(null);
+            loadTree(selectedVault.vaultPath);
+            // Select the saved page (or clear if it was deleted).
+            setSelectedPage(relativePath);
+          }}
         />
       )}
     </div>
