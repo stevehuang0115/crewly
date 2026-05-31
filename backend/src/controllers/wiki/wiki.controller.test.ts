@@ -362,3 +362,74 @@ describe('wiki.controller — /api/wiki/ingest', () => {
     });
   });
 });
+
+describe('wiki.controller — /api/wiki/overlay-page (owner-authored norms/SOPs)', () => {
+  let app: express.Express;
+  let tmpRoot: string;
+  let teamVault: string;
+
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-overlay-test-'));
+    // Vault at <tmpRoot>/wiki so overlay siblings (norms/, sops/) land under <tmpRoot>.
+    teamVault = path.join(tmpRoot, 'wiki');
+    await fs.mkdir(teamVault, { recursive: true });
+    app = express();
+    app.use(express.json());
+    app.use('/api/wiki', createWikiRouter());
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('writes a team norm into the sibling norms dir, then reads it back', async () => {
+    const write = await request(app)
+      .post('/api/wiki/overlay-page')
+      .send({ vaultPath: teamVault, relativePath: 'team-norm/code-commit.md', content: '# Code Commit\nrules' });
+    expect(write.status).toBe(200);
+    // landed in <tmpRoot>/norms/code-commit.md
+    const onDisk = await fs.readFile(path.join(tmpRoot, 'norms', 'code-commit.md'), 'utf8');
+    expect(onDisk).toContain('Code Commit');
+    // and the page endpoint reads it through the overlay
+    const read = await request(app).get(
+      `/api/wiki/page?vaultPath=${encodeURIComponent(teamVault)}&relativePath=team-norm/code-commit.md`,
+    );
+    expect(read.status).toBe(200);
+    expect(read.body.content).toContain('rules');
+  });
+
+  it('writes a custom SOP into the sibling sops dir', async () => {
+    const res = await request(app)
+      .post('/api/wiki/overlay-page')
+      .send({ vaultPath: teamVault, relativePath: 'sop/xhs-posting.md', content: 'sop body' });
+    expect(res.status).toBe(200);
+    const onDisk = await fs.readFile(path.join(tmpRoot, 'sops', 'xhs-posting.md'), 'utf8');
+    expect(onDisk).toBe('sop body');
+  });
+
+  it('refuses to write outside overlay folders (agent-curated area)', async () => {
+    const res = await request(app)
+      .post('/api/wiki/overlay-page')
+      .send({ vaultPath: teamVault, relativePath: 'llm-curated/hack.md', content: 'x' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('not_writable');
+  });
+
+  it('rejects path traversal', async () => {
+    const res = await request(app)
+      .post('/api/wiki/overlay-page')
+      .send({ vaultPath: teamVault, relativePath: 'team-norm/../../../etc/evil.md', content: 'x' });
+    expect(res.status).toBe(400);
+  });
+
+  it('deletes an overlay page and prunes the emptied dir', async () => {
+    await request(app)
+      .post('/api/wiki/overlay-page')
+      .send({ vaultPath: teamVault, relativePath: 'sop/cat/deep.md', content: 'x' });
+    const del = await request(app)
+      .delete('/api/wiki/overlay-page')
+      .send({ vaultPath: teamVault, relativePath: 'sop/cat/deep.md' });
+    expect(del.status).toBe(200);
+    await expect(fs.access(path.join(tmpRoot, 'sops', 'cat'))).rejects.toThrow();
+  });
+});

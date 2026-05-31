@@ -1,0 +1,162 @@
+/* Owner-facing editor for team norms + custom SOPs. */
+
+.wiki-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.wiki-editor-modal {
+  width: min(680px, 94vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface, #1a1d23);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.1));
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.wiki-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+}
+
+.wiki-editor-header h2 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--color-text-primary, #e8eaee);
+}
+
+.wiki-editor-close {
+  background: none;
+  border: none;
+  color: var(--color-text-secondary, #9ba2af);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.wiki-editor-close:hover {
+  background: var(--color-surface-raised, rgba(255, 255, 255, 0.06));
+}
+
+.wiki-editor-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 18px 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #ff7b72;
+  background: rgba(255, 123, 114, 0.1);
+  border-radius: 6px;
+}
+
+.wiki-editor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.wiki-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.wiki-editor-field > span {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary, #6b7280);
+}
+
+.wiki-editor-field input {
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--color-text-primary, #e8eaee);
+  background: var(--color-background, #0f1115);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+}
+
+.wiki-editor-filename {
+  font-size: 11px;
+  color: var(--color-text-tertiary, #6b7280);
+  font-family: ui-monospace, monospace;
+}
+
+.wiki-editor-field.grow textarea {
+  min-height: 320px;
+  resize: vertical;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--color-text-primary, #e8eaee);
+  background: var(--color-background, #0f1115);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+}
+
+.wiki-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-top: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+}
+
+.wiki-editor-footer-right {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.wiki-editor-cancel,
+.wiki-editor-save,
+.wiki-editor-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 7px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.wiki-editor-cancel {
+  background: transparent;
+  border-color: var(--color-border, rgba(255, 255, 255, 0.15));
+  color: var(--color-text-secondary, #9ba2af);
+}
+
+.wiki-editor-save {
+  background: var(--color-primary, #6366f1);
+  color: #fff;
+}
+
+.wiki-editor-delete {
+  background: transparent;
+  border-color: rgba(255, 123, 114, 0.4);
+  color: #ff7b72;
+}
+
+.wiki-editor-save:disabled,
+.wiki-editor-delete:disabled,
+.wiki-editor-cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

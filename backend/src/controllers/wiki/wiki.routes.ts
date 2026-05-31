@@ -24,6 +24,8 @@ import {
   listSopCatalog,
   installSop,
   uninstallSop,
+  writeOverlayPage,
+  deleteOverlayPage,
   getBacklinks,
   lintVault,
   getRecent,
@@ -75,6 +77,9 @@ export function createWikiRouter(): Router {
   router.get('/sop-catalog', listSopCatalog);
   router.post('/sop-catalog/install', installSop);
   router.post('/sop-catalog/uninstall', uninstallSop);
+  // Owner-authored overlay pages (team norms + custom SOPs).
+  router.post('/overlay-page', writeOverlayPage);
+  router.delete('/overlay-page', deleteOverlayPage);
   router.get('/backlinks', getBacklinks);
   router.get('/recent', getRecent);
   router.post('/migrate/scan', migrateScan);

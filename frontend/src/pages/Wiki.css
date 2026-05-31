@@ -328,11 +328,17 @@
   padding-top: 4px;
 }
 
+.wiki-canonical-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 8px 6px;
+}
+
 .wiki-tree-group-action {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-left: auto;
   padding: 2px 7px;
   font-size: 10px;
   font-weight: 600;

@@ -1078,6 +1078,120 @@ export async function uninstallSop(
 }
 
 /**
+ * POST /api/wiki/overlay-page   { vaultPath, relativePath, content }
+ *
+ * Create or overwrite an owner-authored page in a per-team overlay folder
+ * (`team-norm/` or `sop/`). Only overlay folders are writable here — the rest
+ * of the vault is agent-curated / schema-frozen, so a relativePath that does
+ * not resolve to an overlay source is rejected. Used by the wiki editor for
+ * owner-authored team norms and custom SOPs.
+ */
+export async function writeOverlayPage(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { vaultPath, relativePath, content } = req.body ?? {};
+    if (typeof vaultPath !== 'string' || !path.isAbsolute(vaultPath)) {
+      res.status(400).json({ success: false, error: 'vaultPath (absolute) is required' });
+      return;
+    }
+    if (typeof relativePath !== 'string' || !relativePath.endsWith('.md')) {
+      res.status(400).json({ success: false, error: 'relativePath (.md) is required' });
+      return;
+    }
+    if (typeof content !== 'string') {
+      res.status(400).json({ success: false, error: 'content (string) is required' });
+      return;
+    }
+    if (Buffer.byteLength(content, 'utf8') > MAX_PAGE_BYTES) {
+      res.status(413).json({ success: false, error: 'page_too_large', maxBytes: MAX_PAGE_BYTES });
+      return;
+    }
+    let target: string | null;
+    try {
+      target = resolveOverlayFilePath(vaultPath, relativePath);
+    } catch {
+      res.status(400).json({ success: false, error: 'relativePath escapes overlay root' });
+      return;
+    }
+    if (!target) {
+      res.status(403).json({
+        success: false,
+        error: 'not_writable',
+        message: 'Only team-norm/ and sop/ folders are editable here.',
+      });
+      return;
+    }
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, content, 'utf8');
+    res.status(200).json({ success: true, relativePath });
+  } catch (err) {
+    logger.error('wiki/overlay-page write threw', { error: (err as Error).message });
+    next(err);
+  }
+}
+
+/**
+ * DELETE /api/wiki/overlay-page   { vaultPath, relativePath }
+ *
+ * Delete an owner-authored overlay page (team norm / custom SOP) and prune any
+ * emptied parent dirs. Idempotent. Only overlay folders are eligible.
+ */
+export async function deleteOverlayPage(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { vaultPath, relativePath } = req.body ?? {};
+    if (typeof vaultPath !== 'string' || !path.isAbsolute(vaultPath)) {
+      res.status(400).json({ success: false, error: 'vaultPath (absolute) is required' });
+      return;
+    }
+    if (typeof relativePath !== 'string' || !relativePath.endsWith('.md')) {
+      res.status(400).json({ success: false, error: 'relativePath (.md) is required' });
+      return;
+    }
+    let target: string | null;
+    try {
+      target = resolveOverlayFilePath(vaultPath, relativePath);
+    } catch {
+      res.status(400).json({ success: false, error: 'relativePath escapes overlay root' });
+      return;
+    }
+    if (!target) {
+      res.status(403).json({ success: false, error: 'not_writable' });
+      return;
+    }
+    const topFolder = relativePath.replace(/\\/g, '/').split('/')[0];
+    const root = overlayRootFor(vaultPath, topFolder);
+    try {
+      await fs.unlink(target);
+    } catch {
+      // already absent — idempotent
+    }
+    // Prune emptied parent dirs up to the overlay root.
+    if (root) {
+      let dir = path.dirname(target);
+      while (dir.startsWith(root + path.sep) && dir !== root) {
+        try {
+          await fs.rmdir(dir);
+        } catch {
+          break;
+        }
+        dir = path.dirname(dir);
+      }
+    }
+    res.status(200).json({ success: true, relativePath });
+  } catch (err) {
+    logger.error('wiki/overlay-page delete threw', { error: (err as Error).message });
+    next(err);
+  }
+}
+
+/**
  * GET /api/wiki/backlinks?vaultPath=…&relativePath=…
  *
  * For the target page, find every other page in the vault whose markdown
