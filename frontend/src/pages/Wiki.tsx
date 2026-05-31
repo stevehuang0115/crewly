@@ -262,6 +262,9 @@ export function Wiki(): JSX.Element {
   // (see wiki.controller listVaults), so we match on it directly.
   const [searchParams] = useSearchParams();
   const teamParam = searchParams.get(TEAM_QUERY_PARAM);
+  // Deep-link: ?focus=sop|team-norm jumps straight to the first page under that
+  // canonical folder once the tree loads (used by the team-page Norms/SOPs links).
+  const focusParam = searchParams.get('focus');
 
   const [vaults, setVaults] = useState<WikiVault[]>([]);
   const [vaultsLoading, setVaultsLoading] = useState(true);
@@ -273,6 +276,8 @@ export function Wiki(): JSX.Element {
   const [treeError, setTreeError] = useState<string | null>(null);
 
   const [selectedPage, setSelectedPage] = useState<string | null>(null);
+  // Tracks which (vault, focus) deep-link has been applied so it fires once.
+  const [focusApplied, setFocusApplied] = useState<string | null>(null);
   const [pageContent, setPageContent] = useState<PagePayload | null>(null);
   const [pageLoading, setPageLoading] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -675,6 +680,24 @@ export function Wiki(): JSX.Element {
     () => partitionVaultTree(tree),
     [tree],
   );
+
+  /**
+   * Apply the ?focus=<folder> deep-link: once the tree for the requested vault
+   * has loaded, select the first page under that canonical folder. Fires once
+   * per (vault, focus) pair; if the folder is empty (e.g. norms not authored
+   * yet) it just marks the focus applied so the folder is shown but nothing is
+   * force-selected.
+   */
+  useEffect(() => {
+    if (!focusParam || !selectedVault || !tree) return;
+    const key = `${selectedVault.vaultPath}:${focusParam}`;
+    if (focusApplied === key) return;
+    const first = allFilePaths.find(
+      (p) => p === focusParam || p.startsWith(`${focusParam}/`),
+    );
+    if (first) setSelectedPage(first);
+    setFocusApplied(key);
+  }, [focusParam, selectedVault, tree, allFilePaths, focusApplied]);
 
   const handleWikilinkClick = useCallback(
     (target: string) => {

@@ -67,6 +67,9 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
   }, [teamId]);
 
   const wikiHref = `/wiki?${TEAM_QUERY_PARAM}=${teamId}`;
+  // Deep-link straight to the relevant canonical folder in the team wiki.
+  const normsHref = `${wikiHref}&focus=team-norm`;
+  const sopsHref = `${wikiHref}&focus=sop`;
 
   return (
     <div className="space-y-4">
@@ -122,7 +125,7 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
         <div className="flex flex-col gap-2">
           <button
             type="button"
-            onClick={() => navigate(wikiHref)}
+            onClick={() => navigate(normsHref)}
             data-testid="team-norms-link"
             className="flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-text-primary-dark hover:bg-background-dark"
           >
@@ -132,7 +135,7 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
           </button>
           <button
             type="button"
-            onClick={() => navigate(wikiHref)}
+            onClick={() => navigate(sopsHref)}
             data-testid="team-sops-link"
             className="flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-text-primary-dark hover:bg-background-dark"
           >
