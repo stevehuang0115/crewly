@@ -162,7 +162,7 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     presence: 'online',
   };
 
-  it('rail shows Home + orchestrator + one icon per team', async () => {
+  it('rail shows Home + one icon per team (no standalone orchestrator icon)', async () => {
     const { client } = makeStubClient([orcDm]);
     render(
       <LiveTeamChatPage
@@ -175,11 +175,12 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
       />,
     );
     await waitFor(() => expect(screen.getByTestId('workspace-row-home')).toBeInTheDocument());
-    expect(screen.getByTestId('workspace-row-orc')).toBeInTheDocument();
+    // The orchestrator has no dedicated rail icon (reachable via Home + its team).
+    expect(screen.queryByTestId('workspace-row-orc')).not.toBeInTheDocument();
     expect(screen.getByTestId('workspace-row-team:team-product')).toBeInTheDocument();
     expect(screen.getByTestId('workspace-row-team:team-marketing')).toBeInTheDocument();
-    // home + orc + 2 teams
-    expect(screen.queryAllByTestId(/^workspace-row-/).length).toBe(4);
+    // home + 2 teams
+    expect(screen.queryAllByTestId(/^workspace-row-/).length).toBe(3);
   });
 
   it('Home shows the orchestrator by default (top, pinned group)', async () => {
