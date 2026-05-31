@@ -28,7 +28,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
-import { Home } from 'lucide-react';
+import { Home, ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
 import {
   ChatAPIProvider,
   ConversationListPanel,
@@ -321,6 +321,16 @@ function LiveTeamChatPageBody({
     [allDmRows],
   );
 
+  // Slack-bridged threads (all owned by orc) — surfaced inside the Orchestrator
+  // conversation as a thread list rather than 32 separate sidebar rows.
+  const slackThreads = useMemo(
+    () =>
+      allDmRows
+        .filter((r) => r.id.startsWith(SLACK_ID_PREFIX))
+        .map((r) => ({ ...r, title: prettySlackTitle(r.title) })),
+    [allDmRows],
+  );
+
   // channel-id → teamId, so a team's huddle (its all-members channel) is findable
   // from the (teamId-less) conversation rows.
   const channelTeamId = useMemo(() => {
@@ -335,7 +345,9 @@ function LiveTeamChatPageBody({
   const groups = useMemo<ConversationGroup[]>(() => {
     const sel = resolvedWorkspaceId;
 
-    // Home: orchestrator (default, top) + pinned agents + huddles + Slack.
+    // Home: orchestrator (default, top) + pinned agents + huddles. Slack threads
+    // are NOT listed here — they all belong to the orchestrator, so they're
+    // surfaced inside the Orchestrator conversation (see slackThreads below).
     if (sel === HOME_ID) {
       const pinnedRows = allDmRows.filter(
         (r) =>
@@ -343,14 +355,10 @@ function LiveTeamChatPageBody({
           !r.id.startsWith(SLACK_ID_PREFIX) &&
           pinnedChats.isPinned(pinKeyOf(r)),
       );
-      const slackRows = allDmRows
-        .filter((r) => r.id.startsWith(SLACK_ID_PREFIX))
-        .map((r) => ({ ...r, title: prettySlackTitle(r.title) }));
       const top = [...(orcRow ? [orcRow] : []), ...pinnedRows];
       const out: ConversationGroup[] = [];
       if (top.length > 0) out.push({ id: 'pinned', label: 'Pinned', rows: top });
       if (allHuddleRows.length > 0) out.push({ id: 'huddles', label: 'Huddles', rows: allHuddleRows });
-      if (slackRows.length > 0) out.push({ id: 'slack', label: 'Slack', rows: slackRows });
       return out;
     }
 
@@ -438,8 +446,12 @@ function LiveTeamChatPageBody({
     [workspaces, resolvedWorkspaceId],
   );
   const activeConversation = useMemo(
-    () => flattenRows(groups).find((r) => r.id === resolvedConversationId),
-    [groups, resolvedConversationId],
+    () =>
+      flattenRows(groups).find((r) => r.id === resolvedConversationId) ??
+      // A Slack thread can be the active conversation (opened from the orc
+      // panel) even though it's not in the sidebar groups.
+      slackThreads.find((r) => r.id === resolvedConversationId),
+    [groups, slackThreads, resolvedConversationId],
   );
 
   // §9.1 — no workspaces visible at all (e.g. brand-new account).
@@ -502,6 +514,9 @@ function LiveTeamChatPageBody({
       <LiveTeamChatRightPanel
         conversation={activeConversation}
         mentionables={mentionables}
+        slackThreads={slackThreads}
+        orcRow={orcRow}
+        onSelectConversation={handleSelectConversation}
       />
 
       {showCreateGroup && (
@@ -522,11 +537,19 @@ function LiveTeamChatPageBody({
 interface RightPanelProps {
   conversation: ConversationRow | undefined;
   mentionables: MentionTarget[];
+  /** Slack-bridged threads (all orc-owned), surfaced inside the orc conversation. */
+  slackThreads: ConversationRow[];
+  /** The orchestrator conversation row (for the "back to Orchestrator" action). */
+  orcRow: ConversationRow | undefined;
+  onSelectConversation: (row: ConversationRow) => void;
 }
 
 function LiveTeamChatRightPanel({
   conversation,
   mentionables,
+  slackThreads,
+  orcRow,
+  onSelectConversation,
 }: RightPanelProps): JSX.Element {
   // No conversation selected — happens on first render of an empty
   // workspace, or transiently after a workspace switch.
@@ -546,6 +569,9 @@ function LiveTeamChatRightPanel({
     <LiveTeamChatRightPanelInner
       conversation={conversation}
       mentionables={mentionables}
+      slackThreads={slackThreads}
+      orcRow={orcRow}
+      onSelectConversation={onSelectConversation}
     />
   );
 }
@@ -553,9 +579,15 @@ function LiveTeamChatRightPanel({
 function LiveTeamChatRightPanelInner({
   conversation,
   mentionables,
+  slackThreads,
+  orcRow,
+  onSelectConversation,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
+  slackThreads: ConversationRow[];
+  orcRow: ConversationRow | undefined;
+  onSelectConversation: (row: ConversationRow) => void;
 }): JSX.Element {
   const { messages } = useMessages(conversation.id);
   const { send, error: sendError, reset: resetSendError } = useSendMessage();
@@ -574,6 +606,13 @@ function LiveTeamChatRightPanelInner({
     conversation.kind === 'dm' &&
     (conversation.presence === 'inactive' || conversation.presence === 'offline');
   const recipientName = conversation.kind === 'dm' ? conversation.title : undefined;
+
+  // Slack threads all belong to the orchestrator, so they're navigated from
+  // INSIDE the orc conversation (here) rather than the sidebar.
+  const isSlackThread = conversation.id.startsWith(SLACK_ID_PREFIX);
+  const isOrc = conversation.agentSession === ORCHESTRATOR_SESSION && !isSlackThread;
+  const showSlackBar = (isOrc || isSlackThread) && slackThreads.length > 0;
+  const [slackOpen, setSlackOpen] = useState(false);
 
   /**
    * Pick a sensible thread root from incoming messages. When any message
@@ -648,6 +687,57 @@ function LiveTeamChatRightPanelInner({
           </button>
         )}
       </header>
+
+      {showSlackBar && (
+        <div
+          className="border-b border-slate-200 dark:border-slate-700"
+          data-testid="slack-threads-bar"
+        >
+          <div className="flex items-center justify-between px-4 py-2">
+            <button
+              type="button"
+              onClick={() => setSlackOpen((o) => !o)}
+              aria-expanded={slackOpen}
+              data-testid="slack-threads-toggle"
+              className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
+            >
+              {slackOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              Slack threads · {slackThreads.length}
+            </button>
+            {isSlackThread && orcRow && (
+              <button
+                type="button"
+                onClick={() => onSelectConversation(orcRow)}
+                data-testid="slack-back-to-orc"
+                className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+              >
+                ← Orchestrator
+              </button>
+            )}
+          </div>
+          {slackOpen && (
+            <ul className="max-h-48 overflow-y-auto px-2 pb-2" role="list">
+              {slackThreads.map((t) => (
+                <li key={t.id}>
+                  <button
+                    type="button"
+                    onClick={() => onSelectConversation(t)}
+                    data-testid={`slack-thread-${t.id}`}
+                    className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
+                      t.id === conversation.id
+                        ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                        : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <MessageSquare size={13} className="shrink-0 opacity-60" />
+                    <span className="truncate">{t.title}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {isInactiveDm && recipientName && <AgentOfflineBanner agentName={recipientName} />}
 

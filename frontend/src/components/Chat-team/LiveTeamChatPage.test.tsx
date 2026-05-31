@@ -374,7 +374,7 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     });
   });
 
-  it('surfaces Slack threads in a collapsed Slack section under Home, labeled by time', async () => {
+  it('surfaces Slack threads INSIDE the Orchestrator conversation, not the sidebar', async () => {
     const slackId = 'slack-D0AC7NF5N7L-1777760999-956969';
     const channels: Channel[] = [
       orcDm,
@@ -383,13 +383,21 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     const { client } = makeStubClient(channels);
     render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
 
-    const toggle = await screen.findByTestId('conv-group-toggle-slack');
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // The orchestrator is the default conversation; Slack is NOT a sidebar group.
+    await waitFor(() => expect(screen.getByTestId('conv-row-orc-dm')).toBeInTheDocument());
+    expect(screen.queryByTestId('conv-group-slack')).not.toBeInTheDocument();
     expect(screen.queryByTestId(`conv-row-${slackId}`)).not.toBeInTheDocument();
 
+    // Instead, the orchestrator conversation hosts a collapsible Slack-threads bar.
+    const toggle = await screen.findByTestId('slack-threads-toggle');
+    expect(toggle).toHaveTextContent('Slack threads · 1');
     fireEvent.click(toggle);
-    expect(await screen.findByTestId(`conv-row-${slackId}`)).toBeInTheDocument();
-    expect(screen.getAllByText(/Slack thread ·/).length).toBeGreaterThan(0);
+    const thread = await screen.findByTestId(`slack-thread-${slackId}`);
+    expect(thread).toHaveTextContent(/Slack thread ·/);
+
+    // Opening the thread switches to it and offers a way back to the orchestrator.
+    fireEvent.click(thread);
+    expect(await screen.findByTestId('slack-back-to-orc')).toBeInTheDocument();
   });
 
   it('calls onEnsureDm when a team member without a channel is opened', async () => {
