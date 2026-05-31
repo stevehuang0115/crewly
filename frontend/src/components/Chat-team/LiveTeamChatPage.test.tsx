@@ -469,6 +469,29 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
     expect(screen.queryByTestId('empty-no-teams')).not.toBeInTheDocument();
   });
 
+  it('groups the DM list into per-team sections when agents carry a team', async () => {
+    const { client } = makeStubClient([]);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
+        directoryAgents={[
+          { agentSession: 's-ella', name: 'Ella', presence: 'online', teamName: 'Content' },
+          { agentSession: 's-luna', name: 'Luna', presence: 'offline', teamName: 'Content' },
+          { agentSession: 's-grace', name: 'Grace', presence: 'offline', teamName: 'Sales' },
+        ]}
+        onEnsureDm={async () => 'real-chan'}
+      />,
+    );
+    // Team section headers, with their agents underneath.
+    expect(await screen.findByText('Content')).toBeInTheDocument();
+    expect(screen.getByText('Sales')).toBeInTheDocument();
+    expect(screen.getByText('Ella')).toBeInTheDocument();
+    expect(screen.getByText('Luna')).toBeInTheDocument();
+    expect(screen.getByText('Grace')).toBeInTheDocument();
+  });
+
   it('calls onEnsureDm when a directory agent without a channel is opened', async () => {
     const onEnsureDm = vi.fn().mockResolvedValue('real-chan');
     const { client } = makeStubClient([]);
