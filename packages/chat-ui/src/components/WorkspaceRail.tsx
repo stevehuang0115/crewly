@@ -46,6 +46,12 @@ export interface WorkspaceRailProps {
    * false keeps the icon-only Slack rail.
    */
   expanded?: boolean;
+  /**
+   * ADDITIVE. When true, always render the workspace name beside every icon at
+   * a wider, label-first width (chat host's long-list mode). Independent of
+   * `expanded`. Default false preserves the icon-only rail for existing callers.
+   */
+  showLabels?: boolean;
   className?: string;
 }
 
@@ -62,6 +68,7 @@ export function WorkspaceRail({
   activeWorkspaceId = null,
   onSelectWorkspace,
   expanded = false,
+  showLabels = false,
   className = '',
 }: WorkspaceRailProps): JSX.Element {
   // Deterministic order: roots in their original order, each followed by
@@ -69,14 +76,18 @@ export function WorkspaceRail({
   // grouping in §6.1 ("Crewly" parent contains Product, Marketing).
   const ordered = useMemo(() => orderByParent(workspaces), [workspaces]);
 
+  // Labels show in either the tablet `expanded` mode or the host `showLabels`
+  // long-list mode; the latter uses a wider column for full names.
+  const labelled = expanded || showLabels;
+  const width = expanded ? 'w-48' : showLabels ? 'w-56' : 'w-16';
+
   return (
     <nav
-      className={`flex h-full flex-col items-stretch gap-1 border-r border-slate-200 bg-slate-900 py-3 ${
-        expanded ? 'w-48' : 'w-16'
-      } ${className}`}
+      className={`flex h-full flex-col items-stretch gap-1 overflow-y-auto border-r border-slate-200 bg-slate-900 py-3 ${width} ${className}`}
       aria-label="Workspace rail"
       data-testid="workspace-rail"
       data-expanded={expanded ? 'true' : 'false'}
+      data-labelled={labelled ? 'true' : 'false'}
     >
       {ordered.map((ws) => (
         <WorkspaceRow
@@ -84,7 +95,7 @@ export function WorkspaceRail({
           workspace={ws}
           isActive={activeWorkspaceId === ws.id}
           isNested={!!ws.parentId}
-          expanded={expanded}
+          showLabel={labelled}
           onSelect={onSelectWorkspace}
         />
       ))}
@@ -97,19 +108,21 @@ function WorkspaceRow({
   workspace,
   isActive,
   isNested,
-  expanded,
+  showLabel,
   onSelect,
 }: {
   workspace: Workspace;
   isActive: boolean;
   isNested: boolean;
-  expanded: boolean;
+  showLabel: boolean;
   onSelect?: (w: Workspace) => void;
 }): JSX.Element {
   const initials = workspace.initials ?? deriveInitials(workspace.name);
   const isActivity = workspace.kind === 'activity';
   const isHome = workspace.kind === 'home';
   const hasUnread = (workspace.unreadCount ?? 0) > 0;
+  // Glyph precedence: host-injected vector icon → emoji avatar → derived initials.
+  const hasGlyph = workspace.icon != null || workspace.avatar != null;
 
   return (
     <button
@@ -124,7 +137,7 @@ function WorkspaceRow({
       // tooltip override when provided).
       title={workspace.tooltip ?? workspace.name}
       className={[
-        'group relative mx-2 flex items-center gap-3 rounded-lg px-2 py-2 text-left transition',
+        'group relative mx-2 flex items-center gap-3 rounded-lg px-2 py-2 pr-4 text-left transition',
         // Active state is full-width per §6.1, not just a tint.
         isActive
           ? 'bg-blue-600/20 text-white ring-1 ring-blue-400/40'
@@ -143,8 +156,8 @@ function WorkspaceRow({
         aria-hidden="true"
         className={[
           'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-semibold',
-          // Avatar glyph (emoji) is not uppercased; initials are.
-          workspace.avatar ? 'text-lg' : 'text-sm uppercase',
+          // A vector icon / emoji glyph is not uppercased; initials are.
+          hasGlyph ? 'text-lg' : 'text-sm uppercase',
           isHome
             ? 'bg-slate-700 text-white ring-1 ring-slate-500'
             : isActivity
@@ -152,12 +165,12 @@ function WorkspaceRow({
               : 'bg-gradient-to-br from-indigo-500 to-purple-600 text-white',
         ].join(' ')}
       >
-        {workspace.avatar ?? initials}
+        {workspace.icon ?? workspace.avatar ?? initials}
       </span>
 
-      {expanded && (
-        <span className="flex min-w-0 flex-1 items-center gap-2 truncate text-sm font-medium">
-          <span className="truncate">{workspace.name}</span>
+      {showLabel && (
+        <span className="min-w-0 flex-1 truncate text-sm font-medium leading-9">
+          {workspace.name}
         </span>
       )}
 

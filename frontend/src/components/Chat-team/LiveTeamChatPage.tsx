@@ -28,6 +28,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
+import { Home, Bot } from 'lucide-react';
 import {
   ChatAPIProvider,
   ConversationListPanel,
@@ -273,14 +274,14 @@ function LiveTeamChatPageBody({
       id: HOME_ID,
       name: 'Home',
       kind: 'home',
-      avatar: '🏠',
+      icon: <Home className="h-5 w-5" />,
       tooltip: 'Home — orchestrator, pinned chats & huddles',
     };
     const orc: Workspace = {
       id: ORC_RAIL_ID,
       name: ORCHESTRATOR_LABEL,
       kind: 'team',
-      avatar: '🧭',
+      icon: <Bot className="h-5 w-5" />,
       tooltip: ORCHESTRATOR_LABEL,
     };
     const teamItems: Workspace[] = teams.map((t) => ({
@@ -478,6 +479,7 @@ function LiveTeamChatPageBody({
           workspaces={workspaces}
           activeWorkspaceId={resolvedWorkspaceId}
           onSelectWorkspace={handleSelectWorkspace}
+          showLabels
         />
       )}
 

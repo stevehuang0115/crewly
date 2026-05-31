@@ -19,6 +19,7 @@
  * @module types/team-chat
  */
 
+import type { ReactNode } from 'react';
 import type { ChatPresenceStatus } from '../components/AgentStatusBadge';
 
 // =============================================================================
@@ -56,6 +57,13 @@ export interface Workspace {
    * single char. When absent the rail falls back to `initials`/derived initials.
    */
   avatar?: string;
+  /**
+   * Optional pre-rendered icon node (e.g. a lucide-react vector icon) supplied
+   * by the host. ADDITIVE: takes precedence over `avatar` and derived
+   * `initials`. Kept as ReactNode so chat-ui needs no icon-library dependency —
+   * the host injects the node.
+   */
+  icon?: ReactNode;
   /** Hover tooltip override; defaults to `name`. */
   tooltip?: string;
   /** Total unread items in this workspace (channels + dms combined). */
