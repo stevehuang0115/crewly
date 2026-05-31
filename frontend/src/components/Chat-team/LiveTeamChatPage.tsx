@@ -115,6 +115,8 @@ export interface DirectoryAgentEntry {
   agentSession: string;
   name: string;
   presence?: ChatPresenceStatus;
+  /** Team this agent belongs to — used to group the DM list by team. */
+  teamName?: string;
 }
 
 export function LiveTeamChatPage({
@@ -241,9 +243,53 @@ function LiveTeamChatPageBody({
   const resolvedWorkspaceId =
     activeWorkspaceId ?? (workspaces[0]?.id ?? null);
 
-  const groups = useGroupedChannels(mergedChannels, {
+  const baseGroups = useGroupedChannels(mergedChannels, {
     workspaceId: resolvedWorkspaceId,
   });
+
+  // Split the flat "Direct Messages" group into one section per team (agents
+  // mapped via the directory). Agents with no team (e.g. the orchestrator)
+  // stay under "Direct Messages". Channels + Group Chats sections pass
+  // through unchanged. This is what makes the long agent list readable.
+  const sessionToTeam = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of directoryAgents) {
+      if (a.agentSession && a.teamName) m.set(a.agentSession, a.teamName);
+    }
+    return m;
+  }, [directoryAgents]);
+
+  const groups = useMemo(() => {
+    const dms = baseGroups.find((g) => g.id === 'dms');
+    if (!dms || sessionToTeam.size === 0) return baseGroups;
+
+    const byTeam = new Map<string, typeof dms.rows>();
+    const noTeam: typeof dms.rows = [];
+    for (const row of dms.rows) {
+      const team = row.agentSession ? sessionToTeam.get(row.agentSession) : undefined;
+      if (team) {
+        const list = byTeam.get(team) ?? [];
+        list.push(row);
+        byTeam.set(team, list);
+      } else {
+        noTeam.push(row);
+      }
+    }
+
+    const teamSections = [...byTeam.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([team, rows]) => ({ id: `dm-team:${team}`, label: team, rows }));
+
+    // Preserve original order (channels, huddles) then DMs: orchestrator/
+    // teamless DMs first, then per-team sections.
+    return baseGroups.flatMap((g) => {
+      if (g.id !== 'dms') return [g];
+      const out = [];
+      if (noTeam.length > 0) out.push({ id: 'dms', label: 'Direct Messages', rows: noTeam });
+      out.push(...teamSections);
+      return out;
+    });
+  }, [baseGroups, sessionToTeam]);
 
   const totalRows = useMemo(
     () => groups.reduce((acc, g) => acc + g.rows.length, 0),
