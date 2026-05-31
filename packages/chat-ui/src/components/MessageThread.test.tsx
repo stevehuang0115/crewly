@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { ChatAPIProvider } from '../context/ChatAPIProvider';
 import { MockChatApiClient } from '../api/mock-client';
-import { MessageThread } from './MessageThread';
+import { MessageThread, avatarInitials, avatarColor } from './MessageThread';
 
 describe('MessageThread', () => {
   beforeEach(() => {
@@ -99,5 +99,61 @@ describe('MessageThread', () => {
     await waitFor(() => expect(screen.getByText(/Welcome/i)).toBeInTheDocument());
     const divider = screen.getByTestId('unread-divider');
     expect(divider).toHaveTextContent('Unread');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Slack-like flat layout (additive — default stays `bubble`).
+  // ---------------------------------------------------------------------------
+
+  it('default (bubble) layout renders messages in rounded bubbles', async () => {
+    const client = new MockChatApiClient();
+    const channels = await client.listChannels();
+    const { container } = render(
+      <ChatAPIProvider client={client} mode="mock">
+        <MessageThread channelId={channels[0].id} />
+      </ChatAPIProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/Welcome/i)).toBeInTheDocument());
+    expect(container.querySelector('.rounded-2xl')).not.toBeNull();
+  });
+
+  it('flat layout renders messages without chat bubbles', async () => {
+    const client = new MockChatApiClient();
+    const channels = await client.listChannels();
+    const { container } = render(
+      <ChatAPIProvider client={client} mode="mock">
+        <MessageThread channelId={channels[0].id} layout="flat" />
+      </ChatAPIProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/Welcome/i)).toBeInTheDocument());
+    // No iMessage bubble styling in flat mode.
+    expect(container.querySelector('.rounded-2xl')).toBeNull();
+    expect(container.querySelector('.bg-blue-500')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Avatar helpers — pure, exercised independently per the 1:1 test policy.
+// ---------------------------------------------------------------------------
+
+describe('avatarInitials / avatarColor', () => {
+  it('derives initials from a single-word name', () => {
+    expect(avatarInitials('Sam')).toBe('SA');
+  });
+
+  it('derives initials from the first two words / segments', () => {
+    expect(avatarInitials('crewly-orc')).toBe('CO');
+    expect(avatarInitials('Crewly Product Team')).toBe('CP');
+  });
+
+  it('falls back to "?" for an empty name', () => {
+    expect(avatarInitials('')).toBe('?');
+  });
+
+  it('is deterministic and returns a known palette class', () => {
+    const a = avatarColor('Orchestrator');
+    const b = avatarColor('Orchestrator');
+    expect(a).toBe(b);
+    expect(a.startsWith('bg-')).toBe(true);
   });
 });

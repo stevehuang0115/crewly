@@ -54,6 +54,15 @@ export interface MessageThreadProps {
   unreadAfterSeq?: number | null;
   /** Override label for the unread divider. Defaults to `New`. */
   unreadDividerLabel?: string;
+  /**
+   * Visual layout (additive — existing callers keep the chat-bubble look).
+   *
+   * - `'bubble'` (default): iMessage-style bubbles, user-right / agent-left.
+   * - `'flat'`: Slack-style flat list — left-aligned avatar + bold name +
+   *   inline timestamp, plain text, consecutive same-author messages
+   *   grouped under one header. Used by the consolidated team-chat surface.
+   */
+  layout?: 'bubble' | 'flat';
 }
 
 export function MessageThread({
@@ -63,6 +72,7 @@ export function MessageThread({
   emptyState,
   unreadAfterSeq = null,
   unreadDividerLabel = 'New',
+  layout = 'bubble',
 }: MessageThreadProps): JSX.Element {
   const { messages, loading, error, hasMore, agentThinking, loadMore } = useMessages(channelId);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -101,8 +111,13 @@ export function MessageThread({
         </div>
       )}
 
-      <ul role="list" className="flex flex-1 flex-col gap-3 px-4 py-4">
-        {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel })}
+      <ul
+        role="list"
+        className={`flex flex-1 flex-col ${
+          layout === 'flat' ? 'gap-0.5 px-2 py-3' : 'gap-3 px-4 py-4'
+        }`}
+      >
+        {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout })}
         {agentThinking && <AgentThinkingRow agentName={agentName} />}
         {loading && (
           <li className="text-xs text-slate-400" role="status">
@@ -129,29 +144,34 @@ function renderTimeline(args: {
   messages: Message[];
   unreadAfterSeq: number | null;
   unreadDividerLabel: string;
+  layout: 'bubble' | 'flat';
 }): React.ReactNode[] {
-  const { messages, unreadAfterSeq, unreadDividerLabel } = args;
-  if (unreadAfterSeq === null || unreadAfterSeq === undefined) {
-    return messages.map((m) => <MessageRow key={m.id} message={m} />);
-  }
+  const { messages, unreadAfterSeq, unreadDividerLabel, layout } = args;
   const out: React.ReactNode[] = [];
-  let dividerInserted = false;
-  // Find whether the matching seq is in the loaded window.
-  const hasMatchingSeq = messages.some((m) => m.seq === unreadAfterSeq);
-  for (const m of messages) {
-    out.push(<MessageRow key={m.id} message={m} />);
-    if (!dividerInserted && hasMatchingSeq && m.seq === unreadAfterSeq) {
-      out.push(
-        <UnreadDividerRow key="unread-divider" label={unreadDividerLabel} />,
-      );
-      dividerInserted = true;
-    }
+
+  // In flat (Slack) mode, consecutive messages from the same author group
+  // under one avatar/name header. `groupStart` is always true in bubble
+  // mode (each message keeps its own header), preserving prior behavior.
+  let prevAuthor: string | null = null;
+  const hasMatchingSeq =
+    unreadAfterSeq != null && messages.some((m) => m.seq === unreadAfterSeq);
+
+  // Edge case: matching seq paged off-screen — surface the divider at the top.
+  if (unreadAfterSeq != null && !hasMatchingSeq && messages.length > 0) {
+    out.push(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} />);
   }
-  // Edge case: the matching seq is not in the loaded window. Surface
-  // the divider at the top so the boundary stays legible — this is the
-  // case when older messages have been paged off-screen.
-  if (!dividerInserted && messages.length > 0) {
-    out.unshift(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} />);
+
+  let dividerInserted = false;
+  for (const m of messages) {
+    const groupStart = layout !== 'flat' || prevAuthor !== m.author.id;
+    out.push(<MessageRow key={m.id} message={m} layout={layout} groupStart={groupStart} />);
+    prevAuthor = m.author.id;
+    if (!dividerInserted && hasMatchingSeq && m.seq === unreadAfterSeq) {
+      out.push(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} />);
+      dividerInserted = true;
+      // A divider visually breaks the group — next message starts fresh.
+      prevAuthor = null;
+    }
   }
   return out;
 }
@@ -176,7 +196,18 @@ function UnreadDividerRow({ label }: { label: string }): JSX.Element {
   );
 }
 
-function MessageRow({ message }: { message: Message }): JSX.Element {
+function MessageRow({
+  message,
+  layout = 'bubble',
+  groupStart = true,
+}: {
+  message: Message;
+  layout?: 'bubble' | 'flat';
+  groupStart?: boolean;
+}): JSX.Element {
+  if (layout === 'flat') {
+    return <FlatMessageRow message={message} groupStart={groupStart} />;
+  }
   const isUser = message.author.role === 'user';
   const alignment = isUser ? 'items-end' : 'items-start';
   const status = message.deliveryStatus;
@@ -214,6 +245,124 @@ function MessageRow({ message }: { message: Message }): JSX.Element {
       </div>
       <DeliveryFooter message={message} />
     </li>
+  );
+}
+
+/**
+ * Slack-style flat message row. Left-aligned for every author: an avatar
+ * gutter, then a bold name + inline timestamp header (on the first message
+ * of an author group) followed by plain text. Follow-on messages in the
+ * same group omit the avatar/name and reveal their timestamp on hover.
+ */
+function FlatMessageRow({
+  message,
+  groupStart,
+}: {
+  message: Message;
+  groupStart: boolean;
+}): JSX.Element {
+  const status = message.deliveryStatus;
+  const name = message.author.name ?? message.author.id;
+  const faded = status === 'pending' ? 'opacity-60' : '';
+
+  return (
+    <li
+      className={`group flex gap-2 rounded px-2 hover:bg-slate-100 dark:hover:bg-slate-900 ${
+        groupStart ? 'mt-3 pt-0.5' : ''
+      }`}
+      data-author-role={message.author.role}
+      data-delivery-status={status ?? 'sent'}
+    >
+      <div className="w-9 shrink-0 select-none">
+        {groupStart ? (
+          <Avatar name={name} />
+        ) : (
+          <time className="block w-9 pt-0.5 text-right text-[10px] leading-5 text-transparent group-hover:text-slate-400">
+            {formatTimestamp(message.createdAt)}
+          </time>
+        )}
+      </div>
+      <div className="min-w-0 flex-1 pb-0.5">
+        {groupStart && (
+          <div className="flex items-baseline gap-2">
+            <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+              {name}
+            </span>
+            <time className="text-[11px] text-slate-400 dark:text-slate-500">
+              {formatTimestamp(message.createdAt)}
+            </time>
+          </div>
+        )}
+        <div className={`text-sm leading-relaxed text-slate-700 dark:text-slate-200 ${faded}`}>
+          {renderMinimalMarkdown(message.content)}
+          {message.attachments?.map((a) =>
+            a.kind === 'image' ? (
+              <img
+                key={a.id}
+                src={a.url}
+                alt={a.filename ?? 'attachment'}
+                className="mt-2 max-h-64 max-w-full rounded-lg"
+              />
+            ) : null,
+          )}
+        </div>
+        {status === 'pending' && (
+          <span className="text-[10px] italic text-slate-400 dark:text-slate-500">
+            Sending…
+          </span>
+        )}
+        {status === 'failed' && (
+          <span className="text-[10px] font-medium text-red-500" role="alert">
+            Send failed — tap to retry
+          </span>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/** Tailwind background classes for avatar tiles — picked by hashing the name. */
+const AVATAR_COLORS = [
+  'bg-rose-500',
+  'bg-orange-500',
+  'bg-amber-500',
+  'bg-emerald-500',
+  'bg-teal-500',
+  'bg-sky-500',
+  'bg-indigo-500',
+  'bg-violet-500',
+  'bg-fuchsia-500',
+] as const;
+
+/**
+ * Derive 1–2 uppercase initials from a display name. Splits on spaces and
+ * common separators so `crewly-orc` → `CO` and `Sam` → `SA`.
+ */
+export function avatarInitials(name: string): string {
+  const parts = name.split(/[\s\-_.]+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+/** Deterministically map a name to one of the avatar colors. */
+export function avatarColor(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i += 1) {
+    h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+
+/** Slack-style rounded-square avatar tile with initials. */
+function Avatar({ name }: { name: string }): JSX.Element {
+  return (
+    <span
+      className={`flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold text-white ${avatarColor(name)}`}
+      aria-hidden="true"
+    >
+      {avatarInitials(name)}
+    </span>
   );
 }
 
