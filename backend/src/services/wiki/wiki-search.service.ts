@@ -60,10 +60,15 @@ export interface WikiSearchHit {
   score: number;
   /** Up to `WIKI_SEARCH_MAX_SNIPPETS_PER_FILE` matching lines. */
   snippets: WikiSearchSnippet[];
+  /** Owning vault path (set for all-vault search; absent for single-vault). */
+  vaultPath?: string;
+  /** Human label for the owning vault (all-vault search only). */
+  vaultLabel?: string;
 }
 
 export interface WikiSearchResult {
   ok: true;
+  /** Searched vault path, or '' for an all-vault search. */
   vaultPath: string;
   query: string;
   hits: WikiSearchHit[];
@@ -82,8 +87,27 @@ export interface WikiSearchInput {
   query: string;
 }
 
+/** A vault to include in an all-vault search. */
+export interface VaultRef {
+  vaultPath: string;
+  label?: string;
+}
+
+export interface WikiMultiSearchInput {
+  vaults: VaultRef[];
+  query: string;
+}
+
+/** A candidate document: where it lives (which vault) + how to read it. */
+interface DocRef {
+  vaultPath: string;
+  relativePath: string;
+  absPath: string;
+}
+
 /** A document gathered for scoring: where it lives + its term statistics. */
 interface ScoredDoc {
+  vaultPath: string;
   relativePath: string;
   absPath: string;
   filenameMatch: boolean;
@@ -145,83 +169,106 @@ export class WikiSearchService {
     this.instance = null;
   }
 
+  /** Validate + normalise a query, or return a structured failure. */
+  private validateQuery(raw: string): { query: string } | WikiSearchFailure {
+    const query = (raw ?? '').trim();
+    if (query.length === 0) {
+      return { ok: false, reason: 'invalid_query', message: 'query must be at least one non-whitespace character' };
+    }
+    if (query.length > WIKI_SEARCH_MAX_QUERY_LENGTH) {
+      return { ok: false, reason: 'invalid_query', message: `query exceeds ${WIKI_SEARCH_MAX_QUERY_LENGTH} characters` };
+    }
+    return { query };
+  }
+
   /**
-   * Search a vault and rank results with BM25. Returns either
+   * Search a single vault and rank results with BM25. Returns either
    * `{ok:true, hits}` or a structured failure. Filesystem read errors are
    * silently skipped so one bad file doesn't blank the whole result.
    */
   async search(input: WikiSearchInput): Promise<WikiSearchResult | WikiSearchFailure> {
     const vaultPath = input.vaultPath;
-    const rawQuery = input.query ?? '';
-
     if (!vaultPath || !path.isAbsolute(vaultPath)) {
       return { ok: false, reason: 'invalid_input', message: 'vaultPath must be an absolute path' };
     }
     if (!existsSync(vaultPath)) {
       return { ok: false, reason: 'vault_missing', message: `vault not found: ${vaultPath}` };
     }
+    const v = this.validateQuery(input.query);
+    if ('ok' in v) return v;
 
-    const query = rawQuery.trim();
-    if (query.length === 0) {
-      return {
-        ok: false,
-        reason: 'invalid_query',
-        message: 'query must be at least one non-whitespace character',
-      };
-    }
-    if (query.length > WIKI_SEARCH_MAX_QUERY_LENGTH) {
-      return {
-        ok: false,
-        reason: 'invalid_query',
-        message: `query exceeds ${WIKI_SEARCH_MAX_QUERY_LENGTH} characters`,
-      };
+    const refs = (await this.collectDocs(vaultPath)).map((r) => ({ vaultPath, ...r }));
+    const { hits, truncated } = await this._searchCorpus(refs, v.query);
+    return { ok: true, vaultPath, query: v.query, hits, truncated };
+  }
+
+  /**
+   * Search across MANY vaults and return one merged BM25-ranked list. IDF is
+   * computed over the combined corpus so scores are comparable across vaults.
+   * Each hit carries its owning `vaultPath` (+ `vaultLabel` when provided).
+   */
+  async searchAllVaults(input: WikiMultiSearchInput): Promise<WikiSearchResult | WikiSearchFailure> {
+    const v = this.validateQuery(input.query);
+    if ('ok' in v) return v;
+
+    const labelByPath = new Map<string, string>();
+    const refs: DocRef[] = [];
+    for (const vault of input.vaults) {
+      if (!vault.vaultPath || !existsSync(vault.vaultPath)) continue;
+      if (vault.label) labelByPath.set(vault.vaultPath, vault.label);
+      for (const r of await this.collectDocs(vault.vaultPath)) {
+        refs.push({ vaultPath: vault.vaultPath, ...r });
+        if (refs.length >= WIKI_SEARCH_MAX_FILES) break;
+      }
+      if (refs.length >= WIKI_SEARCH_MAX_FILES) break;
     }
 
-    // Distinct query terms drive scoring; keep the raw lowercase query for
-    // substring snippet detection (handles phrases the tokenizer splits).
+    const { hits, truncated } = await this._searchCorpus(refs, v.query);
+    for (const h of hits) {
+      if (h.vaultPath) h.vaultLabel = labelByPath.get(h.vaultPath);
+    }
+    return { ok: true, vaultPath: '', query: v.query, hits, truncated };
+  }
+
+  /**
+   * Core BM25 search over an arbitrary corpus of doc refs (one or many vaults).
+   * Builds the combined corpus statistics, scores, ranks, and attaches snippets
+   * for the top results. Each hit carries its owning `vaultPath`.
+   */
+  private async _searchCorpus(
+    docRefs: DocRef[],
+    query: string,
+  ): Promise<{ hits: WikiSearchHit[]; truncated: boolean }> {
     const queryTerms = Array.from(new Set(tokenize(query)));
     const needleLower = query.toLowerCase();
 
-    const docRefs = await this.collectDocs(vaultPath);
     const truncatedFiles = docRefs.length >= WIKI_SEARCH_MAX_FILES;
     const slice = docRefs.slice(0, WIKI_SEARCH_MAX_FILES);
 
-    // Pass 1: read + tokenise each doc, accumulate term frequencies for the
-    // query terms and document lengths. (We only track query-term frequencies,
-    // not a full term map, to keep memory bounded.)
+    // Pass 1: read + tokenise each doc, accumulate query-term frequencies + length.
     const docs: ScoredDoc[] = [];
     for (const ref of slice) {
       const doc = await this.statDoc(ref, queryTerms);
       if (doc) docs.push(doc);
     }
-
-    if (queryTerms.length === 0) {
-      return { ok: true, vaultPath, query, hits: [], truncated: truncatedFiles };
-    }
+    if (queryTerms.length === 0) return { hits: [], truncated: truncatedFiles };
 
     const N = docs.length || 1;
     const avgdl = docs.reduce((s, d) => s + d.length, 0) / N || 1;
 
     // Document frequency per query term, then IDF (always positive).
-    const df = new Map<string, number>();
-    for (const term of queryTerms) {
-      let count = 0;
-      for (const d of docs) if ((d.termFreq.get(term) ?? 0) > 0) count++;
-      df.set(term, count);
-    }
     const idf = new Map<string, number>();
     for (const term of queryTerms) {
-      const n = df.get(term) ?? 0;
+      let n = 0;
+      for (const d of docs) if ((d.termFreq.get(term) ?? 0) > 0) n++;
       idf.set(term, Math.log(1 + (N - n + 0.5) / (n + 0.5)));
     }
 
-    // Score every doc; keep only those that matched at least one term (score>0).
     const scored = docs
       .map((d) => ({ doc: d, score: this.bm25Score(d, queryTerms, idf, avgdl) }))
       .filter((s) => s.score > 0);
 
-    // Rank: filename/title matches first (a strong product signal kept from
-    // the previous behaviour), then by BM25 score, then path for stability.
+    // Rank: filename/title matches first, then BM25 score, then path for stability.
     scored.sort((a, b) => {
       if (a.doc.filenameMatch !== b.doc.filenameMatch) return a.doc.filenameMatch ? -1 : 1;
       if (b.score !== a.score) return b.score - a.score;
@@ -241,10 +288,10 @@ export class WikiSearchService {
         matchCount,
         score: Math.round(score * 1000) / 1000,
         snippets,
+        vaultPath: doc.vaultPath,
       });
     }
-
-    return { ok: true, vaultPath, query, hits, truncated: truncatedFiles || truncatedResults };
+    return { hits, truncated: truncatedFiles || truncatedResults };
   }
 
   /**
@@ -316,11 +363,8 @@ export class WikiSearchService {
    * tokens are folded in (weighted) so title relevance contributes to BM25.
    * Returns null only on unreadable/oversize files with no filename match.
    */
-  private async statDoc(
-    ref: { relativePath: string; absPath: string },
-    queryTerms: string[],
-  ): Promise<ScoredDoc | null> {
-    const { relativePath, absPath } = ref;
+  private async statDoc(ref: DocRef, queryTerms: string[]): Promise<ScoredDoc | null> {
+    const { vaultPath, relativePath, absPath } = ref;
     const filenameMatch = queryTerms.some((t) => relativePath.toLowerCase().includes(t));
 
     // Filename/title tokens, folded in with a weight.
@@ -353,8 +397,10 @@ export class WikiSearchService {
     if (content) tally(tokenize(content), 1);
 
     // Keep filename-only matches discoverable even with no body match.
-    if (length === 0) return filenameMatch ? { relativePath, absPath, filenameMatch, length: 1, termFreq } : null;
-    return { relativePath, absPath, filenameMatch, length, termFreq };
+    if (length === 0) {
+      return filenameMatch ? { vaultPath, relativePath, absPath, filenameMatch, length: 1, termFreq } : null;
+    }
+    return { vaultPath, relativePath, absPath, filenameMatch, length, termFreq };
   }
 
   /**

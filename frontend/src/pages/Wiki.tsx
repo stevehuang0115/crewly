@@ -166,6 +166,10 @@ interface WikiSearchHit {
   filenameMatch: boolean;
   matchCount: number;
   snippets: WikiSearchSnippet[];
+  /** Owning vault (all-vault search only). */
+  vaultPath?: string;
+  /** Owning vault label (all-vault search only). */
+  vaultLabel?: string;
 }
 
 interface WikiBacklinkSnippet {
@@ -297,6 +301,10 @@ export function Wiki(): JSX.Element {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchTruncated, setSearchTruncated] = useState(false);
+  // Search scope: false = current vault only, true = all vaults (merged ranking).
+  const [searchAll, setSearchAll] = useState(false);
+  // Cross-vault click-through: page to open once the target vault is selected.
+  const [pendingPage, setPendingPage] = useState<{ vaultPath: string; relativePath: string } | null>(null);
 
   const [backlinks, setBacklinks] = useState<WikiBacklink[] | null>(null);
   const [backlinksLoading, setBacklinksLoading] = useState(false);
@@ -435,13 +443,14 @@ export function Wiki(): JSX.Element {
   }, []);
 
   const loadSearch = useCallback(
-    async (vaultPath: string, q: string) => {
+    async (vaultPath: string, q: string, allVaults: boolean) => {
       setSearchLoading(true);
       setSearchError(null);
       try {
-        const res = await fetch(
-          `/api/wiki/search?vaultPath=${encodeURIComponent(vaultPath)}&q=${encodeURIComponent(q)}`,
-        );
+        const url = allVaults
+          ? `/api/wiki/search-all?q=${encodeURIComponent(q)}`
+          : `/api/wiki/search?vaultPath=${encodeURIComponent(vaultPath)}&q=${encodeURIComponent(q)}`;
+        const res = await fetch(url);
         const body = await res.json();
         if (!res.ok || !body.success) {
           throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -602,6 +611,14 @@ export function Wiki(): JSX.Element {
     setBacklinks(null);
   }, []);
 
+  // Open a cross-vault search hit once its target vault becomes active.
+  useEffect(() => {
+    if (pendingPage && selectedVault?.vaultPath === pendingPage.vaultPath) {
+      setSelectedPage(pendingPage.relativePath);
+      setPendingPage(null);
+    }
+  }, [pendingPage, selectedVault]);
+
   useEffect(() => {
     if (selectedVault) {
       loadTree(selectedVault.vaultPath);
@@ -622,9 +639,11 @@ export function Wiki(): JSX.Element {
     }
   }, [selectedVault, selectedPage, loadPage, loadBacklinks]);
 
-  // Debounced search — fires only after the user pauses typing.
+  // Debounced search — fires only after the user pauses typing. Re-runs when
+  // the scope toggle (this vault / all vaults) flips.
   useEffect(() => {
-    if (!selectedVault) return;
+    // All-vault search needs no selected vault; single-vault search does.
+    if (!searchAll && !selectedVault) return;
     const q = searchQuery.trim();
     if (q.length === 0) {
       setSearchHits(null);
@@ -633,10 +652,10 @@ export function Wiki(): JSX.Element {
       return;
     }
     const handle = setTimeout(() => {
-      loadSearch(selectedVault.vaultPath, q);
+      loadSearch(selectedVault?.vaultPath ?? '', q, searchAll);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(handle);
-  }, [searchQuery, selectedVault, loadSearch]);
+  }, [searchQuery, selectedVault, loadSearch, searchAll]);
 
   // Clear the active search whenever the user picks a different vault.
   useEffect(() => {
@@ -831,10 +850,12 @@ export function Wiki(): JSX.Element {
             <input
               type="text"
               className="wiki-search-input"
-              placeholder={selectedVault ? 'Search this vault…' : 'Pick a vault first'}
+              placeholder={
+                searchAll ? 'Search all vaults…' : selectedVault ? 'Search this vault…' : 'Pick a vault first'
+              }
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              disabled={!selectedVault}
+              disabled={!searchAll && !selectedVault}
               aria-label="Search wiki"
             />
             {searchQuery && (
@@ -848,6 +869,28 @@ export function Wiki(): JSX.Element {
               </button>
             )}
           </div>
+          <div className="wiki-search-scope" role="tablist" aria-label="Search scope">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!searchAll}
+              className={`wiki-search-scope-btn${!searchAll ? ' active' : ''}`}
+              onClick={() => setSearchAll(false)}
+              data-testid="search-scope-this"
+            >
+              This vault
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={searchAll}
+              className={`wiki-search-scope-btn${searchAll ? ' active' : ''}`}
+              onClick={() => setSearchAll(true)}
+              data-testid="search-scope-all"
+            >
+              All vaults
+            </button>
+          </div>
           {searchError && (
             <div className="wiki-error">
               <AlertCircle size={14} /> {searchError}
@@ -860,12 +903,21 @@ export function Wiki(): JSX.Element {
             <SearchResults
               hits={searchHits}
               selected={selectedPage}
-              onSelect={(rel) => {
+              showVault={searchAll}
+              onSelect={(rel, vaultPath) => {
                 // B-U4 (2026-05-27): clicking a search hit jumps to the
                 // page AND collapses search results back into tree view.
-                // Previously search list stayed open competing for the
-                // same pane, leaving the user with an ambiguous "am I
-                // browsing or searching?" state.
+                // For an all-vault hit in a DIFFERENT vault, switch to that
+                // vault first, then open the page once it's active.
+                if (vaultPath && vaultPath !== selectedVault?.vaultPath) {
+                  const target = vaults.find((v) => v.vaultPath === vaultPath);
+                  if (target) {
+                    switchVault(target);
+                    setPendingPage({ vaultPath, relativePath: rel });
+                    setSearchQuery('');
+                    return;
+                  }
+                }
                 setSelectedPage(rel);
                 setSearchQuery('');
               }}
@@ -1184,29 +1236,35 @@ function TreeView({
 interface SearchResultsProps {
   hits: WikiSearchHit[];
   selected: string | null;
-  onSelect: (relativePath: string) => void;
+  /** Show each hit's owning vault label (all-vault search). */
+  showVault?: boolean;
+  onSelect: (relativePath: string, vaultPath?: string) => void;
 }
 
 /**
- * Render the flat list of search hits returned by `/api/wiki/search`. Each
- * row is a single matching file with up to three snippet lines.
+ * Render the flat list of search hits returned by `/api/wiki/search[-all]`.
+ * Each row is a single matching file with up to three snippet lines; in
+ * all-vault mode each row is tagged with its owning vault.
  */
-function SearchResults({ hits, selected, onSelect }: SearchResultsProps): JSX.Element {
+function SearchResults({ hits, selected, showVault, onSelect }: SearchResultsProps): JSX.Element {
   return (
     <ul className="wiki-search-results">
       {hits.map((hit) => {
-        const active = selected === hit.relativePath;
+        const active = selected === hit.relativePath && !hit.vaultPath;
         return (
-          <li key={hit.relativePath}>
+          <li key={`${hit.vaultPath ?? ''}:${hit.relativePath}`}>
             <button
               type="button"
               className={`wiki-search-hit${active ? ' active' : ''}`}
-              onClick={() => onSelect(hit.relativePath)}
+              onClick={() => onSelect(hit.relativePath, hit.vaultPath)}
             >
               <div className="wiki-search-path">
                 <FileText size={13} /> {hit.relativePath}
                 {hit.matchCount > 0 && (
                   <span className="wiki-search-count"> · {hit.matchCount}</span>
+                )}
+                {showVault && hit.vaultLabel && (
+                  <span className="wiki-search-vault">{hit.vaultLabel}</span>
                 )}
               </div>
               {hit.snippets.length > 0 && (

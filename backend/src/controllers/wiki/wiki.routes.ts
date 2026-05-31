@@ -21,6 +21,7 @@ import {
   getVaultTree,
   getPage,
   searchVault,
+  searchAllVaults,
   listSopCatalog,
   installSop,
   uninstallSop,
@@ -73,6 +74,7 @@ export function createWikiRouter(): Router {
   router.get('/tree', getVaultTree);
   router.get('/page', getPage);
   router.get('/search', searchVault);
+  router.get('/search-all', searchAllVaults);
   // SOP catalog (marketplace): browse config/sops + install/uninstall per team.
   router.get('/sop-catalog', listSopCatalog);
   router.post('/sop-catalog/install', installSop);
