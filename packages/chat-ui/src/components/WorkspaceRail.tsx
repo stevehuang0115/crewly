@@ -108,6 +108,7 @@ function WorkspaceRow({
 }): JSX.Element {
   const initials = workspace.initials ?? deriveInitials(workspace.name);
   const isActivity = workspace.kind === 'activity';
+  const isHome = workspace.kind === 'home';
   const hasUnread = (workspace.unreadCount ?? 0) > 0;
 
   return (
@@ -119,8 +120,9 @@ function WorkspaceRow({
       data-nested={isNested ? 'true' : 'false'}
       data-kind={workspace.kind ?? 'team'}
       // Hover tooltip — the rail is icon-only when collapsed, so the 2-letter
-      // initials (e.g. "DM"/"CM") are otherwise opaque. Title reveals the name.
-      title={workspace.name}
+      // initials are otherwise opaque. Title reveals the name (or a richer
+      // tooltip override when provided).
+      title={workspace.tooltip ?? workspace.name}
       className={[
         'group relative mx-2 flex items-center gap-3 rounded-lg px-2 py-2 text-left transition',
         // Active state is full-width per §6.1, not just a tint.
@@ -140,13 +142,17 @@ function WorkspaceRow({
       <span
         aria-hidden="true"
         className={[
-          'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-sm font-semibold uppercase',
-          isActivity
-            ? 'bg-slate-700 text-slate-100'
-            : 'bg-gradient-to-br from-indigo-500 to-purple-600 text-white',
+          'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-semibold',
+          // Avatar glyph (emoji) is not uppercased; initials are.
+          workspace.avatar ? 'text-lg' : 'text-sm uppercase',
+          isHome
+            ? 'bg-slate-700 text-white ring-1 ring-slate-500'
+            : isActivity
+              ? 'bg-slate-700 text-slate-100'
+              : 'bg-gradient-to-br from-indigo-500 to-purple-600 text-white',
         ].join(' ')}
       >
-        {initials}
+        {workspace.avatar ?? initials}
       </span>
 
       {expanded && (

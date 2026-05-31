@@ -34,9 +34,27 @@ import {
   type CreateChannelInput,
   type MentionTarget,
 } from '@crewly/chat-ui';
-import { LiveTeamChatPage, __test__ } from './LiveTeamChatPage';
+import { LiveTeamChatPage, __test__, type ChatTeam } from './LiveTeamChatPage';
+import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
 
 const ISO = '2026-04-25T20:00:00.000Z';
+
+/** A product team used by the interaction tests so their channel is reachable. */
+const PRODUCT_TEAM: ChatTeam = {
+  id: 'team-product',
+  name: 'Crewly Product',
+  leaderSessions: [],
+  memberSessions: [],
+};
+/** A team channel that becomes the team's huddle (auto-selected on team view). */
+const TEAM_GENERAL: Channel = {
+  id: 'ch-general',
+  agentSession: '',
+  name: 'general',
+  createdAt: ISO,
+  type: 'channel',
+  teamId: 'team-product',
+};
 
 beforeEach(() => {
   // jsdom lacks scrollIntoView — patch it so MessageThread's auto-scroll
@@ -134,157 +152,125 @@ function makeStubClient(channels: Channel[], messages: Record<string, Message[]>
   };
 }
 
-describe('LiveTeamChatPage — Phase C acceptance', () => {
-  it('AC#5: WorkspaceRail renders one entry per observed teamId', async () => {
-    const channels: Channel[] = [
-      {
-        id: 'ch-product-general',
-        agentSession: '',
-        name: 'general',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-product',
-      },
-      {
-        id: 'ch-product-onboarding',
-        agentSession: '',
-        name: 'proj-onboarding',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-product',
-      },
-      {
-        id: 'ch-marketing-general',
-        agentSession: '',
-        name: 'general',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-marketing',
-      },
-    ];
-    const { client } = makeStubClient(channels);
+describe('LiveTeamChatPage — workspace rail IA', () => {
+  const orcDm: Channel = {
+    id: 'orc-dm',
+    agentSession: ORCHESTRATOR_SESSION,
+    name: 'Orchestrator',
+    createdAt: ISO,
+    type: 'dm',
+    presence: 'online',
+  };
 
+  it('rail shows Home + orchestrator + one icon per team', async () => {
+    const { client } = makeStubClient([orcDm]);
     render(
       <LiveTeamChatPage
         client={client}
-        teamLabels={{ 'team-product': 'Crewly Product', 'team-marketing': 'Crewly Marketing' }}
         mentionables={MENTIONABLES}
+        teams={[
+          PRODUCT_TEAM,
+          { id: 'team-marketing', name: 'Crewly Marketing', leaderSessions: [], memberSessions: [] },
+        ]}
       />,
     );
-
-    await waitFor(() => {
-      expect(screen.getByTestId('workspace-row-team-product')).toBeInTheDocument();
-      expect(screen.getByTestId('workspace-row-team-marketing')).toBeInTheDocument();
-    });
-    // Two unique teamIds → exactly two rail entries (despite three channels).
-    expect(screen.queryAllByTestId(/^workspace-row-/).length).toBe(2);
+    await waitFor(() => expect(screen.getByTestId('workspace-row-home')).toBeInTheDocument());
+    expect(screen.getByTestId('workspace-row-orc')).toBeInTheDocument();
+    expect(screen.getByTestId('workspace-row-team:team-product')).toBeInTheDocument();
+    expect(screen.getByTestId('workspace-row-team:team-marketing')).toBeInTheDocument();
+    // home + orc + 2 teams
+    expect(screen.queryAllByTestId(/^workspace-row-/).length).toBe(4);
   });
 
-  it('AC#3 + AC#4: groups channels vs DMs by `type` and uses correct `kind`', async () => {
+  it('Home shows the orchestrator by default (top, pinned group)', async () => {
+    const { client } = makeStubClient([orcDm]);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+    await waitFor(() => expect(screen.getByTestId('conv-group-pinned')).toBeInTheDocument());
+    expect(screen.getByTestId('conv-row-orc-dm')).toBeInTheDocument();
+  });
+
+  it('renders Home (no dead-end) even with zero channels', async () => {
+    const { client } = makeStubClient([]);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+    await waitFor(() => expect(screen.getByTestId('team-chat-page')).toBeInTheDocument());
+    expect(screen.getByTestId('workspace-row-home')).toBeInTheDocument();
+    expect(screen.queryByTestId('empty-no-teams')).not.toBeInTheDocument();
+  });
+
+  it('a selected team shows huddle → lead → members, lead first', async () => {
     const channels: Channel[] = [
-      {
-        id: 'ch-general',
-        agentSession: '',
-        name: 'general',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-product',
-      },
-      {
-        id: 'dm-sam',
-        agentSession: 'crewly-product-sam',
-        name: 'Sam',
-        createdAt: ISO,
-        type: 'dm',
-        targetMemberId: 'member-sam',
-        presence: 'online',
-      },
+      orcDm,
+      TEAM_GENERAL,
+      { id: 'dm-maya', agentSession: 'sess-maya', name: 'Maya', createdAt: ISO, type: 'dm', presence: 'online' },
+      { id: 'dm-alex', agentSession: 'sess-alex', name: 'Alex', createdAt: ISO, type: 'dm', presence: 'online' },
     ];
     const { client } = makeStubClient(channels);
-
-    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Channels')).toBeInTheDocument();
-      expect(screen.getByText('Direct Messages')).toBeInTheDocument();
-    });
-    // Channel row uses kind=channel, DM row uses kind=dm — verified via the
-    // data-kind attribute the panel already emits.
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        teams={[
+          {
+            id: 'team-product',
+            name: 'Crewly Product',
+            leaderSessions: ['sess-maya'],
+            memberSessions: ['sess-maya', 'sess-alex'],
+          },
+        ]}
+        initialWorkspaceId="team:team-product"
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('conv-group-team-huddle')).toBeInTheDocument());
     expect(screen.getByTestId('conv-row-ch-general')).toHaveAttribute('data-kind', 'channel');
-    expect(screen.getByTestId('conv-row-dm-sam')).toHaveAttribute('data-kind', 'dm');
+    expect(screen.getByTestId('conv-group-team-lead')).toBeInTheDocument();
+    expect(screen.getByTestId('conv-group-team-members')).toBeInTheDocument();
+    // Lead (Maya) renders before member (Alex).
+    const lead = screen.getByTestId('conv-row-dm-maya');
+    const member = screen.getByTestId('conv-row-dm-alex');
+    expect(lead.compareDocumentPosition(member) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('AC#1: MentionComposer onSend posts a string[] of mention IDs', async () => {
-    const channels: Channel[] = [
-      {
-        id: 'ch-general',
-        agentSession: '',
-        name: 'general',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-product',
-      },
-    ];
-    const { client, sendCalls } = makeStubClient(channels);
-
-    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} />);
-
-    // Wait for the composer to mount.
+    const { client, sendCalls } = makeStubClient([TEAM_GENERAL]);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        teams={[PRODUCT_TEAM]}
+        initialWorkspaceId="team:team-product"
+      />,
+    );
     const textarea = await screen.findByTestId('mention-textarea');
-
-    // Type a partial trigger so the popover opens, then click a team
-    // suggestion to insert a chip.
     await userEvent.type(textarea, '@');
     await userEvent.click(await screen.findByTestId('mention-suggestion-team-product'));
-
-    // Type more content + insert a second chip (agent).
     await userEvent.type(textarea, ' help me reach @');
     await userEvent.click(screen.getByTestId('mention-suggestion-agent-sam'));
-
-    // Hit send.
     await userEvent.click(screen.getByTestId('mention-send'));
 
     await waitFor(() => expect(sendCalls).toHaveLength(1));
     expect(sendCalls[0].channelId).toBe('ch-general');
-    // Mentions array on the wire is exactly the ids — never the labels,
-    // never null. Order = insertion order.
     expect(sendCalls[0].input.mentions).toEqual(['team-product', 'agent-sam']);
   });
 
   it('AC#1: empty mentions array is produced when no chips are inserted', async () => {
-    const channels: Channel[] = [
-      {
-        id: 'ch-general',
-        agentSession: '',
-        name: 'general',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-product',
-      },
-    ];
-    const { client, sendCalls } = makeStubClient(channels);
-
-    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} />);
+    const { client, sendCalls } = makeStubClient([TEAM_GENERAL]);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        teams={[PRODUCT_TEAM]}
+        initialWorkspaceId="team:team-product"
+      />,
+    );
     const textarea = await screen.findByTestId('mention-textarea');
     await userEvent.type(textarea, 'hello world');
     await userEvent.click(screen.getByTestId('mention-send'));
 
     await waitFor(() => expect(sendCalls).toHaveLength(1));
-    // Empty array — never null.
     expect(sendCalls[0].input.mentions).toEqual([]);
   });
 
   it('AC#2: incoming messages with threadId surface the "Reply in thread" affordance', async () => {
-    const channels: Channel[] = [
-      {
-        id: 'ch-general',
-        agentSession: '',
-        name: 'general',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-product',
-      },
-    ];
     const messagesById: Record<string, Message[]> = {
       'ch-general': [
         {
@@ -308,24 +294,19 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
         },
       ],
     };
-    const { client } = makeStubClient(channels, messagesById);
-
-    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} />);
-    // The page reads the threadId off the timeline and offers the entry chip.
+    const { client } = makeStubClient([TEAM_GENERAL], messagesById);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        teams={[PRODUCT_TEAM]}
+        initialWorkspaceId="team:team-product"
+      />,
+    );
     expect(await screen.findByTestId('thread-enter')).toBeInTheDocument();
   });
 
   it('AC#2: composer sends `threadId: <root msg id>` after entering thread mode', async () => {
-    const channels: Channel[] = [
-      {
-        id: 'ch-general',
-        agentSession: '',
-        name: 'general',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-product',
-      },
-    ];
     const messagesById: Record<string, Message[]> = {
       'ch-general': [
         {
@@ -340,9 +321,15 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
         },
       ],
     };
-    const { client, sendCalls } = makeStubClient(channels, messagesById);
-
-    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} />);
+    const { client, sendCalls } = makeStubClient([TEAM_GENERAL], messagesById);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        teams={[PRODUCT_TEAM]}
+        initialWorkspaceId="team:team-product"
+      />,
+    );
     await userEvent.click(await screen.findByTestId('thread-enter'));
     expect(screen.getByTestId('thread-reply-banner')).toBeInTheDocument();
 
@@ -355,17 +342,7 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
   });
 
   it('AC#2: validation_error 400 surfaces as a toast that is dismissable', async () => {
-    const channels: Channel[] = [
-      {
-        id: 'ch-general',
-        agentSession: '',
-        name: 'general',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-product',
-      },
-    ];
-    const { client, injectError } = makeStubClient(channels);
+    const { client, injectError } = makeStubClient([TEAM_GENERAL]);
     injectError(
       new ChatApiError({
         code: 'validation_error',
@@ -373,8 +350,14 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
         message: 'threadId references a non-existent message',
       }),
     );
-
-    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} />);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        teams={[PRODUCT_TEAM]}
+        initialWorkspaceId="team:team-product"
+      />,
+    );
     await userEvent.type(await screen.findByTestId('mention-textarea'), 'hi');
     await userEvent.click(screen.getByTestId('mention-send'));
 
@@ -384,157 +367,39 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
       'threadId references a non-existent message',
     );
 
-    // Dismiss clears the toast.
     await userEvent.click(screen.getByTestId('chat-error-toast-dismiss'));
     await waitFor(() => {
       expect(screen.queryByTestId('chat-error-toast')).not.toBeInTheDocument();
     });
   });
 
-  it('mounts the NoTeamsEmptyState when the BE returns zero channels', async () => {
-    const { client } = makeStubClient([]);
-    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} />);
-    expect(await screen.findByTestId('empty-no-teams')).toBeInTheDocument();
-  });
-
-  it('renders without crashing when the MockChatApiClient default seed is used', async () => {
-    // The default seed has DM-only channels; the workspace rail should
-    // be empty (no observed teamIds) and the page renders the
-    // NoTeamsEmptyState. This is a smoke-test for the dev path.
-    render(
-      <LiveTeamChatPage
-        client={new MockChatApiClient()}
-        mentionables={MENTIONABLES}
-      />,
-    );
-    await waitFor(() =>
-      expect(screen.getByTestId('empty-no-teams')).toBeInTheDocument(),
-    );
-  });
-
-  it('injects a Direct Messages workspace when the user has DMs (rail shown alongside a team)', async () => {
-    // A team channel + a DM → two workspaces, so the rail is visible and we
-    // can assert the synthetic DM workspace was prepended.
+  it('surfaces Slack threads in a collapsed Slack section under Home, labeled by time', async () => {
+    const slackId = 'slack-D0AC7NF5N7L-1777760999-956969';
     const channels: Channel[] = [
-      {
-        id: 'ch-team',
-        agentSession: '',
-        name: 'general',
-        createdAt: ISO,
-        type: 'channel',
-        teamId: 'team-x',
-      },
-      {
-        id: 'orc-dm',
-        agentSession: 'crewly-orc',
-        name: 'Orchestrator',
-        createdAt: ISO,
-        type: 'dm',
-        presence: 'online',
-      },
+      orcDm,
+      { id: slackId, agentSession: ORCHESTRATOR_SESSION, name: slackId, createdAt: ISO, type: 'dm', presence: 'online' },
     ];
     const { client } = makeStubClient(channels);
-    render(
-      <LiveTeamChatPage
-        client={client}
-        mentionables={MENTIONABLES}
-        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
-      />,
-    );
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
 
-    await waitFor(() => {
-      expect(screen.getByTestId('workspace-row-__direct__')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('workspace-row-team-x')).toBeInTheDocument();
-  });
-
-  it('shows directory agents (online + offline) even without an existing DM channel', async () => {
-    // No channels at all — agents come purely from the directory.
-    const { client } = makeStubClient([]);
-    render(
-      <LiveTeamChatPage
-        client={client}
-        mentionables={MENTIONABLES}
-        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
-        directoryAgents={[
-          { agentSession: 'sess-ella', name: 'Ella', presence: 'online' },
-          { agentSession: 'sess-grace', name: 'Grace', presence: 'offline' },
-        ]}
-        onEnsureDm={async () => 'real-chan'}
-      />,
-    );
-    // Both agents are listed despite having no channel yet.
-    expect(await screen.findByText('Ella')).toBeInTheDocument();
-    expect(screen.getByText('Grace')).toBeInTheDocument();
-    expect(screen.queryByTestId('empty-no-teams')).not.toBeInTheDocument();
-  });
-
-  it('groups the DM list into per-team sections when agents carry a team', async () => {
-    const { client } = makeStubClient([]);
-    render(
-      <LiveTeamChatPage
-        client={client}
-        mentionables={MENTIONABLES}
-        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
-        directoryAgents={[
-          { agentSession: 's-ella', name: 'Ella', presence: 'online', teamName: 'Content' },
-          { agentSession: 's-luna', name: 'Luna', presence: 'offline', teamName: 'Content' },
-          { agentSession: 's-grace', name: 'Grace', presence: 'offline', teamName: 'Sales' },
-        ]}
-        onEnsureDm={async () => 'real-chan'}
-      />,
-    );
-    // Team sections nest under a "Teams" parent, each with its agents.
-    expect(await screen.findByText('Teams')).toBeInTheDocument();
-    expect(screen.getByText('Content')).toBeInTheDocument();
-    expect(screen.getByText('Sales')).toBeInTheDocument();
-    expect(screen.getByText('Ella')).toBeInTheDocument();
-    expect(screen.getByText('Luna')).toBeInTheDocument();
-    expect(screen.getByText('Grace')).toBeInTheDocument();
-  });
-
-  it('surfaces Slack threads in a collapsed Slack section, labeled by thread time', async () => {
-    const channels: Channel[] = [
-      {
-        // Legacy id-named thread: slack-<channel>-<tsSeconds>-<tsMicros>.
-        id: 'slack-D0AC7NF5N7L-1777760999-956969',
-        agentSession: 'crewly-orc',
-        name: 'slack-D0AC7NF5N7L-1777760999-956969',
-        createdAt: ISO,
-        type: 'dm',
-        presence: 'online',
-      },
-    ];
-    const { client } = makeStubClient(channels);
-    render(
-      <LiveTeamChatPage
-        client={client}
-        mentionables={MENTIONABLES}
-        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
-      />,
-    );
-    // The Slack section header is present, collapsed by default.
     const toggle = await screen.findByTestId('conv-group-toggle-slack');
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByTestId('conv-row-slack-D0AC7NF5N7L-1777760999-956969')).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`conv-row-${slackId}`)).not.toBeInTheDocument();
 
-    // Expanding it reveals the thread, labeled by its start time (not the
-    // identical channel id) so multiple threads are distinguishable.
     fireEvent.click(toggle);
-    expect(
-      await screen.findByTestId('conv-row-slack-D0AC7NF5N7L-1777760999-956969'),
-    ).toBeInTheDocument();
+    expect(await screen.findByTestId(`conv-row-${slackId}`)).toBeInTheDocument();
     expect(screen.getAllByText(/Slack thread ·/).length).toBeGreaterThan(0);
   });
 
-  it('calls onEnsureDm when a directory agent without a channel is opened', async () => {
+  it('calls onEnsureDm when a team member without a channel is opened', async () => {
     const onEnsureDm = vi.fn().mockResolvedValue('real-chan');
     const { client } = makeStubClient([]);
     render(
       <LiveTeamChatPage
         client={client}
         mentionables={MENTIONABLES}
-        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
+        teams={[{ id: 'team-x', name: 'Team X', leaderSessions: [], memberSessions: ['sess-ella'] }]}
+        initialWorkspaceId="team:team-x"
         directoryAgents={[{ agentSession: 'sess-ella', name: 'Ella', presence: 'offline' }]}
         onEnsureDm={onEnsureDm}
       />,
@@ -544,62 +409,10 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
     await waitFor(() => expect(onEnsureDm).toHaveBeenCalledWith('sess-ella'));
   });
 
-  it('does not inject the DM workspace when the user has no DM channels', async () => {
-    // Two team channels, no DMs → two team workspaces, no DM workspace.
-    const channels: Channel[] = [
-      { id: 'ch-a', agentSession: '', name: 'general', createdAt: ISO, type: 'channel', teamId: 'team-a' },
-      { id: 'ch-b', agentSession: '', name: 'general', createdAt: ISO, type: 'channel', teamId: 'team-b' },
-    ];
-    const { client } = makeStubClient(channels);
-    render(
-      <LiveTeamChatPage
-        client={client}
-        mentionables={MENTIONABLES}
-        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
-      />,
-    );
-
-    await waitFor(() =>
-      expect(screen.getByTestId('workspace-row-team-a')).toBeInTheDocument(),
-    );
-    expect(screen.queryByTestId('workspace-row-__direct__')).not.toBeInTheDocument();
-  });
-
-  it('hides the workspace rail and dedupes the header when only the DM workspace exists', async () => {
-    // DM-only → a single workspace → Slack-style 3-column layout (no rail).
-    const channels: Channel[] = [
-      {
-        id: 'orc-dm',
-        agentSession: 'crewly-orc',
-        name: 'Orchestrator',
-        createdAt: ISO,
-        type: 'dm',
-        presence: 'online',
-      },
-    ];
-    const { client } = makeStubClient(channels);
-    render(
-      <LiveTeamChatPage
-        client={client}
-        mentionables={MENTIONABLES}
-        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByTestId('team-chat-page')).toBeInTheDocument());
-    // No workspace rail when there's a single workspace.
-    expect(screen.queryAllByTestId(/^workspace-row-/).length).toBe(0);
-    // The orchestrator DM is reachable (not the no-teams dead-end).
-    expect(screen.queryByTestId('empty-no-teams')).not.toBeInTheDocument();
-    expect(screen.getAllByText('Orchestrator').length).toBeGreaterThan(0);
-    // Orchestrator is pinned by default → surfaces under "Pinned Chats".
-    expect(screen.getByText('Pinned Chats')).toBeInTheDocument();
-  });
-
-  it('pins the orchestrator by default and lets you unpin it', async () => {
+  it('pinning a team member surfaces them under Home', async () => {
     window.localStorage.clear();
     const channels: Channel[] = [
-      { id: 'orc-dm', agentSession: 'crewly-orc', name: 'Orchestrator', createdAt: ISO, type: 'dm', presence: 'online' },
+      orcDm,
       { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', presence: 'online' },
     ];
     const { client } = makeStubClient(channels);
@@ -607,14 +420,15 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
       <LiveTeamChatPage
         client={client}
         mentionables={MENTIONABLES}
-        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
+        teams={[{ id: 'team-x', name: 'Team X', leaderSessions: [], memberSessions: ['sess-ella'] }]}
+        initialWorkspaceId="team:team-x"
       />,
     );
-    // Orchestrator pinned by default → Pinned Chats section present; Ella isn't pinned.
-    await waitFor(() => expect(screen.getByTestId('conv-group-pinned')).toBeInTheDocument());
-    // Unpin the orchestrator via its pin toggle.
-    fireEvent.click(screen.getByTestId('conv-pin-orc-dm'));
-    await waitFor(() => expect(screen.queryByTestId('conv-group-pinned')).not.toBeInTheDocument());
+    // Pin Ella from the team view, then switch to Home — she appears under Pinned.
+    await waitFor(() => expect(screen.getByTestId('conv-pin-dm-ella')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('conv-pin-dm-ella'));
+    fireEvent.click(screen.getByTestId('workspace-row-home'));
+    await waitFor(() => expect(screen.getByTestId('conv-row-dm-ella')).toBeInTheDocument());
   });
 });
 
