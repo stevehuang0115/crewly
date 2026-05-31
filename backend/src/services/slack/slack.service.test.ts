@@ -12,6 +12,17 @@ import { EventEmitter } from 'events';
 const mockBoltStart = jest.fn().mockResolvedValue(undefined);
 const mockBoltStop = jest.fn().mockResolvedValue(undefined);
 
+// Capture chat-v2 mirror calls for the outbound-record test. The mirror
+// dynamic-imports this singleton; jest intercepts that import.
+const mockEnsureLegacyChannel = jest.fn(() => ({ id: 'chan-slack', agentSession: 'crewly-orc' }));
+const mockRecordTurn = jest.fn(() => ({ message: { id: 'm1' } }));
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: () => ({
+    ensureChannelForLegacyConversation: mockEnsureLegacyChannel,
+    recordTurn: mockRecordTurn,
+  }),
+}));
+
 jest.mock('@slack/bolt', () => ({
   App: jest.fn().mockImplementation(() => ({
     client: {
@@ -94,6 +105,38 @@ describe('SlackService', () => {
       await expect(
         service.sendMessage({ channelId: 'C123', text: 'test' })
       ).rejects.toThrow('Slack client not initialized');
+    });
+
+    it('mirrors a threaded outbound reply into chat-v2 as an agent message', async () => {
+      mockEnsureLegacyChannel.mockClear();
+      mockRecordTurn.mockClear();
+      const service = new SlackService();
+      (service as any).client = {
+        chat: { postMessage: jest.fn().mockResolvedValue({ ts: '111.222' }) },
+      };
+
+      await service.sendMessage({ channelId: 'C123', text: 'agent reply', threadTs: '100.000' });
+      // Mirror is fire-and-forget (dynamic imports) — flush microtasks.
+      await new Promise((r) => setImmediate(r));
+
+      expect(mockEnsureLegacyChannel).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: 'slack-C123-100-000' }),
+      );
+      expect(mockRecordTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ channelId: 'chan-slack', senderType: 'agent', content: 'agent reply' }),
+      );
+    });
+
+    it('does not mirror a non-threaded outbound message', async () => {
+      mockRecordTurn.mockClear();
+      const service = new SlackService();
+      (service as any).client = {
+        chat: { postMessage: jest.fn().mockResolvedValue({ ts: '111.222' }) },
+      };
+
+      await service.sendMessage({ channelId: 'C123', text: 'top-level' });
+      await new Promise((r) => setImmediate(r));
+      expect(mockRecordTurn).not.toHaveBeenCalled();
     });
 
     it('should throw when updateMessage called without initialization', async () => {
