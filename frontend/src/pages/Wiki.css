@@ -279,6 +279,24 @@
   margin-left: auto;
 }
 
+/* Tree group labels — separate the canonical (frozen) source-of-truth folders
+   from the working / llm-curated notes so they no longer read as "scattered". */
+.wiki-tree-group-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary, #6b7280);
+  padding: 10px 8px 4px;
+}
+
+.wiki-tree-group-label:first-child {
+  padding-top: 4px;
+}
+
 /* Search */
 
 .wiki-search-bar {
