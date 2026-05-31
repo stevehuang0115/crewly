@@ -5,7 +5,7 @@ import { Team, TeamMember, TeamMemberStatusChangeEvent } from '../types/index';
 import { useTerminal } from '../contexts/TerminalContext';
 import { StartTeamModal } from '../components/StartTeamModal';
 import { TeamModal } from '../components/Modals/TeamModal';
-import { TeamHeader, TeamOverview, TeamStatus, AgentDetailModal } from '../components/TeamDetail';
+import { TeamHeader, TeamOverview, TeamStatus, AgentDetailModal, TeamObjectives } from '../components/TeamDetail';
 import { HierarchyDashboard } from '../components/Hierarchy';
 import { ExecutionFeed } from '../components/ExecutionFeed';
 import { useAlert, useConfirm } from '../components/UI/Dialog';
@@ -653,6 +653,11 @@ export const TeamDetail: React.FC = () => {
         onViewAgent={handleViewAgent}
         isStartingTeam={startTeamLoading}
       />
+
+      {/* Mission / OKR + Team Knowledge (norms & SOPs in the wiki) */}
+      <div className="mt-6">
+        <TeamObjectives teamId={id!} />
+      </div>
 
       {/* Execution Feed — real-time agent activity for this team */}
       <div className="mt-6">
