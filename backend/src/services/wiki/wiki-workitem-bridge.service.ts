@@ -335,6 +335,13 @@ export class WikiWorkItemBridgeService {
   /** Start the periodic scan. Idempotent. Fires an immediate tick. */
   start(): void {
     if (this.timer) return;
+    // Off-switch (ops kill-switch). Set WIKI_BRIDGE_ENABLED=false to pause all
+    // wiki maintenance dispatch (drain/migrate/cleanup) without a code change
+    // or losing the feature — e.g. to stop a runaway loop while a fix ships.
+    if (process.env['WIKI_BRIDGE_ENABLED'] === 'false') {
+      this.logger.warn('WikiWorkItemBridge disabled via WIKI_BRIDGE_ENABLED=false — not starting');
+      return;
+    }
     void this.tick();
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.logger.info('WikiWorkItemBridge started', {
@@ -529,6 +536,12 @@ export class WikiWorkItemBridgeService {
     const inflightCleanupVaults = new Set<string>();
     const allItems = await this.pool.getAllItems();
     for (const wi of allItems) {
+      // Terminal WIs don't block re-creation here BY DESIGN (e.g. draining the
+      // next queue chunk after the prior drain completes). The per-key cooldown
+      // (default 30 min, persisted) is what spaces successive creates; the
+      // "terminal tasks reviving" the orc saw was the reconciler redeliver
+      // flood + the orc-notes self-loop, fixed separately (reconciler cooldown
+      // + cleanup author guard), not a gap here.
       if (TERMINAL_STATUSES.has(wi.status)) continue;
       const meta = wi.metadata ?? {};
       const kind = meta['kind'];

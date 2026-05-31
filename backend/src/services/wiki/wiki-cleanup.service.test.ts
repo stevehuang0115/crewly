@@ -99,6 +99,26 @@ describe('WikiCleanupService.scan', () => {
     await fs.rm(vault, { recursive: true });
   });
 
+  it('never flags the orchestrator’s own notes for cleanup (self-loop guard)', async () => {
+    // Root cause B: orc notes mis-filed into a (customer) vault, flagged
+    // low-quality, re-dispatched as cleanup → orc writes more → loop. The
+    // orc-authored page must be excluded even though its confidence is low.
+    const vault = await makeVault([
+      { relPath: 'llm-curated/patterns/orc-note.md', confidence: 0.2, originalAuthor: 'crewly-orc', originalId: 'orc-1' },
+      { relPath: 'llm-curated/patterns/user-junk.md', confidence: 0.2, originalAuthor: 'alice', originalId: 'usr-1' },
+    ]);
+
+    const result = await WikiCleanupService.getInstance().scan({
+      vaultPath: vault,
+      rules: { minConfidence: 0.5, dropAgentMemoryDumps: false },
+    });
+
+    if (!result.ok || !('candidates' in result)) throw new Error('expected scan result');
+    // Only the non-orc low-confidence page is a candidate.
+    expect(result.candidates.map((c) => c.relPath)).toEqual(['llm-curated/patterns/user-junk.md']);
+    await fs.rm(vault, { recursive: true });
+  });
+
   it('flags pages migrated_from "agent/.../memory.json"', async () => {
     const vault = await makeVault([
       { relPath: 'llm-curated/patterns/a.md', migratedFrom: 'agent/crewly-orc/memory.json', confidence: 0.9, originalId: 'mem-a' },

@@ -35,6 +35,7 @@ import * as path from 'path';
 import { existsSync } from 'fs';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -208,6 +209,16 @@ export class WikiCleanupService {
 
     for (const page of allPages) {
       const fm = page.frontmatter;
+
+      // SELF-LOOP GUARD (root cause B): never auto-flag the orchestrator's own
+      // notes for cleanup. The orc's working notes were mis-filed into customer
+      // vaults, flagged low-quality, and dispatched back to the orc as cleanup
+      // → it wrote more notes → re-filed → re-flagged (a self-reinforcing
+      // loop). Excluding orc-authored pages breaks that loop. (The durable fix
+      // is upstream: stop routing internal orc notes into customer KBs.)
+      const author = typeof fm['original_author'] === 'string' ? fm['original_author'] : null;
+      if (author === ORCHESTRATOR_SESSION_NAME) continue;
+
       const reasons: string[] = [];
 
       const conf = parseConfidence(fm['confidence']);
@@ -243,6 +254,7 @@ export class WikiCleanupService {
         const fm = page.frontmatter;
         const author = typeof fm['original_author'] === 'string' ? fm['original_author'] : null;
         if (!author) continue;
+        if (author === ORCHESTRATOR_SESSION_NAME) continue; // self-loop guard (see first pass)
         const conf = parseConfidence(fm['confidence']) ?? 0;
         const date = typeof fm['original_date'] === 'string' ? fm['original_date'] : '';
         const arr = byAuthor.get(author) ?? [];
