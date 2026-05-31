@@ -44,6 +44,7 @@ import {
   type ChatApiError,
   type Channel,
   type ChatPresenceStatus,
+  type ConversationGroup,
   type ConversationRow,
   type MentionComposerSendPayload,
   type MentionTarget,
@@ -174,6 +175,16 @@ function pinKeyOf(row: ConversationRow): string {
   return row.agentSession || row.id;
 }
 
+/** Count rows in a group including nested sub-groups. */
+function countGroupRows(group: ConversationGroup): number {
+  return group.rows.length + (group.subGroups?.reduce((a, g) => a + countGroupRows(g), 0) ?? 0);
+}
+
+/** Flatten all rows across groups + nested sub-groups, in render order. */
+function flattenRows(groups: ConversationGroup[]): ConversationRow[] {
+  return groups.flatMap((g) => [...g.rows, ...flattenRows(g.subGroups ?? [])]);
+}
+
 function LiveTeamChatPageBody({
   teamLabels,
   mentionables,
@@ -283,36 +294,40 @@ function LiveTeamChatPageBody({
       }
     }
 
-    const teamSections = [...byTeam.entries()]
+    const teamSections: ConversationGroup[] = [...byTeam.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([team, rows]) => ({ id: `dm-team:${team}`, label: team, rows }));
 
-    // Preserve original order (channels, huddles) then DMs: orchestrator/
-    // teamless DMs first, then per-team sections.
-    return baseGroups.flatMap((g) => {
+    // Per-team sections nest under a single collapsible "Teams" parent.
+    // Order: channels, huddles, teamless DMs, then Teams.
+    return baseGroups.flatMap<ConversationGroup>((g) => {
       if (g.id !== 'dms') return [g];
-      const out = [];
+      const out: ConversationGroup[] = [];
       if (noTeam.length > 0) out.push({ id: 'dms', label: 'Direct Messages', rows: noTeam });
-      out.push(...teamSections);
+      if (teamSections.length > 0) {
+        out.push({ id: 'teams', label: 'Teams', rows: [], subGroups: teamSections });
+      }
       return out;
     });
   }, [baseGroups, sessionToTeam]);
 
   // Lift pinned conversations into a top "Pinned Chats" section, removing them
-  // from their normal section so they appear once. Orchestrator is pinned by
-  // default (see usePinnedChats); the user can pin/unpin any DM or huddle.
+  // from their normal section (including nested team sub-groups) so they appear
+  // once. Orchestrator is pinned by default; the user can pin/unpin any chat.
   const groups = useMemo(() => {
     const pinnedRows: ConversationRow[] = [];
-    const pruned = sectioned
-      .map((g) => {
-        const keep: ConversationRow[] = [];
-        for (const r of g.rows) {
-          if (pinnedChats.isPinned(pinKeyOf(r))) pinnedRows.push(r);
-          else keep.push(r);
-        }
-        return { ...g, rows: keep };
-      })
-      .filter((g) => g.rows.length > 0);
+    const prune = (g: ConversationGroup): ConversationGroup => {
+      const keep: ConversationRow[] = [];
+      for (const r of g.rows) {
+        if (pinnedChats.isPinned(pinKeyOf(r))) pinnedRows.push(r);
+        else keep.push(r);
+      }
+      const subs = (g.subGroups ?? [])
+        .map(prune)
+        .filter((sg) => countGroupRows(sg) > 0);
+      return { ...g, rows: keep, subGroups: subs.length > 0 ? subs : undefined };
+    };
+    const pruned = sectioned.map(prune).filter((g) => countGroupRows(g) > 0);
     if (pinnedRows.length === 0) return pruned;
     return [{ id: 'pinned', label: 'Pinned Chats', rows: pinnedRows }, ...pruned];
   }, [sectioned, pinnedChats]);
@@ -328,7 +343,7 @@ function LiveTeamChatPageBody({
   // click, which creates the DM first.
   const resolvedConversationId =
     activeConversationId ??
-    groups.flatMap((g) => g.rows).find((r) => !r.id.startsWith(VIRTUAL_DM_PREFIX))?.id ??
+    flattenRows(groups).find((r) => !r.id.startsWith(VIRTUAL_DM_PREFIX))?.id ??
     null;
 
   const handleSelectWorkspace = useCallback((ws: Workspace) => {
@@ -370,13 +385,10 @@ function LiveTeamChatPageBody({
     () => workspaces.find((w) => w.id === resolvedWorkspaceId) ?? null,
     [workspaces, resolvedWorkspaceId],
   );
-  const activeConversation = useMemo(() => {
-    for (const g of groups) {
-      const found = g.rows.find((r) => r.id === resolvedConversationId);
-      if (found) return found;
-    }
-    return undefined;
-  }, [groups, resolvedConversationId]);
+  const activeConversation = useMemo(
+    () => flattenRows(groups).find((r) => r.id === resolvedConversationId),
+    [groups, resolvedConversationId],
+  );
 
   // §9.1 — no workspaces visible at all (e.g. brand-new account).
   if (workspaces.length === 0 && !channelsLoading) {
