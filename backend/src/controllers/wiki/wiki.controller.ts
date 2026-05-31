@@ -31,6 +31,10 @@ import { WikiLintService } from '../../services/wiki/wiki-lint.service.js';
 import { WikiRecentService } from '../../services/wiki/wiki-recent.service.js';
 import { WikiMigrateService } from '../../services/wiki/wiki-migrate.service.js';
 import { WikiCleanupService } from '../../services/wiki/wiki-cleanup.service.js';
+import {
+  overlayRootFor,
+  resolveOverlayFilePath,
+} from '../../services/wiki/wiki-overlay.resolver.js';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
@@ -735,6 +739,57 @@ export async function getVaultTree(
     }
 
     let scanned = 0;
+
+    /**
+     * Walk an external overlay source dir (e.g. config/sops), producing nodes
+     * whose relativePath is rooted under `relPrefix` so the page endpoint can
+     * read them back through the same overlay. All nodes are marked frozen
+     * (read-through, read-only).
+     */
+    const buildOverlayTree = async (
+      absDir: string,
+      relPrefix: string,
+    ): Promise<WikiTreeNode[]> => {
+      const out: WikiTreeNode[] = [];
+      let entries: import('fs').Dirent[];
+      try {
+        entries = await fs.readdir(absDir, { withFileTypes: true });
+      } catch {
+        return [];
+      }
+      for (const entry of entries) {
+        if (scanned >= MAX_TREE_ENTRIES) break;
+        if (entry.name.startsWith('.')) continue;
+        scanned++;
+        const abs = path.join(absDir, entry.name);
+        const rel = `${relPrefix}/${entry.name}`;
+        if (entry.isDirectory()) {
+          out.push({
+            name: entry.name,
+            relativePath: rel,
+            type: 'directory',
+            frozen: true,
+            children: (await buildOverlayTree(abs, rel)).sort((a, b) => sortTree(a, b)),
+          });
+        } else if (entry.isFile() && entry.name.endsWith('.md')) {
+          try {
+            const stat = await fs.stat(abs);
+            out.push({
+              name: entry.name,
+              relativePath: rel,
+              type: 'file',
+              frozen: true,
+              bytes: stat.size,
+              modifiedAt: new Date(stat.mtimeMs).toISOString(),
+            });
+          } catch {
+            // ignore unreadable file
+          }
+        }
+      }
+      return out;
+    };
+
     const buildTree = async (absDir: string): Promise<WikiTreeNode[]> => {
       const out: WikiTreeNode[] = [];
       let entries: import('fs').Dirent[];
@@ -753,7 +808,14 @@ export async function getVaultTree(
           const folderKey = rel.replace(/[/\\]+$/, '');
           const isFrozen =
             frozenSet.has(folderKey) || frozenSet.has(`${folderKey}/`);
-          const children = await buildTree(abs);
+          // Live read-through: top-level canonical folders (sop/, team-norm/)
+          // are reserved homes whose content lives elsewhere on disk. Source
+          // their children from the real location instead of the empty vault dir.
+          const overlayRoot =
+            absDir === vaultPath ? overlayRootFor(vaultPath, folderKey) : null;
+          const children = overlayRoot
+            ? await buildOverlayTree(overlayRoot, folderKey)
+            : await buildTree(abs);
           out.push({
             name: entry.name,
             relativePath: rel,
@@ -836,10 +898,24 @@ export async function getPage(
       res.status(400).json({ success: false, error: 'only .md files can be read' });
       return;
     }
-    // Resolve and verify containment — path-traversal guard.
-    const requested = path.resolve(vaultPath, relativePath);
-    const vaultRoot = path.resolve(vaultPath);
-    if (!requested.startsWith(vaultRoot + path.sep) && requested !== vaultRoot) {
+    // Live read-through: pages under canonical overlay folders (sop/,
+    // team-norm/) live outside the vault; resolve them to their real source
+    // (the resolver applies its own traversal guard against the source root).
+    let requested: string;
+    try {
+      const overlayFile = resolveOverlayFilePath(vaultPath, relativePath);
+      if (overlayFile) {
+        requested = overlayFile;
+      } else {
+        // Resolve and verify containment — path-traversal guard.
+        requested = path.resolve(vaultPath, relativePath);
+        const vaultRoot = path.resolve(vaultPath);
+        if (!requested.startsWith(vaultRoot + path.sep) && requested !== vaultRoot) {
+          res.status(400).json({ success: false, error: 'relativePath escapes vault root' });
+          return;
+        }
+      }
+    } catch {
       res.status(400).json({ success: false, error: 'relativePath escapes vault root' });
       return;
     }

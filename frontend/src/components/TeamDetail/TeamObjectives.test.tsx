@@ -61,9 +61,9 @@ describe('TeamObjectives', () => {
     render(<TeamObjectives teamId="team-a" />);
     await waitFor(() => expect(screen.getByTestId('team-norms-link')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('team-norms-link'));
-    expect(navigateMock).toHaveBeenCalledWith('/wiki?team=team-a');
+    expect(navigateMock).toHaveBeenCalledWith('/wiki?team=team-a&focus=team-norm');
     fireEvent.click(screen.getByTestId('team-sops-link'));
-    expect(navigateMock).toHaveBeenCalledWith('/wiki?team=team-a');
+    expect(navigateMock).toHaveBeenCalledWith('/wiki?team=team-a&focus=sop');
   });
 
   it('still renders knowledge links when getMissions fails', async () => {
