@@ -372,6 +372,25 @@ describe('ChatV2Service', () => {
       expect(service.listChannels({ principal: otherUser })).toHaveLength(1);
     });
 
+    it('surfaces bridged Slack channels the caller does not own', () => {
+      // Slack bridge persists under the synthetic 'system' owner.
+      service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-D0-1',
+        agentSession: 'crewly-orc',
+      });
+      const list = service.listChannels({ principal: owner });
+      expect(list.some((c) => c.id === 'slack-D0-1')).toBe(true);
+    });
+
+    it('excludes bridged channels when a type filter is applied', () => {
+      service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-D0-2',
+        agentSession: 'crewly-orc',
+      });
+      const list = service.listChannels({ principal: owner, type: 'channel' });
+      expect(list.some((c) => c.id === 'slack-D0-2')).toBe(false);
+    });
+
     // Phase C — channel-rail listing refinements: type + teamId filters.
     describe('Phase C filters', () => {
       function seedMixedFixture() {

@@ -311,6 +311,32 @@ describe('ChannelStore', () => {
     });
   });
 
+  describe('listBridged', () => {
+    it('returns active slack-prefixed channels regardless of owner', () => {
+      store.create({
+        id: 'slack-D0-1',
+        agentSession: 'crewly-orc',
+        ownerUserId: 'system',
+        name: 'slack-D0-1',
+        type: 'dm',
+      });
+      store.create({ agentSession: 'sess-a', ownerUserId: 'user-a', name: 'DM' });
+      expect(store.listBridged().map((r) => r.id)).toEqual(['slack-D0-1']);
+    });
+
+    it('skips archived bridged channels', () => {
+      const row = store.create({
+        id: 'slack-D0-2',
+        agentSession: 'crewly-orc',
+        ownerUserId: 'system',
+        name: 'slack-D0-2',
+        type: 'dm',
+      });
+      store.archive(row.id);
+      expect(store.listBridged()).toHaveLength(0);
+    });
+  });
+
   describe('listByOwner', () => {
     it('returns only this user\'s channels', () => {
       store.create({ agentSession: 'sess-a', ownerUserId: 'user-a', name: 'A', nowMs: 100 });

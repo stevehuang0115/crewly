@@ -170,9 +170,27 @@ interface BodyProps {
 /** Prefix marking a synthetic DM row for a directory agent without a channel. */
 const VIRTUAL_DM_PREFIX = 'agent:';
 
-/** Stable pin key for a row: agent session for DMs, channel id for groups. */
+/** Prefix marking a Slack-bridged channel id (`slack-<chan>-<ts>`). */
+const SLACK_ID_PREFIX = 'slack-';
+
+/**
+ * Stable pin key for a row: channel id for Slack threads / groups (each is its
+ * own conversation), agent session for plain agent DMs. Slack threads must NOT
+ * key by session — they all share the orchestrator session and would collapse.
+ */
 function pinKeyOf(row: ConversationRow): string {
+  if (row.id.startsWith(SLACK_ID_PREFIX)) return row.id;
   return row.agentSession || row.id;
+}
+
+/**
+ * Friendlier label for a Slack thread whose raw title is the synthesized
+ * `slack-<channelId>-<ts>` id. We can't resolve the human channel name without
+ * the Slack API, so surface the channel id portion.
+ */
+function prettySlackTitle(raw: string): string {
+  const m = raw.match(/^slack-([^-]+)-/);
+  return m ? `Slack · ${m[1]}` : raw;
 }
 
 /** Count rows in a group including nested sub-groups. */
@@ -279,11 +297,17 @@ function LiveTeamChatPageBody({
 
   const sectioned = useMemo(() => {
     const dms = baseGroups.find((g) => g.id === 'dms');
-    if (!dms || sessionToTeam.size === 0) return baseGroups;
+    if (!dms) return baseGroups;
 
+    const slackRows: ConversationRow[] = [];
     const byTeam = new Map<string, typeof dms.rows>();
     const noTeam: typeof dms.rows = [];
     for (const row of dms.rows) {
+      // Slack-bridged threads → their own "Slack" section (not a team DM).
+      if (row.id.startsWith(SLACK_ID_PREFIX)) {
+        slackRows.push({ ...row, title: prettySlackTitle(row.title) });
+        continue;
+      }
       const team = row.agentSession ? sessionToTeam.get(row.agentSession) : undefined;
       if (team) {
         const list = byTeam.get(team) ?? [];
@@ -298,12 +322,12 @@ function LiveTeamChatPageBody({
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([team, rows]) => ({ id: `dm-team:${team}`, label: team, rows }));
 
-    // Per-team sections nest under a single collapsible "Teams" parent.
-    // Order: channels, huddles, teamless DMs, then Teams.
+    // Order: channels, huddles, teamless DMs, Slack, then Teams.
     return baseGroups.flatMap<ConversationGroup>((g) => {
       if (g.id !== 'dms') return [g];
       const out: ConversationGroup[] = [];
       if (noTeam.length > 0) out.push({ id: 'dms', label: 'Direct Messages', rows: noTeam });
+      if (slackRows.length > 0) out.push({ id: 'slack', label: 'Slack', rows: slackRows });
       if (teamSections.length > 0) {
         out.push({ id: 'teams', label: 'Teams', rows: [], subGroups: teamSections });
       }

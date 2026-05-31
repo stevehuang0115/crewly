@@ -493,6 +493,31 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
     expect(screen.getByText('Grace')).toBeInTheDocument();
   });
 
+  it('surfaces Slack-bridged threads in a dedicated Slack section', async () => {
+    const channels: Channel[] = [
+      {
+        id: 'slack-D0AC7-1778',
+        agentSession: 'crewly-orc',
+        name: 'slack-D0AC7-1778',
+        createdAt: ISO,
+        type: 'dm',
+        presence: 'online',
+      },
+    ];
+    const { client } = makeStubClient(channels);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
+      />,
+    );
+    // A "Slack" section header with the prettified thread row (the row also
+    // appears in the right-panel header once auto-selected — hence getAllByText).
+    expect(await screen.findByText('Slack')).toBeInTheDocument();
+    expect(screen.getAllByText(/Slack · D0AC7/).length).toBeGreaterThan(0);
+  });
+
   it('calls onEnsureDm when a directory agent without a channel is opened', async () => {
     const onEnsureDm = vi.fn().mockResolvedValue('real-chan');
     const { client } = makeStubClient([]);
