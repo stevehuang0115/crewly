@@ -28,7 +28,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { LiveTeamChatPage, type DirectoryAgentEntry } from './LiveTeamChatPage';
+import {
+  LiveTeamChatPage,
+  HOME_ID,
+  teamRailId,
+  type DirectoryAgentEntry,
+  type ChatTeam,
+} from './LiveTeamChatPage';
 import { useTeams } from '../../hooks/useTeams';
 import { resolveBackendURL, resolveChatMode } from '../../utils/chat-backend';
 import {
@@ -38,8 +44,6 @@ import {
   TEAM_QUERY_PARAM,
   ORCHESTRATOR_SESSION,
   ORCHESTRATOR_LABEL,
-  DM_WORKSPACE_ID,
-  DM_WORKSPACE_LABEL,
 } from '../../utils/team-chat.utils';
 
 /** POST a chat-v2 ensure endpoint and return the resolved channel id, or null. */
@@ -97,6 +101,22 @@ export function TeamChatRoute(): JSX.Element {
     return out;
   }, [teams]);
 
+  // Teams for the workspace rail: identity + lead/member sessions. The lead is
+  // a member listed in `leaderIds` (or the deprecated `leaderId`), or a member
+  // at hierarchy level 1.
+  const chatTeams = useMemo<ChatTeam[]>(() => {
+    return teams.map((t) => {
+      const leaderIds = t.leaderIds?.length ? t.leaderIds : t.leaderId ? [t.leaderId] : [];
+      const leadIdSet = new Set(leaderIds);
+      const members = t.members ?? [];
+      const leaderSessions = members
+        .filter((m) => m.sessionName && (leadIdSet.has(m.id) || m.hierarchyLevel === 1))
+        .map((m) => m.sessionName);
+      const memberSessions = members.filter((m) => m.sessionName).map((m) => m.sessionName);
+      return { id: t.id, name: t.name, leaderSessions, memberSessions };
+    });
+  }, [teams]);
+
   const teamParam = searchParams.get(TEAM_QUERY_PARAM) || null;
 
   // Find-or-create a DM for an agent the user opens from the directory.
@@ -112,10 +132,13 @@ export function TeamChatRoute(): JSX.Element {
     [directoryAgents],
   );
 
-  // Ensure the channels the page needs exist before mounting it. `readyKey`
-  // tracks the team we've prepared for (or `__none__`) so a team switch
-  // re-runs the ensure and the loading gate shows again.
-  const targetKey = teamParam ?? '__none__';
+  // Ensure the channels the page needs exist before mounting it: the
+  // orchestrator DM + EVERY team's huddle channel (so each team rail icon has
+  // its all-members huddle). `readyKey` is keyed on the team-id set so it
+  // re-runs (and re-gates) once `useTeams` resolves, but is stable across
+  // presence-only updates.
+  const teamIds = useMemo(() => chatTeams.map((t) => t.id), [chatTeams]);
+  const targetKey = `${teamParam ?? '__none__'}|${teamIds.join(',')}`;
   const [readyKey, setReadyKey] = useState<string | null>(null);
   const [orcChannelId, setOrcChannelId] = useState<string | null>(null);
   const ready = mode !== 'real' || readyKey === targetKey;
@@ -130,10 +153,10 @@ export function TeamChatRoute(): JSX.Element {
         name: ORCHESTRATOR_LABEL,
         purpose: 'Talk to the orchestrator',
       });
-      // When deep-linked to a team, make sure that team has a channel too.
-      if (teamParam) {
-        await ensureChannel('/api/chat/channels/team/ensure', { teamId: teamParam });
-      }
+      // Ensure each team's huddle channel exists for its rail view.
+      await Promise.all(
+        teamIds.map((id) => ensureChannel('/api/chat/channels/team/ensure', { teamId: id })),
+      );
       if (!cancelled) {
         if (orcId) setOrcChannelId(orcId);
         setReadyKey(targetKey);
@@ -142,7 +165,7 @@ export function TeamChatRoute(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [mode, teamParam, targetKey]);
+  }, [mode, targetKey, teamIds]);
 
   if (!ready) {
     return (
@@ -155,9 +178,9 @@ export function TeamChatRoute(): JSX.Element {
     );
   }
 
-  // Default landing is the orchestrator (in the Direct Messages workspace);
-  // a `?team=` deep-link overrides both to focus that team.
-  const initialWorkspaceId = teamParam ?? DM_WORKSPACE_ID;
+  // Default landing is Home (orchestrator selected); a `?team=` deep-link
+  // focuses that team's rail icon instead.
+  const initialWorkspaceId = teamParam ? teamRailId(teamParam) : HOME_ID;
   const initialConversationId = teamParam ? null : orcChannelId;
 
   return (
@@ -167,8 +190,8 @@ export function TeamChatRoute(): JSX.Element {
       mentionables={mentionables}
       initialWorkspaceId={initialWorkspaceId}
       initialConversationId={initialConversationId}
-      directMessagesWorkspace={{ id: DM_WORKSPACE_ID, name: DM_WORKSPACE_LABEL }}
       directoryAgents={directoryAgents}
+      teams={chatTeams}
       onEnsureDm={onEnsureDm}
     />
   );

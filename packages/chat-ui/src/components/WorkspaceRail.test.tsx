@@ -102,4 +102,22 @@ describe('WorkspaceRail', () => {
     expect(rows[1]).toHaveAttribute('data-testid', 'workspace-row-b');
     expect(rows[2]).toHaveAttribute('data-testid', 'workspace-row-orphan');
   });
+
+  it('renders a home workspace with its avatar glyph + tooltip override', () => {
+    render(
+      <WorkspaceRail
+        workspaces={[
+          { id: 'home', name: 'Home', kind: 'home', avatar: '\u{1F3E0}', tooltip: 'Home — orchestrator & pinned' },
+          { id: 'orc', name: 'Orchestrator', kind: 'team', avatar: '\u{1F9ED}' },
+        ]}
+      />,
+    );
+    const home = screen.getByTestId('workspace-row-home');
+    expect(home).toHaveAttribute('data-kind', 'home');
+    expect(home).toHaveAttribute('title', 'Home — orchestrator & pinned');
+    expect(home).toHaveTextContent('\u{1F3E0}');
+    // Avatar replaces derived initials on the orchestrator too.
+    expect(screen.getByTestId('workspace-row-orc')).toHaveTextContent('\u{1F9ED}');
+  });
+
 });

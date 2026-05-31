@@ -45,11 +45,19 @@ export interface Workspace {
   initials?: string;
   /**
    * Workspace category. `team` is the default; `activity` is the
-   * cross-team unified-inbox entry described in design §4.3.
+   * cross-team unified-inbox entry described in design §4.3; `home` is the
+   * personal/cross-cutting landing (orc + pinned + huddles).
    */
-  kind?: 'team' | 'activity';
+  kind?: 'team' | 'activity' | 'home';
   /** Parent workspace id for nested grouping. */
   parentId?: string;
+  /**
+   * Optional glyph for a richer rail icon than 2-letter initials — an emoji or
+   * single char. When absent the rail falls back to `initials`/derived initials.
+   */
+  avatar?: string;
+  /** Hover tooltip override; defaults to `name`. */
+  tooltip?: string;
   /** Total unread items in this workspace (channels + dms combined). */
   unreadCount?: number;
   /** True when at least one mention is unread — drives the rail dot color. */

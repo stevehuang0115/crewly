@@ -37,7 +37,6 @@ import {
   useChannels,
   useGroupedChannels,
   useMessages,
-  useObservedWorkspaces,
   useSendMessage,
   useChatApiClient,
   type ChatApiClient,
@@ -59,6 +58,29 @@ import {
 import { ChatErrorToast } from './ChatErrorToast';
 import { CreateGroupModal } from './CreateGroupModal';
 import { usePinnedChats } from '../../hooks/usePinnedChats';
+import { ORCHESTRATOR_SESSION, ORCHESTRATOR_LABEL } from '../../utils/team-chat.utils';
+
+/** Rail identifiers for the non-team entries. */
+export const HOME_ID = 'home';
+const ORC_RAIL_ID = 'orc';
+
+/** Build the rail workspace id for a team (so deep-links can target it). */
+export function teamRailId(teamId: string): string {
+  return `team:${teamId}`;
+}
+
+/**
+ * A team as the chat rail needs it: identity + the sessions of its lead(s)
+ * and all members (for the per-team huddle + lead-first roster). Host-derived.
+ */
+export interface ChatTeam {
+  id: string;
+  name: string;
+  /** Session names of the team lead(s) — sorted first in the roster. */
+  leaderSessions: string[];
+  /** Session names of every member of the team. */
+  memberSessions: string[];
+}
 
 export interface LiveTeamChatPageProps {
   /** OSS backend base URL. Required when no `client` is injected. */
@@ -88,21 +110,19 @@ export interface LiveTeamChatPageProps {
   /** Initial conversation selection. Defaults to the first row. */
   initialConversationId?: string | null;
   /**
-   * Optional always-present "Direct Messages" workspace. When provided AND
-   * the user has at least one DM channel, it is prepended to the rail so
-   * DMs (e.g. the orchestrator + agents) are reachable even when the user
-   * has no team channels — otherwise the page would dead-end on the
-   * NoTeams empty state. DMs are workspace-agnostic, so this synthetic
-   * workspace simply scopes the center panel to show only DMs.
-   */
-  directMessagesWorkspace?: { id: string; name: string } | null;
-  /**
    * Full agent directory (host-supplied). Every agent is shown in the DM
    * list — online or offline — even before a DM channel exists, so the user
    * can reach any agent. Agents that already have a real DM channel are
    * de-duplicated against it.
    */
   directoryAgents?: DirectoryAgentEntry[];
+  /**
+   * Teams for the workspace rail. Each rail icon = one team; selecting it
+   * scopes the list to that team's huddle + lead + members. Host-derived
+   * (lead detection from team config). When empty the rail shows just
+   * Home + the orchestrator.
+   */
+  teams?: ChatTeam[];
   /**
    * Ensure (find-or-create) a DM channel for an agent session, returning the
    * resolved channel id. Called when the user opens a directory agent that
@@ -125,12 +145,11 @@ export function LiveTeamChatPage({
   backendURL,
   authToken,
   client,
-  teamLabels,
   mentionables = [],
   initialWorkspaceId,
   initialConversationId,
-  directMessagesWorkspace,
   directoryAgents = [],
+  teams = [],
   onEnsureDm,
 }: LiveTeamChatPageProps): JSX.Element {
   return (
@@ -141,12 +160,11 @@ export function LiveTeamChatPage({
       client={client}
     >
       <LiveTeamChatPageBody
-        teamLabels={teamLabels}
         mentionables={mentionables}
         initialWorkspaceId={initialWorkspaceId}
         initialConversationId={initialConversationId}
-        directMessagesWorkspace={directMessagesWorkspace}
         directoryAgents={directoryAgents}
+        teams={teams}
         onEnsureDm={onEnsureDm}
       />
     </ChatAPIProvider>
@@ -158,12 +176,11 @@ export function LiveTeamChatPage({
 // ---------------------------------------------------------------------------
 
 interface BodyProps {
-  teamLabels?: Record<string, string>;
   mentionables: MentionTarget[];
   initialWorkspaceId?: string | null;
   initialConversationId?: string | null;
-  directMessagesWorkspace?: { id: string; name: string } | null;
   directoryAgents: DirectoryAgentEntry[];
+  teams: ChatTeam[];
   onEnsureDm?: (agentSession: string) => Promise<string>;
 }
 
@@ -205,23 +222,17 @@ function prettySlackTitle(raw: string): string {
   return `Slack · ${m[1]}`;
 }
 
-/** Count rows in a group including nested sub-groups. */
-function countGroupRows(group: ConversationGroup): number {
-  return group.rows.length + (group.subGroups?.reduce((a, g) => a + countGroupRows(g), 0) ?? 0);
-}
-
 /** Flatten all rows across groups + nested sub-groups, in render order. */
 function flattenRows(groups: ConversationGroup[]): ConversationRow[] {
   return groups.flatMap((g) => [...g.rows, ...flattenRows(g.subGroups ?? [])]);
 }
 
 function LiveTeamChatPageBody({
-  teamLabels,
   mentionables,
   initialWorkspaceId,
   initialConversationId,
-  directMessagesWorkspace,
   directoryAgents,
+  teams,
   onEnsureDm,
 }: BodyProps): JSX.Element {
   const { channels, loading: channelsLoading, error: channelsError, refresh } = useChannels();
@@ -254,119 +265,134 @@ function LiveTeamChatPageBody({
     return synthetic.length > 0 ? [...channels, ...synthetic] : channels;
   }, [channels, directoryAgents]);
 
-  const teamWorkspaces = useObservedWorkspaces(mergedChannels, { teamLabels });
-
-  // Prepend the synthetic "Direct Messages" workspace when the host supplies
-  // one and the user actually has DMs — so DMs (orchestrator + agents) are
-  // reachable even with zero team channels. DMs are not team-scoped, so this
-  // workspace just narrows the center panel to the DM group.
-  const hasDms = useMemo(
-    () => mergedChannels.some((c) => (c.type ?? 'dm') !== 'channel'),
-    [mergedChannels],
-  );
+  // Workspace rail: Home → orchestrator → one icon per team. Home is the
+  // personal/cross-cutting landing (orc + pinned + huddles + Slack); each team
+  // icon scopes the center column to that team's huddle + lead + members.
   const workspaces = useMemo<Workspace[]>(() => {
-    if (directMessagesWorkspace && hasDms) {
-      return [
-        {
-          id: directMessagesWorkspace.id,
-          name: directMessagesWorkspace.name,
-          initials: 'DM',
-          kind: 'activity',
-        },
-        ...teamWorkspaces,
-      ];
-    }
-    return teamWorkspaces;
-  }, [directMessagesWorkspace, hasDms, teamWorkspaces]);
+    const home: Workspace = {
+      id: HOME_ID,
+      name: 'Home',
+      kind: 'home',
+      avatar: '🏠',
+      tooltip: 'Home — orchestrator, pinned chats & huddles',
+    };
+    const orc: Workspace = {
+      id: ORC_RAIL_ID,
+      name: ORCHESTRATOR_LABEL,
+      kind: 'team',
+      avatar: '🧭',
+      tooltip: ORCHESTRATOR_LABEL,
+    };
+    const teamItems: Workspace[] = teams.map((t) => ({
+      id: `team:${t.id}`,
+      name: t.name,
+      kind: 'team' as const,
+    }));
+    return [home, orc, ...teamItems];
+  }, [teams]);
+
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
     initialWorkspaceId ?? null,
   );
   const [activeConversationId, setActiveConversationId] = useState<string | null>(
     initialConversationId ?? null,
   );
+  // Home is the default landing.
+  const resolvedWorkspaceId = activeWorkspaceId ?? HOME_ID;
 
-  // Settle the workspace selection: prefer explicit initial, else the
-  // first observed workspace. This runs each render but reaches a
-  // stable fixed-point because the setter compares values.
-  const resolvedWorkspaceId =
-    activeWorkspaceId ?? (workspaces[0]?.id ?? null);
+  // All conversations, unscoped — re-bucketed per rail selection below.
+  const allGroups = useGroupedChannels(mergedChannels, { workspaceId: undefined });
+  const allChannelRows = useMemo(
+    () => allGroups.find((g) => g.id === 'channels')?.rows ?? [],
+    [allGroups],
+  );
+  const allHuddleRows = useMemo(
+    () => allGroups.find((g) => g.id === 'huddles')?.rows ?? [],
+    [allGroups],
+  );
+  const allDmRows = useMemo(
+    () => allGroups.find((g) => g.id === 'dms')?.rows ?? [],
+    [allGroups],
+  );
 
-  const baseGroups = useGroupedChannels(mergedChannels, {
-    workspaceId: resolvedWorkspaceId,
-  });
+  // The orchestrator DM row — Home's default top conversation + the orc rail
+  // item. Exclude Slack-bridged threads (they share the orc session but are
+  // their own conversations).
+  const orcRow = useMemo(
+    () =>
+      allDmRows.find(
+        (r) => r.agentSession === ORCHESTRATOR_SESSION && !r.id.startsWith(SLACK_ID_PREFIX),
+      ),
+    [allDmRows],
+  );
 
-  // Split the flat "Direct Messages" group into one section per team (agents
-  // mapped via the directory). Agents with no team (e.g. the orchestrator)
-  // stay under "Direct Messages". Channels + Group Chats sections pass
-  // through unchanged. This is what makes the long agent list readable.
-  const sessionToTeam = useMemo(() => {
+  // channel-id → teamId, so a team's huddle (its all-members channel) is findable
+  // from the (teamId-less) conversation rows.
+  const channelTeamId = useMemo(() => {
     const m = new Map<string, string>();
-    for (const a of directoryAgents) {
-      if (a.agentSession && a.teamName) m.set(a.agentSession, a.teamName);
+    for (const c of mergedChannels) {
+      if ((c.type ?? 'dm') === 'channel' && c.teamId) m.set(c.id, c.teamId);
     }
     return m;
-  }, [directoryAgents]);
+  }, [mergedChannels]);
 
-  const sectioned = useMemo(() => {
-    const dms = baseGroups.find((g) => g.id === 'dms');
-    if (!dms) return baseGroups;
+  // Conversation groups for the SELECTED rail item.
+  const groups = useMemo<ConversationGroup[]>(() => {
+    const sel = resolvedWorkspaceId;
 
-    const slackRows: ConversationRow[] = [];
-    const byTeam = new Map<string, typeof dms.rows>();
-    const noTeam: typeof dms.rows = [];
-    for (const row of dms.rows) {
-      // Slack-bridged threads → their own "Slack" section (not a team DM).
-      if (row.id.startsWith(SLACK_ID_PREFIX)) {
-        slackRows.push({ ...row, title: prettySlackTitle(row.title) });
-        continue;
-      }
-      const team = row.agentSession ? sessionToTeam.get(row.agentSession) : undefined;
-      if (team) {
-        const list = byTeam.get(team) ?? [];
-        list.push(row);
-        byTeam.set(team, list);
-      } else {
-        noTeam.push(row);
-      }
+    // Orchestrator-only view.
+    if (sel === ORC_RAIL_ID) {
+      return orcRow ? [{ id: 'pinned', label: ORCHESTRATOR_LABEL, rows: [orcRow] }] : [];
     }
 
-    const teamSections: ConversationGroup[] = [...byTeam.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([team, rows]) => ({ id: `dm-team:${team}`, label: team, rows }));
-
-    // Order: channels, huddles, teamless DMs, Slack, then Teams.
-    return baseGroups.flatMap<ConversationGroup>((g) => {
-      if (g.id !== 'dms') return [g];
+    // Home: orchestrator (default, top) + pinned agents + huddles + Slack.
+    if (sel === HOME_ID) {
+      const pinnedRows = allDmRows.filter(
+        (r) =>
+          r.agentSession !== ORCHESTRATOR_SESSION &&
+          !r.id.startsWith(SLACK_ID_PREFIX) &&
+          pinnedChats.isPinned(pinKeyOf(r)),
+      );
+      const slackRows = allDmRows
+        .filter((r) => r.id.startsWith(SLACK_ID_PREFIX))
+        .map((r) => ({ ...r, title: prettySlackTitle(r.title) }));
+      const top = [...(orcRow ? [orcRow] : []), ...pinnedRows];
       const out: ConversationGroup[] = [];
-      if (noTeam.length > 0) out.push({ id: 'dms', label: 'Direct Messages', rows: noTeam });
+      if (top.length > 0) out.push({ id: 'pinned', label: 'Pinned', rows: top });
+      if (allHuddleRows.length > 0) out.push({ id: 'huddles', label: 'Huddles', rows: allHuddleRows });
       if (slackRows.length > 0) out.push({ id: 'slack', label: 'Slack', rows: slackRows });
-      if (teamSections.length > 0) {
-        out.push({ id: 'teams', label: 'Teams', rows: [], subGroups: teamSections });
-      }
       return out;
-    });
-  }, [baseGroups, sessionToTeam]);
+    }
 
-  // Lift pinned conversations into a top "Pinned Chats" section, removing them
-  // from their normal section (including nested team sub-groups) so they appear
-  // once. Orchestrator is pinned by default; the user can pin/unpin any chat.
-  const groups = useMemo(() => {
-    const pinnedRows: ConversationRow[] = [];
-    const prune = (g: ConversationGroup): ConversationGroup => {
-      const keep: ConversationRow[] = [];
-      for (const r of g.rows) {
-        if (pinnedChats.isPinned(pinKeyOf(r))) pinnedRows.push(r);
-        else keep.push(r);
-      }
-      const subs = (g.subGroups ?? [])
-        .map(prune)
-        .filter((sg) => countGroupRows(sg) > 0);
-      return { ...g, rows: keep, subGroups: subs.length > 0 ? subs : undefined };
-    };
-    const pruned = sectioned.map(prune).filter((g) => countGroupRows(g) > 0);
-    if (pinnedRows.length === 0) return pruned;
-    return [{ id: 'pinned', label: 'Pinned Chats', rows: pinnedRows }, ...pruned];
-  }, [sectioned, pinnedChats]);
+    // A team is selected: team huddle (all-members channel) → lead(s) → members.
+    const team = teams.find((t) => `team:${t.id}` === sel);
+    if (!team) return orcRow ? [{ id: 'pinned', label: ORCHESTRATOR_LABEL, rows: [orcRow] }] : [];
+    const leadSet = new Set(team.leaderSessions);
+    const memberSet = new Set(team.memberSessions);
+    const huddleRows = allChannelRows.filter((r) => channelTeamId.get(r.id) === team.id);
+    const memberRows = allDmRows.filter(
+      (r) =>
+        r.agentSession &&
+        r.agentSession !== ORCHESTRATOR_SESSION &&
+        memberSet.has(r.agentSession),
+    );
+    const leads = memberRows.filter((r) => r.agentSession && leadSet.has(r.agentSession));
+    const rest = memberRows.filter((r) => !(r.agentSession && leadSet.has(r.agentSession)));
+    const out: ConversationGroup[] = [];
+    if (huddleRows.length > 0) out.push({ id: 'team-huddle', label: 'Team huddle', rows: huddleRows });
+    if (leads.length > 0) out.push({ id: 'team-lead', label: 'Team lead', rows: leads });
+    if (rest.length > 0) out.push({ id: 'team-members', label: 'Members', rows: rest });
+    return out;
+  }, [
+    resolvedWorkspaceId,
+    teams,
+    orcRow,
+    allDmRows,
+    allHuddleRows,
+    allChannelRows,
+    channelTeamId,
+    pinnedChats,
+  ]);
 
   const totalRows = useMemo(
     () => groups.reduce((acc, g) => acc + g.rows.length, 0),
@@ -456,14 +482,7 @@ function LiveTeamChatPageBody({
       )}
 
       <ConversationListPanel
-        // Avoid a duplicate header: the DM workspace's group label ("Direct
-        // Messages") already heads the list, so don't also render it as the
-        // panel title. Real team workspaces still show their name.
-        workspaceName={
-          activeWorkspace && activeWorkspace.id !== directMessagesWorkspace?.id
-            ? activeWorkspace.name
-            : undefined
-        }
+        workspaceName={activeWorkspace?.name}
         groups={groups}
         activeConversationId={resolvedConversationId}
         onSelectConversation={handleSelectConversation}
