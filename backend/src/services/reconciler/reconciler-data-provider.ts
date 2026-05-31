@@ -41,6 +41,17 @@ import { WEB_CONSTANTS, AGENT_SUSPEND_CONSTANTS } from '../../constants.js';
 const AGENT_STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
 /**
+ * Minimum gap between redelivering the SAME WorkItem brief. The reconciler
+ * fast loop fires every ~10s; this caps a queued WI's re-POSTs to once per
+ * window so an unclaimed-but-read WI can't flood the agent's PTY. Override
+ * with `CREWLY_RECONCILER_REDELIVER_COOLDOWN_MS`.
+ */
+const REDELIVER_COOLDOWN_MS = (() => {
+  const raw = Number(process.env['CREWLY_RECONCILER_REDELIVER_COOLDOWN_MS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000; // 5 min
+})();
+
+/**
  * Heuristic: detect "storage not yet hydrated" errors so the data
  * provider can demote them from `error` to `debug` log level.
  *
@@ -177,6 +188,18 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   // EventBus deduplicates on event id).
   private consecutivePressureSkips = 0;
   private lastPressureNotifiedAt = 0;
+
+  /**
+   * Per-WorkItem redeliver cooldown. The reconciler fast loop runs every
+   * ~10s and re-emits a `redeliver` wake for any queued WI whose target is
+   * active-but-idle — with NO per-WI rate-limit in the rule. Without this
+   * gate a queued-but-unclaimed WI (e.g. one the orc has read but not yet
+   * claimed) is re-POSTed to its PTY every 10s (~50-60/hr), which is the
+   * wiki-bridge "spam" the user saw and the same class as the 2026-05-27
+   * PTY-flood incident. We cap redelivery of a given WI to once per
+   * {@link REDELIVER_COOLDOWN_MS}.
+   */
+  private readonly lastRedeliverAt = new Map<string, number>();
 
   constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ReconcilerDataProvider');
@@ -1027,10 +1050,24 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             workItemId: action.workItemId,
             currentStatus: wi?.status,
           });
+          // WI left the queue (claimed/terminal) — drop its cooldown record.
+          this.lastRedeliverAt.delete(action.workItemId);
+          return false;
+        }
+        // Per-WI redeliver cooldown — the fast loop re-emits this every ~10s
+        // while the WI stays queued; without the gate that floods the PTY.
+        const lastAt = this.lastRedeliverAt.get(action.workItemId);
+        if (lastAt !== undefined && Date.now() - lastAt < REDELIVER_COOLDOWN_MS) {
+          this.logger.debug('Redeliver suppressed — within cooldown', {
+            agent: agentSessionName,
+            workItemId: action.workItemId,
+            sinceMs: Date.now() - lastAt,
+          });
           return false;
         }
         const subscriber = WorkItemDispatchSubscriber.getInstance();
         const delivered = await subscriber.redispatch(wi);
+        if (delivered) this.lastRedeliverAt.set(action.workItemId, Date.now());
         if (delivered) {
           this.logger.info('Redelivered WorkItem brief to active-but-idle agent', {
             agent: agentSessionName,
