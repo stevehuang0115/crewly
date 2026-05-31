@@ -5,4 +5,5 @@ export { AddMemberForm } from './AddMemberForm';
 export { MembersList } from './MembersList';
 export { TeamOverview } from './TeamOverview';
 export { AgentDetailModal } from './AgentDetailModal';
+export { TeamObjectives } from './TeamObjectives';
 export * from './types';

@@ -118,6 +118,9 @@ function WorkspaceRow({
       data-active={isActive ? 'true' : 'false'}
       data-nested={isNested ? 'true' : 'false'}
       data-kind={workspace.kind ?? 'team'}
+      // Hover tooltip — the rail is icon-only when collapsed, so the 2-letter
+      // initials (e.g. "DM"/"CM") are otherwise opaque. Title reveals the name.
+      title={workspace.name}
       className={[
         'group relative mx-2 flex items-center gap-3 rounded-lg px-2 py-2 text-left transition',
         // Active state is full-width per §6.1, not just a tint.

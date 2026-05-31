@@ -184,13 +184,25 @@ function pinKeyOf(row: ConversationRow): string {
 }
 
 /**
- * Friendlier label for a Slack thread whose raw title is the synthesized
- * `slack-<channelId>-<ts>` id. We can't resolve the human channel name without
- * the Slack API, so surface the channel id portion.
+ * Friendlier label for a Slack thread. New threads are named after their first
+ * message (backend), so a non-`slack-…` title is used as-is. Legacy threads are
+ * titled by the synthesized `slack-<channelId>-<tsSeconds>-<tsMicros>` id — all
+ * threads in one channel share the channelId, so we surface the thread's
+ * start time to make them distinguishable (was: identical "Slack · <channel>").
  */
 function prettySlackTitle(raw: string): string {
-  const m = raw.match(/^slack-([^-]+)-/);
-  return m ? `Slack · ${m[1]}` : raw;
+  const m = raw.match(/^slack-([^-]+)-(\d{6,})/);
+  if (!m) return raw; // backend-named (first-message snippet) — already readable
+  const tsSeconds = Number(m[2]);
+  if (Number.isFinite(tsSeconds) && tsSeconds > 0) {
+    const d = new Date(tsSeconds * 1000);
+    if (!Number.isNaN(d.getTime())) {
+      const date = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `Slack thread · ${date} ${time}`;
+    }
+  }
+  return `Slack · ${m[1]}`;
 }
 
 /** Count rows in a group including nested sub-groups. */
@@ -457,6 +469,9 @@ function LiveTeamChatPageBody({
         onSelectConversation={handleSelectConversation}
         isPinned={(row) => pinnedChats.isPinned(pinKeyOf(row))}
         onTogglePin={(row) => pinnedChats.toggle(pinKeyOf(row))}
+        // The Slack section can hold many threads from one channel — start it
+        // collapsed so it doesn't flood the list (user can expand + it persists).
+        defaultCollapsedGroupIds={['slack']}
         headerAction={
           <button
             type="button"

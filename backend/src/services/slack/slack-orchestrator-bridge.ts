@@ -169,6 +169,22 @@ export function suppressFileOnly(rawText: string): string | null {
 let bridgeInstance: SlackOrchestratorBridge | null = null;
 
 /**
+ * Derive a short, readable chat-v2 channel name from a Slack thread's first
+ * message — so the consolidated chat shows a meaningful title rather than the
+ * synthesized `slack-<chan>-<ts>` id (which is identical across a channel's
+ * threads). Collapses whitespace and truncates; falls back to "Slack thread".
+ *
+ * @param content - The first inbound message of the thread.
+ * @returns A title like `Slack: ship the v2 launch deck`.
+ */
+export function deriveSlackThreadName(content: string | undefined): string {
+  const oneLine = (content ?? '').replace(/\s+/g, ' ').trim();
+  if (!oneLine) return 'Slack thread';
+  const snippet = oneLine.length > 48 ? `${oneLine.slice(0, 48)}…` : oneLine;
+  return `Slack: ${snippet}`;
+}
+
+/**
  * SlackOrchestratorBridge class
  *
  * Routes messages between Slack and the Crewly orchestrator.
@@ -2133,6 +2149,11 @@ Just type naturally to chat with the orchestrator!`;
     const channel = this.chatV2.ensureChannelForLegacyConversation({
       conversationId: cid,
       agentSession: args.agentSession,
+      // Name the thread by its first message so the consolidated chat shows a
+      // readable title (e.g. "Slack: ship the v2 launch…") instead of N
+      // identical synthesized ids. ensure… only sets the name on create, so
+      // this stamps the thread's opening message. Falls back to the id.
+      name: deriveSlackThreadName(args.content),
     });
     const { message } = this.chatV2.recordTurn({
       channelId: channel.id,

@@ -92,6 +92,44 @@ interface WikiTreeNode {
   children?: WikiTreeNode[];
 }
 
+/**
+ * Friendly display names for the schema's frozen (canonical) top-level folders.
+ * Keyed by the raw folder name returned in the tree. Folders not listed fall
+ * back to their raw name. This de-scatters the "where do norms/SOPs live?"
+ * confusion by giving the source-of-truth folders human labels.
+ */
+const CANONICAL_FOLDER_LABELS: Record<string, string> = {
+  sop: 'SOPs',
+  'sop-overrides': 'SOP Overrides',
+  'team-norm': 'Team Norms',
+  norms: 'Team Norms',
+  okr: 'OKRs',
+  okrs: 'OKRs',
+  memory: 'Memory',
+};
+
+/**
+ * Split a vault's top-level tree into canonical (schema-frozen) folders and
+ * everything else. Pure so it can be unit-tested. Frozen top-level directories
+ * are the engine's source of truth (SOPs / Team Norms / OKRs); the rest is the
+ * working / llm-curated area.
+ *
+ * @param tree - Top-level tree nodes, or null while loading.
+ * @returns `{ canonicalNodes, workingNodes }` preserving original order.
+ */
+export function partitionVaultTree(tree: WikiTreeNode[] | null): {
+  canonicalNodes: WikiTreeNode[];
+  workingNodes: WikiTreeNode[];
+} {
+  const canonicalNodes: WikiTreeNode[] = [];
+  const workingNodes: WikiTreeNode[] = [];
+  for (const node of tree ?? []) {
+    if (node.type === 'directory' && node.frozen) canonicalNodes.push(node);
+    else workingNodes.push(node);
+  }
+  return { canonicalNodes, workingNodes };
+}
+
 interface PagePayload {
   vaultPath: string;
   relativePath: string;
@@ -612,6 +650,18 @@ export function Wiki(): JSX.Element {
     return out;
   }, [tree]);
 
+  /**
+   * Partition the top-level tree into the canonical (schema-frozen) folders —
+   * the single source of truth for SOPs / Team Norms / OKRs — and everything
+   * else (the working / llm-curated area). Surfacing the canonical folders in
+   * their own labelled group answers the "why are norms & SOPs scattered?"
+   * confusion: they aren't, the UI just used to bury them in the flat list.
+   */
+  const { canonicalNodes, workingNodes } = useMemo(
+    () => partitionVaultTree(tree),
+    [tree],
+  );
+
   const handleWikilinkClick = useCallback(
     (target: string) => {
       const match = resolveWikilink(target, allFilePaths);
@@ -787,9 +837,27 @@ export function Wiki(): JSX.Element {
                 </div>
               )}
               {treeLoading && <div className="wiki-loading">Loading tree…</div>}
-              {tree && (
+              {tree && canonicalNodes.length > 0 && (
+                <>
+                  <div className="wiki-tree-group-label" title="Schema-frozen folders — the source of truth referenced by the engine. Agents can't overwrite these via the wiki.">
+                    <Lock size={11} /> Canonical · source of truth
+                  </div>
+                  <TreeView
+                    nodes={canonicalNodes}
+                    selected={selectedPage}
+                    onSelect={(rel) => setSelectedPage(rel)}
+                    collapsed={collapsedFolders}
+                    onToggleFolder={toggleFolder}
+                    labelOverrides={CANONICAL_FOLDER_LABELS}
+                  />
+                  {workingNodes.length > 0 && (
+                    <div className="wiki-tree-group-label">Working notes</div>
+                  )}
+                </>
+              )}
+              {tree && workingNodes.length > 0 && (
                 <TreeView
-                  nodes={tree}
+                  nodes={workingNodes}
                   selected={selectedPage}
                   onSelect={(rel) => setSelectedPage(rel)}
                   collapsed={collapsedFolders}
@@ -882,6 +950,11 @@ interface TreeViewProps {
   collapsed: Set<string>;
   /** Toggle collapsed state for a folder (persists to localStorage). */
   onToggleFolder: (relativePath: string) => void;
+  /**
+   * Optional map of folder name → friendly display label. Applied only to
+   * top-level rows (depth 0) so canonical folders read "SOPs" not "sop".
+   */
+  labelOverrides?: Record<string, string>;
   depth?: number;
 }
 
@@ -891,6 +964,7 @@ function TreeView({
   onSelect,
   collapsed,
   onToggleFolder,
+  labelOverrides,
   depth = 0,
 }: TreeViewProps): JSX.Element {
   return (
@@ -917,7 +991,9 @@ function TreeView({
                   <ChevronDown size={12} className="wiki-tree-chevron" />
                 )}
                 <Folder size={14} />
-                <span className="wiki-tree-name">{node.name}</span>
+                <span className="wiki-tree-name">
+                  {(depth === 0 && labelOverrides?.[node.name]) || node.name}
+                </span>
                 {childCount > 0 && (
                   <span className="wiki-tree-child-count">{childCount}</span>
                 )}

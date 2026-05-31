@@ -10,7 +10,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { resolveWikilink, pickInitialVault, type WikiVault } from './Wiki';
+import {
+  resolveWikilink,
+  pickInitialVault,
+  partitionVaultTree,
+  type WikiVault,
+} from './Wiki';
 
 const VAULT = [
   'log.md',
@@ -113,5 +118,37 @@ describe('pickInitialVault', () => {
   it('falls back to the first vault when there is no project vault', () => {
     const vaults: WikiVault[] = [mk('global', 'g'), mk('team', 't1')];
     expect(pickInitialVault(vaults, null)?.vaultId).toBe('g');
+  });
+});
+
+describe('partitionVaultTree', () => {
+  const dir = (name: string, frozen?: boolean) => ({
+    name,
+    relativePath: name,
+    type: 'directory' as const,
+    frozen,
+  });
+  const file = (name: string) => ({
+    name,
+    relativePath: name,
+    type: 'file' as const,
+  });
+
+  it('returns empty groups for a null tree', () => {
+    expect(partitionVaultTree(null)).toEqual({ canonicalNodes: [], workingNodes: [] });
+  });
+
+  it('routes frozen top-level directories to canonical and the rest to working', () => {
+    const tree = [dir('sop', true), dir('team-norm', true), dir('llm-curated'), file('index.md')];
+    const { canonicalNodes, workingNodes } = partitionVaultTree(tree);
+    expect(canonicalNodes.map((n) => n.name)).toEqual(['sop', 'team-norm']);
+    expect(workingNodes.map((n) => n.name)).toEqual(['llm-curated', 'index.md']);
+  });
+
+  it('treats frozen files (not directories) as working content', () => {
+    const tree = [{ ...file('pinned.md'), frozen: true }];
+    const { canonicalNodes, workingNodes } = partitionVaultTree(tree);
+    expect(canonicalNodes).toHaveLength(0);
+    expect(workingNodes).toHaveLength(1);
   });
 });
