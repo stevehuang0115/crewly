@@ -250,6 +250,67 @@ describe('ChannelStore', () => {
     });
   });
 
+  describe('findActiveChannelByTeam', () => {
+    it('returns null when the team has no channel', () => {
+      expect(store.findActiveChannelByTeam('team-x')).toBeNull();
+    });
+
+    it('returns the active team channel matching the teamId', () => {
+      const ch = store.create({
+        agentSession: '',
+        ownerUserId: 'user-a',
+        name: '#general',
+        type: 'channel',
+        teamId: 'team-1',
+      });
+      expect(store.findActiveChannelByTeam('team-1')?.id).toBe(ch.id);
+    });
+
+    it('ignores DM rows and channels of other teams', () => {
+      store.create({ agentSession: 'sess-a', ownerUserId: 'user-a', name: 'DM' });
+      store.create({
+        agentSession: '',
+        ownerUserId: 'user-a',
+        name: '#other',
+        type: 'channel',
+        teamId: 'team-2',
+      });
+      expect(store.findActiveChannelByTeam('team-1')).toBeNull();
+    });
+
+    it('ignores archived channels', () => {
+      const ch = store.create({
+        agentSession: '',
+        ownerUserId: 'user-a',
+        name: '#general',
+        type: 'channel',
+        teamId: 'team-1',
+      });
+      store.archive(ch.id);
+      expect(store.findActiveChannelByTeam('team-1')).toBeNull();
+    });
+
+    it('returns the oldest channel when a team has several', () => {
+      const first = store.create({
+        agentSession: '',
+        ownerUserId: 'user-a',
+        name: '#general',
+        type: 'channel',
+        teamId: 'team-1',
+        nowMs: 1000,
+      });
+      store.create({
+        agentSession: '',
+        ownerUserId: 'user-a',
+        name: '#random',
+        type: 'channel',
+        teamId: 'team-1',
+        nowMs: 2000,
+      });
+      expect(store.findActiveChannelByTeam('team-1')?.id).toBe(first.id);
+    });
+  });
+
   describe('listByOwner', () => {
     it('returns only this user\'s channels', () => {
       store.create({ agentSession: 'sess-a', ownerUserId: 'user-a', name: 'A', nowMs: 100 });

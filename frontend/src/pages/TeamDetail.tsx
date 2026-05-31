@@ -12,6 +12,7 @@ import { useAlert, useConfirm } from '../components/UI/Dialog';
 import { webSocketService } from '../services/websocket.service';
 import { apiService } from '../services/api.service';
 import { assignDefaultAvatars } from '../utils/team.utils';
+import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
 import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
 import { CronJobPanel } from '@/components/Settings/CronJobPanel';
 
@@ -623,6 +624,8 @@ export const TeamDetail: React.FC = () => {
         onViewTerminal={handleViewTerminal}
         onDeleteTeam={handleDeleteTeam}
         onEditTeam={handleOpenEditTeam}
+        onOpenChat={() => navigate(`/team-chat?${TEAM_QUERY_PARAM}=${team.id}`)}
+        onOpenWiki={() => navigate(`/wiki?${TEAM_QUERY_PARAM}=${team.id}`)}
         isStoppingTeam={stopTeamLoading}
         isStartingTeam={startTeamLoading}
       />

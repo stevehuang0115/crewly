@@ -24,7 +24,6 @@ vi.mock('./pages/Assignments', () => ({ Assignments: () => <div>Assignments Page
 vi.mock('./pages/ScheduledCheckins', () => ({ ScheduledCheckins: () => <div>Schedules & Cron Page</div> }));
 vi.mock('./pages/Factory', () => ({ Factory: () => <div>Factory Page</div> }));
 vi.mock('./pages/Settings', () => ({ Settings: () => <div>Settings Page</div> }));
-vi.mock('./pages/Chat', () => ({ Chat: () => <div>Chat Page</div> }));
 vi.mock('./pages/Marketplace', () => ({ default: () => <div>Marketplace Page</div> }));
 vi.mock('./pages/MarketplaceDetail', () => ({ default: () => <div>Marketplace Detail Page</div> }));
 vi.mock('./pages/Knowledge', () => ({ Knowledge: () => <div>Knowledge Page</div> }));
@@ -41,9 +40,9 @@ vi.mock('./pages/Missions', () => ({ Missions: () => <div>Missions Page</div> })
 vi.mock('./pages/MissionDetail', () => ({ MissionDetail: () => <div>Mission Detail Page</div> }));
 vi.mock('./pages/RequestDetail', () => ({ RequestDetail: () => <div>Request Detail Page</div> }));
 
-// Phase B Slack-like multi-team chat — mounted at /team-chat.
-vi.mock('./components/Chat-team', () => ({
-  default: () => <div data-testid="team-chat-route">Team Chat Page</div>,
+// Consolidated multi-team chat — mounted live at /team-chat via TeamChatRoute.
+vi.mock('./components/Chat-team/TeamChatRoute', () => ({
+  TeamChatRoute: () => <div data-testid="team-chat-route">Team Chat Page</div>,
 }));
 
 describe('App routes', () => {
@@ -56,12 +55,30 @@ describe('App routes', () => {
     expect(window.location.pathname).toBe('/scheduled-checkins');
   });
 
-  it('mounts TeamChatPage at /team-chat', async () => {
+  it('mounts the live TeamChatRoute at /team-chat', async () => {
     window.history.pushState({}, '', '/team-chat');
 
     render(<App />);
 
     expect(await screen.findByTestId('team-chat-route')).toBeInTheDocument();
+  });
+
+  it('redirects the former /chat to the consolidated /team-chat', async () => {
+    window.history.pushState({}, '', '/chat');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('team-chat-route')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/team-chat');
+  });
+
+  it('redirects the former /agents to the consolidated /team-chat', async () => {
+    window.history.pushState({}, '', '/agents');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('team-chat-route')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/team-chat');
   });
 
   it('mounts WorkItemDetail (not the list) at /workitems/:id', async () => {

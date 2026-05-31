@@ -50,21 +50,19 @@ describe('TeamHeader', () => {
     expect(mockProps.onStartTeam).toHaveBeenCalled();
   });
 
-  it('shows View Terminal button for orchestrator team', () => {
+  it('shows View Terminal button for an active orchestrator team', () => {
+    // View Terminal only renders for the orchestrator team while it is active.
     const orchestratorTeam = { ...mockTeam, id: 'orchestrator', name: 'Orchestrator Team' };
-    render(<TeamHeader {...mockProps} team={orchestratorTeam} />);
+    render(<TeamHeader {...mockProps} team={orchestratorTeam} teamStatus="active" />);
     expect(screen.getByText('View Terminal')).toBeInTheDocument();
   });
 
-  it('does not show Delete Team in overflow menu for orchestrator team', async () => {
+  it('does not render the overflow menu (nor Delete Team) for the orchestrator team', () => {
     const orchestratorTeam = { ...mockTeam, id: 'orchestrator', name: 'Orchestrator Team' };
     render(<TeamHeader {...mockProps} team={orchestratorTeam} />);
 
-    // Open the overflow menu
-    const menuButton = screen.getByRole('button', { name: /more options/i });
-    fireEvent.click(menuButton);
-
-    // Delete Team should not be present for orchestrator
+    // The orchestrator team intentionally has no edit/delete overflow menu.
+    expect(screen.queryByRole('button', { name: /more options/i })).not.toBeInTheDocument();
     expect(screen.queryByText('Delete Team')).not.toBeInTheDocument();
   });
 
@@ -77,5 +75,37 @@ describe('TeamHeader', () => {
 
     // Delete Team should be visible in the menu
     expect(screen.getByText('Delete Team')).toBeInTheDocument();
+  });
+
+  it('renders Chat and Wiki buttons and fires their callbacks for a regular team', () => {
+    const onOpenChat = vi.fn();
+    const onOpenWiki = vi.fn();
+    render(<TeamHeader {...mockProps} onOpenChat={onOpenChat} onOpenWiki={onOpenWiki} />);
+
+    fireEvent.click(screen.getByText('Chat'));
+    expect(onOpenChat).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('Wiki'));
+    expect(onOpenWiki).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render Chat/Wiki buttons when no callbacks are provided', () => {
+    render(<TeamHeader {...mockProps} />);
+    expect(screen.queryByText('Chat')).not.toBeInTheDocument();
+    expect(screen.queryByText('Wiki')).not.toBeInTheDocument();
+  });
+
+  it('hides Chat/Wiki buttons for the orchestrator team even when callbacks are given', () => {
+    const orchestratorTeam = { ...mockTeam, id: 'orchestrator', name: 'Orchestrator Team' };
+    render(
+      <TeamHeader
+        {...mockProps}
+        team={orchestratorTeam}
+        onOpenChat={vi.fn()}
+        onOpenWiki={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Chat')).not.toBeInTheDocument();
+    expect(screen.queryByText('Wiki')).not.toBeInTheDocument();
   });
 });

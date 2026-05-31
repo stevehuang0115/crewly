@@ -21,6 +21,10 @@ export interface TeamHeaderProps {
   onViewTerminal: () => void;
   onDeleteTeam: () => void;
   onEditTeam: () => void;
+  /** Navigate to this team's conversation in the consolidated chat. */
+  onOpenChat?: () => void;
+  /** Navigate to this team's wiki vault. */
+  onOpenWiki?: () => void;
   isStoppingTeam?: boolean;
   isStartingTeam?: boolean;
 }

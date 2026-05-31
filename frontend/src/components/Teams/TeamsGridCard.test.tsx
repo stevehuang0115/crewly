@@ -22,9 +22,17 @@ vi.mock('lucide-react', () => ({
   MoreVertical: () => <svg data-testid="more-icon" />,
 }));
 
-// Mock OverflowMenu
+// Mock OverflowMenu — render the items as buttons so item wiring is testable.
 vi.mock('@/components/UI/OverflowMenu', () => ({
-  OverflowMenu: () => <div data-testid="overflow-menu" />,
+  OverflowMenu: ({ items = [] }: { items?: Array<{ label: string; onClick?: () => void }> }) => (
+    <div data-testid="overflow-menu">
+      {items.map((item) => (
+        <button key={item.label} onClick={item.onClick}>
+          {item.label}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 // Mock MemberAvatar
@@ -247,6 +255,26 @@ describe('TeamsGridCard', () => {
       render(<TeamsGridCard {...defaultProps} />);
       fireEvent.click(screen.getByTestId(`team-card-${defaultProps.team.id}`));
       expect(defaultProps.onClick).toHaveBeenCalled();
+    });
+  });
+
+  describe('Chat / Wiki menu actions', () => {
+    it('renders Open Chat / Open Wiki items and fires their callbacks with the team id', () => {
+      const onOpenChat = vi.fn();
+      const onOpenWiki = vi.fn();
+      render(<TeamsGridCard {...defaultProps} onOpenChat={onOpenChat} onOpenWiki={onOpenWiki} />);
+
+      fireEvent.click(screen.getByText('Open Chat'));
+      expect(onOpenChat).toHaveBeenCalledWith(defaultProps.team.id);
+
+      fireEvent.click(screen.getByText('Open Wiki'));
+      expect(onOpenWiki).toHaveBeenCalledWith(defaultProps.team.id);
+    });
+
+    it('omits the Chat/Wiki items when no callbacks are provided', () => {
+      render(<TeamsGridCard {...defaultProps} />);
+      expect(screen.queryByText('Open Chat')).not.toBeInTheDocument();
+      expect(screen.queryByText('Open Wiki')).not.toBeInTheDocument();
     });
   });
 });

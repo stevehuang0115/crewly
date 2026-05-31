@@ -81,6 +81,15 @@ export interface LiveTeamChatPageProps {
   initialWorkspaceId?: string | null;
   /** Initial conversation selection. Defaults to the first row. */
   initialConversationId?: string | null;
+  /**
+   * Optional always-present "Direct Messages" workspace. When provided AND
+   * the user has at least one DM channel, it is prepended to the rail so
+   * DMs (e.g. the orchestrator + agents) are reachable even when the user
+   * has no team channels — otherwise the page would dead-end on the
+   * NoTeams empty state. DMs are workspace-agnostic, so this synthetic
+   * workspace simply scopes the center panel to show only DMs.
+   */
+  directMessagesWorkspace?: { id: string; name: string } | null;
 }
 
 export function LiveTeamChatPage({
@@ -91,6 +100,7 @@ export function LiveTeamChatPage({
   mentionables = [],
   initialWorkspaceId,
   initialConversationId,
+  directMessagesWorkspace,
 }: LiveTeamChatPageProps): JSX.Element {
   return (
     <ChatAPIProvider
@@ -104,6 +114,7 @@ export function LiveTeamChatPage({
         mentionables={mentionables}
         initialWorkspaceId={initialWorkspaceId}
         initialConversationId={initialConversationId}
+        directMessagesWorkspace={directMessagesWorkspace}
       />
     </ChatAPIProvider>
   );
@@ -118,6 +129,7 @@ interface BodyProps {
   mentionables: MentionTarget[];
   initialWorkspaceId?: string | null;
   initialConversationId?: string | null;
+  directMessagesWorkspace?: { id: string; name: string } | null;
 }
 
 function LiveTeamChatPageBody({
@@ -125,10 +137,34 @@ function LiveTeamChatPageBody({
   mentionables,
   initialWorkspaceId,
   initialConversationId,
+  directMessagesWorkspace,
 }: BodyProps): JSX.Element {
   const { channels, loading: channelsLoading, error: channelsError } = useChannels();
 
-  const workspaces = useObservedWorkspaces(channels, { teamLabels });
+  const teamWorkspaces = useObservedWorkspaces(channels, { teamLabels });
+
+  // Prepend the synthetic "Direct Messages" workspace when the host supplies
+  // one and the user actually has DMs — so DMs (orchestrator + agents) are
+  // reachable even with zero team channels. DMs are not team-scoped, so this
+  // workspace just narrows the center panel to the DM group.
+  const hasDms = useMemo(
+    () => channels.some((c) => (c.type ?? 'dm') !== 'channel'),
+    [channels],
+  );
+  const workspaces = useMemo<Workspace[]>(() => {
+    if (directMessagesWorkspace && hasDms) {
+      return [
+        {
+          id: directMessagesWorkspace.id,
+          name: directMessagesWorkspace.name,
+          initials: 'DM',
+          kind: 'activity',
+        },
+        ...teamWorkspaces,
+      ];
+    }
+    return teamWorkspaces;
+  }, [directMessagesWorkspace, hasDms, teamWorkspaces]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
     initialWorkspaceId ?? null,
   );

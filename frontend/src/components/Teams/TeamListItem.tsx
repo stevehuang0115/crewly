@@ -10,6 +10,10 @@ interface TeamListItemProps {
   onViewTeam?: (teamId: string) => void;
   onEditTeam?: (teamId: string) => void;
   onDeleteTeam?: (teamId: string) => void;
+  /** Open this team's conversation in the consolidated chat. */
+  onOpenChat?: (teamId: string) => void;
+  /** Open this team's wiki vault. */
+  onOpenWiki?: (teamId: string) => void;
   projectName?: string;
 }
 
@@ -19,6 +23,8 @@ export const TeamListItem: React.FC<TeamListItemProps> = ({
   onViewTeam,
   onEditTeam,
   onDeleteTeam,
+  onOpenChat,
+  onOpenWiki,
   projectName
 }) => {
   const members = team.members || [];
@@ -72,6 +78,8 @@ export const TeamListItem: React.FC<TeamListItemProps> = ({
             items={[
               ...(onViewTeam ? [{ label: 'View Team', onClick: () => onViewTeam(team.id) }] : []),
               ...(onEditTeam ? [{ label: 'Edit Team', onClick: () => onEditTeam(team.id) }] : []),
+              ...(onOpenChat ? [{ label: 'Open Chat', onClick: () => onOpenChat(team.id) }] : []),
+              ...(onOpenWiki ? [{ label: 'Open Wiki', onClick: () => onOpenWiki(team.id) }] : []),
               ...(onDeleteTeam ? [{ label: 'Delete Team', danger: true, onClick: () => onDeleteTeam(team.id) }] : [])
             ]}
           />

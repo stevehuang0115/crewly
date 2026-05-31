@@ -720,6 +720,54 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * Find-or-create the canonical `type='channel'` channel for a team.
+   *
+   * Backs the consolidated team-chat surface: opening a team's workspace
+   * deep-link must always land on a real channel, but nothing else
+   * auto-creates one. This is idempotent — if the team already has any
+   * active channel it is returned untouched; otherwise a single default
+   * channel (e.g. `#general`) is created. The same tenant/validation rules
+   * as the public {@link createChannel} apply (the caller must pass team
+   * membership when a `validateTeamMembership` check is wired).
+   *
+   * @param args - Ensure args
+   * @param args.teamId - The team to ensure a channel for (required)
+   * @param args.name - Display name for a freshly created channel; defaults to `#general`
+   * @param args.purpose - Optional channel purpose
+   * @param args.principal - The authenticated caller
+   * @returns The existing or freshly created channel, with `created` flag
+   * @throws {ChatError} `validation_error` (400) when `teamId` is blank
+   * @throws {ChatError} `forbidden_team` (403) when the caller fails the membership check
+   */
+  ensureTeamChannel(args: {
+    teamId: string;
+    name?: string;
+    purpose?: string;
+    principal: ChatPrincipal;
+  }): { channel: ChatChannelDTO; created: boolean } {
+    const teamId = (args.teamId ?? '').trim();
+    if (teamId.length === 0) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'teamId is required',
+      );
+    }
+    const existing = this.channels.findActiveChannelByTeam(teamId);
+    if (existing) {
+      return { channel: this.toChannelDTO(existing), created: false };
+    }
+    const channel = this.createChannel({
+      name: (args.name ?? '#general').trim(),
+      purpose: args.purpose,
+      principal: args.principal,
+      type: 'channel',
+      teamId,
+    });
+    return { channel, created: true };
+  }
+
+  /**
    * Server-internal idempotent helper used by migration / bridge code to
    * map a legacy conversationId (e.g. `slack-D0AC7-1234`, `web-conv-abc`)
    * onto a chat-v2 channel row with the conversationId as the primary key.

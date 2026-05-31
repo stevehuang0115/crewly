@@ -14,7 +14,6 @@ import {
 	FolderOpen,
 	Users,
 	MessageSquare,
-	MessagesSquare,
 	Settings,
 	ChevronLeft,
 	ChevronRight,
@@ -69,9 +68,10 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Projects', href: '/projects', icon: FolderOpen },
 			{ name: 'Teams', href: '/teams', icon: Users },
 			{ name: 'Missions', href: '/missions', icon: Target },
-			{ name: 'Chat', href: '/chat', icon: MessageSquare },
+			// Consolidated chat: one page for the orchestrator, agent DMs, and
+			// team channels. (Former separate /chat + /agents now redirect here.)
+			{ name: 'Chat', href: '/team-chat', icon: MessageSquare },
 			{ name: 'Wiki', href: '/wiki', icon: BookOpen },
-			{ name: 'Agents', href: '/agents', icon: MessagesSquare },
 		],
 	},
 	{

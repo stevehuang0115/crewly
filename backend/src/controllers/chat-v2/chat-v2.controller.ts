@@ -244,6 +244,7 @@ export interface ChatV2ControllerHandlers {
   listMessages: (req: Request, res: Response) => void;
   sendMessage: (req: Request, res: Response) => void | Promise<void>;
   ensureDmChannel: (req: Request, res: Response) => void;
+  ensureTeamChannel: (req: Request, res: Response) => void;
   listAgents: (req: Request, res: Response) => void | Promise<void>;
   getAgentPresence: (req: Request, res: Response) => void | Promise<void>;
 }
@@ -569,6 +570,31 @@ export function createChatV2Controller(
         const body = req.body ?? {};
         const { channel, created } = service.ensureDmChannel({
           agentSession: body.agentSession,
+          name: body.name,
+          purpose: body.purpose,
+          principal,
+        });
+        res.status(created ? 201 : 200).json({ success: true, data: channel });
+      }),
+
+    /**
+     * POST /channels/team/ensure
+     *
+     * Find-or-create the canonical channel for a team. Backs the
+     * consolidated team-chat deep-link (`/team-chat?team=<id>`) so opening
+     * a team's workspace always lands on a real channel even if none was
+     * created manually.
+     *
+     * Status code:
+     *  - 200 when the team already had a channel
+     *  - 201 when a new channel was created
+     */
+    ensureTeamChannel: (req, res) =>
+      runHandler(res, () => {
+        const principal = principalFromRequest(req);
+        const body = req.body ?? {};
+        const { channel, created } = service.ensureTeamChannel({
+          teamId: body.teamId,
           name: body.name,
           purpose: body.purpose,
           principal,

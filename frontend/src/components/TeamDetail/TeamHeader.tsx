@@ -1,5 +1,5 @@
 import React from 'react';
-import { Terminal, Play, Square } from 'lucide-react';
+import { Terminal, Play, Square, MessageSquare, BookOpen } from 'lucide-react';
 import { Button } from '../UI/Button';
 import { OverflowMenu } from '../UI/OverflowMenu';
 import { TeamHeaderProps } from './types';
@@ -13,6 +13,8 @@ export const TeamHeader: React.FC<TeamHeaderProps> = ({
   onViewTerminal,
   onDeleteTeam,
   onEditTeam,
+  onOpenChat,
+  onOpenWiki,
   isStoppingTeam = false,
   isStartingTeam = false,
 }) => {
@@ -49,6 +51,18 @@ export const TeamHeader: React.FC<TeamHeaderProps> = ({
         {isOrchestratorTeam && teamStatus === 'active' && (
           <Button variant="primary" onClick={onViewTerminal} icon={Terminal}>
             View Terminal
+          </Button>
+        )}
+        {/* Chat / Wiki deep-links — real teams only (orchestrator has neither
+            a team workspace nor a team wiki vault). */}
+        {!isOrchestratorTeam && onOpenChat && (
+          <Button variant="secondary" onClick={onOpenChat} icon={MessageSquare}>
+            Chat
+          </Button>
+        )}
+        {!isOrchestratorTeam && onOpenWiki && (
+          <Button variant="secondary" onClick={onOpenWiki} icon={BookOpen}>
+            Wiki
           </Button>
         )}
         {/* Three-dot menu with edit/delete actions - hidden for orchestrator */}

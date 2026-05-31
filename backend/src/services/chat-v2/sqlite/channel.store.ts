@@ -219,6 +219,31 @@ export class ChannelStore {
   }
 
   /**
+   * Find the oldest active `type='channel'` row for a team, if any.
+   *
+   * Team channels are not owner-scoped — a team channel belongs to the
+   * whole team — so this lookup is keyed on `team_id` alone. Ordering by
+   * `created_at ASC` returns the team's original (e.g. `#general`) channel
+   * stably, which is what `ensureTeamChannel` treats as the canonical
+   * "the team already has a channel" marker.
+   *
+   * @param teamId - The team id whose channel to find
+   * @returns The oldest active team channel row, or null when none exists
+   */
+  findActiveChannelByTeam(teamId: string): ChatChannelRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT ${CHANNEL_SELECT_COLUMNS}
+         FROM chat_channels
+         WHERE team_id = ? AND archived_at IS NULL AND type = 'channel'
+         ORDER BY created_at ASC
+         LIMIT 1`,
+      )
+      .get(teamId) as ChatChannelRow | undefined;
+    return row ?? null;
+  }
+
+  /**
    * List channels owned by a user.
    *
    * Phase C — extended with `type` + `teamId` filter options so the

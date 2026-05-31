@@ -596,6 +596,52 @@ describe('chat-v2 controller (REST)', () => {
       }
     });
 
+    it('POST /channels/team/ensure — creates a default team channel on first call (201)', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const res = await request(app)
+          .post('/api/chat/channels/team/ensure')
+          .send({ teamId: 'team-1' });
+        expect(res.status).toBe(201);
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.type).toBe('channel');
+        expect(res.body.data.teamId).toBe('team-1');
+        expect(res.body.data.name).toBe('#general');
+      } finally {
+        service.close();
+      }
+    });
+
+    it('POST /channels/team/ensure — returns the same channel on second call (200)', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const first = await request(app)
+          .post('/api/chat/channels/team/ensure')
+          .send({ teamId: 'team-1' });
+        expect(first.status).toBe(201);
+        const second = await request(app)
+          .post('/api/chat/channels/team/ensure')
+          .send({ teamId: 'team-1' });
+        expect(second.status).toBe(200);
+        expect(second.body.data.id).toBe(first.body.data.id);
+      } finally {
+        service.close();
+      }
+    });
+
+    it('POST /channels/team/ensure — 400 on empty teamId', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const res = await request(app)
+          .post('/api/chat/channels/team/ensure')
+          .send({ name: '#general' });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      } finally {
+        service.close();
+      }
+    });
+
     it('GET /agents — returns flattened directory entries when wired', async () => {
       const { app, service } = buildAppWithProviders({
         directoryTeams: [
