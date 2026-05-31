@@ -298,3 +298,50 @@ describe('WikiSearchService — overlay (sop/team-norm) content', () => {
     expect(hit).toBeDefined();
   });
 });
+
+describe('WikiSearchService.searchAllVaults — merged cross-vault ranking', () => {
+  let root: string;
+  let vaultA: string;
+  let vaultB: string;
+  let svc: WikiSearchService;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-search-all-'));
+    vaultA = path.join(root, 'a');
+    vaultB = path.join(root, 'b');
+    await fs.mkdir(vaultA, { recursive: true });
+    await fs.mkdir(vaultB, { recursive: true });
+    await fs.writeFile(path.join(vaultA, 'pricing.md'), '# Pricing\n$999/mo locked.\n', 'utf8');
+    await fs.writeFile(path.join(vaultB, 'roadmap.md'), 'Pricing experiments planned for Q3.\n', 'utf8');
+    WikiSearchService.resetInstance();
+    svc = WikiSearchService.getInstance();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('returns hits from multiple vaults, each labelled with its vault', async () => {
+    const result = await svc.searchAllVaults({
+      vaults: [
+        { vaultPath: vaultA, label: 'Global' },
+        { vaultPath: vaultB, label: 'Team X' },
+      ],
+      query: 'pricing',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const byVault = Object.fromEntries(result.hits.map((h) => [h.vaultPath, h]));
+    expect(byVault[vaultA]).toBeDefined();
+    expect(byVault[vaultB]).toBeDefined();
+    expect(byVault[vaultA].vaultLabel).toBe('Global');
+    expect(byVault[vaultB].vaultLabel).toBe('Team X');
+    // top-level vaultPath is '' for an all-vault search
+    expect(result.vaultPath).toBe('');
+  });
+
+  it('rejects an empty query', async () => {
+    const result = await svc.searchAllVaults({ vaults: [{ vaultPath: vaultA }], query: '   ' });
+    expect(result.ok).toBe(false);
+  });
+});

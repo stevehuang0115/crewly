@@ -602,6 +602,75 @@ interface WikiTreeNode {
 }
 
 /**
+ * Resolve a human-readable label for a vault. Team vaults use the team's
+ * `name` from `<team-dir>/config.json` (the schema vault_id is a UUID);
+ * project vaults look up `~/.crewly/projects.json` by path; otherwise the
+ * schema vault_id (or path basename) is used.
+ *
+ * @param vaultPath - Absolute vault path.
+ * @param scope - Vault scope.
+ * @param vaultId - Schema vault_id (fallback label).
+ * @returns The resolved label.
+ */
+async function resolveVaultLabel(
+  vaultPath: string,
+  scope: 'project' | 'team' | 'global' | 'unknown',
+  vaultId: string,
+): Promise<string> {
+  let label = vaultId || path.basename(path.dirname(vaultPath));
+  if (scope === 'team') {
+    try {
+      const cfg = JSON.parse(
+        await fs.readFile(path.join(path.dirname(vaultPath), 'config.json'), 'utf8'),
+      ) as { name?: string; teamName?: string };
+      const friendly = cfg.name ?? cfg.teamName;
+      if (typeof friendly === 'string' && friendly.length > 0) label = friendly;
+    } catch {
+      // fall back to UUID label
+    }
+  } else if (scope === 'project') {
+    try {
+      const projects = JSON.parse(
+        await fs.readFile(path.join(os.homedir(), '.crewly/projects.json'), 'utf8'),
+      ) as Array<{ name?: string; path?: string }>;
+      const projectRoot = path.dirname(path.dirname(vaultPath));
+      const hit = projects.find((p) => p.path === projectRoot);
+      if (hit && typeof hit.name === 'string' && hit.name.length > 0) label = hit.name;
+    } catch {
+      // fall back to vault_id / basename
+    }
+  }
+  return label;
+}
+
+/**
+ * Discover all vaults with scope + human label (no stats). Shared by
+ * `/vaults` and `/search-all`.
+ *
+ * @returns Vault descriptors.
+ */
+async function discoverVaultsWithLabels(): Promise<
+  Array<{ vaultPath: string; scope: 'project' | 'team' | 'global' | 'unknown'; label: string }>
+> {
+  const vaultPaths = await discoverWikiVaults();
+  const schemaLoader = new SchemaLoaderService();
+  return Promise.all(
+    vaultPaths.map(async (vaultPath) => {
+      let scope = 'unknown' as 'project' | 'team' | 'global' | 'unknown';
+      let vaultId = '';
+      try {
+        const schema = await schemaLoader.load(vaultPath);
+        scope = schema.vault_scope;
+        vaultId = schema.vault_id;
+      } catch {
+        // malformed schema — still surface
+      }
+      return { vaultPath, scope, label: await resolveVaultLabel(vaultPath, scope, vaultId) };
+    }),
+  );
+}
+
+/**
  * GET /api/wiki/vaults
  *
  * Returns the list of all known vaults (project + team + global) with
@@ -646,44 +715,8 @@ export async function listVaults(
           // ignore — show vault anyway with null stats
         }
 
-        // Human-readable label.
-        //
-        // Default: schema vault_id (good for global + project where the id IS
-        // a human-readable slug). For TEAM vaults the schema's vault_id is
-        // the team UUID, which makes the sidebar unreadable — fall back to
-        // the team's `name` field from `<team-dir>/config.json` when we can.
-        // For PROJECT vaults whose vault_id is generic (e.g. "project"), look
-        // it up in `~/.crewly/projects.json` by path so the sidebar shows
-        // the registered project name (Closie / Flopost / CE / Stevesprompt).
-        let label = vaultId || path.basename(path.dirname(vaultPath));
-        if (scope === 'team') {
-          const teamDir = path.dirname(vaultPath);
-          try {
-            const cfgRaw = await fs.readFile(path.join(teamDir, 'config.json'), 'utf8');
-            const cfg = JSON.parse(cfgRaw) as { name?: string; teamName?: string };
-            const friendly = cfg.name ?? cfg.teamName;
-            if (typeof friendly === 'string' && friendly.length > 0) {
-              label = friendly;
-            }
-          } catch {
-            // ignore — fall back to UUID label
-          }
-        } else if (scope === 'project') {
-          // Look up project name from projects.json by matching the vault
-          // path's parent (project root). Falls back to vault_id/path.
-          try {
-            const projectsJsonPath = path.join(os.homedir(), '.crewly/projects.json');
-            const raw = await fs.readFile(projectsJsonPath, 'utf8');
-            const projects = JSON.parse(raw) as Array<{ name?: string; path?: string }>;
-            const projectRoot = path.dirname(path.dirname(vaultPath)); // strip /.crewly/wiki
-            const hit = projects.find((p) => p.path === projectRoot);
-            if (hit && typeof hit.name === 'string' && hit.name.length > 0) {
-              label = hit.name;
-            }
-          } catch {
-            // ignore — fall back to vault_id / basename
-          }
-        }
+        // Human-readable label (team name / project name / vault_id).
+        const label = await resolveVaultLabel(vaultPath, scope, vaultId);
 
         return {
           vaultPath,
@@ -975,6 +1008,36 @@ export async function searchVault(
       .json({ success: false, error: outcome.reason, message: outcome.message });
   } catch (err) {
     logger.error('wiki/search threw', { error: (err as Error).message });
+    next(err);
+  }
+}
+
+/**
+ * GET /api/wiki/search-all?q=…
+ *
+ * Search EVERY vault and return one merged BM25-ranked list. Each hit carries
+ * its owning vaultPath + vaultLabel so the UI can show where it lives and jump
+ * to it. IDF is computed over the combined corpus for cross-vault comparability.
+ */
+export async function searchAllVaults(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const query = typeof req.query.q === 'string' ? req.query.q : '';
+    const vaults = await discoverVaultsWithLabels();
+    const outcome = await WikiSearchService.getInstance().searchAllVaults({
+      vaults: vaults.map((v) => ({ vaultPath: v.vaultPath, label: v.label })),
+      query,
+    });
+    if (outcome.ok) {
+      res.status(200).json({ success: true, ...outcome });
+      return;
+    }
+    res.status(400).json({ success: false, error: outcome.reason, message: outcome.message });
+  } catch (err) {
+    logger.error('wiki/search-all threw', { error: (err as Error).message });
     next(err);
   }
 }

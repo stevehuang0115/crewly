@@ -356,6 +356,39 @@
   color: var(--color-text-primary, #e8eaee);
 }
 
+/* Search scope toggle (this vault / all vaults) */
+.wiki-search-scope {
+  display: flex;
+  gap: 4px;
+  padding: 0 10px 8px;
+}
+
+.wiki-search-scope-btn {
+  flex: 1;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--color-text-secondary, #9ba2af);
+  cursor: pointer;
+}
+
+.wiki-search-scope-btn.active {
+  background: var(--color-primary, #6366f1);
+  border-color: var(--color-primary, #6366f1);
+  color: #fff;
+}
+
+.wiki-search-vault {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-surface-raised, rgba(255, 255, 255, 0.08));
+  color: var(--color-text-secondary, #9ba2af);
+}
+
 /* Search */
 
 .wiki-search-bar {
