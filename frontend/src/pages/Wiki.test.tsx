@@ -14,6 +14,7 @@ import {
   resolveWikilink,
   pickInitialVault,
   partitionVaultTree,
+  allCanonicalFoldersEmpty,
   type WikiVault,
 } from './Wiki';
 
@@ -150,5 +151,31 @@ describe('partitionVaultTree', () => {
     const { canonicalNodes, workingNodes } = partitionVaultTree(tree);
     expect(canonicalNodes).toHaveLength(0);
     expect(workingNodes).toHaveLength(1);
+  });
+});
+
+describe('allCanonicalFoldersEmpty', () => {
+  const emptyDir = (name: string) => ({
+    name,
+    relativePath: name,
+    type: 'directory' as const,
+    frozen: true,
+    children: [],
+  });
+
+  it('is false when there are no canonical folders', () => {
+    expect(allCanonicalFoldersEmpty([])).toBe(false);
+  });
+
+  it('is true when every canonical folder has no children', () => {
+    expect(allCanonicalFoldersEmpty([emptyDir('sop'), emptyDir('team-norm')])).toBe(true);
+  });
+
+  it('is false when at least one canonical folder has children', () => {
+    const filled = {
+      ...emptyDir('sop'),
+      children: [{ name: 'a.md', relativePath: 'sop/a.md', type: 'file' as const }],
+    };
+    expect(allCanonicalFoldersEmpty([filled, emptyDir('team-norm')])).toBe(false);
   });
 });

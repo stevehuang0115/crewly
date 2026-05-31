@@ -130,6 +130,20 @@ export function partitionVaultTree(tree: WikiTreeNode[] | null): {
   return { canonicalNodes, workingNodes };
 }
 
+/**
+ * Whether every canonical folder is empty (no child pages). Used to decide
+ * when to show the "served from config, not materialised here" explainer.
+ *
+ * @param canonicalNodes - The frozen top-level folders.
+ * @returns true when there is at least one canonical folder and all are empty.
+ */
+export function allCanonicalFoldersEmpty(canonicalNodes: WikiTreeNode[]): boolean {
+  return (
+    canonicalNodes.length > 0 &&
+    canonicalNodes.every((n) => (n.children?.length ?? 0) === 0)
+  );
+}
+
 interface PagePayload {
   vaultPath: string;
   relativePath: string;
@@ -842,6 +856,13 @@ export function Wiki(): JSX.Element {
                   <div className="wiki-tree-group-label" title="Schema-frozen folders — the source of truth referenced by the engine. Agents can't overwrite these via the wiki.">
                     <Lock size={11} /> Canonical · source of truth
                   </div>
+                  {allCanonicalFoldersEmpty(canonicalNodes) && (
+                    <p className="wiki-tree-canonical-note">
+                      Reserved folders. Team SOPs &amp; norms are currently
+                      served to agents straight from <code>config/sops/</code>;
+                      they haven&apos;t been materialised as wiki pages yet.
+                    </p>
+                  )}
                   <TreeView
                     nodes={canonicalNodes}
                     selected={selectedPage}
@@ -849,6 +870,7 @@ export function Wiki(): JSX.Element {
                     collapsed={collapsedFolders}
                     onToggleFolder={toggleFolder}
                     labelOverrides={CANONICAL_FOLDER_LABELS}
+                    rootClassName="wiki-tree--flush"
                   />
                   {workingNodes.length > 0 && (
                     <div className="wiki-tree-group-label">Working notes</div>
@@ -955,6 +977,8 @@ interface TreeViewProps {
    * top-level rows (depth 0) so canonical folders read "SOPs" not "sop".
    */
   labelOverrides?: Record<string, string>;
+  /** Extra class on the depth-0 root `<ul>` (e.g. to opt out of flex-grow). */
+  rootClassName?: string;
   depth?: number;
 }
 
@@ -965,10 +989,14 @@ function TreeView({
   collapsed,
   onToggleFolder,
   labelOverrides,
+  rootClassName,
   depth = 0,
 }: TreeViewProps): JSX.Element {
   return (
-    <ul className="wiki-tree" style={{ paddingLeft: depth === 0 ? 0 : 12 }}>
+    <ul
+      className={`wiki-tree${rootClassName ? ` ${rootClassName}` : ''}`}
+      style={{ paddingLeft: depth === 0 ? 0 : 12 }}
+    >
       {nodes.map((node) => {
         if (node.type === 'directory') {
           const frozenTooltip = node.frozenDescription
@@ -1003,15 +1031,18 @@ function TreeView({
                   </span>
                 )}
               </button>
-              {!isCollapsed && node.children && node.children.length > 0 && (
+              {!isCollapsed && childCount > 0 && (
                 <TreeView
-                  nodes={node.children}
+                  nodes={node.children ?? []}
                   selected={selected}
                   onSelect={onSelect}
                   collapsed={collapsed}
                   onToggleFolder={onToggleFolder}
                   depth={depth + 1}
                 />
+              )}
+              {!isCollapsed && childCount === 0 && (
+                <div className="wiki-tree-empty-hint">No pages yet</div>
               )}
             </li>
           );

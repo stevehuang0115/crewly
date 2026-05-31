@@ -205,6 +205,37 @@
   min-height: 0;
 }
 
+/* Canonical group: size to its (usually tiny) content instead of claiming an
+   equal flex share of the pane — otherwise two sibling .wiki-tree lists split
+   the height 50/50 and the near-empty canonical list leaves a big gap. */
+.wiki-tree--flush {
+  flex: 0 0 auto;
+  overflow: visible;
+  padding-bottom: 0;
+}
+
+.wiki-tree-empty-hint {
+  padding: 2px 8px 4px 34px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--color-text-tertiary, #6b7280);
+}
+
+.wiki-tree-canonical-note {
+  margin: 0;
+  padding: 0 10px 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-text-tertiary, #6b7280);
+}
+
+.wiki-tree-canonical-note code {
+  font-size: 10px;
+  background: var(--color-surface-raised, rgba(255, 255, 255, 0.06));
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
 .wiki-tree li {
   margin: 0;
 }
