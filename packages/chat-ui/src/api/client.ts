@@ -20,6 +20,7 @@
 import type {
   Channel,
   CreateChannelInput,
+  CreateHuddleInput,
   MessagePage,
   SendMessageInput,
   Message,
@@ -71,6 +72,8 @@ export interface CurrentUserIdentity {
 export interface ChatApiClient {
   listChannels(): Promise<Channel[]>;
   createChannel(input: CreateChannelInput): Promise<Channel>;
+  /** Create an ad-hoc multi-agent group chat ("拉群"). */
+  createHuddle(input: CreateHuddleInput): Promise<Channel>;
   listMessages(channelId: string, opts?: { cursor?: string; limit?: number }): Promise<MessagePage>;
   sendMessage(channelId: string, input: SendMessageInput): Promise<Message>;
   getAgentPresence(agentId: string): Promise<AgentPresence>;
@@ -276,6 +279,14 @@ export class HttpChatApiClient implements ChatApiClient {
 
   async createChannel(input: CreateChannelInput): Promise<Channel> {
     const dto = await this.request<ChannelDTO>('/api/chat/channels', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return channelFromDTO(dto);
+  }
+
+  async createHuddle(input: CreateHuddleInput): Promise<Channel> {
+    const dto = await this.request<ChannelDTO>('/api/chat/channels/huddle', {
       method: 'POST',
       body: JSON.stringify(input),
     });

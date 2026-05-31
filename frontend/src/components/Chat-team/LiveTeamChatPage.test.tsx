@@ -83,6 +83,9 @@ function makeStubClient(channels: Channel[], messages: Record<string, Message[]>
     async createChannel(_input: CreateChannelInput): Promise<Channel> {
       throw new Error('not used in this test');
     },
+    async createHuddle(): Promise<Channel> {
+      throw new Error('not used in this test');
+    },
     async listMessages(channelId: string): Promise<MessagePage> {
       return { messages: messages[channelId] ?? [], nextCursor: null };
     },

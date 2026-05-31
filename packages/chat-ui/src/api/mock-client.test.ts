@@ -23,6 +23,18 @@ describe('MockChatApiClient', () => {
     expect(all).toContainEqual(ch);
   });
 
+  it('createHuddle appends a type=huddle channel to the list', async () => {
+    const client = new MockChatApiClient({ initialChannels: [] });
+    const ch = await client.createHuddle({
+      name: 'Launch crew',
+      memberSessions: ['a1', 'a2'],
+    });
+    expect(ch.type).toBe('huddle');
+    expect(ch.name).toBe('Launch crew');
+    const all = await client.listChannels();
+    expect(all).toContainEqual(ch);
+  });
+
   it('sendMessage emits optimistic + confirmed user events, then a delayed agent reply', async () => {
     const client = new MockChatApiClient({ agentReplyDelayMs: 500 });
     const [channel] = await client.listChannels();

@@ -46,7 +46,7 @@ export interface AgentPresence {
  *               Multiple agents may participate; `agentSession` is empty
  *               on the wire and `teamId` is required.
  */
-export type ChannelType = 'dm' | 'channel';
+export type ChannelType = 'dm' | 'channel' | 'huddle';
 
 /**
  * A chat channel — either a 1:1 user↔agent DM or a team-scoped channel.
@@ -105,6 +105,20 @@ export interface CreateChannelInput {
   projectId?: string;
   /** Phase B — optional for `type='dm'`. */
   targetMemberId?: string;
+}
+
+/**
+ * Body for `POST /api/chat/channels/huddle` — create an ad-hoc multi-agent
+ * group chat ("拉群"). Messages posted to the resulting `type='huddle'`
+ * channel fan out to every member agent.
+ */
+export interface CreateHuddleInput {
+  /** Display name for the group (e.g. "Launch crew"). */
+  name: string;
+  /** Optional one-line purpose. */
+  purpose?: string;
+  /** Agent session names to pull into the group. Must be non-empty. */
+  memberSessions: string[];
 }
 
 // =============================================================================

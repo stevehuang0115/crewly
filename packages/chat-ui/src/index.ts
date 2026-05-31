@@ -7,7 +7,7 @@
  */
 
 // Provider
-export { ChatAPIProvider, useChatProviderMode } from './context/ChatAPIProvider';
+export { ChatAPIProvider, useChatProviderMode, useChatApiClient } from './context/ChatAPIProvider';
 export type { ChatAPIProviderProps } from './context/ChatAPIProvider';
 
 // Components
@@ -70,7 +70,9 @@ export type {
   AgentPresence,
   AgentPresenceStatus,
   Channel,
+  ChannelType,
   CreateChannelInput,
+  CreateHuddleInput,
   Message,
   MessageAttachment,
   MessageAuthorRole,
