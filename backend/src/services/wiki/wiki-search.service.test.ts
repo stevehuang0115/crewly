@@ -158,11 +158,53 @@ describe('WikiSearchService', () => {
     });
 
     it('returns empty hits when nothing matches', async () => {
-      const result = await svc.search({ vaultPath: vaultRoot, query: 'zzzzz-not-present' });
+      // Single nonsense token: BM25 matches at the term level, so use a query
+      // that tokenises to one term present in no document.
+      const result = await svc.search({ vaultPath: vaultRoot, query: 'zzzzzqqqqq' });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.hits).toEqual([]);
       expect(result.truncated).toBe(false);
+    });
+  });
+
+  describe('BM25 scoring', () => {
+    it('exposes a positive BM25 score on hits', async () => {
+      const result = await svc.search({ vaultPath: vaultRoot, query: 'anthropic' });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.hits[0].score).toBeGreaterThan(0);
+    });
+
+    it('matches at the term level (multi-word query is OR over terms)', async () => {
+      const result = await svc.search({ vaultPath: vaultRoot, query: 'anthropic pricing' });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const paths = result.hits.map((h) => h.relativePath);
+      expect(paths).toContain('llm-curated/customers/anthropic.md');
+      expect(paths).toContain('llm-curated/decisions/pricing.md');
+    });
+
+    it('ranks a rare term above a doc that only matches a common term', async () => {
+      // "the" is common (appears everywhere we add); "zephyr" is rare → higher idf.
+      await writePage('llm-curated/common-a.md', 'the the the the the the the the');
+      await writePage('llm-curated/common-b.md', 'the the the the the the the the');
+      await writePage('llm-curated/rare.md', 'the zephyr protocol');
+      const result = await svc.search({ vaultPath: vaultRoot, query: 'zephyr the' });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // The doc containing the rare term should rank first.
+      expect(result.hits[0].relativePath).toBe('llm-curated/rare.md');
+    });
+
+    it('tokenises and matches CJK (Chinese) content', async () => {
+      await writePage('llm-curated/zh.md', '小红书运营策略：每天发布三篇笔记。\n');
+      const result = await svc.search({ vaultPath: vaultRoot, query: '小红书' });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const zh = result.hits.find((h) => h.relativePath.endsWith('zh.md'));
+      expect(zh).toBeDefined();
+      expect(zh!.snippets.length).toBeGreaterThan(0);
     });
   });
 
@@ -203,5 +245,56 @@ describe('WikiSearchService', () => {
       const idxOne = result.hits.findIndex((h) => h.relativePath.endsWith('one-hit.md'));
       expect(idxMany).toBeLessThan(idxOne);
     });
+  });
+});
+
+describe('WikiSearchService — overlay (sop/team-norm) content', () => {
+  let teamRoot: string;
+  let vault: string;
+  let svc: WikiSearchService;
+
+  beforeEach(async () => {
+    // Vault at <teamRoot>/wiki so the overlay siblings (sops/, norms/) sit
+    // under <teamRoot> — matching the real ~/.crewly/teams/<id>/ layout.
+    teamRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-search-overlay-'));
+    vault = path.join(teamRoot, 'wiki');
+    await fs.mkdir(vault, { recursive: true });
+    await fs.writeFile(path.join(vault, 'SCHEMA.md'), 'vault_scope: team\n', 'utf8');
+    // Installed/custom SOP + a team norm live in sibling dirs.
+    await fs.mkdir(path.join(teamRoot, 'sops', 'common'), { recursive: true });
+    await fs.writeFile(
+      path.join(teamRoot, 'sops', 'common', 'blocker-handling.md'),
+      '# Blocker Handling\nEscalate blockers within 30 minutes.\n',
+      'utf8',
+    );
+    await fs.mkdir(path.join(teamRoot, 'norms'), { recursive: true });
+    await fs.writeFile(
+      path.join(teamRoot, 'norms', 'delegation.md'),
+      '# Delegation\nLeads delegate within their own team only.\n',
+      'utf8',
+    );
+    WikiSearchService.resetInstance();
+    svc = WikiSearchService.getInstance();
+  });
+
+  afterEach(async () => {
+    await fs.rm(teamRoot, { recursive: true, force: true });
+  });
+
+  it('finds SOP content under the sop/ overlay prefix', async () => {
+    const result = await svc.search({ vaultPath: vault, query: 'escalate' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hit = result.hits.find((h) => h.relativePath === 'sop/common/blocker-handling.md');
+    expect(hit).toBeDefined();
+    expect(hit!.matchCount).toBeGreaterThan(0);
+  });
+
+  it('finds team-norm content under the team-norm/ overlay prefix', async () => {
+    const result = await svc.search({ vaultPath: vault, query: 'delegate' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hit = result.hits.find((h) => h.relativePath === 'team-norm/delegation.md');
+    expect(hit).toBeDefined();
   });
 });
