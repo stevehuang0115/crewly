@@ -28,7 +28,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
-import { Home, Bot } from 'lucide-react';
+import { Home } from 'lucide-react';
 import {
   ChatAPIProvider,
   ConversationListPanel,
@@ -61,9 +61,8 @@ import { CreateGroupModal } from './CreateGroupModal';
 import { usePinnedChats } from '../../hooks/usePinnedChats';
 import { ORCHESTRATOR_SESSION, ORCHESTRATOR_LABEL } from '../../utils/team-chat.utils';
 
-/** Rail identifiers for the non-team entries. */
+/** Rail identifier for the Home (default) entry. */
 export const HOME_ID = 'home';
-const ORC_RAIL_ID = 'orc';
 
 /** Build the rail workspace id for a team (so deep-links can target it). */
 export function teamRailId(teamId: string): string {
@@ -266,9 +265,11 @@ function LiveTeamChatPageBody({
     return synthetic.length > 0 ? [...channels, ...synthetic] : channels;
   }, [channels, directoryAgents]);
 
-  // Workspace rail: Home → orchestrator → one icon per team. Home is the
-  // personal/cross-cutting landing (orc + pinned + huddles + Slack); each team
-  // icon scopes the center column to that team's huddle + lead + members.
+  // Workspace rail: Home → one icon per team. Home is the personal/cross-cutting
+  // landing (orchestrator + pinned + huddles + Slack); each team icon scopes the
+  // center column to that team's huddle + lead + members. The orchestrator has
+  // no dedicated icon — it's reachable from Home (default) and via its own
+  // "Orchestrator Team" team, so a separate icon was redundant.
   const workspaces = useMemo<Workspace[]>(() => {
     const home: Workspace = {
       id: HOME_ID,
@@ -277,19 +278,12 @@ function LiveTeamChatPageBody({
       icon: <Home className="h-5 w-5" />,
       tooltip: 'Home — orchestrator, pinned chats & huddles',
     };
-    const orc: Workspace = {
-      id: ORC_RAIL_ID,
-      name: ORCHESTRATOR_LABEL,
-      kind: 'team',
-      icon: <Bot className="h-5 w-5" />,
-      tooltip: ORCHESTRATOR_LABEL,
-    };
     const teamItems: Workspace[] = teams.map((t) => ({
       id: `team:${t.id}`,
       name: t.name,
       kind: 'team' as const,
     }));
-    return [home, orc, ...teamItems];
+    return [home, ...teamItems];
   }, [teams]);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
@@ -340,11 +334,6 @@ function LiveTeamChatPageBody({
   // Conversation groups for the SELECTED rail item.
   const groups = useMemo<ConversationGroup[]>(() => {
     const sel = resolvedWorkspaceId;
-
-    // Orchestrator-only view.
-    if (sel === ORC_RAIL_ID) {
-      return orcRow ? [{ id: 'pinned', label: ORCHESTRATOR_LABEL, rows: [orcRow] }] : [];
-    }
 
     // Home: orchestrator (default, top) + pinned agents + huddles + Slack.
     if (sel === HOME_ID) {
@@ -472,9 +461,8 @@ function LiveTeamChatPageBody({
       data-loading={channelsLoading ? 'true' : 'false'}
       data-error={channelsError ? 'true' : 'false'}
     >
-      {/* Slack hides the workspace switcher when there's only one workspace
-          (e.g. DM-only). Showing a single lonely icon column adds noise. */}
-      {workspaces.length > 1 && (
+      {/* The rail always carries Home (the primary nav), so it always renders. */}
+      {workspaces.length > 0 && (
         <WorkspaceRail
           workspaces={workspaces}
           activeWorkspaceId={resolvedWorkspaceId}
