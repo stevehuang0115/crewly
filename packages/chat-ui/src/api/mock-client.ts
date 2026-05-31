@@ -22,6 +22,7 @@ import type {
 import type {
   Channel,
   CreateChannelInput,
+  CreateHuddleInput,
   Message,
   MessagePage,
   SendMessageInput,
@@ -79,6 +80,21 @@ export class MockChatApiClient implements ChatApiClient {
       teamId: input.teamId,
       projectId: input.projectId,
       targetMemberId: input.targetMemberId,
+    };
+    this.channels = [...this.channels, ch];
+    this.messages[ch.id] = [];
+    return ch;
+  }
+
+  async createHuddle(input: CreateHuddleInput): Promise<Channel> {
+    const ch: Channel = {
+      id: this.nextId('ch'),
+      agentSession: '',
+      name: input.name,
+      purpose: input.purpose,
+      createdAt: new Date().toISOString(),
+      presence: 'online',
+      type: 'huddle',
     };
     this.channels = [...this.channels, ch];
     this.messages[ch.id] = [];

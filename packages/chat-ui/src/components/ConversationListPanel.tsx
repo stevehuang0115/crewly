@@ -43,6 +43,12 @@ export interface ConversationListPanelProps {
    * "Channels in Selected Team" empty state).
    */
   emptyState?: React.ReactNode;
+  /**
+   * Optional action rendered at the right of the panel header (additive).
+   * Used by the OSS app for the "New group" (拉群) button. When provided,
+   * the header renders even if `workspaceName` is omitted.
+   */
+  headerAction?: React.ReactNode;
   className?: string;
 }
 
@@ -52,6 +58,7 @@ export function ConversationListPanel({
   activeConversationId = null,
   onSelectConversation,
   emptyState,
+  headerAction,
   className = '',
 }: ConversationListPanelProps): JSX.Element {
   const totalRows = useMemo(
@@ -65,11 +72,12 @@ export function ConversationListPanel({
       aria-label={workspaceName ? `${workspaceName} conversations` : 'Conversations'}
       data-testid="conversation-list-panel"
     >
-      {workspaceName && (
-        <header className="border-b border-slate-200 px-4 py-3 dark:border-slate-700">
+      {(workspaceName || headerAction) && (
+        <header className="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-700">
           <h2 className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
-            {workspaceName}
+            {workspaceName ?? ''}
           </h2>
+          {headerAction}
         </header>
       )}
 

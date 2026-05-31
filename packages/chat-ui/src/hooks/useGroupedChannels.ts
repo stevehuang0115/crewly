@@ -8,9 +8,10 @@
  *
  * Behavior:
  *  - When `workspaceId` is provided, the hook scopes `Channels` to
- *    only those rows where `channel.teamId === workspaceId`. DMs are
- *    workspace-agnostic (a DM is user↔agent, not team-scoped) — they
- *    surface in every workspace's center panel.
+ *    only those rows where `channel.teamId === workspaceId`. DMs and
+ *    huddles (ad-hoc multi-agent group chats) are workspace-agnostic —
+ *    they surface in every workspace's center panel under their own
+ *    `Direct Messages` / `Group Chats` sections.
  *  - When `workspaceId` is null/undefined, all channel-typed rows
  *    appear. Useful for the cross-team Activity / All-DMs surface.
  *  - Rows are sorted by `lastMessageAt` (most recent first) within
@@ -52,12 +53,17 @@ export function buildConversationGroups(
   opts: UseGroupedChannelsOptions = {},
 ): ConversationGroup[] {
   const channelRows: ConversationRow[] = [];
+  const huddleRows: ConversationRow[] = [];
   const dmRows: ConversationRow[] = [];
 
   for (const ch of channels) {
     // Treat missing `type` as `'dm'` — back-compat with legacy rows.
-    const kind: ConversationKind = ch.type === 'channel' ? 'channel' : 'dm';
-    if (kind === 'channel') {
+    const t = ch.type ?? 'dm';
+    if (t === 'huddle') {
+      // Huddles (ad-hoc multi-agent groups) aren't team-scoped — like DMs
+      // they surface in every workspace. Rendered with the channel glyph.
+      huddleRows.push(toRow(ch, 'channel'));
+    } else if (t === 'channel') {
       // Scope channels to the active workspace when one is selected.
       if (opts.workspaceId && ch.teamId !== opts.workspaceId) continue;
       channelRows.push(toRow(ch, 'channel'));
@@ -68,10 +74,14 @@ export function buildConversationGroups(
 
   // Sort by lastMessageAt desc — undefined/null sorts last in name order.
   channelRows.sort(byRecencyThenName);
+  huddleRows.sort(byRecencyThenName);
   dmRows.sort(byRecencyThenName);
 
+  // Empty groups are skipped by ConversationListPanel, so always returning
+  // the Group Chats group is safe — it only shows once a huddle exists.
   return [
     { id: 'channels', label: 'Channels', rows: channelRows },
+    { id: 'huddles', label: 'Group Chats', rows: huddleRows },
     { id: 'dms', label: 'Direct Messages', rows: dmRows },
   ];
 }

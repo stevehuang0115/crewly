@@ -24,6 +24,7 @@ import {
  * - `POST   /channels`
  * - `POST   /channels/dm/ensure` — find-or-create DM channel for an agent
  * - `POST   /channels/team/ensure` — find-or-create the canonical team channel
+ * - `POST   /channels/huddle` — create an ad-hoc multi-agent group chat
  * - `GET    /channels/:id`
  * - `DELETE /channels/:id`
  * - `GET    /channels/:id/messages`
@@ -48,6 +49,7 @@ export function createChatV2Router(
   // `/channels/:id` matchers so Express doesn't bind `:id = 'dm'`/`'team'`.
   router.post('/channels/dm/ensure', requireAuth, handlers.ensureDmChannel);
   router.post('/channels/team/ensure', requireAuth, handlers.ensureTeamChannel);
+  router.post('/channels/huddle', requireAuth, handlers.createHuddle);
   router.get('/channels/:id', requireAuth, handlers.getChannel);
   router.delete('/channels/:id', requireAuth, handlers.archiveChannel);
 

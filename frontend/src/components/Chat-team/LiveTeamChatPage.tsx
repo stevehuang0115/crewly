@@ -39,6 +39,7 @@ import {
   useMessages,
   useObservedWorkspaces,
   useSendMessage,
+  useChatApiClient,
   type ChatApiClient,
   type ChatApiError,
   type ConversationRow,
@@ -53,6 +54,7 @@ import {
   NoTeamsEmptyState,
 } from './EmptyStates';
 import { ChatErrorToast } from './ChatErrorToast';
+import { CreateGroupModal } from './CreateGroupModal';
 
 export interface LiveTeamChatPageProps {
   /** OSS backend base URL. Required when no `client` is injected. */
@@ -139,7 +141,9 @@ function LiveTeamChatPageBody({
   initialConversationId,
   directMessagesWorkspace,
 }: BodyProps): JSX.Element {
-  const { channels, loading: channelsLoading, error: channelsError } = useChannels();
+  const { channels, loading: channelsLoading, error: channelsError, refresh } = useChannels();
+  const client = useChatApiClient();
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
 
   const teamWorkspaces = useObservedWorkspaces(channels, { teamLabels });
 
@@ -204,6 +208,19 @@ function LiveTeamChatPageBody({
     setActiveConversationId(row.id);
   }, []);
 
+  // "拉群" — create a multi-agent group chat, then refresh the channel list
+  // and jump into it. Huddles are workspace-agnostic so they surface in the
+  // current workspace's "Group Chats" section immediately.
+  const handleCreateGroup = useCallback(
+    async (name: string, memberSessions: string[]) => {
+      const huddle = await client.createHuddle({ name, memberSessions });
+      await refresh();
+      setActiveConversationId(huddle.id);
+      setShowCreateGroup(false);
+    },
+    [client, refresh],
+  );
+
   const activeWorkspace = useMemo(
     () => workspaces.find((w) => w.id === resolvedWorkspaceId) ?? null,
     [workspaces, resolvedWorkspaceId],
@@ -257,6 +274,17 @@ function LiveTeamChatPageBody({
         groups={groups}
         activeConversationId={resolvedConversationId}
         onSelectConversation={handleSelectConversation}
+        headerAction={
+          <button
+            type="button"
+            onClick={() => setShowCreateGroup(true)}
+            className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-white dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            data-testid="new-group-button"
+            title="Create a multi-agent group chat"
+          >
+            + New group
+          </button>
+        }
         emptyState={
           activeWorkspace && totalRows === 0 ? (
             <NoChannelsEmptyState teamName={activeWorkspace.name} />
@@ -268,6 +296,13 @@ function LiveTeamChatPageBody({
         conversation={activeConversation}
         mentionables={mentionables}
       />
+
+      {showCreateGroup && (
+        <CreateGroupModal
+          onClose={() => setShowCreateGroup(false)}
+          onCreate={handleCreateGroup}
+        />
+      )}
     </div>
   );
 }

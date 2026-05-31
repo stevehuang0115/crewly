@@ -245,6 +245,7 @@ export interface ChatV2ControllerHandlers {
   sendMessage: (req: Request, res: Response) => void | Promise<void>;
   ensureDmChannel: (req: Request, res: Response) => void;
   ensureTeamChannel: (req: Request, res: Response) => void;
+  createHuddle: (req: Request, res: Response) => void;
   listAgents: (req: Request, res: Response) => void | Promise<void>;
   getAgentPresence: (req: Request, res: Response) => void | Promise<void>;
 }
@@ -600,6 +601,27 @@ export function createChatV2Controller(
           principal,
         });
         res.status(created ? 201 : 200).json({ success: true, data: channel });
+      }),
+
+    /**
+     * POST /channels/huddle
+     *
+     * Create an ad-hoc multi-agent group chat ("拉群"). Body:
+     * `{ name, memberSessions: string[], purpose? }`. Messages posted to
+     * the resulting `type='huddle'` channel fan out to every member agent
+     * via the dispatcher's huddle-broadcast strategy.
+     */
+    createHuddle: (req, res) =>
+      runHandler(res, () => {
+        const principal = principalFromRequest(req);
+        const body = req.body ?? {};
+        const channel = service.createHuddle({
+          name: body.name,
+          purpose: body.purpose,
+          memberSessions: Array.isArray(body.memberSessions) ? body.memberSessions : [],
+          principal,
+        });
+        res.status(201).json({ success: true, data: channel });
       }),
 
     /**

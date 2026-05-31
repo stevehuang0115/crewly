@@ -61,13 +61,15 @@ const dmEla: Channel = {
 };
 
 describe('buildConversationGroups', () => {
-  it('produces two stable groups with the right ids/labels', () => {
+  it('produces three stable groups with the right ids/labels', () => {
     const groups = buildConversationGroups([]);
-    expect(groups).toHaveLength(2);
+    expect(groups).toHaveLength(3);
     expect(groups[0].id).toBe('channels');
     expect(groups[0].label).toBe('Channels');
-    expect(groups[1].id).toBe('dms');
-    expect(groups[1].label).toBe('Direct Messages');
+    expect(groups[1].id).toBe('huddles');
+    expect(groups[1].label).toBe('Group Chats');
+    expect(groups[2].id).toBe('dms');
+    expect(groups[2].label).toBe('Direct Messages');
   });
 
   it('partitions channel-typed rows into Channels and dm rows into DMs', () => {
@@ -82,12 +84,29 @@ describe('buildConversationGroups', () => {
       'ch-product-onboarding',
       'ch-product-general',
     ]);
-    expect(groups[1].rows.map((r) => r.id)).toEqual([
+    expect(groups[2].rows.map((r) => r.id)).toEqual([
       // dmSam has a lastMessageAt → it comes first; dmEla has none →
       // sorted by name fallback.
       'ch-dm-sam',
       'ch-dm-ella',
     ]);
+  });
+
+  it('routes huddle-typed rows into the workspace-agnostic Group Chats group', () => {
+    const huddle: Channel = {
+      id: 'ch-huddle-launch',
+      agentSession: '',
+      name: 'Launch crew',
+      createdAt: ISO_OLDER,
+      type: 'huddle',
+    };
+    // Even with a team workspace selected, the huddle surfaces (not team-scoped).
+    const groups = buildConversationGroups([channelGeneral, huddle], {
+      workspaceId: 'team-product',
+    });
+    const huddles = groups.find((g) => g.id === 'huddles')!;
+    expect(huddles.rows.map((r) => r.id)).toEqual(['ch-huddle-launch']);
+    expect(huddles.rows[0].kind).toBe('channel');
   });
 
   it('scopes Channels to the active workspaceId; DMs always flow', () => {
@@ -98,7 +117,7 @@ describe('buildConversationGroups', () => {
     // Only product-team channels in the Channels group.
     expect(groups[0].rows.map((r) => r.id)).toEqual(['ch-product-general']);
     // DMs are workspace-agnostic — both surface regardless of teamId.
-    expect(groups[1].rows.map((r) => r.id)).toEqual(['ch-dm-sam', 'ch-dm-ella']);
+    expect(groups[2].rows.map((r) => r.id)).toEqual(['ch-dm-sam', 'ch-dm-ella']);
   });
 
   it('treats a legacy channel without `type` as a DM (backwards-compat)', () => {
@@ -111,7 +130,7 @@ describe('buildConversationGroups', () => {
     };
     const groups = buildConversationGroups([legacy]);
     expect(groups[0].rows).toHaveLength(0);
-    expect(groups[1].rows).toEqual([
+    expect(groups[2].rows).toEqual([
       expect.objectContaining({ id: 'ch-legacy', kind: 'dm' }),
     ]);
   });
@@ -126,7 +145,7 @@ describe('buildConversationGroups', () => {
 
   it('maps DM rows with the agent session + presence so the panel can render badges', () => {
     const groups = buildConversationGroups([dmSam]);
-    const row = groups[1].rows[0];
+    const row = groups[2].rows[0];
     expect(row.kind).toBe('dm');
     expect(row.agentSession).toBe('crewly-product-sam');
     expect(row.presence).toBe('online');
@@ -145,6 +164,6 @@ describe('buildConversationGroups', () => {
     const b: Channel = { id: 'b', agentSession: 'b', name: 'Apple', createdAt: ISO_OLDER, type: 'dm' };
     const groups = buildConversationGroups([a, b]);
     // Apple sorts before Banana alphabetically.
-    expect(groups[1].rows.map((r) => r.title)).toEqual(['Apple', 'Banana']);
+    expect(groups[2].rows.map((r) => r.title)).toEqual(['Apple', 'Banana']);
   });
 });

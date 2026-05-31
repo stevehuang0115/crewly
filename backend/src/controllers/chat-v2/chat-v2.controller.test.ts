@@ -642,6 +642,34 @@ describe('chat-v2 controller (REST)', () => {
       }
     });
 
+    it('POST /channels/huddle — creates a multi-agent group chat (201)', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const res = await request(app)
+          .post('/api/chat/channels/huddle')
+          .send({ name: 'Launch crew', memberSessions: ['sess-ella', 'sess-grace'] });
+        expect(res.status).toBe(201);
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.type).toBe('huddle');
+        expect(res.body.data.name).toBe('Launch crew');
+      } finally {
+        service.close();
+      }
+    });
+
+    it('POST /channels/huddle — 400 when no members are supplied', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const res = await request(app)
+          .post('/api/chat/channels/huddle')
+          .send({ name: 'Empty crew', memberSessions: [] });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      } finally {
+        service.close();
+      }
+    });
+
     it('GET /agents — returns flattened directory entries when wired', async () => {
       const { app, service } = buildAppWithProviders({
         directoryTeams: [
