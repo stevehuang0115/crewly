@@ -31,7 +31,8 @@ import { AgentStatusBadge } from './AgentStatusBadge';
 /** localStorage key for collapsed conversation-group ids. */
 const COLLAPSED_GROUPS_KEY = 'crewly-chat-collapsed-groups';
 
-function loadCollapsedGroups(): Set<string> {
+/** Stored collapsed-group ids, or null when the user has no saved preference. */
+function loadCollapsedGroups(): Set<string> | null {
   try {
     const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
     if (raw) {
@@ -39,9 +40,9 @@ function loadCollapsedGroups(): Set<string> {
       if (Array.isArray(arr)) return new Set(arr.filter((x) => typeof x === 'string'));
     }
   } catch {
-    // ignore — start expanded
+    // ignore — no saved preference
   }
-  return new Set();
+  return null;
 }
 
 export interface ConversationListPanelProps {
@@ -69,6 +70,12 @@ export interface ConversationListPanelProps {
   isPinned?: (row: ConversationRow) => boolean;
   /** Pin/unpin a conversation. Enables the per-row pin affordance. */
   onTogglePin?: (row: ConversationRow) => void;
+  /**
+   * Group ids collapsed by default when the user has no saved preference yet
+   * (e.g. a noisy "Slack" section). Once the user toggles anything, their
+   * persisted state wins.
+   */
+  defaultCollapsedGroupIds?: string[];
   className?: string;
 }
 
@@ -81,6 +88,7 @@ export function ConversationListPanel({
   headerAction,
   isPinned,
   onTogglePin,
+  defaultCollapsedGroupIds,
   className = '',
 }: ConversationListPanelProps): JSX.Element {
   const totalRows = useMemo(
@@ -88,8 +96,11 @@ export function ConversationListPanel({
     [groups],
   );
 
-  // Collapsed/expanded state per group id, persisted to localStorage.
-  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsedGroups);
+  // Collapsed/expanded state per group id, persisted to localStorage. With no
+  // saved preference, fall back to the host's default-collapsed ids.
+  const [collapsed, setCollapsed] = useState<Set<string>>(
+    () => loadCollapsedGroups() ?? new Set(defaultCollapsedGroupIds ?? []),
+  );
   const toggleCollapse = useCallback((id: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);

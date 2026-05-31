@@ -12,6 +12,7 @@ import {
   resetSlackOrchestratorBridge,
   suppressTrivialOrShort,
   suppressFileOnly,
+  deriveSlackThreadName,
 } from './slack-orchestrator-bridge.js';
 import { resetSlackService } from './slack.service.js';
 import { resetChatService } from '../chat/chat.service.js';
@@ -2313,4 +2314,25 @@ describe('SlackOrchestratorBridge', () => {
   // `ChatService.sendMessage` is now a façade over
   // `ChatV2Service.recordTurn`. The chat-v2 jest.mock at module scope
   // is retained for any future re-instrumentation of the bridge.
+});
+
+describe('deriveSlackThreadName', () => {
+  it('titles a thread by its first message (collapsed whitespace, truncated)', () => {
+    expect(deriveSlackThreadName('ship the v2 launch deck')).toBe('Slack: ship the v2 launch deck');
+    expect(deriveSlackThreadName('  multi\n   line   text ')).toBe('Slack: multi line text');
+  });
+
+  it('truncates long messages with an ellipsis', () => {
+    const long = 'a'.repeat(80);
+    const out = deriveSlackThreadName(long);
+    expect(out.startsWith('Slack: ')).toBe(true);
+    expect(out.endsWith('…')).toBe(true);
+    expect(out.length).toBeLessThan(60);
+  });
+
+  it('falls back to "Slack thread" for empty/whitespace content', () => {
+    expect(deriveSlackThreadName('')).toBe('Slack thread');
+    expect(deriveSlackThreadName('   ')).toBe('Slack thread');
+    expect(deriveSlackThreadName(undefined)).toBe('Slack thread');
+  });
 });

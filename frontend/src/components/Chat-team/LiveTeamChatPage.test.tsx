@@ -493,12 +493,13 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
     expect(screen.getByText('Grace')).toBeInTheDocument();
   });
 
-  it('surfaces Slack-bridged threads in a dedicated Slack section', async () => {
+  it('surfaces Slack threads in a collapsed Slack section, labeled by thread time', async () => {
     const channels: Channel[] = [
       {
-        id: 'slack-D0AC7-1778',
+        // Legacy id-named thread: slack-<channel>-<tsSeconds>-<tsMicros>.
+        id: 'slack-D0AC7NF5N7L-1777760999-956969',
         agentSession: 'crewly-orc',
-        name: 'slack-D0AC7-1778',
+        name: 'slack-D0AC7NF5N7L-1777760999-956969',
         createdAt: ISO,
         type: 'dm',
         presence: 'online',
@@ -512,10 +513,18 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
         directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
       />,
     );
-    // A "Slack" section header with the prettified thread row (the row also
-    // appears in the right-panel header once auto-selected — hence getAllByText).
-    expect(await screen.findByText('Slack')).toBeInTheDocument();
-    expect(screen.getAllByText(/Slack · D0AC7/).length).toBeGreaterThan(0);
+    // The Slack section header is present, collapsed by default.
+    const toggle = await screen.findByTestId('conv-group-toggle-slack');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('conv-row-slack-D0AC7NF5N7L-1777760999-956969')).not.toBeInTheDocument();
+
+    // Expanding it reveals the thread, labeled by its start time (not the
+    // identical channel id) so multiple threads are distinguishable.
+    fireEvent.click(toggle);
+    expect(
+      await screen.findByTestId('conv-row-slack-D0AC7NF5N7L-1777760999-956969'),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/Slack thread ·/).length).toBeGreaterThan(0);
   });
 
   it('calls onEnsureDm when a directory agent without a channel is opened', async () => {
