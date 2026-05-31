@@ -14,7 +14,7 @@
  * @module pages/Wiki
  */
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
 import {
@@ -304,9 +304,16 @@ export function Wiki(): JSX.Element {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchTruncated, setSearchTruncated] = useState(false);
   // Search scope: false = current vault only, true = all vaults (merged ranking).
-  const [searchAll, setSearchAll] = useState(false);
+  // The page-level global search defaults to all-vaults (the natural mental model).
+  const [searchAll, setSearchAll] = useState(true);
+  // Whether the global search overlay (header) is open.
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  // Keyboard-highlighted hit index in the overlay (-1 = none).
+  const [activeHitIndex, setActiveHitIndex] = useState(-1);
   // Cross-vault click-through: page to open once the target vault is selected.
   const [pendingPage, setPendingPage] = useState<{ vaultPath: string; relativePath: string } | null>(null);
+  const searchWrapRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const [backlinks, setBacklinks] = useState<WikiBacklink[] | null>(null);
   const [backlinksLoading, setBacklinksLoading] = useState(false);
@@ -621,6 +628,62 @@ export function Wiki(): JSX.Element {
     }
   }, [pendingPage, selectedVault]);
 
+  /** Open a search hit's page (switching vault on a cross-vault hit), then close. */
+  const handleHitSelect = useCallback(
+    (rel: string, vaultPath?: string) => {
+      if (vaultPath && vaultPath !== selectedVault?.vaultPath) {
+        const target = vaults.find((v) => v.vaultPath === vaultPath);
+        if (target) {
+          switchVault(target);
+          setPendingPage({ vaultPath, relativePath: rel });
+          setSearchQuery('');
+          setIsSearchOpen(false);
+          return;
+        }
+      }
+      setSelectedPage(rel);
+      setSearchQuery('');
+      setIsSearchOpen(false);
+    },
+    [selectedVault, vaults, switchVault],
+  );
+
+  /** Keyboard nav in the global search input: ↑/↓ highlight, Enter open, Esc close. */
+  const handleSearchKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Escape') {
+        if (searchQuery) setSearchQuery('');
+        setIsSearchOpen(false);
+        searchInputRef.current?.blur();
+        return;
+      }
+      const hits = searchHits ?? [];
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveHitIndex((i) => Math.min(i + 1, hits.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveHitIndex((i) => Math.max(i - 1, 0));
+      } else if (e.key === 'Enter') {
+        const hit = hits[activeHitIndex];
+        if (hit) handleHitSelect(hit.relativePath, hit.vaultPath);
+      }
+    },
+    [searchHits, activeHitIndex, searchQuery, handleHitSelect],
+  );
+
+  // Close the search overlay on an outside click.
+  useEffect(() => {
+    if (!isSearchOpen) return;
+    const onDown = (e: MouseEvent): void => {
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target as Node)) {
+        setIsSearchOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [isSearchOpen]);
+
   useEffect(() => {
     if (selectedVault) {
       loadTree(selectedVault.vaultPath);
@@ -749,15 +812,139 @@ export function Wiki(): JSX.Element {
   return (
     <div className="wiki-page">
       <div className="wiki-header">
-        <div className="wiki-header-title">
-          <BookOpen size={22} />
-          <h1>Wiki</h1>
+        <div className="wiki-header-main">
+          <div className="wiki-header-title">
+            <BookOpen size={22} />
+            <h1>Wiki</h1>
+          </div>
+          <p className="wiki-header-subtitle">
+            Agent-curated knowledge across global, team, and project vaults. Reads
+            only — writes happen via the <code>wiki-queue-add</code> →{' '}
+            <code>wiki-process-queue</code> agent flow.
+          </p>
         </div>
-        <p className="wiki-header-subtitle">
-          Agent-curated knowledge across global, team, and project vaults. Reads
-          only — writes happen via the <code>wiki-queue-add</code> →{' '}
-          <code>wiki-process-queue</code> agent flow.
-        </p>
+
+        {/* Page-level global search */}
+        <div className="wiki-global-search" ref={searchWrapRef}>
+          <div className={`wiki-gsearch-box${isSearchOpen ? ' open' : ''}`}>
+            <SearchIcon size={15} className="wiki-search-icon" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              className="wiki-gsearch-input"
+              placeholder="Search the wiki…"
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setIsSearchOpen(true);
+                setActiveHitIndex(-1);
+              }}
+              onFocus={() => setIsSearchOpen(true)}
+              onKeyDown={handleSearchKeyDown}
+              aria-label="Search wiki"
+              aria-expanded={isSearchOpen}
+              role="combobox"
+              aria-controls="wiki-search-overlay"
+            />
+            {searchQuery ? (
+              <button
+                type="button"
+                className="wiki-search-clear"
+                onClick={() => {
+                  setSearchQuery('');
+                  setActiveHitIndex(-1);
+                  searchInputRef.current?.focus();
+                }}
+                aria-label="Clear search"
+              >
+                <X size={14} />
+              </button>
+            ) : (
+              <div className="wiki-search-scope" role="radiogroup" aria-label="Search scope">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!searchAll}
+                  aria-label="Search this vault"
+                  title="This vault"
+                  className={`wiki-search-scope-btn${!searchAll ? ' active' : ''}`}
+                  onClick={() => setSearchAll(false)}
+                >
+                  <Layers size={13} />
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={searchAll}
+                  aria-label="Search all vaults"
+                  title="All vaults"
+                  className={`wiki-search-scope-btn${searchAll ? ' active' : ''}`}
+                  onClick={() => setSearchAll(true)}
+                >
+                  <LayoutGrid size={13} />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {isSearchOpen && searchQuery.trim().length > 0 && (
+            <div className="wiki-search-overlay" id="wiki-search-overlay" role="listbox">
+              <div className="wiki-overlay-scope" role="radiogroup" aria-label="Search scope">
+                <span className="wiki-overlay-scope-label">Scope</span>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!searchAll}
+                  className={`wiki-overlay-scope-btn${!searchAll ? ' active' : ''}`}
+                  onClick={() => setSearchAll(false)}
+                  data-testid="search-scope-this"
+                >
+                  <Layers size={12} /> This vault
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={searchAll}
+                  className={`wiki-overlay-scope-btn${searchAll ? ' active' : ''}`}
+                  onClick={() => setSearchAll(true)}
+                  data-testid="search-scope-all"
+                >
+                  <LayoutGrid size={12} /> All vaults
+                </button>
+              </div>
+
+              <div className="wiki-overlay-body">
+                {searchError && (
+                  <div className="wiki-error">
+                    <AlertCircle size={14} /> {searchError}
+                  </div>
+                )}
+                {searchLoading && <div className="wiki-loading">Searching…</div>}
+                {!searchLoading && searchHits && searchHits.length > 0 && (
+                  <SearchResults
+                    hits={searchHits}
+                    selected={selectedPage}
+                    showVault={searchAll}
+                    activeIndex={activeHitIndex}
+                    onSelect={handleHitSelect}
+                  />
+                )}
+                {!searchLoading && searchHits && searchHits.length === 0 && (
+                  <div className="wiki-empty">
+                    No results for <code>{searchQuery}</code>.
+                  </div>
+                )}
+              </div>
+
+              {searchHits && searchHits.length > 0 && (
+                <div className="wiki-overlay-footer">
+                  {searchHits.length} match{searchHits.length === 1 ? '' : 'es'}
+                  {searchTruncated ? '+' : ''} · ↑↓ navigate · ↵ open · Esc close
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <MigrationBanner
@@ -836,113 +1023,18 @@ export function Wiki(): JSX.Element {
           <div className="wiki-pane-header">
             <span>
               {selectedVault ? selectedVault.label : 'Pick a vault'}
-              {selectedVault && tree && !searchQuery && (
+              {selectedVault && tree && (
                 <span className="wiki-page-count"> · {pageCount}</span>
-              )}
-              {searchHits && (
-                <span className="wiki-page-count">
-                  {' '}· {searchHits.length} match{searchHits.length === 1 ? '' : 'es'}
-                  {searchTruncated ? '+' : ''}
-                </span>
               )}
             </span>
           </div>
-          <div className="wiki-search-bar">
-            <SearchIcon size={13} className="wiki-search-icon" />
-            <input
-              type="text"
-              className="wiki-search-input"
-              placeholder={
-                searchAll ? 'Search all vaults…' : selectedVault ? 'Search this vault…' : 'Pick a vault first'
-              }
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              disabled={!searchAll && !selectedVault}
-              aria-label="Search wiki"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                className="wiki-search-clear"
-                onClick={() => setSearchQuery('')}
-                aria-label="Clear search"
-              >
-                <X size={13} />
-              </button>
-            )}
-            <div className="wiki-search-scope" role="radiogroup" aria-label="Search scope">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={!searchAll}
-                aria-label="Search this vault"
-                title="This vault"
-                className={`wiki-search-scope-btn${!searchAll ? ' active' : ''}`}
-                onClick={() => setSearchAll(false)}
-                data-testid="search-scope-this"
-              >
-                <Layers size={13} />
-              </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={searchAll}
-                aria-label="Search all vaults"
-                title="All vaults"
-                className={`wiki-search-scope-btn${searchAll ? ' active' : ''}`}
-                onClick={() => setSearchAll(true)}
-                data-testid="search-scope-all"
-              >
-                <LayoutGrid size={13} />
-              </button>
-            </div>
-          </div>
-          {searchError && (
+          {treeError && (
             <div className="wiki-error">
-              <AlertCircle size={14} /> {searchError}
+              <AlertCircle size={14} /> {treeError}
             </div>
           )}
-          {searchQuery && searchLoading && (
-            <div className="wiki-loading">Searching…</div>
-          )}
-          {searchQuery && !searchLoading && searchHits && (
-            <SearchResults
-              hits={searchHits}
-              selected={selectedPage}
-              showVault={searchAll}
-              onSelect={(rel, vaultPath) => {
-                // B-U4 (2026-05-27): clicking a search hit jumps to the
-                // page AND collapses search results back into tree view.
-                // For an all-vault hit in a DIFFERENT vault, switch to that
-                // vault first, then open the page once it's active.
-                if (vaultPath && vaultPath !== selectedVault?.vaultPath) {
-                  const target = vaults.find((v) => v.vaultPath === vaultPath);
-                  if (target) {
-                    switchVault(target);
-                    setPendingPage({ vaultPath, relativePath: rel });
-                    setSearchQuery('');
-                    return;
-                  }
-                }
-                setSelectedPage(rel);
-                setSearchQuery('');
-              }}
-            />
-          )}
-          {searchQuery && !searchLoading && searchHits && searchHits.length === 0 && (
-            <div className="wiki-empty">
-              No results for <code>{searchQuery}</code>.
-            </div>
-          )}
-          {!searchQuery && (
-            <>
-              {treeError && (
-                <div className="wiki-error">
-                  <AlertCircle size={14} /> {treeError}
-                </div>
-              )}
-              {treeLoading && <div className="wiki-loading">Loading tree…</div>}
-              {tree && canonicalNodes.length > 0 && (
+          {treeLoading && <div className="wiki-loading">Loading tree…</div>}
+          {tree && canonicalNodes.length > 0 && (
                 <>
                   <div className="wiki-tree-group-label" title="Schema-frozen folders — the source of truth referenced by the engine. Agents can't overwrite these via the wiki.">
                     <Lock size={11} /> Canonical · source of truth
@@ -1008,13 +1100,11 @@ export function Wiki(): JSX.Element {
                   onToggleFolder={toggleFolder}
                 />
               )}
-              {tree && tree.length === 0 && !treeLoading && (
-                <div className="wiki-empty">
-                  Empty vault — no <code>.md</code> pages yet. They land here once
-                  agents queue + ingest worth-saving content.
-                </div>
-              )}
-            </>
+          {tree && tree.length === 0 && !treeLoading && (
+            <div className="wiki-empty">
+              Empty vault — no <code>.md</code> pages yet. They land here once
+              agents queue + ingest worth-saving content.
+            </div>
           )}
         </section>
 
@@ -1078,7 +1168,10 @@ export function Wiki(): JSX.Element {
               {selectedVault && lint && lint.missingConcepts.length > 0 && (
                 <MissingConcepts
                   concepts={lint.missingConcepts}
-                  onSelect={(target) => setSearchQuery(target)}
+                  onSelect={(target) => {
+                    setSearchQuery(target);
+                    setIsSearchOpen(true);
+                  }}
                 />
               )}
               {selectedVault && (
@@ -1244,6 +1337,8 @@ interface SearchResultsProps {
   selected: string | null;
   /** Show each hit's owning vault label (all-vault search). */
   showVault?: boolean;
+  /** Keyboard-highlighted row index (-1/undefined = none). */
+  activeIndex?: number;
   onSelect: (relativePath: string, vaultPath?: string) => void;
 }
 
@@ -1252,16 +1347,19 @@ interface SearchResultsProps {
  * Each row is a single matching file with up to three snippet lines; in
  * all-vault mode each row is tagged with its owning vault.
  */
-function SearchResults({ hits, selected, showVault, onSelect }: SearchResultsProps): JSX.Element {
+function SearchResults({ hits, selected, showVault, activeIndex, onSelect }: SearchResultsProps): JSX.Element {
   return (
     <ul className="wiki-search-results">
-      {hits.map((hit) => {
+      {hits.map((hit, idx) => {
         const active = selected === hit.relativePath && !hit.vaultPath;
+        const kbd = idx === activeIndex;
         return (
           <li key={`${hit.vaultPath ?? ''}:${hit.relativePath}`}>
             <button
               type="button"
-              className={`wiki-search-hit${active ? ' active' : ''}`}
+              role="option"
+              aria-selected={kbd}
+              className={`wiki-search-hit${active ? ' active' : ''}${kbd ? ' kbd-active' : ''}`}
               onClick={() => onSelect(hit.relativePath, hit.vaultPath)}
             >
               <div className="wiki-search-path">
