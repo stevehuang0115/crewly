@@ -1209,6 +1209,63 @@ describe('ChatV2Service', () => {
   });
 
   // -------------------------------------------------------------------------
+  // ensureTeamChannel — find-or-create for the consolidated team-chat surface
+  // -------------------------------------------------------------------------
+
+  describe('ensureTeamChannel', () => {
+    it('creates a default #general channel when the team has none', () => {
+      const { channel, created } = service.ensureTeamChannel({
+        teamId: 'team-1',
+        principal: owner,
+      });
+      expect(created).toBe(true);
+      expect(channel.type).toBe('channel');
+      expect(channel.teamId).toBe('team-1');
+      expect(channel.name).toBe('#general');
+    });
+
+    it('uses a provided name for a freshly created channel', () => {
+      const { channel, created } = service.ensureTeamChannel({
+        teamId: 'team-2',
+        name: '#standup',
+        principal: owner,
+      });
+      expect(created).toBe(true);
+      expect(channel.name).toBe('#standup');
+    });
+
+    it('is idempotent — returns the existing channel on a second call', () => {
+      const first = service.ensureTeamChannel({ teamId: 'team-1', principal: owner });
+      const second = service.ensureTeamChannel({
+        teamId: 'team-1',
+        name: '#ignored',
+        principal: owner,
+      });
+      expect(second.created).toBe(false);
+      expect(second.channel.id).toBe(first.channel.id);
+      expect(second.channel.name).toBe('#general');
+    });
+
+    it('reuses a channel created via the public createChannel path', () => {
+      const made = service.createChannel({
+        name: '#existing',
+        type: 'channel',
+        teamId: 'team-3',
+        principal: owner,
+      });
+      const ensured = service.ensureTeamChannel({ teamId: 'team-3', principal: owner });
+      expect(ensured.created).toBe(false);
+      expect(ensured.channel.id).toBe(made.id);
+    });
+
+    it('rejects an empty teamId', () => {
+      expect(() => service.ensureTeamChannel({ teamId: '   ', principal: owner })).toThrow(
+        /teamId is required/,
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // importLegacyConversation
   // Spec: 2026-05-14-unified-chat-message-store.md Phase 5
   // -------------------------------------------------------------------------

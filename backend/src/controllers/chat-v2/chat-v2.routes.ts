@@ -23,6 +23,7 @@ import {
  * - `GET    /channels`
  * - `POST   /channels`
  * - `POST   /channels/dm/ensure` — find-or-create DM channel for an agent
+ * - `POST   /channels/team/ensure` — find-or-create the canonical team channel
  * - `GET    /channels/:id`
  * - `DELETE /channels/:id`
  * - `GET    /channels/:id/messages`
@@ -43,9 +44,10 @@ export function createChatV2Router(
 
   router.get('/channels', requireAuth, handlers.listChannels);
   router.post('/channels', requireAuth, handlers.createChannel);
-  // `/channels/dm/ensure` must precede `/channels/:id` matchers so Express
-  // doesn't bind `:id = 'dm'` here.
+  // `/channels/dm/ensure` and `/channels/team/ensure` must precede the
+  // `/channels/:id` matchers so Express doesn't bind `:id = 'dm'`/`'team'`.
   router.post('/channels/dm/ensure', requireAuth, handlers.ensureDmChannel);
+  router.post('/channels/team/ensure', requireAuth, handlers.ensureTeamChannel);
   router.get('/channels/:id', requireAuth, handlers.getChannel);
   router.delete('/channels/:id', requireAuth, handlers.archiveChannel);
 
