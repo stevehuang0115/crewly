@@ -22,7 +22,7 @@ import type {
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
-import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS } from '../../constants.js';
+import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
@@ -880,6 +880,12 @@ export class SlackService extends EventEmitter {
       // Track this fingerprint for future dedup
       this.trackMessageFingerprint(fingerprint, now);
 
+      // Mirror the outbound reply into chat-v2 so the Slack thread shows both
+      // sides ("收和发") in the consolidated chat. Best-effort, thread-only.
+      if (message.threadTs) {
+        void this.recordOutboundToChatV2(message);
+      }
+
       return result.ts || '';
     } catch (error) {
       this.logger.error('Send message error', { error: error instanceof Error ? (error as Error).message : String(error) });
@@ -906,6 +912,48 @@ export class SlackService extends EventEmitter {
       }
 
       throw error;
+    }
+  }
+
+  /**
+   * Mirror an outbound Slack reply into the canonical chat-v2 store so the
+   * Slack thread shows both inbound (user) and outbound (agent) messages in
+   * the consolidated /team-chat surface. Records against the SAME channel the
+   * inbound persisted to — `synthesizeSlackConversationId(channelId, threadTs)`.
+   *
+   * Best-effort: dynamic imports + try/catch so a chat-v2 failure never
+   * affects Slack delivery. Only called for threaded replies (threadTs set).
+   *
+   * @param message - The outbound Slack message that was just sent.
+   */
+  private async recordOutboundToChatV2(message: SlackOutgoingMessage): Promise<void> {
+    try {
+      if (!message.channelId || !message.threadTs || !(message.text ?? '').trim()) return;
+      const [{ getChatV2Service }, { synthesizeSlackConversationId }] = await Promise.all([
+        import('../chat-v2/chat-v2.singleton.js'),
+        import('../chat-v2/legacy-dto.utils.js'),
+      ]);
+      const chatV2 = getChatV2Service();
+      const conversationId = synthesizeSlackConversationId(message.channelId, message.threadTs);
+      const channel = chatV2.ensureChannelForLegacyConversation({
+        conversationId,
+        agentSession: ORCHESTRATOR_SESSION_NAME,
+      });
+      chatV2.recordTurn({
+        channelId: channel.id,
+        senderType: 'agent',
+        senderId: channel.agentSession || ORCHESTRATOR_SESSION_NAME,
+        content: message.text,
+        metadata: {
+          source: 'slack',
+          slackChannelId: message.channelId,
+          slackThreadTs: message.threadTs,
+        },
+      });
+    } catch (err) {
+      this.logger.warn('Failed to mirror outbound Slack message to chat-v2', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
