@@ -35,6 +35,7 @@ import {
   overlayRootFor,
   resolveOverlayFilePath,
 } from '../../services/wiki/wiki-overlay.resolver.js';
+import { SopCatalogService } from '../../services/wiki/sop-catalog.service.js';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
@@ -974,6 +975,104 @@ export async function searchVault(
       .json({ success: false, error: outcome.reason, message: outcome.message });
   } catch (err) {
     logger.error('wiki/search threw', { error: (err as Error).message });
+    next(err);
+  }
+}
+
+const sopCatalog = new SopCatalogService();
+
+/**
+ * GET /api/wiki/sop-catalog?vaultPath=…
+ *
+ * List the SOP catalog (`config/sops/`), annotated with whether the given team
+ * (resolved from its vault path) has each entry installed.
+ */
+export async function listSopCatalog(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const vaultPath = typeof req.query.vaultPath === 'string' ? req.query.vaultPath : undefined;
+    if (!vaultPath || !path.isAbsolute(vaultPath)) {
+      res.status(400).json({ success: false, error: 'vaultPath (absolute) is required' });
+      return;
+    }
+    const catalog = await sopCatalog.list(vaultPath);
+    res.status(200).json({ success: true, catalog });
+  } catch (err) {
+    logger.error('wiki/sop-catalog threw', { error: (err as Error).message });
+    next(err);
+  }
+}
+
+/**
+ * POST /api/wiki/sop-catalog/install   { vaultPath, sopPath }
+ *
+ * Copy a catalog SOP into the team's installed store. Idempotent.
+ */
+export async function installSop(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { vaultPath, sopPath } = req.body ?? {};
+    if (typeof vaultPath !== 'string' || !path.isAbsolute(vaultPath)) {
+      res.status(400).json({ success: false, error: 'vaultPath (absolute) is required' });
+      return;
+    }
+    if (typeof sopPath !== 'string' || sopPath.length === 0) {
+      res.status(400).json({ success: false, error: 'sopPath is required' });
+      return;
+    }
+    const result = await sopCatalog.install(vaultPath, sopPath);
+    res.status(200).json({ success: true, ...result });
+  } catch (err) {
+    const message = (err as Error).message;
+    if (/escapes|\.md|sopPath/.test(message)) {
+      res.status(400).json({ success: false, error: message });
+      return;
+    }
+    if (/ENOENT/.test(message)) {
+      res.status(404).json({ success: false, error: 'catalog_sop_not_found' });
+      return;
+    }
+    logger.error('wiki/sop-install threw', { error: message });
+    next(err);
+  }
+}
+
+/**
+ * POST /api/wiki/sop-catalog/uninstall   { vaultPath, sopPath }
+ *
+ * Remove a SOP from the team's installed store (catalog original untouched).
+ * Idempotent.
+ */
+export async function uninstallSop(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { vaultPath, sopPath } = req.body ?? {};
+    if (typeof vaultPath !== 'string' || !path.isAbsolute(vaultPath)) {
+      res.status(400).json({ success: false, error: 'vaultPath (absolute) is required' });
+      return;
+    }
+    if (typeof sopPath !== 'string' || sopPath.length === 0) {
+      res.status(400).json({ success: false, error: 'sopPath is required' });
+      return;
+    }
+    const result = await sopCatalog.uninstall(vaultPath, sopPath);
+    res.status(200).json({ success: true, ...result });
+  } catch (err) {
+    const message = (err as Error).message;
+    if (/escapes|\.md|sopPath/.test(message)) {
+      res.status(400).json({ success: false, error: message });
+      return;
+    }
+    logger.error('wiki/sop-uninstall threw', { error: message });
     next(err);
   }
 }

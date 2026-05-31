@@ -29,12 +29,14 @@ import {
   Clock,
   X,
   Upload,
+  Download,
   CheckCircle2,
   Lightbulb,
   ChevronRight,
   ChevronDown,
 } from 'lucide-react';
 import { WikiMarkdown } from '../components/Wiki/WikiMarkdown.js';
+import { SopCatalogModal } from '../components/Wiki/SopCatalogModal.js';
 import './Wiki.css';
 
 /** Debounce delay (ms) between keystrokes and firing the search. */
@@ -278,6 +280,8 @@ export function Wiki(): JSX.Element {
   const [selectedPage, setSelectedPage] = useState<string | null>(null);
   // Tracks which (vault, focus) deep-link has been applied so it fires once.
   const [focusApplied, setFocusApplied] = useState<string | null>(null);
+  // Whether the SOP catalog (install/uninstall) modal is open.
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const [pageContent, setPageContent] = useState<PagePayload | null>(null);
   const [pageLoading, setPageLoading] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -878,6 +882,17 @@ export function Wiki(): JSX.Element {
                 <>
                   <div className="wiki-tree-group-label" title="Schema-frozen folders — the source of truth referenced by the engine. Agents can't overwrite these via the wiki.">
                     <Lock size={11} /> Canonical · source of truth
+                    {canonicalNodes.some((n) => n.name === 'sop') && (
+                      <button
+                        type="button"
+                        className="wiki-tree-group-action"
+                        onClick={() => setCatalogOpen(true)}
+                        data-testid="open-sop-catalog"
+                        title="Browse the SOP catalog and install SOPs into this team"
+                      >
+                        <Download size={11} /> SOPs
+                      </button>
+                    )}
                   </div>
                   {allCanonicalFoldersEmpty(canonicalNodes) && (
                     <p className="wiki-tree-canonical-note">
@@ -975,6 +990,14 @@ export function Wiki(): JSX.Element {
           )}
         </main>
       </div>
+
+      {catalogOpen && selectedVault && (
+        <SopCatalogModal
+          vaultPath={selectedVault.vaultPath}
+          onClose={() => setCatalogOpen(false)}
+          onChanged={() => loadTree(selectedVault.vaultPath)}
+        />
+      )}
     </div>
   );
 }

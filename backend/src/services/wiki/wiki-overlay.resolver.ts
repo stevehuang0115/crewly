@@ -8,8 +8,10 @@
  * (which would drift), the wiki tree + page endpoints read THROUGH to the real
  * source so the folders always reflect live content.
  *
- * Overlay sources:
- *   - `sop/`       → `<configDir>/sops/`                 (shared, role-based SOP library)
+ * Overlay sources (both PER-TEAM siblings of the vault, so the wiki shows only
+ * what the team actually owns — config/sops/ is a catalog you install FROM,
+ * never shown directly in a team folder):
+ *   - `sop/`       → `<vault>/../sops/`                  (SOPs the team has installed from the catalog)
  *   - `team-norm/` → `<vault>/../norms/`                 (per-team norms written by update-team-norm)
  *
  * @module services/wiki/wiki-overlay.resolver
@@ -23,21 +25,9 @@ export type OverlayFolder = 'sop' | 'team-norm';
 const OVERLAY_FOLDERS: ReadonlySet<string> = new Set<OverlayFolder>(['sop', 'team-norm']);
 
 /**
- * Resolve the config directory that holds the shared SOP library. Mirrors the
- * convention used by other services (`<cwd>/config`), overridable via
- * `CREWLY_CONFIG_DIR` for non-standard deployments.
- *
- * @returns Absolute path to the config directory.
- */
-function configDir(): string {
-  return process.env.CREWLY_CONFIG_DIR
-    ? path.resolve(process.env.CREWLY_CONFIG_DIR)
-    : path.resolve(process.cwd(), 'config');
-}
-
-/**
  * Return the real on-disk directory backing a top-level canonical folder, or
  * null when the folder is not overlayed (the vault's own directory is used).
+ * Both overlay folders resolve to a per-team sibling of the vault.
  *
  * @param vaultPath - Absolute path to the vault root (e.g. `.../teams/<id>/wiki`).
  * @param topFolder - The top-level folder name (e.g. `sop`, `team-norm`, `llm-curated`).
@@ -45,9 +35,9 @@ function configDir(): string {
  */
 export function overlayRootFor(vaultPath: string, topFolder: string): string | null {
   if (!OVERLAY_FOLDERS.has(topFolder)) return null;
-  if (topFolder === 'sop') return path.join(configDir(), 'sops');
-  // team-norm → the sibling `norms/` dir next to the vault.
-  return path.resolve(vaultPath, '..', 'norms');
+  // sop → installed SOPs sibling dir; team-norm → norms sibling dir.
+  const sibling = topFolder === 'sop' ? 'sops' : 'norms';
+  return path.resolve(vaultPath, '..', sibling);
 }
 
 /**
