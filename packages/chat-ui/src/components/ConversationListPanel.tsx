@@ -24,9 +24,25 @@
  * @module components/ConversationListPanel
  */
 
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { ConversationGroup, ConversationRow } from '../types/team-chat.types';
 import { AgentStatusBadge } from './AgentStatusBadge';
+
+/** localStorage key for collapsed conversation-group ids. */
+const COLLAPSED_GROUPS_KEY = 'crewly-chat-collapsed-groups';
+
+function loadCollapsedGroups(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr.filter((x) => typeof x === 'string'));
+    }
+  } catch {
+    // ignore — start expanded
+  }
+  return new Set();
+}
 
 export interface ConversationListPanelProps {
   /** Workspace title rendered as the panel header. */
@@ -49,6 +65,10 @@ export interface ConversationListPanelProps {
    * the header renders even if `workspaceName` is omitted.
    */
   headerAction?: React.ReactNode;
+  /** When provided, renders a pin toggle per row; returns true if pinned. */
+  isPinned?: (row: ConversationRow) => boolean;
+  /** Pin/unpin a conversation. Enables the per-row pin affordance. */
+  onTogglePin?: (row: ConversationRow) => void;
   className?: string;
 }
 
@@ -59,12 +79,30 @@ export function ConversationListPanel({
   onSelectConversation,
   emptyState,
   headerAction,
+  isPinned,
+  onTogglePin,
   className = '',
 }: ConversationListPanelProps): JSX.Element {
   const totalRows = useMemo(
     () => groups.reduce((acc, g) => acc + g.rows.length, 0),
     [groups],
   );
+
+  // Collapsed/expanded state per group id, persisted to localStorage.
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsedGroups);
+  const toggleCollapse = useCallback((id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try {
+        localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify([...next]));
+      } catch {
+        // ignore — collapse state is best-effort
+      }
+      return next;
+    });
+  }, []);
 
   return (
     <aside
@@ -94,6 +132,10 @@ export function ConversationListPanel({
                 group={group}
                 activeConversationId={activeConversationId}
                 onSelectConversation={onSelectConversation}
+                collapsed={collapsed.has(group.id)}
+                onToggleCollapse={() => toggleCollapse(group.id)}
+                isPinned={isPinned}
+                onTogglePin={onTogglePin}
               />
             ) : null,
           )
@@ -107,10 +149,18 @@ function ConversationGroupSection({
   group,
   activeConversationId,
   onSelectConversation,
+  collapsed,
+  onToggleCollapse,
+  isPinned,
+  onTogglePin,
 }: {
   group: ConversationGroup;
   activeConversationId: string | null;
   onSelectConversation?: (row: ConversationRow) => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  isPinned?: (row: ConversationRow) => boolean;
+  onTogglePin?: (row: ConversationRow) => void;
 }): JSX.Element {
   return (
     <section
@@ -118,24 +168,48 @@ function ConversationGroupSection({
       aria-labelledby={`conv-group-${group.id}`}
       data-testid={`conv-group-${group.id}`}
     >
-      <h3
+      {/* Collapsible header — click to expand/collapse the section. */}
+      <button
+        type="button"
         id={`conv-group-${group.id}`}
-        className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
+        onClick={onToggleCollapse}
+        aria-expanded={!collapsed}
+        data-testid={`conv-group-toggle-${group.id}`}
+        className="flex w-full items-center gap-1 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
       >
-        {group.label}
-      </h3>
-      <ul role="list" className="flex flex-col">
-        {group.rows.map((row) => (
-          <li key={row.id}>
-            <ConversationRowItem
-              row={row}
-              isActive={activeConversationId === row.id}
-              onSelect={onSelectConversation}
-            />
-          </li>
-        ))}
-      </ul>
+        <Chevron collapsed={collapsed} />
+        <span className="truncate">{group.label}</span>
+        <span className="ml-auto text-slate-400 dark:text-slate-500">{group.rows.length}</span>
+      </button>
+      {!collapsed && (
+        <ul role="list" className="flex flex-col">
+          {group.rows.map((row) => (
+            <li key={row.id}>
+              <ConversationRowItem
+                row={row}
+                isActive={activeConversationId === row.id}
+                onSelect={onSelectConversation}
+                pinned={isPinned?.(row) ?? false}
+                onTogglePin={onTogglePin}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
+  );
+}
+
+/** Right-pointing chevron that rotates down when expanded. */
+function Chevron({ collapsed }: { collapsed: boolean }): JSX.Element {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 12 12"
+      className={`h-3 w-3 shrink-0 transition-transform ${collapsed ? '' : 'rotate-90'}`}
+    >
+      <path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 
@@ -143,32 +217,38 @@ function ConversationRowItem({
   row,
   isActive,
   onSelect,
+  pinned,
+  onTogglePin,
 }: {
   row: ConversationRow;
   isActive: boolean;
   onSelect?: (row: ConversationRow) => void;
+  pinned?: boolean;
+  onTogglePin?: (row: ConversationRow) => void;
 }): JSX.Element {
   const hasUnread = (row.unreadCount ?? 0) > 0;
   const hasMentions = (row.mentionCount ?? 0) > 0;
 
   return (
-    <button
-      type="button"
-      onClick={() => onSelect?.(row)}
-      data-testid={`conv-row-${row.id}`}
-      data-active={isActive ? 'true' : 'false'}
-      data-kind={row.kind}
-      data-unread={hasUnread ? 'true' : 'false'}
+    <div
       className={[
-        // Full-width active state per §6.1 — left border + tinted bg, not just text color.
-        'flex w-full items-center gap-2 border-l-2 px-3 py-2 text-left transition',
+        'group/row relative flex w-full items-center border-l-2 transition',
         isActive
           ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
           : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800',
       ].join(' ')}
-      aria-current={isActive ? 'page' : undefined}
     >
-      <ConversationKindIcon row={row} />
+      <button
+        type="button"
+        onClick={() => onSelect?.(row)}
+        data-testid={`conv-row-${row.id}`}
+        data-active={isActive ? 'true' : 'false'}
+        data-kind={row.kind}
+        data-unread={hasUnread ? 'true' : 'false'}
+        className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left"
+        aria-current={isActive ? 'page' : undefined}
+      >
+        <ConversationKindIcon row={row} />
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
@@ -228,7 +308,44 @@ function ConversationRowItem({
           {row.unreadCount}
         </span>
       ) : null}
-    </button>
+      </button>
+
+      {onTogglePin && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onTogglePin(row);
+          }}
+          data-testid={`conv-pin-${row.id}`}
+          aria-label={pinned ? `Unpin ${row.title}` : `Pin ${row.title}`}
+          aria-pressed={pinned}
+          title={pinned ? 'Unpin' : 'Pin'}
+          className={[
+            'mr-2 shrink-0 rounded p-1 text-slate-400 hover:text-amber-500',
+            // Pinned: always visible. Unpinned: reveal on row hover.
+            pinned ? 'text-amber-500' : 'opacity-0 group-hover/row:opacity-100',
+          ].join(' ')}
+        >
+          <PinIcon filled={pinned ?? false} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Pin glyph — filled when pinned. */
+function PinIcon({ filled }: { filled: boolean }): JSX.Element {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5">
+      <path
+        d="M9.5 1.5l5 5-2 .5-2.5 2.5L9 13 7 11 3.5 14.5 3 14l3.5-3.5L4.5 8.5 7 6l.5-2.5 2-2z"
+        fill={filled ? 'currentColor' : 'none'}
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

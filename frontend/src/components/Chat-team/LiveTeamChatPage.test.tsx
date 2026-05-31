@@ -557,8 +557,29 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
     // The orchestrator DM is reachable (not the no-teams dead-end).
     expect(screen.queryByTestId('empty-no-teams')).not.toBeInTheDocument();
     expect(screen.getAllByText('Orchestrator').length).toBeGreaterThan(0);
-    // "Direct Messages" appears once (group label only, not also a panel header).
-    expect(screen.getAllByText('Direct Messages').length).toBe(1);
+    // Orchestrator is pinned by default → surfaces under "Pinned Chats".
+    expect(screen.getByText('Pinned Chats')).toBeInTheDocument();
+  });
+
+  it('pins the orchestrator by default and lets you unpin it', async () => {
+    window.localStorage.clear();
+    const channels: Channel[] = [
+      { id: 'orc-dm', agentSession: 'crewly-orc', name: 'Orchestrator', createdAt: ISO, type: 'dm', presence: 'online' },
+      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', presence: 'online' },
+    ];
+    const { client } = makeStubClient(channels);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
+      />,
+    );
+    // Orchestrator pinned by default → Pinned Chats section present; Ella isn't pinned.
+    await waitFor(() => expect(screen.getByTestId('conv-group-pinned')).toBeInTheDocument());
+    // Unpin the orchestrator via its pin toggle.
+    fireEvent.click(screen.getByTestId('conv-pin-orc-dm'));
+    await waitFor(() => expect(screen.queryByTestId('conv-group-pinned')).not.toBeInTheDocument());
   });
 });
 

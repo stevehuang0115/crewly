@@ -57,6 +57,7 @@ import {
 } from './EmptyStates';
 import { ChatErrorToast } from './ChatErrorToast';
 import { CreateGroupModal } from './CreateGroupModal';
+import { usePinnedChats } from '../../hooks/usePinnedChats';
 
 export interface LiveTeamChatPageProps {
   /** OSS backend base URL. Required when no `client` is injected. */
@@ -168,6 +169,11 @@ interface BodyProps {
 /** Prefix marking a synthetic DM row for a directory agent without a channel. */
 const VIRTUAL_DM_PREFIX = 'agent:';
 
+/** Stable pin key for a row: agent session for DMs, channel id for groups. */
+function pinKeyOf(row: ConversationRow): string {
+  return row.agentSession || row.id;
+}
+
 function LiveTeamChatPageBody({
   teamLabels,
   mentionables,
@@ -179,6 +185,7 @@ function LiveTeamChatPageBody({
 }: BodyProps): JSX.Element {
   const { channels, loading: channelsLoading, error: channelsError, refresh } = useChannels();
   const client = useChatApiClient();
+  const pinnedChats = usePinnedChats();
   const [showCreateGroup, setShowCreateGroup] = useState(false);
 
   // Merge the agent directory into the channel list so EVERY agent appears in
@@ -259,7 +266,7 @@ function LiveTeamChatPageBody({
     return m;
   }, [directoryAgents]);
 
-  const groups = useMemo(() => {
+  const sectioned = useMemo(() => {
     const dms = baseGroups.find((g) => g.id === 'dms');
     if (!dms || sessionToTeam.size === 0) return baseGroups;
 
@@ -290,6 +297,25 @@ function LiveTeamChatPageBody({
       return out;
     });
   }, [baseGroups, sessionToTeam]);
+
+  // Lift pinned conversations into a top "Pinned Chats" section, removing them
+  // from their normal section so they appear once. Orchestrator is pinned by
+  // default (see usePinnedChats); the user can pin/unpin any DM or huddle.
+  const groups = useMemo(() => {
+    const pinnedRows: ConversationRow[] = [];
+    const pruned = sectioned
+      .map((g) => {
+        const keep: ConversationRow[] = [];
+        for (const r of g.rows) {
+          if (pinnedChats.isPinned(pinKeyOf(r))) pinnedRows.push(r);
+          else keep.push(r);
+        }
+        return { ...g, rows: keep };
+      })
+      .filter((g) => g.rows.length > 0);
+    if (pinnedRows.length === 0) return pruned;
+    return [{ id: 'pinned', label: 'Pinned Chats', rows: pinnedRows }, ...pruned];
+  }, [sectioned, pinnedChats]);
 
   const totalRows = useMemo(
     () => groups.reduce((acc, g) => acc + g.rows.length, 0),
@@ -393,6 +419,8 @@ function LiveTeamChatPageBody({
         groups={groups}
         activeConversationId={resolvedConversationId}
         onSelectConversation={handleSelectConversation}
+        isPinned={(row) => pinnedChats.isPinned(pinKeyOf(row))}
+        onTogglePin={(row) => pinnedChats.toggle(pinKeyOf(row))}
         headerAction={
           <button
             type="button"
