@@ -235,14 +235,25 @@ function LiveTeamChatPageBody({
       data-loading={channelsLoading ? 'true' : 'false'}
       data-error={channelsError ? 'true' : 'false'}
     >
-      <WorkspaceRail
-        workspaces={workspaces}
-        activeWorkspaceId={resolvedWorkspaceId}
-        onSelectWorkspace={handleSelectWorkspace}
-      />
+      {/* Slack hides the workspace switcher when there's only one workspace
+          (e.g. DM-only). Showing a single lonely icon column adds noise. */}
+      {workspaces.length > 1 && (
+        <WorkspaceRail
+          workspaces={workspaces}
+          activeWorkspaceId={resolvedWorkspaceId}
+          onSelectWorkspace={handleSelectWorkspace}
+        />
+      )}
 
       <ConversationListPanel
-        workspaceName={activeWorkspace?.name}
+        // Avoid a duplicate header: the DM workspace's group label ("Direct
+        // Messages") already heads the list, so don't also render it as the
+        // panel title. Real team workspaces still show their name.
+        workspaceName={
+          activeWorkspace && activeWorkspace.id !== directMessagesWorkspace?.id
+            ? activeWorkspace.name
+            : undefined
+        }
         groups={groups}
         activeConversationId={resolvedConversationId}
         onSelectConversation={handleSelectConversation}
@@ -401,6 +412,7 @@ function LiveTeamChatRightPanelInner({
       <MessageThread
         channelId={conversation.id}
         agentName={recipientName}
+        layout="flat"
         emptyState={
           <NoMessagesEmptyState
             kind={conversation.kind === 'dm' ? 'dm' : 'channel'}
