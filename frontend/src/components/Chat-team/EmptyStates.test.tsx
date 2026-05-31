@@ -43,10 +43,10 @@ describe('Chat-team EmptyStates', () => {
     expect(screen.getByText(/notify this agent/i)).toBeInTheDocument();
   });
 
-  it('AgentOfflineBanner explains queueing without disabling the composer', () => {
+  it('AgentOfflineBanner explains activate-on-send without disabling the composer', () => {
     render(<AgentOfflineBanner agentName="Max" />);
     expect(screen.getByTestId('banner-agent-offline')).toBeInTheDocument();
     expect(screen.getByText(/Max is currently inactive/i)).toBeInTheDocument();
-    expect(screen.getByText(/delivered to the private queue/i)).toBeInTheDocument();
+    expect(screen.getByText(/will activate/i)).toBeInTheDocument();
   });
 });

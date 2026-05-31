@@ -538,7 +538,7 @@ function LiveTeamChatRightPanelInner({
         onSend={handleSend}
         inactiveHelper={
           isInactiveDm && recipientName
-            ? `${recipientName} is inactive. Message will queue for later delivery.`
+            ? `${recipientName} is inactive — sending will activate them and deliver your message.`
             : threadRoot
               ? `Replying in thread ${threadRoot}`
               : undefined

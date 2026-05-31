@@ -146,6 +146,14 @@ export interface ChatV2DispatcherOptions {
    * Order doesn't matter — the dispatcher loops over the whole list.
    */
   huddleMembersFor?: (channelId: string) => readonly string[];
+  /**
+   * Activate-on-send hook. When a DM dispatch fails because the agent's
+   * session doesn't exist (inactive), the dispatcher calls this to start the
+   * agent, then retries delivery once. Returns true when the agent is now
+   * active. User-initiated, so it bypasses the orchestrator wake-gate by
+   * design. When omitted, inactive sends just queue (legacy behavior).
+   */
+  activateAgent?: (agentSession: string) => Promise<boolean>;
 }
 
 /** Inputs to the prompt formatter. */
@@ -215,6 +223,7 @@ export class ChatV2DispatcherService {
   private readonly formatPrompt: (args: FormatPromptArgs) => string;
   private readonly mentionResolver?: ChatV2MentionResolver;
   private readonly huddleMembersFor?: (channelId: string) => readonly string[];
+  private readonly activateAgent?: (agentSession: string) => Promise<boolean>;
   private readonly logger: ComponentLogger;
 
   constructor(options: ChatV2DispatcherOptions) {
@@ -222,6 +231,7 @@ export class ChatV2DispatcherService {
     this.formatPrompt = options.formatPrompt ?? defaultFormatPrompt;
     this.mentionResolver = options.mentionResolver;
     this.huddleMembersFor = options.huddleMembersFor;
+    this.activateAgent = options.activateAgent;
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
   }
 
@@ -537,12 +547,45 @@ export class ChatV2DispatcherService {
     }
 
     if (!result.success) {
-      this.logger.warn('chat-v2 dispatch reported failure', {
-        channelId: channel.id,
-        agentSession: channel.agentSession,
-        err: result.error,
-      });
-      return { dispatched: false, error: result.error ?? 'unknown sink failure' };
+      // Auto-activate on send: the agent's session doesn't exist (inactive).
+      // When an activation hook is wired, start the agent and retry delivery
+      // once — so messaging an offline agent wakes it and delivers, instead
+      // of silently queueing. This is user-initiated, so it bypasses the
+      // orchestrator wake-gate by design.
+      if (this.activateAgent) {
+        this.logger.info('chat-v2 dispatch: agent inactive — activating on send', {
+          channelId: channel.id,
+          agentSession: channel.agentSession,
+        });
+        let activated = false;
+        try {
+          activated = await this.activateAgent(channel.agentSession);
+        } catch (err) {
+          this.logger.warn('chat-v2 activate-on-send failed', {
+            agentSession: channel.agentSession,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+        if (activated) {
+          try {
+            result = await this.agentSink.sendMessageToAgent(channel.agentSession, prompt);
+          } catch (err) {
+            return {
+              dispatched: false,
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+        }
+      }
+
+      if (!result.success) {
+        this.logger.warn('chat-v2 dispatch reported failure', {
+          channelId: channel.id,
+          agentSession: channel.agentSession,
+          err: result.error,
+        });
+        return { dispatched: false, error: result.error ?? 'unknown sink failure' };
+      }
     }
 
     this.logger.debug('chat-v2 dispatched', {

@@ -149,6 +149,45 @@ describe('ChatV2DispatcherService', () => {
       expect(result).toEqual({ dispatched: false, error: 'no such session' });
     });
 
+    it('activates an inactive agent on send, then retries delivery', async () => {
+      // First send fails (no session); after activation the retry succeeds.
+      const calls: string[] = [];
+      let attempt = 0;
+      const sink: AgentMessageSink = {
+        async sendMessageToAgent(sessionName) {
+          calls.push(sessionName);
+          attempt += 1;
+          return attempt === 1
+            ? { success: false, error: 'Session does not exist' }
+            : { success: true };
+        },
+      };
+      const activated: string[] = [];
+      const dispatcher = new ChatV2DispatcherService({
+        agentSink: sink,
+        activateAgent: async (s) => {
+          activated.push(s);
+          return true;
+        },
+      });
+
+      const result = await dispatcher.dispatchToAgent(makeChannel(), makeMessage());
+      expect(result).toEqual({ dispatched: true });
+      expect(activated).toEqual(['crewly-product-sam-dd2b46f7']); // bound session
+      expect(calls).toHaveLength(2); // initial + retry after activation
+    });
+
+    it('stays failed when activation does not bring the agent up', async () => {
+      const { sink } = makeSink({ success: false, error: 'Session does not exist' });
+      const dispatcher = new ChatV2DispatcherService({
+        agentSink: sink,
+        activateAgent: async () => false,
+      });
+
+      const result = await dispatcher.dispatchToAgent(makeChannel(), makeMessage());
+      expect(result).toEqual({ dispatched: false, error: 'Session does not exist' });
+    });
+
     it('treats thrown errors as a clean, reportable failure', async () => {
       const sink: AgentMessageSink = {
         async sendMessageToAgent() {
