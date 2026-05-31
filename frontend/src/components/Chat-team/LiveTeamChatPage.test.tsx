@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   MockChatApiClient,
@@ -446,6 +446,44 @@ describe('LiveTeamChatPage — Phase C acceptance', () => {
       expect(screen.getByTestId('workspace-row-__direct__')).toBeInTheDocument();
     });
     expect(screen.getByTestId('workspace-row-team-x')).toBeInTheDocument();
+  });
+
+  it('shows directory agents (online + offline) even without an existing DM channel', async () => {
+    // No channels at all — agents come purely from the directory.
+    const { client } = makeStubClient([]);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
+        directoryAgents={[
+          { agentSession: 'sess-ella', name: 'Ella', presence: 'online' },
+          { agentSession: 'sess-grace', name: 'Grace', presence: 'offline' },
+        ]}
+        onEnsureDm={async () => 'real-chan'}
+      />,
+    );
+    // Both agents are listed despite having no channel yet.
+    expect(await screen.findByText('Ella')).toBeInTheDocument();
+    expect(screen.getByText('Grace')).toBeInTheDocument();
+    expect(screen.queryByTestId('empty-no-teams')).not.toBeInTheDocument();
+  });
+
+  it('calls onEnsureDm when a directory agent without a channel is opened', async () => {
+    const onEnsureDm = vi.fn().mockResolvedValue('real-chan');
+    const { client } = makeStubClient([]);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        directMessagesWorkspace={{ id: '__direct__', name: 'Direct Messages' }}
+        directoryAgents={[{ agentSession: 'sess-ella', name: 'Ella', presence: 'offline' }]}
+        onEnsureDm={onEnsureDm}
+      />,
+    );
+    const row = await screen.findByText('Ella');
+    fireEvent.click(row);
+    await waitFor(() => expect(onEnsureDm).toHaveBeenCalledWith('sess-ella'));
   });
 
   it('does not inject the DM workspace when the user has no DM channels', async () => {

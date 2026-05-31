@@ -27,12 +27,27 @@ vi.mock('../../hooks/useTeams', () => ({
 
 import { TeamChatRoute } from './TeamChatRoute';
 
-function makeTeam(id: string, name: string): Team {
+function makeTeam(id: string, name: string, members: Team['members'] = []): Team {
   return {
     id,
     name,
-    members: [],
+    members,
     projectIds: [],
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+  };
+}
+
+function makeMember(id: string, name: string, sessionName: string) {
+  return {
+    id,
+    name,
+    sessionName,
+    role: 'developer',
+    systemPrompt: '',
+    agentStatus: 'inactive' as const,
+    workingStatus: 'idle' as const,
+    runtimeType: 'claude-code' as const,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   };
@@ -113,6 +128,22 @@ describe('TeamChatRoute', () => {
     expect(liveProps).toHaveBeenCalledWith(
       expect.objectContaining({ initialWorkspaceId: DM_WORKSPACE_ID }),
     );
+  });
+
+  it('passes the full agent directory (every team member) to the page', async () => {
+    teamsRef.teams = [
+      makeTeam('t1', 'Alpha', [makeMember('m1', 'Ella', 'sess-ella')]),
+      makeTeam('t2', 'Beta', [makeMember('m2', 'Grace', 'sess-grace')]),
+    ];
+    renderAt('/team-chat');
+    await screen.findByTestId('live-team-chat');
+    const props = liveProps.mock.calls[0][0] as {
+      directoryAgents?: Array<{ agentSession: string }>;
+    };
+    expect((props.directoryAgents ?? []).map((a) => a.agentSession)).toEqual([
+      'sess-ella',
+      'sess-grace',
+    ]);
   });
 
   it('derives teamLabels from the teams directory', async () => {

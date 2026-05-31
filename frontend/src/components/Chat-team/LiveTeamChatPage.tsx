@@ -42,6 +42,8 @@ import {
   useChatApiClient,
   type ChatApiClient,
   type ChatApiError,
+  type Channel,
+  type ChatPresenceStatus,
   type ConversationRow,
   type MentionComposerSendPayload,
   type MentionTarget,
@@ -92,6 +94,27 @@ export interface LiveTeamChatPageProps {
    * workspace simply scopes the center panel to show only DMs.
    */
   directMessagesWorkspace?: { id: string; name: string } | null;
+  /**
+   * Full agent directory (host-supplied). Every agent is shown in the DM
+   * list — online or offline — even before a DM channel exists, so the user
+   * can reach any agent. Agents that already have a real DM channel are
+   * de-duplicated against it.
+   */
+  directoryAgents?: DirectoryAgentEntry[];
+  /**
+   * Ensure (find-or-create) a DM channel for an agent session, returning the
+   * resolved channel id. Called when the user opens a directory agent that
+   * doesn't have a channel yet. Host-supplied to keep this component
+   * transport-agnostic.
+   */
+  onEnsureDm?: (agentSession: string) => Promise<string>;
+}
+
+/** One agent in the host-supplied directory shown in the DM list. */
+export interface DirectoryAgentEntry {
+  agentSession: string;
+  name: string;
+  presence?: ChatPresenceStatus;
 }
 
 export function LiveTeamChatPage({
@@ -103,6 +126,8 @@ export function LiveTeamChatPage({
   initialWorkspaceId,
   initialConversationId,
   directMessagesWorkspace,
+  directoryAgents = [],
+  onEnsureDm,
 }: LiveTeamChatPageProps): JSX.Element {
   return (
     <ChatAPIProvider
@@ -117,6 +142,8 @@ export function LiveTeamChatPage({
         initialWorkspaceId={initialWorkspaceId}
         initialConversationId={initialConversationId}
         directMessagesWorkspace={directMessagesWorkspace}
+        directoryAgents={directoryAgents}
+        onEnsureDm={onEnsureDm}
       />
     </ChatAPIProvider>
   );
@@ -132,7 +159,12 @@ interface BodyProps {
   initialWorkspaceId?: string | null;
   initialConversationId?: string | null;
   directMessagesWorkspace?: { id: string; name: string } | null;
+  directoryAgents: DirectoryAgentEntry[];
+  onEnsureDm?: (agentSession: string) => Promise<string>;
 }
+
+/** Prefix marking a synthetic DM row for a directory agent without a channel. */
+const VIRTUAL_DM_PREFIX = 'agent:';
 
 function LiveTeamChatPageBody({
   teamLabels,
@@ -140,20 +172,47 @@ function LiveTeamChatPageBody({
   initialWorkspaceId,
   initialConversationId,
   directMessagesWorkspace,
+  directoryAgents,
+  onEnsureDm,
 }: BodyProps): JSX.Element {
   const { channels, loading: channelsLoading, error: channelsError, refresh } = useChannels();
   const client = useChatApiClient();
   const [showCreateGroup, setShowCreateGroup] = useState(false);
 
-  const teamWorkspaces = useObservedWorkspaces(channels, { teamLabels });
+  // Merge the agent directory into the channel list so EVERY agent appears in
+  // the DM list — even offline ones with no channel yet. Agents that already
+  // have a real DM channel win; the rest get a synthetic row whose DM is
+  // created on first open (see handleSelectConversation).
+  const mergedChannels = useMemo<Channel[]>(() => {
+    const dmSessions = new Set(
+      channels
+        .filter((c) => (c.type ?? 'dm') === 'dm' && c.agentSession)
+        .map((c) => c.agentSession),
+    );
+    const synthetic: Channel[] = directoryAgents
+      .filter((a) => a.agentSession && !dmSessions.has(a.agentSession))
+      .map((a) => ({
+        id: `${VIRTUAL_DM_PREFIX}${a.agentSession}`,
+        agentSession: a.agentSession,
+        name: a.name,
+        createdAt: '',
+        type: 'dm' as const,
+        // Channel presence is the narrower online|busy|offline vocabulary.
+        presence:
+          a.presence === 'online' ? 'online' : a.presence === 'busy' ? 'busy' : 'offline',
+      }));
+    return synthetic.length > 0 ? [...channels, ...synthetic] : channels;
+  }, [channels, directoryAgents]);
+
+  const teamWorkspaces = useObservedWorkspaces(mergedChannels, { teamLabels });
 
   // Prepend the synthetic "Direct Messages" workspace when the host supplies
   // one and the user actually has DMs — so DMs (orchestrator + agents) are
   // reachable even with zero team channels. DMs are not team-scoped, so this
   // workspace just narrows the center panel to the DM group.
   const hasDms = useMemo(
-    () => channels.some((c) => (c.type ?? 'dm') !== 'channel'),
-    [channels],
+    () => mergedChannels.some((c) => (c.type ?? 'dm') !== 'channel'),
+    [mergedChannels],
   );
   const workspaces = useMemo<Workspace[]>(() => {
     if (directMessagesWorkspace && hasDms) {
@@ -182,7 +241,7 @@ function LiveTeamChatPageBody({
   const resolvedWorkspaceId =
     activeWorkspaceId ?? (workspaces[0]?.id ?? null);
 
-  const groups = useGroupedChannels(channels, {
+  const groups = useGroupedChannels(mergedChannels, {
     workspaceId: resolvedWorkspaceId,
   });
 
@@ -191,10 +250,13 @@ function LiveTeamChatPageBody({
     [groups],
   );
 
-  // Auto-select the first available conversation when none is set.
+  // Auto-select the first available conversation when none is set. Skip
+  // virtual directory rows (no real channel yet) so the thread/composer
+  // never operate on a synthetic id — those are only entered via an explicit
+  // click, which creates the DM first.
   const resolvedConversationId =
     activeConversationId ??
-    groups.flatMap((g) => g.rows).find(Boolean)?.id ??
+    groups.flatMap((g) => g.rows).find((r) => !r.id.startsWith(VIRTUAL_DM_PREFIX))?.id ??
     null;
 
   const handleSelectWorkspace = useCallback((ws: Workspace) => {
@@ -204,9 +266,20 @@ function LiveTeamChatPageBody({
     setActiveConversationId(null);
   }, []);
 
-  const handleSelectConversation = useCallback((row: ConversationRow) => {
-    setActiveConversationId(row.id);
-  }, []);
+  const handleSelectConversation = useCallback(
+    async (row: ConversationRow) => {
+      // Virtual directory row (no channel yet): create the DM on first open,
+      // refresh, then select the resolved real channel.
+      if (row.id.startsWith(VIRTUAL_DM_PREFIX) && row.agentSession && onEnsureDm) {
+        const channelId = await onEnsureDm(row.agentSession);
+        await refresh();
+        setActiveConversationId(channelId);
+        return;
+      }
+      setActiveConversationId(row.id);
+    },
+    [onEnsureDm, refresh],
+  );
 
   // "拉群" — create a multi-agent group chat, then refresh the channel list
   // and jump into it. Huddles are workspace-agnostic so they surface in the

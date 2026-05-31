@@ -71,12 +71,13 @@ export function buildTeamLabels(teams: Team[]): Record<string, string> {
  * Translate a member's agent status into the chat-ui presence vocabulary.
  *
  * The teams directory tracks a richer agent lifecycle than the chat presence
- * dot; this collapses it to the three presence states the popover renders.
+ * dot; this collapses it to the states the UI renders (online / idle while
+ * starting / offline otherwise).
  *
  * @param agentStatus - The member's `agentStatus` from the teams directory.
- * @returns The chat-ui presence status for the mention row.
+ * @returns The chat-ui presence status.
  */
-function toPresence(agentStatus: string): ChatPresenceStatus {
+export function agentStatusToPresence(agentStatus: string): ChatPresenceStatus {
   switch (agentStatus) {
     case 'active':
     case 'started':
@@ -124,7 +125,7 @@ export function buildMentionables(teams: Team[]): MentionTarget[] {
         kind: 'agent',
         label: member.name,
         routingHint: member.role,
-        presence: toPresence(member.agentStatus),
+        presence: agentStatusToPresence(member.agentStatus),
         agentSession: member.sessionName,
       });
     }

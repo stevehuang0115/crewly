@@ -26,14 +26,15 @@
  * @module components/Chat-team/TeamChatRoute
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { LiveTeamChatPage } from './LiveTeamChatPage';
+import { LiveTeamChatPage, type DirectoryAgentEntry } from './LiveTeamChatPage';
 import { useTeams } from '../../hooks/useTeams';
 import { resolveBackendURL, resolveChatMode } from '../../utils/chat-backend';
 import {
   buildTeamLabels,
   buildMentionables,
+  agentStatusToPresence,
   TEAM_QUERY_PARAM,
   ORCHESTRATOR_SESSION,
   ORCHESTRATOR_LABEL,
@@ -73,7 +74,42 @@ export function TeamChatRoute(): JSX.Element {
   const teamLabels = useMemo(() => buildTeamLabels(teams), [teams]);
   const mentionables = useMemo(() => buildMentionables(teams), [teams]);
 
+  // Full agent directory → shown in the DM list (online + offline) so every
+  // agent is reachable. Derived from the teams the hook already fetched, so
+  // no extra request; falls back to GET /api/chat/agents semantics (session
+  // name + presence) without the round-trip.
+  const directoryAgents = useMemo<DirectoryAgentEntry[]>(() => {
+    const seen = new Set<string>();
+    const out: DirectoryAgentEntry[] = [];
+    for (const team of teams) {
+      for (const member of team.members ?? []) {
+        const session = member.sessionName;
+        if (!session || seen.has(session)) continue;
+        seen.add(session);
+        out.push({
+          agentSession: session,
+          name: member.name,
+          presence: agentStatusToPresence(member.agentStatus),
+        });
+      }
+    }
+    return out;
+  }, [teams]);
+
   const teamParam = searchParams.get(TEAM_QUERY_PARAM) || null;
+
+  // Find-or-create a DM for an agent the user opens from the directory.
+  const onEnsureDm = useCallback(
+    async (agentSession: string): Promise<string> => {
+      const agent = directoryAgents.find((a) => a.agentSession === agentSession);
+      const id = await ensureChannel('/api/chat/channels/dm/ensure', {
+        agentSession,
+        name: agent?.name ?? agentSession,
+      });
+      return id ?? '';
+    },
+    [directoryAgents],
+  );
 
   // Ensure the channels the page needs exist before mounting it. `readyKey`
   // tracks the team we've prepared for (or `__none__`) so a team switch
@@ -131,6 +167,8 @@ export function TeamChatRoute(): JSX.Element {
       initialWorkspaceId={initialWorkspaceId}
       initialConversationId={initialConversationId}
       directMessagesWorkspace={{ id: DM_WORKSPACE_ID, name: DM_WORKSPACE_LABEL }}
+      directoryAgents={directoryAgents}
+      onEnsureDm={onEnsureDm}
     />
   );
 }
