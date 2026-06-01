@@ -1478,9 +1478,26 @@ export class ChatV2Service extends EventEmitter {
       direction: args.direction,
     });
 
+    // Slack-style thread reply counts: one aggregate query for the whole
+    // channel, then attach `replyCount`/`lastReplyAt` to the root-message
+    // DTOs on this page. Root messages are those whose own `threadId` is
+    // unset; replies never carry a count.
+    const threadSummary = this.messages.threadReplySummary(args.channelId);
+    const messages = page.rows.map((r) => {
+      const dto = this.toMessageDTO(r, []);
+      if (dto.threadId === undefined) {
+        const summary = threadSummary.get(dto.id);
+        if (summary) {
+          dto.replyCount = summary.replyCount;
+          dto.lastReplyAt = new Date(summary.lastReplyAtMs).toISOString();
+        }
+      }
+      return dto;
+    });
+
     return {
       channelId: args.channelId,
-      messages: page.rows.map((r) => this.toMessageDTO(r, [])),
+      messages,
       nextCursor: page.nextCursor,
       prevCursor: page.prevCursor,
     };

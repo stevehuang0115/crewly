@@ -204,6 +204,17 @@ export interface Message {
    * group by `threadId` to render the thread sub-pane.
    */
   threadId?: string;
+  /**
+   * Slack-style threading — number of replies in this message's thread.
+   * Server-computed and present only on root messages (those with no
+   * `threadId`) that have at least one reply. Undefined otherwise.
+   */
+  replyCount?: number;
+  /**
+   * Slack-style threading — ISO 8601 timestamp of the most recent reply
+   * in this message's thread. Paired with `replyCount`.
+   */
+  lastReplyAt?: string;
 }
 
 /** Body for `POST /api/chat/channels/:id/messages`. */

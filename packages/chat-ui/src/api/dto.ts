@@ -89,6 +89,13 @@ export interface MessageDTO {
    * message is a reply within a thread; consumers group by `threadId`.
    */
   threadId?: string;
+  /**
+   * Slack-style threading — server-computed reply count, present only on
+   * root messages with at least one reply.
+   */
+  replyCount?: number;
+  /** Slack-style threading — ms-since-epoch of the most recent reply. */
+  lastReplyAt?: number;
 }
 
 /** Wire shape for attachments (Phase 1 image only). */
@@ -235,6 +242,10 @@ export function messageFromDTO(dto: MessageDTO): Message {
     // omits the field, so domain consumers can rely on `m.mentions`.
     mentions: Array.isArray(dto.mentions) ? dto.mentions : [],
     threadId: dto.threadId,
+    // Slack-style thread summary — only present on root messages with
+    // replies. `lastReplyAt` is ms on the wire; surface as ISO domain-side.
+    replyCount: typeof dto.replyCount === 'number' ? dto.replyCount : undefined,
+    lastReplyAt: msToIso(dto.lastReplyAt),
   };
 }
 

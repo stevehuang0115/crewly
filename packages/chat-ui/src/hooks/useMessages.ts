@@ -105,6 +105,37 @@ export function toAscendingBySeq(messages: Message[]): Message[] {
   return [...messages].sort((a, b) => a.seq - b.seq);
 }
 
+/**
+ * Select the root (top-level) messages from a timeline — those that are
+ * NOT thread replies (`threadId` unset). The main channel timeline renders
+ * only these; replies live inside the thread panel.
+ *
+ * Pure helper so the split is unit-testable without React.
+ *
+ * @param messages - The full channel timeline
+ * @returns Root messages in their original order
+ */
+export function selectRootMessages(messages: Message[]): Message[] {
+  return messages.filter((m) => !m.threadId);
+}
+
+/**
+ * Select the replies belonging to a given thread root, ascending by `seq`
+ * (oldest → newest, matching the timeline contract). A reply belongs to a
+ * thread when its `threadId` equals the root message id.
+ *
+ * Pure helper so the thread panel can derive its view live from `messages`
+ * (so a reply arriving via WS shows instantly) and so the split is
+ * unit-testable without React.
+ *
+ * @param messages - The full channel timeline
+ * @param rootId - The thread root message id
+ * @returns Reply messages for that thread, ascending by seq
+ */
+export function selectThreadReplies(messages: Message[], rootId: string): Message[] {
+  return messages.filter((m) => m.threadId === rootId).sort((a, b) => a.seq - b.seq);
+}
+
 export function deriveAgentThinking(messages: Message[]): boolean {
   if (messages.length === 0) return false;
   const last = messages[messages.length - 1];

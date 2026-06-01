@@ -407,6 +407,41 @@ export class MessageStore {
   }
 
   /**
+   * Aggregate Slack-style thread reply counts for a channel in a single
+   * query.
+   *
+   * Replies carry `thread_id = <root message id>`; root messages have
+   * `thread_id IS NULL`. This groups every reply by its root and returns
+   * one entry per thread with the reply count and the timestamp (ms) of
+   * the most recent reply. The caller attaches these to the matching
+   * root-message DTOs.
+   *
+   * Kept as ONE aggregate query per page (O(rows-with-threads)) rather
+   * than a per-message lookup, so a page render stays a fixed two-query
+   * cost regardless of page size.
+   *
+   * @param channelId - The channel id to aggregate over
+   * @returns Map of `rootMessageId` to `{ replyCount, lastReplyAtMs }`
+   */
+  threadReplySummary(
+    channelId: string,
+  ): Map<string, { replyCount: number; lastReplyAtMs: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT thread_id AS rootId, COUNT(*) AS cnt, MAX(created_at) AS last
+         FROM chat_messages
+         WHERE channel_id = ? AND thread_id IS NOT NULL
+         GROUP BY thread_id`,
+      )
+      .all(channelId) as Array<{ rootId: string; cnt: number; last: number }>;
+    const out = new Map<string, { replyCount: number; lastReplyAtMs: number }>();
+    for (const r of rows) {
+      out.set(r.rootId, { replyCount: r.cnt, lastReplyAtMs: r.last });
+    }
+    return out;
+  }
+
+  /**
    * Return the current `MAX(seq)` for a channel, or 0 when empty.
    *
    * @param channelId - The channel id

@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   MockChatApiClient,
@@ -367,7 +367,7 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     expect(sendCalls[0].input.mentions).toEqual([]);
   });
 
-  it('AC#2: incoming messages with threadId surface the "Reply in thread" affordance', async () => {
+  it('AC#2: a root with replies shows the "N replies" chip and opens the thread panel', async () => {
     const messagesById: Record<string, Message[]> = {
       'ch-general': [
         {
@@ -378,6 +378,9 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
           content: 'kicking off the thread',
           createdAt: ISO,
           mentions: [],
+          // Server-computed reply summary on the root message.
+          replyCount: 1,
+          lastReplyAt: ISO,
         },
         {
           id: 'm-reply',
@@ -400,12 +403,40 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
         initialWorkspaceId="team:team-product"
       />,
     );
-    expect(await screen.findByTestId('thread-enter')).toBeInTheDocument();
+    // The reply is hidden from the main timeline; the chip is shown on the root.
+    expect(await screen.findByText('kicking off the thread')).toBeInTheDocument();
+    expect(screen.queryByText('reply within thread')).not.toBeInTheDocument();
+    const summary = await screen.findByTestId('msg-thread-summary-m-root');
+    expect(summary).toHaveTextContent('1 reply');
+
+    // Clicking the chip opens the right-hand thread panel with root + reply.
+    await userEvent.click(summary);
+    const panel = await screen.findByTestId('thread-panel');
+    expect(panel).toBeInTheDocument();
+    expect(screen.getByTestId('thread-msg-m-root')).toBeInTheDocument();
+    expect(screen.getByTestId('thread-msg-m-reply')).toBeInTheDocument();
+
+    // The close button clears the panel.
+    await userEvent.click(screen.getByTestId('thread-close'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('thread-panel')).not.toBeInTheDocument(),
+    );
   });
 
-  it('AC#2: composer sends `threadId: <root msg id>` after entering thread mode', async () => {
+  it('AC#2: the thread panel composer sends `threadId: <root msg id>`', async () => {
     const messagesById: Record<string, Message[]> = {
       'ch-general': [
+        {
+          id: 'm-root',
+          channelId: 'ch-general',
+          seq: 1,
+          author: { role: 'agent', id: 'agent-sam', name: 'Sam' },
+          content: 'kicking off the thread',
+          createdAt: ISO,
+          mentions: [],
+          replyCount: 1,
+          lastReplyAt: ISO,
+        },
         {
           id: 'm-reply',
           channelId: 'ch-general',
@@ -427,12 +458,16 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
         initialWorkspaceId="team:team-product"
       />,
     );
-    await userEvent.click(await screen.findByTestId('thread-enter'));
-    expect(screen.getByTestId('thread-reply-banner')).toBeInTheDocument();
+    await userEvent.click(await screen.findByTestId('msg-thread-summary-m-root'));
+    const panel = await screen.findByTestId('thread-panel');
 
-    const textarea = screen.getByTestId('mention-textarea');
-    await userEvent.type(textarea, 'me too');
-    await userEvent.click(screen.getByTestId('mention-send'));
+    // The panel hosts its own composer; the textarea inside it posts the reply.
+    const textareas = screen.getAllByTestId('mention-textarea');
+    // Last textarea belongs to the thread panel (rendered after the main one).
+    const panelTextarea = textareas[textareas.length - 1];
+    await userEvent.type(panelTextarea, 'me too');
+    const sendButtons = within(panel).getAllByTestId('mention-send');
+    await userEvent.click(sendButtons[sendButtons.length - 1]);
 
     await waitFor(() => expect(sendCalls).toHaveLength(1));
     expect(sendCalls[0].input.threadId).toBe('m-root');

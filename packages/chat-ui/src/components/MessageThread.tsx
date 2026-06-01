@@ -31,7 +31,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { Bot } from 'lucide-react';
+import { Bot, MessageSquare } from 'lucide-react';
 import type { Message } from '../types/chat.types';
 import { useMessages } from '../hooks/useMessages';
 import { renderMinimalMarkdown } from './internal/minimal-markdown';
@@ -66,6 +66,23 @@ export interface MessageThreadProps {
    *   grouped under one header. Used by the consolidated team-chat surface.
    */
   layout?: 'bubble' | 'flat';
+  /**
+   * Slack-style threading (additive — omit on legacy callers).
+   *
+   * When provided (flat layout), each message row gets a hover
+   * "Reply in thread" action and root messages with `replyCount > 0`
+   * render a clickable "💬 N replies · <relative time>" summary chip.
+   * Both invoke this callback with the message to open as the thread root.
+   */
+  onReplyInThread?(message: Message): void;
+  /**
+   * Slack-style threading — when true, messages that are thread replies
+   * (have a `threadId`) are filtered out of this timeline. The main
+   * channel passes `true`; the thread panel passes `false` so it shows
+   * every message for that thread. Defaults to `false` (no filtering),
+   * preserving legacy behavior.
+   */
+  hideReplies?: boolean;
 }
 
 export function MessageThread({
@@ -76,8 +93,15 @@ export function MessageThread({
   unreadAfterSeq = null,
   unreadDividerLabel = 'New',
   layout = 'bubble',
+  onReplyInThread,
+  hideReplies = false,
 }: MessageThreadProps): JSX.Element {
-  const { messages, loading, error, hasMore, agentThinking, loadMore } = useMessages(channelId);
+  const { messages: allMessages, loading, error, hasMore, agentThinking, loadMore } =
+    useMessages(channelId);
+  // Slack-style: the main timeline hides thread replies (they live in the
+  // thread panel). `hideReplies=false` (default) keeps the full timeline,
+  // preserving legacy single-channel behavior.
+  const messages = hideReplies ? allMessages.filter((m) => !m.threadId) : allMessages;
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   // Auto-scroll to newest on every mutation — Phase 1 keeps it simple.
@@ -126,7 +150,7 @@ export function MessageThread({
         role="list"
         className={`flex flex-1 flex-col ${flat ? 'gap-4 px-6 py-4' : 'gap-3 px-4 py-4'}`}
       >
-        {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout })}
+        {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread })}
         {agentThinking && <AgentThinkingRow agentName={agentName} layout={layout} />}
         {loading && (
           <li
@@ -157,8 +181,9 @@ function renderTimeline(args: {
   unreadAfterSeq: number | null;
   unreadDividerLabel: string;
   layout: 'bubble' | 'flat';
+  onReplyInThread?(message: Message): void;
 }): React.ReactNode[] {
-  const { messages, unreadAfterSeq, unreadDividerLabel, layout } = args;
+  const { messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread } = args;
   const out: React.ReactNode[] = [];
 
   // In flat (Slack) mode, consecutive messages from the same author group
@@ -176,7 +201,15 @@ function renderTimeline(args: {
   let dividerInserted = false;
   for (const m of messages) {
     const groupStart = layout !== 'flat' || prevAuthor !== m.author.id;
-    out.push(<MessageRow key={m.id} message={m} layout={layout} groupStart={groupStart} />);
+    out.push(
+      <MessageRow
+        key={m.id}
+        message={m}
+        layout={layout}
+        groupStart={groupStart}
+        onReplyInThread={onReplyInThread}
+      />,
+    );
     prevAuthor = m.author.id;
     if (!dividerInserted && hasMatchingSeq && m.seq === unreadAfterSeq) {
       out.push(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} layout={layout} />);
@@ -235,13 +268,21 @@ function MessageRow({
   message,
   layout = 'bubble',
   groupStart = true,
+  onReplyInThread,
 }: {
   message: Message;
   layout?: 'bubble' | 'flat';
   groupStart?: boolean;
+  onReplyInThread?(message: Message): void;
 }): JSX.Element {
   if (layout === 'flat') {
-    return <FlatMessageRow message={message} groupStart={groupStart} />;
+    return (
+      <FlatMessageRow
+        message={message}
+        groupStart={groupStart}
+        onReplyInThread={onReplyInThread}
+      />
+    );
   }
   const isUser = message.author.role === 'user';
   const alignment = isUser ? 'items-end' : 'items-start';
@@ -292,9 +333,11 @@ function MessageRow({
 function FlatMessageRow({
   message,
   groupStart,
+  onReplyInThread,
 }: {
   message: Message;
   groupStart: boolean;
+  onReplyInThread?(message: Message): void;
 }): JSX.Element {
   const status = message.deliveryStatus;
   const name = message.author.name ?? message.author.id;
@@ -302,10 +345,17 @@ function FlatMessageRow({
   // Inactive/sleep deliveries read dimmed + dashed so they recede from view.
   const inactive = status === 'pending';
   const faded = inactive ? 'opacity-50' : '';
+  // Slack threading: the hover "Reply" action + the "N replies" summary chip
+  // only render when the host opts in via `onReplyInThread`. The chip is for
+  // roots with replies; the action is for any non-pending message.
+  const threadingOn = typeof onReplyInThread === 'function';
+  const replyCount = message.replyCount ?? 0;
+  const showSummary = threadingOn && replyCount > 0;
+  const showReplyAction = threadingOn && status !== 'pending' && status !== 'failed';
 
   return (
     <li
-      className={`group flex gap-3 ${groupStart ? 'mt-1' : ''}`}
+      className={`group relative flex gap-3 ${groupStart ? 'mt-1' : ''}`}
       data-author-role={message.author.role}
       data-delivery-status={status ?? 'sent'}
     >
@@ -361,7 +411,37 @@ function FlatMessageRow({
             Send failed — tap to retry
           </span>
         )}
+        {showSummary && (
+          <button
+            type="button"
+            data-testid={`msg-thread-summary-${message.id}`}
+            onClick={() => onReplyInThread?.(message)}
+            className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-border-dark bg-surface-dark px-2 py-1 text-[11px] font-medium text-primary transition hover:bg-white/5"
+          >
+            <MessageSquare size={12} className="shrink-0" />
+            <span>
+              {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+            </span>
+            {message.lastReplyAt && (
+              <span className="font-normal text-text-secondary-dark">
+                · last reply {relativeTime(message.lastReplyAt)}
+              </span>
+            )}
+          </button>
+        )}
       </div>
+      {showReplyAction && (
+        <button
+          type="button"
+          data-testid={`msg-reply-action-${message.id}`}
+          onClick={() => onReplyInThread?.(message)}
+          aria-label="Reply in thread"
+          className="absolute right-2 top-0 hidden items-center gap-1 rounded-md border border-border-dark bg-surface-dark px-2 py-1 text-[11px] text-text-secondary-dark transition hover:text-text-primary-dark group-hover:flex"
+        >
+          <MessageSquare size={12} className="shrink-0" />
+          <span>Reply</span>
+        </button>
+      )}
     </li>
   );
 }
@@ -488,6 +568,32 @@ function AgentThinkingRow({
       </div>
     </li>
   );
+}
+
+/**
+ * Compact, locale-agnostic relative time for the thread-summary chip
+ * (e.g. "now", "5m", "3h", "2d", then an absolute short date past a week).
+ * Exported so the threading UI can be unit-tested without rendering.
+ *
+ * @param iso - ISO 8601 timestamp of the last reply
+ * @returns A short relative-time label; empty string on parse failure
+ */
+export function relativeTime(iso: string): string {
+  try {
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return '';
+    const diff = Date.now() - then;
+    const m = Math.floor(diff / 60_000);
+    if (m < 1) return 'now';
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h`;
+    const d = Math.floor(h / 24);
+    if (d < 7) return `${d}d`;
+    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  } catch {
+    return '';
+  }
 }
 
 function formatTimestamp(iso: string): string {
