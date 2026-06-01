@@ -2,7 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ChatAPIProvider } from '../context/ChatAPIProvider';
 import { MockChatApiClient } from '../api/mock-client';
-import { MessageThread, avatarInitials, avatarColor, relativeTime } from './MessageThread';
+import {
+  MessageThread,
+  avatarInitials,
+  avatarColor,
+  relativeTime,
+  formatDayLabel,
+  isNewDay,
+  stripInternalHints,
+} from './MessageThread';
 import type { Channel, Message } from '../types/chat.types';
 
 describe('MessageThread', () => {
@@ -326,5 +334,56 @@ describe('relativeTime', () => {
 
   it('returns empty string on an unparseable value', () => {
     expect(relativeTime('not-a-date')).toBe('');
+  });
+});
+
+describe('formatDayLabel', () => {
+  it('labels today as "Today" and yesterday as "Yesterday"', () => {
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 86_400_000);
+    expect(formatDayLabel(now.toISOString())).toBe('Today');
+    expect(formatDayLabel(yesterday.toISOString())).toBe('Yesterday');
+  });
+
+  it('labels older days with weekday + month + day', () => {
+    const label = formatDayLabel('2026-05-29T12:00:00.000Z');
+    expect(label).toMatch(/May/);
+    expect(label).not.toBe('Today');
+    expect(label).not.toBe('Yesterday');
+  });
+
+  it('falls back to the raw string when unparseable', () => {
+    expect(formatDayLabel('nope')).toBe('nope');
+  });
+});
+
+describe('isNewDay', () => {
+  it('returns true for the first message (no previous)', () => {
+    expect(isNewDay(null, '2026-05-29T10:00:00.000Z')).toBe(true);
+  });
+  it('returns false within the same calendar day', () => {
+    // Build LOCAL times so the assertion is timezone-independent (isNewDay
+    // compares local calendar days).
+    const morning = new Date(2026, 4, 29, 1, 0).toISOString();
+    const evening = new Date(2026, 4, 29, 23, 0).toISOString();
+    expect(isNewDay(morning, evening)).toBe(false);
+  });
+  it('returns true across a day boundary', () => {
+    const lateNight = new Date(2026, 4, 29, 23, 0).toISOString();
+    const nextMorning = new Date(2026, 4, 30, 0, 30).toISOString();
+    expect(isNewDay(lateNight, nextMorning)).toBe(true);
+  });
+});
+
+describe('stripInternalHints', () => {
+  it('removes a trailing "[Thread context file: …]" hint', () => {
+    const raw = 'real reply text\n\n[Thread context file: /Users/x/.crewly/slack-threads/C-1.md]';
+    expect(stripInternalHints(raw)).toBe('real reply text');
+  });
+  it('leaves clean content untouched (just trimmed)', () => {
+    expect(stripInternalHints('hello world')).toBe('hello world');
+  });
+  it('removes an inline hint mid-content too (absorbing the leading space)', () => {
+    expect(stripInternalHints('a [Thread context file: /p/x.md] b')).toBe('a b');
   });
 });

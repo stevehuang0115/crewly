@@ -31,7 +31,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { Bot, MessageSquare } from 'lucide-react';
+import { Bot, MessageSquare, SmilePlus, Link as LinkIcon, MoreHorizontal } from 'lucide-react';
 import type { Message } from '../types/chat.types';
 import { useMessages } from '../hooks/useMessages';
 import { renderMinimalMarkdown } from './internal/minimal-markdown';
@@ -182,7 +182,7 @@ export function MessageThread({
 
       <ul
         role="list"
-        className={`flex flex-1 flex-col ${flat ? 'gap-4 px-6 py-4' : 'gap-3 px-4 py-4'}`}
+        className={`flex flex-1 flex-col ${flat ? 'gap-0 px-4 py-4' : 'gap-3 px-4 py-4'}`}
       >
         {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread })}
         {agentThinking && <AgentThinkingRow agentName={agentName} layout={layout} />}
@@ -224,6 +224,7 @@ function renderTimeline(args: {
   // under one avatar/name header. `groupStart` is always true in bubble
   // mode (each message keeps its own header), preserving prior behavior.
   let prevAuthor: string | null = null;
+  let prevDayIso: string | null = null;
   const hasMatchingSeq =
     unreadAfterSeq != null && messages.some((m) => m.seq === unreadAfterSeq);
 
@@ -234,6 +235,13 @@ function renderTimeline(args: {
 
   let dividerInserted = false;
   for (const m of messages) {
+    // Slack-style day separators — a divider also breaks the author group so
+    // the first message of a new day always gets a fresh header.
+    if (layout === 'flat' && isNewDay(prevDayIso, m.createdAt)) {
+      out.push(<DayDividerRow key={`day-${m.id}`} label={formatDayLabel(m.createdAt)} />);
+      prevAuthor = null;
+    }
+    prevDayIso = m.createdAt;
     const groupStart = layout !== 'flat' || prevAuthor !== m.author.id;
     out.push(
       <MessageRow
@@ -376,54 +384,66 @@ function FlatMessageRow({
   const status = message.deliveryStatus;
   const name = message.author.name ?? message.author.id;
   const isAgent = message.author.role !== 'user';
-  // Inactive/sleep deliveries read dimmed + dashed so they recede from view.
+  // Inactive/sleep deliveries read dimmed so they recede from view.
   const inactive = status === 'pending';
   const faded = inactive ? 'opacity-50' : '';
-  // Slack threading: the hover "Reply" action + the "N replies" summary chip
-  // only render when the host opts in via `onReplyInThread`. The chip is for
-  // roots with replies; the action is for any non-pending message.
+  // Slack threading: the hover toolbar + the "N replies" summary chip only
+  // render when the host opts in via `onReplyInThread`. The chip is for roots
+  // with replies; the toolbar is for any non-pending/non-failed message.
   const threadingOn = typeof onReplyInThread === 'function';
   const replyCount = message.replyCount ?? 0;
   const showSummary = threadingOn && replyCount > 0;
   const showReplyAction = threadingOn && status !== 'pending' && status !== 'failed';
+  // Strip orchestrator plumbing (e.g. "[Thread context file: …]") at display.
+  const displayContent = stripInternalHints(message.content);
 
   return (
     <li
-      className={`group relative flex gap-3 rounded-md px-2 py-0.5 transition hover:bg-white/[0.03] ${groupStart ? 'mt-2' : ''}`}
+      className={`group relative flex gap-3 rounded-md py-0.5 pl-2 pr-2 transition-colors hover:bg-white/[0.03] ${groupStart ? 'mt-3' : 'mt-px'}`}
       data-author-role={message.author.role}
       data-delivery-status={status ?? 'sent'}
     >
+      {/* Subtle agent accent rail on group-start rows — no box. */}
+      {isAgent && groupStart && (
+        <span
+          aria-hidden="true"
+          className="absolute left-0 top-1 h-[calc(100%-0.5rem)] w-[2px] rounded-full bg-primary/40"
+        />
+      )}
+
       <div className="w-9 shrink-0 select-none">
         {groupStart ? (
           <Avatar name={name} isAgent={isAgent} />
         ) : (
-          <time className="block w-9 pt-0.5 text-right text-[10px] leading-5 text-transparent group-hover:text-text-secondary-dark">
+          <time className="block w-9 pt-[3px] text-right text-[10px] leading-5 tabular-nums text-transparent group-hover:text-text-secondary-dark">
             {formatTimestamp(message.createdAt)}
           </time>
         )}
       </div>
+
       <div className="min-w-0 flex-1">
         {groupStart && (
           <div className="flex items-baseline gap-2">
             <span
-              className={`text-[13px] font-bold ${isAgent ? 'text-primary' : 'text-text-primary-dark'}`}
+              className={`text-[13px] font-bold leading-5 ${isAgent ? 'text-primary' : 'text-text-primary-dark'}`}
             >
               {name}
             </span>
-            <time className="text-[10px] text-text-secondary-dark">
-              {formatTimestamp(message.createdAt)}
-            </time>
             {isAgent && (
-              <span className="rounded border border-border-dark bg-white/5 px-1.5 py-0.5 text-[10px] text-text-secondary-dark">
-                AGENT
+              <span className="rounded border border-border-dark bg-white/5 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-text-secondary-dark">
+                Agent
               </span>
             )}
+            <time className="text-[10px] tabular-nums text-text-secondary-dark">
+              {formatTimestamp(message.createdAt)}
+            </time>
           </div>
         )}
+
         <div
-          className={`mt-0.5 max-w-prose text-sm leading-relaxed text-text-primary-dark ${faded}`}
+          className={`mt-0.5 max-w-[760px] text-[13px] leading-[1.45] text-text-primary-dark [&_a]:text-primary [&_a]:underline ${faded}`}
         >
-          {renderMinimalMarkdown(message.content)}
+          {renderMinimalMarkdown(displayContent)}
           {message.attachments?.map((a) =>
             a.kind === 'image' ? (
               <img
@@ -435,45 +455,159 @@ function FlatMessageRow({
             ) : null,
           )}
         </div>
+
         {status === 'pending' && (
-          <span className="text-[10px] italic text-text-secondary-dark">Sending…</span>
+          <span className="mt-0.5 inline-flex items-center gap-1 text-[10px] italic text-text-secondary-dark">
+            Sending…
+          </span>
         )}
         {status === 'failed' && (
-          <span className="text-[10px] font-medium text-amber-300" role="alert">
+          <span
+            className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-medium text-amber-300"
+            role="alert"
+          >
             Send failed — tap to retry
           </span>
         )}
+
         {showSummary && (
-          <button
-            type="button"
-            data-testid={`msg-thread-summary-${message.id}`}
-            onClick={() => onReplyInThread?.(message)}
-            className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-border-dark bg-surface-dark px-2 py-1 text-[11px] font-medium text-primary transition hover:bg-white/5"
-          >
-            <MessageSquare size={12} className="shrink-0" />
-            <span>
-              {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
-            </span>
-            {message.lastReplyAt && (
-              <span className="font-normal text-text-secondary-dark">
-                · last reply {relativeTime(message.lastReplyAt)}
-              </span>
-            )}
-          </button>
+          <ThreadSummaryChip message={message} onOpen={() => onReplyInThread?.(message)} />
         )}
       </div>
-      {showReplyAction && (
-        <button
-          type="button"
-          data-testid={`msg-reply-action-${message.id}`}
-          onClick={() => onReplyInThread?.(message)}
-          aria-label="Reply in thread"
-          className="absolute right-2 top-0 hidden items-center gap-1 rounded-md border border-border-dark bg-surface-dark px-2 py-1 text-[11px] text-text-secondary-dark transition hover:text-text-primary-dark group-hover:flex"
-        >
-          <MessageSquare size={12} className="shrink-0" />
-          <span>Reply</span>
-        </button>
+
+      {showReplyAction && <RowToolbar message={message} onReplyInThread={onReplyInThread!} />}
+    </li>
+  );
+}
+
+/** A single 28×28 icon button inside the hover toolbar. */
+function ToolbarButton({
+  label,
+  children,
+  onClick,
+  ...rest
+}: {
+  label: string;
+  children: React.ReactNode;
+  onClick?: () => void;
+} & Record<string, unknown>): JSX.Element {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary-dark transition-colors hover:bg-white/5 hover:text-text-primary-dark"
+      {...rest}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Slack-style floating action toolbar pinned to the top-right of a hovered
+ * message row. Only "Reply in thread" is wired; reaction / copy-link / more
+ * are styled-but-inert placeholders for a future pass.
+ */
+function RowToolbar({
+  message,
+  onReplyInThread,
+}: {
+  message: Message;
+  onReplyInThread(message: Message): void;
+}): JSX.Element {
+  return (
+    <div
+      data-testid={`msg-toolbar-${message.id}`}
+      className="absolute -top-3 right-2 z-10 hidden items-center gap-0.5 rounded-lg border border-border-dark bg-surface-dark p-0.5 shadow-md group-hover:flex"
+    >
+      <ToolbarButton label="Add reaction">
+        <SmilePlus size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        label="Reply in thread"
+        data-testid={`msg-reply-action-${message.id}`}
+        onClick={() => onReplyInThread(message)}
+      >
+        <MessageSquare size={15} />
+      </ToolbarButton>
+      <ToolbarButton label="Copy link">
+        <LinkIcon size={15} />
+      </ToolbarButton>
+      <ToolbarButton label="More actions">
+        <MoreHorizontal size={15} />
+      </ToolbarButton>
+    </div>
+  );
+}
+
+/**
+ * Slack-style thread summary: stacked participant avatars, reply count, and a
+ * muted "Last reply <relative>". Clickable — opens the thread panel. The reply
+ * roster isn't on the root DTO, so the avatar stack is seeded from the root
+ * author (swap for `threadParticipants` if a future DTO adds it).
+ */
+function ThreadSummaryChip({
+  message,
+  onOpen,
+}: {
+  message: Message;
+  onOpen: () => void;
+}): JSX.Element {
+  const replyCount = message.replyCount ?? 0;
+  const rootName = message.author.name ?? message.author.id;
+  const seeds = [rootName].slice(0, 3);
+
+  return (
+    <button
+      type="button"
+      data-testid={`msg-thread-summary-${message.id}`}
+      onClick={onOpen}
+      className="group/chip mt-1 flex w-fit items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-white/5"
+    >
+      <span className="flex -space-x-1.5">
+        {seeds.map((seed) => (
+          <span
+            key={seed}
+            className={`flex h-5 w-5 items-center justify-center rounded-md text-[9px] font-bold text-white ring-2 ring-background-dark ${avatarColor(seed)}`}
+            aria-hidden="true"
+          >
+            {avatarInitials(seed)}
+          </span>
+        ))}
+      </span>
+      <span className="text-[12px] font-semibold text-primary group-hover/chip:underline">
+        {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+      </span>
+      {message.lastReplyAt && (
+        <span className="text-[11px] font-normal text-text-secondary-dark">
+          Last reply {relativeTime(message.lastReplyAt)}
+        </span>
       )}
+    </button>
+  );
+}
+
+/**
+ * Centered day separator inserted between messages that cross a calendar-day
+ * boundary. Pure visual; the pill masks the hairline behind it.
+ */
+function DayDividerRow({ label }: { label: string }): JSX.Element {
+  return (
+    <li
+      className="relative my-3 flex items-center justify-center"
+      role="separator"
+      aria-label={label}
+      data-testid="day-divider"
+    >
+      <span
+        className="absolute inset-x-2 top-1/2 h-px -translate-y-1/2 bg-border-dark/50"
+        aria-hidden="true"
+      />
+      <span className="relative rounded-full border border-border-dark bg-background-dark px-3 py-0.5 text-[11px] font-semibold text-text-secondary-dark">
+        {label}
+      </span>
     </li>
   );
 }
@@ -569,6 +703,29 @@ function AgentThinkingRow({
 }): JSX.Element {
   const label = agentName ? `${agentName} is thinking` : 'Agent is thinking';
   const flat = layout === 'flat';
+  if (flat) {
+    // Align to the same avatar gutter as message rows so the column reads clean.
+    return (
+      <li
+        className="mt-3 flex items-center gap-3 px-2"
+        role="status"
+        aria-live="polite"
+        data-testid="agent-thinking"
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/20 text-primary">
+          <Bot size={16} />
+        </span>
+        <span className="inline-flex items-center gap-2 text-[13px] text-text-secondary-dark">
+          <span aria-hidden="true" className="flex gap-0.5">
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark [animation-delay:-0.3s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark [animation-delay:-0.15s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark" />
+          </span>
+          <span>{label}…</span>
+        </span>
+      </li>
+    );
+  }
   return (
     <li
       className="flex flex-col items-start"
@@ -576,24 +733,12 @@ function AgentThinkingRow({
       aria-live="polite"
       data-testid="agent-thinking"
     >
-      <div
-        className={
-          flat
-            ? 'px-2 py-1 text-sm text-text-secondary-dark'
-            : 'rounded-2xl bg-surface-dark px-3 py-2 text-sm text-text-secondary-dark shadow-sm'
-        }
-      >
+      <div className="rounded-2xl bg-surface-dark px-3 py-2 text-sm text-text-secondary-dark shadow-sm">
         <span className="inline-flex items-center gap-1">
           <span aria-hidden="true" className="flex gap-0.5">
-            <span
-              className={`h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:-0.3s] ${flat ? 'bg-text-secondary-dark' : 'bg-text-secondary-dark'}`}
-            />
-            <span
-              className={`h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:-0.15s] ${flat ? 'bg-text-secondary-dark' : 'bg-text-secondary-dark'}`}
-            />
-            <span
-              className={`h-1.5 w-1.5 animate-bounce rounded-full ${flat ? 'bg-text-secondary-dark' : 'bg-text-secondary-dark'}`}
-            />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark [animation-delay:-0.3s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark [animation-delay:-0.15s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark" />
           </span>
           <span>{label}…</span>
         </span>
@@ -635,4 +780,64 @@ function formatTimestamp(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+/**
+ * Human day label for a timeline divider: "Today", "Yesterday", or a
+ * weekday+date like "Fri, May 29". Compares calendar days in local time.
+ *
+ * @param iso - ISO 8601 timestamp of the message starting the new day
+ * @returns The day label; falls back to the raw string on parse failure
+ */
+export function formatDayLabel(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const today = startOf(new Date());
+    const that = startOf(d);
+    const dayMs = 86_400_000;
+    if (that === today) return 'Today';
+    if (that === today - dayMs) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  } catch {
+    return iso;
+  }
+}
+
+/**
+ * True when two ISO timestamps fall on different local calendar days. Used to
+ * decide whether to insert a day divider before a message. The first message
+ * (no previous) always opens a day.
+ *
+ * @param prevIso - Previous message's timestamp, or null for the first row
+ * @param currIso - Current message's timestamp
+ * @returns Whether `currIso` starts a new calendar day
+ */
+export function isNewDay(prevIso: string | null, currIso: string): boolean {
+  if (!prevIso) return true;
+  const a = new Date(prevIso);
+  const b = new Date(currIso);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return false;
+  return (
+    a.getFullYear() !== b.getFullYear() ||
+    a.getMonth() !== b.getMonth() ||
+    a.getDate() !== b.getDate()
+  );
+}
+
+/**
+ * Strip orchestrator plumbing that leaks into message content before display.
+ * Currently removes a "[Thread context file: <path>]" hint the orchestrator
+ * appends for its own routing — never meant for the user. Safe on clean
+ * content (returns it trimmed, untouched otherwise).
+ *
+ * @param content - Raw message content from the DTO
+ * @returns Content with internal hints removed and trailing whitespace trimmed
+ */
+export function stripInternalHints(content: string): string {
+  return content
+    .replace(/\s*\[Thread context file:[^\]]*\]/gi, '')
+    .replace(/[ \t]+$/gm, '')
+    .trim();
 }

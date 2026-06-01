@@ -15,7 +15,7 @@ export { AgentStatusBadge } from './components/AgentStatusBadge';
 export type { AgentStatusBadgeProps, ChatPresenceStatus } from './components/AgentStatusBadge';
 export { ChannelList } from './components/ChannelList';
 export type { ChannelListProps } from './components/ChannelList';
-export { MessageThread } from './components/MessageThread';
+export { MessageThread, stripInternalHints } from './components/MessageThread';
 export type { MessageThreadProps } from './components/MessageThread';
 export { MessageInput } from './components/MessageInput';
 export type { MessageInputProps } from './components/MessageInput';

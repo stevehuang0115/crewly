@@ -49,6 +49,7 @@ import {
   useSendMessage,
   useChatApiClient,
   selectThreadReplies,
+  stripInternalHints,
   type ChatApiClient,
   type ChatApiError,
   type Channel,
@@ -914,7 +915,7 @@ function ThreadMessageRow({
         <time className="text-[10px] text-text-secondary-dark">{time}</time>
       </div>
       <div className="mt-0.5 max-w-full whitespace-pre-wrap break-words text-sm leading-relaxed text-text-primary-dark">
-        {message.content}
+        {stripInternalHints(message.content)}
       </div>
     </div>
   );
