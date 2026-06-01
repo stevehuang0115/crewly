@@ -131,6 +131,10 @@ describe('MessageThread', () => {
     expect(container.querySelector('.rounded-2xl')).toBeNull();
     // The own-message bubble fill (brand primary) must not appear in flat mode.
     expect(container.querySelector('.bg-primary')).toBeNull();
+    // Flat messages are plain rows (cohesive surface) — no per-message
+    // boxed/frosted body. The `glass-panel` treatment was removed so the
+    // timeline reads as one whole, not a stack of isolated cards.
+    expect(container.querySelector('.glass-panel')).toBeNull();
   });
 });
 

@@ -355,7 +355,7 @@ function FlatMessageRow({
 
   return (
     <li
-      className={`group relative flex gap-3 ${groupStart ? 'mt-1' : ''}`}
+      className={`group relative flex gap-3 rounded-md px-2 py-0.5 transition hover:bg-white/[0.03] ${groupStart ? 'mt-2' : ''}`}
       data-author-role={message.author.role}
       data-delivery-status={status ?? 'sent'}
     >
@@ -387,9 +387,7 @@ function FlatMessageRow({
           </div>
         )}
         <div
-          className={`glass-panel mt-1 max-w-2xl rounded-xl rounded-tl-none px-4 py-2 text-sm leading-relaxed text-text-primary-dark ${
-            isAgent ? 'border-l-2 border-l-primary' : ''
-          } ${inactive ? 'border-dashed' : ''} ${faded}`}
+          className={`mt-0.5 max-w-prose text-sm leading-relaxed text-text-primary-dark ${faded}`}
         >
           {renderMinimalMarkdown(message.content)}
           {message.attachments?.map((a) =>
@@ -547,7 +545,7 @@ function AgentThinkingRow({
       <div
         className={
           flat
-            ? 'glass-panel rounded-xl rounded-tl-none px-4 py-2 text-sm text-text-secondary-dark'
+            ? 'px-2 py-1 text-sm text-text-secondary-dark'
             : 'rounded-2xl bg-surface-dark px-3 py-2 text-sm text-text-secondary-dark shadow-sm'
         }
       >
