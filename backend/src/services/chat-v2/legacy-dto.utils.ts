@@ -163,3 +163,41 @@ export function synthesizeSlackConversationId(
 ): string {
   return `slack-${channelId}-${String(threadTs).replace('.', '-')}`;
 }
+
+/**
+ * Deterministic idempotency key for an OUTBOUND Slack reply mirrored into
+ * chat-v2.
+ *
+ * The same orc reply is persisted by TWO independent paths and must land as a
+ * single row:
+ *   - `SlackService.recordOutboundToChatV2` (fires inside `sendMessage`,
+ *     `metadata.source = 'slack'`)
+ *   - the `/api/slack/send` controller's `recordSlackReplyBookkeeping`
+ *     (`metadata.source = 'reply-tool'`)
+ * Giving both calls the SAME `clientMessageId` makes `recordTurn` dedupe on
+ * `(channel_id, clientMessageId)`, so the reply is stored once instead of
+ * doubled (visible as duplicate bubbles in the merged Orchestrator timeline).
+ *
+ * Keyed on the Slack thread + a stable hash of the content because the posted
+ * Slack message `ts` is not known to both call sites. Two genuinely-identical
+ * replies in the same thread would collide (rare; the same trade-off the
+ * optimistic-send dedup already makes).
+ *
+ * @param slackChannelId - Slack channel id (e.g. `D0AC7NF5N7L`)
+ * @param slackThreadTs - Slack thread root timestamp
+ * @param content - The reply text being persisted
+ * @returns A stable `clientMessageId`, identical across both persist paths
+ */
+export function slackOutboundClientMessageId(
+  slackChannelId: string,
+  slackThreadTs: string,
+  content: string,
+): string {
+  // djb2 (xor variant) — fast, stable, collision-resistant enough for dedup.
+  let hash = 5381;
+  const s = content ?? '';
+  for (let i = 0; i < s.length; i += 1) {
+    hash = ((hash * 33) ^ s.charCodeAt(i)) >>> 0;
+  }
+  return `slack-out-${slackChannelId}-${slackThreadTs}-${hash.toString(36)}`;
+}

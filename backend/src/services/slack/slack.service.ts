@@ -929,10 +929,11 @@ export class SlackService extends EventEmitter {
   private async recordOutboundToChatV2(message: SlackOutgoingMessage): Promise<void> {
     try {
       if (!message.channelId || !message.threadTs || !(message.text ?? '').trim()) return;
-      const [{ getChatV2Service }, { synthesizeSlackConversationId }] = await Promise.all([
-        import('../chat-v2/chat-v2.singleton.js'),
-        import('../chat-v2/legacy-dto.utils.js'),
-      ]);
+      const [{ getChatV2Service }, { synthesizeSlackConversationId, slackOutboundClientMessageId }] =
+        await Promise.all([
+          import('../chat-v2/chat-v2.singleton.js'),
+          import('../chat-v2/legacy-dto.utils.js'),
+        ]);
       const chatV2 = getChatV2Service();
       const conversationId = synthesizeSlackConversationId(message.channelId, message.threadTs);
       const channel = chatV2.ensureChannelForLegacyConversation({
@@ -944,6 +945,14 @@ export class SlackService extends EventEmitter {
         senderType: 'agent',
         senderId: channel.agentSession || ORCHESTRATOR_SESSION_NAME,
         content: message.text,
+        // Shared idempotency key with the /slack/send bookkeeping path so the
+        // same reply isn't persisted twice (duplicate bubbles in the merged
+        // Orchestrator timeline).
+        clientMessageId: slackOutboundClientMessageId(
+          message.channelId,
+          message.threadTs,
+          message.text,
+        ),
         metadata: {
           source: 'slack',
           slackChannelId: message.channelId,

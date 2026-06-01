@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { ChatAPIProvider } from '../context/ChatAPIProvider';
-import { useMergedMessages, toChronological } from './useMergedMessages';
+import { useMergedMessages, toChronological, dedupeNearDuplicates } from './useMergedMessages';
 import type { ChatApiClient, ChannelSubscription } from '../api/client';
 import type {
   Channel,
@@ -89,6 +89,31 @@ describe('toChronological', () => {
     ]);
     // seq 1 before seq 2; within seq 1, id 'a' before 'm'.
     expect(out.map((m) => m.id)).toEqual(['a', 'm', 'z']);
+  });
+});
+
+describe('dedupeNearDuplicates', () => {
+  const a = { role: 'agent', id: 'orc', name: 'Orc' } as Message['author'];
+  it('collapses same channel+author+content within the window', () => {
+    const out = dedupeNearDuplicates([
+      msg({ id: '1', channelId: 'x', createdAt: '2026-01-01T00:00:00.000Z', author: a, content: 'hello' }),
+      msg({ id: '2', channelId: 'x', createdAt: '2026-01-01T00:00:00.030Z', author: a, content: 'hello' }),
+    ]);
+    expect(out.map((m) => m.id)).toEqual(['1']);
+  });
+  it('keeps identical content sent far apart (outside the window)', () => {
+    const out = dedupeNearDuplicates([
+      msg({ id: '1', channelId: 'x', createdAt: '2026-01-01T00:00:00.000Z', author: a, content: 'ok' }),
+      msg({ id: '2', channelId: 'x', createdAt: '2026-01-01T00:05:00.000Z', author: a, content: 'ok' }),
+    ]);
+    expect(out.map((m) => m.id)).toEqual(['1', '2']);
+  });
+  it('does not collapse same content across different channels', () => {
+    const out = dedupeNearDuplicates([
+      msg({ id: '1', channelId: 'x', createdAt: '2026-01-01T00:00:00.000Z', author: a, content: 'hi' }),
+      msg({ id: '2', channelId: 'y', createdAt: '2026-01-01T00:00:00.010Z', author: a, content: 'hi' }),
+    ]);
+    expect(out.map((m) => m.id)).toEqual(['1', '2']);
   });
 });
 
