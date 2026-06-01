@@ -517,7 +517,14 @@ export function createChatV2Controller(
       // -------- post-ack realtime side-effects --------
       const { gateway, dispatcher } = resolveDeps();
       try {
-        if (gateway && channelForDispatch) {
+        // Broadcast the persisted row to the channel's WS subscribers. This
+        // must NOT depend on `channelForDispatch`: that lookup uses the
+        // sender's principal, and an AGENT reply (via reply-channel) whose
+        // principal doesn't match the channel owner resolves it to null —
+        // which previously suppressed the agent reply's realtime fan-out,
+        // leaving the chat UI stuck on "thinking" until a reload. The
+        // broadcast only needs the already-persisted message + its channel.
+        if (gateway) {
           gateway.broadcast(
             persisted.channelId,
             buildMessageEvent(persisted.channelId, persisted),

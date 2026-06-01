@@ -20,6 +20,7 @@ import { openChatDatabase } from '../../services/chat-v2/sqlite/chat-db.js';
 import { loadChatV2Config } from '../../services/chat-v2/config.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import type { ChatChannelDTO } from '../../services/chat-v2/types.js';
+import type { ChatV2Gateway } from '../../websocket/chat-v2.gateway.js';
 
 /** Build a test app with the chat router mounted under /api/chat. */
 function buildApp() {
@@ -115,6 +116,48 @@ describe('chat-v2 controller (REST)', () => {
         .send({ content: 'second attempt', clientMessageId: 'cmid-1' });
       expect(again.status).toBe(201);
       expect(again.body.data.id).toBe(sent.body.data.id);
+    } finally {
+      service.close();
+    }
+  });
+
+  it('POST /api/chat/channels/:id/messages — broadcasts an AGENT reply over WS (not gated on the sender principal)', async () => {
+    // Regression: the agent reply (via reply-channel, X-Agent-Session) used to
+    // be suppressed from the realtime fan-out because the broadcast was gated
+    // on a channel lookup using the agent's principal, which doesn't match the
+    // channel owner. The reply persisted but the chat UI hung on "thinking"
+    // until a reload. The broadcast must fire for the persisted message itself.
+    const calls: Array<{ channelId: string; event: { payload?: { message?: { content?: string; senderType?: string } } } }> = [];
+    const mockGateway = {
+      broadcast: (channelId: string, event: unknown) =>
+        calls.push({ channelId, event: event as { payload?: { message?: { content?: string; senderType?: string } } } }),
+    };
+    const db = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
+    const service = new ChatV2Service({
+      config: loadChatV2Config({}),
+      db,
+      getPresence: () => ({ status: 'online', lastSeenAt: 111 }),
+      now: () => 1000,
+    });
+    const app = express();
+    app.use(express.json());
+    app.use('/api/chat', createChatV2Router(service, { gateway: mockGateway as unknown as ChatV2Gateway }));
+    try {
+      const created = await request(app)
+        .post('/api/chat/channels')
+        .send({ agentSession: 'sess-a', name: 'Ch' });
+      const chId = created.body.data.id;
+
+      const reply = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .set('X-Agent-Session', 'sess-a')
+        .send({ content: 'agent reply' });
+
+      expect(reply.status).toBe(201);
+      expect(reply.body.data.senderType).toBe('agent');
+      // The realtime broadcast must have fired for the agent reply.
+      const agentBroadcasts = calls.filter((c) => c.channelId === chId && c.event.payload?.message?.content === 'agent reply');
+      expect(agentBroadcasts.length).toBe(1);
     } finally {
       service.close();
     }
