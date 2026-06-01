@@ -72,8 +72,8 @@ describe('ChatV2DispatcherService', () => {
       expect(prompt).toContain('<steve@Chat with Sam>');
       // trim() stripped the leading/trailing whitespace
       expect(prompt).toContain('\nhi, sam\n');
-      expect(prompt).toContain('`reply-channel`');
-      expect(prompt).toContain('channelId="chan-1"');
+      expect(prompt).toContain('`reply-chat`');
+      expect(prompt).toContain('conversationId="chan-1"');
     });
 
     it('appends [cmid:...] when clientMessageId is present', () => {
@@ -628,7 +628,7 @@ describe('ChatV2DispatcherService', () => {
         // Prompt body for sess-b uses the "required" reply hint;
         // sess-a/c use the "optional" hint.
         const calledForB = calls.find((c) => c.sessionName === 'sess-b')!;
-        expect(calledForB.message).toContain('reply-channel');
+        expect(calledForB.message).toContain('reply-chat');
         expect(calledForB.message).not.toMatch(/否则不回复也可以/);
 
         const calledForA = calls.find((c) => c.sessionName === 'sess-a')!;

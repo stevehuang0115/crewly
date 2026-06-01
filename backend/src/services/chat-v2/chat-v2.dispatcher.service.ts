@@ -8,14 +8,14 @@
  *     → controller broadcasts WS message frame (user bubble)
  *     → controller calls ChatV2Dispatcher.dispatchToAgent(channel, messageDTO)
  *     → sendMessageToAgent(agent_session, "[CHAT:<id>] <content>\n<hint>")
- *     → agent processes + calls `reply-channel` skill
+ *     → agent processes + calls `reply-chat` skill
  *     → skill POSTs back to /api/chat/channels/:id/messages as the agent
  *     → same controller path → WS message frame (agent bubble)
  *
  * This service is intentionally thin — a couple of dozen lines of glue
  * around the AgentRegistrationService's `sendMessageToAgent` primitive.
  * The dispatch prompt is extracted so tests can assert the format, which
- * is the contract the `reply-channel` skill relies on.
+ * is the contract the `reply-chat` skill relies on.
  *
  * @module services/chat-v2/chat-v2.dispatcher.service
  */
@@ -123,7 +123,7 @@ export interface ChatV2DispatcherOptions {
   agentSink: AgentMessageSink;
   /**
    * Override the prompt formatter for tests / future customization. The
-   * default matches the `reply-channel` skill's parser exactly.
+   * default matches the `reply-chat` skill's parser exactly.
    */
   formatPrompt?: (args: FormatPromptArgs) => string;
   /**
@@ -183,7 +183,7 @@ export interface FormatPromptArgs {
  * Default prompt formatter the agent sees when a user sends in their
  * chat channel.
  *
- * Format is intentionally stable and tag-prefixed so the `reply-channel`
+ * Format is intentionally stable and tag-prefixed so the `reply-chat`
  * skill (and future tooling) can reliably extract the channelId without
  * regex ambiguity. The `回复:` hint line gives the agent a one-step
  * instruction on how to reply.
@@ -197,8 +197,8 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
   // to "optional" for non-@'d members.
   const mode = responseMode ?? 'required';
   const replyHint = mode === 'optional'
-    ? `回复本频道: 你在此 huddle 中收到此消息但未被 @ — 如有必要可用 \`reply-channel\` skill (channelId="${channelId}") 回复，否则不回复也可以。`
-    : `回复本频道: 用 \`reply-channel\` skill, 参数 channelId="${channelId}"、content="<your reply>"。`;
+    ? `回复本频道: 你在此 huddle 中收到此消息但未被 @ — 如有必要可用 \`reply-chat\` skill (conversationId="${channelId}") 回复，否则不回复也可以。`
+    : `回复本频道: 用 \`reply-chat\` skill, 参数 conversationId="${channelId}"、content="<your reply>"。`;
   return [
     `[CHAT:${channelId}]${idHint} <${senderId}@${channelName}>`,
     ``,
