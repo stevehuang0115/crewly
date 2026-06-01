@@ -372,6 +372,16 @@ describe('ChatV2Service', () => {
       expect(service.listChannels({ principal: otherUser })).toHaveLength(1);
     });
 
+    it('setPresenceProvider swaps the presence used by channel DTOs (DM dots)', () => {
+      const ch = createSam();
+      // Default beforeEach presence is 'online'; the setter replaces it,
+      // proving the composition root can wire live presence post-construction.
+      service.setPresenceProvider(() => ({ status: 'busy', lastSeenAt: 777 }));
+      const dto = service.getChannel(ch.id, owner);
+      expect(dto.agentPresence.status).toBe('busy');
+      expect(dto.agentPresence.lastSeenAt).toBe(777);
+    });
+
     it('surfaces bridged Slack channels the caller does not own', () => {
       // Slack bridge persists under the synthetic 'system' owner.
       service.ensureChannelForLegacyConversation({

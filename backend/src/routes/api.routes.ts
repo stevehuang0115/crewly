@@ -55,6 +55,7 @@ import { createOssTeamMembershipValidator } from '../services/chat-v2/chat-v2.te
 import {
   createOssAgentDirectoryProvider,
   createOssAgentPresenceProvider,
+  createOssSyncPresence,
 } from '../services/chat-v2/chat-v2.providers.js';
 
 /**
@@ -214,17 +215,23 @@ export function createApiRoutes(apiController: ApiController): Router {
   // endpoints can resolve real team data and live agent status. Providers
   // live in `chat-v2.providers.ts` so this wire-up doesn't bloat the
   // route table or pull controller code into the routes module.
+  const chatV2Service = getChatV2Service({
+    validateTeamMembership: createOssTeamMembershipValidator(),
+  });
+  // Wire the SYNC presence used by the channel-list DTOs (the DM presence
+  // dots). Via a setter — not the constructor — because the singleton may
+  // already have been built (with DEFAULT_PRESENCE='offline') by an earlier
+  // no-arg caller (ws gateway / slack bridge / replay), in which case
+  // constructor overrides are ignored. Without this every DM dot reads offline
+  // even while agents are running. The async provider below still backs the
+  // richer /presence endpoint.
+  chatV2Service.setPresenceProvider(createOssSyncPresence());
   router.use(
     '/chat',
-    createChatV2Router(
-      getChatV2Service({
-        validateTeamMembership: createOssTeamMembershipValidator(),
-      }),
-      {
-        directory: createOssAgentDirectoryProvider(apiController.storageService),
-        presence: createOssAgentPresenceProvider(apiController.storageService),
-      },
-    ),
+    createChatV2Router(chatV2Service, {
+      directory: createOssAgentDirectoryProvider(apiController.storageService),
+      presence: createOssAgentPresenceProvider(apiController.storageService),
+    }),
   );
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)

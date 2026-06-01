@@ -7,6 +7,7 @@
 import {
   createOssAgentDirectoryProvider,
   createOssAgentPresenceProvider,
+  createOssSyncPresence,
   resolvePresenceStatus,
   type IStorageServiceLike,
 } from './chat-v2.providers.js';
@@ -240,5 +241,29 @@ describe('createOssAgentPresenceProvider', () => {
     const result = await provider.getPresence('crewly-orc');
     expect(result.status).toBe('offline');
     expect(result.lastSeenAt).toBeNull();
+  });
+});
+
+describe('createOssSyncPresence', () => {
+  it('returns online + a lastSeenAt when the agent is alive', () => {
+    const getPresence = createOssSyncPresence({
+      isAliveSync: (s) => s === 'crewly-orc',
+      now: () => 4242,
+    });
+    expect(getPresence('crewly-orc')).toEqual({ status: 'online', lastSeenAt: 4242 });
+  });
+
+  it('returns offline + null when the agent is not alive', () => {
+    const getPresence = createOssSyncPresence({ isAliveSync: () => false });
+    expect(getPresence('sleepy-agent')).toEqual({ status: 'offline', lastSeenAt: null });
+  });
+
+  it('treats a thrown liveness probe as offline (DTO mapper must never throw)', () => {
+    const getPresence = createOssSyncPresence({
+      isAliveSync: () => {
+        throw new Error('boom');
+      },
+    });
+    expect(getPresence('x')).toEqual({ status: 'offline', lastSeenAt: null });
   });
 });
