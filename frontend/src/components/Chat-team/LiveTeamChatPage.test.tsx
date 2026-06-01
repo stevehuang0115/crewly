@@ -186,10 +186,12 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     expect(screen.queryAllByTestId(/^workspace-row-/).length).toBe(3);
   });
 
-  it('Home shows the orchestrator by default (top, pinned group)', async () => {
+  it('Home lists the orchestrator first in the Direct messages group', async () => {
     const { client } = makeStubClient([orcDm]);
     render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
-    await waitFor(() => expect(screen.getByTestId('conv-group-pinned')).toBeInTheDocument());
+    // Home now surfaces the full DM roster (orc first) rather than only a
+    // single pinned orc row, so the panel is populated, not an empty void.
+    await waitFor(() => expect(screen.getByTestId('conv-group-dms')).toBeInTheDocument());
     expect(screen.getByTestId('conv-row-orc-dm')).toBeInTheDocument();
   });
 

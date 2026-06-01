@@ -427,20 +427,50 @@ function LiveTeamChatPageBody({
   const groups = useMemo<ConversationGroup[]>(() => {
     const sel = resolvedWorkspaceId;
 
-    // Home: orchestrator (default, top) + pinned agents + huddles. Slack threads
-    // are NOT listed here — they all belong to the orchestrator, so they're
-    // surfaced inside the Orchestrator conversation (see slackThreads below).
+    // Home: the personal landing — Pinned (if any) → Direct messages (the full
+    // agent roster, orc first, presence-sorted) → Group chats. Surfacing the
+    // whole DM directory keeps the panel populated and every agent one click
+    // away (it used to show only orc + a big empty void). Slack threads are NOT
+    // listed here — they belong to the orchestrator (see slackThreads below).
     if (sel === HOME_ID) {
-      const pinnedRows = allDmRows.filter(
-        (r) =>
-          r.agentSession !== ORCHESTRATOR_SESSION &&
-          !r.id.startsWith(SLACK_ID_PREFIX) &&
-          pinnedChats.isPinned(pinKeyOf(r)),
+      const roleBySession = new Map(
+        directoryAgents.map((a) => [a.agentSession, a.role] as const),
       );
-      const top = [...(orcRow ? [orcRow] : []), ...pinnedRows];
+      const withRole = (r: ConversationRow): ConversationRow => {
+        const role = r.agentSession ? roleBySession.get(r.agentSession) : undefined;
+        return role ? { ...r, subtitle: role } : r;
+      };
+      // Real DMs + synthetic directory rows; exclude Slack-thread channels.
+      const agentDmRows = allDmRows.filter((r) => r.agentSession && !r.id.startsWith(SLACK_ID_PREFIX));
+
+      const pinnedRows = agentDmRows
+        .filter((r) => r.agentSession !== ORCHESTRATOR_SESSION && pinnedChats.isPinned(pinKeyOf(r)))
+        .map(withRole);
+      const pinnedKeys = new Set(pinnedRows.map((r) => pinKeyOf(r)));
+
+      // Direct messages excludes pinned agents (shown above) to avoid dupes;
+      // the orchestrator always appears here, first.
+      // Orchestrator first; then online → busy → offline; then most-recent; then name.
+      const presenceRank = (p?: ChatPresenceStatus): number =>
+        p === 'online' ? 0 : p === 'busy' ? 1 : p === 'offline' ? 2 : 3;
+      const dmRows = [...agentDmRows]
+        .filter((r) => r.agentSession === ORCHESTRATOR_SESSION || !pinnedKeys.has(pinKeyOf(r)))
+        .sort((a, b) => {
+          if (a.agentSession === ORCHESTRATOR_SESSION) return -1;
+          if (b.agentSession === ORCHESTRATOR_SESSION) return 1;
+          const pr = presenceRank(a.presence) - presenceRank(b.presence);
+          if (pr !== 0) return pr;
+          const at = a.lastMessageAt ?? '';
+          const bt = b.lastMessageAt ?? '';
+          if (at !== bt) return bt.localeCompare(at);
+          return a.title.localeCompare(b.title);
+        })
+        .map(withRole);
+
       const out: ConversationGroup[] = [];
-      if (top.length > 0) out.push({ id: 'pinned', label: 'Pinned', rows: top });
-      if (allHuddleRows.length > 0) out.push({ id: 'huddles', label: 'Huddles', rows: allHuddleRows });
+      if (pinnedRows.length > 0) out.push({ id: 'pinned', label: 'Pinned', rows: pinnedRows });
+      if (dmRows.length > 0) out.push({ id: 'dms', label: 'Direct messages', rows: dmRows });
+      if (allHuddleRows.length > 0) out.push({ id: 'huddles', label: 'Group chats', rows: allHuddleRows });
       return out;
     }
 
