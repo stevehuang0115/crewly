@@ -118,6 +118,12 @@ export interface ConversationRow {
    * through to AgentStatusBadge for live presence subscription.
    */
   agentSession?: string;
+  /**
+   * Optional short role tag rendered as an inline pill next to the title —
+   * e.g. `Lead` to mark a team lead inside the members list. ADDITIVE and
+   * Portal-safe; rows without it render unchanged.
+   */
+  badge?: string;
 }
 
 /**

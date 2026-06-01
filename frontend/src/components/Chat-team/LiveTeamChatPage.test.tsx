@@ -223,8 +223,10 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     );
     await waitFor(() => expect(screen.getByTestId('conv-group-team-huddle')).toBeInTheDocument());
     expect(screen.getByTestId('conv-row-ch-general')).toHaveAttribute('data-kind', 'channel');
-    expect(screen.getByTestId('conv-group-team-lead')).toBeInTheDocument();
+    // Leads and members share a single Members list; leads carry a "Lead" badge.
     expect(screen.getByTestId('conv-group-team-members')).toBeInTheDocument();
+    expect(screen.getByTestId('conv-badge-dm-maya')).toHaveTextContent('Lead');
+    expect(screen.queryByTestId('conv-badge-dm-alex')).not.toBeInTheDocument();
     // Lead (Maya) renders before member (Alex).
     const lead = screen.getByTestId('conv-row-dm-maya');
     const member = screen.getByTestId('conv-row-dm-alex');
