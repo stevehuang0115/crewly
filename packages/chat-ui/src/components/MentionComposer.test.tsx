@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { MentionTarget } from '../types/team-chat.types';
 import { MentionComposer } from './MentionComposer';
@@ -139,6 +139,33 @@ describe('MentionComposer', () => {
     await userEvent.type(screen.getByTestId('mention-textarea'), 'hello{Enter}');
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend.mock.calls[0][0].content).toBe('hello');
+  });
+
+  it('does NOT send on Enter while an IME composition is active (Chinese/JP/KR input)', async () => {
+    const onSend = vi.fn();
+    render(<MentionComposer mentionables={mentionables} onSend={onSend} />);
+    const ta = screen.getByTestId('mention-textarea');
+    await userEvent.type(ta, 'ni hao');
+    // Mid-composition: Enter commits the IME candidate, it must NOT send.
+    fireEvent.compositionStart(ta);
+    fireEvent.keyDown(ta, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    // After the composition ends, Enter sends as normal.
+    fireEvent.compositionEnd(ta);
+    fireEvent.keyDown(ta, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0][0].content).toBe('ni hao');
+  });
+
+  it('does NOT send on Enter when nativeEvent.isComposing is set', async () => {
+    const onSend = vi.fn();
+    render(<MentionComposer mentionables={mentionables} onSend={onSend} />);
+    const ta = screen.getByTestId('mention-textarea');
+    await userEvent.type(ta, 'hello');
+    // Some browsers don't fire compositionStart but flag the committing
+    // keystroke via isComposing — guard on that too.
+    fireEvent.keyDown(ta, { key: 'Enter', isComposing: true });
+    expect(onSend).not.toHaveBeenCalled();
   });
 
   it('does NOT send on Shift+Enter (newline behavior)', async () => {

@@ -78,6 +78,12 @@ export function MentionComposer({
   /** Filter text inside the suggestion popover — what comes after the `@`. */
   const [filter, setFilter] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // True while an IME composition is active (e.g. typing Chinese/Japanese/
+  // Korean). Pressing Enter to COMMIT a composition must NOT send — otherwise a
+  // half-composed message fires early. Tracked via composition events because
+  // `KeyboardEvent.isComposing` alone is unreliable across browsers/IMEs for
+  // the committing keystroke.
+  const isComposingRef = useRef(false);
 
   const grouped = useMemo(() => groupMentionables(mentionables, filter), [mentionables, filter]);
   const totalSuggestions = grouped.teams.length + grouped.agents.length;
@@ -145,12 +151,23 @@ export function MentionComposer({
         return;
       }
       if (e.key === 'Enter' && !e.shiftKey) {
+        // Don't send mid-IME-composition — Enter is committing the candidate,
+        // not submitting the message. `isComposingRef` (composition events) +
+        // the native `isComposing` flag together cover all browsers/IMEs.
+        if (isComposingRef.current || e.nativeEvent.isComposing) return;
         e.preventDefault();
         handleSend();
       }
     },
     [handleSend, popoverOpen],
   );
+
+  const handleCompositionStart = useCallback(() => {
+    isComposingRef.current = true;
+  }, []);
+  const handleCompositionEnd = useCallback(() => {
+    isComposingRef.current = false;
+  }, []);
 
   // The @ toolbar button inserts an `@` at the caret and opens the popover so
   // the mention flow is reachable without the keyboard.
@@ -197,6 +214,8 @@ export function MentionComposer({
           value={value}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onCompositionStart={handleCompositionStart}
+          onCompositionEnd={handleCompositionEnd}
           disabled={disabled}
           placeholder={placeholder}
           rows={1}
