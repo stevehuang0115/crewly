@@ -36,6 +36,7 @@ import {
   type ChatTeam,
 } from './LiveTeamChatPage';
 import { useTeams } from '../../hooks/useTeams';
+import { useSidebar } from '../../contexts/SidebarContext';
 import { resolveBackendURL, resolveChatMode } from '../../utils/chat-backend';
 import {
   buildTeamLabels,
@@ -71,6 +72,19 @@ async function ensureChannel(url: string, body: Record<string, unknown>): Promis
 export function TeamChatRoute(): JSX.Element {
   const [searchParams] = useSearchParams();
   const { teams } = useTeams();
+  const { isCollapsed, collapseSidebar, expandSidebar } = useSidebar();
+
+  // The chat is already a dense 3-panel surface; collapse the app's left nav
+  // while on this page to give it room, then restore the user's prior state
+  // when they leave. Mount/unmount only — capture the pre-chat state once.
+  useEffect(() => {
+    const wasExpanded = !isCollapsed;
+    collapseSidebar();
+    return () => {
+      if (wasExpanded) expandSidebar();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const mode = resolveChatMode();
   const backendURL = mode === 'real' ? resolveBackendURL() : undefined;

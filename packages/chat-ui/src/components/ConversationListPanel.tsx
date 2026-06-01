@@ -143,7 +143,7 @@ export function ConversationListPanel({
 
   return (
     <aside
-      className={`flex h-full w-[240px] flex-col border-r border-border-dark bg-surface-dark ${className}`}
+      className={`flex h-full w-[240px] flex-col border-r border-border-dark bg-[#232d3b] ${className}`}
       aria-label={workspaceName ? `${workspaceName} conversations` : 'Conversations'}
       data-testid="conversation-list-panel"
     >
