@@ -1520,7 +1520,18 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
-   * Fetch the channel and allow if the caller is the owner OR the bound agent.
+   * Fetch the channel and allow if the caller is the owner OR the bound agent
+   * OR the channel is a shared bridged Slack conversation.
+   *
+   * Slack-bridged channels (`slack-…`, persisted under the synthetic `'system'`
+   * owner by the inbound bridge) belong to no single Crewly user — exactly like
+   * {@link ChannelStore.listBridged} surfaces them in the consolidated list
+   * regardless of owner, this lets the web user READ them (e.g. the team-chat
+   * surface merges them inline into the Orchestrator timeline). Writes are still
+   * gated downstream by {@link resolveSender}, which throws `forbidden` unless
+   * the caller is the owner or bound agent — so this read allowance does not let
+   * a user post into a bridged channel.
+   *
    * Used for read + send; agents must always be acting from their own session.
    */
   private requireReadableChannel(channelId: string, principal: ChatPrincipal): ChatChannelRow {
@@ -1531,7 +1542,8 @@ export class ChatV2Service extends EventEmitter {
     const isOwner = row.owner_user_id === principal.userId;
     const isBoundAgent =
       !!principal.agentSession && principal.agentSession === row.agent_session;
-    if (!isOwner && !isBoundAgent) {
+    const isSharedBridged = row.id.startsWith('slack-');
+    if (!isOwner && !isBoundAgent && !isSharedBridged) {
       throw new ChatError(CHAT_ERROR_CODES.CHANNEL_NOT_FOUND, 404, 'Channel not found');
     }
     if (row.archived_at) {
