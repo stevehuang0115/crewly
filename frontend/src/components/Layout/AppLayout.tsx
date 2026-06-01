@@ -93,15 +93,19 @@ export const AppLayout: React.FC = () => {
         </main>
       </div>
 
-      {/* Terminal Toggle Button */}
-      <IconButton
-        className={`fixed bottom-6 right-6 z-40 ${isTerminalOpen ? 'bg-primary/90' : ''}`}
-        icon={Terminal}
-        onClick={toggleTerminal}
-        variant="primary"
-        title={isTerminalOpen ? 'Close Terminal' : 'Open Terminal'}
-        aria-label={isTerminalOpen ? 'Close Terminal' : 'Open Terminal'}
-      />
+      {/* Terminal Toggle Button — hidden on full-bleed routes (the chat),
+          where its fixed bottom-right position overlaps the composer's Send
+          button. */}
+      {!isFullBleed && (
+        <IconButton
+          className={`fixed bottom-6 right-6 z-40 ${isTerminalOpen ? 'bg-primary/90' : ''}`}
+          icon={Terminal}
+          onClick={toggleTerminal}
+          variant="primary"
+          title={isTerminalOpen ? 'Close Terminal' : 'Open Terminal'}
+          aria-label={isTerminalOpen ? 'Close Terminal' : 'Open Terminal'}
+        />
+      )}
 
       {/* Terminal Side Panel with Overlay */}
       <>

@@ -62,7 +62,6 @@ import {
   type Workspace,
 } from '@crewly/chat-ui';
 import {
-  AgentOfflineBanner,
   NoChannelsEmptyState,
   NoMessagesEmptyState,
   NoTeamsEmptyState,
@@ -700,9 +699,6 @@ function LiveTeamChatRightPanelInner({
   // optimistic bubble in `failed` state via the client's emit path.
   const toast = useMemo(() => buildToastMessage(sendError), [sendError]);
 
-  const isInactiveDm =
-    conversation.kind === 'dm' &&
-    (conversation.presence === 'inactive' || conversation.presence === 'offline');
   const recipientName = conversation.kind === 'dm' ? conversation.title : undefined;
 
   // Slack threads all belong to the orchestrator, so they're navigated from
@@ -847,8 +843,6 @@ function LiveTeamChatRightPanelInner({
         </div>
       )}
 
-      {isInactiveDm && recipientName && <AgentOfflineBanner agentName={recipientName} />}
-
       <MessageThread
         channelId={conversation.id}
         agentName={recipientName}
@@ -868,13 +862,7 @@ function LiveTeamChatRightPanelInner({
       <MentionComposer
         mentionables={mentionables}
         onSend={handleSend}
-        inactiveHelper={
-          isInactiveDm && recipientName
-            ? `${recipientName} is inactive — sending will activate them and deliver your message.`
-            : threadRoot
-              ? `Replying in thread ${threadRoot}`
-              : undefined
-        }
+        inactiveHelper={threadRoot ? `Replying in thread ${threadRoot}` : undefined}
       />
 
       {toast && (

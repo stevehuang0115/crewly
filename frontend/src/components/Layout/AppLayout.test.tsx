@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { BrowserRouter } from 'react-router-dom';
+import { BrowserRouter, MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import { AppLayout } from './AppLayout';
 import { TerminalProvider } from '../../contexts/TerminalContext';
@@ -74,6 +74,21 @@ describe('AppLayout', () => {
 
     const toggleButton = screen.getByRole('button', { name: /terminal/i });
     expect(toggleButton).toBeInTheDocument();
+  });
+
+  it('hides the terminal toggle on the full-bleed chat route', () => {
+    render(
+      <MemoryRouter initialEntries={['/team-chat']}>
+        <TerminalProvider>
+          <SidebarProvider>
+            <AppLayout />
+          </SidebarProvider>
+        </TerminalProvider>
+      </MemoryRouter>,
+    );
+    // The fixed bottom-right terminal button overlaps the chat composer's
+    // Send button, so it's hidden on /team-chat.
+    expect(screen.queryByRole('button', { name: /open terminal/i })).not.toBeInTheDocument();
   });
 
   it('opens terminal panel when terminal button is clicked', () => {
