@@ -374,12 +374,16 @@ function LiveTeamChatPageBody({
         r.agentSession !== ORCHESTRATOR_SESSION &&
         memberSet.has(r.agentSession),
     );
-    const leads = memberRows.filter((r) => r.agentSession && leadSet.has(r.agentSession));
+    // Single Members list, leads first, each lead tagged with a "Lead" badge
+    // so the roster reads as one Slack-style list rather than split sections.
+    const leads = memberRows
+      .filter((r) => r.agentSession && leadSet.has(r.agentSession))
+      .map((r) => ({ ...r, badge: 'Lead' }));
     const rest = memberRows.filter((r) => !(r.agentSession && leadSet.has(r.agentSession)));
     const out: ConversationGroup[] = [];
     if (huddleRows.length > 0) out.push({ id: 'team-huddle', label: 'Team huddle', rows: huddleRows });
-    if (leads.length > 0) out.push({ id: 'team-lead', label: 'Team lead', rows: leads });
-    if (rest.length > 0) out.push({ id: 'team-members', label: 'Members', rows: rest });
+    const members = [...leads, ...rest];
+    if (members.length > 0) out.push({ id: 'team-members', label: 'Members', rows: members });
     return out;
   }, [
     resolvedWorkspaceId,

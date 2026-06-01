@@ -310,6 +310,14 @@ function ConversationRowItem({
           >
             {row.title}
           </span>
+          {row.badge && (
+            <span
+              className="shrink-0 rounded bg-indigo-100 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300"
+              data-testid={`conv-badge-${row.id}`}
+            >
+              {row.badge}
+            </span>
+          )}
           {row.lastMessageAt && (
             <time
               className="ml-auto shrink-0 text-[10px] text-slate-400 dark:text-slate-500"

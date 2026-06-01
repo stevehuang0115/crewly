@@ -95,6 +95,22 @@ describe('ConversationListPanel', () => {
     expect(screen.getByTestId('conv-unread-pill-c-proj-onboarding')).toHaveTextContent('3');
   });
 
+  it('renders a role badge pill next to the title when row.badge is set', () => {
+    const groups: ConversationGroup[] = [
+      {
+        id: 'members',
+        label: 'Members',
+        rows: [
+          { id: 'dm-lead', kind: 'dm', title: 'Maya', badge: 'Lead' },
+          { id: 'dm-plain', kind: 'dm', title: 'Alex' },
+        ],
+      },
+    ];
+    renderPanel({ groups });
+    expect(screen.getByTestId('conv-badge-dm-lead')).toHaveTextContent('Lead');
+    expect(screen.queryByTestId('conv-badge-dm-plain')).not.toBeInTheDocument();
+  });
+
   it('marks the active row with data-active=true and aria-current', () => {
     renderPanel({ activeConversationId: 'c-general' });
     const row = screen.getByTestId('conv-row-c-general');
