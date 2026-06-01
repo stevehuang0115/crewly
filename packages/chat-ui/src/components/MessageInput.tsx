@@ -92,7 +92,7 @@ export function MessageInput({
 
   return (
     <div
-      className={`border-t border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900 ${className}`}
+      className={`border-t border-border-dark bg-surface-dark p-3 ${className}`}
       onDrop={handleDrop}
       onDragOver={handleDragOver}
       data-testid="message-input"
@@ -109,7 +109,7 @@ export function MessageInput({
               <button
                 type="button"
                 onClick={() => removeAttachment(a.id)}
-                className="absolute -right-1 -top-1 rounded-full bg-slate-900/80 px-1 text-[10px] leading-4 text-white"
+                className="absolute -right-1 -top-1 rounded-full bg-background-dark/80 px-1 text-[10px] leading-4 text-white"
                 aria-label={`Remove ${a.filename ?? 'attachment'}`}
               >
                 ×
@@ -128,13 +128,13 @@ export function MessageInput({
           disabled={!channelId || sending}
           placeholder={channelId ? placeholder : 'Select a channel to send a message.'}
           rows={2}
-          className="flex-1 resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          className="flex-1 resize-none rounded-lg border border-border-dark bg-background-dark px-3 py-2 text-sm text-text-primary-dark placeholder:text-text-secondary-dark shadow-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
         />
         <button
           type="button"
           onClick={() => void handleSend()}
           disabled={!canSend}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {sending ? 'Sending…' : 'Send'}
         </button>

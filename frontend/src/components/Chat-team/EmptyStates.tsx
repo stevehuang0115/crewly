@@ -31,8 +31,8 @@ function EmptyShell({ headline, body, cta, testId }: EmptyShellProps): JSX.Eleme
       data-testid={testId}
       className="flex h-full flex-col items-center justify-center gap-3 px-8 py-12 text-center"
     >
-      <h3 className="text-base font-semibold text-slate-700 dark:text-slate-200">{headline}</h3>
-      <div className="max-w-md text-sm text-slate-500 dark:text-slate-400">{body}</div>
+      <h3 className="text-base font-semibold text-text-primary-dark">{headline}</h3>
+      <div className="max-w-md text-sm text-text-secondary-dark">{body}</div>
       {cta && <div className="mt-2">{cta}</div>}
     </div>
   );
@@ -52,7 +52,7 @@ export function NoTeamsEmptyState(): JSX.Element {
       cta={
         <button
           type="button"
-          className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary/90"
         >
           Open team builder
         </button>
@@ -80,19 +80,19 @@ export function NoChannelsEmptyState({ teamName }: { teamName: string }): JSX.El
         <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
           <button
             type="button"
-            className="rounded-md bg-slate-200 px-3 py-1.5 font-medium text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+            className="rounded-md bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-border-dark"
           >
             Message team lead
           </button>
           <button
             type="button"
-            className="rounded-md bg-slate-200 px-3 py-1.5 font-medium text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+            className="rounded-md bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-border-dark"
           >
             Open project channel
           </button>
           <button
             type="button"
-            className="rounded-md bg-slate-200 px-3 py-1.5 font-medium text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+            className="rounded-md bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-border-dark"
           >
             Start DM
           </button>
@@ -158,7 +158,7 @@ export function AgentOfflineBanner({ agentName }: { agentName: string }): JSX.El
     <div
       role="alert"
       data-testid="banner-agent-offline"
-      className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:border-amber-600/40 dark:bg-amber-900/20 dark:text-amber-100"
+      className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-200"
     >
       <strong>{agentName} is currently inactive.</strong> Sending a message will activate{' '}
       {agentName} and deliver it once the session is up.

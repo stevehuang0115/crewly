@@ -117,13 +117,13 @@ export function ConversationListPanel({
 
   return (
     <aside
-      className={`flex h-full w-72 flex-col border-r border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900 ${className}`}
+      className={`flex h-full w-72 flex-col border-r border-border-dark bg-surface-dark ${className}`}
       aria-label={workspaceName ? `${workspaceName} conversations` : 'Conversations'}
       data-testid="conversation-list-panel"
     >
       {(workspaceName || headerAction) && (
-        <header className="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-700">
-          <h2 className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+        <header className="flex items-center justify-between gap-2 border-b border-border-dark px-4 py-3">
+          <h2 className="truncate text-sm font-semibold text-text-primary-dark">
             {workspaceName ?? ''}
           </h2>
           {headerAction}
@@ -132,7 +132,7 @@ export function ConversationListPanel({
 
       <div className="flex-1 overflow-y-auto">
         {totalRows === 0 ? (
-          <div className="px-4 py-6 text-sm text-slate-500" role="status">
+          <div className="px-4 py-6 text-sm text-text-secondary-dark" role="status">
             {emptyState ?? 'No conversations in this workspace yet.'}
           </div>
         ) : (
@@ -194,7 +194,7 @@ function ConversationGroupSection({
 
   return (
     <section
-      className={depth === 0 ? 'border-b border-slate-200 py-2 last:border-b-0 dark:border-slate-800' : ''}
+      className={depth === 0 ? 'border-b border-border-dark py-2 last:border-b-0' : ''}
       aria-labelledby={`conv-group-${group.id}`}
       data-testid={`conv-group-${group.id}`}
     >
@@ -205,12 +205,12 @@ function ConversationGroupSection({
         onClick={() => onToggleCollapse(group.id)}
         aria-expanded={!isCollapsed}
         data-testid={`conv-group-toggle-${group.id}`}
-        className="flex w-full items-center gap-1 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+        className="flex w-full items-center gap-1 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary-dark hover:text-text-primary-dark"
         style={{ paddingLeft: `${0.75 + depth * 0.75}rem`, paddingRight: '0.75rem' }}
       >
         <Chevron collapsed={isCollapsed} />
         <span className="truncate">{group.label}</span>
-        <span className="ml-auto text-slate-400 dark:text-slate-500">{countRows(group)}</span>
+        <span className="ml-auto text-text-secondary-dark">{countRows(group)}</span>
       </button>
       {!isCollapsed && (
         <>
@@ -282,8 +282,8 @@ function ConversationRowItem({
       className={[
         'group/row relative flex w-full items-center border-l-2 transition',
         isActive
-          ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-          : 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800',
+          ? 'border-primary bg-primary/10'
+          : 'border-transparent hover:bg-background-dark',
       ].join(' ')}
     >
       <button
@@ -304,15 +304,15 @@ function ConversationRowItem({
             className={[
               'truncate text-sm',
               hasUnread
-                ? 'font-semibold text-slate-900 dark:text-slate-50'
-                : 'text-slate-700 dark:text-slate-300',
+                ? 'font-semibold text-text-primary-dark'
+                : 'text-text-secondary-dark',
             ].join(' ')}
           >
             {row.title}
           </span>
           {row.badge && (
             <span
-              className="shrink-0 rounded bg-indigo-100 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300"
+              className="shrink-0 rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-primary"
               data-testid={`conv-badge-${row.id}`}
             >
               {row.badge}
@@ -320,7 +320,7 @@ function ConversationRowItem({
           )}
           {row.lastMessageAt && (
             <time
-              className="ml-auto shrink-0 text-[10px] text-slate-400 dark:text-slate-500"
+              className="ml-auto shrink-0 text-[10px] text-text-secondary-dark"
               dateTime={row.lastMessageAt}
             >
               {formatRelativeTime(row.lastMessageAt)}
@@ -332,15 +332,15 @@ function ConversationRowItem({
             className={[
               'truncate text-xs',
               hasUnread
-                ? 'text-slate-600 dark:text-slate-300'
-                : 'text-slate-500 dark:text-slate-400',
+                ? 'text-text-primary-dark'
+                : 'text-text-secondary-dark',
             ].join(' ')}
           >
             {row.lastMessagePreview}
           </div>
         )}
         {row.subtitle && !row.lastMessagePreview && (
-          <div className="truncate text-xs text-slate-400 dark:text-slate-500">
+          <div className="truncate text-xs text-text-secondary-dark">
             {row.subtitle}
           </div>
         )}
@@ -357,7 +357,7 @@ function ConversationRowItem({
         </span>
       ) : hasUnread ? (
         <span
-          className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-slate-700 px-1 text-[10px] font-semibold text-white dark:bg-slate-300 dark:text-slate-900"
+          className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-white"
           data-testid={`conv-unread-pill-${row.id}`}
           aria-label={`${row.unreadCount} unread`}
         >
@@ -378,9 +378,9 @@ function ConversationRowItem({
           aria-pressed={pinned}
           title={pinned ? 'Unpin' : 'Pin'}
           className={[
-            'mr-2 shrink-0 rounded p-1 text-slate-400 hover:text-amber-500',
+            'mr-2 shrink-0 rounded p-1 text-text-secondary-dark hover:text-amber-400',
             // Pinned: always visible. Unpinned: reveal on row hover.
-            pinned ? 'text-amber-500' : 'opacity-0 group-hover/row:opacity-100',
+            pinned ? 'text-amber-400' : 'opacity-0 group-hover/row:opacity-100',
           ].join(' ')}
         >
           <PinIcon filled={pinned ?? false} />
@@ -414,7 +414,7 @@ function ConversationKindIcon({ row }: { row: ConversationRow }): JSX.Element {
     return (
       <span
         aria-hidden="true"
-        className="flex h-6 w-6 shrink-0 items-center justify-center text-base font-medium text-slate-500 dark:text-slate-400"
+        className="flex h-6 w-6 shrink-0 items-center justify-center text-base font-medium text-text-secondary-dark"
         data-testid={`conv-icon-${row.id}`}
       >
         #
@@ -425,12 +425,12 @@ function ConversationKindIcon({ row }: { row: ConversationRow }): JSX.Element {
     return (
       <span
         aria-hidden="true"
-        className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-[10px] font-semibold uppercase text-white"
+        className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-[#1e5fc7] text-[10px] font-semibold uppercase text-white"
         data-testid={`conv-icon-${row.id}`}
       >
         {deriveDmInitials(row.title)}
         {row.presence && (
-          <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-white p-[1px] dark:bg-slate-900">
+          <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-surface-dark p-[1px]">
             <AgentStatusBadge status={row.presence} compact />
           </span>
         )}
@@ -441,7 +441,7 @@ function ConversationKindIcon({ row }: { row: ConversationRow }): JSX.Element {
   return (
     <span
       aria-hidden="true"
-      className="flex h-6 w-6 shrink-0 items-center justify-center text-xs text-slate-400"
+      className="flex h-6 w-6 shrink-0 items-center justify-center text-xs text-text-secondary-dark"
       data-testid={`conv-icon-${row.id}`}
     >
       ⟳

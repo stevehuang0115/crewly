@@ -57,11 +57,11 @@ export interface MentionComposerProps {
 
 const DEFAULT_PLACEHOLDER = 'Message — try @ to mention a team or agent';
 const PRESENCE_DOT: Record<ChatPresenceStatus, string> = {
-  online: 'bg-emerald-500',
+  online: 'bg-emerald-400',
   busy: 'bg-amber-400',
-  idle: 'bg-amber-300',
-  offline: 'bg-slate-400',
-  inactive: 'bg-slate-300',
+  idle: 'bg-amber-400',
+  offline: 'bg-gray-500',
+  inactive: 'bg-gray-500',
 };
 
 export function MentionComposer({
@@ -164,7 +164,7 @@ export function MentionComposer({
 
   return (
     <div
-      className={`relative border-t border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900 ${className}`}
+      className={`relative border-t border-border-dark bg-surface-dark p-3 ${className}`}
       data-testid="mention-composer"
     >
       {mentions.length > 0 && (
@@ -191,14 +191,14 @@ export function MentionComposer({
           placeholder={placeholder}
           rows={2}
           data-testid="mention-textarea"
-          className="flex-1 resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          className="flex-1 resize-none rounded-lg border border-border-dark bg-background-dark px-3 py-2 text-sm text-text-primary-dark placeholder:text-text-secondary-dark shadow-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
         />
         <button
           type="button"
           onClick={handleSend}
           disabled={!canSend}
           data-testid="mention-send"
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Send
         </button>
@@ -206,7 +206,7 @@ export function MentionComposer({
 
       {helperText && (
         <p
-          className="mt-1 text-[11px] text-slate-500 dark:text-slate-400"
+          className="mt-1 text-[11px] text-text-secondary-dark"
           data-testid="mention-helper"
         >
           {helperText}
@@ -241,7 +241,7 @@ function SuggestionPopover({
     <div
       role="listbox"
       data-testid="mention-suggestions"
-      className="absolute bottom-[110%] left-3 right-3 z-10 max-h-72 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800"
+      className="absolute bottom-[110%] left-3 right-3 z-10 max-h-72 overflow-y-auto rounded-lg border border-border-dark bg-surface-dark shadow-lg"
     >
       {teams.length > 0 && (
         <SuggestionGroup label="Teams" items={teams} onSelect={onSelect} testid="teams" />
@@ -266,7 +266,7 @@ function SuggestionGroup({
 }): JSX.Element {
   return (
     <div data-testid={`mention-group-${testid}`}>
-      <div className="border-b border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+      <div className="border-b border-border-dark bg-background-dark px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-secondary-dark">
         {label}
       </div>
       <ul role="list">
@@ -276,14 +276,14 @@ function SuggestionGroup({
               type="button"
               onClick={() => onSelect(it)}
               data-testid={`mention-suggestion-${it.id}`}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-700"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-background-dark"
             >
               <MentionKindGlyph target={it} />
-              <span className="min-w-0 flex-1 truncate text-slate-800 dark:text-slate-100">
+              <span className="min-w-0 flex-1 truncate text-text-primary-dark">
                 {it.label}
               </span>
               {it.routingHint && (
-                <span className="shrink-0 text-[11px] text-slate-400 dark:text-slate-500">
+                <span className="shrink-0 text-[11px] text-text-secondary-dark">
                   {it.routingHint}
                 </span>
               )}
@@ -314,8 +314,8 @@ function MentionChip({
       className={[
         'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1',
         isTeam
-          ? 'bg-indigo-50 text-indigo-700 ring-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-200 dark:ring-indigo-700'
-          : 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:ring-emerald-700',
+          ? 'bg-primary/15 text-primary ring-primary/30'
+          : 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
       ].join(' ')}
     >
       <MentionKindGlyph target={target} compact />
@@ -345,7 +345,7 @@ function MentionKindGlyph({
         aria-hidden="true"
         className={`inline-flex items-center justify-center rounded ${
           compact ? 'h-3 w-3 text-[8px]' : 'h-5 w-5 text-[10px]'
-        } bg-indigo-200 font-semibold text-indigo-700 dark:bg-indigo-700 dark:text-indigo-100`}
+        } bg-primary/20 font-semibold text-primary`}
       >
         T
       </span>
@@ -354,7 +354,7 @@ function MentionKindGlyph({
   return (
     <span
       aria-hidden="true"
-      className={`relative inline-flex items-center justify-center rounded-full bg-emerald-200 font-semibold text-emerald-700 dark:bg-emerald-700 dark:text-emerald-100 ${
+      className={`relative inline-flex items-center justify-center rounded-full bg-emerald-500/20 font-semibold text-emerald-300 ${
         compact ? 'h-3 w-3 text-[8px]' : 'h-5 w-5 text-[10px]'
       }`}
     >
@@ -362,7 +362,7 @@ function MentionKindGlyph({
       {target.presence && (
         <span
           aria-hidden="true"
-          className={`absolute -bottom-0.5 -right-0.5 inline-block h-1.5 w-1.5 rounded-full ring-2 ring-white dark:ring-slate-900 ${
+          className={`absolute -bottom-0.5 -right-0.5 inline-block h-1.5 w-1.5 rounded-full ring-2 ring-surface-dark ${
             PRESENCE_DOT[target.presence]
           }`}
         />

@@ -69,11 +69,11 @@ export interface WorkspaceRailProps {
 }
 
 const PRESENCE_DOT: Record<ChatPresenceStatus, string> = {
-  online: 'bg-emerald-500',
+  online: 'bg-emerald-400',
   busy: 'bg-amber-400',
-  idle: 'bg-amber-300',
-  offline: 'bg-slate-400',
-  inactive: 'bg-slate-300',
+  idle: 'bg-amber-400',
+  offline: 'bg-gray-500',
+  inactive: 'bg-gray-500',
 };
 
 export function WorkspaceRail({
@@ -118,7 +118,7 @@ export function WorkspaceRail({
 
   return (
     <nav
-      className={`flex h-full flex-col items-stretch gap-1 overflow-y-auto border-r border-slate-200 bg-slate-900 py-3 ${width} ${className}`}
+      className={`flex h-full flex-col items-stretch gap-1 overflow-y-auto border-r border-border-dark bg-background-dark py-3 ${width} ${className}`}
       aria-label="Workspace rail"
       data-testid="workspace-rail"
       data-expanded={expanded ? 'true' : 'false'}
@@ -187,19 +187,19 @@ function WorkspaceRow({
   const dot = workspace.hasMentions ? (
     <span
       aria-hidden="true"
-      className="absolute -right-0.5 -top-0.5 inline-block h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-slate-900"
+      className="absolute -right-0.5 -top-0.5 inline-block h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-background-dark"
       data-testid={`workspace-mention-${workspace.id}`}
     />
   ) : hasUnread ? (
     <span
       aria-hidden="true"
-      className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 rounded-full bg-blue-400 ring-2 ring-slate-900"
+      className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 rounded-full bg-primary ring-2 ring-background-dark"
       data-testid={`workspace-unread-${workspace.id}`}
     />
   ) : workspace.presence ? (
     <span
       aria-hidden="true"
-      className={`absolute -right-0.5 -top-0.5 inline-block h-1.5 w-1.5 rounded-full ring-2 ring-slate-900 ${
+      className={`absolute -right-0.5 -top-0.5 inline-block h-1.5 w-1.5 rounded-full ring-2 ring-background-dark ${
         PRESENCE_DOT[workspace.presence]
       }`}
       data-testid={`workspace-presence-${workspace.id}`}
@@ -223,8 +223,8 @@ function WorkspaceRow({
           ? 'mx-1.5 flex flex-col items-center gap-1 px-1 py-1.5 text-center'
           : 'mx-2 flex items-center gap-3 px-2 py-2 pr-4 text-left',
         isActive
-          ? 'bg-blue-600/20 text-white ring-1 ring-blue-400/40'
-          : 'text-slate-200 hover:bg-slate-800',
+          ? 'bg-primary/15 text-text-primary-dark ring-1 ring-primary/50'
+          : 'text-text-secondary-dark hover:bg-surface-dark hover:text-text-primary-dark',
         // Indent nested children one notch (beside layout only).
         isNested && !caption ? 'ml-4' : '',
         // Caption child: inset the tile so the connector spine sits at its left.
@@ -245,10 +245,10 @@ function WorkspaceRow({
             // A vector icon / emoji glyph is not uppercased; initials are.
             hasGlyph ? (childInset ? 'text-base' : 'text-lg') : childInset ? 'text-[10px] uppercase' : 'text-sm uppercase',
             isHome
-              ? 'bg-slate-700 text-white ring-1 ring-slate-500'
+              ? 'bg-surface-dark text-text-primary-dark ring-1 ring-border-dark'
               : isActivity
-                ? 'bg-slate-700 text-slate-100'
-                : 'bg-gradient-to-br from-indigo-500 to-purple-600 text-white',
+                ? 'bg-surface-dark text-text-primary-dark'
+                : 'bg-gradient-to-br from-primary to-[#1e5fc7] text-white',
           ].join(' ')}
         >
           {workspace.icon ?? workspace.avatar ?? initials}
@@ -278,7 +278,7 @@ function WorkspaceRow({
       {childInset && (
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute bottom-1 left-3 top-0 w-px bg-slate-700"
+          className="pointer-events-none absolute bottom-1 left-3 top-0 w-px bg-border-dark"
           data-testid={`workspace-spine-${workspace.id}`}
         />
       )}
@@ -291,7 +291,7 @@ function WorkspaceRow({
           aria-label={isCollapsed ? `Expand ${workspace.name}` : `Collapse ${workspace.name}`}
           aria-expanded={!isCollapsed}
           title={isCollapsed ? 'Expand sub-teams' : 'Collapse sub-teams'}
-          className="absolute right-1 top-1 rounded p-0.5 text-slate-400 transition hover:bg-slate-700 hover:text-slate-100"
+          className="absolute right-1 top-1 rounded p-0.5 text-text-secondary-dark transition hover:bg-surface-dark hover:text-text-primary-dark"
         >
           <RailChevron collapsed={isCollapsed} />
         </button>
@@ -322,7 +322,7 @@ function RailChevron({ collapsed }: { collapsed: boolean }): JSX.Element {
 
 function RailEmpty(): JSX.Element {
   return (
-    <div className="px-2 py-4 text-center text-xs text-slate-500" role="status">
+    <div className="px-2 py-4 text-center text-xs text-text-secondary-dark" role="status">
       No teams yet.
     </div>
   );

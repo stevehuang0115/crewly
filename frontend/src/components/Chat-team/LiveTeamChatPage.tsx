@@ -527,7 +527,7 @@ function LiveTeamChatPageBody({
   if (workspaces.length === 0 && !channelsLoading) {
     return (
       <div
-        className="flex h-full w-full items-center justify-center bg-slate-50 dark:bg-slate-950"
+        className="flex h-full w-full items-center justify-center bg-background-dark"
         data-testid="team-chat-page"
       >
         <NoTeamsEmptyState />
@@ -537,7 +537,7 @@ function LiveTeamChatPageBody({
 
   return (
     <div
-      className="flex h-full w-full bg-slate-50 dark:bg-slate-950"
+      className="flex h-full w-full bg-background-dark"
       data-testid="team-chat-page"
       data-loading={channelsLoading ? 'true' : 'false'}
       data-error={channelsError ? 'true' : 'false'}
@@ -568,7 +568,7 @@ function LiveTeamChatPageBody({
           <button
             type="button"
             onClick={() => setShowCreateGroup(true)}
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-white dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            className="rounded-md border border-border-dark px-2 py-1 text-xs font-medium text-text-secondary-dark hover:bg-surface-dark hover:text-text-primary-dark"
             data-testid="new-group-button"
             title="Create a multi-agent group chat"
           >
@@ -627,7 +627,7 @@ function LiveTeamChatRightPanel({
   if (!conversation) {
     return (
       <section
-        className="flex flex-1 items-center justify-center bg-slate-50 text-sm text-slate-500 dark:bg-slate-950"
+        className="flex flex-1 items-center justify-center bg-background-dark text-sm text-text-secondary-dark"
         data-testid="team-chat-right-panel"
         aria-label="Conversation thread"
       >
@@ -728,18 +728,18 @@ function LiveTeamChatRightPanelInner({
 
   return (
     <section
-      className="flex flex-1 flex-col bg-white dark:bg-slate-900"
+      className="flex flex-1 flex-col bg-background-dark"
       data-testid="team-chat-right-panel"
       aria-label={`Conversation with ${conversation.title}`}
       data-thread-active={threadRoot ? 'true' : 'false'}
     >
-      <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700">
+      <header className="flex items-center justify-between border-b border-border-dark px-4 py-3">
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+          <h2 className="truncate text-sm font-semibold text-text-primary-dark">
             {conversation.kind === 'channel' ? `#${conversation.title}` : conversation.title}
           </h2>
           {conversation.subtitle && (
-            <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+            <p className="truncate text-xs text-text-secondary-dark">
               {conversation.subtitle}
             </p>
           )}
@@ -752,7 +752,7 @@ function LiveTeamChatRightPanelInner({
             type="button"
             onClick={handleEnterThread}
             data-testid="thread-enter"
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            className="rounded-md border border-border-dark px-2 py-1 text-xs text-text-secondary-dark hover:bg-surface-dark hover:text-text-primary-dark"
           >
             Reply in thread
           </button>
@@ -761,7 +761,7 @@ function LiveTeamChatRightPanelInner({
 
       {showSlackBar && (
         <div
-          className="border-b border-slate-200 dark:border-slate-700"
+          className="border-b border-border-dark"
           data-testid="slack-threads-bar"
         >
           <div className="flex items-center justify-between px-4 py-2">
@@ -770,7 +770,7 @@ function LiveTeamChatRightPanelInner({
               onClick={() => setSlackOpen((o) => !o)}
               aria-expanded={slackOpen}
               data-testid="slack-threads-toggle"
-              className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
+              className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-secondary-dark"
             >
               {slackOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               Slack threads · {slackThreads.length}
@@ -780,7 +780,7 @@ function LiveTeamChatRightPanelInner({
                 type="button"
                 onClick={() => onSelectConversation(orcRow)}
                 data-testid="slack-back-to-orc"
-                className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                className="text-xs text-primary hover:underline"
               >
                 ← Orchestrator
               </button>
@@ -796,8 +796,8 @@ function LiveTeamChatRightPanelInner({
                     data-testid={`slack-thread-${t.id}`}
                     className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
                       t.id === conversation.id
-                        ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
-                        : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+                        ? 'bg-primary/10 text-primary'
+                        : 'text-text-secondary-dark hover:bg-surface-dark hover:text-text-primary-dark'
                     }`}
                   >
                     <MessageSquare size={13} className="shrink-0 opacity-60" />
@@ -870,16 +870,16 @@ function ThreadReplyBanner({
     <div
       role="note"
       data-testid="thread-reply-banner"
-      className="flex items-center justify-between gap-2 border-t border-slate-200 bg-slate-100 px-4 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+      className="flex items-center justify-between gap-2 border-t border-border-dark bg-surface-dark px-4 py-1.5 text-xs text-text-secondary-dark"
     >
       <span>
-        Replying to thread <code className="rounded bg-slate-200 px-1 dark:bg-slate-700">{threadRootId}</code>
+        Replying to thread <code className="rounded bg-background-dark px-1">{threadRootId}</code>
       </span>
       <button
         type="button"
         onClick={onExit}
         data-testid="thread-exit"
-        className="rounded px-2 py-0.5 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-700"
+        className="rounded px-2 py-0.5 text-text-secondary-dark hover:bg-background-dark hover:text-text-primary-dark"
       >
         Cancel
       </button>

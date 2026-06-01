@@ -85,7 +85,7 @@ export function MessageThread({
   if (!channelId) {
     return (
       <div
-        className={`flex h-full items-center justify-center text-sm text-slate-500 ${className}`}
+        className={`flex h-full items-center justify-center text-sm text-text-secondary-dark ${className}`}
         role="status"
       >
         {emptyState ?? 'Select a channel to start chatting.'}
@@ -95,16 +95,16 @@ export function MessageThread({
 
   return (
     <div
-      className={`flex h-full flex-col overflow-y-auto bg-slate-50 dark:bg-slate-950 ${className}`}
+      className={`flex h-full flex-col overflow-y-auto bg-background-dark ${className}`}
       aria-label="Message thread"
       data-testid="message-thread"
     >
       {hasMore && (
-        <div className="sticky top-0 z-10 flex justify-center bg-slate-50/80 py-2 backdrop-blur dark:bg-slate-950/80">
+        <div className="sticky top-0 z-10 flex justify-center bg-background-dark/80 py-2 backdrop-blur">
           <button
             type="button"
             onClick={() => void loadMore()}
-            className="rounded-full border border-slate-300 px-3 py-1 text-xs text-slate-600 hover:bg-white dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            className="rounded-full border border-border-dark px-3 py-1 text-xs text-text-secondary-dark hover:bg-surface-dark"
           >
             Load older
           </button>
@@ -120,7 +120,7 @@ export function MessageThread({
         {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout })}
         {agentThinking && <AgentThinkingRow agentName={agentName} />}
         {loading && (
-          <li className="text-xs text-slate-400" role="status">
+          <li className="text-xs text-text-secondary-dark" role="status">
             Loading messages…
           </li>
         )}
@@ -212,8 +212,8 @@ function MessageRow({
   const alignment = isUser ? 'items-end' : 'items-start';
   const status = message.deliveryStatus;
   const baseBubble = isUser
-    ? 'bg-blue-500 text-white'
-    : 'bg-white text-slate-800 dark:bg-slate-800 dark:text-slate-100';
+    ? 'bg-primary text-white'
+    : 'bg-surface-dark text-text-primary-dark';
   const bubble =
     status === 'pending'
       ? `${baseBubble} opacity-60`
@@ -227,7 +227,7 @@ function MessageRow({
       data-author-role={message.author.role}
       data-delivery-status={status ?? 'sent'}
     >
-      <div className="mb-0.5 text-xs text-slate-500 dark:text-slate-400">
+      <div className="mb-0.5 text-xs text-text-secondary-dark">
         {message.author.name ?? message.author.id}
       </div>
       <div className={`max-w-prose rounded-2xl px-3 py-2 text-sm shadow-sm ${bubble}`}>
@@ -267,7 +267,7 @@ function FlatMessageRow({
 
   return (
     <li
-      className={`group flex gap-2 rounded px-2 hover:bg-slate-100 dark:hover:bg-slate-900 ${
+      className={`group flex gap-2 rounded px-2 hover:bg-surface-dark ${
         groupStart ? 'mt-3 pt-0.5' : ''
       }`}
       data-author-role={message.author.role}
@@ -277,7 +277,7 @@ function FlatMessageRow({
         {groupStart ? (
           <Avatar name={name} />
         ) : (
-          <time className="block w-9 pt-0.5 text-right text-[10px] leading-5 text-transparent group-hover:text-slate-400">
+          <time className="block w-9 pt-0.5 text-right text-[10px] leading-5 text-transparent group-hover:text-text-secondary-dark">
             {formatTimestamp(message.createdAt)}
           </time>
         )}
@@ -285,15 +285,15 @@ function FlatMessageRow({
       <div className="min-w-0 flex-1 pb-0.5">
         {groupStart && (
           <div className="flex items-baseline gap-2">
-            <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+            <span className="text-sm font-semibold text-text-primary-dark">
               {name}
             </span>
-            <time className="text-[11px] text-slate-400 dark:text-slate-500">
+            <time className="text-[11px] text-text-secondary-dark">
               {formatTimestamp(message.createdAt)}
             </time>
           </div>
         )}
-        <div className={`text-sm leading-relaxed text-slate-700 dark:text-slate-200 ${faded}`}>
+        <div className={`text-sm leading-relaxed text-text-primary-dark ${faded}`}>
           {renderMinimalMarkdown(message.content)}
           {message.attachments?.map((a) =>
             a.kind === 'image' ? (
@@ -307,7 +307,7 @@ function FlatMessageRow({
           )}
         </div>
         {status === 'pending' && (
-          <span className="text-[10px] italic text-slate-400 dark:text-slate-500">
+          <span className="text-[10px] italic text-text-secondary-dark">
             Sending…
           </span>
         )}
@@ -373,7 +373,7 @@ function Avatar({ name }: { name: string }): JSX.Element {
 function DeliveryFooter({ message }: { message: Message }): JSX.Element {
   if (message.deliveryStatus === 'pending') {
     return (
-      <span className="mt-0.5 text-[10px] italic text-slate-400 dark:text-slate-500">
+      <span className="mt-0.5 text-[10px] italic text-text-secondary-dark">
         Sending…
       </span>
     );
@@ -389,7 +389,7 @@ function DeliveryFooter({ message }: { message: Message }): JSX.Element {
     );
   }
   return (
-    <time className="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">
+    <time className="mt-0.5 text-[10px] text-text-secondary-dark">
       {formatTimestamp(message.createdAt)}
     </time>
   );
@@ -405,12 +405,12 @@ function AgentThinkingRow({ agentName }: { agentName?: string }): JSX.Element {
       aria-live="polite"
       data-testid="agent-thinking"
     >
-      <div className="rounded-2xl bg-white px-3 py-2 text-sm text-slate-500 shadow-sm dark:bg-slate-800 dark:text-slate-400">
+      <div className="rounded-2xl bg-surface-dark px-3 py-2 text-sm text-text-secondary-dark shadow-sm">
         <span className="inline-flex items-center gap-1">
           <span aria-hidden="true" className="flex gap-0.5">
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark [animation-delay:-0.3s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark [animation-delay:-0.15s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark" />
           </span>
           <span>{label}…</span>
         </span>
