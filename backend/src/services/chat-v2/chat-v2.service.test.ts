@@ -888,6 +888,41 @@ describe('ChatV2Service', () => {
         service.listMessages({ channelId: ch.id, principal: otherUser }),
       ).toThrow(ChatError);
     });
+
+    it('lets any caller READ a shared bridged Slack channel they do not own', () => {
+      // Slack bridge persists under the synthetic 'system' owner; the bound
+      // agent records the turn. The team-chat surface merges these into the
+      // Orchestrator timeline, so a non-owner web user must be able to read them.
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-D0-read',
+        agentSession: 'crewly-orc',
+      });
+      const orcAgent: ChatPrincipal = {
+        userId: 'orc-agent',
+        agentSession: 'crewly-orc',
+        source: 'oss',
+      };
+      service.sendMessage({ channelId: ch.id, principal: orcAgent, content: 'from slack' });
+      // `owner` does NOT own this channel ('system' does) yet can read it.
+      const page = service.listMessages({ channelId: ch.id, principal: owner });
+      expect(page.messages.map((m) => m.content)).toEqual(['from slack']);
+    });
+
+    it('still forbids a non-owner from POSTING into a shared Slack channel', () => {
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-D0-write',
+        agentSession: 'crewly-orc',
+      });
+      // The read gate now allows shared Slack channels, but resolveSender keeps
+      // writes locked to the owner / bound agent → forbidden for a plain user.
+      try {
+        service.sendMessage({ channelId: ch.id, principal: owner, content: 'nope' });
+        fail('expected ChatError');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ChatError);
+        expect((err as ChatError).code).toBe('forbidden');
+      }
+    });
   });
 
   // -------------------------------------------------------------------------
