@@ -21,14 +21,17 @@
  * break):
  *  - `unreadAfterSeq` optional prop renders an "Unread" divider in the
  *    timeline after the message whose `seq` matches the value (design
- *    §6.2 thread rule). Designed for the team-chat surfaces where the
- *    BE supplies the last-read marker per channel; legacy single-channel
- *    consumers omit the prop and see no divider.
+ *    §6.2 thread rule).
+ *
+ * The `flat` layout follows the approved Material-3 prototype: left-aligned
+ * rounded-square avatars, an inline bold-name + timestamp header, and a
+ * frosted `glass-panel` message body (agents get a secondary accent rule).
  *
  * @module components/MessageThread
  */
 
 import { useEffect, useRef } from 'react';
+import { Bot } from 'lucide-react';
 import type { Message } from '../types/chat.types';
 import { useMessages } from '../hooks/useMessages';
 import { renderMinimalMarkdown } from './internal/minimal-markdown';
@@ -93,18 +96,26 @@ export function MessageThread({
     );
   }
 
+  const flat = layout === 'flat';
+
   return (
     <div
-      className={`flex h-full flex-col overflow-y-auto bg-background-dark ${className}`}
+      className={`chat-scrollbar flex h-full flex-col overflow-y-auto ${flat ? 'bg-background-dark' : 'bg-background-dark'} ${className}`}
       aria-label="Message thread"
       data-testid="message-thread"
     >
       {hasMore && (
-        <div className="sticky top-0 z-10 flex justify-center bg-background-dark/80 py-2 backdrop-blur">
+        <div
+          className={`sticky top-0 z-10 flex justify-center py-2 backdrop-blur ${flat ? 'bg-background-dark/80' : 'bg-background-dark/80'}`}
+        >
           <button
             type="button"
             onClick={() => void loadMore()}
-            className="rounded-full border border-border-dark px-3 py-1 text-xs text-text-secondary-dark hover:bg-surface-dark"
+            className={
+              flat
+                ? 'rounded-full border border-border-dark px-3 py-1 text-xs text-text-secondary-dark hover:bg-white/5'
+                : 'rounded-full border border-border-dark px-3 py-1 text-xs text-text-secondary-dark hover:bg-surface-dark'
+            }
           >
             Load older
           </button>
@@ -113,14 +124,15 @@ export function MessageThread({
 
       <ul
         role="list"
-        className={`flex flex-1 flex-col ${
-          layout === 'flat' ? 'gap-0.5 px-2 py-3' : 'gap-3 px-4 py-4'
-        }`}
+        className={`flex flex-1 flex-col ${flat ? 'gap-4 px-6 py-4' : 'gap-3 px-4 py-4'}`}
       >
         {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout })}
-        {agentThinking && <AgentThinkingRow agentName={agentName} />}
+        {agentThinking && <AgentThinkingRow agentName={agentName} layout={layout} />}
         {loading && (
-          <li className="text-xs text-text-secondary-dark" role="status">
+          <li
+            className={`text-xs ${flat ? 'text-text-secondary-dark' : 'text-text-secondary-dark'}`}
+            role="status"
+          >
             Loading messages…
           </li>
         )}
@@ -158,7 +170,7 @@ function renderTimeline(args: {
 
   // Edge case: matching seq paged off-screen — surface the divider at the top.
   if (unreadAfterSeq != null && !hasMatchingSeq && messages.length > 0) {
-    out.push(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} />);
+    out.push(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} layout={layout} />);
   }
 
   let dividerInserted = false;
@@ -167,7 +179,7 @@ function renderTimeline(args: {
     out.push(<MessageRow key={m.id} message={m} layout={layout} groupStart={groupStart} />);
     prevAuthor = m.author.id;
     if (!dividerInserted && hasMatchingSeq && m.seq === unreadAfterSeq) {
-      out.push(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} />);
+      out.push(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} layout={layout} />);
       dividerInserted = true;
       // A divider visually breaks the group — next message starts fresh.
       prevAuthor = null;
@@ -177,9 +189,32 @@ function renderTimeline(args: {
 }
 
 /**
- * Slack-style unread separator. Pure visual element; no interactivity.
+ * Slack-style unread / day separator. Pure visual element; no interactivity.
+ * In flat (prototype) mode it reads as a subtle centered label between hairlines.
  */
-function UnreadDividerRow({ label }: { label: string }): JSX.Element {
+function UnreadDividerRow({
+  label,
+  layout,
+}: {
+  label: string;
+  layout: 'bubble' | 'flat';
+}): JSX.Element {
+  if (layout === 'flat') {
+    return (
+      <li
+        className="flex items-center gap-4 py-1"
+        data-testid="unread-divider"
+        role="separator"
+        aria-label={`${label} messages below`}
+      >
+        <span className="h-[1px] flex-1 bg-border-dark/20" aria-hidden="true" />
+        <span className="text-[11px] font-bold uppercase tracking-widest text-text-secondary-dark">
+          {label}
+        </span>
+        <span className="h-[1px] flex-1 bg-border-dark/20" aria-hidden="true" />
+      </li>
+    );
+  }
   return (
     <li
       className="flex items-center gap-2 py-1"
@@ -249,10 +284,10 @@ function MessageRow({
 }
 
 /**
- * Slack-style flat message row. Left-aligned for every author: an avatar
- * gutter, then a bold name + inline timestamp header (on the first message
- * of an author group) followed by plain text. Follow-on messages in the
- * same group omit the avatar/name and reveal their timestamp on hover.
+ * Slack-style flat message row (prototype). A rounded-square avatar gutter,
+ * then a bold name + inline timestamp header (on the first message of an
+ * author group) followed by the message body in a frosted glass panel.
+ * Agent messages carry a secondary accent rule + an `AGENT` tag.
  */
 function FlatMessageRow({
   message,
@@ -263,37 +298,49 @@ function FlatMessageRow({
 }): JSX.Element {
   const status = message.deliveryStatus;
   const name = message.author.name ?? message.author.id;
-  const faded = status === 'pending' ? 'opacity-60' : '';
+  const isAgent = message.author.role !== 'user';
+  // Inactive/sleep deliveries read dimmed + dashed so they recede from view.
+  const inactive = status === 'pending';
+  const faded = inactive ? 'opacity-50' : '';
 
   return (
     <li
-      className={`group flex gap-2 rounded px-2 hover:bg-surface-dark ${
-        groupStart ? 'mt-3 pt-0.5' : ''
-      }`}
+      className={`group flex gap-3 ${groupStart ? 'mt-1' : ''}`}
       data-author-role={message.author.role}
       data-delivery-status={status ?? 'sent'}
     >
       <div className="w-9 shrink-0 select-none">
         {groupStart ? (
-          <Avatar name={name} />
+          <Avatar name={name} isAgent={isAgent} />
         ) : (
           <time className="block w-9 pt-0.5 text-right text-[10px] leading-5 text-transparent group-hover:text-text-secondary-dark">
             {formatTimestamp(message.createdAt)}
           </time>
         )}
       </div>
-      <div className="min-w-0 flex-1 pb-0.5">
+      <div className="min-w-0 flex-1">
         {groupStart && (
           <div className="flex items-baseline gap-2">
-            <span className="text-sm font-semibold text-text-primary-dark">
+            <span
+              className={`text-[13px] font-bold ${isAgent ? 'text-primary' : 'text-text-primary-dark'}`}
+            >
               {name}
             </span>
-            <time className="text-[11px] text-text-secondary-dark">
+            <time className="text-[10px] text-text-secondary-dark">
               {formatTimestamp(message.createdAt)}
             </time>
+            {isAgent && (
+              <span className="rounded border border-border-dark bg-white/5 px-1.5 py-0.5 text-[10px] text-text-secondary-dark">
+                AGENT
+              </span>
+            )}
           </div>
         )}
-        <div className={`text-sm leading-relaxed text-text-primary-dark ${faded}`}>
+        <div
+          className={`glass-panel mt-1 max-w-2xl rounded-xl rounded-tl-none px-4 py-2 text-sm leading-relaxed text-text-primary-dark ${
+            isAgent ? 'border-l-2 border-l-primary' : ''
+          } ${inactive ? 'border-dashed' : ''} ${faded}`}
+        >
           {renderMinimalMarkdown(message.content)}
           {message.attachments?.map((a) =>
             a.kind === 'image' ? (
@@ -307,12 +354,10 @@ function FlatMessageRow({
           )}
         </div>
         {status === 'pending' && (
-          <span className="text-[10px] italic text-text-secondary-dark">
-            Sending…
-          </span>
+          <span className="text-[10px] italic text-text-secondary-dark">Sending…</span>
         )}
         {status === 'failed' && (
-          <span className="text-[10px] font-medium text-red-500" role="alert">
+          <span className="text-[10px] font-medium text-amber-300" role="alert">
             Send failed — tap to retry
           </span>
         )}
@@ -354,14 +399,21 @@ export function avatarColor(name: string): string {
   return AVATAR_COLORS[h % AVATAR_COLORS.length];
 }
 
-/** Slack-style rounded-square avatar tile with initials. */
-function Avatar({ name }: { name: string }): JSX.Element {
+/**
+ * Prototype avatar tile — a rounded-square. Users use the tertiary
+ * container tint; agents use the secondary container tint with a Bot glyph.
+ */
+function Avatar({ name, isAgent }: { name: string; isAgent: boolean }): JSX.Element {
   return (
     <span
-      className={`flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold text-white ${avatarColor(name)}`}
+      className={`flex h-9 w-9 items-center justify-center rounded-lg text-[12px] font-bold ${
+        isAgent
+          ? 'bg-primary/20 text-primary'
+          : 'bg-indigo-500/20 text-indigo-300'
+      }`}
       aria-hidden="true"
     >
-      {avatarInitials(name)}
+      {isAgent ? <Bot size={16} /> : avatarInitials(name)}
     </span>
   );
 }
@@ -396,8 +448,15 @@ function DeliveryFooter({ message }: { message: Message }): JSX.Element {
 }
 
 /** "Agent is thinking…" indicator that renders below the user's send. */
-function AgentThinkingRow({ agentName }: { agentName?: string }): JSX.Element {
+function AgentThinkingRow({
+  agentName,
+  layout = 'bubble',
+}: {
+  agentName?: string;
+  layout?: 'bubble' | 'flat';
+}): JSX.Element {
   const label = agentName ? `${agentName} is thinking` : 'Agent is thinking';
+  const flat = layout === 'flat';
   return (
     <li
       className="flex flex-col items-start"
@@ -405,12 +464,24 @@ function AgentThinkingRow({ agentName }: { agentName?: string }): JSX.Element {
       aria-live="polite"
       data-testid="agent-thinking"
     >
-      <div className="rounded-2xl bg-surface-dark px-3 py-2 text-sm text-text-secondary-dark shadow-sm">
+      <div
+        className={
+          flat
+            ? 'glass-panel rounded-xl rounded-tl-none px-4 py-2 text-sm text-text-secondary-dark'
+            : 'rounded-2xl bg-surface-dark px-3 py-2 text-sm text-text-secondary-dark shadow-sm'
+        }
+      >
         <span className="inline-flex items-center gap-1">
           <span aria-hidden="true" className="flex gap-0.5">
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark [animation-delay:-0.3s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark [animation-delay:-0.15s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-secondary-dark" />
+            <span
+              className={`h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:-0.3s] ${flat ? 'bg-text-secondary-dark' : 'bg-text-secondary-dark'}`}
+            />
+            <span
+              className={`h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:-0.15s] ${flat ? 'bg-text-secondary-dark' : 'bg-text-secondary-dark'}`}
+            />
+            <span
+              className={`h-1.5 w-1.5 animate-bounce rounded-full ${flat ? 'bg-text-secondary-dark' : 'bg-text-secondary-dark'}`}
+            />
           </span>
           <span>{label}…</span>
         </span>

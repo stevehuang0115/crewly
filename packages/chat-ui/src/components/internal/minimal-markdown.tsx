@@ -75,7 +75,7 @@ function renderInline(text: string): JSX.Element {
         }
         if (/^`[^`]+`$/.test(part)) {
           return (
-            <code key={i} className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.85em] dark:bg-slate-800">
+            <code key={i} className="rounded bg-primary/10 px-1 font-mono text-[0.85em] text-primary">
               {part.slice(1, -1)}
             </code>
           );

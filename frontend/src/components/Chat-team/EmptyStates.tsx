@@ -14,6 +14,7 @@
  */
 
 import type { ReactNode } from 'react';
+import { AlertTriangle } from 'lucide-react';
 
 interface EmptyShellProps {
   headline: string;
@@ -52,7 +53,7 @@ export function NoTeamsEmptyState(): JSX.Element {
       cta={
         <button
           type="button"
-          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary/90"
+          className="rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-white hover:bg-primary/90"
         >
           Open team builder
         </button>
@@ -80,19 +81,19 @@ export function NoChannelsEmptyState({ teamName }: { teamName: string }): JSX.El
         <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
           <button
             type="button"
-            className="rounded-md bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-border-dark"
+            className="rounded-lg bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-white/5"
           >
             Message team lead
           </button>
           <button
             type="button"
-            className="rounded-md bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-border-dark"
+            className="rounded-lg bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-white/5"
           >
             Open project channel
           </button>
           <button
             type="button"
-            className="rounded-md bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-border-dark"
+            className="rounded-lg bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-white/5"
           >
             Start DM
           </button>
@@ -158,10 +159,13 @@ export function AgentOfflineBanner({ agentName }: { agentName: string }): JSX.El
     <div
       role="alert"
       data-testid="banner-agent-offline"
-      className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-200"
+      className="mx-4 mt-3 flex items-center gap-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-200"
     >
-      <strong>{agentName} is currently inactive.</strong> Sending a message will activate{' '}
-      {agentName} and deliver it once the session is up.
+      <AlertTriangle size={18} className="shrink-0 text-amber-300" aria-hidden="true" />
+      <span>
+        <strong>{agentName} is currently inactive.</strong> Sending a message will activate{' '}
+        {agentName} and deliver it once the session is up.
+      </span>
     </div>
   );
 }

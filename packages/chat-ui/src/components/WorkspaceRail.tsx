@@ -22,17 +22,38 @@
  *    mode shows the workspace label next to the icon — useful for the
  *    Tablet breakpoint per §10.1.
  *
+ * The `caption` layout (the chat host's, `showLabels`) follows the
+ * approved Material-3 prototype: a narrow centred rail of circular
+ * avatars with a small caption beneath. A PARENT team (one with child
+ * sub-teams) renders its children below it as indented horizontal rows.
+ *
  * Phase B does NOT wire to a live BE — the parent passes mock data.
- * Phase A backend (Sam, target 2026-04-27 EOD) will populate
- * `workspaces` from the team directory and the unread counts from the
- * cross-team unread index.
  *
  * @module components/WorkspaceRail
  */
 
 import { useMemo } from 'react';
+import { ChevronDown } from 'lucide-react';
 import type { Workspace } from '../types/team-chat.types';
 import type { ChatPresenceStatus } from './AgentStatusBadge';
+
+/** Legacy presence dot palette for the icon/beside layouts. */
+const PRESENCE_DOT: Record<ChatPresenceStatus, string> = {
+  online: 'bg-emerald-400',
+  busy: 'bg-amber-400',
+  idle: 'bg-amber-400',
+  offline: 'bg-gray-500',
+  inactive: 'bg-gray-500',
+};
+
+/** Caption (prototype) presence dot palette — green online, muted otherwise. */
+const CAPTION_PRESENCE_DOT: Record<ChatPresenceStatus, string> = {
+  online: 'bg-emerald-400',
+  busy: 'bg-amber-400',
+  idle: 'bg-amber-400',
+  offline: 'bg-gray-500',
+  inactive: 'bg-gray-500',
+};
 
 export interface WorkspaceRailProps {
   /** All workspaces visible to the current user. Order is preserved. */
@@ -68,14 +89,6 @@ export interface WorkspaceRailProps {
   className?: string;
 }
 
-const PRESENCE_DOT: Record<ChatPresenceStatus, string> = {
-  online: 'bg-emerald-400',
-  busy: 'bg-amber-400',
-  idle: 'bg-amber-400',
-  offline: 'bg-gray-500',
-  inactive: 'bg-gray-500',
-};
-
 export function WorkspaceRail({
   workspaces,
   activeWorkspaceId = null,
@@ -104,6 +117,19 @@ export function WorkspaceRail({
     [collapsedParentIds],
   );
 
+  // Children grouped by parent id, in render order — used by the caption
+  // layout to nest sub-teams beneath their parent as indented rows.
+  const childrenByParent = useMemo(() => {
+    const m = new Map<string, Workspace[]>();
+    for (const w of ordered) {
+      if (!w.parentId) continue;
+      const list = m.get(w.parentId) ?? [];
+      list.push(w);
+      m.set(w.parentId, list);
+    }
+    return m;
+  }, [ordered]);
+
   // Hide children whose parent is collapsed. Parents and roots always show.
   const visible = useMemo(
     () => ordered.filter((w) => !(w.parentId && collapsed.has(w.parentId))),
@@ -111,10 +137,26 @@ export function WorkspaceRail({
   );
 
   // Three layouts: `beside` (tablet `expanded`, label to the right, wide),
-  // `caption` (host `showLabels` — Slack-style icon with a small label beneath,
-  // narrow), or `icon` (default icon-only). `caption` is the chat default.
+  // `caption` (host `showLabels` — prototype Material-3 centred rail), or
+  // `icon` (default icon-only). `caption` is the chat default.
   const layout: RailLayout = expanded ? 'beside' : showLabels ? 'caption' : 'icon';
-  const width = layout === 'beside' ? 'w-48' : layout === 'caption' ? 'w-24' : 'w-16';
+
+  if (layout === 'caption') {
+    return (
+      <CaptionRail
+        ordered={ordered}
+        childrenByParent={childrenByParent}
+        parentIds={parentIds}
+        collapsed={collapsed}
+        activeWorkspaceId={activeWorkspaceId}
+        onSelectWorkspace={onSelectWorkspace}
+        onToggleCollapse={onToggleCollapse}
+        className={className}
+      />
+    );
+  }
+
+  const width = layout === 'beside' ? 'w-48' : 'w-16';
 
   return (
     <nav
@@ -146,6 +188,281 @@ export function WorkspaceRail({
 /** Visual layout of a rail row. */
 type RailLayout = 'icon' | 'beside' | 'caption';
 
+// =============================================================================
+// Caption layout — the approved Material-3 prototype (chat host's rail).
+// =============================================================================
+
+function CaptionRail({
+  ordered,
+  childrenByParent,
+  parentIds,
+  collapsed,
+  activeWorkspaceId,
+  onSelectWorkspace,
+  onToggleCollapse,
+  className,
+}: {
+  ordered: Workspace[];
+  childrenByParent: Map<string, Workspace[]>;
+  parentIds: Set<string>;
+  collapsed: Set<string>;
+  activeWorkspaceId: string | null;
+  onSelectWorkspace?: (w: Workspace) => void;
+  onToggleCollapse?: (parentId: string) => void;
+  className: string;
+}): JSX.Element {
+  // Only top-level (root) workspaces render as caption tiles; children render
+  // as indented horizontal rows beneath their parent.
+  const roots = ordered.filter((w) => !w.parentId);
+
+  return (
+    <nav
+      className={`chat-scrollbar flex h-full w-[84px] flex-col items-center gap-3 overflow-y-auto border-r border-border-dark bg-background-dark pt-4 ${className}`}
+      aria-label="Workspace rail"
+      data-testid="workspace-rail"
+      data-expanded="false"
+      data-labelled="true"
+      data-layout="caption"
+    >
+      {roots.map((ws, idx) => {
+        const isHome = ws.kind === 'home';
+        const isParent = parentIds.has(ws.id);
+        const kids = childrenByParent.get(ws.id) ?? [];
+        const isCollapsed = collapsed.has(ws.id);
+        return (
+          <div key={ws.id} className="flex w-full flex-col items-center gap-3">
+            {/* A divider after Home separates the personal landing from teams. */}
+            {isHome && (
+              <CaptionTile
+                workspace={ws}
+                isActive={activeWorkspaceId === ws.id}
+                isParent={false}
+                isCollapsed={false}
+                onSelect={onSelectWorkspace}
+                onToggleCollapse={onToggleCollapse}
+              />
+            )}
+            {isHome ? (
+              <span aria-hidden="true" className="h-[1px] w-8 bg-border-dark/30" />
+            ) : (
+              <CaptionTile
+                workspace={ws}
+                isActive={activeWorkspaceId === ws.id}
+                isParent={isParent}
+                isCollapsed={isCollapsed}
+                onSelect={onSelectWorkspace}
+                onToggleCollapse={onToggleCollapse}
+              />
+            )}
+            {/* Parent's sub-teams, when expanded, as indented horizontal rows. */}
+            {isParent && !isCollapsed && kids.length > 0 && (
+              <div className="mt-2 flex w-full flex-col gap-3 pl-4">
+                {kids.map((child) => (
+                  <CaptionChildRow
+                    key={child.id}
+                    workspace={child}
+                    isActive={activeWorkspaceId === child.id}
+                    onSelect={onSelectWorkspace}
+                  />
+                ))}
+              </div>
+            )}
+            {idx === roots.length - 1 && roots.length === 0 && <RailEmpty />}
+          </div>
+        );
+      })}
+      {roots.length === 0 && <RailEmpty />}
+    </nav>
+  );
+}
+
+/** A top-level caption tile: circular avatar + small caption beneath. */
+function CaptionTile({
+  workspace,
+  isActive,
+  isParent,
+  isCollapsed,
+  onSelect,
+  onToggleCollapse,
+}: {
+  workspace: Workspace;
+  isActive: boolean;
+  isParent: boolean;
+  isCollapsed: boolean;
+  onSelect?: (w: Workspace) => void;
+  onToggleCollapse?: (parentId: string) => void;
+}): JSX.Element {
+  const initials = workspace.initials ?? deriveInitials(workspace.name);
+  const isHome = workspace.kind === 'home';
+  const hasGlyph = workspace.icon != null || workspace.avatar != null;
+  const hasUnread = (workspace.unreadCount ?? 0) > 0;
+  const showChevron = isParent && !!onToggleCollapse;
+
+  // Circle treatment: Home + active/parent use the brand accent; plain
+  // teams use the neutral surface chip.
+  const circleClass = isHome
+    ? 'bg-white/5 border border-border-dark text-text-secondary-dark'
+    : isParent || isActive
+      ? 'bg-primary/10 text-primary border border-primary/30'
+      : 'bg-white/5 text-text-secondary-dark border border-border-dark hover:border-primary';
+
+  const captionClass = isParent
+    ? 'text-[10px] font-medium text-primary'
+    : isActive
+      ? 'text-[10px] text-center leading-tight max-w-[60px] text-text-primary-dark'
+      : 'text-[10px] text-center leading-tight max-w-[60px] text-text-secondary-dark group-hover:text-text-primary-dark';
+
+  // Indicator dot — mention > unread > presence (§8.2).
+  const dot = workspace.hasMentions ? (
+    <span
+      aria-hidden="true"
+      className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface-dark bg-rose-500"
+      data-testid={`workspace-mention-${workspace.id}`}
+    />
+  ) : hasUnread ? (
+    <span
+      aria-hidden="true"
+      className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface-dark bg-primary"
+      data-testid={`workspace-unread-${workspace.id}`}
+    />
+  ) : workspace.presence ? (
+    <span
+      aria-hidden="true"
+      className={`absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border-2 border-surface-dark ${CAPTION_PRESENCE_DOT[workspace.presence]}`}
+      data-testid={`workspace-presence-${workspace.id}`}
+    />
+  ) : null;
+
+  return (
+    <div className="relative flex flex-col items-center">
+      <button
+        type="button"
+        onClick={() => onSelect?.(workspace)}
+        data-testid={`workspace-row-${workspace.id}`}
+        data-active={isActive ? 'true' : 'false'}
+        data-nested="false"
+        data-kind={workspace.kind ?? 'team'}
+        title={workspace.tooltip ?? workspace.name}
+        aria-current={isActive ? 'page' : undefined}
+        aria-label={
+          hasUnread ? `${workspace.name}, ${workspace.unreadCount} unread` : workspace.name
+        }
+        className="group flex flex-col items-center gap-1"
+      >
+        <span className="relative">
+          <span
+            aria-hidden="true"
+            className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
+              hasGlyph ? 'text-base' : 'text-[12px] font-bold uppercase'
+            } ${circleClass}`}
+          >
+            {workspace.icon ?? workspace.avatar ?? initials}
+          </span>
+          {dot}
+        </span>
+        <span className={captionClass}>{workspace.name}</span>
+      </button>
+      {showChevron && (
+        <button
+          type="button"
+          onClick={() => onToggleCollapse?.(workspace.id)}
+          data-testid={`workspace-collapse-${workspace.id}`}
+          aria-label={isCollapsed ? `Expand ${workspace.name}` : `Collapse ${workspace.name}`}
+          aria-expanded={!isCollapsed}
+          title={isCollapsed ? 'Expand sub-teams' : 'Collapse sub-teams'}
+          className="absolute -right-2 top-0 rounded p-0.5 text-[14px] text-text-secondary-dark transition hover:text-text-primary-dark"
+        >
+          <ChevronDown
+            size={14}
+            className={`transition-transform ${isCollapsed ? '-rotate-90' : ''}`}
+          />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A nested sub-team rendered as an indented horizontal row in the rail. */
+function CaptionChildRow({
+  workspace,
+  isActive,
+  onSelect,
+}: {
+  workspace: Workspace;
+  isActive: boolean;
+  onSelect?: (w: Workspace) => void;
+}): JSX.Element {
+  const initials = workspace.initials ?? deriveInitials(workspace.name);
+  const hasGlyph = workspace.icon != null || workspace.avatar != null;
+  const hasUnread = (workspace.unreadCount ?? 0) > 0;
+
+  const avatarClass = isActive
+    ? 'bg-primary/20 border-2 border-primary active-glow text-primary'
+    : 'bg-white/5 text-text-secondary-dark border border-border-dark group-hover/item:border-primary';
+
+  const dot = workspace.hasMentions ? (
+    <span
+      aria-hidden="true"
+      className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border-2 border-surface-dark bg-rose-500"
+      data-testid={`workspace-mention-${workspace.id}`}
+    />
+  ) : hasUnread ? (
+    <span
+      aria-hidden="true"
+      className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border-2 border-surface-dark bg-primary"
+      data-testid={`workspace-unread-${workspace.id}`}
+    />
+  ) : workspace.presence ? (
+    <span
+      aria-hidden="true"
+      className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-surface-dark ${CAPTION_PRESENCE_DOT[workspace.presence]}`}
+      data-testid={`workspace-presence-${workspace.id}`}
+    />
+  ) : null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect?.(workspace)}
+      data-testid={`workspace-row-${workspace.id}`}
+      data-active={isActive ? 'true' : 'false'}
+      data-nested="true"
+      data-kind={workspace.kind ?? 'team'}
+      title={workspace.tooltip ?? workspace.name}
+      aria-current={isActive ? 'page' : undefined}
+      aria-label={
+        hasUnread ? `${workspace.name}, ${workspace.unreadCount} unread` : workspace.name
+      }
+      className="group/item ml-4 flex w-full cursor-pointer items-center gap-3 rounded-lg p-1 hover:bg-white/5"
+    >
+      <span className="relative shrink-0">
+        <span
+          aria-hidden="true"
+          className={`flex h-8 w-8 items-center justify-center rounded-full ${
+            hasGlyph ? 'text-sm' : 'text-[9px] font-bold uppercase'
+          } ${avatarClass}`}
+        >
+          {workspace.icon ?? workspace.avatar ?? initials}
+        </span>
+        {dot}
+      </span>
+      <span
+        className={`truncate text-[10px] ${
+          isActive
+            ? 'font-medium text-text-primary-dark'
+            : 'text-text-secondary-dark group-hover/item:text-text-primary-dark'
+        }`}
+      >
+        {workspace.name}
+      </span>
+    </button>
+  );
+}
+
+// =============================================================================
+// Icon / beside layouts (other callers) — preserved Crewly-token styling.
+// =============================================================================
+
 function WorkspaceRow({
   workspace,
   isActive,
@@ -173,15 +490,9 @@ function WorkspaceRow({
   const hasUnread = (workspace.unreadCount ?? 0) > 0;
   // Glyph precedence: host-injected vector icon → emoji avatar → derived initials.
   const hasGlyph = workspace.icon != null || workspace.avatar != null;
-  const caption = layout === 'caption';
   const beside = layout === 'beside';
-  // A nested child in the caption rail gets a connector spine + slight inset +
-  // a smaller glyph, so the parent → sub-team relationship reads at a glance
-  // without aggressive indentation at the narrow w-24 width.
-  const childInset = caption && isNested;
-  // Parents render a collapse chevron only when the host wires collapse and
-  // we're in the labelled caption rail (the OSS chat host's layout).
-  const showChevron = caption && isParent && !!onToggleCollapse;
+  // Parents render a collapse chevron only when the host wires collapse.
+  const showChevron = isParent && !!onToggleCollapse;
 
   // Indicator dot — mention > unread > presence (§8.2). Positioned on the glyph.
   const dot = workspace.hasMentions ? (
@@ -214,21 +525,13 @@ function WorkspaceRow({
       data-active={isActive ? 'true' : 'false'}
       data-nested={isNested ? 'true' : 'false'}
       data-kind={workspace.kind ?? 'team'}
-      // Hover tooltip — reveals the full name (esp. for icon-only mode + when a
-      // caption truncates), or a richer tooltip override when provided.
       title={workspace.tooltip ?? workspace.name}
       className={[
-        'group relative rounded-lg transition',
-        caption
-          ? 'mx-1.5 flex flex-col items-center gap-1 px-1 py-1.5 text-center'
-          : 'mx-2 flex items-center gap-3 px-2 py-2 pr-4 text-left',
+        'group relative mx-2 flex items-center gap-3 rounded-lg px-2 py-2 pr-4 text-left transition',
         isActive
           ? 'bg-primary/15 text-text-primary-dark ring-1 ring-primary/50'
           : 'text-text-secondary-dark hover:bg-surface-dark hover:text-text-primary-dark',
-        // Indent nested children one notch (beside layout only).
-        isNested && !caption ? 'ml-4' : '',
-        // Caption child: inset the tile so the connector spine sits at its left.
-        childInset ? 'ml-3' : '',
+        isNested ? 'ml-4' : '',
       ].join(' ')}
       aria-current={isActive ? 'page' : undefined}
       aria-label={
@@ -239,11 +542,8 @@ function WorkspaceRow({
         <span
           aria-hidden="true"
           className={[
-            'flex items-center justify-center rounded-lg font-semibold',
-            // Child tiles are a notch smaller than parents/roots.
-            childInset ? 'h-7 w-7' : 'h-9 w-9',
-            // A vector icon / emoji glyph is not uppercased; initials are.
-            hasGlyph ? (childInset ? 'text-base' : 'text-lg') : childInset ? 'text-[10px] uppercase' : 'text-sm uppercase',
+            'flex h-9 w-9 items-center justify-center rounded-lg font-semibold',
+            hasGlyph ? 'text-lg' : 'text-sm uppercase',
             isHome
               ? 'bg-surface-dark text-text-primary-dark ring-1 ring-border-dark'
               : isActivity
@@ -256,11 +556,6 @@ function WorkspaceRow({
         {dot}
       </span>
 
-      {caption && (
-        <span className="w-full truncate text-[11px] font-medium leading-tight">
-          {workspace.name}
-        </span>
-      )}
       {beside && (
         <span className="min-w-0 flex-1 truncate text-sm font-medium leading-9">
           {workspace.name}
@@ -269,33 +564,21 @@ function WorkspaceRow({
     </button>
   );
 
-  // Bare button is the common case. In the caption rail, a child tile gets a
-  // connector spine up to its parent, and a parent tile gets a collapse
-  // chevron — both need a positioned wrapper around the button.
-  if (!childInset && !showChevron) return rowButton;
+  if (!showChevron) return rowButton;
   return (
     <div className="relative">
-      {childInset && (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute bottom-1 left-3 top-0 w-px bg-border-dark"
-          data-testid={`workspace-spine-${workspace.id}`}
-        />
-      )}
       {rowButton}
-      {showChevron && (
-        <button
-          type="button"
-          onClick={() => onToggleCollapse?.(workspace.id)}
-          data-testid={`workspace-collapse-${workspace.id}`}
-          aria-label={isCollapsed ? `Expand ${workspace.name}` : `Collapse ${workspace.name}`}
-          aria-expanded={!isCollapsed}
-          title={isCollapsed ? 'Expand sub-teams' : 'Collapse sub-teams'}
-          className="absolute right-1 top-1 rounded p-0.5 text-text-secondary-dark transition hover:bg-surface-dark hover:text-text-primary-dark"
-        >
-          <RailChevron collapsed={isCollapsed} />
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => onToggleCollapse?.(workspace.id)}
+        data-testid={`workspace-collapse-${workspace.id}`}
+        aria-label={isCollapsed ? `Expand ${workspace.name}` : `Collapse ${workspace.name}`}
+        aria-expanded={!isCollapsed}
+        title={isCollapsed ? 'Expand sub-teams' : 'Collapse sub-teams'}
+        className="absolute right-1 top-1 rounded p-0.5 text-text-secondary-dark transition hover:bg-surface-dark hover:text-text-primary-dark"
+      >
+        <RailChevron collapsed={isCollapsed} />
+      </button>
     </div>
   );
 }

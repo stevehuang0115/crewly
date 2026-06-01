@@ -130,7 +130,8 @@ describe('WorkspaceRail', () => {
     );
     const rail = screen.getByTestId('workspace-rail');
     expect(rail).toHaveAttribute('data-labelled', 'true');
-    expect(rail.className).toContain('w-24');
+    // Prototype caption rail is the narrow 84px column.
+    expect(rail.className).toContain('w-[84px]');
     // The full team name is visible (not just the initials).
     expect(screen.getByText('Customer Engineering')).toBeInTheDocument();
   });
@@ -146,12 +147,16 @@ describe('WorkspaceRail', () => {
     expect(screen.queryByTestId('workspace-collapse-team-product')).not.toBeInTheDocument();
   });
 
-  it('renders a connector spine on nested child tiles in caption mode', () => {
+  it('renders nested child tiles as indented rows in caption mode', () => {
     render(<WorkspaceRail workspaces={fixture} showLabels onToggleCollapse={() => {}} />);
-    expect(screen.getByTestId('workspace-spine-team-product')).toBeInTheDocument();
-    expect(screen.getByTestId('workspace-spine-team-marketing')).toBeInTheDocument();
-    // Roots/parents have no spine.
-    expect(screen.queryByTestId('workspace-spine-org-crewly')).not.toBeInTheDocument();
+    // Children render beneath their parent, marked data-nested=true and indented.
+    const product = screen.getByTestId('workspace-row-team-product');
+    const marketing = screen.getByTestId('workspace-row-team-marketing');
+    expect(product).toHaveAttribute('data-nested', 'true');
+    expect(marketing).toHaveAttribute('data-nested', 'true');
+    expect(product.className).toContain('ml-4');
+    // Roots/parents are not nested.
+    expect(screen.getByTestId('workspace-row-org-crewly')).toHaveAttribute('data-nested', 'false');
   });
 
   it('hides children of a collapsed parent but keeps the parent visible', () => {
