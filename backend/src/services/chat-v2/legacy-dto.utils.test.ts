@@ -10,6 +10,7 @@ import {
   v2ChannelToLegacy,
   inferSourceFromLegacyMetadata,
   synthesizeSlackConversationId,
+  slackOutboundClientMessageId,
   SYSTEM_PRINCIPAL,
 } from './legacy-dto.utils.js';
 import type { ChatMessageDTO, ChatChannelDTO } from './types.js';
@@ -197,5 +198,29 @@ describe('synthesizeSlackConversationId', () => {
 
   it('handles threadTs with no dot (defensive — Slack always provides one, but be safe)', () => {
     expect(synthesizeSlackConversationId('CHAN', '1234567890')).toBe('slack-CHAN-1234567890');
+  });
+});
+
+describe('slackOutboundClientMessageId', () => {
+  it('is deterministic for the same channel + thread + content', () => {
+    const a = slackOutboundClientMessageId('C1', '1777.1', 'hello world');
+    const b = slackOutboundClientMessageId('C1', '1777.1', 'hello world');
+    expect(a).toBe(b);
+  });
+
+  it('differs when the content differs (so distinct replies are not collapsed)', () => {
+    const a = slackOutboundClientMessageId('C1', '1777.1', 'reply one');
+    const b = slackOutboundClientMessageId('C1', '1777.1', 'reply two');
+    expect(a).not.toBe(b);
+  });
+
+  it('differs across threads even with identical content', () => {
+    const a = slackOutboundClientMessageId('C1', '1777.1', 'same');
+    const b = slackOutboundClientMessageId('C1', '1777.2', 'same');
+    expect(a).not.toBe(b);
+  });
+
+  it('is prefixed for traceability', () => {
+    expect(slackOutboundClientMessageId('C1', '1777.1', 'x')).toMatch(/^slack-out-C1-1777\.1-/);
   });
 });

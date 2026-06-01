@@ -120,6 +120,9 @@ async function recordSlackReplyBookkeeping(params: {
   if (resolvedConversationId) {
     try {
       const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+      const { slackOutboundClientMessageId } = await import(
+        '../../services/chat-v2/legacy-dto.utils.js'
+      );
       const chatV2 = getChatV2Service();
       const agentSession =
         typeof senderSessionName === 'string' && senderSessionName.length > 0
@@ -134,6 +137,15 @@ async function recordSlackReplyBookkeeping(params: {
         senderType: 'agent',
         senderId: agentSession,
         content,
+        // Shared idempotency key with SlackService.recordOutboundToChatV2 so a
+        // text reply (which goes out via sendMessage → that mirror) isn't
+        // persisted twice. File/image uploads don't go through sendMessage, so
+        // this stays their single persist; the key just makes it idempotent.
+        ...(typeof channelId === 'string' && typeof threadTs === 'string'
+          ? {
+              clientMessageId: slackOutboundClientMessageId(channelId, threadTs, content),
+            }
+          : {}),
         metadata: {
           source: 'reply-tool',
           replyKind,
