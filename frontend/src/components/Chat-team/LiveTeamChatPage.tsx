@@ -323,11 +323,16 @@ function LiveTeamChatPageBody({
       directoryAgents.map((a) => [a.agentSession, a.role] as const),
     );
     // Agents that lead ANY team — the per-team rosters are gone, so we surface
-    // the lead signal as a badge in the flat DM list instead.
+    // the lead signal as a badge in the flat DM list instead. A lead is anyone
+    // configured as a team's leader OR whose role is `team-leader` (so every
+    // team-leader is badged even when a team's `leaderSessions` is incomplete —
+    // which is why previously only one Lead showed).
     const leadSessions = new Set(teams.flatMap((t) => t.leaderSessions));
+    const isLeadRole = (role?: string): boolean => role === 'team-leader';
     const withMeta = (r: ConversationRow): ConversationRow => {
       const role = r.agentSession ? roleBySession.get(r.agentSession) : undefined;
-      const isLead = !!r.agentSession && leadSessions.has(r.agentSession);
+      const isLead =
+        (!!r.agentSession && leadSessions.has(r.agentSession)) || isLeadRole(role);
       let row = r;
       if (role) row = { ...row, subtitle: role };
       if (isLead) row = { ...row, badge: 'Lead' };
