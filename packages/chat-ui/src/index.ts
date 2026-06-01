@@ -36,7 +36,7 @@ export type {
 // Hooks
 export { useChannels } from './hooks/useChannels';
 export type { UseChannelsResult } from './hooks/useChannels';
-export { useMessages } from './hooks/useMessages';
+export { useMessages, selectRootMessages, selectThreadReplies } from './hooks/useMessages';
 export type { UseMessagesResult } from './hooks/useMessages';
 export { useSendMessage } from './hooks/useSendMessage';
 export type { UseSendMessageResult } from './hooks/useSendMessage';

@@ -792,6 +792,71 @@ describe('ChatV2Service', () => {
   });
 
   // -------------------------------------------------------------------------
+  // listMessages — Slack-style thread reply counts
+  // -------------------------------------------------------------------------
+
+  describe('listMessages thread reply counts', () => {
+    it('attaches replyCount + lastReplyAt to a root once a reply is posted', () => {
+      const ch = createSam();
+      const root = service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'thread root',
+      });
+
+      // Before any reply: the root carries no reply summary.
+      const before = service.listMessages({ channelId: ch.id, principal: owner });
+      const rootBefore = before.messages.find((m) => m.id === root.id);
+      expect(rootBefore?.replyCount).toBeUndefined();
+      expect(rootBefore?.lastReplyAt).toBeUndefined();
+
+      // Post one reply into the thread.
+      service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'a reply',
+        threadId: root.id,
+      });
+
+      // After: the root has replyCount=1 and a populated lastReplyAt; the
+      // reply row itself never carries a count.
+      const after = service.listMessages({ channelId: ch.id, principal: owner });
+      const rootAfter = after.messages.find((m) => m.id === root.id);
+      expect(rootAfter?.replyCount).toBe(1);
+      expect(typeof rootAfter?.lastReplyAt).toBe('string');
+      expect(Number.isNaN(Date.parse(rootAfter!.lastReplyAt!))).toBe(false);
+
+      const replyRow = after.messages.find((m) => m.threadId === root.id);
+      expect(replyRow).toBeDefined();
+      expect(replyRow?.replyCount).toBeUndefined();
+    });
+
+    it('counts multiple replies and tracks the latest reply time', () => {
+      const ch = createSam();
+      const root = service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'root',
+      });
+      service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'r1',
+        threadId: root.id,
+      });
+      service.sendMessage({
+        channelId: ch.id,
+        principal: owner,
+        content: 'r2',
+        threadId: root.id,
+      });
+      const page = service.listMessages({ channelId: ch.id, principal: owner });
+      const rootDto = page.messages.find((m) => m.id === root.id);
+      expect(rootDto?.replyCount).toBe(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // listMessages
   // -------------------------------------------------------------------------
 

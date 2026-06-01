@@ -39,6 +39,7 @@ import {
   Search,
   Info,
   Plus,
+  X,
 } from 'lucide-react';
 import {
   ChatAPIProvider,
@@ -51,6 +52,7 @@ import {
   useMessages,
   useSendMessage,
   useChatApiClient,
+  selectThreadReplies,
   type ChatApiClient,
   type ChatApiError,
   type Channel,
@@ -59,6 +61,7 @@ import {
   type ConversationRow,
   type MentionComposerSendPayload,
   type MentionTarget,
+  type Message,
   type Workspace,
 } from '@crewly/chat-ui';
 import {
@@ -689,9 +692,17 @@ function LiveTeamChatRightPanelInner({
   const { messages } = useMessages(conversation.id);
   const { send, error: sendError, reset: resetSendError } = useSendMessage();
 
-  // Phase C thread-pane state — `threadRoot` is the message id we're
-  // composing replies against. Top-level posts have `threadRoot=null`.
-  const [threadRoot, setThreadRoot] = useState<string | null>(null);
+  // Slack-style thread panel state — `activeThreadRootId` is the root
+  // message id whose thread panel is open (null = closed). It doubles as
+  // the compose target: when the panel is open, replies POST with
+  // `threadId = activeThreadRootId`; top-level posts have it null.
+  const [activeThreadRootId, setActiveThreadRootId] = useState<string | null>(null);
+
+  // Reset the open thread whenever the conversation changes — a thread root
+  // from one channel is meaningless in another.
+  useEffect(() => {
+    setActiveThreadRootId(null);
+  }, [conversation.id]);
 
   // Surface validation_error and payload_too_large 400/413s as a toast.
   // Network errors (code 'network_error') get the same treatment so the
@@ -708,19 +719,16 @@ function LiveTeamChatRightPanelInner({
   const showSlackBar = (isOrc || isSlackThread) && slackThreads.length > 0;
   const [slackOpen, setSlackOpen] = useState(false);
 
-  /**
-   * Pick a sensible thread root from incoming messages. When any message
-   * in the timeline already carries a `threadId`, surface a small
-   * "Reply in thread" affordance keyed to that thread. The user clicks
-   * to enter thread-reply mode.
-   */
-  const lastObservedThreadId = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const t = messages[i].threadId;
-      if (t) return t;
-    }
-    return null;
-  }, [messages]);
+  // The root message of the open thread (found in the live timeline) + its
+  // replies derived live so a WS-delivered reply shows in the panel instantly.
+  const threadRootMessage = useMemo<Message | undefined>(
+    () => (activeThreadRootId ? messages.find((m) => m.id === activeThreadRootId) : undefined),
+    [messages, activeThreadRootId],
+  );
+  const threadReplies = useMemo<Message[]>(
+    () => (activeThreadRootId ? selectThreadReplies(messages, activeThreadRootId) : []),
+    [messages, activeThreadRootId],
+  );
 
   const handleSend = useCallback(
     async (payload: MentionComposerSendPayload) => {
@@ -731,139 +739,139 @@ function LiveTeamChatRightPanelInner({
         await send(conversation.id, {
           content: payload.content,
           mentions: mentionIds,
-          threadId: threadRoot ?? undefined,
+          threadId: activeThreadRootId ?? undefined,
         });
       } catch {
         // Error is captured in `sendError`; the toast renders below.
         // Swallow here so the composer doesn't double-report.
       }
     },
-    [conversation.id, send, threadRoot],
+    [conversation.id, send, activeThreadRootId],
   );
 
-  const handleEnterThread = useCallback(() => {
-    if (lastObservedThreadId) setThreadRoot(lastObservedThreadId);
-  }, [lastObservedThreadId]);
-
-  const handleExitThread = useCallback(() => {
-    setThreadRoot(null);
+  const handleOpenThread = useCallback((m: Message) => {
+    setActiveThreadRootId(m.id);
   }, []);
+
+  const handleCloseThread = useCallback(() => {
+    setActiveThreadRootId(null);
+  }, []);
+
+  const threadOpen = activeThreadRootId !== null;
 
   return (
     <section
-      className="flex flex-1 flex-col bg-background-dark"
+      className="flex flex-1 bg-background-dark"
       data-testid="team-chat-right-panel"
       aria-label={`Conversation with ${conversation.title}`}
-      data-thread-active={threadRoot ? 'true' : 'false'}
+      data-thread-active={threadOpen ? 'true' : 'false'}
     >
-      <header className="flex items-center justify-between gap-4 border-b border-border-dark bg-background-dark/30 px-6 py-3 backdrop-blur-md">
-        <div className="min-w-0 leading-tight">
-          <h2 className="truncate text-base font-bold text-text-primary-dark">
-            {conversation.kind === 'channel'
-              ? `#${conversation.title.replace(/^#+\s*/, '')}`
-              : conversation.title}
-          </h2>
-          {conversation.subtitle && (
-            <p className="truncate text-[11px] text-text-secondary-dark">
-              {conversation.subtitle}
-            </p>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          {/* Phase C minimal thread affordance — surfaces only when the
-              timeline contains a threaded reply, so we know there IS a
-              thread to drop into. */}
-          {lastObservedThreadId && !threadRoot && (
-            <button
-              type="button"
-              onClick={handleEnterThread}
-              data-testid="thread-enter"
-              className="mr-2 rounded-md border border-border-dark px-2 py-1 text-xs text-text-secondary-dark transition hover:bg-white/5 hover:text-text-primary-dark"
-            >
-              Reply in thread
-            </button>
-          )}
-          {/* Header actions. (A "call" affordance was dropped — there's
-              nothing to dial in an agent chat.) Search/info are placeholders
-              for now until wired to in-conversation search + details. */}
-          <HeaderActionButton label="Search">
-            <Search size={18} />
-          </HeaderActionButton>
-          <HeaderActionButton label="Conversation info">
-            <Info size={18} />
-          </HeaderActionButton>
-        </div>
-      </header>
-
-      {showSlackBar && (
-        <div className="border-b border-border-dark" data-testid="slack-threads-bar">
-          <div className="flex items-center justify-between px-4 py-2">
-            <button
-              type="button"
-              onClick={() => setSlackOpen((o) => !o)}
-              aria-expanded={slackOpen}
-              data-testid="slack-threads-toggle"
-              className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-secondary-dark"
-            >
-              {slackOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              Slack threads · {slackThreads.length}
-            </button>
-            {isSlackThread && orcRow && (
-              <button
-                type="button"
-                onClick={() => onSelectConversation(orcRow)}
-                data-testid="slack-back-to-orc"
-                className="text-xs text-primary hover:underline"
-              >
-                ← Orchestrator
-              </button>
+      {/* Main message column — shrinks to make room for the thread panel. */}
+      <div className="flex min-w-0 flex-1 flex-col bg-background-dark">
+        <header className="flex items-center justify-between gap-4 border-b border-border-dark bg-background-dark/30 px-6 py-3 backdrop-blur-md">
+          <div className="min-w-0 leading-tight">
+            <h2 className="truncate text-base font-bold text-text-primary-dark">
+              {conversation.kind === 'channel'
+                ? `#${conversation.title.replace(/^#+\s*/, '')}`
+                : conversation.title}
+            </h2>
+            {conversation.subtitle && (
+              <p className="truncate text-[11px] text-text-secondary-dark">
+                {conversation.subtitle}
+              </p>
             )}
           </div>
-          {slackOpen && (
-            <ul className="chat-scrollbar max-h-48 overflow-y-auto px-2 pb-2" role="list">
-              {slackThreads.map((t) => (
-                <li key={t.id}>
-                  <button
-                    type="button"
-                    onClick={() => onSelectConversation(t)}
-                    data-testid={`slack-thread-${t.id}`}
-                    className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
-                      t.id === conversation.id
-                        ? 'bg-primary/10 text-primary'
-                        : 'text-text-secondary-dark hover:bg-white/5 hover:text-text-primary-dark'
-                    }`}
-                  >
-                    <MessageSquare size={13} className="shrink-0 opacity-60" />
-                    <span className="truncate">{t.title}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+          <div className="flex items-center gap-1">
+            {/* Header actions. (A "call" affordance was dropped — there's
+                nothing to dial in an agent chat.) Search/info are placeholders
+                for now until wired to in-conversation search + details. */}
+            <HeaderActionButton label="Search">
+              <Search size={18} />
+            </HeaderActionButton>
+            <HeaderActionButton label="Conversation info">
+              <Info size={18} />
+            </HeaderActionButton>
+          </div>
+        </header>
+
+        {showSlackBar && (
+          <div className="border-b border-border-dark" data-testid="slack-threads-bar">
+            <div className="flex items-center justify-between px-4 py-2">
+              <button
+                type="button"
+                onClick={() => setSlackOpen((o) => !o)}
+                aria-expanded={slackOpen}
+                data-testid="slack-threads-toggle"
+                className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-secondary-dark"
+              >
+                {slackOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                Slack threads · {slackThreads.length}
+              </button>
+              {isSlackThread && orcRow && (
+                <button
+                  type="button"
+                  onClick={() => onSelectConversation(orcRow)}
+                  data-testid="slack-back-to-orc"
+                  className="text-xs text-primary hover:underline"
+                >
+                  ← Orchestrator
+                </button>
+              )}
+            </div>
+            {slackOpen && (
+              <ul className="chat-scrollbar max-h-48 overflow-y-auto px-2 pb-2" role="list">
+                {slackThreads.map((t) => (
+                  <li key={t.id}>
+                    <button
+                      type="button"
+                      onClick={() => onSelectConversation(t)}
+                      data-testid={`slack-thread-${t.id}`}
+                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
+                        t.id === conversation.id
+                          ? 'bg-primary/10 text-primary'
+                          : 'text-text-secondary-dark hover:bg-white/5 hover:text-text-primary-dark'
+                      }`}
+                    >
+                      <MessageSquare size={13} className="shrink-0 opacity-60" />
+                      <span className="truncate">{t.title}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {/* Main timeline: roots only (replies hidden — they live in the
+            thread panel). Hover "Reply in thread" + the "N replies" chip
+            both open the thread panel for that root. */}
+        <MessageThread
+          channelId={conversation.id}
+          agentName={recipientName}
+          layout="flat"
+          hideReplies
+          onReplyInThread={handleOpenThread}
+          emptyState={
+            <NoMessagesEmptyState
+              kind={conversation.kind === 'dm' ? 'dm' : 'channel'}
+              recipientName={recipientName}
+            />
+          }
+        />
+
+        <MentionComposer mentionables={mentionables} onSend={handleSend} />
+      </div>
+
+      {/* Right-hand Slack-style thread panel. */}
+      {threadOpen && (
+        <ThreadPanel
+          rootMessage={threadRootMessage}
+          replies={threadReplies}
+          mentionables={mentionables}
+          onClose={handleCloseThread}
+          onSend={handleSend}
+        />
       )}
-
-      <MessageThread
-        channelId={conversation.id}
-        agentName={recipientName}
-        layout="flat"
-        emptyState={
-          <NoMessagesEmptyState
-            kind={conversation.kind === 'dm' ? 'dm' : 'channel'}
-            recipientName={recipientName}
-          />
-        }
-      />
-
-      {threadRoot && (
-        <ThreadReplyBanner threadRootId={threadRoot} onExit={handleExitThread} />
-      )}
-
-      <MentionComposer
-        mentionables={mentionables}
-        onSend={handleSend}
-        inactiveHelper={threadRoot ? `Replying in thread ${threadRoot}` : undefined}
-      />
 
       {toast && (
         <ChatErrorToast
@@ -901,34 +909,133 @@ function HeaderActionButton({
 }
 
 /**
- * Small banner above the composer when a thread reply is active.
- * Mirrors Slack's "Replying to a thread in #general" affordance.
+ * Right-hand Slack-style Thread panel.
+ *
+ * Renders the thread's root message at the top, a divider, then every
+ * reply (derived live from the channel timeline so WS-delivered replies
+ * appear instantly), and a composer that posts replies with
+ * `threadId = root id` (the host's `onSend` already reads
+ * `activeThreadRootId`). The replies are rendered as a self-contained
+ * list rather than via `MessageThread` so the panel does not re-subscribe
+ * to the whole channel feed.
+ *
+ * @param rootMessage - The thread root (may be undefined if not yet loaded)
+ * @param replies - Replies for this thread, ascending by seq
+ * @param mentionables - Mention pool for the reply composer
+ * @param onClose - Close the panel (clears the active thread)
+ * @param onSend - Host send handler (composes with the active thread id)
  */
-function ThreadReplyBanner({
-  threadRootId,
-  onExit,
+function ThreadPanel({
+  rootMessage,
+  replies,
+  mentionables,
+  onClose,
+  onSend,
 }: {
-  threadRootId: string;
-  onExit: () => void;
+  rootMessage: Message | undefined;
+  replies: Message[];
+  mentionables: MentionTarget[];
+  onClose: () => void;
+  onSend: (payload: MentionComposerSendPayload) => void;
 }): JSX.Element {
+  const replyCount = replies.length;
+  return (
+    <aside
+      data-testid="thread-panel"
+      aria-label="Thread"
+      className="flex w-[380px] shrink-0 flex-col border-l border-border-dark bg-background-dark"
+    >
+      <header className="flex items-center justify-between gap-4 border-b border-border-dark bg-background-dark/30 px-4 py-3 backdrop-blur-md">
+        <div className="leading-tight">
+          <h3 className="text-sm font-bold text-text-primary-dark">Thread</h3>
+          {replyCount > 0 && (
+            <p className="text-[11px] text-text-secondary-dark">
+              {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          data-testid="thread-close"
+          aria-label="Close thread"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-text-secondary-dark transition hover:bg-white/5 hover:text-text-primary-dark"
+        >
+          <X size={18} />
+        </button>
+      </header>
+
+      <div className="chat-scrollbar flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">
+        {rootMessage ? (
+          <ThreadMessageRow message={rootMessage} isRoot />
+        ) : (
+          <p className="text-xs text-text-secondary-dark">Thread root unavailable.</p>
+        )}
+        <div className="flex items-center gap-3 py-1">
+          <span className="h-[1px] flex-1 bg-border-dark/30" aria-hidden="true" />
+          <span className="text-[10px] font-bold uppercase tracking-widest text-text-secondary-dark">
+            {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+          </span>
+          <span className="h-[1px] flex-1 bg-border-dark/30" aria-hidden="true" />
+        </div>
+        {replies.map((m) => (
+          <ThreadMessageRow key={m.id} message={m} />
+        ))}
+      </div>
+
+      <MentionComposer mentionables={mentionables} onSend={onSend} placeholder="Reply…" />
+    </aside>
+  );
+}
+
+/**
+ * One message rendered inside the thread panel — a compact, self-contained
+ * row mirroring the flat timeline look (bold name, timestamp, glass body)
+ * so the panel reads consistently without re-subscribing the channel feed.
+ *
+ * @param message - The message to render
+ * @param isRoot - When true, this is the thread's root (slightly emphasized)
+ */
+function ThreadMessageRow({
+  message,
+  isRoot = false,
+}: {
+  message: Message;
+  isRoot?: boolean;
+}): JSX.Element {
+  const isAgent = message.author.role !== 'user';
+  const name = message.author.name ?? message.author.id;
+  const time = (() => {
+    try {
+      return new Date(message.createdAt).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return '';
+    }
+  })();
   return (
     <div
-      role="note"
-      data-testid="thread-reply-banner"
-      className="mx-4 flex items-center justify-between gap-2 border-t border-border-dark px-4 py-1.5 text-xs text-text-secondary-dark"
+      className="flex flex-col"
+      data-testid={`thread-msg-${message.id}`}
+      data-author-role={message.author.role}
     >
-      <span>
-        Replying to thread{' '}
-        <code className="rounded bg-primary/10 px-1 text-primary">{threadRootId}</code>
-      </span>
-      <button
-        type="button"
-        onClick={onExit}
-        data-testid="thread-exit"
-        className="rounded px-2 py-0.5 text-text-secondary-dark transition hover:bg-white/5 hover:text-text-primary-dark"
+      <div className="flex items-baseline gap-2">
+        <span
+          className={`text-[13px] font-bold ${isAgent ? 'text-primary' : 'text-text-primary-dark'}`}
+        >
+          {name}
+        </span>
+        <time className="text-[10px] text-text-secondary-dark">{time}</time>
+      </div>
+      <div
+        className={`glass-panel mt-1 max-w-full whitespace-pre-wrap break-words rounded-xl rounded-tl-none px-4 py-2 text-sm leading-relaxed text-text-primary-dark ${
+          isAgent ? 'border-l-2 border-l-primary' : ''
+        } ${isRoot ? 'ring-1 ring-border-dark' : ''}`}
       >
-        Cancel
-      </button>
+        {message.content}
+      </div>
     </div>
   );
 }

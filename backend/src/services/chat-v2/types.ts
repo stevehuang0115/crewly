@@ -250,6 +250,20 @@ export interface ChatMessageDTO {
    * group by `threadId` to render the thread sub-pane.
    */
   threadId?: string;
+  /**
+   * Slack-style threading — number of replies whose `threadId` equals
+   * this message's `id`. Populated only for root messages (those whose
+   * own `threadId` is unset) that have at least one reply, via a single
+   * per-page aggregate query in `listMessages`. Undefined when there are
+   * no replies; reply rows never carry this field.
+   */
+  replyCount?: number;
+  /**
+   * Slack-style threading — ISO 8601 timestamp of the most recent reply
+   * in this message's thread. Paired with `replyCount`; undefined when
+   * there are no replies.
+   */
+  lastReplyAt?: string;
 }
 
 /** Outbound attachment shape — image only in Phase 1. */

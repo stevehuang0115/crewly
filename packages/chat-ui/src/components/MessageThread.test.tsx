@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ChatAPIProvider } from '../context/ChatAPIProvider';
 import { MockChatApiClient } from '../api/mock-client';
-import { MessageThread, avatarInitials, avatarColor } from './MessageThread';
+import { MessageThread, avatarInitials, avatarColor, relativeTime } from './MessageThread';
+import type { Channel, Message } from '../types/chat.types';
 
 describe('MessageThread', () => {
   beforeEach(() => {
@@ -156,5 +157,113 @@ describe('avatarInitials / avatarColor', () => {
     const b = avatarColor('Orchestrator');
     expect(a).toBe(b);
     expect(a.startsWith('bg-')).toBe(true);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Slack-style threading additions (additive — legacy callers omit the props).
+// ---------------------------------------------------------------------------
+
+describe('MessageThread threading', () => {
+  beforeEach(() => {
+    Element.prototype.scrollIntoView = function () {
+      /* no-op */
+    };
+  });
+
+  const channel: Channel = {
+    id: 'c-thread',
+    agentSession: '',
+    name: '#general',
+    createdAt: '2026-04-25T00:00:00.000Z',
+    type: 'channel',
+    teamId: 't1',
+  };
+
+  const root: Message = {
+    id: 'root-1',
+    channelId: 'c-thread',
+    seq: 1,
+    author: { role: 'user', id: 'me', name: 'Me' },
+    content: 'root message',
+    createdAt: '2026-04-25T00:00:00.000Z',
+    mentions: [],
+    replyCount: 2,
+    lastReplyAt: new Date().toISOString(),
+  };
+  const reply: Message = {
+    id: 'reply-1',
+    channelId: 'c-thread',
+    seq: 2,
+    author: { role: 'agent', id: 'sam', name: 'Sam' },
+    content: 'a reply',
+    createdAt: '2026-04-25T00:01:00.000Z',
+    mentions: [],
+    threadId: 'root-1',
+  };
+
+  function renderWith(props: Record<string, unknown>) {
+    const client = new MockChatApiClient({
+      initialChannels: [channel],
+      initialMessages: { 'c-thread': [root, reply] },
+    });
+    return render(
+      <ChatAPIProvider client={client} mode="mock">
+        <MessageThread channelId="c-thread" layout="flat" {...props} />
+      </ChatAPIProvider>,
+    );
+  }
+
+  it('does not show reply affordances when onReplyInThread is omitted', async () => {
+    renderWith({});
+    await waitFor(() => expect(screen.getByText('root message')).toBeInTheDocument());
+    expect(screen.queryByTestId('msg-reply-action-root-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('msg-thread-summary-root-1')).not.toBeInTheDocument();
+  });
+
+  it('renders the hover reply action + the N replies summary chip when enabled', async () => {
+    const onReplyInThread = vi.fn();
+    renderWith({ onReplyInThread });
+    await waitFor(() => expect(screen.getByText('root message')).toBeInTheDocument());
+
+    const action = screen.getByTestId('msg-reply-action-root-1');
+    expect(action).toBeInTheDocument();
+    const summary = screen.getByTestId('msg-thread-summary-root-1');
+    expect(summary).toHaveTextContent('2 replies');
+
+    fireEvent.click(summary);
+    expect(onReplyInThread).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-1' }));
+    fireEvent.click(action);
+    expect(onReplyInThread).toHaveBeenCalledTimes(2);
+  });
+
+  it('hideReplies=true removes thread-reply rows from the main timeline', async () => {
+    renderWith({ onReplyInThread: vi.fn(), hideReplies: true });
+    await waitFor(() => expect(screen.getByText('root message')).toBeInTheDocument());
+    expect(screen.queryByText('a reply')).not.toBeInTheDocument();
+  });
+
+  it('hideReplies=false (default) keeps thread-reply rows visible', async () => {
+    renderWith({ onReplyInThread: vi.fn() });
+    await waitFor(() => expect(screen.getByText('root message')).toBeInTheDocument());
+    expect(screen.getByText('a reply')).toBeInTheDocument();
+  });
+});
+
+describe('relativeTime', () => {
+  it('renders "now" for a just-now timestamp', () => {
+    expect(relativeTime(new Date().toISOString())).toBe('now');
+  });
+
+  it('renders minute / hour / day buckets', () => {
+    const now = Date.now();
+    expect(relativeTime(new Date(now - 5 * 60_000).toISOString())).toBe('5m');
+    expect(relativeTime(new Date(now - 3 * 3_600_000).toISOString())).toBe('3h');
+    expect(relativeTime(new Date(now - 2 * 86_400_000).toISOString())).toBe('2d');
+  });
+
+  it('returns empty string on an unparseable value', () => {
+    expect(relativeTime('not-a-date')).toBe('');
   });
 });

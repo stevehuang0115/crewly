@@ -148,6 +148,43 @@ describe('messageFromDTO', () => {
     expect(messageFromDTO(dto).author.name).toBe('System');
   });
 
+  // Slack-style threading — reply count summary fields.
+  it('maps replyCount + lastReplyAt (ms → ISO) when present on a root', () => {
+    const dto: MessageDTO = {
+      id: 'root-1',
+      channelId: 'ch-1',
+      seq: 1,
+      senderType: 'user',
+      senderId: 'demo-user',
+      content: 'root',
+      contentType: 'markdown',
+      createdAt: 0,
+      attachments: [],
+      replyCount: 3,
+      lastReplyAt: 1729790000000,
+    };
+    const m = messageFromDTO(dto);
+    expect(m.replyCount).toBe(3);
+    expect(m.lastReplyAt).toBe(new Date(1729790000000).toISOString());
+  });
+
+  it('leaves replyCount/lastReplyAt undefined when the wire omits them', () => {
+    const dto: MessageDTO = {
+      id: 'plain',
+      channelId: 'ch-1',
+      seq: 1,
+      senderType: 'user',
+      senderId: 'demo-user',
+      content: 'plain',
+      contentType: 'markdown',
+      createdAt: 0,
+      attachments: [],
+    };
+    const m = messageFromDTO(dto);
+    expect(m.replyCount).toBeUndefined();
+    expect(m.lastReplyAt).toBeUndefined();
+  });
+
   // Phase B (SEALED §3.2) — mention array invariants.
   it('preserves a mentions array verbatim through translation', () => {
     const dto: MessageDTO = {
