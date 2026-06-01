@@ -147,14 +147,16 @@ describe('WorkspaceRail', () => {
     expect(screen.queryByTestId('workspace-collapse-team-product')).not.toBeInTheDocument();
   });
 
-  it('renders nested child tiles as indented rows in caption mode', () => {
+  it('renders nested sub-teams as centred caption tiles in caption mode', () => {
     render(<WorkspaceRail workspaces={fixture} showLabels onToggleCollapse={() => {}} />);
-    // Children render beneath their parent, marked data-nested=true and indented.
+    // Children render beneath their parent, marked data-nested=true and laid out
+    // as centred caption tiles (avatar over label) so they fit the narrow rail.
     const product = screen.getByTestId('workspace-row-team-product');
     const marketing = screen.getByTestId('workspace-row-team-marketing');
     expect(product).toHaveAttribute('data-nested', 'true');
     expect(marketing).toHaveAttribute('data-nested', 'true');
-    expect(product.className).toContain('ml-4');
+    expect(product.className).toContain('flex-col');
+    expect(product.className).toContain('items-center');
     // Roots/parents are not nested.
     expect(screen.getByTestId('workspace-row-org-crewly')).toHaveAttribute('data-nested', 'false');
   });

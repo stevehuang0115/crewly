@@ -217,7 +217,7 @@ function CaptionRail({
 
   return (
     <nav
-      className={`chat-scrollbar flex h-full w-[84px] flex-col items-center gap-3 overflow-y-auto border-r border-border-dark bg-background-dark pt-4 ${className}`}
+      className={`chat-scrollbar flex h-full w-[84px] flex-col items-center gap-3 overflow-y-auto overflow-x-hidden border-r border-border-dark bg-background-dark py-4 ${className}`}
       aria-label="Workspace rail"
       data-testid="workspace-rail"
       data-expanded="false"
@@ -254,9 +254,11 @@ function CaptionRail({
                 onToggleCollapse={onToggleCollapse}
               />
             )}
-            {/* Parent's sub-teams, when expanded, as indented horizontal rows. */}
+            {/* Parent's sub-teams, when expanded, as centred caption tiles
+                (smaller avatar) — keeps them inside the narrow rail with no
+                horizontal overflow. */}
             {isParent && !isCollapsed && kids.length > 0 && (
-              <div className="mt-2 flex w-full flex-col gap-3 pl-4">
+              <div className="flex w-full flex-col items-center gap-3">
                 {kids.map((child) => (
                   <CaptionChildRow
                     key={child.id}
@@ -382,7 +384,12 @@ function CaptionTile({
   );
 }
 
-/** A nested sub-team rendered as an indented horizontal row in the rail. */
+/**
+ * A nested sub-team in the rail. Same centred caption shape as a top-level
+ * tile (avatar on top, small label beneath) but with a smaller avatar so the
+ * parent → child relationship reads at a glance — and, crucially, it stays
+ * inside the narrow 84px rail with no horizontal overflow.
+ */
 function CaptionChildRow({
   workspace,
   isActive,
@@ -433,9 +440,9 @@ function CaptionChildRow({
       aria-label={
         hasUnread ? `${workspace.name}, ${workspace.unreadCount} unread` : workspace.name
       }
-      className="group/item ml-4 flex w-full cursor-pointer items-center gap-3 rounded-lg p-1 hover:bg-white/5"
+      className="group/item flex cursor-pointer flex-col items-center gap-1"
     >
-      <span className="relative shrink-0">
+      <span className="relative">
         <span
           aria-hidden="true"
           className={`flex h-8 w-8 items-center justify-center rounded-full ${
@@ -447,7 +454,7 @@ function CaptionChildRow({
         {dot}
       </span>
       <span
-        className={`truncate text-[10px] ${
+        className={`max-w-[64px] text-center text-[10px] leading-tight ${
           isActive
             ? 'font-medium text-text-primary-dark'
             : 'text-text-secondary-dark group-hover/item:text-text-primary-dark'
