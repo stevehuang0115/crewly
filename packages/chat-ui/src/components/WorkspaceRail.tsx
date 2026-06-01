@@ -300,18 +300,21 @@ function CaptionTile({
   const hasUnread = (workspace.unreadCount ?? 0) > 0;
   const showChevron = isParent && !!onToggleCollapse;
 
-  // Circle treatment: Home + active/parent use the brand accent; plain
-  // teams use the neutral surface chip.
-  const circleClass = isHome
-    ? 'bg-white/5 border border-border-dark text-text-secondary-dark'
-    : isParent || isActive
+  // Circle treatment. ACTIVE wins over everything (incl. Home) with the
+  // strongest accent + glow so the selected tile is unmistakable; then
+  // parent, then Home, then plain teams (neutral chip).
+  const circleClass = isActive
+    ? 'bg-primary/20 text-primary border-2 border-primary active-glow'
+    : isParent
       ? 'bg-primary/10 text-primary border border-primary/30'
-      : 'bg-white/5 text-text-secondary-dark border border-border-dark hover:border-primary';
+      : isHome
+        ? 'bg-white/5 border border-border-dark text-text-secondary-dark hover:border-primary'
+        : 'bg-white/5 text-text-secondary-dark border border-border-dark hover:border-primary';
 
-  const captionClass = isParent
-    ? 'text-[10px] font-medium text-primary'
-    : isActive
-      ? 'text-[10px] text-center leading-tight max-w-[60px] text-text-primary-dark'
+  const captionClass = isActive
+    ? 'text-[10px] text-center leading-tight max-w-[60px] font-semibold text-primary'
+    : isParent
+      ? 'text-[10px] font-medium text-primary'
       : 'text-[10px] text-center leading-tight max-w-[60px] text-text-secondary-dark group-hover:text-text-primary-dark';
 
   // Indicator dot — mention > unread > presence (§8.2).
