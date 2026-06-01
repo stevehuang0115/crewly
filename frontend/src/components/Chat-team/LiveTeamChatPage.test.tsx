@@ -193,6 +193,16 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     expect(screen.getByTestId('conv-row-orc-dm')).toBeInTheDocument();
   });
 
+  it('conversation header offers Search but no Call action', async () => {
+    const { client } = makeStubClient([orcDm]);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+    // The active conversation's header renders its action buttons.
+    await waitFor(() => expect(screen.getByLabelText('Search')).toBeInTheDocument());
+    // There's nothing to dial in an agent chat — the Call icon must be gone.
+    expect(screen.queryByLabelText('Call')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Conversation info')).toBeInTheDocument();
+  });
+
   it('renders Home (no dead-end) even with zero channels', async () => {
     const { client } = makeStubClient([]);
     render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);

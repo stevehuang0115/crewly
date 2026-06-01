@@ -37,7 +37,6 @@ import {
   ChevronRight,
   MessageSquare,
   Search,
-  Phone,
   Info,
   Plus,
 } from 'lucide-react';
@@ -746,8 +745,8 @@ function LiveTeamChatRightPanelInner({
       aria-label={`Conversation with ${conversation.title}`}
       data-thread-active={threadRoot ? 'true' : 'false'}
     >
-      <header className="flex h-14 items-center justify-between border-b border-border-dark bg-background-dark/30 px-6 backdrop-blur-md">
-        <div className="min-w-0">
+      <header className="flex items-center justify-between gap-4 border-b border-border-dark bg-background-dark/30 px-6 py-3 backdrop-blur-md">
+        <div className="min-w-0 leading-tight">
           <h2 className="truncate text-base font-bold text-text-primary-dark">
             {conversation.kind === 'channel' ? `#${conversation.title}` : conversation.title}
           </h2>
@@ -771,13 +770,11 @@ function LiveTeamChatRightPanelInner({
               Reply in thread
             </button>
           )}
-          {/* Visual-only header actions — search/call/info. No backend wired,
-              so these are presentational affordances per the prototype. */}
+          {/* Header actions. (A "call" affordance was dropped — there's
+              nothing to dial in an agent chat.) Search/info are placeholders
+              for now until wired to in-conversation search + details. */}
           <HeaderActionButton label="Search">
             <Search size={18} />
-          </HeaderActionButton>
-          <HeaderActionButton label="Call">
-            <Phone size={18} />
           </HeaderActionButton>
           <HeaderActionButton label="Conversation info">
             <Info size={18} />
