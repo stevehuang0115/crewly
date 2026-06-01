@@ -191,11 +191,14 @@ describe('LiveTeamChatPage — consolidated conversation list', () => {
     ).toBeInTheDocument();
   });
 
-  it('tags a team lead with a "Lead" badge in the DM list', async () => {
+  it('tags leads with a "Lead" badge — by leaderSessions AND by team-leader role', async () => {
     const channels: Channel[] = [
       orcDm,
       { id: 'dm-maya', agentSession: 'sess-maya', name: 'Maya', createdAt: ISO, type: 'dm', presence: 'online' },
       { id: 'dm-alex', agentSession: 'sess-alex', name: 'Alex', createdAt: ISO, type: 'dm', presence: 'online' },
+      // Victor is a team-leader by ROLE but is NOT in any team's leaderSessions
+      // (the gap that previously left him unbadged).
+      { id: 'dm-victor', agentSession: 'sess-victor', name: 'Victor', createdAt: ISO, type: 'dm', presence: 'online' },
     ];
     const { client } = makeStubClient(channels);
     render(
@@ -210,11 +213,18 @@ describe('LiveTeamChatPage — consolidated conversation list', () => {
             memberSessions: ['sess-maya', 'sess-alex'],
           },
         ]}
+        directoryAgents={[
+          { agentSession: 'sess-maya', name: 'Maya', role: 'product-manager' },
+          { agentSession: 'sess-alex', name: 'Alex', role: 'designer' },
+          { agentSession: 'sess-victor', name: 'Victor', role: 'team-leader' },
+        ]}
       />,
     );
     await waitFor(() => expect(screen.getByTestId('conv-group-dms')).toBeInTheDocument());
-    // The lead carries a "Lead" badge; a non-lead does not.
+    // Maya: lead via leaderSessions. Victor: lead via team-leader role.
     expect(screen.getByTestId('conv-badge-dm-maya')).toHaveTextContent('Lead');
+    expect(screen.getByTestId('conv-badge-dm-victor')).toHaveTextContent('Lead');
+    // Alex is neither → no badge.
     expect(screen.queryByTestId('conv-badge-dm-alex')).not.toBeInTheDocument();
   });
 
