@@ -33,9 +33,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Home,
-  ChevronDown,
-  ChevronRight,
-  MessageSquare,
   Search,
   Info,
   Plus,
@@ -471,6 +468,10 @@ function LiveTeamChatPageBody({
       if (pinnedRows.length > 0) out.push({ id: 'pinned', label: 'Pinned', rows: pinnedRows });
       if (dmRows.length > 0) out.push({ id: 'dms', label: 'Direct messages', rows: dmRows });
       if (allHuddleRows.length > 0) out.push({ id: 'huddles', label: 'Group chats', rows: allHuddleRows });
+      // Slack-bridged threads (all orc-owned) live in the sidebar as their own
+      // collapsed section (alongside DMs / group chats) rather than a bar
+      // inside the orchestrator conversation.
+      if (slackThreads.length > 0) out.push({ id: 'slack', label: 'Slack threads', rows: slackThreads });
       return out;
     }
 
@@ -517,6 +518,7 @@ function LiveTeamChatPageBody({
     channelTeamId,
     pinnedChats,
     directoryAgents,
+    slackThreads,
   ]);
 
   const totalRows = useMemo(
@@ -644,9 +646,6 @@ function LiveTeamChatPageBody({
       <LiveTeamChatRightPanel
         conversation={activeConversation}
         mentionables={mentionables}
-        slackThreads={slackThreads}
-        orcRow={orcRow}
-        onSelectConversation={handleSelectConversation}
       />
 
       {showCreateGroup && (
@@ -667,19 +666,11 @@ function LiveTeamChatPageBody({
 interface RightPanelProps {
   conversation: ConversationRow | undefined;
   mentionables: MentionTarget[];
-  /** Slack-bridged threads (all orc-owned), surfaced inside the orc conversation. */
-  slackThreads: ConversationRow[];
-  /** The orchestrator conversation row (for the "back to Orchestrator" action). */
-  orcRow: ConversationRow | undefined;
-  onSelectConversation: (row: ConversationRow) => void;
 }
 
 function LiveTeamChatRightPanel({
   conversation,
   mentionables,
-  slackThreads,
-  orcRow,
-  onSelectConversation,
 }: RightPanelProps): JSX.Element {
   // No conversation selected — happens on first render of an empty
   // workspace, or transiently after a workspace switch.
@@ -699,9 +690,6 @@ function LiveTeamChatRightPanel({
     <LiveTeamChatRightPanelInner
       conversation={conversation}
       mentionables={mentionables}
-      slackThreads={slackThreads}
-      orcRow={orcRow}
-      onSelectConversation={onSelectConversation}
     />
   );
 }
@@ -709,15 +697,9 @@ function LiveTeamChatRightPanel({
 function LiveTeamChatRightPanelInner({
   conversation,
   mentionables,
-  slackThreads,
-  orcRow,
-  onSelectConversation,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
-  slackThreads: ConversationRow[];
-  orcRow: ConversationRow | undefined;
-  onSelectConversation: (row: ConversationRow) => void;
 }): JSX.Element {
   const { messages } = useMessages(conversation.id);
   const { send, error: sendError, reset: resetSendError } = useSendMessage();
@@ -741,13 +723,6 @@ function LiveTeamChatRightPanelInner({
   const toast = useMemo(() => buildToastMessage(sendError), [sendError]);
 
   const recipientName = conversation.kind === 'dm' ? conversation.title : undefined;
-
-  // Slack threads all belong to the orchestrator, so they're navigated from
-  // INSIDE the orc conversation (here) rather than the sidebar.
-  const isSlackThread = conversation.id.startsWith(SLACK_ID_PREFIX);
-  const isOrc = conversation.agentSession === ORCHESTRATOR_SESSION && !isSlackThread;
-  const showSlackBar = (isOrc || isSlackThread) && slackThreads.length > 0;
-  const [slackOpen, setSlackOpen] = useState(false);
 
   // The root message of the open thread (found in the live timeline) + its
   // replies derived live so a WS-delivered reply shows in the panel instantly.
@@ -823,54 +798,6 @@ function LiveTeamChatRightPanelInner({
             </HeaderActionButton>
           </div>
         </header>
-
-        {showSlackBar && (
-          <div className="border-b border-border-dark" data-testid="slack-threads-bar">
-            <div className="flex items-center justify-between px-4 py-2">
-              <button
-                type="button"
-                onClick={() => setSlackOpen((o) => !o)}
-                aria-expanded={slackOpen}
-                data-testid="slack-threads-toggle"
-                className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-secondary-dark"
-              >
-                {slackOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                Slack threads · {slackThreads.length}
-              </button>
-              {isSlackThread && orcRow && (
-                <button
-                  type="button"
-                  onClick={() => onSelectConversation(orcRow)}
-                  data-testid="slack-back-to-orc"
-                  className="text-xs text-primary hover:underline"
-                >
-                  ← Orchestrator
-                </button>
-              )}
-            </div>
-            {slackOpen && (
-              <ul className="chat-scrollbar max-h-48 overflow-y-auto px-2 pb-2" role="list">
-                {slackThreads.map((t) => (
-                  <li key={t.id}>
-                    <button
-                      type="button"
-                      onClick={() => onSelectConversation(t)}
-                      data-testid={`slack-thread-${t.id}`}
-                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
-                        t.id === conversation.id
-                          ? 'bg-primary/10 text-primary'
-                          : 'text-text-secondary-dark hover:bg-white/5 hover:text-text-primary-dark'
-                      }`}
-                    >
-                      <MessageSquare size={13} className="shrink-0 opacity-60" />
-                      <span className="truncate">{t.title}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
 
         {/* Main timeline: roots only (replies hidden — they live in the
             thread panel). Hover "Reply in thread" + the "N replies" chip

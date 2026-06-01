@@ -507,7 +507,7 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     });
   });
 
-  it('surfaces Slack threads INSIDE the Orchestrator conversation, not the sidebar', async () => {
+  it('surfaces Slack threads as a sidebar section (collapsed), not a bar inside the conversation', async () => {
     const slackId = 'slack-D0AC7NF5N7L-1777760999-956969';
     const channels: Channel[] = [
       orcDm,
@@ -516,21 +516,16 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     const { client } = makeStubClient(channels);
     render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
 
-    // The orchestrator is the default conversation; Slack is NOT a sidebar group.
-    await waitFor(() => expect(screen.getByTestId('conv-row-orc-dm')).toBeInTheDocument());
-    expect(screen.queryByTestId('conv-group-slack')).not.toBeInTheDocument();
-    expect(screen.queryByTestId(`conv-row-${slackId}`)).not.toBeInTheDocument();
+    // Slack threads now live in the sidebar as their own group — NOT an
+    // in-conversation bar. The section renders (collapsed by default).
+    await waitFor(() => expect(screen.getByTestId('conv-group-slack')).toBeInTheDocument());
+    expect(screen.queryByTestId('slack-threads-toggle')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('slack-threads-bar')).not.toBeInTheDocument();
 
-    // Instead, the orchestrator conversation hosts a collapsible Slack-threads bar.
-    const toggle = await screen.findByTestId('slack-threads-toggle');
-    expect(toggle).toHaveTextContent('Slack threads · 1');
-    fireEvent.click(toggle);
-    const thread = await screen.findByTestId(`slack-thread-${slackId}`);
-    expect(thread).toHaveTextContent(/Slack thread ·/);
-
-    // Opening the thread switches to it and offers a way back to the orchestrator.
-    fireEvent.click(thread);
-    expect(await screen.findByTestId('slack-back-to-orc')).toBeInTheDocument();
+    // Expanding the section reveals the thread row with its prettified title.
+    fireEvent.click(screen.getByTestId('conv-group-toggle-slack'));
+    const row = await screen.findByTestId(`conv-row-${slackId}`);
+    expect(row).toHaveTextContent(/Slack thread ·/);
   });
 
   it('calls onEnsureDm when a team member without a channel is opened', async () => {
