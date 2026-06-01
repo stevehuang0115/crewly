@@ -19,6 +19,17 @@
   display: none;  /* Safari and Chrome */
 }
 
+/* Team Chat (/team-chat) prototype utilities — app-scoped, chat surface only. */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.chat-scrollbar::-webkit-scrollbar { width: 4px; }
+.chat-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.chat-scrollbar::-webkit-scrollbar-thumb { background: #424754; border-radius: 10px; }
+.active-glow { box-shadow: 0 0 15px rgba(59, 130, 246, 0.2); }
+
 /* Force Tailwind to generate some classes */
 .test-tailwind {
   @apply bg-background-dark text-text-primary-dark;

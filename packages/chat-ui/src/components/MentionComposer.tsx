@@ -10,19 +10,18 @@
  *    for newline). It does NOT re-use MessageInput directly because
  *    MessageInput owns its own value state and ships via the chat API
  *    client; the team-chat surfaces want a mention-aware composer
- *    decoupled from the existing single-channel send path. Phase C
- *    swaps the local send for `useSendMessage` once the BE API supports
- *    mention payloads.
+ *    decoupled from the existing single-channel send path.
  *  - Typing `@` opens a suggestion popover, split into Teams + Agents
  *    groups per §7.2. Each suggestion row shows the label, a routing
  *    hint, and (for agents) a presence dot.
  *  - Selecting a suggestion adds the target to the `mentions` array and
- *    inserts `@<label>` text into the textarea so the rendered message
- *    keeps the routing intent legible (§7.3). The chip strip below the
- *    textarea is the structured view — chips are removable.
+ *    inserts `@<label>` text into the textarea (§7.3). The chip strip
+ *    below the textarea is the structured view — chips are removable.
  *  - Routing-hint helper text under the textarea explains the next
- *    selected chip's behavior so the user understands whether they
- *    will broadcast (team) or directly ping (agent).
+ *    selected chip's behavior.
+ *
+ * Visuals follow the approved Material-3 prototype: a frosted glass panel
+ * wrapping the textarea, a toolbar of icon buttons, and an accent Send.
  *
  * @module components/MentionComposer
  */
@@ -35,6 +34,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
+import { AtSign, Code, Plus, Send, Smile } from 'lucide-react';
 import type { MentionTarget } from '../types/team-chat.types';
 import type { ChatPresenceStatus } from './AgentStatusBadge';
 
@@ -152,6 +152,19 @@ export function MentionComposer({
     [handleSend, popoverOpen],
   );
 
+  // The @ toolbar button inserts an `@` at the caret and opens the popover so
+  // the mention flow is reachable without the keyboard.
+  const handleAtButton = useCallback(() => {
+    if (disabled) return;
+    setValue((v) => {
+      const needsSpace = v.length > 0 && !/\s$/.test(v);
+      return `${v}${needsSpace ? ' ' : ''}@`;
+    });
+    setFilter('');
+    setPopoverOpen(true);
+    textareaRef.current?.focus();
+  }, [disabled]);
+
   const helperText = useMemo(() => {
     if (inactiveHelper) return inactiveHelper;
     const last = mentions[mentions.length - 1];
@@ -163,10 +176,7 @@ export function MentionComposer({
   }, [inactiveHelper, mentions]);
 
   return (
-    <div
-      className={`relative border-t border-border-dark bg-surface-dark p-3 ${className}`}
-      data-testid="mention-composer"
-    >
+    <div className={`relative px-4 pb-4 pt-2 ${className}`} data-testid="mention-composer">
       {mentions.length > 0 && (
         <ul
           className="mb-2 flex flex-wrap gap-1.5"
@@ -181,7 +191,7 @@ export function MentionComposer({
         </ul>
       )}
 
-      <div className="flex items-end gap-2">
+      <div className="glass-panel flex flex-col gap-2 rounded-2xl bg-background-dark/50 p-2 focus-within:ring-1 focus-within:ring-primary/50">
         <textarea
           ref={textareaRef}
           value={value}
@@ -189,26 +199,43 @@ export function MentionComposer({
           onKeyDown={handleKeyDown}
           disabled={disabled}
           placeholder={placeholder}
-          rows={2}
+          rows={1}
           data-testid="mention-textarea"
-          className="flex-1 resize-none rounded-lg border border-border-dark bg-background-dark px-3 py-2 text-sm text-text-primary-dark placeholder:text-text-secondary-dark shadow-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+          className="min-h-[44px] w-full resize-none border-none bg-transparent px-4 py-2 text-sm text-text-primary-dark placeholder:text-text-secondary-dark focus:outline-none focus:ring-0 disabled:opacity-50"
         />
-        <button
-          type="button"
-          onClick={handleSend}
-          disabled={!canSend}
-          data-testid="mention-send"
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Send
-        </button>
+        <div className="flex items-center justify-between px-2 pb-1">
+          <div className="flex items-center gap-1">
+            <ToolbarButton label="Attach" disabled>
+              <Plus size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="Mention" onClick={handleAtButton} disabled={disabled}>
+              <AtSign size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="Emoji" disabled>
+              <Smile size={16} />
+            </ToolbarButton>
+            <ToolbarButton label="Code" disabled>
+              <Code size={16} />
+            </ToolbarButton>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] text-text-secondary-dark">Markdown supported</span>
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={!canSend}
+              data-testid="mention-send"
+              className="flex h-8 items-center gap-2 rounded-lg bg-primary px-4 text-[13px] font-bold text-white transition hover:bg-primary/90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Send size={14} />
+              Send
+            </button>
+          </div>
+        </div>
       </div>
 
       {helperText && (
-        <p
-          className="mt-1 text-[11px] text-text-secondary-dark"
-          data-testid="mention-helper"
-        >
+        <p className="mt-1 text-[11px] text-text-secondary-dark" data-testid="mention-helper">
           {helperText}
         </p>
       )}
@@ -221,6 +248,32 @@ export function MentionComposer({
         />
       )}
     </div>
+  );
+}
+
+/** A small toolbar icon button in the composer (mostly visual affordances). */
+function ToolbarButton({
+  label,
+  onClick,
+  disabled,
+  children,
+}: {
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className="flex h-8 w-8 items-center justify-center rounded-lg text-text-secondary-dark transition hover:bg-white/5 disabled:opacity-40"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -241,7 +294,7 @@ function SuggestionPopover({
     <div
       role="listbox"
       data-testid="mention-suggestions"
-      className="absolute bottom-[110%] left-3 right-3 z-10 max-h-72 overflow-y-auto rounded-lg border border-border-dark bg-surface-dark shadow-lg"
+      className="absolute bottom-[110%] left-4 right-4 z-10 max-h-72 overflow-y-auto rounded-xl border border-border-dark bg-surface-dark shadow-lg"
     >
       {teams.length > 0 && (
         <SuggestionGroup label="Teams" items={teams} onSelect={onSelect} testid="teams" />
@@ -276,12 +329,10 @@ function SuggestionGroup({
               type="button"
               onClick={() => onSelect(it)}
               data-testid={`mention-suggestion-${it.id}`}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-background-dark"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-white/5"
             >
               <MentionKindGlyph target={it} />
-              <span className="min-w-0 flex-1 truncate text-text-primary-dark">
-                {it.label}
-              </span>
+              <span className="min-w-0 flex-1 truncate text-text-primary-dark">{it.label}</span>
               {it.routingHint && (
                 <span className="shrink-0 text-[11px] text-text-secondary-dark">
                   {it.routingHint}

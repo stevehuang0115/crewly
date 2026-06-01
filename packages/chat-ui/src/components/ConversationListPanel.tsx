@@ -17,19 +17,40 @@
  *  - Unread uses the bold-row + count-pill convention (§6.2 center
  *    list rule).
  *
- * Phase B: parent supplies a `groups` array. Phase A backend wires real
- * data via Sam's chat conversation API. Mention chip routing to the
- * suggestion popover stays out of this panel — that's MentionComposer.
+ * Visuals follow the approved Material-3 prototype: a header with the
+ * team name + a New-group affordance and a Find… search box, then grouped
+ * channel / member rows.
  *
  * @module components/ConversationListPanel
  */
 
 import { useCallback, useMemo, useState } from 'react';
+import { ChevronDown, Plus } from 'lucide-react';
 import type { ConversationGroup, ConversationRow } from '../types/team-chat.types';
 import { AgentStatusBadge } from './AgentStatusBadge';
 
 /** localStorage key for collapsed conversation-group ids. */
 const COLLAPSED_GROUPS_KEY = 'crewly-chat-collapsed-groups';
+
+/**
+ * Per-agent avatar tints for DM rows (prototype palette). Deterministically
+ * chosen per name so the same agent keeps the same color across renders.
+ */
+const DM_AVATAR_TINTS = [
+  'bg-blue-500/20 text-blue-400',
+  'bg-purple-500/20 text-purple-400',
+  'bg-cyan-500/20 text-cyan-400',
+  'bg-indigo-500/20 text-indigo-400',
+] as const;
+
+/** Deterministically map a name to one of the DM avatar tints. */
+function dmAvatarTint(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i += 1) {
+    h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return DM_AVATAR_TINTS[h % DM_AVATAR_TINTS.length];
+}
 
 /** Stored collapsed-group ids, or null when the user has no saved preference. */
 function loadCollapsedGroups(): Set<string> | null {
@@ -91,9 +112,14 @@ export function ConversationListPanel({
   defaultCollapsedGroupIds,
   className = '',
 }: ConversationListPanelProps): JSX.Element {
+  // Local search filter — narrows visible rows by title (case-insensitive).
+  const [query, setQuery] = useState('');
+
+  const filteredGroups = useMemo(() => filterGroups(groups, query), [groups, query]);
+
   const totalRows = useMemo(
-    () => groups.reduce((acc, g) => acc + countRows(g), 0),
-    [groups],
+    () => filteredGroups.reduce((acc, g) => acc + countRows(g), 0),
+    [filteredGroups],
   );
 
   // Collapsed/expanded state per group id, persisted to localStorage. With no
@@ -117,26 +143,41 @@ export function ConversationListPanel({
 
   return (
     <aside
-      className={`flex h-full w-72 flex-col border-r border-border-dark bg-surface-dark ${className}`}
+      className={`flex h-full w-[240px] flex-col border-r border-border-dark bg-surface-dark ${className}`}
       aria-label={workspaceName ? `${workspaceName} conversations` : 'Conversations'}
       data-testid="conversation-list-panel"
     >
       {(workspaceName || headerAction) && (
-        <header className="flex items-center justify-between gap-2 border-b border-border-dark px-4 py-3">
-          <h2 className="truncate text-sm font-semibold text-text-primary-dark">
-            {workspaceName ?? ''}
-          </h2>
-          {headerAction}
+        <header className="border-b border-border-dark p-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="truncate text-base font-bold text-text-primary-dark">
+              {workspaceName ?? ''}
+            </h2>
+            {headerAction}
+          </div>
+          <div className="relative mt-3">
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Find..."
+              aria-label="Find a conversation"
+              data-testid="conv-search"
+              className="w-full rounded-lg border border-border-dark bg-background-dark px-3 py-1.5 text-[13px] text-text-primary-dark outline-none placeholder:text-text-secondary-dark focus:border-primary focus:ring-1 focus:ring-primary"
+            />
+          </div>
         </header>
       )}
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="chat-scrollbar flex-1 overflow-y-auto p-2">
         {totalRows === 0 ? (
-          <div className="px-4 py-6 text-sm text-text-secondary-dark" role="status">
-            {emptyState ?? 'No conversations in this workspace yet.'}
+          <div className="px-2 py-6 text-[13px] text-text-secondary-dark" role="status">
+            {query
+              ? 'No conversations match your search.'
+              : (emptyState ?? 'No conversations in this workspace yet.')}
           </div>
         ) : (
-          groups.map((group) =>
+          filteredGroups.map((group) =>
             groupHasContent(group) ? (
               <ConversationGroupSection
                 key={group.id}
@@ -168,6 +209,21 @@ function groupHasContent(group: ConversationGroup): boolean {
   return countRows(group) > 0;
 }
 
+/**
+ * Filter every group's rows (recursively through sub-groups) by a
+ * case-insensitive title match. An empty query returns the input untouched.
+ */
+function filterGroups(groups: ConversationGroup[], query: string): ConversationGroup[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return groups;
+  const filterOne = (g: ConversationGroup): ConversationGroup => ({
+    ...g,
+    rows: g.rows.filter((r) => r.title.toLowerCase().includes(q)),
+    subGroups: g.subGroups?.map(filterOne),
+  });
+  return groups.map(filterOne);
+}
+
 function ConversationGroupSection({
   group,
   activeConversationId,
@@ -194,7 +250,7 @@ function ConversationGroupSection({
 
   return (
     <section
-      className={depth === 0 ? 'border-b border-border-dark py-2 last:border-b-0' : ''}
+      className={depth === 0 ? 'mb-4' : 'mt-2'}
       aria-labelledby={`conv-group-${group.id}`}
       data-testid={`conv-group-${group.id}`}
     >
@@ -205,17 +261,24 @@ function ConversationGroupSection({
         onClick={() => onToggleCollapse(group.id)}
         aria-expanded={!isCollapsed}
         data-testid={`conv-group-toggle-${group.id}`}
-        className="flex w-full items-center gap-1 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary-dark hover:text-text-primary-dark"
-        style={{ paddingLeft: `${0.75 + depth * 0.75}rem`, paddingRight: '0.75rem' }}
+        className="mb-2 flex w-full items-center justify-between px-2"
+        style={{ paddingLeft: `${0.5 + depth * 0.75}rem` }}
       >
-        <Chevron collapsed={isCollapsed} />
-        <span className="truncate">{group.label}</span>
-        <span className="ml-auto text-text-secondary-dark">{countRows(group)}</span>
+        <span className="flex items-center gap-1">
+          <ChevronDown
+            size={16}
+            className={`text-text-secondary-dark transition-transform ${isCollapsed ? '-rotate-90' : ''}`}
+          />
+          <span className="truncate text-[11px] font-bold uppercase tracking-wider text-text-secondary-dark">
+            {group.label}
+          </span>
+        </span>
+        <span className="text-[10px] text-text-secondary-dark">{countRows(group)}</span>
       </button>
       {!isCollapsed && (
         <>
           {group.rows.length > 0 && (
-            <ul role="list" className="flex flex-col">
+            <ul role="list" className="flex flex-col gap-0.5">
               {group.rows.map((row) => (
                 <li key={row.id}>
                   <ConversationRowItem
@@ -248,19 +311,6 @@ function ConversationGroupSection({
   );
 }
 
-/** Right-pointing chevron that rotates down when expanded. */
-function Chevron({ collapsed }: { collapsed: boolean }): JSX.Element {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 12 12"
-      className={`h-3 w-3 shrink-0 transition-transform ${collapsed ? '' : 'rotate-90'}`}
-    >
-      <path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 function ConversationRowItem({
   row,
   isActive,
@@ -276,16 +326,20 @@ function ConversationRowItem({
 }): JSX.Element {
   const hasUnread = (row.unreadCount ?? 0) > 0;
   const hasMentions = (row.mentionCount ?? 0) > 0;
+  const isChannel = row.kind === 'channel';
+
+  // Channel rows are a compact `# name` pill; DM/activity rows are a richer
+  // avatar + name + preview layout per the prototype.
+  const rowClass = isChannel
+    ? isActive
+      ? 'flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/10 px-3 py-1.5 text-primary'
+      : 'flex items-center gap-2 rounded-lg px-3 py-1.5 text-text-secondary-dark hover:bg-white/5'
+    : isActive
+      ? 'group flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/10 px-3 py-2 text-primary'
+      : 'group flex items-center gap-3 rounded-lg px-3 py-2 text-text-secondary-dark hover:bg-white/5';
 
   return (
-    <div
-      className={[
-        'group/row relative flex w-full items-center border-l-2 transition',
-        isActive
-          ? 'border-primary bg-primary/10'
-          : 'border-transparent hover:bg-background-dark',
-      ].join(' ')}
-    >
+    <div className="group/row relative flex w-full items-center">
       <button
         type="button"
         onClick={() => onSelect?.(row)}
@@ -293,77 +347,79 @@ function ConversationRowItem({
         data-active={isActive ? 'true' : 'false'}
         data-kind={row.kind}
         data-unread={hasUnread ? 'true' : 'false'}
-        className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left"
+        className={`min-w-0 flex-1 text-left ${rowClass}`}
         aria-current={isActive ? 'page' : undefined}
       >
         <ConversationKindIcon row={row} />
 
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
+        {isChannel ? (
           <span
             className={[
-              'truncate text-sm',
-              hasUnread
-                ? 'font-semibold text-text-primary-dark'
-                : 'text-text-secondary-dark',
+              'min-w-0 flex-1 truncate text-[13px]',
+              hasUnread ? 'font-semibold text-text-primary-dark' : '',
             ].join(' ')}
           >
             {row.title}
           </span>
-          {row.badge && (
-            <span
-              className="shrink-0 rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-primary"
-              data-testid={`conv-badge-${row.id}`}
-            >
-              {row.badge}
-            </span>
-          )}
-          {row.lastMessageAt && (
-            <time
-              className="ml-auto shrink-0 text-[10px] text-text-secondary-dark"
-              dateTime={row.lastMessageAt}
-            >
-              {formatRelativeTime(row.lastMessageAt)}
-            </time>
-          )}
-        </div>
-        {row.lastMessagePreview && (
-          <div
-            className={[
-              'truncate text-xs',
-              hasUnread
-                ? 'text-text-primary-dark'
-                : 'text-text-secondary-dark',
-            ].join(' ')}
-          >
-            {row.lastMessagePreview}
+        ) : (
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span
+                className={[
+                  'truncate text-[13px] font-medium',
+                  hasUnread
+                    ? 'font-semibold text-text-primary-dark'
+                    : 'text-text-primary-dark group-hover:text-primary',
+                ].join(' ')}
+              >
+                {row.title}
+              </span>
+              {row.badge && (
+                <span
+                  className="shrink-0 rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-primary"
+                  data-testid={`conv-badge-${row.id}`}
+                >
+                  {row.badge}
+                </span>
+              )}
+              {row.lastMessageAt && (
+                <time
+                  className="ml-auto shrink-0 text-[10px] text-text-secondary-dark"
+                  dateTime={row.lastMessageAt}
+                >
+                  {formatRelativeTime(row.lastMessageAt)}
+                </time>
+              )}
+            </div>
+            {row.lastMessagePreview && (
+              <div className="truncate text-[10px] opacity-70">
+                {row.lastMessagePreview}
+              </div>
+            )}
+            {row.subtitle && !row.lastMessagePreview && (
+              <div className="truncate text-[10px] opacity-70">{row.subtitle}</div>
+            )}
           </div>
         )}
-        {row.subtitle && !row.lastMessagePreview && (
-          <div className="truncate text-xs text-text-secondary-dark">
-            {row.subtitle}
-          </div>
-        )}
-      </div>
 
-      {/* Mention count is the strongest pill — overrides unread pill when both apply. */}
-      {hasMentions ? (
-        <span
-          className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold text-white"
-          data-testid={`conv-mention-pill-${row.id}`}
-          aria-label={`${row.mentionCount} mentions`}
-        >
-          @{row.mentionCount}
-        </span>
-      ) : hasUnread ? (
-        <span
-          className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-white"
-          data-testid={`conv-unread-pill-${row.id}`}
-          aria-label={`${row.unreadCount} unread`}
-        >
-          {row.unreadCount}
-        </span>
-      ) : null}
+        {/* Mention count is the strongest pill — overrides unread pill when both apply. */}
+        {hasMentions ? (
+          <span
+            className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold text-white"
+            data-testid={`conv-mention-pill-${row.id}`}
+            aria-label={`${row.mentionCount} mentions`}
+          >
+            @{row.mentionCount}
+          </span>
+        ) : hasUnread ? (
+          <span
+            className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-white"
+            data-testid={`conv-unread-pill-${row.id}`}
+            aria-label={`${row.unreadCount} unread`}
+          >
+            {row.unreadCount}
+          </span>
+        ) : null}
       </button>
 
       {onTogglePin && (
@@ -378,7 +434,7 @@ function ConversationRowItem({
           aria-pressed={pinned}
           title={pinned ? 'Unpin' : 'Pin'}
           className={[
-            'mr-2 shrink-0 rounded p-1 text-text-secondary-dark hover:text-amber-400',
+            'ml-1 shrink-0 rounded p-1 text-text-secondary-dark hover:text-amber-400',
             // Pinned: always visible. Unpinned: reveal on row hover.
             pinned ? 'text-amber-400' : 'opacity-0 group-hover/row:opacity-100',
           ].join(' ')}
@@ -414,7 +470,7 @@ function ConversationKindIcon({ row }: { row: ConversationRow }): JSX.Element {
     return (
       <span
         aria-hidden="true"
-        className="flex h-6 w-6 shrink-0 items-center justify-center text-base font-medium text-text-secondary-dark"
+        className="flex shrink-0 items-center justify-center text-base font-medium"
         data-testid={`conv-icon-${row.id}`}
       >
         #
@@ -425,7 +481,7 @@ function ConversationKindIcon({ row }: { row: ConversationRow }): JSX.Element {
     return (
       <span
         aria-hidden="true"
-        className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-[#1e5fc7] text-[10px] font-semibold uppercase text-white"
+        className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[10px] font-bold uppercase ${dmAvatarTint(row.title)}`}
         data-testid={`conv-icon-${row.id}`}
       >
         {deriveDmInitials(row.title)}
@@ -441,7 +497,7 @@ function ConversationKindIcon({ row }: { row: ConversationRow }): JSX.Element {
   return (
     <span
       aria-hidden="true"
-      className="flex h-6 w-6 shrink-0 items-center justify-center text-xs text-text-secondary-dark"
+      className="flex h-8 w-8 shrink-0 items-center justify-center text-xs text-text-secondary-dark"
       data-testid={`conv-icon-${row.id}`}
     >
       ⟳

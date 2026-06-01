@@ -24,11 +24,23 @@
  *    (delegated to ConversationListPanel — already correct).
  *  - WorkspaceRail renders one entry per observed teamId.
  *
+ * Visuals follow the approved Material-3 prototype: a frosted header with
+ * action icons, error-tinted inactive banner, and the chat surface tokens.
+ *
  * @module components/Chat-team/LiveTeamChatPage
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Home, ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
+import {
+  Home,
+  ChevronDown,
+  ChevronRight,
+  MessageSquare,
+  Search,
+  Phone,
+  Info,
+  Plus,
+} from 'lucide-react';
 import {
   ChatAPIProvider,
   ConversationListPanel,
@@ -568,11 +580,12 @@ function LiveTeamChatPageBody({
           <button
             type="button"
             onClick={() => setShowCreateGroup(true)}
-            className="rounded-md border border-border-dark px-2 py-1 text-xs font-medium text-text-secondary-dark hover:bg-surface-dark hover:text-text-primary-dark"
+            className="flex h-6 w-6 items-center justify-center rounded bg-surface-dark text-text-secondary-dark transition hover:text-primary"
             data-testid="new-group-button"
             title="Create a multi-agent group chat"
+            aria-label="Create a multi-agent group chat"
           >
-            + New group
+            <Plus size={16} />
           </button>
         }
         emptyState={
@@ -733,37 +746,47 @@ function LiveTeamChatRightPanelInner({
       aria-label={`Conversation with ${conversation.title}`}
       data-thread-active={threadRoot ? 'true' : 'false'}
     >
-      <header className="flex items-center justify-between border-b border-border-dark px-4 py-3">
+      <header className="flex h-14 items-center justify-between border-b border-border-dark bg-background-dark/30 px-6 backdrop-blur-md">
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold text-text-primary-dark">
+          <h2 className="truncate text-base font-bold text-text-primary-dark">
             {conversation.kind === 'channel' ? `#${conversation.title}` : conversation.title}
           </h2>
           {conversation.subtitle && (
-            <p className="truncate text-xs text-text-secondary-dark">
+            <p className="truncate text-[11px] text-text-secondary-dark">
               {conversation.subtitle}
             </p>
           )}
         </div>
-        {/* Phase C minimal thread affordance — surfaces only when the
-            timeline contains a threaded reply, so we know there IS a
-            thread to drop into. */}
-        {lastObservedThreadId && !threadRoot && (
-          <button
-            type="button"
-            onClick={handleEnterThread}
-            data-testid="thread-enter"
-            className="rounded-md border border-border-dark px-2 py-1 text-xs text-text-secondary-dark hover:bg-surface-dark hover:text-text-primary-dark"
-          >
-            Reply in thread
-          </button>
-        )}
+        <div className="flex items-center gap-1">
+          {/* Phase C minimal thread affordance — surfaces only when the
+              timeline contains a threaded reply, so we know there IS a
+              thread to drop into. */}
+          {lastObservedThreadId && !threadRoot && (
+            <button
+              type="button"
+              onClick={handleEnterThread}
+              data-testid="thread-enter"
+              className="mr-2 rounded-md border border-border-dark px-2 py-1 text-xs text-text-secondary-dark transition hover:bg-white/5 hover:text-text-primary-dark"
+            >
+              Reply in thread
+            </button>
+          )}
+          {/* Visual-only header actions — search/call/info. No backend wired,
+              so these are presentational affordances per the prototype. */}
+          <HeaderActionButton label="Search">
+            <Search size={18} />
+          </HeaderActionButton>
+          <HeaderActionButton label="Call">
+            <Phone size={18} />
+          </HeaderActionButton>
+          <HeaderActionButton label="Conversation info">
+            <Info size={18} />
+          </HeaderActionButton>
+        </div>
       </header>
 
       {showSlackBar && (
-        <div
-          className="border-b border-border-dark"
-          data-testid="slack-threads-bar"
-        >
+        <div className="border-b border-border-dark" data-testid="slack-threads-bar">
           <div className="flex items-center justify-between px-4 py-2">
             <button
               type="button"
@@ -787,7 +810,7 @@ function LiveTeamChatRightPanelInner({
             )}
           </div>
           {slackOpen && (
-            <ul className="max-h-48 overflow-y-auto px-2 pb-2" role="list">
+            <ul className="chat-scrollbar max-h-48 overflow-y-auto px-2 pb-2" role="list">
               {slackThreads.map((t) => (
                 <li key={t.id}>
                   <button
@@ -797,7 +820,7 @@ function LiveTeamChatRightPanelInner({
                     className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
                       t.id === conversation.id
                         ? 'bg-primary/10 text-primary'
-                        : 'text-text-secondary-dark hover:bg-surface-dark hover:text-text-primary-dark'
+                        : 'text-text-secondary-dark hover:bg-white/5 hover:text-text-primary-dark'
                     }`}
                   >
                     <MessageSquare size={13} className="shrink-0 opacity-60" />
@@ -855,6 +878,26 @@ function LiveTeamChatRightPanelInner({
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** A presentational header action icon button (search / call / info). */
+function HeaderActionButton({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      className="flex h-9 w-9 items-center justify-center rounded-lg text-text-secondary-dark transition hover:bg-white/5 hover:text-text-primary-dark"
+    >
+      {children}
+    </button>
+  );
+}
+
 /**
  * Small banner above the composer when a thread reply is active.
  * Mirrors Slack's "Replying to a thread in #general" affordance.
@@ -870,16 +913,17 @@ function ThreadReplyBanner({
     <div
       role="note"
       data-testid="thread-reply-banner"
-      className="flex items-center justify-between gap-2 border-t border-border-dark bg-surface-dark px-4 py-1.5 text-xs text-text-secondary-dark"
+      className="mx-4 flex items-center justify-between gap-2 border-t border-border-dark px-4 py-1.5 text-xs text-text-secondary-dark"
     >
       <span>
-        Replying to thread <code className="rounded bg-background-dark px-1">{threadRootId}</code>
+        Replying to thread{' '}
+        <code className="rounded bg-primary/10 px-1 text-primary">{threadRootId}</code>
       </span>
       <button
         type="button"
         onClick={onExit}
         data-testid="thread-exit"
-        className="rounded px-2 py-0.5 text-text-secondary-dark hover:bg-background-dark hover:text-text-primary-dark"
+        className="rounded px-2 py-0.5 text-text-secondary-dark transition hover:bg-white/5 hover:text-text-primary-dark"
       >
         Cancel
       </button>
