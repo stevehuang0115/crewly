@@ -89,6 +89,22 @@ export function reconcileMessage(prev: Message[], incoming: Message): Message[] 
  * @param messages - Current ordered timeline
  * @returns Whether to show the "agent is thinking" indicator
  */
+/**
+ * Normalize a fetched page to ascending-by-seq (oldest → newest).
+ *
+ * The backend's default ("backward") page is ordered newest → oldest for
+ * cursor pagination, but the whole timeline contract here is ASCENDING:
+ * new messages append to the end, `deriveAgentThinking` inspects the last
+ * element, and the thread renders top → bottom and auto-scrolls to the
+ * bottom. Without this normalization the timeline renders inverted (newest
+ * at the top, hidden after the scroll-to-bottom) and the "thinking"
+ * indicator reads the wrong end. Sorting by `seq` is robust regardless of
+ * the order the API happens to return.
+ */
+export function toAscendingBySeq(messages: Message[]): Message[] {
+  return [...messages].sort((a, b) => a.seq - b.seq);
+}
+
 export function deriveAgentThinking(messages: Message[]): boolean {
   if (messages.length === 0) return false;
   const last = messages[messages.length - 1];
@@ -124,7 +140,7 @@ export function useMessages(channelId: string | null): UseMessagesResult {
       .listMessages(channelId)
       .then((page) => {
         if (cancelled) return;
-        setMessages(page.messages);
+        setMessages(toAscendingBySeq(page.messages));
         cursorRef.current = page.nextCursor;
         setHasMore(page.nextCursor !== null);
       })
@@ -164,7 +180,9 @@ export function useMessages(channelId: string | null): UseMessagesResult {
     const cursor = cursorRef.current;
     try {
       const page = await client.listMessages(channelId, { cursor });
-      setMessages((prev) => [...page.messages, ...prev]);
+      // Older page is also newest → oldest; normalize then prepend so the
+      // combined timeline stays ascending.
+      setMessages((prev) => [...toAscendingBySeq(page.messages), ...prev]);
       cursorRef.current = page.nextCursor;
       setHasMore(page.nextCursor !== null);
     } catch (err) {

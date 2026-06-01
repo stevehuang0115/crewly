@@ -3,7 +3,7 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { ChatAPIProvider } from '../context/ChatAPIProvider';
 import { MockChatApiClient } from '../api/mock-client';
-import { useMessages, reconcileMessage, deriveAgentThinking } from './useMessages';
+import { useMessages, reconcileMessage, deriveAgentThinking, toAscendingBySeq } from './useMessages';
 import type { Message } from '../types/chat.types';
 
 describe('useMessages', () => {
@@ -222,5 +222,27 @@ describe('deriveAgentThinking', () => {
 
   it('returns false for stale user messages loaded from history', () => {
     expect(deriveAgentThinking([userHistory])).toBe(false);
+  });
+});
+
+describe('toAscendingBySeq', () => {
+  const mk = (seq: number): Message => ({
+    id: `m-${seq}`,
+    channelId: 'c1',
+    seq,
+    author: { role: 'user', id: 'me' },
+    content: `msg ${seq}`,
+    createdAt: '2026-04-25T01:00:00.000Z',
+    mentions: [],
+  });
+
+  it('orders a newest-first (descending) page into ascending seq order', () => {
+    // The backend default page is newest → oldest; the timeline must render
+    // oldest → newest so the latest message lands at the bottom.
+    const desc = [mk(26), mk(25), mk(24), mk(2), mk(1)];
+    const asc = toAscendingBySeq(desc);
+    expect(asc.map((m) => m.seq)).toEqual([1, 2, 24, 25, 26]);
+    // Does not mutate the input.
+    expect(desc.map((m) => m.seq)).toEqual([26, 25, 24, 2, 1]);
   });
 });
