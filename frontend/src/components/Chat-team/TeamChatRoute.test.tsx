@@ -6,6 +6,7 @@
 
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { SidebarProvider, useSidebar } from '../../contexts/SidebarContext';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Team } from '../../types';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
@@ -63,7 +64,9 @@ function makeMember(id: string, name: string, sessionName: string) {
 function renderAt(path: string): void {
   render(
     <MemoryRouter initialEntries={[path]}>
-      <TeamChatRoute />
+      <SidebarProvider>
+        <TeamChatRoute />
+      </SidebarProvider>
     </MemoryRouter>,
   );
 }
@@ -182,5 +185,23 @@ describe('TeamChatRoute', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     const props = liveProps.mock.calls[0][0] as { backendURL?: string };
     expect(props.backendURL).toBeUndefined();
+  });
+
+  it('collapses the left app nav while on the chat page', async () => {
+    function Probe(): JSX.Element {
+      const { isCollapsed } = useSidebar();
+      return <div data-testid="sidebar-collapsed">{String(isCollapsed)}</div>;
+    }
+    render(
+      <MemoryRouter initialEntries={['/team-chat']}>
+        <SidebarProvider>
+          <Probe />
+          <TeamChatRoute />
+        </SidebarProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('sidebar-collapsed').textContent).toBe('true'),
+    );
   });
 });
