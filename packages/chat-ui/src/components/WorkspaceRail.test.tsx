@@ -67,6 +67,22 @@ describe('WorkspaceRail', () => {
     expect(row).toHaveAttribute('aria-current', 'page');
   });
 
+  it('gives the active tile a strong accent in caption mode — including Home', () => {
+    // Home active used to keep its neutral chip (isHome branch won over
+    // isActive), so the selected state was barely visible. Active must win.
+    render(
+      <WorkspaceRail
+        workspaces={[{ id: 'home', name: 'Home', kind: 'home' }, { id: 't1', name: 'Team One' }]}
+        showLabels
+        activeWorkspaceId="home"
+      />,
+    );
+    const home = screen.getByTestId('workspace-row-home');
+    // Active glyph gets the brand glow + a primary border (vs the neutral chip).
+    expect(home.querySelector('.active-glow')).not.toBeNull();
+    expect(home.innerHTML).toContain('border-primary');
+  });
+
   it('invokes onSelectWorkspace with the full workspace on click', async () => {
     const onSelect = vi.fn();
     render(<WorkspaceRail workspaces={fixture} onSelectWorkspace={onSelect} />);
