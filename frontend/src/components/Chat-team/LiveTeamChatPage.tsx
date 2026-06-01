@@ -595,13 +595,15 @@ function MergedConversationPanel({
   mentionables: MentionTarget[];
   channelIds: string[];
 }): JSX.Element {
-  const { messages, agentThinking } = useMergedMessages(channelIds);
+  const { messages, agentThinking, hasMore, loadMore } = useMergedMessages(channelIds);
   return (
     <ConversationView
       conversation={conversation}
       mentionables={mentionables}
       messages={messages}
       agentThinking={agentThinking}
+      hasMore={hasMore}
+      onLoadMore={loadMore}
     />
   );
 }
