@@ -113,7 +113,7 @@ export function TeamChatRoute(): JSX.Element {
         .filter((m) => m.sessionName && (leadIdSet.has(m.id) || m.hierarchyLevel === 1))
         .map((m) => m.sessionName);
       const memberSessions = members.filter((m) => m.sessionName).map((m) => m.sessionName);
-      return { id: t.id, name: t.name, leaderSessions, memberSessions };
+      return { id: t.id, name: t.name, leaderSessions, memberSessions, parentTeamId: t.parentTeamId };
     });
   }, [teams]);
 

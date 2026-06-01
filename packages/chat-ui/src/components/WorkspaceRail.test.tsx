@@ -135,6 +135,46 @@ describe('WorkspaceRail', () => {
     expect(screen.getByText('Customer Engineering')).toBeInTheDocument();
   });
 
+  it('renders a parent collapse chevron only in caption mode with onToggleCollapse', () => {
+    // No chevron in the default (icon) layout / without the collapse handler.
+    const { rerender } = render(<WorkspaceRail workspaces={fixture} showLabels />);
+    expect(screen.queryByTestId('workspace-collapse-org-crewly')).not.toBeInTheDocument();
+    // With showLabels (caption) AND a toggle handler, the parent gets a chevron.
+    rerender(<WorkspaceRail workspaces={fixture} showLabels onToggleCollapse={() => {}} />);
+    expect(screen.getByTestId('workspace-collapse-org-crewly')).toBeInTheDocument();
+    // A leaf child does not get a chevron.
+    expect(screen.queryByTestId('workspace-collapse-team-product')).not.toBeInTheDocument();
+  });
+
+  it('renders a connector spine on nested child tiles in caption mode', () => {
+    render(<WorkspaceRail workspaces={fixture} showLabels onToggleCollapse={() => {}} />);
+    expect(screen.getByTestId('workspace-spine-team-product')).toBeInTheDocument();
+    expect(screen.getByTestId('workspace-spine-team-marketing')).toBeInTheDocument();
+    // Roots/parents have no spine.
+    expect(screen.queryByTestId('workspace-spine-org-crewly')).not.toBeInTheDocument();
+  });
+
+  it('hides children of a collapsed parent but keeps the parent visible', () => {
+    render(
+      <WorkspaceRail
+        workspaces={fixture}
+        showLabels
+        onToggleCollapse={() => {}}
+        collapsedParentIds={['org-crewly']}
+      />,
+    );
+    expect(screen.getByTestId('workspace-row-org-crewly')).toBeInTheDocument();
+    expect(screen.queryByTestId('workspace-row-team-product')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('workspace-row-team-marketing')).not.toBeInTheDocument();
+  });
+
+  it('invokes onToggleCollapse with the parent id when the chevron is clicked', async () => {
+    const onToggle = vi.fn();
+    render(<WorkspaceRail workspaces={fixture} showLabels onToggleCollapse={onToggle} />);
+    await userEvent.click(screen.getByTestId('workspace-collapse-org-crewly'));
+    expect(onToggle).toHaveBeenCalledWith('org-crewly');
+  });
+
   it('renders a host-injected icon node over avatar/initials', () => {
     render(
       <WorkspaceRail

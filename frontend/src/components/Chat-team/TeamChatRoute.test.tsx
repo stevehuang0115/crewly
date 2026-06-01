@@ -8,16 +8,23 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Team } from '../../types';
-import { DM_WORKSPACE_ID, ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
+import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
+import { HOME_ID, teamRailId } from './LiveTeamChatPage';
 
-// Capture the props LiveTeamChatPage is rendered with.
+// Capture the props LiveTeamChatPage is rendered with. Keep the module's real
+// exports (HOME_ID / teamRailId, which TeamChatRoute imports) and only stub the
+// component so we don't mount the full chat surface.
 const liveProps = vi.fn();
-vi.mock('./LiveTeamChatPage', () => ({
-  LiveTeamChatPage: (props: Record<string, unknown>) => {
-    liveProps(props);
-    return <div data-testid="live-team-chat" />;
-  },
-}));
+vi.mock('./LiveTeamChatPage', async (importActual) => {
+  const actual = await importActual<typeof import('./LiveTeamChatPage')>();
+  return {
+    ...actual,
+    LiveTeamChatPage: (props: Record<string, unknown>) => {
+      liveProps(props);
+      return <div data-testid="live-team-chat" />;
+    },
+  };
+});
 
 // Control the teams the wrapper derives labels/mentionables from.
 const teamsRef: { teams: Team[] } = { teams: [] };
@@ -84,7 +91,7 @@ describe('TeamChatRoute', () => {
     vi.unstubAllGlobals();
   });
 
-  it('ensures the orchestrator DM and defaults to it in the DM workspace (no ?team=)', async () => {
+  it('ensures the orchestrator DM and lands on Home by default (no ?team=)', async () => {
     renderAt('/team-chat');
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -92,15 +99,18 @@ describe('TeamChatRoute', () => {
     const dmCall = fetchMock.mock.calls.find((c) => c[0] === '/api/chat/channels/dm/ensure');
     expect(dmCall).toBeTruthy();
     expect(bodyOf(dmCall!)).toMatchObject({ agentSession: ORCHESTRATOR_SESSION });
-    // No team ensure when there's no ?team=.
-    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat/channels/team/ensure')).toBe(false);
+    // Every team's huddle is ensured up-front (so each rail icon has its
+    // all-members channel), even without a ?team= deep-link.
+    const teamEnsures = fetchMock.mock.calls
+      .filter((c) => c[0] === '/api/chat/channels/team/ensure')
+      .map((c) => bodyOf(c).teamId);
+    expect(teamEnsures).toEqual(expect.arrayContaining(['t1', 't2']));
 
     await screen.findByTestId('live-team-chat');
     expect(liveProps).toHaveBeenCalledWith(
       expect.objectContaining({
-        initialWorkspaceId: DM_WORKSPACE_ID,
+        initialWorkspaceId: HOME_ID,
         initialConversationId: 'orc-chan',
-        directMessagesWorkspace: { id: DM_WORKSPACE_ID, name: expect.any(String) },
       }),
     );
   });
@@ -111,13 +121,16 @@ describe('TeamChatRoute', () => {
     await waitFor(() =>
       expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat/channels/team/ensure')).toBe(true),
     );
-    const teamCall = fetchMock.mock.calls.find((c) => c[0] === '/api/chat/channels/team/ensure');
-    expect(bodyOf(teamCall!)).toEqual({ teamId: 't2' });
+    // The deep-linked team's huddle is ensured (among all teams' huddles).
+    const teamEnsures = fetchMock.mock.calls
+      .filter((c) => c[0] === '/api/chat/channels/team/ensure')
+      .map((c) => bodyOf(c).teamId);
+    expect(teamEnsures).toContain('t2');
 
     await screen.findByTestId('live-team-chat');
-    // Deep-link focuses the team; conversation auto-selects within it.
+    // Deep-link focuses the team's rail icon; conversation auto-selects within it.
     expect(liveProps).toHaveBeenCalledWith(
-      expect.objectContaining({ initialWorkspaceId: 't2', initialConversationId: null }),
+      expect.objectContaining({ initialWorkspaceId: teamRailId('t2'), initialConversationId: null }),
     );
   });
 
@@ -126,7 +139,7 @@ describe('TeamChatRoute', () => {
     renderAt('/team-chat');
     await screen.findByTestId('live-team-chat');
     expect(liveProps).toHaveBeenCalledWith(
-      expect.objectContaining({ initialWorkspaceId: DM_WORKSPACE_ID }),
+      expect.objectContaining({ initialWorkspaceId: HOME_ID }),
     );
   });
 

@@ -27,7 +27,7 @@
  * @module components/Chat-team/LiveTeamChatPage
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Home, ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
 import {
   ChatAPIProvider,
@@ -64,6 +64,9 @@ import { ORCHESTRATOR_SESSION, ORCHESTRATOR_LABEL } from '../../utils/team-chat.
 /** Rail identifier for the Home (default) entry. */
 export const HOME_ID = 'home';
 
+/** localStorage key for the rail's collapsed parent-team ids. */
+const RAIL_COLLAPSE_KEY = 'crewly-chat-rail-collapsed';
+
 /** Build the rail workspace id for a team (so deep-links can target it). */
 export function teamRailId(teamId: string): string {
   return `team:${teamId}`;
@@ -80,6 +83,11 @@ export interface ChatTeam {
   leaderSessions: string[];
   /** Session names of every member of the team. */
   memberSessions: string[];
+  /**
+   * Parent team id, when this team is a sub-team. Drives the rail's nested
+   * parent → sub-team grouping. Undefined for a top-level (standalone) team.
+   */
+  parentTeamId?: string;
 }
 
 export interface LiveTeamChatPageProps {
@@ -278,11 +286,20 @@ function LiveTeamChatPageBody({
       icon: <Home className="h-5 w-5" />,
       tooltip: 'Home — orchestrator, pinned chats & huddles',
     };
-    const teamItems: Workspace[] = teams.map((t) => ({
-      id: `team:${t.id}`,
-      name: t.name,
-      kind: 'team' as const,
-    }));
+    // Only nest under a parent that is itself a present team in the rail —
+    // a parentTeamId pointing at a missing/hidden team renders as a clean root
+    // (defensive against stale config), and self-references are ignored.
+    const presentIds = new Set(teams.map((t) => t.id));
+    const teamItems: Workspace[] = teams.map((t) => {
+      const hasParent =
+        !!t.parentTeamId && t.parentTeamId !== t.id && presentIds.has(t.parentTeamId);
+      return {
+        id: teamRailId(t.id),
+        name: t.name,
+        kind: 'team' as const,
+        ...(hasParent ? { parentId: teamRailId(t.parentTeamId!) } : {}),
+      };
+    });
     return [home, ...teamItems];
   }, [teams]);
 
@@ -294,6 +311,54 @@ function LiveTeamChatPageBody({
   );
   // Home is the default landing.
   const resolvedWorkspaceId = activeWorkspaceId ?? HOME_ID;
+
+  // Collapsed parent-team rail tiles (their sub-teams are hidden). Persisted so
+  // the user's collapse choices survive reloads; default is everything expanded.
+  const [collapsedParentIds, setCollapsedParentIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(RAIL_COLLAPSE_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return arr.filter((x) => typeof x === 'string');
+      }
+    } catch {
+      // ignore — collapse state is best-effort
+    }
+    return [];
+  });
+
+  const toggleRailCollapse = useCallback((parentId: string) => {
+    setCollapsedParentIds((prev) => {
+      const next = prev.includes(parentId)
+        ? prev.filter((id) => id !== parentId)
+        : [...prev, parentId];
+      try {
+        localStorage.setItem(RAIL_COLLAPSE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore — best-effort persistence
+      }
+      return next;
+    });
+  }, []);
+
+  // Deep-link safety: if the selected workspace is a sub-team whose parent is
+  // collapsed (e.g. via `?team=`), auto-expand the parent so the active tile is
+  // visible in the rail rather than hidden.
+  useEffect(() => {
+    const ws = workspaces.find((w) => w.id === resolvedWorkspaceId);
+    const parentId = ws?.parentId;
+    if (!parentId) return;
+    setCollapsedParentIds((prev) => {
+      if (!prev.includes(parentId)) return prev;
+      const next = prev.filter((id) => id !== parentId);
+      try {
+        localStorage.setItem(RAIL_COLLAPSE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore — best-effort persistence
+      }
+      return next;
+    });
+  }, [resolvedWorkspaceId, workspaces]);
 
   // All conversations, unscoped — re-bucketed per rail selection below.
   const allGroups = useGroupedChannels(mergedChannels, { workspaceId: undefined });
@@ -484,6 +549,8 @@ function LiveTeamChatPageBody({
           activeWorkspaceId={resolvedWorkspaceId}
           onSelectWorkspace={handleSelectWorkspace}
           showLabels
+          collapsedParentIds={collapsedParentIds}
+          onToggleCollapse={toggleRailCollapse}
         />
       )}
 

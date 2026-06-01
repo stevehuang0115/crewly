@@ -62,6 +62,9 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = function noop() {
     /* no-op */
   };
+  // Rail collapse + group-collapse state persist to localStorage; clear it so
+  // one test's collapse choices don't leak into another's initial render.
+  window.localStorage.clear();
 });
 
 const MENTIONABLES: MentionTarget[] = [
@@ -231,6 +234,44 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     const lead = screen.getByTestId('conv-row-dm-maya');
     const member = screen.getByTestId('conv-row-dm-alex');
     expect(lead.compareDocumentPosition(member) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('nests a sub-team under its parent in the rail (parentTeamId → parentId)', async () => {
+    const { client } = makeStubClient([orcDm]);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        teams={[
+          { id: 'crewly', name: 'Crewly', leaderSessions: [], memberSessions: [] },
+          {
+            id: 'mktg',
+            name: 'Crewly Marketing',
+            leaderSessions: [],
+            memberSessions: [],
+            parentTeamId: 'crewly',
+          },
+          // Orphan parent reference → renders as a clean top-level root.
+          {
+            id: 'evership',
+            name: 'Evership',
+            leaderSessions: [],
+            memberSessions: [],
+            parentTeamId: 'missing-team',
+          },
+        ]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('workspace-row-home')).toBeInTheDocument());
+    // The sub-team is marked nested under Crewly; standalone teams are not.
+    expect(screen.getByTestId('workspace-row-team:mktg')).toHaveAttribute('data-nested', 'true');
+    expect(screen.getByTestId('workspace-row-team:crewly')).toHaveAttribute('data-nested', 'false');
+    expect(screen.getByTestId('workspace-row-team:evership')).toHaveAttribute('data-nested', 'false');
+    // The parent gets a collapse chevron; collapsing it hides the sub-team.
+    expect(screen.getByTestId('workspace-collapse-team:crewly')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('workspace-collapse-team:crewly'));
+    expect(screen.queryByTestId('workspace-row-team:mktg')).not.toBeInTheDocument();
+    expect(screen.getByTestId('workspace-row-team:crewly')).toBeInTheDocument();
   });
 
   it('AC#1: MentionComposer onSend posts a string[] of mention IDs', async () => {
