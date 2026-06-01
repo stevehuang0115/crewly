@@ -128,7 +128,8 @@ describe('MessageThread', () => {
     await waitFor(() => expect(screen.getByText(/Welcome/i)).toBeInTheDocument());
     // No iMessage bubble styling in flat mode.
     expect(container.querySelector('.rounded-2xl')).toBeNull();
-    expect(container.querySelector('.bg-blue-500')).toBeNull();
+    // The own-message bubble fill (brand primary) must not appear in flat mode.
+    expect(container.querySelector('.bg-primary')).toBeNull();
   });
 });
 

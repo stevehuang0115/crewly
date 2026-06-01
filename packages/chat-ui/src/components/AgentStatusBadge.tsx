@@ -80,19 +80,19 @@ const STATUS_TEXT: Record<ResolvedStatus, string> = {
 };
 
 const STATUS_DOT: Record<ResolvedStatus, string> = {
-  online: 'bg-emerald-500',
+  online: 'bg-emerald-400',
   busy: 'bg-amber-400',
-  idle: 'bg-amber-300',
-  offline: 'bg-slate-400',
-  inactive: 'bg-slate-300',
+  idle: 'bg-amber-400',
+  offline: 'bg-gray-500',
+  inactive: 'bg-gray-500',
 };
 
 const STATUS_TEXT_COLOR: Record<ResolvedStatus, string> = {
-  online: 'text-emerald-600',
-  busy: 'text-amber-600',
-  idle: 'text-amber-600',
-  offline: 'text-slate-500',
-  inactive: 'text-slate-500',
+  online: 'text-emerald-400',
+  busy: 'text-amber-400',
+  idle: 'text-amber-400',
+  offline: 'text-text-secondary-dark',
+  inactive: 'text-text-secondary-dark',
 };
 
 export function AgentStatusBadge({
