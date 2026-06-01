@@ -246,6 +246,38 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     expect(lead.compareDocumentPosition(member) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('shows each member\'s role under their name in the team roster', async () => {
+    const channels: Channel[] = [
+      orcDm,
+      TEAM_GENERAL,
+      { id: 'dm-maya', agentSession: 'sess-maya', name: 'Maya', createdAt: ISO, type: 'dm' },
+      { id: 'dm-alex', agentSession: 'sess-alex', name: 'Alex', createdAt: ISO, type: 'dm' },
+    ];
+    const { client } = makeStubClient(channels);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        teams={[
+          {
+            id: 'team-product',
+            name: 'Crewly Product',
+            leaderSessions: ['sess-maya'],
+            memberSessions: ['sess-maya', 'sess-alex'],
+          },
+        ]}
+        directoryAgents={[
+          { agentSession: 'sess-maya', name: 'Maya', role: 'eng-lead' },
+          { agentSession: 'sess-alex', name: 'Alex', role: 'designer' },
+        ]}
+        initialWorkspaceId="team:team-product"
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('conv-group-team-members')).toBeInTheDocument());
+    expect(screen.getByText('eng-lead')).toBeInTheDocument();
+    expect(screen.getByText('designer')).toBeInTheDocument();
+  });
+
   it('nests a sub-team under its parent in the rail (parentTeamId → parentId)', async () => {
     const { client } = makeStubClient([orcDm]);
     render(

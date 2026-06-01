@@ -158,6 +158,8 @@ export interface DirectoryAgentEntry {
   presence?: ChatPresenceStatus;
   /** Team this agent belongs to — used to group the DM list by team. */
   teamName?: string;
+  /** Agent's role (e.g. `content-strategist`) — shown under the name. */
+  role?: string;
 }
 
 export function LiveTeamChatPage({
@@ -275,6 +277,8 @@ function LiveTeamChatPageBody({
         id: `${VIRTUAL_DM_PREFIX}${a.agentSession}`,
         agentSession: a.agentSession,
         name: a.name,
+        // Surface the agent's role under their name in the roster.
+        purpose: a.role,
         createdAt: '',
         type: 'dm' as const,
         // Channel presence is the narrower online|busy|offline vocabulary.
@@ -443,13 +447,23 @@ function LiveTeamChatPageBody({
     if (!team) return orcRow ? [{ id: 'pinned', label: ORCHESTRATOR_LABEL, rows: [orcRow] }] : [];
     const leadSet = new Set(team.leaderSessions);
     const memberSet = new Set(team.memberSessions);
-    const huddleRows = allChannelRows.filter((r) => channelTeamId.get(r.id) === team.id);
-    const memberRows = allDmRows.filter(
-      (r) =>
-        r.agentSession &&
-        r.agentSession !== ORCHESTRATOR_SESSION &&
-        memberSet.has(r.agentSession),
+    // session → role, so every member row shows the agent's role under their
+    // name (uniform whether or not they already have a real DM channel).
+    const roleBySession = new Map(
+      directoryAgents.map((a) => [a.agentSession, a.role] as const),
     );
+    const huddleRows = allChannelRows.filter((r) => channelTeamId.get(r.id) === team.id);
+    const memberRows = allDmRows
+      .filter(
+        (r) =>
+          r.agentSession &&
+          r.agentSession !== ORCHESTRATOR_SESSION &&
+          memberSet.has(r.agentSession),
+      )
+      .map((r) => {
+        const role = r.agentSession ? roleBySession.get(r.agentSession) : undefined;
+        return role ? { ...r, subtitle: role } : r;
+      });
     // Single Members list, leads first, each lead tagged with a "Lead" badge
     // so the roster reads as one Slack-style list rather than split sections.
     const leads = memberRows
@@ -470,6 +484,7 @@ function LiveTeamChatPageBody({
     allChannelRows,
     channelTeamId,
     pinnedChats,
+    directoryAgents,
   ]);
 
   const totalRows = useMemo(
@@ -748,7 +763,9 @@ function LiveTeamChatRightPanelInner({
       <header className="flex items-center justify-between gap-4 border-b border-border-dark bg-background-dark/30 px-6 py-3 backdrop-blur-md">
         <div className="min-w-0 leading-tight">
           <h2 className="truncate text-base font-bold text-text-primary-dark">
-            {conversation.kind === 'channel' ? `#${conversation.title}` : conversation.title}
+            {conversation.kind === 'channel'
+              ? `#${conversation.title.replace(/^#+\s*/, '')}`
+              : conversation.title}
           </h2>
           {conversation.subtitle && (
             <p className="truncate text-[11px] text-text-secondary-dark">

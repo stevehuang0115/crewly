@@ -95,6 +95,7 @@ export function TeamChatRoute(): JSX.Element {
           name: member.name,
           presence: agentStatusToPresence(member.agentStatus),
           teamName: team.name,
+          role: member.role,
         });
       }
     }
