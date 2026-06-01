@@ -350,27 +350,32 @@ function LiveTeamChatPageBody({
       (r) => r.agentSession && !r.id.startsWith(SLACK_ID_PREFIX),
     );
 
-    const pinnedRows = agentDmRows
-      .filter((r) => r.agentSession !== ORCHESTRATOR_SESSION && pinnedChats.isPinned(pinKeyOf(r)))
+    // Orchestrator first; then online → busy → offline; then most-recent; name.
+    const presenceRank = (p?: ChatPresenceStatus): number =>
+      p === 'online' ? 0 : p === 'busy' ? 1 : p === 'offline' ? 2 : 3;
+    const byDmOrder = (a: ConversationRow, b: ConversationRow): number => {
+      if (a.agentSession === ORCHESTRATOR_SESSION) return -1;
+      if (b.agentSession === ORCHESTRATOR_SESSION) return 1;
+      const pr = presenceRank(a.presence) - presenceRank(b.presence);
+      if (pr !== 0) return pr;
+      const at = a.lastMessageAt ?? '';
+      const bt = b.lastMessageAt ?? '';
+      if (at !== bt) return bt.localeCompare(at);
+      return a.title.localeCompare(b.title);
+    };
+
+    // Pinned: ANY pinned conversation (the orchestrator included) — pinning is
+    // an explicit user choice, so it wins over the orc's default DM placement.
+    const pinnedRows = [...agentDmRows]
+      .filter((r) => pinnedChats.isPinned(pinKeyOf(r)))
+      .sort(byDmOrder)
       .map(withMeta);
     const pinnedKeys = new Set(pinnedRows.map((r) => pinKeyOf(r)));
 
-    // Direct messages: orchestrator first; then online → busy → offline; then
-    // most-recent; then name. Pinned agents are lifted into the Pinned group.
-    const presenceRank = (p?: ChatPresenceStatus): number =>
-      p === 'online' ? 0 : p === 'busy' ? 1 : p === 'offline' ? 2 : 3;
+    // Direct messages: everything not lifted into Pinned.
     const dmRows = [...agentDmRows]
-      .filter((r) => r.agentSession === ORCHESTRATOR_SESSION || !pinnedKeys.has(pinKeyOf(r)))
-      .sort((a, b) => {
-        if (a.agentSession === ORCHESTRATOR_SESSION) return -1;
-        if (b.agentSession === ORCHESTRATOR_SESSION) return 1;
-        const pr = presenceRank(a.presence) - presenceRank(b.presence);
-        if (pr !== 0) return pr;
-        const at = a.lastMessageAt ?? '';
-        const bt = b.lastMessageAt ?? '';
-        if (at !== bt) return bt.localeCompare(at);
-        return a.title.localeCompare(b.title);
-      })
+      .filter((r) => !pinnedKeys.has(pinKeyOf(r)))
+      .sort(byDmOrder)
       .map(withMeta);
 
     const out: ConversationGroup[] = [];

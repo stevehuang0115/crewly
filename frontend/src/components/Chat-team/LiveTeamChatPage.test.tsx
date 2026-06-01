@@ -181,11 +181,14 @@ describe('LiveTeamChatPage — consolidated conversation list', () => {
     expect(channelRow).toHaveTextContent('Crewly Product');
   });
 
-  it('lists the orchestrator first in the Direct messages group', async () => {
+  it('surfaces the orchestrator (pinned by default) in the Pinned group', async () => {
     const { client } = makeStubClient([orcDm]);
     render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
-    await waitFor(() => expect(screen.getByTestId('conv-group-dms')).toBeInTheDocument());
-    expect(screen.getByTestId('conv-row-orc-dm')).toBeInTheDocument();
+    // The orchestrator is pinned by default, so it lands in Pinned (not DMs).
+    await waitFor(() => expect(screen.getByTestId('conv-group-pinned')).toBeInTheDocument());
+    expect(
+      within(screen.getByTestId('conv-group-pinned')).getByTestId('conv-row-orc-dm'),
+    ).toBeInTheDocument();
   });
 
   it('tags a team lead with a "Lead" badge in the DM list', async () => {
@@ -484,6 +487,25 @@ describe('LiveTeamChatPage — consolidated conversation list', () => {
     fireEvent.click(screen.getByTestId('conv-pin-dm-ella'));
     await waitFor(() => expect(screen.getByTestId('conv-group-pinned')).toBeInTheDocument());
     expect(within(screen.getByTestId('conv-group-pinned')).getByTestId('conv-row-dm-ella')).toBeInTheDocument();
+  });
+
+  it('unpinning the orchestrator moves it out of Pinned into Direct messages', async () => {
+    window.localStorage.clear();
+    const channels: Channel[] = [
+      orcDm,
+      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', presence: 'online' },
+    ];
+    const { client } = makeStubClient(channels);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+    // Pinned by default → orc starts in the Pinned group.
+    await waitFor(() =>
+      expect(within(screen.getByTestId('conv-group-pinned')).getByTestId('conv-row-orc-dm')).toBeInTheDocument(),
+    );
+    // Unpin it → it drops into Direct messages.
+    fireEvent.click(screen.getByTestId('conv-pin-orc-dm'));
+    await waitFor(() =>
+      expect(within(screen.getByTestId('conv-group-dms')).getByTestId('conv-row-orc-dm')).toBeInTheDocument(),
+    );
   });
 });
 
