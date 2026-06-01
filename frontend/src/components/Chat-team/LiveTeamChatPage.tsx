@@ -1029,11 +1029,7 @@ function ThreadMessageRow({
         </span>
         <time className="text-[10px] text-text-secondary-dark">{time}</time>
       </div>
-      <div
-        className={`glass-panel mt-1 max-w-full whitespace-pre-wrap break-words rounded-xl rounded-tl-none px-4 py-2 text-sm leading-relaxed text-text-primary-dark ${
-          isAgent ? 'border-l-2 border-l-primary' : ''
-        } ${isRoot ? 'ring-1 ring-border-dark' : ''}`}
-      >
+      <div className="mt-0.5 max-w-full whitespace-pre-wrap break-words text-sm leading-relaxed text-text-primary-dark">
         {message.content}
       </div>
     </div>
