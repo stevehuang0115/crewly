@@ -138,10 +138,16 @@ export function MessageThread({
   const messages = hideReplies ? allMessages.filter((m) => !m.threadId) : allMessages;
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto-scroll to newest on every mutation — Phase 1 keeps it simple.
+  // Auto-scroll to the newest message — but key the effect on the LAST
+  // message's id, not the list length. Otherwise "Load older" (which prepends
+  // older messages, growing the length) would yank the view back to the
+  // bottom. Prepending leaves the last id unchanged → no scroll; a genuinely
+  // new message at the bottom changes it → scroll. Channel switch + the
+  // thinking indicator still scroll to the latest.
+  const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null;
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, channelId, agentThinking]);
+  }, [lastMessageId, channelId, agentThinking]);
 
   if (!channelId) {
     return (
