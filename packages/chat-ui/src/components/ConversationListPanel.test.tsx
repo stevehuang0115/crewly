@@ -95,6 +95,18 @@ describe('ConversationListPanel', () => {
     expect(screen.getByTestId('conv-unread-pill-c-proj-onboarding')).toHaveTextContent('3');
   });
 
+  it('does not double the `#` when a channel name already carries one', () => {
+    const groups: ConversationGroup[] = [
+      { id: 'channels', label: 'Channels', rows: [{ id: 'c-gen', kind: 'channel', title: '#general' }] },
+    ];
+    renderPanel({ groups });
+    const row = screen.getByTestId('conv-row-c-gen');
+    // The `#` glyph is the icon; the title text must not repeat it.
+    expect(screen.getByTestId('conv-icon-c-gen')).toHaveTextContent('#');
+    expect(row).not.toHaveTextContent('##');
+    expect(row).toHaveTextContent('general');
+  });
+
   it('renders a role badge pill next to the title when row.badge is set', () => {
     const groups: ConversationGroup[] = [
       {

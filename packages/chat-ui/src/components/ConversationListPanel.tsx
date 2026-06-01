@@ -359,7 +359,9 @@ function ConversationRowItem({
               hasUnread ? 'font-semibold text-text-primary-dark' : '',
             ].join(' ')}
           >
-            {row.title}
+            {/* The leading `#` glyph is rendered separately, so strip any `#`
+                the channel name itself carries to avoid a doubled `##`. */}
+            {row.title.replace(/^#+\s*/, '')}
           </span>
         ) : (
           <div className="min-w-0 flex-1">
