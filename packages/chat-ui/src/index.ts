@@ -38,6 +38,8 @@ export { useChannels } from './hooks/useChannels';
 export type { UseChannelsResult } from './hooks/useChannels';
 export { useMessages, selectRootMessages, selectThreadReplies } from './hooks/useMessages';
 export type { UseMessagesResult } from './hooks/useMessages';
+export { useMergedMessages, toChronological } from './hooks/useMergedMessages';
+export type { UseMergedMessagesResult } from './hooks/useMergedMessages';
 export { useSendMessage } from './hooks/useSendMessage';
 export type { UseSendMessageResult } from './hooks/useSendMessage';
 export { useAgentPresence } from './hooks/useAgentPresence';

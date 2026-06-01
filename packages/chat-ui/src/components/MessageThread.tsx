@@ -83,6 +83,26 @@ export interface MessageThreadProps {
    * preserving legacy behavior.
    */
   hideReplies?: boolean;
+  /**
+   * Controlled-feed mode (additive — omit for the default self-fetching
+   * behavior, keeping legacy + Portal callers unchanged).
+   *
+   * When `messages` is provided, MessageThread renders THESE messages and
+   * skips its internal `useMessages(channelId)` fetch/subscription entirely.
+   * The host owns the data — used for the merged multi-channel feed (e.g. the
+   * Orchestrator timeline with its Slack threads merged in). `agentThinking`,
+   * `loading`, `hasMore`, and `onLoadMore` are then read from props too
+   * (each optional, defaulting to off / no-op).
+   */
+  messages?: Message[];
+  /** Controlled "agent is thinking" flag (only read when `messages` is set). */
+  agentThinking?: boolean;
+  /** Controlled loading flag (only read when `messages` is set). */
+  loading?: boolean;
+  /** Controlled "load older" availability (only read when `messages` is set). */
+  hasMore?: boolean;
+  /** Controlled "load older" handler (only read when `messages` is set). */
+  onLoadMore?: () => void;
 }
 
 export function MessageThread({
@@ -95,9 +115,23 @@ export function MessageThread({
   layout = 'bubble',
   onReplyInThread,
   hideReplies = false,
+  messages: controlledMessages,
+  agentThinking: controlledAgentThinking,
+  loading: controlledLoading,
+  hasMore: controlledHasMore,
+  onLoadMore: controlledOnLoadMore,
 }: MessageThreadProps): JSX.Element {
-  const { messages: allMessages, loading, error, hasMore, agentThinking, loadMore } =
-    useMessages(channelId);
+  // Controlled mode: the host supplies `messages` (e.g. a merged multi-channel
+  // feed). We then disable the internal fetch by passing a null channelId so
+  // the hook no-ops, and read every timeline value from props instead.
+  const controlled = controlledMessages !== undefined;
+  const feed = useMessages(controlled ? null : channelId);
+  const allMessages = controlled ? controlledMessages! : feed.messages;
+  const loading = controlled ? controlledLoading ?? false : feed.loading;
+  const error = controlled ? null : feed.error;
+  const hasMore = controlled ? controlledHasMore ?? false : feed.hasMore;
+  const agentThinking = controlled ? controlledAgentThinking ?? false : feed.agentThinking;
+  const loadMore = controlled ? controlledOnLoadMore ?? (() => {}) : feed.loadMore;
   // Slack-style: the main timeline hides thread replies (they live in the
   // thread panel). `hideReplies=false` (default) keeps the full timeline,
   // preserving legacy single-channel behavior.
