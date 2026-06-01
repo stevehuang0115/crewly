@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
 import { Terminal, Menu, X } from 'lucide-react';
 import { Navigation } from './Navigation';
 import { TerminalPanel } from '../TerminalPanel/TerminalPanel';
@@ -22,6 +22,12 @@ export const AppLayout: React.FC = () => {
   const { isCollapsed } = useSidebar();
   const { activeLimitEvent, escalationLevel, isVisible, dismiss, openModal } = usePaymentWall();
   const [isMobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const location = useLocation();
+
+  // Full-bleed routes manage their own internal padding + scrolling (e.g. the
+  // 3-panel team chat). For those we drop the content-area padding and outer
+  // scroll so they fill the viewport edge-to-edge with no dead strips.
+  const isFullBleed = location.pathname.startsWith('/team-chat');
 
   const toggleTerminal = () => {
     if (isTerminalOpen) {
@@ -78,7 +84,10 @@ export const AppLayout: React.FC = () => {
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <UpdateBanner />
           <OrchestratorStatusBanner />
-          <div className="flex-1 p-4 md:p-6 min-h-0 overflow-y-auto">
+          <div className={clsx(
+            'flex-1 min-h-0',
+            isFullBleed ? 'overflow-hidden' : 'p-4 md:p-6 overflow-y-auto'
+          )}>
             <Outlet />
           </div>
         </main>

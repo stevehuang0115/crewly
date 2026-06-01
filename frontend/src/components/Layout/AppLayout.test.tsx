@@ -37,6 +37,18 @@ vi.mock('../TeamsRestorePopup', () => ({
   TeamsRestorePopup: () => null
 }));
 
+// AppLayout reads payment-wall state; stub the hook so the test doesn't need
+// the full PaymentWallProvider (and its API/auth dependencies).
+vi.mock('../../contexts/PaymentWallContext', () => ({
+  usePaymentWall: () => ({
+    activeLimitEvent: null,
+    escalationLevel: 'none',
+    isVisible: false,
+    dismiss: vi.fn(),
+    openModal: vi.fn(),
+  }),
+}));
+
 const renderWithProviders = (component: React.ReactElement) => {
   return render(
     <BrowserRouter>
