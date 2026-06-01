@@ -291,7 +291,7 @@ export class ChatV2Service extends EventEmitter {
   private readonly db: ChatDatabase;
   private readonly channels: ChannelStore;
   private readonly messages: MessageStore;
-  private readonly presence: ChatV2ServiceOptions['getPresence'];
+  private presence: ChatV2ServiceOptions['getPresence'];
   private readonly validateTeamMembership: ChatV2ServiceOptions['validateTeamMembership'];
   private readonly now: () => number;
 
@@ -304,6 +304,20 @@ export class ChatV2Service extends EventEmitter {
     this.presence = options.getPresence ?? DEFAULT_PRESENCE;
     this.validateTeamMembership = options.validateTeamMembership;
     this.now = options.now ?? Date.now;
+  }
+
+  /**
+   * Wire (or replace) the synchronous presence provider used by the channel
+   * DTO mapper — i.e. what drives the DM presence dots in the conversation
+   * list. Settable POST-construction because the singleton is first-constructed
+   * by whichever caller wins the race (slack bridge, ws gateway, replay, …),
+   * usually with no presence wired; the composition root then calls this once
+   * so the dots reflect real agent liveness regardless of construction order.
+   *
+   * @param getPresence - Sync presence lookup (e.g. `createOssSyncPresence()`)
+   */
+  setPresenceProvider(getPresence: ChatV2ServiceOptions['getPresence']): void {
+    this.presence = getPresence;
   }
 
   /** Release the DB handle. Safe to call during graceful shutdown / in tests. */

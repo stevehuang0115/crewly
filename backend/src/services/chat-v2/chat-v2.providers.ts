@@ -25,6 +25,7 @@ import type {
   IAgentPresenceProvider,
   ChatAgentPresenceDTO,
 } from '../../controllers/chat-v2/chat-v2.controller.js';
+import { getSessionBackendSync } from '../session/index.js';
 
 /**
  * Minimal storage surface the providers need. Decoupled from the full
@@ -247,5 +248,58 @@ export function createOssAgentPresenceProvider(
         lastSeenAt: active ? now() : null,
       };
     },
+  };
+}
+
+/**
+ * SYNCHRONOUS presence for the channel-LIST path.
+ *
+ * `ChatV2Service.toChannelDTO` is synchronous and `listChannels` builds many
+ * DTOs at once, so the channel rows (which drive the DM presence dots) need a
+ * sync `getPresence`. The async {@link createOssAgentPresenceProvider} backs
+ * the richer `/presence/:id` endpoint, but it was never wired into the service
+ * — so every DM dot fell back to `DEFAULT_PRESENCE` ('offline') regardless of
+ * whether the agent was actually running.
+ *
+ * This factory returns a sync presence keyed on runtime liveness — the SAME
+ * "is the agent's child process alive" signal behind the Dashboard's
+ * "Running Agents" count (`isAgentActive` → `getSessionBackendSync`) — so a DM
+ * dot turns green exactly when the agent is running. Busy/idle refinement needs
+ * the async team-status read and stays in the `/presence` provider; here online
+ * vs offline is what the dot needs.
+ *
+ * @param opts.isAliveSync - Liveness override (tests pass a stub).
+ * @param opts.now - Clock override (tests freeze `lastSeenAt`).
+ * @returns A sync `(agentSession) => { status, lastSeenAt }` for `getPresence`.
+ */
+export function createOssSyncPresence(opts: {
+  isAliveSync?: (agentSession: string) => boolean;
+  now?: () => number;
+} = {}): (agentSession: string) => { status: ChatAgentPresenceDTO['status']; lastSeenAt: number | null } {
+  const now = opts.now ?? Date.now;
+  const isLive =
+    opts.isAliveSync ??
+    ((agentSession: string): boolean => {
+      try {
+        const backend = getSessionBackendSync();
+        return (
+          !!backend &&
+          backend.sessionExists(agentSession) &&
+          !!backend.isChildProcessAlive?.(agentSession)
+        );
+      } catch {
+        return false;
+      }
+    });
+  return (agentSession: string) => {
+    let live = false;
+    try {
+      live = isLive(agentSession);
+    } catch {
+      // toChannelDTO must never throw on presence (it'd blank the whole
+      // channel list) — degrade to offline.
+      live = false;
+    }
+    return { status: live ? 'online' : 'offline', lastSeenAt: live ? now() : null };
   };
 }
