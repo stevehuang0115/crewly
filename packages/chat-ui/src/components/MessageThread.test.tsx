@@ -253,6 +253,63 @@ describe('MessageThread threading', () => {
     await waitFor(() => expect(screen.getByText('root message')).toBeInTheDocument());
     expect(screen.getByText('a reply')).toBeInTheDocument();
   });
+  // ---------------------------------------------------------------------------
+  // Controlled-feed mode: when `messages` is supplied the host owns the data
+  // and the internal useMessages fetch is bypassed entirely.
+  // ---------------------------------------------------------------------------
+
+  it('renders controlled messages and skips the internal channel fetch', async () => {
+    const client = new MockChatApiClient();
+    const channels = await client.listChannels();
+    const controlled: Message[] = [
+      {
+        id: 'm-ctrl-1',
+        channelId: channels[0].id,
+        seq: 1,
+        author: { role: 'agent', id: 'orc', name: 'Orchestrator' },
+        content: 'merged-feed-message',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        mentions: [],
+      },
+    ];
+    render(
+      <ChatAPIProvider client={client} mode="mock">
+        <MessageThread channelId={channels[0].id} layout="flat" messages={controlled} />
+      </ChatAPIProvider>,
+    );
+    // The controlled message renders…
+    expect(await screen.findByText('merged-feed-message')).toBeInTheDocument();
+    // …and the channel's seeded "Welcome" message does NOT (fetch was skipped).
+    expect(screen.queryByText(/Welcome/i)).not.toBeInTheDocument();
+  });
+
+  it('uses the controlled onLoadMore + hasMore for the "Load older" affordance', async () => {
+    const onLoadMore = vi.fn();
+    const controlled: Message[] = [
+      {
+        id: 'm-ctrl-2',
+        channelId: 'orc',
+        seq: 1,
+        author: { role: 'agent', id: 'orc', name: 'Orchestrator' },
+        content: 'hello',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        mentions: [],
+      },
+    ];
+    render(
+      <ChatAPIProvider mode="mock">
+        <MessageThread
+          channelId="orc"
+          layout="flat"
+          messages={controlled}
+          hasMore
+          onLoadMore={onLoadMore}
+        />
+      </ChatAPIProvider>,
+    );
+    fireEvent.click(await screen.findByText('Load older'));
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('relativeTime', () => {
