@@ -203,6 +203,17 @@ describe('LiveTeamChatPage — workspace rail IA', () => {
     expect(screen.getByLabelText('Conversation info')).toBeInTheDocument();
   });
 
+  it('does not warn that the agent is inactive (sending wakes it anyway)', async () => {
+    const { client } = makeStubClient([orcDm]);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+    await waitFor(() => expect(screen.getByLabelText('Search')).toBeInTheDocument());
+    // The "currently inactive" banner + footer hint were removed — typing a
+    // message activates the agent, so the warning was just noise.
+    expect(screen.queryByTestId('banner-agent-offline')).not.toBeInTheDocument();
+    expect(screen.queryByText(/currently inactive/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/is inactive — sending will activate/i)).not.toBeInTheDocument();
+  });
+
   it('renders Home (no dead-end) even with zero channels', async () => {
     const { client } = makeStubClient([]);
     render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
