@@ -150,9 +150,9 @@ describe('useMergedMessages', () => {
     expect(result.current.messages.map((m) => m.id)).toEqual(['o1', 's2', 'o3']);
   });
 
-  it('windows to the most-recent 50 and reveals older via loadMore', async () => {
+  it('windows to the most-recent 20 and reveals older via loadMore', async () => {
     // 120 messages in one channel — the merged feed should render only the
-    // latest 50, with hasMore=true; loadMore reveals the next 50.
+    // latest 20, with hasMore=true; loadMore reveals the next 50.
     const many = Array.from({ length: 120 }, (_, i) =>
       msg({
         id: `m${String(i).padStart(3, '0')}`,
@@ -165,15 +165,15 @@ describe('useMergedMessages', () => {
     const { result } = renderHook(() => useMergedMessages(['orc']), { wrapper: wrap(client) });
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.messages).toHaveLength(50);
+    expect(result.current.messages).toHaveLength(20);
     expect(result.current.hasMore).toBe(true);
-    // The window holds the NEWEST 50 (m070..m119), oldest-first within it.
-    expect(result.current.messages[0].id).toBe('m070');
-    expect(result.current.messages[49].id).toBe('m119');
+    // The window holds the NEWEST 20 (m100..m119), oldest-first within it.
+    expect(result.current.messages[0].id).toBe('m100');
+    expect(result.current.messages[19].id).toBe('m119');
 
     act(() => result.current.loadMore());
-    expect(result.current.messages).toHaveLength(100);
-    expect(result.current.messages[0].id).toBe('m020');
+    expect(result.current.messages).toHaveLength(70);
+    expect(result.current.messages[0].id).toBe('m050');
     expect(result.current.hasMore).toBe(true);
 
     act(() => result.current.loadMore());
