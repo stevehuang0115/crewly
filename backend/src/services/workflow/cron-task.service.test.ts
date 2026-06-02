@@ -133,6 +133,39 @@ describe('CronTaskService', () => {
 			const result = getNextRunTime('0 9 * * *', 'Asia/Shanghai', new Date('2026-03-20T00:00:00Z'));
 			expect(new Date(result).toISOString()).toBe('2026-03-20T01:00:00.000Z');
 		});
+
+		// #678 fire-time hardening: a bad/empty timezone must NOT throw (it would
+		// crash the whole evaluateTasks tick and stall every cron) — it falls
+		// back to UTC and still computes a real schedule-aligned time.
+		it('does NOT throw on an invalid timezone — falls back to UTC', () => {
+			const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+			const result = getNextRunTime('0 9 * * *', 'Not/AZone', new Date('2026-03-20T08:00:00Z'));
+			expect(new Date(result).getUTCHours()).toBe(9); // UTC-aligned, not drifted
+			warn.mockRestore();
+		});
+
+		it('treats empty timezone as UTC', () => {
+			const result = getNextRunTime('0 9 * * *', '', new Date('2026-03-20T08:00:00Z'));
+			expect(new Date(result).getUTCHours()).toBe(9);
+		});
+
+		it('matches a midnight cron (0 0 * * *) instead of drifting', () => {
+			const result = getNextRunTime('0 0 * * *', 'UTC', new Date('2026-03-20T08:00:00Z'));
+			const d = new Date(result);
+			expect(d.getUTCHours()).toBe(0);
+			expect(d.getUTCMinutes()).toBe(0);
+			expect(d.getUTCDate()).toBe(21); // next midnight, properly aligned
+		});
+
+		it('alerts (does not silently drift) on an impossible expression (Feb 31)', () => {
+			const err = jest.spyOn(console, 'error').mockImplementation(() => {});
+			const after = new Date('2026-03-20T08:00:00Z');
+			const result = getNextRunTime('0 0 31 2 *', 'UTC', after);
+			expect(err).toHaveBeenCalled(); // loud alert, no silent drift
+			// Returns a value (eval loop never throws) — the now+24h fallback.
+			expect(new Date(result).getTime()).toBe(after.getTime() + 24 * 60 * 60 * 1000);
+			err.mockRestore();
+		});
 	});
 
 	describe('getDatePartsInTimezone', () => {

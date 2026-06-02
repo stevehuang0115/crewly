@@ -111,11 +111,38 @@ export function getDatePartsInTimezone(
 
 	return {
 		minute: parseInt(partsMap.get('minute') || '0', 10),
-		hour: parseInt(partsMap.get('hour') || '0', 10),
+		// Some ICU/Node versions format midnight as "24" under hour12:false;
+		// normalize 24→0 so a `0 0 * * *` (midnight) cron actually matches
+		// instead of never matching → falling through to the drift fallback.
+		hour: parseInt(partsMap.get('hour') || '0', 10) % 24,
 		dayOfWeek: weekdayMap[weekdayStr] ?? 0,
 		dayOfMonth: parseInt(partsMap.get('day') || '1', 10),
 		month: parseInt(partsMap.get('month') || '1', 10),
 	};
+}
+
+/**
+ * Validate an IANA timezone, falling back to UTC for an invalid/empty one.
+ *
+ * `new Intl.DateTimeFormat(..., { timeZone })` THROWS `RangeError` on a bad
+ * tz. That throw was previously uncaught inside `getNextRunTime`'s minute scan,
+ * so a single cron task with a malformed/empty timezone would crash the whole
+ * `evaluateTasks` tick and stall EVERY cron. Defaulting to UTC (with a one-time
+ * warn) keeps the scheduler resilient to one bad task.
+ *
+ * @param tz - Candidate IANA timezone
+ * @returns The tz if valid, otherwise 'UTC'
+ */
+export function safeTimezone(tz: string | undefined | null): string {
+	const candidate = (tz ?? '').trim();
+	if (!candidate) return 'UTC';
+	try {
+		new Intl.DateTimeFormat('en-US', { timeZone: candidate });
+		return candidate;
+	} catch {
+		console.warn(`[cron] Invalid timezone "${candidate}" — falling back to UTC`);
+		return 'UTC';
+	}
 }
 
 /**
@@ -191,6 +218,9 @@ export function getNextRunTime(cronExpression: string, timezone: string, after?:
 	if (parts.length !== 5) {
 		throw new Error(`Invalid cron expression: expected 5 fields, got ${parts.length}`);
 	}
+	// A bad/empty tz must not crash the whole evaluate tick (it would throw
+	// inside the minute scan below); fall back to UTC.
+	const tz = safeTimezone(timezone);
 
 	const minuteSet = parseCronField(parts[0], 0, 59);
 	const hourSet = parseCronField(parts[1], 0, 23);
@@ -206,7 +236,7 @@ export function getNextRunTime(cronExpression: string, timezone: string, after?:
 	// Try up to 8 days of minutes (covers full week + buffer for day-of-week crons)
 	for (let i = 0; i < 8 * 24 * 60; i++) {
 		// Extract fields in the TARGET timezone, not server-local
-		const tp = getDatePartsInTimezone(candidate, timezone);
+		const tp = getDatePartsInTimezone(candidate, tz);
 
 		const minuteMatch = !minuteSet || minuteSet.has(tp.minute);
 		const hourMatch = !hourSet || hourSet.has(tp.hour);
@@ -221,7 +251,18 @@ export function getNextRunTime(cronExpression: string, timezone: string, after?:
 		candidate.setMinutes(candidate.getMinutes() + 1);
 	}
 
-	// Fallback: 24 hours from now
+	// No match in 8 days. With tz validated (UTC fallback) and the midnight
+	// hour normalized, this only happens for a genuinely impossible expression
+	// (e.g. "0 0 31 2 *" — Feb 31) or a DOM/DOW contradiction. ALERT loudly
+	// instead of silently returning a non-cron-aligned now+24h that would drift
+	// the task forever (the #678 fire-time-drift symptom). We still return a
+	// value so the eval loop never throws; the loud log + the resulting daily
+	// WorkItem make the broken expression visible so it can be fixed/disabled.
+	console.error(
+		`[cron] getNextRunTime: no run time within 8 days for "${cronExpression}" (tz ${tz}) — ` +
+		`expression is likely impossible (e.g. an invalid day/month combo). Returning now+24h, which will NOT ` +
+		`align to the schedule. Fix or disable this cron.`,
+	);
 	return new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
 }
 
