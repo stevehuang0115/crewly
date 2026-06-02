@@ -576,6 +576,43 @@ export class CronTaskService {
 	 */
 	async create(request: CreateCronTaskRequest): Promise<CronTask> {
 		const timezone = request.timezone || 'UTC';
+		const isOrchestratorTask = request.targetTeamId === ORCHESTRATOR_TEAM_ID;
+
+		// Load the destination store up front so we can both dedup against it
+		// and append to it (orchestrator tasks live in the global store,
+		// team tasks in their per-team store).
+		const store = isOrchestratorTask
+			? await this.loadGlobalStore()
+			: await this.loadTeamStore(request.targetTeamId);
+
+		// Idempotency guard (#613, #621). A cron is logically identified by its
+		// target agent + team + schedule + timezone + description. If an
+		// identical task already exists, return it instead of pushing a
+		// duplicate. Without this, repeated create-cron calls — an agent
+		// self-scheduling on every restart (#621), or the orchestrator
+		// re-running a startup routine — accumulate duplicate entries in the
+		// store file, and `evaluateTasks` fires EVERY copy, delivering N
+		// identical reports per trigger (#613). create() generates a fresh
+		// random id per call, so id-based dedup cannot catch this; we match on
+		// the logical key. Genuinely distinct schedules (different time,
+		// timezone, or description) are never collapsed.
+		const existing = store.tasks.find(t =>
+			t.targetAgent === request.targetAgent &&
+			t.targetTeamId === request.targetTeamId &&
+			t.cronExpression === request.cronExpression &&
+			(t.timezone || 'UTC') === timezone &&
+			t.taskDescription === request.taskDescription,
+		);
+		if (existing) {
+			this.logger.info('Cron task create deduplicated — identical task already exists', {
+				id: existing.id,
+				cron: existing.cronExpression,
+				target: existing.targetAgent,
+				teamId: existing.targetTeamId,
+			});
+			return existing;
+		}
+
 		const nextRunAt = getNextRunTime(request.cronExpression, timezone);
 
 		const task: CronTask = {
@@ -593,13 +630,10 @@ export class CronTaskService {
 		};
 
 		// Orchestrator tasks go to global store; team tasks go to per-team store
-		if (task.targetTeamId === ORCHESTRATOR_TEAM_ID) {
-			const store = await this.loadGlobalStore();
-			store.tasks.push(task);
+		store.tasks.push(task);
+		if (isOrchestratorTask) {
 			await this.saveGlobalStore(store);
 		} else {
-			const store = await this.loadTeamStore(task.targetTeamId);
-			store.tasks.push(task);
 			await this.saveTeamStore(task.targetTeamId, store);
 		}
 
