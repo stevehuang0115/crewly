@@ -31,7 +31,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
-import { WEB_CONSTANTS, AGENT_SUSPEND_CONSTANTS } from '../../constants.js';
+import { WEB_CONSTANTS, AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1205,7 +1205,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         return await suspendService.rehydrateAgent(agentSessionName);
       } else if (strategy === 'start') {
         // For inactive agents, we need to start them via the registration service.
-        // The agent session creation is complex — use the team-member-start API endpoint.
+        // The agent session creation is complex — use the HTTP API endpoint.
         const { teamId, memberId } = action;
 
         // Follow-up #10 from PR #543 review: replace the hardcoded
@@ -1213,21 +1213,42 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         // still wins when set so deployments overriding the default keep
         // working unchanged.
         const port = process.env.PORT || WEB_CONSTANTS.PORTS.BACKEND;
-        let url = `http://localhost:${port}/api/teams/members/start`;
-        if (teamId && memberId) {
-          url = `http://localhost:${port}/api/teams/${teamId}/members/${memberId}/start`;
+
+        // The main orchestrator (crewly-orc) is a VIRTUAL team member: its
+        // teamId/memberId are intentionally undefined in the health map, and
+        // it is "managed at system level". It CANNOT be started via the
+        // team-member-start path — that handler rejects the orchestrator
+        // member with 400, and the undefined-teamId fallback URL
+        // `/api/teams/members/start` misroutes to `startTeam` (route
+        // `/:id/start`, id="members") → 404 "Team not found", which the
+        // reconciler then retried every ~10s (#679). It must be (re)started
+        // via the dedicated, idempotent orchestrator setup endpoint — which
+        // skips if already healthy and is also the path that recovers the
+        // orchestrator after a backend restart (#686).
+        let url: string;
+        let body: Record<string, unknown>;
+        if (agentSessionName === ORCHESTRATOR_SESSION_NAME) {
+          url = `http://localhost:${port}/api/orchestrator/setup`;
+          // setupOrchestrator takes no body; it is idempotent and self-gating.
+          body = {};
+        } else {
+          url = `http://localhost:${port}/api/teams/members/start`;
+          if (teamId && memberId) {
+            url = `http://localhost:${port}/api/teams/${teamId}/members/${memberId}/start`;
+          }
+          // Pass `workItemId` so the team-controller wake-gate can verify
+          // that this wake is pool-driven (path 1 of the gate). Reconciler
+          // hybrid-wake has already decided which WI triggered the wake;
+          // the gate trusts that decision rather than re-scanning the pool.
+          // Without this, the gate would still pass via path 2 (pool scan)
+          // — but explicit is better when we already have the evidence.
+          body = { sessionName: agentSessionName, workItemId: action.workItemId };
         }
 
-        // Pass `workItemId` so the team-controller wake-gate can verify
-        // that this wake is pool-driven (path 1 of the gate). Reconciler
-        // hybrid-wake has already decided which WI triggered the wake;
-        // the gate trusts that decision rather than re-scanning the pool.
-        // Without this, the gate would still pass via path 2 (pool scan)
-        // — but explicit is better when we already have the evidence.
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionName: agentSessionName, workItemId: action.workItemId }),
+          body: JSON.stringify(body),
         });
 
         if (!response.ok) {
