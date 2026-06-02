@@ -47,6 +47,7 @@ jest.mock('../../services/core/storage.service.js', () => ({
 const mockService = {
   getAvailableItems: jest.fn(),
   claimFromPool: jest.fn(),
+  claimSpecificItem: jest.fn(),
   releaseBack: jest.fn(),
   getPoolStatus: jest.fn(),
   heartbeat: jest.fn(),
@@ -204,6 +205,49 @@ describe('TaskPoolController', () => {
       await claimItem(req, res);
 
       expect(mockService.claimFromPool).toHaveBeenCalledWith('agent-leo', filters);
+    });
+
+    // #679 (sub): an explicit workItemId targets a specific queued item
+    // instead of taking next-available — needed to drain a specific stuck WI.
+    it('claims a specific WorkItem when workItemId is provided (targeted claim)', async () => {
+      const claimResult = {
+        workItem: { id: 'wi-stuck', status: 'running' },
+        claim: { id: 'cl-9', agentId: 'agent-leo' },
+      };
+      mockService.claimSpecificItem.mockResolvedValue(claimResult);
+
+      const req = mockReq({ body: { agentId: 'agent-leo', workItemId: 'wi-stuck' } });
+      const res = mockRes();
+      await claimItem(req, res);
+
+      expect(mockService.claimSpecificItem).toHaveBeenCalledWith('agent-leo', 'wi-stuck');
+      // Must NOT fall back to FIFO next-available.
+      expect(mockService.claimFromPool).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: claimResult });
+    });
+
+    it('returns 404 with a targeted message when the specific WorkItem is not claimable', async () => {
+      mockService.claimSpecificItem.mockResolvedValue(null);
+
+      const req = mockReq({ body: { agentId: 'agent-leo', workItemId: 'wi-stuck' } });
+      const res = mockRes();
+      await claimItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      const body = res.json.mock.calls[0][0];
+      expect(body.error).toMatch(/wi-stuck/);
+      expect(mockService.claimFromPool).not.toHaveBeenCalled();
+    });
+
+    it('falls back to FIFO when workItemId is blank/whitespace', async () => {
+      mockService.claimFromPool.mockResolvedValue(null);
+
+      const req = mockReq({ body: { agentId: 'agent-leo', workItemId: '   ' } });
+      const res = mockRes();
+      await claimItem(req, res);
+
+      expect(mockService.claimSpecificItem).not.toHaveBeenCalled();
+      expect(mockService.claimFromPool).toHaveBeenCalledWith('agent-leo', undefined);
     });
   });
 
