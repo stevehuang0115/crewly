@@ -40,6 +40,7 @@ import { TerminalGateway, setTerminalGateway } from './websocket/terminal.gatewa
 import { initializeChatGateway } from './websocket/chat.gateway.js';
 import { StartupConfig } from './types/index.js';
 import { LoggerService } from './services/core/logger.service.js';
+import { retryWithBackoff } from './services/core/retry.util.js';
 import {
 	CREWLY_CONSTANTS,
 	ORCHESTRATOR_SESSION_NAME,
@@ -2508,19 +2509,55 @@ void (async () => {
 				}
 			}
 
-			// Create orchestrator agent session
-			const result = await this.apiController.agentRegistrationService.createAgentSession({
-				sessionName: ORCHESTRATOR_SESSION_NAME,
-				role: ORCHESTRATOR_ROLE,
-				projectPath: this.config.crewlyHome,
-				windowName: ORCHESTRATOR_WINDOW_NAME,
-				runtimeType,
-				forceRecreate: true,
-			});
+			// Create orchestrator agent session, with bounded retry + backoff.
+			//
+			// #686: a single `createAgentSession` failure here used to be a
+			// one-shot WARN + return — the orchestrator then stayed inactive
+			// with NO retry and NO health signal, leaving the system in a
+			// silent "假死" state (inbound messages queue forever, /health still
+			// reports healthy). Transient failures are common at boot (e.g. a
+			// momentary PTY spawn-slot exhaustion like #611, or a downstream
+			// dependency still warming up after a process restart), so we retry
+			// with a linear backoff before giving up. The reconciler's
+			// hybrid-wake is the longer-term self-heal (it now restarts the orc
+			// via /orchestrator/setup, #679), but boot-time retry avoids leaving
+			// the orc dead until the next inbound message arrives.
+			const MAX_AUTOSTART_ATTEMPTS = 5;
+			const AUTOSTART_BACKOFF_MS = 3_000;
+
+			const result = await retryWithBackoff(
+				() => this.apiController.agentRegistrationService.createAgentSession({
+					sessionName: ORCHESTRATOR_SESSION_NAME,
+					role: ORCHESTRATOR_ROLE,
+					projectPath: this.config.crewlyHome,
+					windowName: ORCHESTRATOR_WINDOW_NAME,
+					runtimeType,
+					forceRecreate: true,
+				}),
+				{
+					maxAttempts: MAX_AUTOSTART_ATTEMPTS,
+					backoffMs: AUTOSTART_BACKOFF_MS,
+					isSuccess: r => r.success,
+					onRetry: ({ attempt, maxAttempts, retryInMs, result: r }) => {
+						this.logger.warn('Auto-start orchestrator failed to create session — retrying', {
+							error: r.error,
+							attempt,
+							maxAttempts,
+							retryInMs,
+						});
+					},
+				},
+			);
 
 			if (!result.success) {
-				this.logger.warn('Auto-start orchestrator failed to create session', {
+				// Exhausted all retries. Log loudly at ERROR (not WARN) so the
+				// failure is greppable in pm2/console output and not mistaken for
+				// a benign skip. The orchestrator stays inactive; recovery now
+				// falls to the reconciler's hybrid-wake on the next queued
+				// inbound WorkItem (#679 routing fix).
+				this.logger.error('Auto-start orchestrator FAILED after all retries — orchestrator is INACTIVE', {
 					error: result.error,
+					attempts: MAX_AUTOSTART_ATTEMPTS,
 				});
 				return;
 			}
