@@ -154,6 +154,7 @@ import { WorkItemDispatchSubscriber } from '../v3/workitem-dispatch.subscriber.j
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { TaskClaim } from '../../types/v2/claim.types.js';
 import type { WakeAction } from '../../types/v2/reconcile.types.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 // Access mock instances via type assertions
 const mockPool = (TaskPoolService as any)._mockInstance;
@@ -937,6 +938,40 @@ describe('LiveReconcilerDataProvider', () => {
       );
       const bodyArg = (globalThis.fetch as jest.Mock).mock.calls[0][1].body as string;
       expect(JSON.parse(bodyArg)).toMatchObject({ sessionName: 'agent-idle', workItemId: 'wi-1' });
+
+      globalThis.fetch = originalFetch;
+    });
+
+    // #679 / #686: the orchestrator is a virtual member with undefined
+    // teamId/memberId. The old fallback URL `/api/teams/members/start`
+    // misrouted to `startTeam` → 404 "Team not found" (retried every ~10s),
+    // and the orchestrator could never be (re)started by the reconciler — so
+    // after a backend restart it stayed inactive and inbound work sat queued.
+    // It must be routed to the dedicated, idempotent /api/orchestrator/setup.
+    it('starts the orchestrator via /api/orchestrator/setup, not the member-start path (#679, #686)', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true }),
+      });
+
+      const action: WakeAction = {
+        workItemId: 'wi-orc-1',
+        agentSessionName: ORCHESTRATOR_SESSION_NAME, // 'crewly-orc'
+        strategy: 'start',
+        // teamId/memberId intentionally absent — orc is a virtual member.
+        score: 90,
+        scoreBreakdown: { skillMatch: 40, urgency: 40, contextFamiliarity: 10, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      };
+
+      const result = await provider.executeWakeAction(action);
+
+      expect(result).toBe(true);
+      const calledUrl = (globalThis.fetch as jest.Mock).mock.calls[0][0] as string;
+      expect(calledUrl).toContain('/api/orchestrator/setup');
+      // Must NOT hit the misrouting member-start fallback.
+      expect(calledUrl).not.toContain('/api/teams/members/start');
 
       globalThis.fetch = originalFetch;
     });
