@@ -34,7 +34,6 @@ jest.mock('./modules/scheduled-messages.routes.js', () => ({ registerScheduledMe
 jest.mock('./modules/delivery-logs.routes.js', () => ({ registerDeliveryLogRoutes: jest.fn() }));
 jest.mock('./modules/config.routes.js', () => ({ registerConfigRoutes: jest.fn() }));
 jest.mock('./modules/cron-task.routes.js', () => ({ registerCronTaskRoutes: jest.fn() }));
-jest.mock('./modules/unified-scheduler.routes.js', () => ({ createUnifiedSchedulerRoutes: () => Router() }));
 jest.mock('./factory.routes.js', () => ({ createFactoryRoutes: () => Router() }));
 jest.mock('./modules/quality-gate.routes.js', () => ({ createQualityGateRouter: () => Router() }));
 jest.mock('../controllers/self-improvement/index.js', () => ({ selfImprovementRouter: Router() }));
@@ -75,7 +74,9 @@ jest.mock('../controllers/trigger/trigger.routes.js', () => ({ createTriggerRout
 jest.mock('../controllers/growth/growth.routes.js', () => ({ createGrowthRouter: () => Router() }));
 jest.mock('../controllers/task-projection/task-projection.routes.js', () => ({ __esModule: true, default: Router() }));
 jest.mock('../controllers/chat-v2/index.js', () => ({ createChatV2Router: () => Router() }));
-jest.mock('../services/chat-v2/chat-v2.singleton.js', () => ({ getChatV2Service: () => ({}) }));
+jest.mock('../services/chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: () => ({ setPresenceProvider: jest.fn() }),
+}));
 jest.mock('../services/chat-v2/chat-v2.team-membership.js', () => ({ createOssTeamMembershipValidator: () => undefined }));
 
 import { createApiRoutes } from './api.routes.js';
