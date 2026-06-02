@@ -211,6 +211,100 @@ describe('CronTaskService', () => {
 				'utf-8',
 			);
 		});
+
+		// Idempotency (#613, #621): create() must not append a duplicate when an
+		// identical task already exists, otherwise the evaluation loop fires
+		// every copy → N× reports per trigger, and agents that self-schedule on
+		// each restart accumulate duplicates.
+		it('returns the existing task without writing when an identical task already exists', async () => {
+			const existing: Partial<CronTask> = {
+				id: 'cron-existing',
+				cronExpression: '0 9 * * *',
+				timezone: 'UTC',
+				targetAgent: 'agent-1',
+				targetTeamId: 'team-alpha',
+				taskDescription: 'Daily report',
+				createdBy: 'orchestrator',
+				createdAt: '2026-01-01',
+				enabled: true,
+				lastRunAt: null,
+			};
+			setupTeamStore('team-alpha', [existing]);
+
+			const task = await service.create({
+				cronExpression: '0 9 * * *',
+				timezone: 'UTC',
+				targetAgent: 'agent-1',
+				targetTeamId: 'team-alpha',
+				taskDescription: 'Daily report',
+			});
+
+			// Same task returned, no new id minted
+			expect(task.id).toBe('cron-existing');
+			// Crucially, nothing was written back (no duplicate appended)
+			expect(mockWriteFile).not.toHaveBeenCalled();
+		});
+
+		it('creates a distinct task when the schedule differs from existing ones', async () => {
+			const existing: Partial<CronTask> = {
+				id: 'cron-existing',
+				cronExpression: '0 9 * * *',
+				timezone: 'UTC',
+				targetAgent: 'agent-1',
+				targetTeamId: 'team-alpha',
+				taskDescription: 'Daily report',
+				createdBy: 'orchestrator',
+				createdAt: '2026-01-01',
+				enabled: true,
+				lastRunAt: null,
+			};
+			setupTeamStore('team-alpha', [existing]);
+
+			// Different cron expression → must NOT be deduped
+			const task = await service.create({
+				cronExpression: '0 15 * * *',
+				timezone: 'UTC',
+				targetAgent: 'agent-1',
+				targetTeamId: 'team-alpha',
+				taskDescription: 'Daily report',
+			});
+
+			expect(task.id).not.toBe('cron-existing');
+			expect(task.id).toMatch(/^cron-/);
+			// A write happened (new task persisted)
+			expect(mockWriteFile).toHaveBeenCalledWith(
+				'/tmp/test-crewly/teams/team-alpha/cron-tasks.json',
+				expect.any(String),
+				'utf-8',
+			);
+		});
+
+		it('creates a distinct task when the description differs (same schedule)', async () => {
+			const existing: Partial<CronTask> = {
+				id: 'cron-existing',
+				cronExpression: '0 9 * * *',
+				timezone: 'UTC',
+				targetAgent: 'agent-1',
+				targetTeamId: 'team-alpha',
+				taskDescription: 'Daily report',
+				createdBy: 'orchestrator',
+				createdAt: '2026-01-01',
+				enabled: true,
+				lastRunAt: null,
+			};
+			setupTeamStore('team-alpha', [existing]);
+
+			const task = await service.create({
+				cronExpression: '0 9 * * *',
+				timezone: 'UTC',
+				targetAgent: 'agent-1',
+				targetTeamId: 'team-alpha',
+				taskDescription: 'Pre-market prep', // different description
+			});
+
+			expect(task.id).not.toBe('cron-existing');
+			expect(mockWriteFile).toHaveBeenCalled();
+		});
 	});
 
 	describe('list (aggregated across teams)', () => {
