@@ -321,23 +321,36 @@ export async function listAvailable(req: Request, res: Response): Promise<void> 
 // ---------------------------------------------------------------------------
 
 /**
- * Agent claims the next available WorkItem from the pool.
+ * Agent claims a WorkItem from the pool.
+ *
+ * Two modes:
+ * - **Next-available (FIFO)** — omit `workItemId`. Claims the next queued
+ *   item matching `filters` for the agent.
+ * - **Targeted** — pass `workItemId`. Claims that specific queued item
+ *   (#679: previously impossible — the endpoint only ever handed out the
+ *   next-available item, so a specific stuck `queued` WI could not be
+ *   targeted for claim, forcing operators to repeatedly claim-and-release
+ *   to drain it). The service-layer `claimSpecificItem` still enforces the
+ *   agent-liveness and target-respect gates, so a targeted claim of a WI
+ *   owned by a different agent (or for a dead session) is refused.
  *
  * Request body:
  * ```json
  * {
  *   "agentId": "crewly-product-leo-member-n",
- *   "filters": { "types": ["delegate"], "owner": "agent" }
+ *   "workItemId": "wi-123",                       // optional — targeted claim
+ *   "filters": { "types": ["delegate"], "owner": "agent" }  // ignored if workItemId set
  * }
  * ```
  *
- * @param req - Express request with agentId in body
+ * @param req - Express request with agentId (and optional workItemId) in body
  * @param res - Express response with claimed item and claim, or 404
  */
 export async function claimItem(req: Request, res: Response): Promise<void> {
   try {
-    const { agentId, filters } = req.body as {
+    const { agentId, workItemId, filters } = req.body as {
       agentId?: string;
+      workItemId?: string;
       filters?: PoolFilters;
     };
 
@@ -346,12 +359,17 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const result = await getService().claimFromPool(agentId.trim(), filters);
+    const hasTarget = typeof workItemId === 'string' && workItemId.trim().length > 0;
+    const result = hasTarget
+      ? await getService().claimSpecificItem(agentId.trim(), workItemId.trim())
+      : await getService().claimFromPool(agentId.trim(), filters);
 
     if (!result) {
       res.status(404).json({
         success: false,
-        error: 'No available WorkItem matching filters',
+        error: hasTarget
+          ? `WorkItem ${workItemId} is not claimable by ${agentId.trim()} (not queued, already claimed, target mismatch, or agent not active)`
+          : 'No available WorkItem matching filters',
       });
       return;
     }
