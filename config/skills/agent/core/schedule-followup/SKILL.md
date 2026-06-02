@@ -34,6 +34,19 @@ that went quiet.
 | "Whenever Rex goes idle, check progress" | `watch-for-event` (event-based, not this skill) |
 | Simple self-reminder with no team scope | `schedule-check` (older skill) |
 
+## Before you schedule — check you aren't already scheduled
+
+Schedules live in **two stores**: follow-up triggers (this skill) and cron
+tasks the orchestrator sets for you. Check **both** before creating, or you
+will stack a duplicate that fires N× reports:
+
+- `list-my-followups` — your follow-up triggers
+- `list-my-crons` — recurring crons targeting you (the orchestrator's)
+
+Do **not** treat "cron list shows 0" alone as "no schedule exists" — verify
+with both skills, and if still unsure, ask the orchestrator instead of
+re-creating (#621).
+
 ## Key invariants
 
 - Every followup is **team-scoped**. It shows up under `list-my-followups` and
