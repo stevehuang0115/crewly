@@ -255,6 +255,13 @@ export interface WorkItem {
  * Input for creating a new WorkItem.
  */
 export interface CreateWorkItemInput {
+  /**
+   * Optional deterministic id. When omitted a random uuid is generated. Supply
+   * a stable id when the WorkItem represents an idempotent occurrence (e.g. a
+   * cron fire keyed to its slot) so re-creating the same occurrence is a no-op
+   * via the pool's `(id)` dedup instead of a duplicate.
+   */
+  id?: string;
   requestId?: string;
   parentWorkItemId?: string;
   type: WorkItemType;
@@ -558,7 +565,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
       ? 'scheduled'
       : 'queued';
   return {
-    id: uuidv4(),
+    id: input.id ?? uuidv4(),
     requestId: input.requestId,
     parentWorkItemId: input.parentWorkItemId,
     type: input.type,

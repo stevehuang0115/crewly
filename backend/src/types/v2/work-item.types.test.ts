@@ -443,6 +443,12 @@ describe('WorkItem Types', () => {
       const wi = createWorkItem(input);
       expect(wi.id).toMatch(/^[0-9a-f]{8}-/);
     });
+    it('should honor a supplied deterministic id (idempotent occurrences)', () => {
+      const wi = createWorkItem({ ...input, id: 'cron-task-7-2026-06-02T08:00:00.000Z' });
+      expect(wi.id).toBe('cron-task-7-2026-06-02T08:00:00.000Z');
+      const again = createWorkItem({ ...input, id: 'cron-task-7-2026-06-02T08:00:00.000Z' });
+      expect(again.id).toBe(wi.id);
+    });
     it('should default maxRetries to DEFAULT_MAX_RETRIES', () => {
       const wi = createWorkItem(input);
       expect(wi.maxRetries).toBe(DEFAULT_MAX_RETRIES);

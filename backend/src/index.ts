@@ -55,7 +55,6 @@ import { getSettingsService } from './services/settings/index.js';
 import { MemoryService } from './services/memory/memory.service.js';
 import { getImprovementStartupService } from './services/orchestrator/improvement-startup.service.js';
 import { initializeSlackIfConfigured, shutdownSlack } from './services/slack/index.js';
-import { resolveTeamByIdOrSlug, slugifyTeamName } from './services/workflow/team-identifier-resolver.js';
 import { initializeWhatsAppIfConfigured, shutdownWhatsApp } from './services/whatsapp/index.js';
 import { initializeGoogleChatIfConfigured } from './services/messaging/google-chat-initializer.js';
 import { initializeTelegramIfConfigured, shutdownTelegram } from './services/telegram/index.js';
@@ -1802,83 +1801,50 @@ void (async () => {
 				});
 			}
 
-			// #286: Start cron task service with agent status/start callbacks
+			// #286/#678: Cron fires ENQUEUE a WorkItem into the task pool instead
+			// of writing straight to the agent's terminal. The pool's wake-mesh
+			// (WorkItemDispatchSubscriber push + AgentAutoClaim pull + reconciler
+			// self-heal) then assigns + delivers it — so a cron firing for an
+			// OFFLINE agent becomes a durable queued item that gets woken, instead
+			// of being silently dropped (#678). No agent-status/auto-start callbacks
+			// are wired: the cron now ALWAYS enqueues regardless of liveness, and
+			// the pool owns online/offline delivery + recovery.
 			try {
 				const cronTaskService = CronTaskService.getInstance();
-				const storageRef = this.storageService;
-				const registrationRef = this.apiController.agentRegistrationService;
+				const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+				const { createWorkItem } = await import('./types/v2/work-item.types.js');
 
 				cronTaskService.setExecutionCallback(async (task) => {
-					this.logger.info('Executing cron task', { id: task.id, target: task.targetAgent });
-					await registrationRef.sendMessageToAgent(
-						task.targetAgent,
-						`[CRON_TASK:${task.id}] ${task.taskDescription}`,
-					);
-				});
-				// Issue #307: cron tasks created with `targetTeamId` set to a
-				// name slug (e.g. "stock-ops-team") instead of the UUID would
-				// silently 404 on every fire — `teams.find(t => t.id === teamId)`
-				// returned undefined and both callbacks returned `false` with
-				// no log surface. `resolveTeamByIdOrSlug` (imported statically
-				// at the top of the file) tries UUID first, then falls back
-				// to a slug match against `name`. Misses now surface a distinct
-				// warn-log with the available slugs so the cause is visible
-				// instead of hiding behind the generic "agent offline" warn
-				// from cron-task.service.
-				cronTaskService.setAgentStatusCallback(async (sessionName, teamId) => {
-					// Handle orchestrator separately — it's not in regular teams
-					if (sessionName === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME || teamId === 'orchestrator') {
-						const orchStatus = await storageRef.getOrchestratorStatus();
-						return orchStatus?.agentStatus === 'active' || orchStatus?.agentStatus === 'started';
-					}
-					const teams = await storageRef.getTeams();
-					const team = resolveTeamByIdOrSlug(teams, teamId);
-					if (!team) {
-						this.logger.warn('CronTask: targetTeamId resolves to no team', {
-							sessionName,
-							targetTeamId: teamId,
-							availableSlugs: teams.slice(0, 10).map((t) => slugifyTeamName(t.name)),
-							hint: 'Set targetTeamId to either the team UUID or one of availableSlugs (lowercase, spaces→-)',
-						});
-						return false;
-					}
-					const member = team.members.find((m) => m.sessionName === sessionName);
-					if (!member) return false;
-					// #286 Root Cause C: treat both 'active' and 'started' as online
-					return member.agentStatus === 'active' || member.agentStatus === 'started';
-				});
-				cronTaskService.setAgentStartCallback(async (sessionName, teamId) => {
-					try {
-						const teams = await storageRef.getTeams();
-						const team = resolveTeamByIdOrSlug(teams, teamId);
-						if (!team) {
-							this.logger.warn('CronTask auto-start: targetTeamId resolves to no team', {
-								sessionName,
-								targetTeamId: teamId,
-								availableSlugs: teams.slice(0, 10).map((t) => slugifyTeamName(t.name)),
-								hint: 'Set targetTeamId to either the team UUID or one of availableSlugs (lowercase, spaces→-)',
-							});
-							return false;
-						}
-						const member = team.members.find((m) => m.sessionName === sessionName);
-						if (!member) return false;
-						await registrationRef.createAgentSession({
-							sessionName: member.sessionName,
-							role: member.role,
-							// Use the resolved team's UUID — not the user-supplied identifier
-							// — so downstream agent-registration always sees the canonical id.
-							teamId: team.id,
-							memberId: member.id,
-						});
-						return true;
-					} catch {
-						return false;
-					}
+					// Deterministic id per fire slot: re-evaluating the same due slot
+					// is a no-op (addToPool dedups by id), but each scheduled
+					// occurrence is a fresh WorkItem. `task.nextRunAt` is still the
+					// firing slot here — the service advances it AFTER this returns.
+					const slot = task.nextRunAt ?? new Date().toISOString();
+					const workItem = createWorkItem({
+						id: `cron-${task.id}-${slot}`,
+						type: 'cron_run',
+						owner: 'orchestrator',
+						target: task.targetAgent,
+						title: `Cron: ${task.taskDescription.slice(0, 80)}`,
+						description: task.taskDescription,
+						metadata: {
+							source: 'cron',
+							cronTaskId: task.id,
+							targetTeamId: task.targetTeamId,
+							firedSlot: slot,
+						},
+					});
+					await TaskPoolService.getInstance().addToPool(workItem);
+					this.logger.info('Cron task enqueued as WorkItem', {
+						id: task.id,
+						workItemId: workItem.id,
+						target: task.targetAgent,
+					});
 				});
 				// Self-heal stale nextRunAt values from pre-timezone-fix versions
 				await cronTaskService.recalculateAllNextRunTimes();
 				cronTaskService.start();
-				this.logger.info('CronTaskService started');
+				this.logger.info('CronTaskService started (cron fires → task pool WorkItems)');
 			} catch (cronErr) {
 				this.logger.warn('CronTaskService initialization failed (non-critical)', {
 					error: cronErr instanceof Error ? cronErr.message : String(cronErr),

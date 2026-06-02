@@ -356,6 +356,34 @@ describe('CronTaskService', () => {
 			expect(executedTasks).toHaveLength(0);
 		});
 
+		// #678 gate: the composition root no longer wires agentStatusCallback /
+		// agentStartCallback — cron now ALWAYS executes (enqueues a WorkItem) and
+		// the task pool owns offline delivery + recovery. Guard that a due task
+		// fires regardless of agent liveness when no status callback is set.
+		it('executes a due task with NO agent-status callback (always enqueues — #678)', async () => {
+			const executedTasks: CronTask[] = [];
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+			// intentionally NO setAgentStatusCallback / setAgentStartCallback
+
+			setupTeamDirs(['team-a']);
+			const pastTime = new Date(Date.now() - 60000).toISOString();
+			mockReadFile.mockImplementation(async (path: any) => {
+				if (String(path).includes('team-a')) {
+					return JSON.stringify({ tasks: [{
+						id: 'cron-always-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+						targetAgent: 'offline-agent', targetTeamId: 'team-a', taskDescription: 'Run',
+						enabled: true, lastRunAt: null, nextRunAt: pastTime,
+						createdBy: 'user', createdAt: '2026-01-01',
+					}] });
+				}
+				throw new Error('ENOENT');
+			});
+
+			await service.evaluateTasks();
+			expect(executedTasks).toHaveLength(1);
+			expect(executedTasks[0].id).toBe('cron-always-1');
+		});
+
 		// Issue #305 regression gate: an offline agent that auto-start
 		// successfully wakes up must be allowed to receive the cron task
 		// once it reports ready. Previously the executionCallback fired
