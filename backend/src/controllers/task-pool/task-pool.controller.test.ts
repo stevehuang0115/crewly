@@ -20,6 +20,7 @@ import {
   listAllItems,
 } from './task-pool.controller.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
+import { StorageService } from '../../services/core/storage.service.js';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -38,9 +39,16 @@ jest.mock('../../services/task-pool/task-pool.service.js', () => {
   };
 });
 
+// #615: addItem now validates the target session via StorageService. Mock it
+// so target resolution is controllable per-test.
+jest.mock('../../services/core/storage.service.js', () => ({
+  StorageService: { getInstance: jest.fn() },
+}));
+
 const mockService = {
   getAvailableItems: jest.fn(),
   claimFromPool: jest.fn(),
+  claimSpecificItem: jest.fn(),
   releaseBack: jest.fn(),
   getPoolStatus: jest.fn(),
   heartbeat: jest.fn(),
@@ -57,6 +65,12 @@ const mockService = {
 };
 
 (TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
+
+// #615: StorageService.findMemberBySessionName backs addItem's target check.
+const mockStorage = {
+  findMemberBySessionName: jest.fn(),
+};
+(StorageService.getInstance as any) = jest.fn().mockReturnValue(mockStorage);
 
 function mockReq(overrides: Record<string, any> = {}): any {
   return {
@@ -192,6 +206,49 @@ describe('TaskPoolController', () => {
       await claimItem(req, res);
 
       expect(mockService.claimFromPool).toHaveBeenCalledWith('agent-leo', filters);
+    });
+
+    // #679 (sub): an explicit workItemId targets a specific queued item
+    // instead of taking next-available — needed to drain a specific stuck WI.
+    it('claims a specific WorkItem when workItemId is provided (targeted claim)', async () => {
+      const claimResult = {
+        workItem: { id: 'wi-stuck', status: 'running' },
+        claim: { id: 'cl-9', agentId: 'agent-leo' },
+      };
+      mockService.claimSpecificItem.mockResolvedValue(claimResult);
+
+      const req = mockReq({ body: { agentId: 'agent-leo', workItemId: 'wi-stuck' } });
+      const res = mockRes();
+      await claimItem(req, res);
+
+      expect(mockService.claimSpecificItem).toHaveBeenCalledWith('agent-leo', 'wi-stuck');
+      // Must NOT fall back to FIFO next-available.
+      expect(mockService.claimFromPool).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: claimResult });
+    });
+
+    it('returns 404 with a targeted message when the specific WorkItem is not claimable', async () => {
+      mockService.claimSpecificItem.mockResolvedValue(null);
+
+      const req = mockReq({ body: { agentId: 'agent-leo', workItemId: 'wi-stuck' } });
+      const res = mockRes();
+      await claimItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      const body = res.json.mock.calls[0][0];
+      expect(body.error).toMatch(/wi-stuck/);
+      expect(mockService.claimFromPool).not.toHaveBeenCalled();
+    });
+
+    it('falls back to FIFO when workItemId is blank/whitespace', async () => {
+      mockService.claimFromPool.mockResolvedValue(null);
+
+      const req = mockReq({ body: { agentId: 'agent-leo', workItemId: '   ' } });
+      const res = mockRes();
+      await claimItem(req, res);
+
+      expect(mockService.claimSpecificItem).not.toHaveBeenCalled();
+      expect(mockService.claimFromPool).toHaveBeenCalledWith('agent-leo', undefined);
     });
   });
 
@@ -853,6 +910,12 @@ describe('TaskPoolController', () => {
     beforeEach(() => {
       mockService.addToPool.mockResolvedValue(undefined);
       mockService.getAllItems.mockResolvedValue([]);
+      // Default: any targeted session resolves to a real member, so the
+      // #615 target guard passes. Individual tests override to return null.
+      mockStorage.findMemberBySessionName.mockResolvedValue({
+        team: { id: 'team-1' },
+        member: { id: 'm-1', sessionName: 'crewly-product-leo' },
+      });
     });
 
     it('accepts a minimal CreateWorkItemInput body and generates id + status + createdAt', async () => {
@@ -1020,6 +1083,75 @@ describe('TaskPoolController', () => {
       const addedWI = mockService.addToPool.mock.calls[0][0];
       expect(addedWI.status).toBe('blocked');
       expect(addedWI.dependsOn).toEqual(['wi-upstream-1', 'wi-upstream-2']);
+    });
+
+    // #615: an agent (Don) invented teammates "Leo"/"Noah" with plausible
+    // session names and dispatched WorkItems that orphaned forever. The target
+    // must resolve to a real member or known virtual agent, else reject.
+    it('rejects a WorkItem whose target session does not resolve to any member (#615)', async () => {
+      mockStorage.findMemberBySessionName.mockResolvedValue(null); // fabricated target
+
+      const req = mockReq({
+        body: {
+          type: 'delegate',
+          owner: 'orchestrator',
+          target: 'stock-ops-team-noah-cbe74bbd', // looks real, does not exist
+          title: 'Distribute report',
+        },
+      });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      const body = res.json.mock.calls[0][0];
+      expect(body.success).toBe(false);
+      expect(body.code).toBe('unknown_target_session');
+      expect(body.error).toMatch(/does not exist/);
+      // Crucially, the orphan WI must NOT enter the pool.
+      expect(mockService.addToPool).not.toHaveBeenCalled();
+    });
+
+    it('allows a known virtual agent target (orchestrator) even without a member record (#615)', async () => {
+      // findMemberBySessionName returns null for virtual sessions, but the
+      // orchestrator is an allowed dispatch target via the virtual allowlist.
+      mockStorage.findMemberBySessionName.mockResolvedValue(null);
+
+      const req = mockReq({
+        body: {
+          type: 'delegate',
+          owner: 'orchestrator',
+          target: 'crewly-orc',
+          title: 'Escalate to orchestrator',
+        },
+      });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(mockService.addToPool).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows an unassigned WorkItem (no target) — hybrid-wake picks it up (#615)', async () => {
+      mockStorage.findMemberBySessionName.mockResolvedValue(null);
+
+      const req = mockReq({
+        body: {
+          type: 'delegate',
+          owner: 'orchestrator',
+          title: 'Unassigned work',
+          // no target
+        },
+      });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(mockService.addToPool).toHaveBeenCalledTimes(1);
+      // The target validator must not even consult storage for an absent target.
+      expect(mockStorage.findMemberBySessionName).not.toHaveBeenCalled();
     });
   });
 

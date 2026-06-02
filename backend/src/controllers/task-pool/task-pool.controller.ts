@@ -30,8 +30,56 @@ import {
 } from '../../types/v2/work-item.types.js';
 import { formatError } from '../../utils/format-error.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TaskPoolController');
+
+/**
+ * Known virtual agent sessions that are NOT stored as team members in
+ * teams.json but are legitimate dispatch targets. These mirror the virtual
+ * members surfaced by `buildOrchestratorTeam` in the team controller.
+ */
+const VIRTUAL_AGENT_SESSIONS: ReadonlySet<string> = new Set([
+  ORCHESTRATOR_SESSION_NAME, // 'crewly-orc'
+  'crewly-orc-assistant',    // in-process shadow orchestrator (AI SDK runtime)
+  'crewly-auditor',          // auditor agent
+]);
+
+/**
+ * Validate that a WorkItem's `target` (when set) resolves to a real agent —
+ * either a stored team member's session, or a known virtual agent
+ * (orchestrator / its assistant / auditor).
+ *
+ * #615: an agent (Don) hallucinated non-existent teammates ("Leo"/"Noah")
+ * and dispatched real WorkItems to fabricated session names that followed
+ * the real `<team>-<name>-<uuid>` convention. Because the dispatch path
+ * never validated the target, those WorkItems passed through silently and
+ * orphaned in the pool forever — no session existed to claim them. This is
+ * the system-side structural guard: a fabricated target is rejected at
+ * enqueue time instead of polluting the pool.
+ *
+ * An ABSENT target is legitimate (an unassigned WorkItem that hybrid-wake
+ * picks up), so it passes.
+ *
+ * @param target - The WorkItem target session name (may be undefined)
+ * @returns null if the target is valid or absent, otherwise an error message
+ */
+async function validateTargetSession(target: string | undefined): Promise<string | null> {
+  if (!target || typeof target !== 'string' || target.trim() === '') {
+    return null; // unassigned WorkItem — allowed
+  }
+  if (VIRTUAL_AGENT_SESSIONS.has(target)) {
+    return null;
+  }
+  const found = await StorageService.getInstance().findMemberBySessionName(target);
+  if (found) {
+    return null;
+  }
+  return (
+    `target session "${target}" does not exist — no team member or known agent has this session. ` +
+    `Dispatch only to sessions listed in your team context; do not invent session names.`
+  );
+}
 
 /**
  * Maps service-layer errors to appropriate HTTP status codes and sends a JSON error response.
@@ -257,6 +305,20 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       }
     }
 
+    // #615: reject WorkItems addressed to a fabricated/non-existent target
+    // session before they enqueue and orphan in the pool. Runs for both body
+    // shapes (the workItem is fully built by this point).
+    const targetError = await validateTargetSession(workItem.target);
+    if (targetError) {
+      logger.warn('Rejected WorkItem with non-existent target session (#615)', {
+        target: workItem.target,
+        workItemId: workItem.id,
+        type: workItem.type,
+      });
+      res.status(400).json({ success: false, error: targetError, code: 'unknown_target_session' });
+      return;
+    }
+
     // ServiceContract gate — only runs when the body carries cross-team
     // routing hints. Rejects before the item is enqueued.
     const rejection = await maybeEnforceContract(workItem as unknown as Record<string, unknown>);
@@ -321,23 +383,36 @@ export async function listAvailable(req: Request, res: Response): Promise<void> 
 // ---------------------------------------------------------------------------
 
 /**
- * Agent claims the next available WorkItem from the pool.
+ * Agent claims a WorkItem from the pool.
+ *
+ * Two modes:
+ * - **Next-available (FIFO)** — omit `workItemId`. Claims the next queued
+ *   item matching `filters` for the agent.
+ * - **Targeted** — pass `workItemId`. Claims that specific queued item
+ *   (#679: previously impossible — the endpoint only ever handed out the
+ *   next-available item, so a specific stuck `queued` WI could not be
+ *   targeted for claim, forcing operators to repeatedly claim-and-release
+ *   to drain it). The service-layer `claimSpecificItem` still enforces the
+ *   agent-liveness and target-respect gates, so a targeted claim of a WI
+ *   owned by a different agent (or for a dead session) is refused.
  *
  * Request body:
  * ```json
  * {
  *   "agentId": "crewly-product-leo-member-n",
- *   "filters": { "types": ["delegate"], "owner": "agent" }
+ *   "workItemId": "wi-123",                       // optional — targeted claim
+ *   "filters": { "types": ["delegate"], "owner": "agent" }  // ignored if workItemId set
  * }
  * ```
  *
- * @param req - Express request with agentId in body
+ * @param req - Express request with agentId (and optional workItemId) in body
  * @param res - Express response with claimed item and claim, or 404
  */
 export async function claimItem(req: Request, res: Response): Promise<void> {
   try {
-    const { agentId, filters } = req.body as {
+    const { agentId, workItemId, filters } = req.body as {
       agentId?: string;
+      workItemId?: string;
       filters?: PoolFilters;
     };
 
@@ -346,12 +421,17 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const result = await getService().claimFromPool(agentId.trim(), filters);
+    const hasTarget = typeof workItemId === 'string' && workItemId.trim().length > 0;
+    const result = hasTarget
+      ? await getService().claimSpecificItem(agentId.trim(), workItemId.trim())
+      : await getService().claimFromPool(agentId.trim(), filters);
 
     if (!result) {
       res.status(404).json({
         success: false,
-        error: 'No available WorkItem matching filters',
+        error: hasTarget
+          ? `WorkItem ${workItemId} is not claimable by ${agentId.trim()} (not queued, already claimed, target mismatch, or agent not active)`
+          : 'No available WorkItem matching filters',
       });
       return;
     }
