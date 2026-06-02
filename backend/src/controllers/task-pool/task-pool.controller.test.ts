@@ -17,6 +17,7 @@ import {
   completeItem,
   addItem,
   cancelQueuedItem,
+  listAllItems,
 } from './task-pool.controller.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
@@ -1151,6 +1152,78 @@ describe('TaskPoolController', () => {
       expect(mockService.addToPool).toHaveBeenCalledTimes(1);
       // The target validator must not even consult storage for an absent target.
       expect(mockStorage.findMemberBySessionName).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/task-pool/items — listAllItems (status/target filters, #679)
+  // -------------------------------------------------------------------------
+
+  describe('listAllItems (#679 status/target filters)', () => {
+    const items = [
+      { id: 'wi-run-a', status: 'running', target: 'agent-a' },
+      { id: 'wi-run-b', status: 'running', target: 'agent-b' },
+      { id: 'wi-queued-a', status: 'queued', target: 'agent-a' },
+      { id: 'wi-done-a', status: 'done', target: 'agent-a' },
+    ];
+
+    beforeEach(() => {
+      mockService.getAllItems.mockResolvedValue(items);
+    });
+
+    it('returns every item when no filters are given', async () => {
+      const req = mockReq();
+      const res = mockRes();
+      await listAllItems(req, res);
+
+      const body = res.json.mock.calls[0][0];
+      expect(body.count).toBe(4);
+      expect(body.data.map((w: any) => w.id)).toEqual(
+        ['wi-run-a', 'wi-run-b', 'wi-queued-a', 'wi-done-a'],
+      );
+    });
+
+    // The complete-task fallback query: ?status=running&target=<session>.
+    // It must resolve to ONLY that session's running WI — previously it
+    // received all items and [0] could be another agent's / a terminal WI.
+    it('filters by status AND target (the complete-task resolution path)', async () => {
+      const req = mockReq({ query: { status: 'running', target: 'agent-a' } });
+      const res = mockRes();
+      await listAllItems(req, res);
+
+      const body = res.json.mock.calls[0][0];
+      expect(body.count).toBe(1);
+      expect(body.data[0].id).toBe('wi-run-a');
+    });
+
+    it('supports a comma-separated status list', async () => {
+      const req = mockReq({ query: { status: 'running,queued' } });
+      const res = mockRes();
+      await listAllItems(req, res);
+
+      const body = res.json.mock.calls[0][0];
+      expect(body.data.map((w: any) => w.id).sort()).toEqual(
+        ['wi-queued-a', 'wi-run-a', 'wi-run-b'],
+      );
+    });
+
+    it('returns an empty list when the session has no matching item (no misdirection)', async () => {
+      const req = mockReq({ query: { status: 'running', target: 'agent-ghost' } });
+      const res = mockRes();
+      await listAllItems(req, res);
+
+      const body = res.json.mock.calls[0][0];
+      expect(body.count).toBe(0);
+      expect(body.data).toEqual([]);
+    });
+
+    it('filters by target alone', async () => {
+      const req = mockReq({ query: { target: 'agent-a' } });
+      const res = mockRes();
+      await listAllItems(req, res);
+
+      const body = res.json.mock.calls[0][0];
+      expect(body.data.map((w: any) => w.id)).toEqual(['wi-run-a', 'wi-queued-a', 'wi-done-a']);
     });
   });
 

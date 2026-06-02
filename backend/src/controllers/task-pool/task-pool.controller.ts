@@ -975,7 +975,7 @@ export async function revokeAndRelease(req: Request, res: Response): Promise<voi
 // ---------------------------------------------------------------------------
 
 /**
- * Returns every WorkItem currently in the pool — including cancelled,
+ * Returns WorkItems currently in the pool — including cancelled,
  * done_by_worker, failed, etc. — so admin / cleanup tooling can audit the
  * full state without filtering by claimability.
  *
@@ -985,14 +985,42 @@ export async function revokeAndRelease(req: Request, res: Response): Promise<voi
  * downstream consumers, this endpoint adds the audit-shaped surface that
  * the bulk-DELETE script needs.
  *
+ * Optional query filters (#679): callers may narrow by `status` (a single
+ * value or comma-separated list) and/or `target` (exact session match).
+ * These were previously IGNORED — the endpoint always returned every item.
+ * The `complete-task` skill resolves the WorkItem to complete via
+ * `GET /api/task-pool/items?status=running&target=<session>` and takes the
+ * first result; with no server-side filtering it received an arbitrary item
+ * (another agent's WI, or an already-terminal one), so the worker's
+ * completion landed on the WRONG WorkItem and was rejected with 409 —
+ * leaving the worker unable to close its own task. Honoring the filters
+ * makes that resolution correct (and returns an empty list when the session
+ * has no matching item, instead of a misleading first-of-everything).
+ *
  * Response: `{ success: true, data: WorkItem[], count }`.
  *
- * @param req - Express request
+ * @param req - Express request (optional `?status=`, `?target=` query)
  * @param res - Express response
  */
 export async function listAllItems(req: Request, res: Response): Promise<void> {
   try {
-    const items = await getService().getAllItems();
+    let items = await getService().getAllItems();
+
+    const statusParam = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    if (statusParam) {
+      const allowed = new Set(
+        statusParam.split(',').map(s => s.trim()).filter(Boolean),
+      );
+      if (allowed.size > 0) {
+        items = items.filter(wi => allowed.has(wi.status));
+      }
+    }
+
+    const targetParam = typeof req.query.target === 'string' ? req.query.target.trim() : '';
+    if (targetParam) {
+      items = items.filter(wi => wi.target === targetParam);
+    }
+
     res.json({ success: true, data: items, count: items.length });
   } catch (error) {
     res.status(500).json({ success: false, error: (error as Error).message });
