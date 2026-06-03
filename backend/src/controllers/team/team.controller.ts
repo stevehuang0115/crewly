@@ -1111,9 +1111,19 @@ export async function getTeams(this: ApiContext, req: Request, res: Response): P
     const backend = getSessionBackendSync();
     const orchestratorSessionExists = backend?.sessionExists(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME) || false;
 
+    // The orchestrator can run as an in-process Crewly Agent runtime (no PTY,
+    // so sessionExists is always false for it). Consult the in-process runtime
+    // registry so its status is not misreported INACTIVE — a wrong status here
+    // makes SlackBridge route messages to the OFFLINE path and silently drop
+    // them to a live orc (issue #693 follow-up bug (b)).
+    const orchestratorInProcessActive = this.agentRegistrationService.isInProcessRuntimeActive(
+      CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME
+    );
+
     const actualOrchestratorStatus = resolveAgentStatus(
       orchestratorStatus?.agentStatus as TeamMember['agentStatus'],
-      orchestratorSessionExists
+      orchestratorSessionExists,
+      orchestratorInProcessActive
     );
 
     // Check in-process runtime status for virtual team members (Assistant, Auditor)
@@ -1176,9 +1186,17 @@ export async function getTeam(this: ApiContext, req: Request, res: Response): Pr
       const backend = getSessionBackendSync();
       const orchestratorSessionExists = backend?.sessionExists(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME) || false;
 
+      // In-process orchestrator has no PTY — consult the runtime registry so
+      // it isn't misreported INACTIVE (issue #693 follow-up bug (b)). See the
+      // getTeams() handler for the full rationale.
+      const orchestratorInProcessActive = this.agentRegistrationService.isInProcessRuntimeActive(
+        CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME
+      );
+
       const actualOrchestratorStatus = resolveAgentStatus(
         orchestratorStatus?.agentStatus as TeamMember['agentStatus'],
-        orchestratorSessionExists
+        orchestratorSessionExists,
+        orchestratorInProcessActive
       );
 
       const inProcessStatus = getInProcessRuntimeStatusMap(this.agentRegistrationService);
