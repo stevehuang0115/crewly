@@ -154,6 +154,18 @@ export class TelegramOrchestratorBridge {
 				),
 			]);
 
+			// Guard against empty captures: the orchestrator is a PTY-backed agent
+			// whose reply is occasionally captured empty/whitespace. Sending empty
+			// text to Telegram fails with HTTP 400 and is then reported to the user
+			// as the misleading "something went wrong" error below — even though the
+			// message was received and is being worked on. Skip the reply instead.
+			if (!response || !response.trim()) {
+				this.logger.warn('Empty orchestrator response — skipping Telegram reply', {
+					chatId: msg.chatId,
+				});
+				return;
+			}
+
 			// Store the bot reply
 			await this.threadStore.appendBotReply(msg.chatId, response);
 

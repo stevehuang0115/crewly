@@ -196,6 +196,35 @@ describe('TelegramOrchestratorBridge', () => {
 				55
 			);
 		});
+
+		it('should skip the reply when the orchestrator response is empty', async () => {
+			await bridge.initialize();
+
+			const testMessage = {
+				chatId: '12345',
+				messageId: 55,
+				userId: '42',
+				userName: 'Alice',
+				text: 'Hello',
+				timestamp: 1700000000,
+			};
+
+			mockTelegramService.emit('message', testMessage);
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			const enqueueCall = mockQueueService.enqueue.mock.calls[0]![0] as {
+				sourceMetadata: { telegramResolve: (response: string) => void };
+			};
+
+			// Simulate an empty/whitespace capture from the PTY-backed orchestrator.
+			enqueueCall.sourceMetadata.telegramResolve('   ');
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			// No blank message and no misleading "something went wrong" error are sent,
+			// and nothing is stored as a bot reply.
+			expect(mockTelegramService.sendMessage).not.toHaveBeenCalled();
+			expect(mockThreadStore.appendBotReply).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('destroy', () => {
