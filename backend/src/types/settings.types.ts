@@ -7,6 +7,8 @@
  * @module types/settings.types
  */
 
+import { CREWLY_AGENT_MANAGED_COMMAND } from '../constants.js';
+
 /**
  * Available AI runtime options
  */
@@ -334,7 +336,10 @@ export function getDefaultSettings(): CrewlySettings {
         'claude-code': 'claude --dangerously-skip-permissions',
         'gemini-cli': 'gemini --yolo',
         'codex-cli': 'codex -a never -s danger-full-access',
-        'crewly-agent': 'crewly-agent-in-process',
+        // The managed external binary (PR #599). NOT 'crewly-agent-in-process'
+        // — that stale sentinel shelled out to a non-existent command and
+        // exited 127 (issue #693).
+        'crewly-agent': CREWLY_AGENT_MANAGED_COMMAND,
       },
       agentIdleTimeoutMinutes: 30,
       enableProactiveCompact: false,

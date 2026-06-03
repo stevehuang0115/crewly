@@ -215,6 +215,58 @@ describe('SettingsService', () => {
       expect(settings.general.runtimeCommands['codex-cli']).toBe('codex -a never -s danger-full-access');
     });
 
+    it('should self-heal the stale crewly-agent-in-process sentinel to the managed binary (issue #693)', async () => {
+      // Nodes that persisted settings before PR #599 carry the sentinel
+      // 'crewly-agent-in-process', which is not a real executable and exits
+      // 127 when shelled out. Loading settings must rewrite it so existing
+      // nodes recover on restart without a manual settings.json edit.
+      const settingsWithStaleSentinel = {
+        general: {
+          runtimeCommands: {
+            'claude-code': 'claude --dangerously-skip-permissions',
+            'gemini-cli': 'gemini --yolo',
+            'codex-cli': 'codex -a never -s danger-full-access',
+            'crewly-agent': 'crewly-agent-in-process',
+          },
+        },
+      };
+
+      await fs.writeFile(
+        path.join(testDir, 'settings.json'),
+        JSON.stringify(settingsWithStaleSentinel, null, 2)
+      );
+
+      service.clearCache();
+      const settings = await service.getSettings();
+
+      expect(settings.general.runtimeCommands['crewly-agent']).toBe('crewly-agent');
+    });
+
+    it('should NOT rewrite a genuine custom crewly-agent command during migration', async () => {
+      const settingsWithCustomCommand = {
+        general: {
+          runtimeCommands: {
+            'claude-code': 'claude --dangerously-skip-permissions',
+            'gemini-cli': 'gemini --yolo',
+            'codex-cli': 'codex -a never -s danger-full-access',
+            'crewly-agent': 'node /opt/crewly/bin/crewly-agent --verbose',
+          },
+        },
+      };
+
+      await fs.writeFile(
+        path.join(testDir, 'settings.json'),
+        JSON.stringify(settingsWithCustomCommand, null, 2)
+      );
+
+      service.clearCache();
+      const settings = await service.getSettings();
+
+      expect(settings.general.runtimeCommands['crewly-agent']).toBe(
+        'node /opt/crewly/bin/crewly-agent --verbose'
+      );
+    });
+
     // ----------------------------------------------------------------------
     // enableProactiveCompact one-time flip migration
     // Per spec 2026-05-05-compact-fix-AB-followup §A.1

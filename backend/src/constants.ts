@@ -152,6 +152,30 @@ export const RUNTIME_TYPES = {
 	CREWLY_AGENT: 'crewly-agent',
 } as const;
 
+/**
+ * The canonical managed binary name for the Crewly Agent runtime.
+ *
+ * After PR #599 (Plan A) the agent reasoning loop lives in the standalone
+ * `crewly-agent` npm package; OSS spawns it as a subprocess. This is the
+ * default value of `settings.general.runtimeCommands['crewly-agent']` and the
+ * command `resolveRuntimeCommand()` returns (no shell) when no genuine custom
+ * shell command is configured.
+ */
+export const CREWLY_AGENT_MANAGED_COMMAND = 'crewly-agent' as const;
+
+/**
+ * Legacy / sentinel values for `runtimeCommands['crewly-agent']` that must NOT
+ * be treated as real shell commands.
+ *
+ * `'crewly-agent-in-process'` was the factory default before PR #599 switched
+ * the runtime to an external binary. It is not a real executable — when shelled
+ * out via `sh -lc` it fails with exit-127 (issue #693). Any value listed here is
+ * recognized as "use the managed default binary" and is rewritten to
+ * `CREWLY_AGENT_MANAGED_COMMAND` on settings load (migration) and at command
+ * resolution time (defensive guard).
+ */
+export const LEGACY_CREWLY_AGENT_SENTINELS = ['crewly-agent-in-process'] as const;
+
 /** Error patterns indicating non-recoverable failures (e.g. missing CLI binary) that should not be retried. */
 export const NON_RECOVERABLE_ERROR_PATTERNS = ['command not found', 'not installed', 'No such file'] as const;
 
