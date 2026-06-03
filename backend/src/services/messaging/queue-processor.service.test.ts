@@ -608,6 +608,35 @@ describe('QueueProcessorService', () => {
       expect(queueService.hasPending()).toBe(true);
     });
 
+    it('does NOT force-deliver a system_event to the BUSY orchestrator even when force-deliver is ON (2026-06-02 autonomy incident)', async () => {
+      // Force-deliver is ON (production default), but the target is the
+      // orchestrator and it is busy (not ready). Force-injecting an FYI agent-
+      // status event mid-work handed the orc a spurious agentic turn during
+      // which it launched a team on a fabricated owner approval. The fix
+      // requeues instead — the orc processes the status when it next idles.
+      mockSystemEventForceDeliver = true;
+      mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(false);
+
+      processor.start();
+
+      // No targetSession → delivery target defaults to the orchestrator (crewly-orc).
+      queueService.enqueue({
+        content: '[IN_PROGRESS] Agent sam: TL_REPORT done',
+        conversationId: 'conv-1',
+        source: 'system_event',
+      });
+
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+
+      // Must NOT have force-delivered to the busy orchestrator.
+      expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+      // Still pending — it will be delivered when the orc returns to prompt.
+      expect(queueService.hasPending()).toBe(true);
+    });
+
     it('should retry after re-queue when agent becomes ready', async () => {
       // Disable force-deliver to exercise the requeue path
       mockSystemEventForceDeliver = false;
@@ -1294,7 +1323,10 @@ describe('QueueProcessorService', () => {
       expect(routeErrorSpy).toHaveBeenCalled();
     });
 
-    it('should force-deliver system events when agent not ready', async () => {
+    it('should force-deliver system events to a NON-orchestrator target when agent not ready', async () => {
+      // Force-delivery of system events is preserved for non-orchestrator
+      // targets. (Orchestrator-targeted system events are intentionally NOT
+      // force-delivered while busy — see the autonomy-incident test above.)
       mockAgentRegistrationService.waitForAgentReady.mockResolvedValue(false);
       mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true });
 
@@ -1306,6 +1338,7 @@ describe('QueueProcessorService', () => {
         content: '[EVENT:agent_status] Agent Sam started',
         conversationId: 'conv-sys',
         source: 'system_event',
+        targetSession: 'crewly-assistant',
       });
 
       jest.advanceTimersByTime(0);
@@ -1313,10 +1346,10 @@ describe('QueueProcessorService', () => {
       await flushPromises();
       await flushPromises();
 
-      // system_event should force-deliver even when agent is not ready.
+      // system_event to a non-orc target should force-deliver even when not ready.
       // Wrapped in [SYSTEM]...[/SYSTEM] per 2026-05-13 dogfood fix.
       expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith(
-        'crewly-orc',
+        'crewly-assistant',
         '\n[SYSTEM]\n[EVENT:agent_status] Agent Sam started\n[/SYSTEM]\n',
         'claude-code'
       );
@@ -1613,10 +1646,14 @@ describe('QueueProcessorService', () => {
 
       processor.start();
 
+      // Non-orchestrator target so the system event still force-delivers
+      // (orchestrator-targeted system events are no longer force-delivered
+      // while busy — see the autonomy-incident test).
       queueService.enqueue({
         content: 'System event',
         conversationId: 'sys-1',
         source: 'system_event',
+        targetSession: 'crewly-assistant',
       });
 
       jest.advanceTimersByTime(0);

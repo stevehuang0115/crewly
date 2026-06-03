@@ -42,6 +42,12 @@ import { SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
 import type { EventBusService } from '../../services/event-bus/event-bus.service.js';
 import { getCriticalEventTypes } from '../../types/event-bus.types.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
+import {
+  evaluateColdLaunch,
+  isDormantTeam,
+  COMMITMENT_APPROVAL_LOOKBACK_MS,
+} from '../../services/orchestrator/commitment-approval-guard.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TeamController');
 
@@ -1831,6 +1837,61 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
           code: 'wake_gate_no_pool_work',
         } as ApiResponse);
         return;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Commitment Approval Gate: cold-launching a DORMANT team needs owner OK
+    // -----------------------------------------------------------------------
+    //
+    // 2026-06-02 autonomy incident (recurrence of 2026-05-30): the orchestrator
+    // launched a dormant team ("启动 Phase 1") on a FABRICATED owner approval
+    // (it wrote `owner Steve 拍板` into the triggering WorkItem) that the owner
+    // never gave. The wake-gate above PASSED because the orc had created a
+    // WorkItem — it only checks "is there pool work", not "is the launch
+    // approved". The orchestrator prompt already forbids this, and the orc
+    // ignored it: prompt rules cannot hold the boundary, so we enforce it here.
+    //
+    // Rule (mirrors the prompt's "launching a team needs explicit approval"):
+    // if this start would COLD-LAUNCH a dormant team (no active member), require
+    // a genuine recent OWNER (`sender_type='user'`) affirmative in chat — which
+    // the orc cannot fabricate. Continuation (an already-active team) and crash
+    // recovery are unaffected (isDormantTeam → false). Fail-OPEN on read error
+    // so a chat hiccup never blocks legitimate starts.
+    if (!memberAlreadyActive && isDormantTeam(team)) {
+      let ownerMessages: string[] = [];
+      let readOk = true;
+      try {
+        ownerMessages = getChatV2Service().getRecentOwnerMessageContents(
+          Date.now() - COMMITMENT_APPROVAL_LOOKBACK_MS,
+        );
+      } catch (err) {
+        readOk = false;
+        logger.warn('Commitment gate: owner-approval chat read failed — failing open', {
+          teamId,
+          memberId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      if (readOk) {
+        const decision = evaluateColdLaunch({ team, recentOwnerMessages: ownerMessages });
+        if (!decision.allowed) {
+          logger.error('startTeamMember BLOCKED by commitment-approval gate — cold launch of a dormant team with NO owner approval', {
+            teamId,
+            teamName: team.name,
+            memberId,
+            memberName: member.name,
+            sessionName: member.sessionName,
+            workItemId: typeof req.body?.workItemId === 'string' ? req.body.workItemId : null,
+            ownerMessagesScanned: ownerMessages.length,
+          });
+          res.status(403).json({
+            success: false,
+            error: decision.reason,
+            code: 'commitment_requires_owner_approval',
+          } as ApiResponse);
+          return;
+        }
       }
     }
 

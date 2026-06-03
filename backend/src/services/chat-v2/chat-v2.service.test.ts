@@ -1956,4 +1956,37 @@ describe('ChatV2Service', () => {
       expect(service.queryHuddleMembersForDispatch(dm.id)).toEqual([]);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // getRecentOwnerMessageContents (commitment-approval-guard read)
+  // -------------------------------------------------------------------------
+  describe('getRecentOwnerMessageContents', () => {
+    function seed(channelId: string, senderType: string, content: string, createdAt: number, seq: number): void {
+      db.prepare(
+        `INSERT INTO chat_messages (id, channel_id, seq, sender_type, sender_id, content, content_type, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'markdown', ?)`,
+      ).run(`m-${seq}`, channelId, seq, senderType, `${senderType}-1`, content, createdAt);
+    }
+
+    it('returns only OWNER (user) messages at/after sinceMs, newest first, excluding agent/system', () => {
+      const ch = createSam();
+      seed(ch.id, 'user', 'old owner msg', 500, 1); // before window
+      seed(ch.id, 'agent', '好，启动 Phase 1 (agent — must be ignored)', 2000, 2);
+      seed(ch.id, 'system', 'system note', 2000, 3);
+      seed(ch.id, 'user', '好，启动 Phase 1', 2000, 4);
+      seed(ch.id, 'user', '再来一条', 3000, 5);
+
+      const got = service.getRecentOwnerMessageContents(1000);
+
+      // Newest-first, only user rows within the window.
+      expect(got).toEqual(['再来一条', '好，启动 Phase 1']);
+    });
+
+    it('returns empty when there are no owner messages in the window', () => {
+      const ch = createSam();
+      seed(ch.id, 'user', 'way old', 100, 1);
+      seed(ch.id, 'agent', 'recent agent', 5000, 2);
+      expect(service.getRecentOwnerMessageContents(1000)).toEqual([]);
+    });
+  });
 });
