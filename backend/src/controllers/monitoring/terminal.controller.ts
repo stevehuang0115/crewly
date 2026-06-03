@@ -25,6 +25,10 @@ import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { PtySessionBackend } from '../../services/session/pty/pty-session-backend.js';
 import { InProcessLogBuffer } from '../../services/agent/crewly-agent/in-process-log-buffer.js';
+import {
+	getInProcessRuntime,
+	isInProcessRuntimeActive,
+} from '../../services/agent/crewly-agent/in-process-runtime-registry.js';
 import type { PendingWorkSummary, HeartbeatState } from '../../services/agent/adaptive-heartbeat.service.js';
 import { ADAPTIVE_HEARTBEAT_DEFAULTS } from '../../services/agent/adaptive-heartbeat.service.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
@@ -364,6 +368,43 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 
 		const session = backend.getSession(sessionName);
 		if (!session) {
+			// No PTY session. Before returning 404, check for an in-process Crewly
+			// Agent runtime (e.g. an in-process orchestrator): crewly-agent runs
+			// in-process with NO PTY session, so backend.getSession() is always
+			// null for it. The WorkItem dispatch subscriber and Hybrid-Wake
+			// redeliver both POST to this endpoint; without this branch they
+			// 404-loop against a live in-process target and the WI is never
+			// delivered (issue #693 follow-up bug (a)). The module-scoped
+			// in-process-runtime-registry is populated in this (API-server)
+			// process by AgentRegistrationService.registerAgent(), so the lookup
+			// is reliable here without an AgentRegistrationService reference.
+			const inProcessRuntime = getInProcessRuntime(sessionName);
+			if (inProcessRuntime && isInProcessRuntimeActive(sessionName)) {
+				// Fire-and-forget to preserve the /write contract's non-blocking
+				// semantics: a PTY session.write() returns immediately, whereas
+				// handleMessage() resolves only when the full agent run completes.
+				// Awaiting it here would stall the caller (the subscriber uses a
+				// 5s timeout) for the duration of a full agent turn. Delivery
+				// errors are logged, not surfaced — the caller's retry path (the
+				// subscriber leaves the WI undispatched on failure) handles
+				// redelivery. Bracketed-paste / two-step write is a PTY/TUI
+				// concern and is intentionally skipped for the in-process path.
+				void inProcessRuntime.handleMessage(dataStr).catch((err) => {
+					logger.warn('In-process runtime message delivery failed', {
+						sessionName,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				});
+				logger.debug('Data delivered to in-process runtime', {
+					sessionName,
+					dataLength: dataStr.length,
+				});
+				res.json({
+					success: true,
+					message: 'Data delivered to in-process runtime',
+				} as ApiResponse);
+				return;
+			}
 			res.status(404).json({
 				success: false,
 				error: `Session '${sessionName}' not found`,
