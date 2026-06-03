@@ -14,7 +14,15 @@
  * @module services/agent/crewly-agent/crewly-agent-external-runtime.service.test
  */
 
+// Controllable settings mock — resolveRuntimeCommand() reads
+// settings.general.runtimeCommands['crewly-agent'] via getSettingsService().
+const mockGetSettings = jest.fn();
+jest.mock('../../settings/settings.service.js', () => ({
+  getSettingsService: jest.fn(() => ({ getSettings: mockGetSettings })),
+}));
+
 import { CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runtime.service.js';
+import { CREWLY_AGENT_MANAGED_COMMAND } from '../../../constants.js';
 
 // Pull the private allow-list regex via a typed escape hatch so we
 // can pin its behavior. Keeping it private on the class is the right
@@ -23,6 +31,32 @@ import { CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runti
 const ALLOW_LIST_RE: RegExp = (CrewlyAgentExternalRuntimeService as unknown as {
   SAFE_SHELL_COMMAND_RE: RegExp;
 }).SAFE_SHELL_COMMAND_RE;
+
+/**
+ * Build a minimal CrewlySettings-shaped object exposing only the field
+ * resolveRuntimeCommand() reads. `undefined` omits the command entirely.
+ */
+function settingsWithCrewlyAgentCommand(command?: string): unknown {
+  return {
+    general: {
+      runtimeCommands:
+        command === undefined ? {} : { 'crewly-agent': command },
+    },
+  };
+}
+
+/**
+ * Construct an instance against minimal stubs and invoke the private
+ * resolveRuntimeCommand() via a typed escape hatch.
+ */
+async function resolve(): Promise<{ command: string; useShell: boolean }> {
+  const svc = new CrewlyAgentExternalRuntimeService({} as never, '/tmp/project');
+  return (
+    svc as unknown as {
+      resolveRuntimeCommand: () => Promise<{ command: string; useShell: boolean }>;
+    }
+  ).resolveRuntimeCommand();
+}
 
 describe('CrewlyAgentExternalRuntimeService.SAFE_SHELL_COMMAND_RE — shell-injection guard', () => {
   describe('accepts safe shapes', () => {
@@ -89,6 +123,71 @@ describe('CrewlyAgentExternalRuntimeService.SAFE_SHELL_COMMAND_RE — shell-inje
 
   it('rejects backslash escapes (could smuggle metacharacters past a naive split)', () => {
     expect(ALLOW_LIST_RE.test('crewly-agent \\; rm')).toBe(false);
+  });
+});
+
+describe('CrewlyAgentExternalRuntimeService.resolveRuntimeCommand — sentinel routing (issue #693)', () => {
+  beforeEach(() => {
+    mockGetSettings.mockReset();
+  });
+
+  it('routes the legacy sentinel "crewly-agent-in-process" to the managed binary WITHOUT a shell (regression #693)', async () => {
+    // This is the exact value that shipped as the factory default before
+    // PR #599 and is still persisted on existing nodes. Before the fix it
+    // passed the shell allow-list and was run via `sh -lc` → exit-127.
+    mockGetSettings.mockResolvedValue(
+      settingsWithCrewlyAgentCommand('crewly-agent-in-process'),
+    );
+    const result = await resolve();
+    expect(result).toEqual({ command: CREWLY_AGENT_MANAGED_COMMAND, useShell: false });
+    // The whole point: a sentinel must NEVER reach the shell branch.
+    expect(result.useShell).toBe(false);
+  });
+
+  it('routes the managed command name itself to no-shell (explicit default never shells out)', async () => {
+    mockGetSettings.mockResolvedValue(
+      settingsWithCrewlyAgentCommand(CREWLY_AGENT_MANAGED_COMMAND),
+    );
+    expect(await resolve()).toEqual({
+      command: CREWLY_AGENT_MANAGED_COMMAND,
+      useShell: false,
+    });
+  });
+
+  it('honors a genuine custom shell command (useShell=true)', async () => {
+    mockGetSettings.mockResolvedValue(
+      settingsWithCrewlyAgentCommand('node /opt/crewly/bin/crewly-agent --verbose'),
+    );
+    expect(await resolve()).toEqual({
+      command: 'node /opt/crewly/bin/crewly-agent --verbose',
+      useShell: true,
+    });
+  });
+
+  it('falls back to the managed binary (no shell) for commands with shell metacharacters', async () => {
+    mockGetSettings.mockResolvedValue(
+      settingsWithCrewlyAgentCommand('crewly-agent; rm -rf ~'),
+    );
+    expect(await resolve()).toEqual({
+      command: CREWLY_AGENT_MANAGED_COMMAND,
+      useShell: false,
+    });
+  });
+
+  it('falls back to the managed binary (no shell) when no command is configured', async () => {
+    mockGetSettings.mockResolvedValue(settingsWithCrewlyAgentCommand(undefined));
+    expect(await resolve()).toEqual({
+      command: CREWLY_AGENT_MANAGED_COMMAND,
+      useShell: false,
+    });
+  });
+
+  it('falls back to the managed binary (no shell) when settings load throws', async () => {
+    mockGetSettings.mockRejectedValue(new Error('settings unreadable'));
+    expect(await resolve()).toEqual({
+      command: CREWLY_AGENT_MANAGED_COMMAND,
+      useShell: false,
+    });
   });
 });
 

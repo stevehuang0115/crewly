@@ -22,6 +22,10 @@ import {
   resolveApiKey,
 } from '../../types/settings.types.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
+import {
+  CREWLY_AGENT_MANAGED_COMMAND,
+  LEGACY_CREWLY_AGENT_SENTINELS,
+} from '../../constants.js';
 
 // ============================================================================
 // Custom Error Classes
@@ -311,6 +315,24 @@ export class SettingsService {
     const runtimeCommands = general['runtimeCommands'] as Record<string, unknown> | undefined;
     if (runtimeCommands?.['codex-cli'] === 'codex --full-auto') {
       runtimeCommands['codex-cli'] = 'codex -a never -s danger-full-access';
+    }
+
+    // Self-heal the stale crewly-agent sentinel (issue #693). Nodes that
+    // persisted settings before PR #599 carry
+    // `runtimeCommands['crewly-agent'] = 'crewly-agent-in-process'`, a value
+    // that is not a real executable: it passes the shell-command allow-list
+    // (no metacharacters) and gets shelled out via `sh -lc`, failing with
+    // exit-127 so the orchestrator never starts. Rewrite any known legacy
+    // sentinel to the managed binary so existing nodes recover on restart
+    // without a manual settings.json edit. Idempotent — fresh installs already
+    // default to the managed command.
+    if (
+      runtimeCommands &&
+      LEGACY_CREWLY_AGENT_SENTINELS.includes(
+        runtimeCommands['crewly-agent'] as (typeof LEGACY_CREWLY_AGENT_SENTINELS)[number],
+      )
+    ) {
+      runtimeCommands['crewly-agent'] = CREWLY_AGENT_MANAGED_COMMAND;
     }
 
     // One-time flip: existing users with proactive compact enabled get switched

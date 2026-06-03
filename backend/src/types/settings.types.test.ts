@@ -311,6 +311,16 @@ describe('Settings Types', () => {
       expect(defaults.general.runtimeCommands['codex-cli']).toBe('codex -a never -s danger-full-access');
     });
 
+    it('defaults crewly-agent to the managed binary, NOT the stale in-process sentinel (issue #693)', () => {
+      // The old default 'crewly-agent-in-process' is not a real executable;
+      // it shelled out via `sh -lc` and exited 127, so orchestrators using
+      // the crewly-agent runtime never started. PR #599 made crewly-agent an
+      // external binary — the default must be the real command name.
+      const defaults = getDefaultSettings();
+      expect(defaults.general.runtimeCommands['crewly-agent']).toBe('crewly-agent');
+      expect(defaults.general.runtimeCommands['crewly-agent']).not.toBe('crewly-agent-in-process');
+    });
+
     it('should include non-empty runtime commands for all runtimes', () => {
       const defaults = getDefaultSettings();
 
@@ -571,8 +581,9 @@ describe('Settings Types', () => {
 
       const merged = mergeSettings(existing, {});
 
-      // crewly-agent should be backfilled from defaults
-      expect(merged.general.runtimeCommands['crewly-agent']).toBe('crewly-agent-in-process');
+      // crewly-agent should be backfilled from defaults (the managed binary,
+      // not the stale 'crewly-agent-in-process' sentinel — issue #693).
+      expect(merged.general.runtimeCommands['crewly-agent']).toBe('crewly-agent');
       // Existing entries should be preserved
       expect(merged.general.runtimeCommands['claude-code']).toBe('claude --dangerously-skip-permissions');
     });

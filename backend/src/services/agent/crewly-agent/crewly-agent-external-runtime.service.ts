@@ -27,7 +27,9 @@ import { LoggerService } from '../../core/logger.service.js';
 import {
   ADDON_CONSTANTS,
   CREWLY_CONSTANTS,
+  CREWLY_AGENT_MANAGED_COMMAND,
   ENV_CONSTANTS,
+  LEGACY_CREWLY_AGENT_SENTINELS,
   RUNTIME_TYPES,
   type RuntimeType,
 } from '../../../constants.js';
@@ -316,6 +318,24 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
       const configured = settings.general.runtimeCommands?.['crewly-agent'];
       if (configured && configured.trim()) {
         const trimmed = configured.trim();
+
+        // Managed sentinels are NOT real shell commands — route them to the
+        // managed binary (no shell). This is the root-cause guard for issue
+        // #693: the legacy default `'crewly-agent-in-process'` passes the
+        // shell allow-list below (no metacharacters), so without this branch
+        // it would be shelled out via `sh -lc` to a non-existent command and
+        // exit-127. We also treat the managed command name itself as a
+        // sentinel so the explicit default never accidentally shells out.
+        // Routing through `useShell: false` re-enables the pre-flight
+        // `lookupOnPath` check in spawnAgentProcess(), turning a cryptic
+        // exit-127 into a clear "binary not found on PATH" error.
+        if (
+          trimmed === CREWLY_AGENT_MANAGED_COMMAND ||
+          (LEGACY_CREWLY_AGENT_SENTINELS as readonly string[]).includes(trimmed)
+        ) {
+          return { command: CREWLY_AGENT_MANAGED_COMMAND, useShell: false };
+        }
+
         if (CrewlyAgentExternalRuntimeService.SAFE_SHELL_COMMAND_RE.test(trimmed)) {
           return { command: trimmed, useShell: true };
         }
@@ -330,7 +350,7 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     } catch {
       // Fall through to default command.
     }
-    return { command: 'crewly-agent', useShell: false };
+    return { command: CREWLY_AGENT_MANAGED_COMMAND, useShell: false };
   }
 
   /**
