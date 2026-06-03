@@ -215,15 +215,36 @@ export class TelegramService extends EventEmitter {
 			body.reply_to_message_id = replyToMessageId;
 		}
 
-		const resp = await fetch(
-			`${TELEGRAM_CONSTANTS.API_BASE}${this.config.botToken}/sendMessage`,
-			{
+		const { botToken } = this.config;
+		const sendOnce = (payload: Record<string, unknown>): Promise<Response> =>
+			fetch(`${TELEGRAM_CONSTANTS.API_BASE}${botToken}/sendMessage`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body),
+				body: JSON.stringify(payload),
 				signal: AbortSignal.timeout(TELEGRAM_CONSTANTS.FETCH_TIMEOUT_MS),
+			});
+
+		let resp = await sendOnce(body);
+
+		// Telegram returns HTTP 400 "can't parse entities" when the text contains
+		// Markdown its legacy parser can't parse — extremely common with LLM/agent
+		// output (e.g. **snake_case_name**, an unbalanced `code` span, or a stray
+		// '_' / '*'). Without a fallback the message is silently dropped. Retry once
+		// as plain text (no parse_mode) so delivery always succeeds.
+		if (!resp.ok && resp.status === 400) {
+			const details = await resp.text();
+			if (/can't parse entities/i.test(details)) {
+				this.logger.warn('Telegram Markdown parse failed — retrying as plain text', {
+					chatId,
+					details: details.slice(0, 200),
+				});
+				const plainBody = { ...body };
+				delete plainBody.parse_mode;
+				resp = await sendOnce(plainBody);
+			} else {
+				throw new Error(`Telegram send failed (${resp.status}): ${details}`);
 			}
-		);
+		}
 
 		if (!resp.ok) {
 			const details = await resp.text();
