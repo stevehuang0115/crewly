@@ -8,6 +8,10 @@ import { ActiveProjectsService } from '../../services/index.js';
 import { PromptTemplateService } from '../../services/index.js';
 import { Team, TeamMember } from '../../types/index.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
+// Mocked below via jest.mock('../../services/session/index.js') (jest hoists
+// the mock above imports) so tests can set its return value without an inline
+// require() — avoids @typescript-eslint/no-var-requires.
+import { getSessionBackendSync } from '../../services/session/index.js';
 
 // Mock dependencies
 jest.mock('../../services/index.js');
@@ -494,6 +498,57 @@ describe('Teams Handlers', () => {
       expect(assistant.agentStatus).toBe('inactive');
     });
 
+    // Issue #693 follow-up bug (b): the orchestrator itself can run as an
+    // in-process crewly-agent (no PTY). It was misreported INACTIVE because the
+    // orc status was resolved from PTY sessionExists only — which then drove
+    // SlackBridge to the offline path and silently dropped messages to the live
+    // orc. The orc's own status must now consult the in-process registry.
+    it('should show the orchestrator member as active when its in-process runtime is active (no PTY)', async () => {
+      mockStorageService.getTeams.mockResolvedValue([]);
+      mockStorageService.getOrchestratorStatus.mockResolvedValue(null);
+
+      // No PTY session for the orc, but its in-process runtime is active.
+      (getSessionBackendSync as unknown as jest.Mock).mockReturnValue({
+        sessionExists: jest.fn<any>().mockReturnValue(false),
+      });
+      (mockApiContext.agentRegistrationService as any).isInProcessRuntimeActive
+        .mockImplementation((name: string) => name === 'crewly-orc');
+
+      await teamsHandlers.getTeams.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const responseData = responseMock.json.mock.calls[0][0] as any;
+      const orchestratorTeam = responseData.data[0];
+      const orcMember = orchestratorTeam.members.find((m: any) => m.sessionName === 'crewly-orc');
+      expect(orcMember.agentStatus).toBe('active');
+      // The top-level orchestrator status block must agree with the member.
+      expect(responseData.orchestrator.agentStatus).toBe('active');
+    });
+
+    it('should show the orchestrator member as inactive when there is no PTY and no in-process runtime', async () => {
+      mockStorageService.getTeams.mockResolvedValue([]);
+      mockStorageService.getOrchestratorStatus.mockResolvedValue(null);
+
+      (getSessionBackendSync as unknown as jest.Mock).mockReturnValue({
+        sessionExists: jest.fn<any>().mockReturnValue(false),
+      });
+      (mockApiContext.agentRegistrationService as any).isInProcessRuntimeActive.mockReturnValue(false);
+
+      await teamsHandlers.getTeams.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const responseData = responseMock.json.mock.calls[0][0] as any;
+      const orchestratorTeam = responseData.data[0];
+      const orcMember = orchestratorTeam.members.find((m: any) => m.sessionName === 'crewly-orc');
+      expect(orcMember.agentStatus).toBe('inactive');
+    });
+
     it('should resolve team member status correctly with in-process runtime', async () => {
       const mockTeams = [{
         id: 'team-1',
@@ -764,6 +819,29 @@ describe('Teams Handlers', () => {
       const responseData = responseMock.json.mock.calls[0][0] as any;
       expect(responseData.data.lastActivity).toBeDefined();
       expect(typeof responseData.data.lastActivity).toBe('string');
+    });
+
+    // Issue #693 follow-up bug (b), GET /api/teams/orchestrator path: same fix
+    // as getTeams — the in-process orc must not be misreported INACTIVE.
+    it('should show the orchestrator member as active when its in-process runtime is active (no PTY)', async () => {
+      mockRequest.params = { id: 'orchestrator' };
+      mockStorageService.getOrchestratorStatus.mockResolvedValue(null);
+
+      (getSessionBackendSync as unknown as jest.Mock).mockReturnValue({
+        sessionExists: jest.fn<any>().mockReturnValue(false),
+      });
+      (mockApiContext.agentRegistrationService as any).isInProcessRuntimeActive
+        .mockImplementation((name: string) => name === 'crewly-orc');
+
+      await teamsHandlers.getTeam.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      const responseData = responseMock.json.mock.calls[0][0] as any;
+      const orcMember = responseData.data.members.find((m: any) => m.sessionName === 'crewly-orc');
+      expect(orcMember.agentStatus).toBe('active');
     });
   });
 

@@ -122,6 +122,16 @@ jest.mock('../../services/agent/crewly-agent/in-process-log-buffer.js', () => ({
 	},
 }));
 
+// Mock the in-process runtime registry. writeToSession() consults it so a
+// /write to an in-process Crewly Agent runtime (no PTY session) is delivered
+// via handleMessage() instead of 404ing (issue #693 follow-up bug (a)).
+const mockGetInProcessRuntime = jest.fn<(s: string) => unknown>();
+const mockIsInProcessRuntimeActive = jest.fn<(s: string) => boolean>();
+jest.mock('../../services/agent/crewly-agent/in-process-runtime-registry.js', () => ({
+	getInProcessRuntime: (...args: [string]) => mockGetInProcessRuntime(...args),
+	isInProcessRuntimeActive: (...args: [string]) => mockIsInProcessRuntimeActive(...args),
+}));
+
 // Mock AdaptiveHeartbeatService defaults
 jest.mock('../../services/agent/adaptive-heartbeat.service.js', () => ({
 	ADAPTIVE_HEARTBEAT_DEFAULTS: {
@@ -159,6 +169,11 @@ describe('TerminalController', () => {
 		mockInProcessLogBuffer.getSessionNames.mockReturnValue([]);
 		mockInProcessLogBuffer.hasSession.mockReturnValue(false);
 		mockInProcessLogBuffer.capture.mockReturnValue('');
+
+		// Default: no in-process runtime registered (so the existing PTY-based
+		// tests, incl. the plain 404 path, behave exactly as before).
+		mockGetInProcessRuntime.mockReturnValue(undefined);
+		mockIsInProcessRuntimeActive.mockReturnValue(false);
 
 		// Create mock response with proper typing
 		const jsonMock = jest.fn().mockReturnThis();
@@ -453,6 +468,85 @@ describe('TerminalController', () => {
 				success: false,
 				error: "Session 'nonexistent' not found",
 			});
+		});
+
+		// Issue #693 follow-up bug (a): in-process Crewly Agent runtimes have no
+		// PTY session, so the dispatch subscriber's POST /write 404-looped against
+		// a live in-process orchestrator. writeToSession() now routes to the
+		// in-process runtime's handleMessage() when there is no PTY session.
+		it('should deliver to an active in-process runtime instead of 404 (no PTY session)', async () => {
+			const handleMessage = jest.fn<(m: string) => Promise<unknown>>().mockResolvedValue({
+				text: 'ok', steps: 1, toolCalls: [], usage: { input: 0, output: 0 },
+			});
+			mockBackend.getSession.mockReturnValue(null);
+			mockGetInProcessRuntime.mockReturnValue({ handleMessage });
+			mockIsInProcessRuntimeActive.mockReturnValue(true);
+			mockReq = {
+				params: { sessionName: 'crewly-orc' } as any,
+				body: { data: 'hello-orc' },
+			};
+
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+			expect(handleMessage).toHaveBeenCalledWith('hello-orc');
+			expect(mockRes.status).not.toHaveBeenCalledWith(404);
+			expect(mockRes.json).toHaveBeenCalledWith({
+				success: true,
+				message: 'Data delivered to in-process runtime',
+			});
+		});
+
+		it('should still 404 when there is no PTY session AND no in-process runtime', async () => {
+			mockBackend.getSession.mockReturnValue(null);
+			mockGetInProcessRuntime.mockReturnValue(undefined);
+			mockIsInProcessRuntimeActive.mockReturnValue(false);
+			mockReq = {
+				params: { sessionName: 'gone' } as any,
+				body: { data: 'hello' },
+			};
+
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+			expect(mockRes.status).toHaveBeenCalledWith(404);
+		});
+
+		it('should 404 when an in-process runtime is registered but not ready', async () => {
+			const handleMessage = jest.fn<(m: string) => Promise<unknown>>();
+			mockBackend.getSession.mockReturnValue(null);
+			mockGetInProcessRuntime.mockReturnValue({ handleMessage });
+			mockIsInProcessRuntimeActive.mockReturnValue(false); // not ready
+			mockReq = {
+				params: { sessionName: 'crewly-orc' } as any,
+				body: { data: 'hello' },
+			};
+
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+			expect(handleMessage).not.toHaveBeenCalled();
+			expect(mockRes.status).toHaveBeenCalledWith(404);
+		});
+
+		it('should fire-and-forget in-process delivery — a handleMessage rejection is not surfaced', async () => {
+			const handleMessage = jest.fn<(m: string) => Promise<unknown>>().mockRejectedValue(
+				new Error('agent boom'),
+			);
+			mockBackend.getSession.mockReturnValue(null);
+			mockGetInProcessRuntime.mockReturnValue({ handleMessage });
+			mockIsInProcessRuntimeActive.mockReturnValue(true);
+			mockReq = {
+				params: { sessionName: 'crewly-orc' } as any,
+				body: { data: 'hello' },
+			};
+
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+			// Response is success immediately; the rejection is swallowed + logged
+			// so the /write contract stays non-blocking.
+			expect(mockRes.json).toHaveBeenCalledWith({
+				success: true,
+				message: 'Data delivered to in-process runtime',
+			});
+			expect(mockRes.status).not.toHaveBeenCalledWith(500);
 		});
 
 		it('should allow empty string data', async () => {
