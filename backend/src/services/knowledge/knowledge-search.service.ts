@@ -320,6 +320,7 @@ export class GeminiEmbeddingStrategy implements KnowledgeSearchStrategy {
           body: JSON.stringify({
             model: `models/${EMBEDDING_CONSTANTS.GEMINI_MODEL}`,
             content: { parts: [{ text }] },
+            outputDimensionality: EMBEDDING_CONSTANTS.EMBEDDING_DIMENSIONS,
           }),
           signal: controller.signal,
         });
@@ -453,6 +454,7 @@ export class LocalVectorSearchStrategy implements KnowledgeSearchStrategy {
           body: JSON.stringify({
             model: `models/${EMBEDDING_CONSTANTS.GEMINI_MODEL}`,
             content: { parts: [{ text }] },
+            outputDimensionality: EMBEDDING_CONSTANTS.EMBEDDING_DIMENSIONS,
           }),
           signal: controller.signal,
         });
