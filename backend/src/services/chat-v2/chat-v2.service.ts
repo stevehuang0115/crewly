@@ -1179,6 +1179,34 @@ export class ChatV2Service extends EventEmitter {
     return this.messages.count(channelId);
   }
 
+  /**
+   * Returns the text of recent OWNER-authored messages (`sender_type='user'`)
+   * across ALL channels, newest first, created at or after `sinceMs`.
+   *
+   * Purpose: the Commitment Approval Guard (2026-06-02 autonomy incident) needs
+   * an UNFAKEABLE signal of owner approval — the orchestrator can fabricate a
+   * WorkItem title claiming "owner approved", but it cannot fabricate the
+   * owner's actual chat history. This is a deliberate cross-channel read (no
+   * per-channel authorization) used only server-side by the guard; it returns
+   * message TEXT only, never agent/system messages.
+   *
+   * @param sinceMs - Unix epoch ms; only messages created at/after this are returned.
+   * @param limit - Max messages to return (default 100, capped at 500).
+   * @returns Owner message contents, newest first.
+   */
+  getRecentOwnerMessageContents(sinceMs: number, limit = 100): string[] {
+    const capped = Math.min(Math.max(1, Math.floor(limit)), 500);
+    const rows = this.db
+      .prepare(
+        `SELECT content FROM chat_messages
+         WHERE sender_type = 'user' AND created_at >= ?
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(sinceMs, capped) as Array<{ content: string }>;
+    return rows.map((r) => r.content);
+  }
+
   // -------------------------------------------------------------------------
   // Message operations
   // -------------------------------------------------------------------------
