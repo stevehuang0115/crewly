@@ -401,9 +401,21 @@ export class QueueProcessorService extends EventEmitter {
         // of re-queuing to avoid the retry loop that causes multi-minute delays.
         // System events are fire-and-forget (no response expected), so force-delivery
         // is lower risk. The orchestrator will process input when it returns to prompt.
+        //
+        // EXCEPTION (2026-06-02 autonomy incident): do NOT force-deliver a
+        // SYSTEM_EVENT into the ORCHESTRATOR while it is busy. Agent-status
+        // events ("[IN_PROGRESS] Agent X: …") are informational, but
+        // force-injecting one mid-work hands the orchestrator a spurious
+        // agentic turn — during which it acted on a stale pending decision and
+        // launched a team on a FABRICATED owner approval. The orchestrator is
+        // the autonomous decision-maker; an FYI status ping must not interrupt
+        // it into action. Let it requeue and deliver when the orc returns to
+        // prompt (status is ephemeral; a dropped one is harmless). User
+        // messages and system events to NON-orchestrator targets are unchanged.
+        const isOrchestratorTarget = deliveryTarget === ORCHESTRATOR_SESSION_NAME;
         const shouldForceDeliver =
           (isUserMessage && EVENT_DELIVERY_CONSTANTS.USER_MESSAGE_FORCE_DELIVER) ||
-          (isSystemEvent && EVENT_DELIVERY_CONSTANTS.SYSTEM_EVENT_FORCE_DELIVER);
+          (isSystemEvent && EVENT_DELIVERY_CONSTANTS.SYSTEM_EVENT_FORCE_DELIVER && !isOrchestratorTarget);
         if (shouldForceDeliver) {
           wasForceDelivered = true;
           this.logger.warn('Agent not ready but force-delivering message to reduce delay', {
