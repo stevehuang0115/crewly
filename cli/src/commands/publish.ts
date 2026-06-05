@@ -17,6 +17,7 @@ import type { SkillManifest } from '../utils/package-validator.js';
 import { readFileSync } from 'fs';
 import { MARKETPLACE_CONSTANTS } from '../../../config/constants.js';
 import { submitToGitHub } from '../utils/gh-submit.js';
+import { submitToCloud } from '../utils/cloud-submit.js';
 
 /** Options for the publish command */
 interface PublishOptions {
@@ -24,8 +25,10 @@ interface PublishOptions {
   dryRun?: boolean;
   /** Output directory for the archive (defaults to cwd) */
   output?: string;
-  /** If true, submit the archive to the marketplace for review */
+  /** If true, submit the archive to the marketplace via the user's own gh CLI */
   submit?: boolean;
+  /** If true, submit via Crewly Cloud (cloud opens the PR using its bot token; requires `crewly cloud login`) */
+  cloud?: boolean;
   /** Backend URL for submission (defaults to localhost:3000) */
   url?: string;
 }
@@ -99,7 +102,25 @@ export async function publishCommand(skillPath?: string, options?: PublishOption
   console.log(chalk.blue('\nRegistry entry:'));
   console.log(JSON.stringify(entry, null, 2));
 
-  // Submit to marketplace if --submit flag is set
+  // Submit via Crewly Cloud if --cloud flag is set (cloud opens the PR with its
+  // bot token; the user only needs to be logged in — no local gh / GitHub account).
+  if (options?.cloud) {
+    try {
+      const result = await submitToCloud(absPath, manifest);
+      console.log(chalk.green(`\n${result.updated ? 'Updated existing submission PR!' : 'Submission PR opened!'}`));
+      console.log(chalk.blue(`  PR: ${result.prUrl}`));
+      console.log(chalk.gray(`  Branch: ${result.branch}`));
+      console.log(chalk.gray('  A maintainer will review and merge it. The registry index updates on merge.'));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(chalk.red(`\nCloud submission failed: ${msg}`));
+      process.exit(1);
+    }
+    console.log(chalk.green('\nDone!'));
+    return;
+  }
+
+  // Submit to marketplace via the user's own gh CLI if --submit flag is set
   if (options?.submit) {
     try {
       const result = await submitToGitHub(absPath, manifest);

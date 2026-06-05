@@ -100,7 +100,8 @@ program
   .description('Validate and package a skill for the Crewly marketplace')
   .option('--dry-run', 'Validate only, do not create archive')
   .option('-o, --output <dir>', 'Output directory for the archive')
-  .option('--submit', 'Submit the skill to the marketplace for review')
+  .option('--submit', 'Submit via your own GitHub (gh CLI) — opens a PR from your account')
+  .option('--cloud', 'Submit via Crewly Cloud — the cloud opens the PR for you (requires `crewly cloud login`)')
   .option('--url <url>', 'Backend URL for submission (default: http://localhost:3000)')
   .action(publishCommand);
 
