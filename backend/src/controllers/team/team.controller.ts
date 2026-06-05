@@ -46,6 +46,7 @@ import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
 import {
   evaluateColdLaunch,
   isDormantTeam,
+  isPreAuthorizedSchedule,
   COMMITMENT_APPROVAL_LOOKBACK_MS,
 } from '../../services/orchestrator/commitment-approval-guard.js';
 
@@ -205,6 +206,43 @@ async function checkWakeGate(
       `with target set explicitly to this member, or pass workItemId in the ` +
       `request body to indicate which orphan WI you intend this wake to fulfil.`,
   };
+}
+
+/**
+ * Determines whether a wake is pre-authorized by a real owner-configured
+ * schedule (cron or trigger), and therefore exempt from the commitment gate.
+ *
+ * A cron/trigger the owner set up IS the approval to run on that cadence —
+ * blocking it would break scheduled autonomy (e.g. a 3am cron with the owner
+ * asleep). SECURITY: the WorkItem's self-declared origin is NOT trusted; the
+ * claimed cron-task / trigger id must resolve in the real scheduler registry
+ * (which the orchestrator cannot fabricate), else the wake falls through to the
+ * gate. Fail-SAFE: any lookup error returns false (apply the gate), unlike the
+ * chat read which fails open.
+ *
+ * @param workItemId - The `workItemId` from the start request body, if any.
+ * @returns True when the wake should bypass the commitment-approval gate.
+ */
+async function isScheduledWakePreAuthorized(workItemId: string | null): Promise<boolean> {
+  if (!workItemId) return false;
+  try {
+    const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+    const wi = await TaskPoolService.getInstance().findWorkItem(workItemId);
+    if (!wi) return false;
+    // Pre-import both scheduler registries so the lookups can run.
+    const { CronTaskService } = await import('../../services/workflow/cron-task.service.js');
+    const { TriggerEngine } = await import('../../services/v3/trigger-engine.service.js');
+    return await isPreAuthorizedSchedule(wi, {
+      cronTaskExists: async (id: string) => (await CronTaskService.getInstance().get(id)) != null,
+      triggerExists: (id: string) => TriggerEngine.getInstance().get(id) != null,
+    });
+  } catch (err) {
+    logger.warn('Commitment gate: schedule-exemption check failed — not exempting', {
+      workItemId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
 }
 
 /**
@@ -1858,7 +1896,24 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
     // the orc cannot fabricate. Continuation (an already-active team) and crash
     // recovery are unaffected (isDormantTeam → false). Fail-OPEN on read error
     // so a chat hiccup never blocks legitimate starts.
-    if (!memberAlreadyActive && isDormantTeam(team)) {
+    //
+    // EXEMPTION: a wake driven by a cron job or trigger the OWNER configured is
+    // already pre-authorized (the schedule IS the approval) — without this, all
+    // scheduled autonomy on a dormant team would be blocked (e.g. a 3am cron
+    // with the owner asleep). The exemption is verified against the real
+    // scheduler registry, so the orc cannot forge a `source:'cron'` claim.
+    const wakeWorkItemId =
+      typeof req.body?.workItemId === 'string' ? (req.body.workItemId as string) : null;
+    const scheduledPreAuthorized = await isScheduledWakePreAuthorized(wakeWorkItemId);
+    if (scheduledPreAuthorized) {
+      logger.info('Commitment gate: exempting pre-authorized scheduled wake (cron/trigger)', {
+        teamId,
+        memberId,
+        sessionName: member.sessionName,
+        workItemId: wakeWorkItemId,
+      });
+    }
+    if (!memberAlreadyActive && isDormantTeam(team) && !scheduledPreAuthorized) {
       let ownerMessages: string[] = [];
       let readOk = true;
       try {

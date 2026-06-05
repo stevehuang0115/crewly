@@ -179,3 +179,97 @@ export function evaluateColdLaunch(args: {
       'NOT count.',
   };
 }
+
+// ---------------------------------------------------------------------------
+// Pre-authorized schedule exemption (cron / trigger)
+// ---------------------------------------------------------------------------
+//
+// WHY: a wake driven by a CRON job or a TRIGGER the owner configured is already
+// authorized — the owner set up the schedule, which is a durable, explicit
+// "run this on this cadence" approval. The commitment gate (which demands a
+// fresh "启动/go" in chat) would otherwise block ALL scheduled autonomy on a
+// dormant team: a 3am cron with the owner asleep would sit blocked forever.
+// That defeats the purpose of scheduling. So scheduled-origin wakes are exempt.
+//
+// SECURITY: the orchestrator can fabricate WorkItem fields, so we must NOT
+// trust a WI that merely *claims* `source: 'cron'`. The exemption is honored
+// ONLY when the claimed cron task / trigger id resolves to a REAL entry in the
+// scheduler registry — which the orc cannot fabricate (same principle as the
+// gate keying off the owner's real chat history). A forged claim whose id does
+// not resolve is NOT exempt and falls through to the normal gate.
+
+/** A minimal view of a WorkItem — only the fields the exemption needs. */
+export interface GuardWorkItem {
+  /** WorkItem type, e.g. 'cron_run' for scheduled runs. */
+  type?: string;
+  /** Trigger id, set when an event/time trigger created/woke the WorkItem. */
+  triggerId?: string;
+  /** Extensible metadata; cron runs carry `source:'cron'` + `cronTaskId`. */
+  metadata?: Record<string, unknown> | null;
+}
+
+/** A WorkItem's self-declared scheduled origin, pending registry verification. */
+export interface ScheduleClaim {
+  /** Which scheduler the WorkItem claims to originate from. */
+  kind: 'cron' | 'trigger';
+  /** The id to verify against the real scheduler registry (unfakeable check). */
+  refId: string;
+}
+
+/**
+ * Extracts a WorkItem's claimed scheduled origin, if any.
+ *
+ * Returns the backing cron-task / trigger id that the CALLER must then verify
+ * against the real scheduler registry. Returns null when the WorkItem makes no
+ * verifiable scheduled-origin claim (e.g. a `cron_run` with no `cronTaskId`, or
+ * an ordinary delegate WorkItem) — such items get no exemption.
+ *
+ * @param wi - The WorkItem that triggered the wake.
+ * @returns The schedule claim to verify, or null if none.
+ */
+export function extractScheduleClaim(wi: GuardWorkItem): ScheduleClaim | null {
+  const md = wi.metadata ?? undefined;
+  const source = md && typeof md.source === 'string' ? (md.source as string) : undefined;
+
+  // Cron-origin: a cron_run WorkItem (or one tagged source:'cron') must carry
+  // the backing cron task id so it can be verified. No id → not verifiable → no claim.
+  if (wi.type === 'cron_run' || source === 'cron') {
+    const cronTaskId = md && typeof md.cronTaskId === 'string' ? (md.cronTaskId as string) : '';
+    if (cronTaskId) return { kind: 'cron', refId: cronTaskId };
+  }
+
+  // Trigger-origin: a WorkItem woken by an event/time trigger carries triggerId.
+  if (typeof wi.triggerId === 'string' && wi.triggerId) {
+    return { kind: 'trigger', refId: wi.triggerId };
+  }
+
+  return null;
+}
+
+/**
+ * Decides whether a wake is pre-authorized by a real owner-configured schedule.
+ *
+ * The decision is the whole exemption logic, made unit-testable by injecting the
+ * registry lookups: a claim is honored ONLY when its id resolves in the real
+ * scheduler, so a forged `source:'cron'` claim with a non-existent id is
+ * rejected and falls through to the commitment gate.
+ *
+ * @param wi - The WorkItem that triggered the wake (may be null).
+ * @param registry - Lookups against the REAL scheduler registry.
+ * @param registry.cronTaskExists - Resolves true iff the cron task id is registered.
+ * @param registry.triggerExists - True iff the trigger id is registered.
+ * @returns True when the wake should bypass the commitment gate.
+ */
+export async function isPreAuthorizedSchedule(
+  wi: GuardWorkItem | null | undefined,
+  registry: {
+    cronTaskExists: (id: string) => Promise<boolean>;
+    triggerExists: (id: string) => boolean;
+  },
+): Promise<boolean> {
+  if (!wi) return false;
+  const claim = extractScheduleClaim(wi);
+  if (!claim) return false;
+  if (claim.kind === 'cron') return registry.cronTaskExists(claim.refId);
+  return registry.triggerExists(claim.refId);
+}
