@@ -351,6 +351,37 @@ export class MemoryService implements IMemoryService {
   }
 
   /**
+   * Derives a content-aware title when the caller omits `metadata.title`.
+   *
+   * Defense-in-depth for the P0-SEV silent-success fix: even after dedup is
+   * tightened to require title+content match, two different rememberings that
+   * BOTH lacked an explicit title used to collide on the same default
+   * ('Gotcha', 'Untitled Pattern', 'Untitled Decision'). Auto-deriving from
+   * content makes those titles distinct, so any future dedup-predicate
+   * regression cannot fully silently collapse them.
+   *
+   * Strategy: take the first ~60 chars of content, prefer a word boundary;
+   * fall back to the caller-provided default if content is empty.
+   *
+   * @param content - The user-supplied content payload
+   * @param fallback - The category-specific default title to use when content is empty
+   * @returns A derived title string (max ~60 chars), never empty
+   */
+  private deriveTitleFromContent(content: string, fallback: string): string {
+    const trimmed = (content ?? '').trim();
+    if (trimmed.length === 0) return fallback;
+    if (trimmed.length <= 60) return trimmed;
+
+    // Try to cut on a word boundary near 60 chars; require at least 30 chars
+    // before falling back to a hard char-cut, to avoid 'Th...' style stubs.
+    const wordBoundary = trimmed.lastIndexOf(' ', 60);
+    if (wordBoundary >= 30) {
+      return trimmed.substring(0, wordBoundary).trim();
+    }
+    return trimmed.substring(0, 60).trim();
+  }
+
+  /**
    * Parses a preference string into AgentPreferences
    */
   private parsePreference(content: string): Partial<AgentPreferences> {
@@ -744,7 +775,9 @@ export class MemoryService implements IMemoryService {
       case 'pattern':
         return this.projectMemory.addPattern(params.projectPath, {
           category: params.metadata?.patternCategory || 'other',
-          title: params.metadata?.title || 'Untitled Pattern',
+          // P0-SEV defense-in-depth: derive title from content when caller omits
+          // metadata.title, instead of a static default that collides on every call.
+          title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'Untitled Pattern'),
           description: params.content,
           example: params.metadata?.example,
           files: params.metadata?.files,
@@ -756,7 +789,7 @@ export class MemoryService implements IMemoryService {
 
       case 'decision':
         return this.projectMemory.addDecision(params.projectPath, {
-          title: params.metadata?.title || 'Untitled Decision',
+          title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'Untitled Decision'),
           decision: params.content,
           rationale: params.metadata?.rationale || '',
           alternatives: params.metadata?.alternatives,
@@ -766,7 +799,7 @@ export class MemoryService implements IMemoryService {
 
       case 'gotcha':
         return this.projectMemory.addGotcha(params.projectPath, {
-          title: params.metadata?.title || 'Gotcha',
+          title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'Gotcha'),
           problem: params.content,
           solution: params.metadata?.solution || '',
           severity: params.metadata?.severity || 'medium',
@@ -789,7 +822,7 @@ export class MemoryService implements IMemoryService {
       case 'user_preference':
         return this.projectMemory.addPattern(params.projectPath, {
           category: 'user_preference',
-          title: params.metadata?.title || 'User Preference',
+          title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'User Preference'),
           description: params.content,
           example: params.metadata?.example,
           files: params.metadata?.files,

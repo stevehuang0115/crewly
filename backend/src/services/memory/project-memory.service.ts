@@ -252,9 +252,12 @@ export class ProjectMemoryService implements IProjectMemoryService {
   ): Promise<string> {
     const patterns = await this.getPatterns(projectPath);
 
-    // Check for existing similar pattern
+    // Dedup requires BOTH title match AND content similarity. Pre-fix this was an
+    // OR-clause, which caused silent-success collisions when callers omitted
+    // `metadata.title` and shared the same default title (e.g. 'Untitled Pattern').
+    // See P0-SEV fix: silent-success in core/remember for scope=project.
     const existing = patterns.find(p =>
-      p.title.toLowerCase() === pattern.title.toLowerCase() ||
+      p.title.toLowerCase() === pattern.title.toLowerCase() &&
       this.isSimilarContent(p.description, pattern.description)
     );
 
@@ -272,7 +275,13 @@ export class ProjectMemoryService implements IProjectMemoryService {
       if (updated) {
         await this.savePatterns(projectPath, patterns);
       }
-      this.logger.debug('Found existing similar pattern', { projectPath, patternId: existing.id });
+      // Observability: surface dedup hits at WARN so regressions are visible (was debug).
+      this.logger.warn('addPattern: dedup hit (title+content match), returning existing entry', {
+        projectPath,
+        existingPatternId: existing.id,
+        title: pattern.title,
+        discoveredBy: pattern.discoveredBy,
+      });
       return existing.id;
     }
 
@@ -362,13 +371,23 @@ export class ProjectMemoryService implements IProjectMemoryService {
   ): Promise<string> {
     const decisions = await this.getDecisions(projectPath);
 
-    // Check for existing similar decision
+    // Dedup requires BOTH title match AND decision-content similarity. Pre-fix this was
+    // title-only, which caused silent-success collisions when callers omitted
+    // `metadata.title` and shared the same default title (e.g. 'Untitled Decision').
+    // See P0-SEV fix: silent-success in core/remember for scope=project.
     const existing = decisions.find(d =>
-      d.title.toLowerCase() === decision.title.toLowerCase()
+      d.title.toLowerCase() === decision.title.toLowerCase() &&
+      this.isSimilarContent(d.decision, decision.decision)
     );
 
     if (existing) {
-      this.logger.debug('Found existing similar decision', { projectPath, decisionId: existing.id });
+      // Observability: surface dedup hits at WARN so regressions are visible (was debug).
+      this.logger.warn('addDecision: dedup hit (title+content match), returning existing entry', {
+        projectPath,
+        existingDecisionId: existing.id,
+        title: decision.title,
+        decidedBy: decision.decidedBy,
+      });
       return existing.id;
     }
 
@@ -443,9 +462,12 @@ export class ProjectMemoryService implements IProjectMemoryService {
   ): Promise<string> {
     const gotchas = await this.getGotchas(projectPath);
 
-    // Check for existing similar gotcha
+    // Dedup requires BOTH title match AND content similarity. Pre-fix this was an
+    // OR-clause, which caused silent-success collisions when callers omitted
+    // `metadata.title` and shared the same default title (e.g. 'Gotcha').
+    // See P0-SEV fix: silent-success in core/remember for scope=project.
     const existing = gotchas.find(g =>
-      g.title.toLowerCase() === gotcha.title.toLowerCase() ||
+      g.title.toLowerCase() === gotcha.title.toLowerCase() &&
       this.isSimilarContent(g.problem, gotcha.problem)
     );
 
@@ -455,7 +477,13 @@ export class ProjectMemoryService implements IProjectMemoryService {
         existing.solution = gotcha.solution;
         await this.saveGotchas(projectPath, gotchas);
       }
-      this.logger.debug('Found existing similar gotcha', { projectPath, gotchaId: existing.id });
+      // Observability: surface dedup hits at WARN so regressions are visible (was debug).
+      this.logger.warn('addGotcha: dedup hit (title+content match), returning existing entry', {
+        projectPath,
+        existingGotchaId: existing.id,
+        title: gotcha.title,
+        discoveredBy: gotcha.discoveredBy,
+      });
       return existing.id;
     }
 
