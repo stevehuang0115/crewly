@@ -19,10 +19,14 @@
  * @module services/boot/boot-announce.service
  */
 
+import { existsSync, writeFileSync } from 'fs';
+
 /** Inputs describing the just-completed boot. */
 export interface BootAnnounceInfo {
   /** The running Crewly version, e.g. "1.11.3". */
   version: string;
+  /** True on the first-ever boot (welcome) vs a restart (back-online). */
+  firstBoot?: boolean;
   /** How long the system was offline before this boot, in ms (optional). */
   offlineDurationMs?: number;
   /** How many queued offline messages were replayed on boot (optional). */
@@ -66,6 +70,15 @@ function formatDuration(ms: number): string {
  * // → { title: '✅ Crewly 已重启上线', message: '• 版本: 1.11.3\n• 离线: 12 分钟\n• 已补处理: 3 条离线消息' }
  */
 export function composeBootAnnouncement(info: BootAnnounceInfo): BootAnnounceMessage {
+  // First-ever boot: a welcome, not a "restarted" message — and offline /
+  // replayed lines are meaningless (there was no prior run).
+  if (info.firstBoot) {
+    return {
+      title: '🎉 欢迎使用 Crewly！',
+      message: `Crewly 已启动并就绪。\n• 版本: ${info.version}`,
+    };
+  }
+
   const lines: string[] = [`• 版本: ${info.version}`];
   if (typeof info.offlineDurationMs === 'number' && info.offlineDurationMs > 0) {
     lines.push(`• 离线: ${formatDuration(info.offlineDurationMs)}`);
@@ -116,5 +129,29 @@ export async function sendBootAnnouncement(
     deps.logger.warn('Boot announce failed (non-critical)', {
       error: err instanceof Error ? err.message : String(err),
     });
+  }
+}
+
+/**
+ * Returns true if no boot marker exists yet — i.e. this is the first-ever boot.
+ *
+ * @param markerPath - Absolute path to the boot marker file.
+ * @returns True when the marker is absent.
+ */
+export function isFirstBoot(markerPath: string): boolean {
+  return !existsSync(markerPath);
+}
+
+/**
+ * Persists the boot marker so subsequent boots are recognized as restarts.
+ * Best-effort: if the write fails, a future boot may re-show the welcome — harmless.
+ *
+ * @param markerPath - Absolute path to the boot marker file.
+ */
+export function markBooted(markerPath: string): void {
+  try {
+    writeFileSync(markerPath, new Date().toISOString());
+  } catch {
+    // Ignore — persistence is best-effort.
   }
 }
