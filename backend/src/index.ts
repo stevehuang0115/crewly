@@ -78,6 +78,7 @@ import { RequestStatusUpdateSubscriber } from './services/v3/request-status-upda
 import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscriber.js';
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { getSlackService } from './services/slack/slack.service.js';
+import { sendBootAnnouncement } from './services/boot/boot-announce.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -179,6 +180,8 @@ export class CrewlyServer {
 	private io: SocketIOServer;
 	private config: StartupConfig;
 	private logger = LoggerService.getInstance().createComponentLogger('CrewlyServer');
+	/** Offline-replay summary from this boot, surfaced in the boot announcement. */
+	private lastOfflineReplay?: { offlineDurationMs?: number; replayedCount?: number };
 
 	private storageService!: StorageService;
 	private tmuxService!: TmuxService;
@@ -1754,6 +1757,11 @@ void (async () => {
 					this.config.crewlyHome,
 				);
 				const replayResult = await replayService.replayPendingMessages();
+				// Stash for the boot announcement (surfaced after the orchestrator starts).
+				this.lastOfflineReplay = {
+					offlineDurationMs: replayResult.offlineDurationMs,
+					replayedCount: replayResult.replayedCount,
+				};
 				if (replayResult.replayedCount > 0) {
 					this.logger.info('Replayed pending messages from offline period (#247)', {
 						replayed: replayResult.replayedCount,
@@ -2582,6 +2590,47 @@ void (async () => {
 			}
 
 			this.logger.info('Orchestrator auto-started successfully');
+
+			// Announce "back online" to the owner's channel (best-effort, never
+			// blocks boot). Deterministic system message — reports startup + the
+			// running version, enriched with offline duration + replayed count.
+			try {
+				const settings = await getSettingsService().getSettings();
+				if (settings.general.announceOnBoot) {
+					let version = 'unknown';
+					try {
+						version = VersionCheckService.getInstance().getLocalVersion();
+					} catch {
+						version = process.env.npm_package_version || 'unknown';
+					}
+					await sendBootAnnouncement(
+						{
+							version,
+							offlineDurationMs: this.lastOfflineReplay?.offlineDurationMs,
+							replayedCount: this.lastOfflineReplay?.replayedCount,
+						},
+						{
+							isSlackConnected: () => getSlackService().isConnected(),
+							sendSlack: (msg) =>
+								getSlackService().sendNotification({
+									type: 'project_update',
+									title: msg.title,
+									message: msg.message,
+									urgency: 'normal',
+									timestamp: new Date().toISOString(),
+								}),
+							logger: {
+								info: (m, meta) => this.logger.info(m, meta),
+								warn: (m, meta) => this.logger.warn(m, meta),
+							},
+						},
+					);
+				}
+			} catch (announceErr) {
+				this.logger.warn('Boot announce skipped (non-critical)', {
+					error: announceErr instanceof Error ? announceErr.message : String(announceErr),
+				});
+			}
 		} catch (error) {
 			this.logger.error('Failed to auto-start orchestrator', {
 				error: error instanceof Error ? error.message : String(error),
