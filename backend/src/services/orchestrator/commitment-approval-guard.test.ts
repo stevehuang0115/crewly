@@ -7,7 +7,10 @@ import {
   isDormantTeam,
   containsApprovalToken,
   evaluateColdLaunch,
+  extractScheduleClaim,
+  isPreAuthorizedSchedule,
   type GuardTeam,
+  type GuardWorkItem,
 } from './commitment-approval-guard.js';
 
 const dormant: GuardTeam = {
@@ -95,5 +98,69 @@ describe('evaluateColdLaunch', () => {
   it('ALLOWS continuation/recovery of an already-active team without any approval', () => {
     const d = evaluateColdLaunch({ team: active, recentOwnerMessages: [] });
     expect(d.allowed).toBe(true);
+  });
+});
+
+describe('extractScheduleClaim', () => {
+  it('extracts a cron claim from a cron_run WorkItem carrying cronTaskId', () => {
+    const wi: GuardWorkItem = { type: 'cron_run', metadata: { source: 'cron', cronTaskId: 'cron-abc123' } };
+    expect(extractScheduleClaim(wi)).toEqual({ kind: 'cron', refId: 'cron-abc123' });
+  });
+
+  it('extracts a cron claim from metadata.source=cron even if type differs', () => {
+    const wi: GuardWorkItem = { type: 'delegate', metadata: { source: 'cron', cronTaskId: 'cron-x' } };
+    expect(extractScheduleClaim(wi)).toEqual({ kind: 'cron', refId: 'cron-x' });
+  });
+
+  it('extracts a trigger claim from triggerId', () => {
+    const wi: GuardWorkItem = { type: 'delegate', triggerId: 'trg-77' };
+    expect(extractScheduleClaim(wi)).toEqual({ kind: 'trigger', refId: 'trg-77' });
+  });
+
+  it('returns null for a cron_run with NO cronTaskId (nothing to verify)', () => {
+    expect(extractScheduleClaim({ type: 'cron_run', metadata: { source: 'cron' } })).toBeNull();
+    expect(extractScheduleClaim({ type: 'cron_run' })).toBeNull();
+  });
+
+  it('returns null for an ordinary delegate WorkItem', () => {
+    expect(extractScheduleClaim({ type: 'delegate', metadata: { source: 'orchestrator' } })).toBeNull();
+    expect(extractScheduleClaim({ type: 'delegate' })).toBeNull();
+  });
+});
+
+describe('isPreAuthorizedSchedule', () => {
+  // Registry where only these ids are real (owner-configured).
+  const registry = {
+    cronTaskExists: async (id: string) => id === 'cron-real',
+    triggerExists: (id: string) => id === 'trg-real',
+  };
+
+  it('EXEMPTS a cron run whose cronTaskId resolves in the registry', async () => {
+    const wi: GuardWorkItem = { type: 'cron_run', metadata: { source: 'cron', cronTaskId: 'cron-real' } };
+    expect(await isPreAuthorizedSchedule(wi, registry)).toBe(true);
+  });
+
+  it('does NOT exempt a FORGED cron claim whose id is not registered (security)', async () => {
+    // The orchestrator can write source:'cron' onto a fabricated WorkItem — but
+    // it cannot fabricate a real cron task, so the id does not resolve.
+    const wi: GuardWorkItem = { type: 'cron_run', metadata: { source: 'cron', cronTaskId: 'cron-FORGED' } };
+    expect(await isPreAuthorizedSchedule(wi, registry)).toBe(false);
+  });
+
+  it('EXEMPTS a trigger wake whose triggerId resolves in the registry', async () => {
+    expect(await isPreAuthorizedSchedule({ triggerId: 'trg-real' }, registry)).toBe(true);
+  });
+
+  it('does NOT exempt a forged/unknown triggerId', async () => {
+    expect(await isPreAuthorizedSchedule({ triggerId: 'trg-FORGED' }, registry)).toBe(false);
+  });
+
+  it('does NOT exempt a WorkItem with no scheduled-origin claim', async () => {
+    expect(await isPreAuthorizedSchedule({ type: 'delegate' }, registry)).toBe(false);
+  });
+
+  it('does NOT exempt a null/missing WorkItem', async () => {
+    expect(await isPreAuthorizedSchedule(null, registry)).toBe(false);
+    expect(await isPreAuthorizedSchedule(undefined, registry)).toBe(false);
   });
 });
