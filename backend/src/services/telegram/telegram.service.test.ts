@@ -277,6 +277,50 @@ describe('TelegramService', () => {
 			expect(body.text.length).toBeLessThanOrEqual(4096);
 			expect(body.text).toContain('...(truncated)');
 		});
+
+		it('should retry as plain text when Markdown parsing fails', async () => {
+			// First attempt: Telegram rejects the message because the Markdown
+			// entities don't parse (e.g. **snake_case_name**).
+			mockFetch.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						ok: false,
+						error_code: 400,
+						description:
+							"Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 12",
+					}),
+					{ status: 400 }
+				)
+			);
+			// Retry without parse_mode succeeds.
+			mockFetch.mockResolvedValueOnce(
+				new Response(JSON.stringify({ ok: true, result: { message_id: 88 } }), { status: 200 })
+			);
+
+			const msgId = await service.sendMessage('12345', 'Build **antique_identifier** is ready');
+			expect(msgId).toBe(88);
+
+			const sendCalls = mockFetch.mock.calls.filter((c) => String(c[0]).includes('/sendMessage'));
+			expect(sendCalls).toHaveLength(2);
+			const firstBody = JSON.parse((sendCalls[0]![1] as RequestInit).body as string);
+			const retryBody = JSON.parse((sendCalls[1]![1] as RequestInit).body as string);
+			expect(firstBody.parse_mode).toBe('Markdown');
+			expect(retryBody.parse_mode).toBeUndefined();
+			expect(retryBody.text).toContain('antique_identifier');
+		});
+
+		it('should not retry on non-parse 400 errors', async () => {
+			mockFetch.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: chat not found' }),
+					{ status: 400 }
+				)
+			);
+
+			await expect(service.sendMessage('12345', 'hi')).rejects.toThrow('send failed');
+			const sendCalls = mockFetch.mock.calls.filter((c) => String(c[0]).includes('/sendMessage'));
+			expect(sendCalls).toHaveLength(1); // no retry
+		});
 	});
 
 	describe('getStatus', () => {
