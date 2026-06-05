@@ -1,0 +1,22 @@
+{
+  "id": "xhs-downloader",
+  "name": "XHS (小红书) Note Downloader",
+  "description": "Download images and videos from 小红书 (RedNote/XHS) share links. Pass a URL or xhslink.com short link; returns downloaded file paths + metadata (title, author, type). Uses XHS-Downloader Python library — no account login required.",
+  "category": "automation",
+  "skillType": "claude-skill",
+  "promptFile": "instructions.md",
+  "execution": {
+    "type": "script",
+    "script": {
+      "file": "execute.sh",
+      "interpreter": "bash",
+      "timeoutMs": 60000
+    }
+  },
+  "triggers": ["download xhs", "download rednote", "下载小红书", "xhs download", "save rednote note", "保存小红书笔记"],
+  "tags": ["automation", "rednote", "xiaohongshu", "download", "media", "images", "video"],
+  "assignableRoles": ["generalist", "researcher"],
+  "version": "1.0.0",
+  "createdAt": "2026-06-05T00:00:00.000Z",
+  "updatedAt": "2026-06-05T00:00:00.000Z"
+}
