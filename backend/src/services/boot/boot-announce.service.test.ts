@@ -3,9 +3,14 @@
  */
 
 import { describe, it, expect, jest } from '@jest/globals';
+import { existsSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import {
   composeBootAnnouncement,
   sendBootAnnouncement,
+  isFirstBoot,
+  markBooted,
   type BootAnnounceDeps,
 } from './boot-announce.service.js';
 
@@ -36,6 +41,45 @@ describe('composeBootAnnouncement', () => {
     const { message } = composeBootAnnouncement({ version: '1.0.0' });
     expect(message).not.toContain('离线');
     expect(message).not.toContain('已补处理');
+  });
+
+  it('shows a WELCOME (not restarted) on first boot, and omits offline/replayed', () => {
+    const { title, message } = composeBootAnnouncement({
+      version: '1.11.4',
+      firstBoot: true,
+      offlineDurationMs: 999_999, // should be ignored on first boot
+      replayedCount: 5, // should be ignored on first boot
+    });
+    expect(title).toContain('欢迎');
+    expect(title).not.toContain('重启');
+    expect(message).toContain('1.11.4');
+    expect(message).not.toContain('离线');
+    expect(message).not.toContain('已补处理');
+  });
+
+  it('shows the restarted message when firstBoot is false', () => {
+    const { title } = composeBootAnnouncement({ version: '1.11.4', firstBoot: false });
+    expect(title).toContain('重启');
+  });
+});
+
+describe('isFirstBoot / markBooted', () => {
+  it('is first boot when the marker is absent, not after markBooted', () => {
+    // Unique path per run (Date.now/random are unavailable here).
+    const marker = join(tmpdir(), `crewly-boot-marker-${process.pid}-${process.hrtime.bigint()}`);
+    try {
+      expect(isFirstBoot(marker)).toBe(true);
+      markBooted(marker);
+      expect(existsSync(marker)).toBe(true);
+      expect(isFirstBoot(marker)).toBe(false);
+    } finally {
+      rmSync(marker, { force: true });
+    }
+  });
+
+  it('markBooted swallows write errors (unwritable path) without throwing', () => {
+    const bad = join(tmpdir(), 'crewly-no-such-dir-xyz', 'marker');
+    expect(() => markBooted(bad)).not.toThrow();
   });
 });
 

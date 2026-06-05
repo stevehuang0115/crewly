@@ -78,7 +78,7 @@ import { RequestStatusUpdateSubscriber } from './services/v3/request-status-upda
 import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscriber.js';
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { getSlackService } from './services/slack/slack.service.js';
-import { sendBootAnnouncement } from './services/boot/boot-announce.service.js';
+import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -2603,9 +2603,14 @@ void (async () => {
 					} catch {
 						version = process.env.npm_package_version || 'unknown';
 					}
+					// First-ever boot → welcome; subsequent boots → "back online".
+					const bootMarker = path.join(this.config.crewlyHome, '.boot-announced');
+					const firstBoot = isFirstBoot(bootMarker);
+					if (firstBoot) markBooted(bootMarker);
 					await sendBootAnnouncement(
 						{
 							version,
+							firstBoot,
 							offlineDurationMs: this.lastOfflineReplay?.offlineDurationMs,
 							replayedCount: this.lastOfflineReplay?.replayedCount,
 						},
