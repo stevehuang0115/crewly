@@ -58,7 +58,9 @@ This creates a tar.gz archive and submits it to the local Crewly backend for rev
 bash {{AGENT_SKILLS_PATH}}/marketplace/marketplace-publish/execute.sh '{"action":"publish-remote","skillPath":"{{PROJECT_PATH}}/config/skills/agent/my-skill"}'
 ```
 
-Publishes to the local backend AND to the remote registry at crewlyai.com, making the skill available to all Crewly users.
+Publishes to the local review queue AND to the public marketplace. The public path goes through the authenticated Crewly Cloud flow (`crewly publish --cloud`) — it requires `crewly cloud login`, and the cloud opens a PR to the skills repo on your behalf (a maintainer reviews + merges it). It does NOT write the registry directly: that admin endpoint is correctly restricted (returns 401 to unauthenticated callers), and sending an admin token from a user skill would leak it to every machine.
+
+If you are not logged in, the local submission still succeeds; the result includes a `cloudError` and a hint to run `crewly cloud login`, then retry.
 
 ### `list-submissions` — View submission status
 

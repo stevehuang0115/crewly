@@ -9,7 +9,6 @@ INPUT=$(read_json_input "${1:-}")
 
 ACTION=$(printf '%s' "$INPUT" | jq -r '.action // "publish"')
 SKILL_PATH=$(printf '%s' "$INPUT" | jq -r '.skillPath // empty')
-REMOTE_URL=$(printf '%s' "$INPUT" | jq -r '.remoteUrl // "https://crewlyai.com"')
 
 case "$ACTION" in
   validate)
@@ -115,7 +114,14 @@ case "$ACTION" in
     ;;
 
   publish-remote)
-    # Package skill and submit to both local and remote registries
+    # Submit to the LOCAL review queue AND publish to the PUBLIC marketplace.
+    #
+    # The public path goes through `crewly publish --cloud`, which carries the
+    # user's Crewly Cloud token (from `crewly cloud login`); the cloud holds the
+    # GitHub bot token and opens a PR. We deliberately do NOT write the registry
+    # directly: the old `POST /api/registry/skills` path is an admin-only
+    # endpoint and correctly rejects unauthenticated requests with 401 — sending
+    # an admin token from a user skill would leak it to every machine.
     require_param "skillPath" "$SKILL_PATH"
 
     if [ ! -d "$SKILL_PATH" ]; then
@@ -131,45 +137,30 @@ case "$ACTION" in
     SKILL_VERSION=$(echo "$MANIFEST" | jq -r '.version')
     SKILL_NAME=$(echo "$MANIFEST" | jq -r '.name')
 
-    # Create temp directory for archive
+    # 1. Local review queue (unchanged) — package + submit to the local backend.
     TMP_DIR=$(mktemp -d)
-    ARCHIVE_NAME="${SKILL_ID}-${SKILL_VERSION}.tar.gz"
-    ARCHIVE_PATH="${TMP_DIR}/${ARCHIVE_NAME}"
-
-    # Create tar.gz archive
+    ARCHIVE_PATH="${TMP_DIR}/${SKILL_ID}-${SKILL_VERSION}.tar.gz"
     tar -czf "$ARCHIVE_PATH" -C "$(dirname "$SKILL_PATH")" "$(basename "$SKILL_PATH")"
-
-    # Submit to local backend
     LOCAL_RESULT=$(api_call POST "/marketplace/submit" "{\"archivePath\":\"${ARCHIVE_PATH}\"}" 2>&1 || true)
-
-    # Submit to remote registry
-    CHECKSUM=$(shasum -a 256 "$ARCHIVE_PATH" | cut -d ' ' -f1)
-    SIZE=$(stat -f%z "$ARCHIVE_PATH" 2>/dev/null || stat -c%s "$ARCHIVE_PATH" 2>/dev/null)
-    REMOTE_PAYLOAD=$(jq -n \
-      --arg id "$SKILL_ID" \
-      --arg name "$SKILL_NAME" \
-      --arg desc "$(echo "$MANIFEST" | jq -r '.description')" \
-      --arg author "$(echo "$MANIFEST" | jq -r '.author // "Community"')" \
-      --arg version "$SKILL_VERSION" \
-      --arg category "$(echo "$MANIFEST" | jq -r '.category')" \
-      --argjson tags "$(echo "$MANIFEST" | jq '.tags // []')" \
-      --arg license "$(echo "$MANIFEST" | jq -r '.license // "MIT"')" \
-      --arg checksum "sha256:${CHECKSUM}" \
-      --argjson size "$SIZE" \
-      '{id:$id,name:$name,description:$desc,author:$author,version:$version,category:$category,tags:$tags,license:$license,checksum:$checksum,sizeBytes:($size|tonumber)}')
-
-    REMOTE_RESULT=$(curl -s -w '\n%{http_code}' -X POST \
-      -H "Content-Type: application/json" \
-      -d "$REMOTE_PAYLOAD" \
-      "${REMOTE_URL}/api/registry/skills" 2>&1 || true)
-
-    REMOTE_HTTP=$(echo "$REMOTE_RESULT" | tail -1)
-    REMOTE_BODY=$(echo "$REMOTE_RESULT" | sed '$d')
-
-    # Clean up temp
     rm -rf "$TMP_DIR"
 
-    echo "{\"success\":true,\"message\":\"Published ${SKILL_NAME} v${SKILL_VERSION} to local + remote\",\"localResult\":${LOCAL_RESULT:-null},\"remoteStatus\":\"${REMOTE_HTTP}\",\"remoteResult\":${REMOTE_BODY:-null}}"
+    # 2. Public marketplace via the authenticated Crewly Cloud flow (opens a PR).
+    if ! command -v crewly >/dev/null 2>&1; then
+      echo "{\"success\":false,\"message\":\"Local submission done; crewly CLI not found, cannot publish to the public marketplace\",\"localResult\":${LOCAL_RESULT:-null}}"
+      exit 0
+    fi
+
+    CLOUD_OUT=$(crewly publish "$SKILL_PATH" --cloud 2>&1 || true)
+    PR_URL=$(printf '%s' "$CLOUD_OUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1)
+
+    if [ -n "$PR_URL" ]; then
+      echo "{\"success\":true,\"message\":\"Published ${SKILL_NAME} v${SKILL_VERSION}: local review queue + public marketplace PR\",\"localResult\":${LOCAL_RESULT:-null},\"prUrl\":\"${PR_URL}\"}"
+    else
+      # Most common failure: not logged in → `crewly cloud login`.
+      CLOUD_MSG=$(printf '%s' "$CLOUD_OUT" | tr '\n' ' ' | sed 's/"/\\"/g')
+      echo "{\"success\":false,\"message\":\"Local submission done; public publish failed\",\"localResult\":${LOCAL_RESULT:-null},\"cloudError\":\"${CLOUD_MSG}\",\"hint\":\"Run 'crewly cloud login' if not authenticated, then retry.\"}"
+      exit 0
+    fi
     ;;
 
   list-submissions)
