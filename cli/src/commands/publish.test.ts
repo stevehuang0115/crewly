@@ -47,6 +47,12 @@ jest.mock('../utils/gh-submit.js', () => ({
   submitToGitHub: (...args: unknown[]) => mockSubmitToGitHub(...args),
 }));
 
+// Mock cloud-submit
+const mockSubmitToCloud = jest.fn();
+jest.mock('../utils/cloud-submit.js', () => ({
+  submitToCloud: (...args: unknown[]) => mockSubmitToCloud(...args),
+}));
+
 // Mock fs
 jest.mock('fs', () => {
   const actual = jest.requireActual('fs');
@@ -163,6 +169,40 @@ describe('publishCommand', () => {
     expect(mockConsole).toHaveBeenCalledWith(
       expect.stringContaining('Pull request created successfully'),
     );
+  });
+
+  it('should call submitToCloud (and NOT gh) when --cloud flag is set', async () => {
+    mockValidate.mockReturnValue({ valid: true, errors: [], warnings: [] });
+    mockCreateArchive.mockResolvedValue('/output/test-1.0.0.tar.gz');
+    mockGenerateChecksum.mockReturnValue('sha256:abc123');
+    mockGenerateRegistryEntry.mockReturnValue({ id: 'test', type: 'skill' });
+    mockSubmitToCloud.mockResolvedValue({
+      prUrl: 'https://github.com/stevehuang0115/crewly/pull/100',
+      branch: 'skill/test',
+      updated: false,
+    });
+
+    await publishCommand('/some/path', { cloud: true });
+
+    expect(mockSubmitToCloud).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ id: 'test' }),
+    );
+    expect(mockSubmitToGitHub).not.toHaveBeenCalled();
+    expect(mockConsole).toHaveBeenCalledWith(expect.stringContaining('Submission PR opened'));
+  });
+
+  it('should exit when --cloud submission fails (e.g. not logged in)', async () => {
+    mockValidate.mockReturnValue({ valid: true, errors: [], warnings: [] });
+    mockCreateArchive.mockResolvedValue('/output/test-1.0.0.tar.gz');
+    mockGenerateChecksum.mockReturnValue('sha256:abc123');
+    mockGenerateRegistryEntry.mockReturnValue({ id: 'test', type: 'skill' });
+    mockSubmitToCloud.mockRejectedValue(
+      new Error('Not logged in to Crewly Cloud. Run `crewly cloud login` first.'),
+    );
+
+    await expect(publishCommand('/some/path', { cloud: true })).rejects.toThrow('process.exit');
+    expect(mockConsole).toHaveBeenCalledWith(expect.stringContaining('Cloud submission failed'));
   });
 
   it('should show manual instructions when submit fails', async () => {
