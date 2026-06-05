@@ -46,6 +46,9 @@ export interface GeneralSettings {
   /** Whether to auto-resume agent sessions on restart */
   autoResumeOnRestart: boolean;
 
+  /** Whether to post a "back online" message to the owner's channel after a restart */
+  announceOnBoot: boolean;
+
   /** Per-runtime CLI init commands. Key = runtime type, value = CLI command string */
   runtimeCommands: Record<AIRuntime, string>;
 
@@ -332,6 +335,7 @@ export function getDefaultSettings(): CrewlySettings {
       maxConcurrentAgents: 10,
       verboseLogging: false,
       autoResumeOnRestart: true,
+      announceOnBoot: true,
       runtimeCommands: {
         'claude-code': 'claude --dangerously-skip-permissions',
         'gemini-cli': 'gemini --yolo',

@@ -64,6 +64,7 @@ describe('Settings Types', () => {
         maxConcurrentAgents: 10,
         verboseLogging: false,
         autoResumeOnRestart: true,
+        announceOnBoot: true,
         runtimeCommands: {
           'claude-code': 'claude --dangerously-skip-permissions',
           'gemini-cli': 'gemini --yolo',
@@ -97,6 +98,7 @@ describe('Settings Types', () => {
         maxConcurrentAgents: 5,
         verboseLogging: true,
         autoResumeOnRestart: false,
+        announceOnBoot: true,
         runtimeCommands: {
           'claude-code': '/custom/path/to/claude --dangerously-skip-permissions',
           'gemini-cli': '/custom/gemini --custom-flag',
@@ -162,6 +164,7 @@ describe('Settings Types', () => {
           maxConcurrentAgents: 10,
           verboseLogging: false,
           autoResumeOnRestart: true,
+          announceOnBoot: true,
           runtimeCommands: {
             'claude-code': 'claude --dangerously-skip-permissions',
             'gemini-cli': 'gemini --yolo',
