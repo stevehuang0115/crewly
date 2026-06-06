@@ -1,5 +1,5 @@
 ---
-name: code-review
+name: Code Review
 description: "Analyze git changes and produce a structured code review with automated checks for missing tests, debug statements, potential secrets, large changes, and dependency modifications. Use when reviewing staged changes, unstaged diffs, recent commits, or branch comparisons before submitting a pull request. For task-level quality gates, use check-quality-gates instead."
 version: 1.0.0
 category: development
