@@ -5154,12 +5154,12 @@ Loop until done, blocked, or explicitly reassigned:
 				await sessionHelper.sendMessage(sessionName, messageToSend);
 
 				// Claude Code: rapid-check verification.
-				// Check every 1s for up to 8s whether Claude started processing.
+				// Check every 1s for up to 24s (Claude v2 first-token can be slow: MCP/skill load) whether Claude started processing.
 				// If Claude leaves the prompt at any point, the message was received.
 				// This avoids the old length-comparison approach which was unreliable
 				// (Claude's TUI redraws change output length unpredictably).
 				if (isClaudeCode) {
-					for (let i = 0; i < 8; i++) {
+					for (let i = 0; i < 24; i++) {
 						await delay(1000);
 						if (abortSignal?.aborted) return false;
 
@@ -5185,9 +5185,21 @@ Loop until done, blocked, or explicitly reassigned:
 					// Claude still at prompt after 8s — message likely not received.
 					// For Claude Code with --append-system-prompt-file, don't retry
 					// (would cause duplicate). Log warning and return false.
-					this.logger.warn('Kickoff delivery unconfirmed — Claude still at prompt after 8s (not retrying)', {
-						sessionName, runtimeType,
-					});
+					// Still at prompt — the kickoff was likely typed but not submitted (PTY submit
+					// can be dropped). A missing agent costs far more than a duplicate kickoff
+					// (idempotent: it just re-reads the prompt file), so resend ONCE and re-poll.
+					this.logger.warn('Kickoff unconfirmed after 24s — resending once', { sessionName, runtimeType });
+					await sessionHelper.sendMessage(sessionName, messageToSend);
+					for (let j = 0; j < 12; j++) {
+						await delay(1000);
+						if (abortSignal?.aborted) return false;
+						const out2 = sessionHelper.capturePane(sessionName);
+						if (containsSpinnerOrWorkingIndicator(out2) || !this.isClaudeAtPrompt(out2, RUNTIME_TYPES.CLAUDE_CODE)) {
+							this.logger.debug('Kickoff delivered on resend', { sessionName, checkIndex: j });
+							return true;
+						}
+					}
+					this.logger.warn('Kickoff delivery unconfirmed after resend — giving up', { sessionName, runtimeType });
 					return false;
 				}
 

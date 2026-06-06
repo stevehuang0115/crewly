@@ -298,6 +298,55 @@ describe('EventToWorkItemBridge', () => {
       expect(taskPool.addCalls).toHaveLength(0);
       bridge.stop();
     });
+
+    // -----------------------------------------------------------------------
+    // #698 — verify-of-verify cascade guard. A verification WI is itself a
+    // task; when the team lead completes it, it re-emits task:done_by_worker.
+    // Without the guard, each verify spawns another verify (verify-of-verify),
+    // an unbounded cascade that floods the pool and starves real work. These
+    // three tests pin each of the guard's recognised "source is a verification"
+    // signals → NO new verification WI is created.
+    // -----------------------------------------------------------------------
+    it('does NOT create a verify-of-verify when the source WI is a review (type=review)', async () => {
+      const sourceWI = buildWorkItem({ type: 'review' as WorkItemType });
+      const taskPool = buildFakeTaskPool([sourceWI]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+
+      bus.publish(buildEvent({ type: 'task:done_by_worker' }));
+      await bridge.flushPending();
+
+      expect(taskPool.addCalls).toHaveLength(0);
+      bridge.stop();
+    });
+
+    it('does NOT create a verify-of-verify when the source id contains ":verify:" (cascade breaker)', async () => {
+      const verifyWI = buildWorkItem({ id: 'wi-x:verify:wi-x' });
+      const taskPool = buildFakeTaskPool([verifyWI]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+
+      bus.publish(buildEvent({ type: 'task:done_by_worker', workItemId: 'wi-x:verify:wi-x' }));
+      await bridge.flushPending();
+
+      expect(taskPool.addCalls).toHaveLength(0);
+      bridge.stop();
+    });
+
+    it('does NOT create a verify-of-verify when the source WI carries metadata.verifyOf', async () => {
+      const sourceWI = buildWorkItem({
+        metadata: { teamId: 'team-product', triggerSource: 'event', verifyOf: 'wi-source-1' },
+      });
+      const taskPool = buildFakeTaskPool([sourceWI]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+
+      bus.publish(buildEvent({ type: 'task:done_by_worker' }));
+      await bridge.flushPending();
+
+      expect(taskPool.addCalls).toHaveLength(0);
+      bridge.stop();
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -376,6 +376,23 @@ export class EventToWorkItemBridge {
       return;
     }
 
+    // Do NOT create a verification WI for a WI that is itself a verification/review.
+    // A verify WI is a task; when the team lead completes it, it re-emits
+    // task:done_by_worker — without this guard each verify spawns another verify
+    // (verify-of-verify), an infinite cascade that floods the orchestrator and
+    // starves real work (members such as the Builder never get spawned).
+    if (
+      sourceWI.type === 'review' ||
+      sourceWI.metadata?.['verifyOf'] ||
+      String(sourceWI.id).includes(':verify:')
+    ) {
+      this.logger.debug('Skipping verification WI for a verification/review source (no verify-of-verify)', {
+        sourceWorkItemId: sourceWI.id,
+        type: sourceWI.type,
+      });
+      return;
+    }
+
     const target = await this.resolveTeamLeadSession(sourceWI);
     const verifyId = `${sourceWI.id}:verify:${sourceWI.id}`;
 
