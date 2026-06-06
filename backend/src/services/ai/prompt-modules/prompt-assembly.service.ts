@@ -17,6 +17,7 @@ import { ProjectReferenceModule } from './project-reference.module.js';
 import { UserProfileReferenceModule } from './user-profile-reference.module.js';
 import { LearningReferenceModule } from './learning-reference.module.js';
 import { MissionContextModule } from './mission-context.module.js';
+import { SOPNormDistinctionModule } from './sop-norm-distinction.module.js';
 import { CommunicationModule } from './communication.module.js';
 import { RecoveryModule } from './recovery.module.js';
 import { LifecycleModule } from './lifecycle.module.js';
@@ -167,6 +168,7 @@ export class PromptAssemblyService {
 			new UserProfileReferenceModule(),
 			new RiskPolicyModule(),
 			new LearningReferenceModule(),
+			new SOPNormDistinctionModule(),
 			new LifecycleModule(),
 		];
 	}

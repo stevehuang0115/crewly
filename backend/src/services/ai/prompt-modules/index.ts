@@ -27,6 +27,7 @@ export { ProjectReferenceModule } from './project-reference.module.js';
 export { UserProfileReferenceModule } from './user-profile-reference.module.js';
 export { LearningReferenceModule } from './learning-reference.module.js';
 export { MissionContextModule } from './mission-context.module.js';
+export { SOPNormDistinctionModule } from './sop-norm-distinction.module.js';
 export { CommunicationModule } from './communication.module.js';
 export { RecoveryModule } from './recovery.module.js';
 export { LifecycleModule } from './lifecycle.module.js';
