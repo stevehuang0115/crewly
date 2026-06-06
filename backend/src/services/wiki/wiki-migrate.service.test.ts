@@ -7,7 +7,6 @@
  * @module services/wiki/wiki-migrate.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -156,6 +155,24 @@ describe('WikiMigrateService.scan', () => {
     expect(md?.targetRelativePath).toMatch(
       /^llm-curated\/decisions\/2026-05-04-runbook\.md$/,
     );
+  });
+
+  it('flags legacyDetected + proposes pages for a docs-only project (retired Knowledge feature)', async () => {
+    // A project whose ONLY legacy store is `.crewly/docs/` (the retired
+    // Company-Knowledge feature) must still surface the migrate banner —
+    // otherwise that data strands silently after the feature is removed.
+    await write(
+      '.crewly/docs/business-model.md',
+      '# Business Model\n\nPricing, GTM, and the cloud-first plan in detail.\n',
+    );
+    const out = await svc.scan({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.legacyDetected).toBe(true);
+    const doc = out.proposedPages.find(
+      (p) => p.sourceFile === '.crewly/docs/business-model.md',
+    );
+    expect(doc?.targetRelativePath).toMatch(/^llm-curated\/docs\//);
   });
 
   it('proposes agent memory.json roleKnowledge as memory-entry pages', async () => {

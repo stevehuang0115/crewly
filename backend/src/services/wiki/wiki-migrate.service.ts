@@ -640,13 +640,17 @@ export class WikiMigrateService {
     // 114 such docs (blog drafts, case studies, business-model, cloud-mvp
     // plan, competitive scans). Without this they're invisible to
     // wiki-query and stuck in the deprecated `query-knowledge` path.
-    await this.proposeProjectDocs(
-      projectRoot,
-      vaultPath,
-      proposedPages,
-      migratedIds,
-      migratedHashes,
-    );
+    if (
+      await this.proposeProjectDocs(
+        projectRoot,
+        vaultPath,
+        proposedPages,
+        migratedIds,
+        migratedHashes,
+      )
+    ) {
+      legacyDetected = true;
+    }
 
     if (includeMemory) {
       const agentsDir = path.join(homeDir, '.crewly', 'agents');
@@ -1206,16 +1210,17 @@ export class WikiMigrateService {
     out: WikiMigrateProposedPage[],
     migratedIds: Set<string>,
     migratedHashes: Set<string>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const docsDir = path.join(projectRoot, '.crewly', 'docs');
-    if (!existsSync(docsDir)) return;
+    if (!existsSync(docsDir)) return false;
     let entries: import('fs').Dirent[];
     try {
       entries = await fs.readdir(docsDir, { withFileTypes: true });
     } catch {
-      return;
+      return false;
     }
     let count = 0;
+    let anyNew = false;
     for (const entry of entries) {
       if (count >= WIKI_MIGRATE_MAX_LOOSE_MD) break;
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
@@ -1240,6 +1245,7 @@ export class WikiMigrateService {
       const hash = sha256(body);
       const skipReason =
         migratedIds.has(sourceId) || migratedHashes.has(hash) ? 'already migrated' : undefined;
+      if (!skipReason) anyNew = true;
       out.push({
         sourceType: 'loose-md',
         sourceFile: path.join('.crewly/docs', entry.name),
@@ -1253,6 +1259,10 @@ export class WikiMigrateService {
       });
       runbookRenderCache.set(sourceId, body);
     }
+    // Signal legacy data so the migrate banner surfaces for projects whose only
+    // legacy store is `.crewly/docs/` (the retired Company-Knowledge feature) —
+    // without this they would never see the prompt and the data would strand.
+    return anyNew;
   }
 
   private async proposeFromAgentMemory(
