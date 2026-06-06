@@ -34,6 +34,7 @@ import {
 	destroySessionBackend,
 	PtySessionBackend,
 } from './services/session/index.js';
+import { RuntimePidRegistry } from './services/session/runtime-pid-registry.service.js';
 import { ApiController } from './controllers/api.controller.js';
 import { createApiRoutes } from './routes/api.routes.js';
 import { TerminalGateway, setTerminalGateway } from './websocket/terminal.gateway.js';
@@ -2289,6 +2290,23 @@ void (async () => {
 
 			// Start health monitoring
 			this.startHealthMonitoring();
+
+			// Reap orphaned runtime processes left by a previous, non-graceful
+			// backend death (crash / OOM / force-exit) BEFORE we spawn any new
+			// sessions below — otherwise stray `gemini --yolo` / `claude` runtimes
+			// accumulate across restarts and inflate the process table (#715).
+			// Identity-verified: only kills recorded PIDs whose live cmdline still
+			// matches, so it never touches an unrelated reused PID.
+			try {
+				const reaped = RuntimePidRegistry.getInstance().reapOrphans();
+				if (reaped > 0) {
+					this.logger.warn('Reaped orphaned runtime processes at startup', { reaped });
+				}
+			} catch (err) {
+				this.logger.warn('Orphan runtime reap failed (non-fatal)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
 
 			// Auto-start orchestrator if enabled in settings
 			await this.autoStartOrchestratorIfEnabled();

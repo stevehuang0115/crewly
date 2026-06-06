@@ -17,6 +17,7 @@ import { PtyTerminalBuffer } from './pty-terminal-buffer.js';
 import { LoggerService, ComponentLogger } from '../../core/logger.service.js';
 import { PTY_CONSTANTS, CREWLY_CONSTANTS } from '../../../constants.js';
 import { PtyActivityTrackerService } from '../../agent/pty-activity-tracker.service.js';
+import { RuntimePidRegistry } from '../runtime-pid-registry.service.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -178,6 +179,15 @@ export class PtySessionBackend implements ISessionBackend {
 		this.sessions.set(name, session);
 		this.terminalBuffers.set(name, terminalBuffer);
 
+		// Record the spawned PID so a non-graceful backend death can be cleaned
+		// up at the next boot (issue #715). Removed again on clean teardown.
+		RuntimePidRegistry.getInstance().record(
+			session.pid,
+			name,
+			options.command,
+			options.args ?? [],
+		);
+
 		this.logger.info('PTY session created', {
 			name,
 			pid: session.pid,
@@ -231,6 +241,9 @@ export class PtySessionBackend implements ISessionBackend {
 			terminalBuffer.dispose();
 			this.terminalBuffers.delete(name);
 		}
+
+		// We reaped this process ourselves — drop it from the orphan registry.
+		RuntimePidRegistry.getInstance().remove(name);
 
 		this.cumulativeOutputBytes.delete(name);
 		this.closeSessionLogStream(name);
@@ -498,6 +511,10 @@ export class PtySessionBackend implements ISessionBackend {
 		this.sessions.clear();
 		this.terminalBuffers.clear();
 		this.cumulativeOutputBytes.clear();
+
+		// We just reaped every tracked process + group — clear the orphan
+		// registry so the next boot doesn't try to re-reap these PIDs.
+		RuntimePidRegistry.getInstance().clear();
 
 		this.logger.info('Force-destroyed all PTY sessions');
 	}
