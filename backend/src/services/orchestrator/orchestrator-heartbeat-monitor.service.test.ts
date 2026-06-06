@@ -50,6 +50,26 @@ jest.mock('../agent/auditor-scheduler.service.js', () => ({
 	},
 }));
 
+// Hung-session signal (#713) + recovery gate. Default: not hung, recovery on —
+// so existing tests fall through to the normal heartbeat/idle logic unchanged.
+const mockGetHungAgents = jest.fn<string[], []>(() => []);
+const mockClearHungState = jest.fn();
+jest.mock('../task-pool/task-pool.service.js', () => ({
+	TaskPoolService: {
+		getInstance: () => ({
+			getHungAgents: mockGetHungAgents,
+			clearHungState: mockClearHungState,
+		}),
+	},
+}));
+
+const mockGetSettings = jest
+	.fn()
+	.mockResolvedValue({ general: { autoRecoverHungOrchestrator: true } });
+jest.mock('../settings/index.js', () => ({
+	getSettingsService: () => ({ getSettings: mockGetSettings }),
+}));
+
 import { OrchestratorHeartbeatMonitorService } from './orchestrator-heartbeat-monitor.service.js';
 import { OrchestratorRestartService } from './orchestrator-restart.service.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
@@ -83,6 +103,11 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 
 	beforeEach(() => {
 		jest.useFakeTimers();
+
+		// Reset hung-session mocks to the default (not hung, recovery enabled).
+		mockGetHungAgents.mockReturnValue([]);
+		mockClearHungState.mockReset();
+		mockGetSettings.mockResolvedValue({ general: { autoRecoverHungOrchestrator: true } });
 
 		OrchestratorHeartbeatMonitorService.resetInstance();
 		OrchestratorRestartService.resetInstance();
@@ -770,6 +795,54 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 				expect.stringContaining('[SYSTEM] Orchestrator heartbeat timeout'),
 				expect.any(Object),
 			);
+
+			restartSpy.mockRestore();
+		});
+	});
+
+	describe('hung-session auto-restart (#713 signal)', () => {
+		it('restarts when the orchestrator session is hung and recovery is enabled', async () => {
+			mockGetHungAgents.mockReturnValue([ORCHESTRATOR_SESSION_NAME]);
+			const restartSpy = jest
+				.spyOn(OrchestratorRestartService.getInstance(), 'attemptRestart')
+				.mockResolvedValue(true);
+
+			await performCheckAndFlush(service);
+
+			expect(restartSpy).toHaveBeenCalled();
+			// Hung state cleared so the fresh session isn't immediately re-flagged.
+			expect(mockClearHungState).toHaveBeenCalledWith(ORCHESTRATOR_SESSION_NAME);
+
+			restartSpy.mockRestore();
+		});
+
+		it('does NOT restart when autoRecoverHungOrchestrator is disabled', async () => {
+			mockGetHungAgents.mockReturnValue([ORCHESTRATOR_SESSION_NAME]);
+			mockGetSettings.mockResolvedValue({
+				general: { autoRecoverHungOrchestrator: false },
+			});
+			const restartSpy = jest
+				.spyOn(OrchestratorRestartService.getInstance(), 'attemptRestart')
+				.mockResolvedValue(true);
+
+			await performCheckAndFlush(service);
+
+			expect(restartSpy).not.toHaveBeenCalled();
+			expect(mockClearHungState).not.toHaveBeenCalled();
+
+			restartSpy.mockRestore();
+		});
+
+		it('does not trigger the hung path when no agent is hung', async () => {
+			// Default mock returns [] — the hung branch must not fire, and the
+			// check must not clear hung state.
+			const restartSpy = jest
+				.spyOn(OrchestratorRestartService.getInstance(), 'attemptRestart')
+				.mockResolvedValue(true);
+
+			await performCheckAndFlush(service);
+
+			expect(mockClearHungState).not.toHaveBeenCalled();
 
 			restartSpy.mockRestore();
 		});

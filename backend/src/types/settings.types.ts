@@ -34,6 +34,13 @@ export interface GeneralSettings {
   /** Whether to auto-start the orchestrator on application launch */
   autoStartOrchestrator: boolean;
 
+  /**
+   * Whether the hung-session watchdog auto-restarts the orchestrator when its
+   * session is hung (alive but claiming work without ever heartbeating). When
+   * false, the hang is still detected + surfaced on `/health` but not recovered.
+   */
+  autoRecoverHungOrchestrator: boolean;
+
   /** Agent check-in interval in minutes */
   checkInIntervalMinutes: number;
 
@@ -331,6 +338,7 @@ export function getDefaultSettings(): CrewlySettings {
     general: {
       defaultRuntime: 'claude-code',
       autoStartOrchestrator: true,
+      autoRecoverHungOrchestrator: true,
       checkInIntervalMinutes: 5,
       maxConcurrentAgents: 10,
       verboseLogging: false,

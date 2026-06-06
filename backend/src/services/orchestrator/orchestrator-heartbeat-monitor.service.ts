@@ -30,6 +30,8 @@ import { delay } from '../../utils/async.utils.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { OrchestratorRestartService } from './orchestrator-restart.service.js';
 import { isAgentActive } from './orchestrator-status.service.js';
+import { TaskPoolService } from '../task-pool/task-pool.service.js';
+import { getSettingsService } from '../settings/index.js';
 import type { ISessionBackend } from '../session/session-backend.interface.js';
 
 /**
@@ -378,6 +380,39 @@ export class OrchestratorHeartbeatMonitorService {
 				await this.triggerAutoRestart();
 				return;
 			}
+		}
+
+		// Hung-session trigger (Irissair 假死). The orchestrator can keep its
+		// PTY/API-activity heartbeat fresh by auto-claiming work every hour even
+		// when its session is actually stuck — those claims never heartbeat and
+		// get grace-revoked in a loop. The idle-time checks below are fooled by
+		// that periodic activity, so detect the stuck state DIRECTLY via the
+		// claim-service hung signal (#713) and reuse the same restart path.
+		try {
+			const hung = TaskPoolService.getInstance().getHungAgents();
+			if (hung.includes(ORCHESTRATOR_SESSION_NAME)) {
+				const settings = await getSettingsService().getSettings();
+				if (settings.general.autoRecoverHungOrchestrator) {
+					this.logger.error(
+						'Orchestrator session is HUNG (claims work but never heartbeats) — triggering auto-restart',
+						{ sessionName: ORCHESTRATOR_SESSION_NAME },
+					);
+					// Clear the hung state so a restart cooldown / slow restart does
+					// not immediately re-trigger before the fresh session heartbeats.
+					TaskPoolService.getInstance().clearHungState(ORCHESTRATOR_SESSION_NAME);
+					this.heartbeatRequestSentAt = null;
+					await this.triggerAutoRestart();
+					return;
+				}
+				this.logger.warn(
+					'Orchestrator session looks hung but autoRecoverHungOrchestrator is disabled',
+					{ sessionName: ORCHESTRATOR_SESSION_NAME },
+				);
+			}
+		} catch (err) {
+			this.logger.warn('Hung-session check failed (non-fatal)', {
+				error: err instanceof Error ? err.message : String(err),
+			});
 		}
 
 		const activityTracker = PtyActivityTrackerService.getInstance();

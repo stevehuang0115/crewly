@@ -413,6 +413,18 @@ export class ClaimService {
     return hung;
   }
 
+  /**
+   * Clear an agent's consecutive grace-revoke count. Called by the hung-session
+   * watchdog after it triggers a recovery (session restart) so the freshly
+   * restarted session is not immediately re-flagged as hung before it has had a
+   * chance to heartbeat.
+   *
+   * @param agentId - The agent/session id to clear.
+   */
+  clearGraceRevokes(agentId: string): void {
+    this.consecutiveGraceRevokes.delete(agentId);
+  }
+
   // -----------------------------------------------------------------------
   // Expiry Detection (used by Reconciler)
   // -----------------------------------------------------------------------
