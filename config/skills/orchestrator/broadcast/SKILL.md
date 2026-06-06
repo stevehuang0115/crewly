@@ -1,5 +1,5 @@
 ---
-name: broadcast
+name: Broadcast
 description: "Send a message to all active agent sessions, excluding the orchestrator. Use when the orchestrator needs to announce information or coordinate the entire team at once. For messaging a single agent, use send-message instead."
 version: 1.0.0
 category: communication

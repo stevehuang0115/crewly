@@ -1,5 +1,5 @@
 ---
-name: accept-task
+name: Accept Task
 description: "Accept and take the next available task from the task queue. Use when an agent is idle and ready to pick up the highest-priority unassigned task. For assigning tasks to specific agents, use assign-task instead."
 version: 1.0.0
 category: task-management
@@ -41,14 +41,13 @@ Accept and take the next available task from the task queue. The backend selects
 
 ## When to Use
 
-Run this skill when the agent is idle and ready to pick up new work. The backend automatically selects the highest-priority unassigned task. Without a `teamMemberId`, assignment is based on the session alone.
+Run this skill when the agent is idle and ready to pick up new work. The backend automatically selects the highest-priority unassigned task; assignment is keyed by the agent's session.
 
 ## Parameters
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `sessionName` | Yes | The agent's session name (e.g., `dev-1`) |
-| `teamMemberId` | No | Team member ID for targeted assignment |
 | `projectPath` | No | Project path to scope task selection |
 | `taskGroup` | No | Task group to filter available tasks |
 
@@ -58,12 +57,6 @@ Run this skill when the agent is idle and ready to pick up new work. The backend
 
 ```bash
 bash config/skills/agent/core/accept-task/execute.sh '{"sessionName":"dev-1"}'
-```
-
-### Accept with team member targeting
-
-```bash
-bash config/skills/agent/core/accept-task/execute.sh '{"sessionName":"dev-1","teamMemberId":"tm-abc123"}'
 ```
 
 ### Accept within a specific project and task group

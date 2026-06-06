@@ -1,5 +1,5 @@
 ---
-name: register-self
+name: Register Self
 description: "Register the agent as active with the Crewly backend on startup. Use when an agent first launches and needs to join the team and become visible to the orchestrator. For confirming responsiveness after registration, use heartbeat instead."
 version: 1.0.0
 category: system

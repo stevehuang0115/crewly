@@ -1,5 +1,5 @@
 ---
-name: assign-task
+name: Assign Task
 description: "Assign a task to a specific agent via the task management system. Use when the orchestrator needs to target a particular agent with a known task ID. For agents self-assigning the next available task, use accept-task instead."
 version: 1.0.0
 category: management
@@ -38,6 +38,7 @@ The skill passes the full JSON input to the assignment endpoint. Common fields:
 |-----------|----------|-------------|
 | `taskId` | Yes | The ID of the task to assign |
 | `assignee` | Yes | Target agent session name (e.g., `agent-joe`) |
+| `reason` | No | Why the task is being assigned (recorded with the assignment) |
 
 ## Examples
 
@@ -47,10 +48,10 @@ The skill passes the full JSON input to the assignment endpoint. Common fields:
 bash config/skills/orchestrator/assign-task/execute.sh '{"taskId":"task-123","assignee":"agent-joe"}'
 ```
 
-### Assign with additional priority context
+### Assign with a reason for the assignment
 
 ```bash
-bash config/skills/orchestrator/assign-task/execute.sh '{"taskId":"task-456","assignee":"agent-sam","priority":"high"}'
+bash config/skills/orchestrator/assign-task/execute.sh '{"taskId":"task-456","assignee":"agent-sam","reason":"owns the auth module"}'
 ```
 
 ## Output
