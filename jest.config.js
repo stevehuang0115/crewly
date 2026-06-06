@@ -50,7 +50,6 @@ export default {
     'backend/src/services/session/pty/pty-session\\.test\\.ts$',
     'backend/src/services/session/pty/pty-session-backend\\.test\\.ts$',
     'backend/src/services/session/pty/pty-input-reliability\\.test\\.ts$',
-    'backend/src/services/knowledge/vector-store\\.service\\.test\\.ts$',
     // Tech-debt parking — PR #504 (test:integration discovery hygiene).
     // Each entry has a tracking issue with reproduction + fix shape.
     // Remove the entry once the underlying issue is fixed.

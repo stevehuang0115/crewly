@@ -18,6 +18,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SchemaLoaderService } from './schema-loader.service.js';
+import { WikiSearchService } from './wiki-search.service.js';
 import { VaultSchema } from './wiki.types.js';
 
 const DEFAULT_RECENT_LOG_ENTRIES = 20;
@@ -269,9 +270,12 @@ export class WikiQueryService {
   }
 
   /**
-   * Walk the vault's NON-frozen subtrees and rank pages by keyword overlap
-   * with the query. Phase 1 is intentionally simple — Phase 2 will swap in
-   * embedding-based scoring.
+   * Gather the vault's NON-frozen (`llm-curated/`) `.md` pages and rank them by
+   * Okapi BM25 against the query, reusing {@link WikiSearchService.searchCorpus}
+   * so the agent-facing `wiki-query` skill scores identically to the wiki UI
+   * search. IDF is computed over exactly the gathered pages, preserving this
+   * skill's scope: only curated pages are eligible, and `llm-curated/log.md`
+   * is excluded (it is surfaced separately as `recentLog`).
    */
   private async findCandidatePages(
     vaultPath: string,
@@ -279,14 +283,36 @@ export class WikiQueryService {
     query: string,
     topK: number,
   ): Promise<WikiCandidatePage[]> {
-    const queryTerms = this.tokenize(query);
-    if (queryTerms.length === 0) return [];
+    const docs = await this.gatherCuratedPages(vaultPath, schema);
+    if (docs.length === 0) return [];
 
+    const hits = await WikiSearchService.getInstance().searchCorpus(vaultPath, docs, query);
+
+    const candidates: WikiCandidatePage[] = [];
+    for (const hit of hits.slice(0, topK)) {
+      const excerpt = await this.readExcerpt(path.join(vaultPath, hit.relativePath));
+      candidates.push({ path: hit.relativePath, excerpt, score: hit.score });
+    }
+    return candidates;
+  }
+
+  /**
+   * Collect candidate `.md` pages under the schema's `llm-curated/` roots,
+   * skipping dotfile/`node_modules` dirs and `llm-curated/log.md`.
+   *
+   * @param vaultPath - Absolute vault root.
+   * @param schema - Loaded vault schema (defines the curated roots).
+   * @returns Page refs as `{ relativePath (POSIX), absPath }`.
+   */
+  private async gatherCuratedPages(
+    vaultPath: string,
+    schema: VaultSchema,
+  ): Promise<Array<{ relativePath: string; absPath: string }>> {
     const llmCuratedRoots = schema.llm_curated.map((l) =>
       path.join(vaultPath, l.path.replace(/[/\\]+$/, '')),
     );
 
-    const candidates: WikiCandidatePage[] = [];
+    const docs: Array<{ relativePath: string; absPath: string }> = [];
     let scanned = 0;
 
     for (const root of llmCuratedRoots) {
@@ -308,58 +334,15 @@ export class WikiQueryService {
           }
           if (!entry.isFile()) continue;
           if (!entry.name.endsWith('.md')) continue;
+          const rel = path.relative(vaultPath, full).replace(/\\/g, '/');
           // Skip log.md — it's surfaced separately as recentLog.
-          if (
-            path.relative(vaultPath, full).replace(/\\/g, '/') ===
-            'llm-curated/log.md'
-          ) {
-            continue;
-          }
+          if (rel === 'llm-curated/log.md') continue;
           scanned++;
-          const score = await this.scorePage(full, queryTerms);
-          if (score > 0) {
-            const excerpt = await this.readExcerpt(full);
-            candidates.push({
-              path: path.relative(vaultPath, full).replace(/\\/g, '/'),
-              excerpt,
-              score,
-            });
-          }
+          docs.push({ relativePath: rel, absPath: full });
         }
       }
     }
-    candidates.sort((a, b) => b.score - a.score);
-    return candidates.slice(0, topK);
-  }
-
-  private tokenize(text: string): string[] {
-    return text
-      .toLowerCase()
-      .split(/[\s\p{P}]+/u)
-      .filter((t) => t.length >= 2);
-  }
-
-  private async scorePage(absolutePath: string, queryTerms: string[]): Promise<number> {
-    let content: string;
-    try {
-      content = (await fs.readFile(absolutePath, 'utf8')).toLowerCase();
-    } catch {
-      return 0;
-    }
-    let score = 0;
-    for (const term of queryTerms) {
-      // Bounded count: don't reward spammy repetition above 10.
-      let count = 0;
-      let idx = 0;
-      while (count < 10) {
-        const found = content.indexOf(term, idx);
-        if (found < 0) break;
-        count++;
-        idx = found + term.length;
-      }
-      score += count;
-    }
-    return score;
+    return docs;
   }
 
   private async readExcerpt(absolutePath: string): Promise<string> {

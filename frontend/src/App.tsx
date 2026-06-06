@@ -13,7 +13,6 @@ import { Settings } from './pages/Settings';
 import { TeamChatRoute } from './components/Chat-team/TeamChatRoute';
 import Marketplace from './pages/Marketplace';
 import MarketplaceDetail from './pages/MarketplaceDetail';
-import { Knowledge } from './pages/Knowledge';
 import { Wiki } from './pages/Wiki';
 import { SecurityOverview } from './pages/SecurityOverview';
 import { CostDashboard } from './pages/CostDashboard';
@@ -71,7 +70,6 @@ function App() {
               <Route path="factory" element={<Factory />} />
               <Route path="marketplace" element={<Marketplace />} />
               <Route path="marketplace/:id" element={<MarketplaceDetail />} />
-              <Route path="knowledge" element={<Knowledge />} />
               <Route path="wiki" element={<Wiki />} />
               <Route path="security" element={<SecurityOverview />} />
               <Route path="monitoring/costs" element={<CostDashboard />} />

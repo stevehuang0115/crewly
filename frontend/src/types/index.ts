@@ -300,69 +300,6 @@ export * from './chat.types';
 // Re-export skill types
 export * from './skill.types';
 
-// =============================================================================
-// Knowledge Document Types
-// =============================================================================
-
-/**
- * Scope of a knowledge document
- */
-export type KnowledgeScope = 'global' | 'project';
-
-/**
- * Full knowledge document with markdown content
- */
-export interface KnowledgeDocument {
-  /** Unique document identifier */
-  id: string;
-  /** Document title */
-  title: string;
-  /** Document category */
-  category: string;
-  /** Tags for filtering/search */
-  tags: string[];
-  /** Full markdown content */
-  content: string;
-  /** Document scope */
-  scope: KnowledgeScope;
-  /** Project path if scope is 'project' */
-  projectPath?: string;
-  /** Who created the document */
-  createdBy: string;
-  /** Who last updated the document */
-  updatedBy: string;
-  /** ISO timestamp of creation */
-  createdAt: string;
-  /** ISO timestamp of last update */
-  updatedAt: string;
-}
-
-/**
- * Summary of a knowledge document for list views
- */
-export interface KnowledgeDocumentSummary {
-  /** Unique document identifier */
-  id: string;
-  /** Document title */
-  title: string;
-  /** Document category */
-  category: string;
-  /** Tags for filtering/search */
-  tags: string[];
-  /** Short preview of content */
-  preview: string;
-  /** Document scope */
-  scope: KnowledgeScope;
-  /** Who created the document */
-  createdBy: string;
-  /** Who last updated the document */
-  updatedBy: string;
-  /** ISO timestamp of creation */
-  createdAt: string;
-  /** ISO timestamp of last update */
-  updatedAt: string;
-}
-
 
 // Re-export monitoring types
 export * from './monitoring.types';

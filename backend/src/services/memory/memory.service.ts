@@ -8,16 +8,16 @@
  */
 
 import * as path from 'path';
+import { existsSync, readdirSync } from 'fs';
 import { AgentMemoryService, IAgentMemoryService } from './agent-memory.service.js';
 import { ProjectMemoryService, IProjectMemoryService, SearchResults } from './project-memory.service.js';
 import { LoggerService } from '../core/logger.service.js';
-import { KnowledgeSearchService } from '../knowledge/knowledge-search.service.js';
-import { VectorStoreService, type VectorSearchResult } from '../knowledge/vector-store.service.js';
-import { createEmbeddingProvider, type EmbeddingProvider } from '../knowledge/embedding-provider.js';
+import { WikiSearchService } from '../wiki/wiki-search.service.js';
+import { WikiIngestService } from '../wiki/wiki-ingest.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
 import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
 import { CREWLY_CONSTANTS, MEMORY_CONSTANTS } from '../../constants.js';
-import type { KnowledgeDocumentSummary } from '../../types/knowledge.types.js';
 import type {
   RoleKnowledgeEntry,
   RoleKnowledgeCategory,
@@ -152,8 +152,6 @@ export interface RecallResult {
   projectMemories: string[];
   /** Combined formatted result */
   combined: string;
-  /** Matching knowledge documents (optional, from knowledge base search) */
-  knowledgeDocuments?: KnowledgeDocumentSummary[];
 
   // === v2: Operational context (lightweight, always included when available) ===
 
@@ -235,8 +233,6 @@ export class MemoryService implements IMemoryService {
   private readonly agentMemory: AgentMemoryService;
   private readonly projectMemory: ProjectMemoryService;
   private readonly logger = LoggerService.getInstance().createComponentLogger('MemoryService');
-  private embeddingProvider: EmbeddingProvider | null = null;
-  private embeddingProviderInitialized = false;
 
   /**
    * Creates a new MemoryService instance
@@ -259,29 +255,50 @@ export class MemoryService implements IMemoryService {
   }
 
   /**
-   * Lazily initializes the embedding provider on first use.
-   * Returns null if no embedding API key is configured.
+   * Resolve the wiki vault paths that back semantic recall for a given scope.
    *
-   * @returns EmbeddingProvider instance or null
+   * The retired embedding/vector store has been replaced by BM25 search over
+   * the LLM-wiki vaults (see {@link wikiRecallSearch}). This maps a memory
+   * scope to the vaults whose `llm-curated/` content should be searched:
+   *   - `project` → the project's own vault (`<projectPath>/.crewly/wiki`)
+   *   - `global`  → the cross-project `~/.crewly/global-wiki` plus every team
+   *     vault (`~/.crewly/teams/<id>/wiki`); agent-scope learnings are mirrored
+   *     into these by {@link ingestToWiki}.
+   *
+   * Only vaults that actually exist (carry a `SCHEMA.md`) are returned.
+   *
+   * @param scope - Memory scope being recalled.
+   * @param projectPath - Project root, required for `project` scope.
+   * @returns Absolute vault paths to search (possibly empty).
    */
-  private getEmbeddingProvider(): EmbeddingProvider | null {
-    if (!this.embeddingProviderInitialized) {
-      this.embeddingProviderInitialized = true;
-      this.embeddingProvider = createEmbeddingProvider();
-      if (this.embeddingProvider) {
-        this.logger.info('Semantic recall enabled', { provider: this.embeddingProvider.name });
+  private resolveRecallVaults(scope: 'global' | 'project', projectPath?: string): string[] {
+    if (scope === 'project') {
+      if (!projectPath) return [];
+      const vault = path.join(projectPath, '.crewly', 'wiki');
+      return existsSync(path.join(vault, 'SCHEMA.md')) ? [vault] : [];
+    }
+    // global: the cross-project vault + every team vault, anchored on the
+    // resolved Crewly home (honours CREWLY_HOME so tests/dry-runs stay isolated
+    // from the developer's real ~/.crewly). Only vaults carrying a SCHEMA.md
+    // are returned; project vaults are intentionally excluded so global recall
+    // stays cross-cutting rather than project-specific.
+    const home = getCrewlyHomePath();
+    const vaults: string[] = [];
+    const globalVault = path.join(home, 'global-wiki');
+    if (existsSync(path.join(globalVault, 'SCHEMA.md'))) vaults.push(globalVault);
+    const teamsRoot = path.join(home, 'teams');
+    if (existsSync(teamsRoot)) {
+      try {
+        for (const entry of readdirSync(teamsRoot, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const teamVault = path.join(teamsRoot, entry.name, 'wiki');
+          if (existsSync(path.join(teamVault, 'SCHEMA.md'))) vaults.push(teamVault);
+        }
+      } catch {
+        // partial discovery is fine — a missing/unreadable teams dir yields none
       }
     }
-    return this.embeddingProvider;
-  }
-
-  /**
-   * Gets the VectorStoreService singleton for embedding storage.
-   *
-   * @returns VectorStoreService instance
-   */
-  private getVectorStore(): VectorStoreService {
-    return VectorStoreService.getInstance();
+    return vaults;
   }
 
   /**
@@ -532,46 +549,61 @@ export class MemoryService implements IMemoryService {
       );
     }
 
-    if (result.knowledgeDocuments && result.knowledgeDocuments.length > 0) {
-      sections.push(
-        '### From Knowledge Base\n' +
-          result.knowledgeDocuments
-            .map((d) => `- **${d.title}** (${d.category}): ${d.preview}`)
-            .join('\n'),
-      );
-    }
 
     return sections.join('\n\n');
   }
 
   /**
-   * Embeds content and stores it in the vector store for semantic recall.
-   * No-ops silently if no embedding provider is configured.
+   * Mirror a remembered learning into the LLM-wiki so BM25 recall can surface
+   * it. Replaces the retired embed-into-vector-store path: instead of computing
+   * an embedding (the Gemini model was retired → 404), we append the content to
+   * the target vault's `llm-curated/log.md` via {@link WikiIngestService}.
    *
-   * @param id - Unique identifier for the memory entry
-   * @param content - Text content to embed
-   * @param metadata - Metadata to store alongside the embedding
-   * @param scope - Storage scope ('global' or 'project')
-   * @param projectPath - Required when scope is 'project'
+   * No-ops silently when the target vault does not exist yet (no SCHEMA.md) so a
+   * first-run machine without an initialised wiki still stores the file-based
+   * memory without error. Fire-and-forget; never throws.
+   *
+   * @param id - Unique identifier for the memory entry (used as the source ref).
+   * @param content - Text content to ingest.
+   * @param metadata - Memory metadata (category/title surface in the log header).
+   * @param scope - Storage scope ('global' → global-wiki, 'project' → project vault).
+   * @param projectPath - Required when scope is 'project'.
    */
-  private async embedMemory(
+  private async ingestToWiki(
     id: string,
     content: string,
     metadata: Record<string, unknown>,
     scope: 'global' | 'project',
     projectPath?: string,
   ): Promise<void> {
-    const provider = this.getEmbeddingProvider();
-    if (!provider) return;
+    const vaultPath =
+      scope === 'project'
+        ? projectPath
+          ? path.join(projectPath, '.crewly', 'wiki')
+          : null
+        : path.join(getCrewlyHomePath(), 'global-wiki');
+    if (!vaultPath || !existsSync(path.join(vaultPath, 'SCHEMA.md'))) return;
+
+    const title = typeof metadata['title'] === 'string' ? (metadata['title'] as string) : '';
+    const category = typeof metadata['category'] === 'string' ? (metadata['category'] as string) : 'memory';
+    const agentId = typeof metadata['agentId'] === 'string' ? (metadata['agentId'] as string) : undefined;
+    const body = title ? `**${title}** (${category})\n\n${content}` : `(${category}) ${content}`;
 
     try {
-      const embedding = await provider.embed(content);
-      if (embedding) {
-        this.getVectorStore().upsert(id, embedding, metadata, scope, projectPath);
-        this.logger.debug('Embedded memory for semantic recall', { id, scope });
+      const outcome = await WikiIngestService.getInstance().ingest({
+        vaultPath,
+        sourceType: 'record_learning',
+        sourceRef: id,
+        sourceBody: body,
+        callerSession: agentId,
+      });
+      if (outcome.ok) {
+        this.logger.debug('Mirrored memory into wiki for BM25 recall', { id, scope, vaultPath });
+      } else {
+        this.logger.debug('Wiki ingest refused memory (non-fatal)', { id, reason: outcome.reason });
       }
     } catch (error) {
-      this.logger.debug('Failed to embed memory (non-fatal)', {
+      this.logger.debug('Failed to ingest memory into wiki (non-fatal)', {
         id,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -579,48 +611,80 @@ export class MemoryService implements IMemoryService {
   }
 
   /**
-   * Performs semantic search against the vector store for memory entries.
-   * Returns formatted memory strings matching the query semantically.
-   * Falls back gracefully to empty results if no provider is available.
+   * BM25 full-text search over the LLM-wiki vaults backing semantic recall.
+   * Replaces the retired embedding/vector-store search: ranks `.md` pages by
+   * Okapi BM25 (see {@link WikiSearchService}) — CJK-aware, no external index,
+   * no API key. Falls back gracefully to empty results when no vault exists.
    *
-   * @param context - Search query text
-   * @param scope - Storage scope ('global' or 'project')
-   * @param projectPath - Required when scope is 'project'
-   * @param limit - Maximum number of results
-   * @returns Formatted memory strings from semantic search
+   * @param context - Search query text.
+   * @param scope - Storage scope ('global' or 'project').
+   * @param projectPath - Required when scope is 'project'.
+   * @param limit - Maximum number of results.
+   * @returns Formatted memory strings from the BM25 search.
    */
-  private async semanticSearch(
+  private async wikiRecallSearch(
     context: string,
     scope: 'global' | 'project',
     projectPath?: string,
     limit: number = 5,
   ): Promise<string[]> {
-    const provider = this.getEmbeddingProvider();
-    if (!provider) return [];
+    const vaultPaths = this.resolveRecallVaults(scope, projectPath);
+    if (vaultPaths.length === 0) return [];
 
     try {
-      const queryEmbedding = await provider.embed(context);
-      if (!queryEmbedding) return [];
+      const outcome = await WikiSearchService.getInstance().searchAllVaults({
+        vaults: vaultPaths.map((vaultPath) => ({ vaultPath, label: this.wikiVaultLabel(vaultPath) })),
+        query: context,
+      });
+      if (!outcome.ok) return [];
 
-      const results = this.getVectorStore().search(
-        queryEmbedding,
-        scope,
-        projectPath,
-        limit,
-        0.3, // Higher threshold for memories — only return strong matches
-      );
-
-      return results.map((r: VectorSearchResult) => {
-        const category = (r.metadata.category as string) || 'memory';
-        const content = (r.metadata.content as string) || r.id;
-        return `[${category}] ${content} (relevance: ${(r.score * 100).toFixed(0)}%)`;
+      return outcome.hits.slice(0, limit).map((hit) => {
+        const where = hit.vaultLabel ? `${hit.vaultLabel}/${hit.relativePath}` : hit.relativePath;
+        const snippet = hit.snippets[0]?.text ?? '';
+        return `[wiki:${where}] ${snippet} (score ${hit.score.toFixed(1)})`;
       });
     } catch (error) {
-      this.logger.debug('Semantic search failed (non-fatal)', {
+      this.logger.debug('Wiki BM25 recall failed (non-fatal)', {
         error: error instanceof Error ? error.message : String(error),
       });
       return [];
     }
+  }
+
+  /**
+   * Merge BM25 wiki hits into a base list of memory strings, de-duplicating
+   * and capping the result to `limit`. The base (file-based) memories keep
+   * priority; wiki hits fill any remaining slots.
+   *
+   * @param base - File-based memories already collected for this scope.
+   * @param extra - BM25 wiki hits to fold in.
+   * @param limit - Maximum size of the merged list.
+   * @returns The merged, de-duplicated, capped list.
+   */
+  private mergeCapped(base: string[], extra: string[], limit: number): string[] {
+    const merged = [...base];
+    for (const hit of extra) {
+      if (merged.length >= limit) break;
+      if (!merged.includes(hit)) merged.push(hit);
+    }
+    return merged.length > limit ? merged.slice(0, limit) : merged;
+  }
+
+  /**
+   * Human-readable label for a wiki vault, derived from its path:
+   * `global-wiki` → `global`, `teams/<id>/wiki` → `team:<id>`,
+   * `<project>/.crewly/wiki` → the project directory name.
+   *
+   * @param vaultPath - Absolute vault path.
+   * @returns A short label used to prefix recall hits.
+   */
+  private wikiVaultLabel(vaultPath: string): string {
+    if (vaultPath.endsWith('global-wiki')) return 'global';
+    const teamMatch = vaultPath.match(/teams[/\\]([^/\\]+)[/\\]wiki$/);
+    if (teamMatch) return `team:${teamMatch[1]}`;
+    const projMatch = vaultPath.match(/([^/\\]+)[/\\]\.crewly[/\\]wiki$/);
+    if (projMatch) return projMatch[1] as string;
+    return path.basename(vaultPath);
   }
 
   // ========================= PUBLIC INTERFACE =========================
@@ -662,9 +726,9 @@ export class MemoryService implements IMemoryService {
       id = await this.rememberForProject(params);
     }
 
-    // Embed for semantic recall (fire-and-forget, non-blocking)
-    const vectorScope = params.scope === 'agent' ? 'global' as const : 'project' as const;
-    this.embedMemory(
+    // Mirror into the LLM-wiki for BM25 recall (fire-and-forget, non-blocking)
+    const wikiScope = params.scope === 'agent' ? 'global' as const : 'project' as const;
+    this.ingestToWiki(
       `mem:${params.scope}:${id}`,
       params.content,
       {
@@ -673,7 +737,7 @@ export class MemoryService implements IMemoryService {
         agentId: params.agentId,
         title: params.metadata?.title,
       },
-      vectorScope,
+      wikiScope,
       params.projectPath,
     ).catch(() => { /* non-fatal */ });
 
@@ -893,36 +957,25 @@ export class MemoryService implements IMemoryService {
       );
     }
 
-    // Fetch from knowledge base (search both global and project scopes)
-    promises.push(
-      this.searchKnowledgeDocuments(params.context, params.projectPath).then((docs) => {
-        if (docs.length > 0) {
-          result.knowledgeDocuments = docs;
-        }
-      }),
-    );
-
-    // Semantic vector search across stored memory embeddings
+    // BM25 full-text search across the LLM-wiki vaults (replaces embeddings).
+    // Collect into local buffers and merge AFTER the barrier: the role-knowledge
+    // and project promises ASSIGN their arrays, so merging here (rather than
+    // pushing inside a concurrent `.then`) avoids a clobber race and lets us
+    // enforce the caller's `limit` on the combined list.
     const semanticLimit = Math.max(3, Math.ceil((params.limit || 10) / 3));
+    let agentWikiHits: string[] = [];
+    let projectWikiHits: string[] = [];
     if (params.scope === 'agent' || params.scope === 'both') {
       promises.push(
-        this.semanticSearch(params.context, 'global', undefined, semanticLimit).then((hits) => {
-          for (const hit of hits) {
-            if (!result.agentMemories.includes(hit)) {
-              result.agentMemories.push(hit);
-            }
-          }
+        this.wikiRecallSearch(params.context, 'global', undefined, semanticLimit).then((hits) => {
+          agentWikiHits = hits;
         }),
       );
     }
     if ((params.scope === 'project' || params.scope === 'both') && params.projectPath) {
       promises.push(
-        this.semanticSearch(params.context, 'project', params.projectPath, semanticLimit).then((hits) => {
-          for (const hit of hits) {
-            if (!result.projectMemories.includes(hit)) {
-              result.projectMemories.push(hit);
-            }
-          }
+        this.wikiRecallSearch(params.context, 'project', params.projectPath, semanticLimit).then((hits) => {
+          projectWikiHits = hits;
         }),
       );
     }
@@ -947,6 +1000,12 @@ export class MemoryService implements IMemoryService {
     }
 
     await Promise.all(promises);
+
+    // Merge BM25 wiki hits into the file-based memories (dedup) and enforce the
+    // caller's limit on the combined list so the wiki layer can't blow past it.
+    const recallCap = params.limit && params.limit > 0 ? params.limit : 10;
+    result.agentMemories = this.mergeCapped(result.agentMemories, agentWikiHits, recallCap);
+    result.projectMemories = this.mergeCapped(result.projectMemories, projectWikiHits, recallCap);
 
     // v2: Enrich with operational context (goals, focus, active tasks)
     await this.enrichWithOperationalContext(result, params);
@@ -1057,46 +1116,6 @@ export class MemoryService implements IMemoryService {
     await Promise.all(opPromises);
   }
 
-  /**
-   * Searches knowledge documents across global and project scopes.
-   *
-   * @param context - Search query text
-   * @param projectPath - Optional project path for project-scoped search
-   * @returns Combined and deduplicated knowledge document summaries
-   */
-  private async searchKnowledgeDocuments(
-    context: string,
-    projectPath?: string,
-  ): Promise<KnowledgeDocumentSummary[]> {
-    try {
-      const searchService = KnowledgeSearchService.getInstance();
-      const searchPromises: Promise<KnowledgeDocumentSummary[]>[] = [
-        searchService.search(context, 'global'),
-      ];
-
-      if (projectPath) {
-        searchPromises.push(searchService.search(context, 'project', projectPath));
-      }
-
-      const results = await Promise.all(searchPromises);
-      const combined = results.flat();
-
-      // Deduplicate by document ID
-      const seen = new Set<string>();
-      return combined.filter((doc) => {
-        if (seen.has(doc.id)) {
-          return false;
-        }
-        seen.add(doc.id);
-        return true;
-      });
-    } catch (error) {
-      this.logger.warn('Failed to search knowledge documents', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return [];
-    }
-  }
 
   /**
    * Generates combined context from both agent and project memory
@@ -1164,6 +1183,16 @@ export class MemoryService implements IMemoryService {
         this.logger.warn('Failed to add learning to agent memory', { error });
       }
     }
+
+    // Mirror into the project's LLM-wiki so the learning is BM25-recallable
+    // (fire-and-forget; auto-learning is the high-volume path into this method).
+    this.ingestToWiki(
+      `learning:${params.agentId}:${params.relatedTask ?? 'adhoc'}`,
+      params.learning,
+      { category: 'learning', agentId: params.agentId },
+      'project',
+      params.projectPath,
+    ).catch(() => { /* non-fatal */ });
   }
 
   /**

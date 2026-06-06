@@ -315,18 +315,6 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 													{tab.charAt(0).toUpperCase() + tab.slice(1)}
 												</NavLink>
 											))}
-											<NavLink
-												to={`/knowledge?project=${activeProjectId}`}
-												onClick={handleLinkClick}
-												className={() =>
-													clsx(
-														'block px-4 py-1.5 text-sm rounded-lg transition-colors',
-														'text-text-secondary-dark hover:bg-background-dark hover:text-text-primary-dark'
-													)
-												}
-											>
-												Knowledge
-											</NavLink>
 										</div>
 									)}
 								</div>

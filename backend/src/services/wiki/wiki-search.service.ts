@@ -231,6 +231,30 @@ export class WikiSearchService {
   }
 
   /**
+   * BM25-rank an explicit list of documents (rather than auto-collecting the
+   * whole vault). Lets callers that need their own eligibility rules — e.g. the
+   * `wiki-query` skill, which ranks only `llm-curated/` pages and skips
+   * `log.md` — reuse the exact same Okapi BM25 scoring with IDF computed over
+   * precisely the documents they supply.
+   *
+   * @param vaultPath - Owning vault (stamped on each hit's `vaultPath`).
+   * @param docs - Candidate documents as `{ relativePath, absPath }`.
+   * @param query - Raw query string (validated/normalised here).
+   * @returns BM25-ranked hits, or an empty array for an invalid/empty query.
+   */
+  async searchCorpus(
+    vaultPath: string,
+    docs: Array<{ relativePath: string; absPath: string }>,
+    query: string,
+  ): Promise<WikiSearchHit[]> {
+    const v = this.validateQuery(query);
+    if ('ok' in v) return [];
+    const refs: DocRef[] = docs.map((d) => ({ vaultPath, ...d }));
+    const { hits } = await this._searchCorpus(refs, v.query);
+    return hits;
+  }
+
+  /**
    * Core BM25 search over an arbitrary corpus of doc refs (one or many vaults).
    * Builds the combined corpus statistics, scores, ranks, and attaches snippets
    * for the top results. Each hit carries its owning `vaultPath`.

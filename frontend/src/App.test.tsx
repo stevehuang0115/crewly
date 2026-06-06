@@ -26,7 +26,6 @@ vi.mock('./pages/Factory', () => ({ Factory: () => <div>Factory Page</div> }));
 vi.mock('./pages/Settings', () => ({ Settings: () => <div>Settings Page</div> }));
 vi.mock('./pages/Marketplace', () => ({ default: () => <div>Marketplace Page</div> }));
 vi.mock('./pages/MarketplaceDetail', () => ({ default: () => <div>Marketplace Detail Page</div> }));
-vi.mock('./pages/Knowledge', () => ({ Knowledge: () => <div>Knowledge Page</div> }));
 vi.mock('./pages/SecurityOverview', () => ({ SecurityOverview: () => <div>Security Page</div> }));
 vi.mock('./pages/CostDashboard', () => ({ CostDashboard: () => <div>Cost Dashboard Page</div> }));
 vi.mock('./pages/AuthCallback', () => ({ AuthCallback: () => <div>Auth Callback Page</div> }));

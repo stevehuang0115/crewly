@@ -198,7 +198,6 @@ describe('CrewlyMcpServer', () => {
       agentMemories: [],
       projectMemories: [],
       combined: '',
-      knowledgeDocuments: [],
     });
 
     _resetDerivedKeyCache();
@@ -584,14 +583,6 @@ describe('CrewlyMcpServer', () => {
         agentMemories: ['Found memory 1'],
         projectMemories: ['Found memory 2'],
         combined: 'Combined results',
-        knowledgeDocuments: [
-          {
-            id: 'doc-1',
-            title: 'Deployment Guide',
-            category: 'SOP',
-            preview: 'How to deploy...',
-          },
-        ],
       });
 
       const result = await callTool(handlers, 'crewly_recall_memory', {
@@ -602,11 +593,9 @@ describe('CrewlyMcpServer', () => {
       const data = parseResult(result) as {
         agentMemories: string[];
         projectMemories: string[];
-        knowledgeDocuments: Array<{ title: string }>;
       };
       expect(data.agentMemories).toHaveLength(1);
       expect(data.projectMemories).toHaveLength(1);
-      expect(data.knowledgeDocuments).toHaveLength(1);
     });
 
     it('should use default scope "both" and agentId "mcp-client"', async () => {

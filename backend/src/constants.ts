@@ -1084,23 +1084,6 @@ export const SLACK_FILE_DOWNLOAD_CONSTANTS = {
 } as const;
 
 /**
- * Constants for Gemini embedding-based knowledge search.
- * Used by KnowledgeSearchService when GEMINI_API_KEY is configured.
- */
-export const EMBEDDING_CONSTANTS = {
-	/** Gemini embedding model identifier */
-	GEMINI_MODEL: 'gemini-embedding-001',
-	/** Base endpoint for Gemini generative language API */
-	GEMINI_ENDPOINT: 'https://generativelanguage.googleapis.com/v1beta/models',
-	/** Timeout for embedding API calls (ms) */
-	TIMEOUT_MS: 10000,
-	/** Maximum documents to embed in a single batch */
-	MAX_BATCH_SIZE: 20,
-	/** Expected embedding vector dimensions */
-	EMBEDDING_DIMENSIONS: 768,
-} as const;
-
-/**
  * Message source identifiers for the queue processor.
  * Determines delivery strategy (timeouts, retry behavior).
  */
