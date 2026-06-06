@@ -523,6 +523,32 @@ describe('RequestSlaSubscriber', () => {
   });
 
   // -------------------------------------------------------------------------
+  // getPendingUserRequestCount — powers the /health orchestrator signal (#686)
+  // -------------------------------------------------------------------------
+
+  describe('getPendingUserRequestCount', () => {
+    it('starts at 0 with no tracked requests', () => {
+      expect(sub.getPendingUserRequestCount()).toBe(0);
+    });
+
+    it('counts an inbound-tagged request awaiting a response', async () => {
+      const r = buildRequest({ tags: ['slack'] });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+      expect(sub.getPendingUserRequestCount()).toBe(1);
+    });
+
+    it('does not count a request with no inbound tag', async () => {
+      const r = buildRequest({ tags: ['cli'] });
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+      expect(sub.getPendingUserRequestCount()).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Inbound tag filter
   // -------------------------------------------------------------------------
 

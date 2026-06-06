@@ -69,6 +69,7 @@ import { MilestoneNotificationSubscriber } from './services/notification/milesto
 import {
 	RequestSlaSubscriber,
 	setRequestSlaSubscriber,
+	getRequestSlaSubscriber,
 } from './services/v3/request-sla.subscriber.js';
 import {
 	RequestDecomposeSubscriber,
@@ -1069,6 +1070,24 @@ void (async () => {
 				  }
 				: { status: 'warming', last_sweep_age_ms: -1, shadowMode: null };
 
+			// Orchestrator-liveness signal (issue #686). The silent 假死 symptom is
+			// "inbound user messages queue but nobody answers": no active agent AND
+			// outstanding `respond_to_user` SLA trackers. Surface it as a body block
+			// — we deliberately keep top-level status:"healthy" / HTTP 200 so a load
+			// balancer doesn't drop the node on this (the LB keys on the status code;
+			// this signal is for dashboards/monitoring to read from the body).
+			const slaSub = getRequestSlaSubscriber();
+			const pendingUserRequests = slaSub ? slaSub.getPendingUserRequestCount() : 0;
+			const orchestratorStalled = agentCount === 0 && pendingUserRequests > 0;
+			const orchestratorBlock = {
+				status: orchestratorStalled ? 'degraded' : 'ok',
+				activeAgents: agentCount,
+				pendingUserRequests,
+				reason: orchestratorStalled
+					? `no active agent with ${pendingUserRequests} pending user request(s) — orchestrator may be down`
+					: null,
+			};
+
 			res.json({
 				status: 'healthy',
 				timestamp: new Date().toISOString(),
@@ -1082,6 +1101,7 @@ void (async () => {
 					total: agentCount,
 				},
 				team_health: teamHealthBlock,
+				orchestrator: orchestratorBlock,
 			});
 		});
 
