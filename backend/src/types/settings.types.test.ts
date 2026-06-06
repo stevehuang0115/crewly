@@ -60,6 +60,7 @@ describe('Settings Types', () => {
       const settings: GeneralSettings = {
         defaultRuntime: 'claude-code',
         autoStartOrchestrator: false,
+        autoRecoverHungOrchestrator: true,
         checkInIntervalMinutes: 5,
         maxConcurrentAgents: 10,
         verboseLogging: false,
@@ -94,6 +95,7 @@ describe('Settings Types', () => {
       const settings: GeneralSettings = {
         defaultRuntime: 'claude-code',
         autoStartOrchestrator: true,
+        autoRecoverHungOrchestrator: true,
         checkInIntervalMinutes: 10,
         maxConcurrentAgents: 5,
         verboseLogging: true,
@@ -160,6 +162,7 @@ describe('Settings Types', () => {
         general: {
           defaultRuntime: 'claude-code',
           autoStartOrchestrator: false,
+          autoRecoverHungOrchestrator: true,
           checkInIntervalMinutes: 5,
           maxConcurrentAgents: 10,
           verboseLogging: false,

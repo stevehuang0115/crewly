@@ -1474,6 +1474,16 @@ export class TaskPoolService {
   }
 
   /**
+   * Clear an agent's hung state after a recovery (session restart), so the
+   * restarted session is not immediately re-flagged before it can heartbeat.
+   *
+   * @param agentId - The agent/session id to clear.
+   */
+  clearHungState(agentId: string): void {
+    this.claimService.clearGraceRevokes(agentId);
+  }
+
+  /**
    * Revokes a claim and releases the work item back to the pool.
    * Used by the Reconciler when a claim's grace period is exceeded.
    *
