@@ -136,6 +136,37 @@ export const TERMINAL_WORK_ITEM_STATUSES: ReadonlySet<WorkItemStatus> = new Set(
   'cancelled',
 ]);
 
+/**
+ * Broader "exited the active queue" status set used by SLA-style consumers
+ * (e.g. `RequestSlaSubscriber`, `MissionReminderService`) that need to
+ * treat `failed` and `rejected` as terminal for *their* purposes — even
+ * though those statuses are NOT terminal in the strict state-machine sense
+ * (they can transition back to `queued` via the retry path).
+ *
+ * Hoisted to close the canonical-set duplication anti-pattern called out
+ * by Arch on PR #357 (INBOUND-1) N2. Previously each SLA caller redeclared
+ * a 5-element local set; this single source of truth keeps them aligned
+ * if a new "exit-the-queue" status is added in the future.
+ *
+ * Members:
+ * - `done` / `verified` / `cancelled` — strictly terminal (cannot transition).
+ * - `failed` / `rejected` — semantically "exited active queue" for SLA timer
+ *   no-op + reentrancy-lock release purposes, even though the state machine
+ *   permits `rejected → queued` (retry) and `failed` is not formally terminal.
+ *
+ * Use this set when answering "should the SLA timer / reentrancy lock
+ * release based on the current WI state?", and use {@link TERMINAL_WORK_ITEM_STATUSES}
+ * when answering "is the state machine done with this WI?".
+ */
+export const SLA_TERMINAL_WORK_ITEM_STATUSES: ReadonlySet<WorkItemStatus> =
+  new Set<WorkItemStatus>([
+    'done',
+    'verified',
+    'cancelled',
+    'failed',
+    'rejected',
+  ]);
+
 // ---------------------------------------------------------------------------
 // Core Interface
 // ---------------------------------------------------------------------------
