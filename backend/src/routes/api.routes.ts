@@ -22,7 +22,6 @@ import { createWikiRouter } from '../controllers/wiki/wiki.routes.js';
 import { createCredentialsRouter } from '../controllers/credentials/credentials.routes.js';
 import { createQualityGateRouter } from './modules/quality-gate.routes.js';
 import { createMarketplaceRouter } from '../controllers/marketplace/index.js';
-import { createKnowledgeRouter } from '../controllers/knowledge/index.js';
 import { createTemplateRouter } from '../controllers/template/index.js';
 import { createAuditorRouter } from '../controllers/auditor/auditor.routes.js';
 import { createPaymentRouter } from '../controllers/payment/payment.routes.js';
@@ -118,9 +117,6 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Marketplace routes for browsing, installing, and managing marketplace items
   router.use('/marketplace', createMarketplaceRouter());
-
-  // Knowledge document routes for company knowledge management
-  router.use('/knowledge', createKnowledgeRouter());
 
   // Template routes for team template management and team creation
   router.use('/templates', createTemplateRouter());

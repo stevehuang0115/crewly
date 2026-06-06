@@ -17,6 +17,7 @@ describe('MemoryService', () => {
   let testProjectPath: string;
   const testAgentId = 'test-agent-001';
   const testRole = 'developer';
+  let prevCrewlyHome: string | undefined;
 
   beforeEach(async () => {
     // Create unique temp directories for each test
@@ -27,6 +28,12 @@ describe('MemoryService', () => {
     await fs.mkdir(testDir, { recursive: true });
     await fs.mkdir(testProjectPath, { recursive: true });
 
+    // Isolate the wiki-backed recall/ingest paths from the developer's real
+    // ~/.crewly/global-wiki by pointing CREWLY_HOME at an empty temp dir
+    // (resolveRecallVaults/ingestToWiki resolve global-wiki under it).
+    prevCrewlyHome = process.env.CREWLY_HOME;
+    process.env.CREWLY_HOME = testDir;
+
     // Clear singleton and create new instance
     MemoryService.clearInstance();
     service = MemoryService.getInstance();
@@ -35,6 +42,11 @@ describe('MemoryService', () => {
   afterEach(async () => {
     // Clean up test directories
     MemoryService.clearInstance();
+    if (prevCrewlyHome === undefined) {
+      delete process.env.CREWLY_HOME;
+    } else {
+      process.env.CREWLY_HOME = prevCrewlyHome;
+    }
     try {
       await fs.rm(testDir, { recursive: true, force: true });
       await fs.rm(testProjectPath, { recursive: true, force: true });
@@ -231,22 +243,30 @@ describe('MemoryService', () => {
       ).toBe(true);
     });
 
-    it('should reject relationship for agent scope (project-only by design)', async () => {
-      await expect(service.remember({
+    // relationship/user_preference are project-only categories. Since the
+    // "Steve 2026-05-15 dogfood" change, agent-scope stores with a project-only
+    // category are COERCED (data preserved) rather than rejected — with no
+    // projectPath they fall back to an agent-scope fact. These tests document
+    // that coercion contract (they previously asserted a throw, which the
+    // source intentionally stopped doing).
+    it('coerces relationship for agent scope into a preserved fact (no data loss)', async () => {
+      const id = await service.remember({
         agentId: testAgentId,
         content: 'UserController',
         category: 'relationship',
         scope: 'agent',
-      })).rejects.toThrow('not valid for agent scope');
+      });
+      expect(id).toBeTruthy();
     });
 
-    it('should reject user_preference for agent scope (project-only by design)', async () => {
-      await expect(service.remember({
+    it('coerces user_preference for agent scope into a preserved fact (no data loss)', async () => {
+      const id = await service.remember({
         agentId: testAgentId,
         content: 'User prefers concise replies',
         category: 'user_preference',
         scope: 'agent',
-      })).rejects.toThrow('not valid for agent scope');
+      });
+      expect(id).toBeTruthy();
     });
   });
 
@@ -788,16 +808,17 @@ describe('MemoryService', () => {
     });
   });
 
-  describe('semantic recall integration', () => {
+  describe('wiki BM25 recall integration', () => {
     beforeEach(async () => {
       await service.initializeForSession(testAgentId, testRole, testProjectPath);
     });
 
-    it('should call embedMemory on remember without throwing', async () => {
-      // embedMemory is fire-and-forget; verify remember still works when no provider
+    it('should mirror remember into the wiki without throwing', async () => {
+      // ingestToWiki is fire-and-forget; verify remember still works when the
+      // target vault has not been initialised (no SCHEMA.md → silent no-op).
       const id = await service.remember({
         agentId: testAgentId,
-        content: 'Semantic test content for embedding',
+        content: 'Learning content mirrored into the wiki',
         category: 'fact',
         scope: 'agent',
       });
@@ -805,12 +826,12 @@ describe('MemoryService', () => {
       expect(id).toBeDefined();
     });
 
-    it('should include semantic search in recall without error when no provider', async () => {
-      // Without an embedding API key, semantic search returns empty — should not fail
+    it('should include wiki BM25 search in recall without error when no vault exists', async () => {
+      // With no initialised wiki vault, BM25 search returns empty — must not fail.
       const result = await service.recall({
         agentId: testAgentId,
         projectPath: testProjectPath,
-        context: 'semantic search test query',
+        context: 'bm25 search test query',
         scope: 'both',
       });
 
@@ -819,7 +840,7 @@ describe('MemoryService', () => {
       expect(result.projectMemories).toBeInstanceOf(Array);
     });
 
-    it('should gracefully handle recall with project-only semantic search', async () => {
+    it('should gracefully handle recall with project-only wiki search', async () => {
       await service.remember({
         agentId: testAgentId,
         projectPath: testProjectPath,

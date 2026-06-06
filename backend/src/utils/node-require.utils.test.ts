@@ -4,9 +4,8 @@ import { createBareModuleRequire } from './node-require.utils.js';
  * Regression-guard test for the `createBareModuleRequire` helper.
  *
  * The helper extracts PR #494's (`fa05720e`) entry-script-anchored
- * `createRequire` pattern into a single shared utility so the 5
- * native-module callsites (better-sqlite3 ×4, sqlite-vec ×2 across
- * memory/vector-store, knowledge/vector-store, knowledge/fts5-index,
+ * `createRequire` pattern into a single shared utility so the
+ * native-module callsites (better-sqlite3 across knowledge/fts5-index,
  * chat-v2/sqlite/chat-db, observability/observability-db) can opt in
  * without each reproducing the bridge inline.
  *

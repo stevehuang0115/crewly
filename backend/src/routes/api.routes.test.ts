@@ -44,7 +44,6 @@ jest.mock('../controllers/slack/slack-thread.routes.js', () => ({ createSlackThr
 jest.mock('../controllers/memory/memory.routes.js', () => ({ createMemoryRouter: () => Router() }));
 jest.mock('../controllers/credentials/credentials.routes.js', () => ({ createCredentialsRouter: () => Router() }));
 jest.mock('../controllers/marketplace/index.js', () => ({ createMarketplaceRouter: () => Router() }));
-jest.mock('../controllers/knowledge/index.js', () => ({ createKnowledgeRouter: () => Router() }));
 jest.mock('../controllers/template/index.js', () => ({ createTemplateRouter: () => Router() }));
 jest.mock('../controllers/auditor/auditor.routes.js', () => ({ createAuditorRouter: () => Router() }));
 jest.mock('../controllers/payment/payment.routes.js', () => ({ createPaymentRouter: () => Router() }));

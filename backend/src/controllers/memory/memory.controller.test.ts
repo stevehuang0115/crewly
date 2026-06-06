@@ -67,16 +67,6 @@ jest.mock('../../services/memory/learning-accumulation.service.js', () => ({
   },
 }));
 
-// Mock KnowledgeService
-const mockListDocuments = jest.fn();
-jest.mock('../../services/knowledge/knowledge.service.js', () => ({
-  KnowledgeService: {
-    getInstance: () => ({
-      listDocuments: mockListDocuments,
-    }),
-  },
-}));
-
 // Mock MemorySupersessionService (M4)
 const mockSupersede = jest.fn();
 jest.mock('../../services/memory/memory-supersession.service.js', () => ({
@@ -782,17 +772,11 @@ describe('MemoryController', () => {
         projectMemories: [],
         combined: '',
       });
-      mockListDocuments.mockReset();
     });
 
-    it('should include knowledgeDocs in response', async () => {
-      const globalDocs = [{ id: 'g1', title: 'Global SOP', category: 'SOPs' }];
-      const projectDocs = [{ id: 'p1', title: 'Project Architecture', category: 'Architecture' }];
-
-      mockListDocuments
-        .mockResolvedValueOnce(globalDocs)
-        .mockResolvedValueOnce(projectDocs);
-
+    it('returns context (memories/goals/learnings) without a knowledge-base section', async () => {
+      // The standalone knowledge base was retired — agent recall is now BM25
+      // over the LLM-wiki, so the context response no longer carries knowledgeDocs.
       await getMyContext(
         {
           body: {
@@ -805,47 +789,10 @@ describe('MemoryController', () => {
         mockNext,
       );
 
-      expect(mockRes.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          success: true,
-          data: expect.objectContaining({
-            knowledgeDocs: {
-              global: globalDocs,
-              project: projectDocs,
-            },
-          }),
-        }),
-      );
-    });
-
-    it('should return empty arrays when knowledge service fails', async () => {
-      mockListDocuments
-        .mockRejectedValueOnce(new Error('Index not found'))
-        .mockRejectedValueOnce(new Error('Index not found'));
-
-      await getMyContext(
-        {
-          body: {
-            agentId: 'dev-001',
-            agentRole: 'developer',
-            projectPath: '/path/to/project',
-          },
-        } as any,
-        mockRes as any,
-        mockNext,
-      );
-
-      expect(mockRes.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          success: true,
-          data: expect.objectContaining({
-            knowledgeDocs: {
-              global: [],
-              project: [],
-            },
-          }),
-        }),
-      );
+      const payload = (mockRes.json as jest.Mock).mock.calls[0][0];
+      expect(payload.success).toBe(true);
+      expect(payload.data).toHaveProperty('memories');
+      expect(payload.data).not.toHaveProperty('knowledgeDocs');
     });
 
     it('should return 400 when agentId is missing', async () => {

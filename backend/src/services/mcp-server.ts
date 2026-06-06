@@ -540,12 +540,6 @@ export class CrewlyMcpServer {
       query,
       agentMemories: result.agentMemories,
       projectMemories: result.projectMemories,
-      knowledgeDocuments: result.knowledgeDocuments?.map((doc) => ({
-        id: doc.id,
-        title: doc.title,
-        category: doc.category,
-        preview: doc.preview,
-      })),
       // taskHistory present only when caller passed `capability` — the
       // orchestrator reads this to decide who to delegate to.
       taskHistory: result.taskHistory,

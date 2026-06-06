@@ -7,7 +7,6 @@
  * @module services/wiki/wiki-search.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -343,5 +342,66 @@ describe('WikiSearchService.searchAllVaults — merged cross-vault ranking', () 
   it('rejects an empty query', async () => {
     const result = await svc.searchAllVaults({ vaults: [{ vaultPath: vaultA }], query: '   ' });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('WikiSearchService.searchCorpus — BM25 over an explicit doc list', () => {
+  let vault: string;
+  let svc: WikiSearchService;
+
+  beforeEach(async () => {
+    vault = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-search-corpus-'));
+    await fs.mkdir(path.join(vault, 'llm-curated/decisions'), { recursive: true });
+    await fs.writeFile(
+      path.join(vault, 'llm-curated/decisions/pricing.md'),
+      '# Pricing\n\npricing pricing pricing — locked at $999.\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(vault, 'llm-curated/decisions/auth.md'),
+      '# Auth\n\nSession-cookie path deprecated. Mentions pricing once.\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(vault, 'llm-curated/log.md'),
+      '# Log\n\npricing pricing pricing pricing (should be excludable by caller)\n',
+      'utf8',
+    );
+    WikiSearchService.resetInstance();
+    svc = WikiSearchService.getInstance();
+  });
+
+  afterEach(async () => {
+    await fs.rm(vault, { recursive: true, force: true });
+  });
+
+  it('ranks only the supplied docs by BM25 and stamps the vault path', async () => {
+    const docs = [
+      { relativePath: 'llm-curated/decisions/pricing.md', absPath: path.join(vault, 'llm-curated/decisions/pricing.md') },
+      { relativePath: 'llm-curated/decisions/auth.md', absPath: path.join(vault, 'llm-curated/decisions/auth.md') },
+    ];
+    const hits = await svc.searchCorpus(vault, docs, 'pricing');
+    expect(hits.length).toBe(2);
+    // pricing.md (filename + 3× term) ranks above auth.md (1× term).
+    expect(hits[0].relativePath).toBe('llm-curated/decisions/pricing.md');
+    expect(hits[0].score).toBeGreaterThan(hits[1].score);
+    expect(hits[0].vaultPath).toBe(vault);
+  });
+
+  it('honours caller eligibility — a doc not in the list is never scored', async () => {
+    // Caller deliberately omits log.md; it must not appear even though it has
+    // the most term hits.
+    const docs = [
+      { relativePath: 'llm-curated/decisions/pricing.md', absPath: path.join(vault, 'llm-curated/decisions/pricing.md') },
+    ];
+    const hits = await svc.searchCorpus(vault, docs, 'pricing');
+    expect(hits.map((h) => h.relativePath)).not.toContain('llm-curated/log.md');
+  });
+
+  it('returns an empty array for an invalid query', async () => {
+    const docs = [
+      { relativePath: 'llm-curated/decisions/pricing.md', absPath: path.join(vault, 'llm-curated/decisions/pricing.md') },
+    ];
+    expect(await svc.searchCorpus(vault, docs, '   ')).toEqual([]);
   });
 });
