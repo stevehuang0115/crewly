@@ -30,6 +30,18 @@ import {
   DEFAULT_MAX_EXTENSIONS,
 } from '../../types/v2/claim.types.js';
 
+/**
+ * Consecutive grace-period revocations (with NO intervening heartbeat) after
+ * which an agent's session is considered HUNG — it keeps claiming work but
+ * never proves liveness. This is the Irissair orchestrator 假死 signature:
+ * claimed hourly, never heartbeated, revoked ~13 min later, repeat. Surfaced
+ * via {@link ClaimService.getHungAgents}.
+ */
+export const HUNG_SESSION_GRACE_REVOKE_THRESHOLD = 3;
+
+/** Prefix of the reconciler's revoke reason for grace-period revocations. */
+const GRACE_REVOKE_REASON_PREFIX = 'Grace period exceeded';
+
 // ---------------------------------------------------------------------------
 // Result Types
 // ---------------------------------------------------------------------------
@@ -103,6 +115,14 @@ export interface ExpiredClaimsSummary {
 export class ClaimService {
   private readonly storage: PoolStorage;
   private readonly logger: ComponentLogger;
+
+  /**
+   * Per-agent count of consecutive grace-period revocations with NO intervening
+   * heartbeat. Incremented on each grace revoke, reset to 0 on any successful
+   * heartbeat (proof the session is alive). Powers hung-session detection
+   * ({@link getHungAgents}).
+   */
+  private readonly consecutiveGraceRevokes = new Map<string, number>();
 
   constructor(storage: PoolStorage) {
     this.storage = storage;
@@ -210,6 +230,10 @@ export class ClaimService {
 
     const updatedClaim = claims.find((c) => c.id === claimId)!;
     this.logger.debug?.('Heartbeat received', { claimId, agentId });
+
+    // Liveness proof — clear any accumulated grace-revoke count for this agent
+    // so hung-session detection only fires on agents that NEVER heartbeat.
+    this.consecutiveGraceRevokes.delete(agentId);
 
     return { success: true, claim: updatedClaim };
   }
@@ -341,6 +365,52 @@ export class ClaimService {
     });
 
     this.logger.info('Claim revoked', { claimId, reason, agentId: claim.agentId });
+
+    // Hung-session detection: a grace-period revoke means the agent held a lease
+    // but never heartbeated. Track consecutive occurrences per agent (reset on
+    // the next heartbeat). Repeated grace revokes with no heartbeat = a session
+    // that keeps claiming work but never executes it (the Irissair 假死).
+    if (reason.startsWith(GRACE_REVOKE_REASON_PREFIX)) {
+      const next = (this.consecutiveGraceRevokes.get(claim.agentId) ?? 0) + 1;
+      this.consecutiveGraceRevokes.set(claim.agentId, next);
+      if (next >= HUNG_SESSION_GRACE_REVOKE_THRESHOLD) {
+        this.logger.error(
+          'Agent session looks HUNG — repeated grace-period revokes with no heartbeat',
+          {
+            agentId: claim.agentId,
+            consecutiveGraceRevokes: next,
+            threshold: HUNG_SESSION_GRACE_REVOKE_THRESHOLD,
+          },
+        );
+      }
+    }
+  }
+
+  /**
+   * Consecutive grace-period revocations (with no intervening heartbeat) for an
+   * agent. Resets to 0 on the agent's next successful heartbeat.
+   *
+   * @param agentId - The agent/session id.
+   * @returns The current consecutive grace-revoke count (0 if none).
+   */
+  getConsecutiveGraceRevokes(agentId: string): number {
+    return this.consecutiveGraceRevokes.get(agentId) ?? 0;
+  }
+
+  /**
+   * Agents whose consecutive grace-revoke count is at or above `threshold` —
+   * their sessions keep claiming work but never heartbeat, i.e. they look HUNG.
+   *
+   * @param threshold - Minimum consecutive grace-revokes (default
+   *   {@link HUNG_SESSION_GRACE_REVOKE_THRESHOLD}).
+   * @returns Agent ids that currently look hung.
+   */
+  getHungAgents(threshold: number = HUNG_SESSION_GRACE_REVOKE_THRESHOLD): string[] {
+    const hung: string[] = [];
+    for (const [agentId, count] of this.consecutiveGraceRevokes) {
+      if (count >= threshold) hung.push(agentId);
+    }
+    return hung;
   }
 
   // -----------------------------------------------------------------------

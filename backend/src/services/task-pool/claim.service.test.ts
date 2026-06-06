@@ -7,7 +7,7 @@
  * @module services/task-pool/claim.service.test
  */
 
-import { ClaimService } from './claim.service.js';
+import { ClaimService, HUNG_SESSION_GRACE_REVOKE_THRESHOLD } from './claim.service.js';
 import { PoolStorage } from './pool-storage.js';
 import {
   DEFAULT_LEASE_DURATION_MS,
@@ -348,6 +348,47 @@ describe('ClaimService', () => {
 
     it('should throw for non-existent claim', async () => {
       await expect(service.revoke('nonexistent', 'expired')).rejects.toThrow(/not found/);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // hung-session detection (grace-revoke tracking) — Irissair 假死
+  // -----------------------------------------------------------------------
+
+  describe('hung-session detection', () => {
+    // Mirrors the reconciler's revoke reason (reconcile-rules.ts).
+    const GRACE_REASON = 'Grace period exceeded for claim c-x on WorkItem wi-x';
+
+    it('counts consecutive grace-revokes per agent and flags hung at the threshold', async () => {
+      for (let i = 0; i < HUNG_SESSION_GRACE_REVOKE_THRESHOLD; i++) {
+        const claim = await service.createClaim({ workItemId: `wi-${i}`, agentId: 'agent-hung' });
+        await service.revoke(claim.id, GRACE_REASON);
+      }
+      expect(service.getConsecutiveGraceRevokes('agent-hung')).toBe(
+        HUNG_SESSION_GRACE_REVOKE_THRESHOLD,
+      );
+      expect(service.getHungAgents()).toContain('agent-hung');
+    });
+
+    it('resets the count on a successful heartbeat (proof of life)', async () => {
+      const c1 = await service.createClaim({ workItemId: 'wi-a', agentId: 'agent-x' });
+      await service.revoke(c1.id, GRACE_REASON);
+      const c2 = await service.createClaim({ workItemId: 'wi-b', agentId: 'agent-x' });
+      await service.revoke(c2.id, GRACE_REASON);
+      expect(service.getConsecutiveGraceRevokes('agent-x')).toBe(2);
+
+      const c3 = await service.createClaim({ workItemId: 'wi-c', agentId: 'agent-x' });
+      await service.heartbeat(c3.id, 'agent-x');
+
+      expect(service.getConsecutiveGraceRevokes('agent-x')).toBe(0);
+      expect(service.getHungAgents()).not.toContain('agent-x');
+    });
+
+    it('ignores non-grace revoke reasons', async () => {
+      const claim = await service.createClaim({ workItemId: 'wi-1', agentId: 'agent-y' });
+      await service.revoke(claim.id, 'released by user');
+      expect(service.getConsecutiveGraceRevokes('agent-y')).toBe(0);
+      expect(service.getHungAgents()).not.toContain('agent-y');
     });
   });
 

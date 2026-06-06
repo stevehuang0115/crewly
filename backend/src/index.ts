@@ -1078,14 +1078,34 @@ void (async () => {
 			// this signal is for dashboards/monitoring to read from the body).
 			const slaSub = getRequestSlaSubscriber();
 			const pendingUserRequests = slaSub ? slaSub.getPendingUserRequestCount() : 0;
-			const orchestratorStalled = agentCount === 0 && pendingUserRequests > 0;
+
+			// "Down" — no active agent while user work is queued (issue #686).
+			const orchestratorDown = agentCount === 0 && pendingUserRequests > 0;
+
+			// "Up but hung" — the orchestrator process is alive yet its session keeps
+			// claiming work and never heartbeats (claims get grace-revoked in a loop).
+			// agentCount>0 hides this from the "down" check, so detect it explicitly
+			// via the claim-service hung signal (the Irissair 假死).
+			let orchestratorHung = false;
+			try {
+				orchestratorHung = TaskPoolService.getInstance()
+					.getHungAgents()
+					.includes(ORCHESTRATOR_SESSION_NAME);
+			} catch {
+				// Task pool not ready yet — treat as not-hung.
+			}
+
+			const orchestratorStalled = orchestratorDown || orchestratorHung;
 			const orchestratorBlock = {
 				status: orchestratorStalled ? 'degraded' : 'ok',
 				activeAgents: agentCount,
 				pendingUserRequests,
-				reason: orchestratorStalled
-					? `no active agent with ${pendingUserRequests} pending user request(s) — orchestrator may be down`
-					: null,
+				hung: orchestratorHung,
+				reason: orchestratorHung
+					? 'orchestrator session is hung — claiming work but not heartbeating (repeated grace-revokes)'
+					: orchestratorDown
+						? `no active agent with ${pendingUserRequests} pending user request(s) — orchestrator may be down`
+						: null,
 			};
 
 			res.json({

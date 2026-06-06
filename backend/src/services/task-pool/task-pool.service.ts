@@ -1462,6 +1462,18 @@ export class TaskPoolService {
   }
 
   /**
+   * Agents that look HUNG — they keep claiming work but never heartbeat, so
+   * their claims are repeatedly grace-revoked. Powers the `/health`
+   * orchestrator-liveness signal ("up but stalled") and hung-session recovery.
+   *
+   * @param threshold - Minimum consecutive grace-revokes to count as hung.
+   * @returns Agent ids that currently look hung.
+   */
+  getHungAgents(threshold?: number): string[] {
+    return this.claimService.getHungAgents(threshold);
+  }
+
+  /**
    * Revokes a claim and releases the work item back to the pool.
    * Used by the Reconciler when a claim's grace period is exceeded.
    *
