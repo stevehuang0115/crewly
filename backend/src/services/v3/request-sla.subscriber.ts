@@ -602,6 +602,19 @@ export class RequestSlaSubscriber {
   }
 
   /**
+   * Number of inbound user Requests still awaiting an orchestrator response —
+   * i.e. live `respond_to_user` SLA trackers that have neither been answered
+   * nor breached-and-cleared. Powers the `/health` orchestrator-liveness signal
+   * (issue #686): `agents.active === 0` while this is `> 0` means inbound user
+   * messages are queued with no one to answer them (the silent 假死 symptom).
+   *
+   * @returns Count of pending tracked `respond_to_user` work items.
+   */
+  getPendingUserRequestCount(): number {
+    return this.trackedByRequest.size;
+  }
+
+  /**
    * Wait for in-flight async dispatches to settle. Test affordance.
    */
   async flushPending(): Promise<void> {
