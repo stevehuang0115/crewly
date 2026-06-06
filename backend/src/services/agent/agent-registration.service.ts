@@ -1196,7 +1196,20 @@ export class AgentRegistrationService {
 				this.promptCache.set(templatePath, content);
 			}
 
-			await writeFile(config.outputPath, content, { flag: 'wx' }).catch(() => {
+			// Substitute path placeholders before writing (#209). The cache holds
+			// the RAW template; resolve into a per-project copy so skill-script and
+			// project paths in the provisioned config file point at real locations
+			// (mirrors the placeholder substitution done for the registration prompt).
+			const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
+			const orchestratorSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'orchestrator');
+			const marketplaceSkillsPath = path.join(os.homedir(), '.crewly', 'marketplace', 'skills');
+			const resolved = content
+				.replace(/\{\{PROJECT_PATH\}\}/g, projectPath)
+				.replace(/\{\{AGENT_SKILLS_PATH\}\}/g, agentSkillsPath)
+				.replace(/\{\{ORCHESTRATOR_SKILLS_PATH\}\}/g, orchestratorSkillsPath)
+				.replace(/\{\{MARKETPLACE_SKILLS_PATH\}\}/g, marketplaceSkillsPath);
+
+			await writeFile(config.outputPath, resolved, { flag: 'wx' }).catch(() => {
 				// File already exists — no action needed
 			});
 		} catch (err) {
@@ -4143,6 +4156,8 @@ Loop until done, blocked, or explicitly reassigned:
 							confirmAttempt++;
 
 							const loopOutput = sessionHelper.capturePane(sessionName);
+							const loopBottom = loopOutput.split('\n').slice(-10).join(' ').replace(/\s+/g, ' ');
+							const textStuck = loopBottom.includes(confirmSnippet);
 
 							// Spinner or working indicator → delivered
 							if (containsSpinnerOrWorkingIndicator(loopOutput)) {
@@ -4153,7 +4168,29 @@ Loop until done, blocked, or explicitly reassigned:
 								break;
 							}
 
-							// Fast-response detection: output changed since send → delivered
+							// Text still stuck → Enter was dropped, NOT delivered. Try
+							// Tab+Enter recovery and re-check next iteration. This is
+							// checked BEFORE the output-change shortcut below: when our
+							// own pasted message is echoed at the prompt the output DID
+							// change vs the pre-send baseline, but that change is the
+							// stuck echo, not a response — treating it as "delivered"
+							// is the false-positive that masked the orc 假死 (#686
+							// follow-up: a hung session looked "delivered" forever).
+							if (textStuck) {
+								this.logger.warn('Confirmation loop: text still stuck, pressing Tab+Enter', {
+									sessionName, attempt, confirmAttempt,
+								});
+								await sessionHelper.sendKey(sessionName, 'Tab');
+								await delay(200);
+								await sessionHelper.sendEnter(sessionName);
+								await delay(500);
+								await sessionHelper.sendEnter(sessionName); // backup
+								continue;
+							}
+
+							// Fast-response detection: output changed since send AND our
+							// message text is NOT stuck at the prompt → a real response
+							// landed and returned to prompt before we looked. Delivered.
 							if (loopOutput !== beforeOutput) {
 								this.logger.info('Confirmation loop: output changed from pre-send — fast response confirmed', {
 									sessionName, attempt, confirmAttempt,
@@ -4163,25 +4200,12 @@ Loop until done, blocked, or explicitly reassigned:
 							}
 
 							// Not at prompt and text not stuck → delivered
-							const loopBottom = loopOutput.split('\n').slice(-10).join(' ').replace(/\s+/g, ' ');
-							if (!this.isClaudeAtPrompt(loopOutput, runtimeType) && !loopBottom.includes(confirmSnippet)) {
+							if (!this.isClaudeAtPrompt(loopOutput, runtimeType)) {
 								this.logger.info('Confirmation loop: prompt gone, text cleared', {
 									sessionName, attempt, confirmAttempt,
 								});
 								claudeDelivered = true;
 								break;
-							}
-
-							// Text still stuck → Tab+Enter recovery
-							if (loopBottom.includes(confirmSnippet)) {
-								this.logger.warn('Confirmation loop: text still stuck, pressing Tab+Enter', {
-									sessionName, attempt, confirmAttempt,
-								});
-								await sessionHelper.sendKey(sessionName, 'Tab');
-								await delay(200);
-								await sessionHelper.sendEnter(sessionName);
-								await delay(500);
-								await sessionHelper.sendEnter(sessionName); // backup
 							}
 						}
 

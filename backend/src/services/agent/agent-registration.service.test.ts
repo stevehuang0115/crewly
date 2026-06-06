@@ -914,6 +914,29 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.clearCurrentCommandLine).toHaveBeenCalled();
 		}, 120000);
 
+		it('DOES confirm delivery when output changes and the message text is NOT stuck', async () => {
+			// Positive counterpart to the false-positive test above: the output
+			// changed from the pre-send baseline AND our message text is not sitting
+			// at the prompt → a real response landed, so delivery is confirmed.
+			// Guards the reordered confirmation logic: stuck-echo ≠ delivered, but a
+			// genuine non-stuck change IS.
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			let capturePaneCount = 0;
+			mockSessionHelper.capturePane.mockImplementation(() => {
+				capturePaneCount++;
+				if (capturePaneCount === 1) return '❯ \n'; // pre-send: clean prompt
+				if (capturePaneCount === 2) return '❯ \n'; // beforeOutput baseline
+				// Changed output, no idle prompt, message text NOT present → real response.
+				return 'Working on your request…\n';
+			});
+
+			const resultPromise = service.sendMessageToAgent('test-session', 'Hello world');
+			await jest.advanceTimersByTimeAsync(300000);
+			const result = await resultPromise;
+
+			expect(result.success).toBe(true);
+		}, 120000);
+
 		it('should fall through to direct delivery when agent is not at prompt', async () => {
 			mockSessionHelper.sessionExists.mockReturnValue(true);
 			// capturePane shows non-prompt content (agent is busy/modal)
