@@ -2059,6 +2059,23 @@ void (async () => {
 				});
 			}
 
+			// Bootstrap SOPService at boot (F8 — fix/f8-get-sops-graceful-fallback).
+			// This materialises `~/.crewly/sops/{system,custom}/` and seeds the
+			// `index.json` so the get-sops skill — which sits on every agent's
+			// session-startup hot path — never hits a missing-file 500.
+			// SOPService.initialize is internally idempotent and the service has
+			// graceful in-memory fallbacks, so this is non-critical: failures here
+			// will be tolerated by the API layer at request time.
+			try {
+				const { SOPService } = await import('./services/sop/sop.service.js');
+				await SOPService.getInstance().initialize();
+				this.logger.info('SOPService bootstrapped — get-sops endpoint ready');
+			} catch (sopErr) {
+				this.logger.warn('SOPService bootstrap failed (non-critical, runtime fallback active)', {
+					error: sopErr instanceof Error ? sopErr.message : String(sopErr),
+				});
+			}
+
 			// Start AgentAutoClaimService — auto-assign work to idle agents
 			try {
 				const { AgentAutoClaimService } = await import('./services/v3/agent-auto-claim.service.js');
