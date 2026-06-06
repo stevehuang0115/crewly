@@ -200,6 +200,104 @@ fi
 assert_eq "empty types uses role default" "delegate,project_task,review" "$FINAL_TYPES2"
 
 # ---------------------------------------------------------------------------
+# Test 7: D8 fallback — target= query when owner=agent yields zero
+#
+# Mirrors the production logic: when the primary owner=agent response has
+# count=0, we should adopt the target= response if it contains any items,
+# and record the first item's id as TARGET_PINNED_ID so the claim step
+# can claim by workItemId rather than by FIFO filters.
+# ---------------------------------------------------------------------------
+echo "Test 7: D8 fallback for orchestrator-owned target items"
+
+OWNER_AGENT_EMPTY='{"success":true,"data":[],"count":0}'
+TARGET_RESPONSE_HIT='{"success":true,"data":[
+  {"id":"wi-orc-1","type":"delegate","owner":"orchestrator","target":"agent-1","status":"queued"},
+  {"id":"wi-orc-2","type":"delegate","owner":"orchestrator","target":"agent-1","status":"queued"}
+],"count":2}'
+
+# Simulate the merge step
+AVAILABLE_RESPONSE_SIM="$OWNER_AGENT_EMPTY"
+AVAILABLE_COUNT_SIM=$(printf '%s' "$AVAILABLE_RESPONSE_SIM" | jq -r '.count // 0')
+TARGET_PINNED_ID_SIM=""
+if [ "$AVAILABLE_COUNT_SIM" -eq 0 ]; then
+  TARGET_RESPONSE_SIM="$TARGET_RESPONSE_HIT"
+  TARGET_COUNT_SIM=$(printf '%s' "$TARGET_RESPONSE_SIM" | jq -r '.count // 0')
+  if [ "$TARGET_COUNT_SIM" -gt 0 ]; then
+    AVAILABLE_RESPONSE_SIM="$TARGET_RESPONSE_SIM"
+    AVAILABLE_COUNT_SIM="$TARGET_COUNT_SIM"
+    TARGET_PINNED_ID_SIM=$(printf '%s' "$TARGET_RESPONSE_SIM" | jq -r '(.data // [])[0].id // empty')
+  fi
+fi
+
+assert_eq "fallback adopts target response count" "2" "$AVAILABLE_COUNT_SIM"
+assert_eq "fallback pins first target item id" "wi-orc-1" "$TARGET_PINNED_ID_SIM"
+
+# When BOTH queries are empty, AVAILABLE_COUNT stays 0 and no pin is set
+AVAILABLE_RESPONSE_EMPTY="$OWNER_AGENT_EMPTY"
+AVAILABLE_COUNT_EMPTY=$(printf '%s' "$AVAILABLE_RESPONSE_EMPTY" | jq -r '.count // 0')
+TARGET_PINNED_ID_EMPTY=""
+if [ "$AVAILABLE_COUNT_EMPTY" -eq 0 ]; then
+  TARGET_RESPONSE_EMPTY='{"success":true,"data":[],"count":0}'
+  TARGET_COUNT_EMPTY=$(printf '%s' "$TARGET_RESPONSE_EMPTY" | jq -r '.count // 0')
+  if [ "$TARGET_COUNT_EMPTY" -gt 0 ]; then
+    AVAILABLE_RESPONSE_EMPTY="$TARGET_RESPONSE_EMPTY"
+    AVAILABLE_COUNT_EMPTY="$TARGET_COUNT_EMPTY"
+    TARGET_PINNED_ID_EMPTY=$(printf '%s' "$TARGET_RESPONSE_EMPTY" | jq -r '(.data // [])[0].id // empty')
+  fi
+fi
+assert_eq "both-empty leaves count at 0" "0" "$AVAILABLE_COUNT_EMPTY"
+assert_eq "both-empty leaves pin empty" "" "$TARGET_PINNED_ID_EMPTY"
+
+# When owner=agent has items already, fallback must NOT fire
+OWNER_AGENT_HIT='{"success":true,"data":[
+  {"id":"wi-agent-1","type":"project_task","owner":"agent","status":"queued"}
+],"count":1}'
+AVAILABLE_RESPONSE_PRI="$OWNER_AGENT_HIT"
+AVAILABLE_COUNT_PRI=$(printf '%s' "$AVAILABLE_RESPONSE_PRI" | jq -r '.count // 0')
+TARGET_PINNED_ID_PRI=""
+if [ "$AVAILABLE_COUNT_PRI" -eq 0 ]; then
+  TARGET_PINNED_ID_PRI="should-not-be-set"
+fi
+assert_eq "primary-hit keeps count=1" "1" "$AVAILABLE_COUNT_PRI"
+assert_eq "primary-hit leaves pin empty (no fallback)" "" "$TARGET_PINNED_ID_PRI"
+
+# ---------------------------------------------------------------------------
+# Test 8: Claim body shape — workItemId vs filters
+#
+# When TARGET_PINNED_ID is set, the claim body must include workItemId.
+# Otherwise it uses the FIFO filters shape. Both are accepted by the
+# /task-pool/claim endpoint, but only the workItemId form will claim
+# orchestrator-owned items.
+# ---------------------------------------------------------------------------
+echo "Test 8: Claim body shape"
+
+build_claim_body() {
+  local pinned="$1" session="$2" types="$3"
+  if [ -n "$pinned" ]; then
+    jq -nc \
+      --arg agentId "$session" \
+      --arg workItemId "$pinned" \
+      '{agentId: $agentId, workItemId: $workItemId}'
+  else
+    jq -nc \
+      --arg agentId "$session" \
+      --arg types "$types" \
+      '{agentId: $agentId, filters: {types: ($types | split(","))}}'
+  fi
+}
+
+PINNED_BODY=$(build_claim_body "wi-orc-1" "agent-1" "delegate,project_task")
+assert_json_field "pinned body has workItemId" "$PINNED_BODY" ".workItemId" "wi-orc-1"
+assert_json_field "pinned body has agentId" "$PINNED_BODY" ".agentId" "agent-1"
+assert_json_field "pinned body has no filters" "$PINNED_BODY" ".filters" "null"
+
+FIFO_BODY=$(build_claim_body "" "agent-1" "delegate,project_task")
+assert_json_field "fifo body has agentId" "$FIFO_BODY" ".agentId" "agent-1"
+assert_json_field "fifo body has no workItemId" "$FIFO_BODY" ".workItemId" "null"
+assert_json_field "fifo body types[0]" "$FIFO_BODY" ".filters.types[0]" "delegate"
+assert_json_field "fifo body types[1]" "$FIFO_BODY" ".filters.types[1]" "project_task"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

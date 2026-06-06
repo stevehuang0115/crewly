@@ -64,6 +64,15 @@ fi
 
 # ---------------------------------------------------------------------------
 # Step 1: Query available WorkItems from Task Pool
+#
+# Primary query: owner=agent (normal task-pool queue).
+# Fallback query: target=$SESSION_NAME — picks up orchestrator/TL-owned
+# WorkItems delegated directly to this agent. Without the fallback,
+# direct delegations would never be seen by poll-tasks because they
+# do not match owner=agent. (D8 defect: previously the target= query
+# only fired on HTTP error from the primary, not on count=0, so direct
+# delegations sat in the pool indefinitely while the agent reported
+# "no work".)
 # ---------------------------------------------------------------------------
 
 QUERY_PARAMS="?types=${TYPES}&owner=agent"
@@ -76,6 +85,22 @@ AVAILABLE_RESPONSE=$(api_call GET "/task-pool${QUERY_PARAMS}" 2>&1) || {
 }
 
 AVAILABLE_COUNT=$(printf '%s' "$AVAILABLE_RESPONSE" | jq -r '.count // 0')
+
+# When the primary owner=agent query yields no items, also probe the
+# target= namespace before declaring no work. If the fallback returns
+# items, they are by definition pinned to this agent — record the first
+# item's id so Step 3 can claim it explicitly (the server-side FIFO
+# picker filters owner=agent and would otherwise ignore these items).
+TARGET_PINNED_ID=""
+if [ "$AVAILABLE_COUNT" -eq 0 ]; then
+  TARGET_RESPONSE=$(api_call GET "/task-pool?types=${TYPES}&target=${SESSION_NAME}" 2>&1) || TARGET_RESPONSE=""
+  TARGET_COUNT=$(printf '%s' "$TARGET_RESPONSE" | jq -r '.count // 0' 2>/dev/null || echo 0)
+  if [ "$TARGET_COUNT" -gt 0 ]; then
+    AVAILABLE_RESPONSE="$TARGET_RESPONSE"
+    AVAILABLE_COUNT="$TARGET_COUNT"
+    TARGET_PINNED_ID=$(printf '%s' "$TARGET_RESPONSE" | jq -r '(.data // [])[0].id // empty')
+  fi
+fi
 
 if [ "$AVAILABLE_COUNT" -eq 0 ]; then
   # No available work — return early
@@ -123,15 +148,25 @@ fi
 # We pass our agentId and filters so the server picks the best match.
 # ---------------------------------------------------------------------------
 
-CLAIM_BODY=$(jq -n \
-  --arg agentId "$SESSION_NAME" \
-  --arg types "$TYPES" \
-  '{
-    agentId: $agentId,
-    filters: {
-      types: ($types | split(","))
-    }
-  }')
+# When a target-pinned item was found via the fallback query, claim it
+# by explicit workItemId — the server-side FIFO picker filters owner=agent
+# and would not return orchestrator-owned items via the unfiltered claim.
+if [ -n "$TARGET_PINNED_ID" ]; then
+  CLAIM_BODY=$(jq -n \
+    --arg agentId "$SESSION_NAME" \
+    --arg workItemId "$TARGET_PINNED_ID" \
+    '{agentId: $agentId, workItemId: $workItemId}')
+else
+  CLAIM_BODY=$(jq -n \
+    --arg agentId "$SESSION_NAME" \
+    --arg types "$TYPES" \
+    '{
+      agentId: $agentId,
+      filters: {
+        types: ($types | split(","))
+      }
+    }')
+fi
 
 CLAIM_RESPONSE=$(api_call POST "/task-pool/claim" "$CLAIM_BODY" 2>&1) || {
   CLAIM_ERROR="$CLAIM_RESPONSE"
