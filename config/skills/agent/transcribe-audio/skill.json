@@ -1,0 +1,22 @@
+{
+  "id": "transcribe-audio",
+  "name": "transcribe-audio",
+  "displayName": "Transcribe Audio (Whisper)",
+  "description": "Transcribe a local audio (or video) file to text with timestamps using Whisper. Defaults to local whisper.cpp (free/offline/word-level timestamps) and falls back to the OpenAI Whisper API (whisper-1) when the local engine is unavailable.",
+  "category": "content",
+  "assignableRoles": ["*"],
+  "version": "1.0.0",
+  "author": "Crewly Team",
+  "tags": [
+    "audio",
+    "transcribe",
+    "transcription",
+    "whisper",
+    "whisper.cpp",
+    "openai",
+    "speech-to-text",
+    "timestamps"
+  ],
+  "requires": [],
+  "optionalSecrets": ["OPENAI_API_KEY"]
+}
