@@ -322,6 +322,36 @@ describe('BrowserProxyService', () => {
       expect(result.id).toBe(cmdId);
     });
 
+    it('includes agentName + agentGoal in the relay_to payload for the takeover banner', async () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [{ instanceId: 'id-1', instanceName: 'Chrome', sessionId: 'bs-1' }],
+        }),
+      );
+
+      // tool, params, instance, timeoutMs, agentName, agentSession, agentGoal.
+      // agentSession omitted on purpose: supplying it triggers an async tabId-
+      // binding import that defers the send past our synchronous lastCall read.
+      const cmdPromise = proxy.sendCommand('navigate', { url: 'https://x.com' }, undefined, 5000, 'researcher-1', undefined, 'Verify DMARC setup');
+
+      const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
+      const payload = JSON.parse(sentMsg.payload as string);
+      expect(payload.agentName).toBe('researcher-1');
+      expect(payload.agentGoal).toBe('Verify DMARC setup');
+
+      // Resolve the pending command so no timer/promise dangles into the next test.
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({ type: 'relay', payload: JSON.stringify({ id: payload.id, success: true, result: {} }) }),
+      );
+      await cmdPromise;
+    });
+
     it('updates lastSeenAt on the matching instance when a relay carries senderSessionId', () => {
       connectAndRegister();
       const proxy = BrowserProxyService.getInstance();

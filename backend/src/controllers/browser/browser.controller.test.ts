@@ -700,9 +700,34 @@ describe('Browser Controller — per-tab dispatch (M2)', () => {
 				'navigate',
 				expect.objectContaining({ url: 'https://example.com' }),
 				undefined,
-				expect.any(String)
+				expect.any(String),
+				undefined // agentGoal — none supplied on this request
 			);
 			expect(bridge.sendCommand).not.toHaveBeenCalled();
+		});
+
+		it('forwards the X-Agent-Goal header through to sendCommandForAgent', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			markBridgeConnected(bridge);
+			const spy = jest
+				.spyOn(bridge, 'sendCommandForAgent')
+				.mockResolvedValue(okResponse);
+			jest.spyOn(bridge, 'sendCommand').mockResolvedValue(okResponse);
+
+			await request(app)
+				.post('/api/browser/navigate')
+				.set('X-Agent-Session', 'agent-A')
+				.set('X-Agent-Goal', 'Verify crewlyai.com DMARC setup')
+				.send({ url: 'https://example.com' });
+
+			expect(spy).toHaveBeenCalledWith(
+				'agent-A',
+				'navigate',
+				expect.objectContaining({ url: 'https://example.com' }),
+				undefined,
+				expect.any(String),
+				'Verify crewlyai.com DMARC setup' // agentGoal threaded from the header
+			);
 		});
 
 		it('falls back to sendCommand (legacy active-tab) when no agentSession is set', async () => {
