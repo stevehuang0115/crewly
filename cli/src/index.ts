@@ -124,10 +124,13 @@ program
   .action(serviceCommand);
 
 program
-  .command('backup <action>')
-  .description('Workspace backup (create) — archive this machine to restore on another. Pro: cloud push/pull (soon)')
+  .command('backup <action> [target]')
+  .description('Workspace backup: create | restore <file>. Archive this machine to restore on another. Pro: cloud push/pull (soon)')
   .option('-o, --out <file>', 'Output archive path (create)')
-  .option('--no-chat-db', 'Exclude chat.db from the archive (smaller, faster)')
+  .option('--no-chat-db', 'Exclude chat.db from the archive (create)')
+  .option('--mode <mode>', 'Restore conflict mode: abort (default) | overwrite')
+  .option('--map <mapping...>', 'Restore source→target path remap, OLD=NEW (repeatable)')
+  .option('--apply', 'Apply the restore (without this, restore is a dry-run preview)')
   .action(backupCommand);
 
 program

@@ -107,3 +107,68 @@ export interface CreateBackupResult {
   /** Total uncompressed bytes captured (for quota/UX). */
   totalBytes: number;
 }
+
+// ---------------------------------------------------------------------------
+// Restore (P1)
+// ---------------------------------------------------------------------------
+
+/** How to handle a target that already has overlapping data. */
+export type RestoreMode = 'abort' | 'overwrite';
+
+/** Options for restoring an archive onto this machine. */
+export interface RestoreOptions {
+  /** Archive (.tar.gz) to restore. */
+  archivePath: string;
+  /** Target CREWLY_HOME. Defaults to getCrewlyHomePath(). */
+  homePath?: string;
+  /** Conflict policy. Default 'abort'. */
+  mode?: RestoreMode;
+  /**
+   * Source→target absolute path remap for projects, e.g.
+   * `{ '/Users/alice/web': '/Users/bob/web' }`. When a source path isn't
+   * mapped, restore reuses it if it exists on the target, else records a
+   * warning and skips that project's `.crewly/` write.
+   */
+  pathMap?: Record<string, string>;
+  /** ISO timestamp used to name the pre-restore rollback snapshot. */
+  now: string;
+}
+
+/** One project's restore plan entry. */
+export interface RestoreProjectPlan {
+  id: string;
+  name: string;
+  sourcePath: string;
+  /** Resolved target path (pathMap → existing sourcePath → null when unresolved). */
+  targetPath: string | null;
+  git: { remote: string | null; commit: string | null };
+  /** Whether the resolved target path currently exists on this machine. */
+  targetExists: boolean;
+}
+
+/** Non-destructive restore plan (dry-run). */
+export interface RestorePlan {
+  /** False when mode='abort' and conflicts exist (apply would refuse). */
+  ok: boolean;
+  manifestCreatedAt: string;
+  sourceHomePath: string;
+  /** Stable ids present on BOTH the backup and this machine (would be overwritten). */
+  conflicts: { teams: string[]; projects: string[] };
+  globalFileCount: number;
+  projects: RestoreProjectPlan[];
+  chatDbIncluded: boolean;
+  /** Things to regenerate (device identity) / discard (runtime/session). */
+  regenerated: string[];
+  discarded: string[];
+  warnings: string[];
+}
+
+/** Result of an applied restore. */
+export interface RestoreResult {
+  restoredGlobalFiles: number;
+  restoredProjects: number;
+  chatDbRestored: boolean;
+  /** Where the pre-restore snapshot of the current CREWLY_HOME was saved. */
+  rollbackSnapshotPath: string;
+  warnings: string[];
+}
