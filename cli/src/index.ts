@@ -14,6 +14,7 @@ import { mcpServerCommand } from './commands/mcp-server.js';
 import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
+import { backupCommand } from './commands/backup.js';
 import { pairCommand } from './commands/pair.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
@@ -121,6 +122,13 @@ program
   .option('-n, --lines <number>', 'Number of log lines to show (default: 50)')
   .option('-f, --follow', 'Follow log output in real-time (logs action)')
   .action(serviceCommand);
+
+program
+  .command('backup <action>')
+  .description('Workspace backup (create) — archive this machine to restore on another. Pro: cloud push/pull (soon)')
+  .option('-o, --out <file>', 'Output archive path (create)')
+  .option('--no-chat-db', 'Exclude chat.db from the archive (smaller, faster)')
+  .action(backupCommand);
 
 program
   .command('pair')
