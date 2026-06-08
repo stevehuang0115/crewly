@@ -101,6 +101,12 @@ api_call() {
   # Include agent session identity header for heartbeat tracking
   # Use ${VAR:-} pattern to avoid 'unbound variable' error under set -u (nounset)
   [ -n "${CREWLY_SESSION_NAME:-}" ] && args+=(-H "X-Agent-Session: $CREWLY_SESSION_NAME")
+  # Forward the agent's current goal/objective so user-facing surfaces (e.g.
+  # the Chrome takeover banner) can show *what* the agent is doing. The
+  # backend reads it as the X-Agent-Goal header; callers either export
+  # CREWLY_AGENT_GOAL (auto) or set it per-command (e.g. remote-browser's
+  # --goal override exports it before this call).
+  [ -n "${CREWLY_AGENT_GOAL:-}" ] && args+=(-H "X-Agent-Goal: $CREWLY_AGENT_GOAL")
   [ -n "$body" ] && args+=(-d "$body")
 
   local response
