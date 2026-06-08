@@ -15,6 +15,19 @@ import {
 	BrowserBridgeService,
 	type BrowserCommandResponse,
 } from '../../services/browser/browser-bridge.service.js';
+import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
+
+// Mock the task pool so agentGoal auto-derive is deterministic: by default no
+// active claim → no derived goal (keeps tests that don't care unaffected).
+// Individual tests override getInstance to simulate a claimed work item.
+jest.mock('../../services/task-pool/task-pool.service.js', () => ({
+	TaskPoolService: {
+		getInstance: jest.fn(() => ({
+			getClaimService: () => ({ getActiveClaimByAgent: jest.fn().mockResolvedValue(undefined) }),
+			findWorkItem: jest.fn().mockResolvedValue(null),
+		})),
+	},
+}));
 
 // Mock logger
 jest.mock('../../services/core/logger.service.js', () => ({
@@ -727,6 +740,37 @@ describe('Browser Controller — per-tab dispatch (M2)', () => {
 				undefined,
 				expect.any(String),
 				'Verify crewlyai.com DMARC setup' // agentGoal threaded from the header
+			);
+		});
+
+		it('auto-derives agentGoal from the agent\'s active work item when no header is set', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			markBridgeConnected(bridge);
+			const spy = jest
+				.spyOn(bridge, 'sendCommandForAgent')
+				.mockResolvedValue(okResponse);
+			jest.spyOn(bridge, 'sendCommand').mockResolvedValue(okResponse);
+
+			// Agent 'agent-A' has an active claim on a work item titled "Fix the login bug".
+			(TaskPoolService.getInstance as jest.Mock).mockReturnValueOnce({
+				getClaimService: () => ({
+					getActiveClaimByAgent: jest.fn().mockResolvedValue({ workItemId: 'wi-9' }),
+				}),
+				findWorkItem: jest.fn().mockResolvedValue({ title: 'Fix the login bug' }),
+			});
+
+			await request(app)
+				.post('/api/browser/navigate')
+				.set('X-Agent-Session', 'agent-A')
+				.send({ url: 'https://example.com' }); // note: NO X-Agent-Goal header
+
+			expect(spy).toHaveBeenCalledWith(
+				'agent-A',
+				'navigate',
+				expect.objectContaining({ url: 'https://example.com' }),
+				undefined,
+				expect.any(String),
+				'Fix the login bug' // auto-derived from the work item title
 			);
 		});
 
