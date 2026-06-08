@@ -13,9 +13,16 @@ import chalk from 'chalk';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import { BackupArchiveService } from '../../../backend/src/services/backup/backup-archive.service.js';
 import { BackupRestoreService, RestoreConflictError } from '../../../backend/src/services/backup/backup-restore.service.js';
+import {
+  BackupCloudClient,
+  BackupNotProError,
+  type CloudBackupItem,
+} from '../../../backend/src/services/backup/backup-cloud.client.js';
 import { getCrewlyHomePath } from '../../../backend/src/services/core/crewly-home.utils.js';
+import { CloudClientService } from '../../../backend/src/services/cloud/cloud-client.service.js';
 
 /** Options accepted by `crewly backup`. */
 export interface BackupCommandOptions {
@@ -79,10 +86,13 @@ export async function backupCommand(
       await runRestore(target, options);
       break;
     case 'push':
+      await withCloudErrors(() => runPush(options));
+      break;
     case 'pull':
+      await withCloudErrors(() => runPull(target, options));
+      break;
     case 'list':
-      console.log(chalk.yellow(`'crewly backup ${action}' is not available yet (coming in a later phase).`));
-      console.log(chalk.gray('Available now: crewly backup create | crewly backup restore <file>'));
+      await withCloudErrors(() => runList());
       break;
     default:
       console.log(chalk.red(`Unknown backup action: ${action}`));
@@ -195,4 +205,116 @@ async function runRestore(target: string | undefined, options: BackupCommandOpti
     }
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cloud (Pro): push / pull / list
+// ---------------------------------------------------------------------------
+
+/** Thrown when there's no persisted Crewly Cloud connection. */
+class CloudNotConnectedError extends Error {
+  constructor() {
+    super('Not connected to Crewly Cloud.');
+  }
+}
+
+/**
+ * Resolve the Cloud API base URL + access token from the persisted config
+ * (~/.crewly/cloud/config.json). Read directly (not via CloudClientService)
+ * so this one-shot CLI doesn't start the singleton's relay-token refresh timer.
+ *
+ * @returns Cloud base URL + token + tier
+ * @throws CloudNotConnectedError when not connected
+ */
+async function resolveCloudAuth(): Promise<{ baseUrl: string; token: string; tier: string }> {
+  try {
+    const raw = await fsp.readFile(CloudClientService.getConfigPath(), 'utf8');
+    const cfg = JSON.parse(raw) as { cloudUrl?: string; token?: string; tier?: string };
+    if (cfg.cloudUrl && cfg.token) return { baseUrl: cfg.cloudUrl, token: cfg.token, tier: cfg.tier ?? 'free' };
+  } catch {
+    /* fall through to not-connected */
+  }
+  throw new CloudNotConnectedError();
+}
+
+/** Wrap a cloud action, mapping not-Pro / not-connected to friendly messages. */
+async function withCloudErrors(fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    if (err instanceof BackupNotProError) {
+      console.log(chalk.yellow('\n⚠ Cloud backup is a Pro feature.'));
+      console.log(chalk.gray(`  ${err.message}`));
+      process.exitCode = 1;
+    } else if (err instanceof CloudNotConnectedError) {
+      console.log(chalk.red('\nNot connected to Crewly Cloud. Run: crewly cloud login'));
+      process.exitCode = 1;
+    } else {
+      throw err;
+    }
+  }
+}
+
+/** `crewly backup push` — create a local archive and upload it to the cloud. */
+async function runPush(options: BackupCommandOptions): Promise<void> {
+  const auth = await resolveCloudAuth();
+  const home = getCrewlyHomePath();
+  const deviceName = os.hostname();
+  const deviceId = readDeviceId(home);
+
+  console.log(chalk.cyan('Creating workspace backup…'));
+  const svc = new BackupArchiveService();
+  const { archivePath, manifest } = await svc.createArchive({
+    homePath: home,
+    excludeChatDb: options.chatDb === false,
+    createdAt: new Date().toISOString(),
+    sourceDeviceId: deviceId,
+    sourceDeviceName: deviceName,
+  });
+
+  console.log(chalk.cyan('Uploading to Crewly Cloud…'));
+  const client = new BackupCloudClient({ baseUrl: auth.baseUrl, token: auth.token });
+  const item = await client.push(archivePath, { deviceName, deviceId: deviceId ?? undefined });
+
+  console.log(chalk.green('\n✓ Backup pushed to cloud'));
+  console.log(`  ${chalk.bold('Backup id')}  ${item.backupId}`);
+  console.log(`  ${chalk.bold('Size')}       ${humanBytes(item.sizeBytes)} · chat.db ${manifest.chatDb.included ? 'yes' : 'no'}`);
+  console.log(chalk.gray(`\n  Restore on another machine: crewly backup pull ${item.backupId} --apply`));
+}
+
+/** `crewly backup pull <id>` — download a cloud snapshot and restore it. */
+async function runPull(backupId: string | undefined, options: BackupCommandOptions): Promise<void> {
+  if (!backupId) {
+    console.log(chalk.red('Missing backup id. Usage: crewly backup pull <id> [--apply]'));
+    process.exitCode = 1;
+    return;
+  }
+  const auth = await resolveCloudAuth();
+  const client = new BackupCloudClient({ baseUrl: auth.baseUrl, token: auth.token });
+  const dest = path.join(os.tmpdir(), `crewly-pull-${backupId.replace(/[^\w.-]/g, '_')}.tar.gz`);
+
+  console.log(chalk.cyan(`Downloading backup ${backupId} from cloud…`));
+  await client.pull(backupId, dest);
+  console.log(chalk.gray(`  Saved to ${dest}`));
+
+  // Hand off to the restore flow (dry-run by default; --apply commits).
+  await runRestore(dest, options);
+}
+
+/** `crewly backup list` — show this account's cloud snapshots. */
+async function runList(): Promise<void> {
+  const auth = await resolveCloudAuth();
+  const client = new BackupCloudClient({ baseUrl: auth.baseUrl, token: auth.token });
+  const items: CloudBackupItem[] = await client.list();
+  if (items.length === 0) {
+    console.log(chalk.gray('No cloud backups yet. Create one with: crewly backup push'));
+    return;
+  }
+  console.log(chalk.cyan(`\nCloud backups (${items.length})`));
+  for (const it of items) {
+    console.log(
+      `  ${chalk.bold(it.backupId)}  ${it.createdAt}  ${humanBytes(it.sizeBytes)}  ${it.deviceName ?? ''}`,
+    );
+  }
+  console.log(chalk.gray('\n  Restore: crewly backup pull <id> --apply'));
 }
