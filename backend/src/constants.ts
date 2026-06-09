@@ -1278,8 +1278,29 @@ export const CLOUD_CONSTANTS = {
 export const CLOUD_SYNC_CONSTANTS = {
 	/** Interval between heartbeat uploads (ms) */
 	HEARTBEAT_INTERVAL_MS: 30_000,
-	/** Interval between message poll requests (ms) */
+	/**
+	 * Idle interval between message poll requests (ms). Used as the gap when
+	 * long-poll is disabled (`MESSAGE_LONGPOLL_WAIT_MS = 0`), after a poll
+	 * error, or as the auto-degrade fallback when the relay returns a held
+	 * long-poll near-instantly (i.e. it doesn't support `wait=`).
+	 */
 	MESSAGE_POLL_INTERVAL_MS: 5_000,
+	/**
+	 * Long-poll hold time (ms) sent to the relay as `?wait=`. The relay holds
+	 * `/queue/poll` open until a message arrives (or this deadline), so the OSS
+	 * picks up Portal `chat_request`s near-instantly instead of on the old 5s
+	 * tick. Set to 0 to disable and fall back to fixed-interval polling. Kept
+	 * under the relay's own 25s ceiling.
+	 */
+	MESSAGE_LONGPOLL_WAIT_MS: 20_000,
+	/**
+	 * HTTP request timeout (ms) for the long-poll message fetch. MUST exceed
+	 * {@link MESSAGE_LONGPOLL_WAIT_MS} so the client doesn't abort the held
+	 * connection before the relay's deadline returns it.
+	 */
+	MESSAGE_LONGPOLL_TIMEOUT_MS: 30_000,
+	/** Gap (ms) before re-opening the next long-poll after one returns. */
+	MESSAGE_LONGPOLL_GAP_MS: 100,
 	/** Interval between device list poll requests (ms) */
 	DEVICE_POLL_INTERVAL_MS: 30_000,
 	/**

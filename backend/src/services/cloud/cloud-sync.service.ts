@@ -128,8 +128,10 @@ export class CloudSyncService extends EventEmitter {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   /** Device poll timer handle */
   private devicePollTimer: ReturnType<typeof setInterval> | null = null;
-  /** Message poll timer handle */
-  private messagePollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Message poll timer handle (self-rescheduling long-poll loop). */
+  private messagePollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Guards against overlapping self-scheduled message-poll cycles. */
+  private messagePollRunning = false;
   /** Queue re-register timer handle (lets relay evict stale Portal pairs). */
   private registerTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -236,10 +238,10 @@ export class CloudSyncService extends EventEmitter {
       () => { this.pollDevices().catch(() => {}); },
       CLOUD_SYNC_CONSTANTS.DEVICE_POLL_INTERVAL_MS
     );
-    this.messagePollTimer = setInterval(
-      () => { this.pollMessages().catch(() => {}); },
-      CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS
-    );
+    // Message polling is a self-rescheduling loop (not a fixed interval) so a
+    // held long-poll never overlaps the next request. Kicks off immediately;
+    // each cycle picks its own next gap (see runMessagePollCycle).
+    this.scheduleNextMessagePoll(0);
     // Periodic re-register lets the relay's stale-pair eviction kick in
     // when a previously-paired Portal closes uncleanly. Without this,
     // OSS would stay wedged against a dead Portal session until restart.
@@ -248,10 +250,10 @@ export class CloudSyncService extends EventEmitter {
       CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS
     );
 
-    // Unref timers so they don't keep the process alive
+    // Unref timers so they don't keep the process alive (messagePollTimer is
+    // unref'd inside scheduleNextMessagePoll on each cycle).
     if (this.heartbeatTimer.unref) this.heartbeatTimer.unref();
     if (this.devicePollTimer.unref) this.devicePollTimer.unref();
-    if (this.messagePollTimer.unref) this.messagePollTimer.unref();
     if (this.registerTimer.unref) this.registerTimer.unref();
   }
 
@@ -267,7 +269,7 @@ export class CloudSyncService extends EventEmitter {
 
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     if (this.devicePollTimer) { clearInterval(this.devicePollTimer); this.devicePollTimer = null; }
-    if (this.messagePollTimer) { clearInterval(this.messagePollTimer); this.messagePollTimer = null; }
+    if (this.messagePollTimer) { clearTimeout(this.messagePollTimer); this.messagePollTimer = null; }
     if (this.registerTimer) { clearInterval(this.registerTimer); this.registerTimer = null; }
     if (this.errorRecoveryTimer) { clearInterval(this.errorRecoveryTimer); this.errorRecoveryTimer = null; }
 
@@ -753,8 +755,8 @@ export class CloudSyncService extends EventEmitter {
    * The Cloud Sync message poll endpoint uses `deviceId` query param.
    * Cloud returns messages as: `{ id, from, fromDeviceName, type, payload, encrypted, sentAt }`.
    */
-  async pollMessages(): Promise<void> {
-    if (!this.config || this.state === 'error') return;
+  async pollMessages(): Promise<number> {
+    if (!this.config || this.state === 'error') return 0;
 
     try {
       // Cloud Relay queue/poll requires the queueId assigned during queue registration.
@@ -762,14 +764,25 @@ export class CloudSyncService extends EventEmitter {
       const pollQueueId = this.queueId || this.config.deviceId;
       if (!this.queueId) {
         // Not yet registered — skip silently (registration is async)
-        return;
+        return 0;
       }
-      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL}?queueId=${encodeURIComponent(pollQueueId)}`;
+      // Long-poll: ask the relay to hold the connection until a message lands
+      // (or its deadline) so we pick up Portal chat_requests near-instantly.
+      // The relay falls back to an immediate empty return if it's older; the
+      // poll loop auto-degrades to the fixed interval in that case.
+      const longPollMs = CLOUD_SYNC_CONSTANTS.MESSAGE_LONGPOLL_WAIT_MS;
+      const waitQuery = longPollMs > 0 ? `&wait=${longPollMs}` : '';
+      const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL}?queueId=${encodeURIComponent(pollQueueId)}${waitQuery}`;
 
+      // The request timeout MUST exceed the long-poll hold so we don't abort
+      // the held connection before the relay returns it.
+      const timeoutMs = longPollMs > 0
+        ? CLOUD_SYNC_CONSTANTS.MESSAGE_LONGPOLL_TIMEOUT_MS
+        : CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS;
       const response = await fetch(url, {
         method: 'GET',
         headers: this.authHeaders(),
-        signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       if (!response.ok) {
@@ -778,7 +791,7 @@ export class CloudSyncService extends EventEmitter {
           const refreshed = await this.handleAuthError(response.status);
           if (refreshed) {
             this.logger.info('Message poll will retry with refreshed token on next cycle');
-            return;
+            return 0;
           }
         }
         throw new Error(`Message poll failed: ${response.status}`);
@@ -791,7 +804,7 @@ export class CloudSyncService extends EventEmitter {
 
       if (!rawMessages || rawMessages.length === 0) {
         this.messagePollFailures = 0;
-        return;
+        return 0;
       }
 
       // Normalize Cloud Relay message format to IncomingMessage shape.
@@ -857,6 +870,7 @@ export class CloudSyncService extends EventEmitter {
 
       this.messagePollFailures = 0;
       this.logger.debug('Polled and processed messages', { count: rawMessages.length });
+      return rawMessages.length;
     } catch (error) {
       this.messagePollFailures++;
       this.logger.warn('Message poll failed', {
@@ -864,7 +878,72 @@ export class CloudSyncService extends EventEmitter {
         failures: this.messagePollFailures,
       });
       this.checkErrorThreshold();
+      // Signal an error to the loop via a sentinel so it backs off to the
+      // fixed interval rather than re-opening immediately.
+      return -1;
     }
+  }
+
+  /**
+   * One iteration of the self-rescheduling message-poll loop. Runs a
+   * (possibly long-held) {@link pollMessages}, then schedules the next cycle
+   * with a gap chosen from the outcome:
+   *
+   *  - **error** (`count < 0`) → back off to {@link CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS}.
+   *  - **long-poll disabled** → fixed interval (legacy cadence).
+   *  - **message received** (`count > 0`) → re-open right away to drain more.
+   *  - **held then empty** (elapsed ≥ half the wait) → short gap; this is the
+   *    normal continuous long-poll.
+   *  - **empty too fast** (elapsed < half the wait) → the relay likely ignores
+   *    `wait=`; degrade to the fixed interval so we don't hot-loop against an
+   *    un-upgraded relay.
+   *
+   * Re-entrancy is guarded so a delayed timer can never overlap an in-flight
+   * cycle. No-op once stopped.
+   */
+  private async runMessagePollCycle(): Promise<void> {
+    if (this.state === 'stopped' || this.messagePollRunning) return;
+    this.messagePollRunning = true;
+    const longPollMs = CLOUD_SYNC_CONSTANTS.MESSAGE_LONGPOLL_WAIT_MS;
+    const startedAt = Date.now();
+    let count = 0;
+    try {
+      count = await this.pollMessages();
+    } catch {
+      // pollMessages handles its own errors and returns -1; this guards any
+      // unexpected throw so the loop always reschedules.
+      count = -1;
+    } finally {
+      this.messagePollRunning = false;
+    }
+
+    // `stop()` may have run during the await — re-read the (widened) state.
+    if ((this.state as CloudSyncState) === 'stopped' || !this.config) return;
+
+    let gap: number;
+    if (count < 0 || longPollMs <= 0) {
+      gap = CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS;
+    } else {
+      const heldLongEnough = Date.now() - startedAt >= longPollMs / 2;
+      gap = count > 0 || heldLongEnough
+        ? CLOUD_SYNC_CONSTANTS.MESSAGE_LONGPOLL_GAP_MS
+        : CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS;
+    }
+    this.scheduleNextMessagePoll(gap);
+  }
+
+  /**
+   * Schedule the next message-poll cycle. Stores the (unref'd) timer handle so
+   * `stop()` can cancel a pending cycle. No-op once stopped.
+   *
+   * @param delayMs - Delay before the next {@link runMessagePollCycle}
+   */
+  private scheduleNextMessagePoll(delayMs: number): void {
+    if (this.state === 'stopped') return;
+    this.messagePollTimer = setTimeout(() => {
+      void this.runMessagePollCycle();
+    }, delayMs);
+    if (this.messagePollTimer.unref) this.messagePollTimer.unref();
   }
 
   /**
@@ -1028,7 +1107,7 @@ export class CloudSyncService extends EventEmitter {
     if (this.errorRecoveryTimer) { clearInterval(this.errorRecoveryTimer); this.errorRecoveryTimer = null; }
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     if (this.devicePollTimer) { clearInterval(this.devicePollTimer); this.devicePollTimer = null; }
-    if (this.messagePollTimer) { clearInterval(this.messagePollTimer); this.messagePollTimer = null; }
+    if (this.messagePollTimer) { clearTimeout(this.messagePollTimer); this.messagePollTimer = null; }
     if (this.registerTimer) { clearInterval(this.registerTimer); this.registerTimer = null; }
 
     this.state = 'auth_expired';
