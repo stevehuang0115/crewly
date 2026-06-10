@@ -696,5 +696,25 @@ describe('CloudSyncService', () => {
       );
       expect(pollCall).toBeUndefined();
     });
+
+    it('long-polls with ?wait= once a queueId is registered', async () => {
+      service.start(testConfig);
+      await flushPromises();
+      // Simulate a successful registration so pollMessages proceeds.
+      (service as unknown as { queueId: string }).queueId = 'q-abc';
+
+      mockFetch.mockClear();
+      mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
+
+      await service.pollMessages();
+
+      const pollCall = mockFetch.mock.calls.find(
+        ([url]) => typeof url === 'string' && url.includes('/queue/poll'),
+      );
+      expect(pollCall).toBeDefined();
+      const url = pollCall![0] as string;
+      expect(url).toContain('queueId=q-abc');
+      expect(url).toContain(`wait=${CLOUD_SYNC_CONSTANTS.MESSAGE_LONGPOLL_WAIT_MS}`);
+    });
   });
 });
