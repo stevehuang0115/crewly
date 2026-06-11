@@ -66,11 +66,28 @@ export interface CascadeNotifier {
   }): void;
 }
 
+/**
+ * Optional hook fired exactly once when the cascade completes a Request
+ * (transitions it to `done` — meaning all its children were actually
+ * VERIFIED per the P2 acceptance gate). The production wiring uses this to
+ * deliver the FINAL deliverable judgment to the orchestrator: "the whole
+ * deliverable is assembled and every piece is verified — do the final
+ * holistic check that it meets the original goal and is usable, then accept
+ * or reopen with specific gaps." This is the top-level "is the software
+ * actually usable" verdict the autonomous harness needs. Best-effort —
+ * the cascade never fails on a hook error.
+ */
+export interface RequestCompletedHook {
+  (request: Request, childItems: WorkItem[]): void | Promise<void>;
+}
+
 export interface CascadeDeps {
   requestService: CascadeRequestService;
   taskPool: CascadeTaskPool;
   logger?: ComponentLogger;
   notifier?: CascadeNotifier;
+  /** Fired once when a Request completes (→ done). See {@link RequestCompletedHook}. */
+  onRequestCompleted?: RequestCompletedHook;
 }
 
 /**
@@ -104,6 +121,33 @@ const VERIFIED_SLA_REPLY_REASONS = new Set([
 function isSlaResolvedByVerifiedReply(metadata: Record<string, unknown> | undefined): boolean {
   const reason = metadata?.slaResolvedReason;
   return typeof reason === 'string' && VERIFIED_SLA_REPLY_REASONS.has(reason);
+}
+
+/**
+ * Fire the optional {@link CascadeDeps.onRequestCompleted} hook, best-effort.
+ * A hook error never breaks the cascade — the Request status change has
+ * already been persisted by the time this runs.
+ *
+ * @param deps - Cascade deps (hook may be absent).
+ * @param request - The completed Request (original pre-cascade object).
+ * @param childItems - The Request's child WorkItems.
+ * @param logger - Component logger for the non-fatal warning.
+ */
+async function fireRequestCompleted(
+  deps: CascadeDeps,
+  request: Request,
+  childItems: WorkItem[],
+  logger: ComponentLogger,
+): Promise<void> {
+  if (!deps.onRequestCompleted) return;
+  try {
+    await deps.onRequestCompleted(request, childItems);
+  } catch (err) {
+    logger.debug('onRequestCompleted hook failed (non-fatal)', {
+      requestId: request.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**
@@ -223,6 +267,9 @@ export async function cascadeRequestStatus(
         status: newStatus,
         previousStatus: request.status,
       });
+      if (newStatus === 'done') {
+        await fireRequestCompleted(deps, request, childItems, logger);
+      }
       return;
     }
 
@@ -247,6 +294,7 @@ export async function cascadeRequestStatus(
         status: newStatus,
         previousStatus: request.status,
       });
+      await fireRequestCompleted(deps, request, childItems, logger);
       return;
     }
 

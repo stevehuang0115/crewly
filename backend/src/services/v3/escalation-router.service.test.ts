@@ -400,4 +400,34 @@ describe('EscalationRouterService', () => {
       expect(mockEnqueue).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('requestFinalDeliverableReview (final deliverable judgment — P2b)', () => {
+    it('enqueues an ORC message asking for the final holistic verdict', async () => {
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      await service.requestFinalDeliverableReview(
+        { id: 'req-7', objective: 'Build a small CLI todo app' },
+        [
+          { title: 'backend API', status: 'verified' },
+          { title: 'CLI parser', status: 'verified' },
+        ],
+      );
+
+      expect(mockEnqueue).toHaveBeenCalledTimes(1);
+      const payload = mockEnqueue.mock.calls[0][0];
+      expect(payload.content).toContain('[ESCALATION]');
+      expect(payload.content).toContain('req-7');
+      expect(payload.content).toContain('Build a small CLI todo app');
+      expect(payload.content).toContain('2/2 work items verified');
+      expect(payload.content.toLowerCase()).toContain('usable');
+      expect(payload.sourceMetadata.subtype).toBe('final_deliverable_review');
+    });
+
+    it('does not throw when MessageQueue.enqueue itself throws', async () => {
+      mockEnqueue.mockImplementationOnce(() => { throw new Error('queue offline'); });
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      await expect(
+        service.requestFinalDeliverableReview({ id: 'req-8', title: 'X' }, [{ title: 't', status: 'verified' }]),
+      ).resolves.not.toThrow();
+    });
+  });
 });
