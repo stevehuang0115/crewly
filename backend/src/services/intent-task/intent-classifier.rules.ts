@@ -446,4 +446,12 @@ export const CATEGORY_KEYWORDS = {
     en: /\b(what|where|when|who|which|how|show|list|get|status|check|find|search|look\s*up|count|describe|explain)\b/i,
     zh: /(什么|哪里|哪|何时|谁|哪个|怎么|怎样|展示|列出|看|看看|查看|查询|状态|检查|查找|搜索|查阅|多少|描述|解释|说明)/,
   },
+  // Growth / money / marketing — non-software business goals (make money, grow
+  // an audience, run marketing). Keywords are deliberately SPECIFIC phrases to
+  // avoid colliding with software intents ("build" stays code_change; only the
+  // domain phrases below route here).
+  growth: {
+    en: /\b(monetize|monetise|make\s+money|earn\s+money|revenue|profit|sales\s+funnel|lead\s+gen(eration)?|conversion\s+rate|go[- ]to[- ]market|gtm|social\s+media|marketing\s+campaign|ad\s+campaign|grow\s+(the\s+)?(audience|following|account|subscribers|userbase)|gain\s+(followers|subscribers)|acquire\s+(customers|users)|seo\s+strategy|content\s+marketing|influencer)\b/i,
+    zh: /(变现|挣钱|赚钱|盈利|营收|获客|拉新|涨粉|增粉|涨粉丝|加粉|社媒|社交媒体|营销|推广|引流|带货|卖货|销售额|转化率|增长黑客|私域|公域|投放|起号|做号|运营.{0,2}(账号|社媒|抖音|小红书|公众号))/,
+  },
 } as const;

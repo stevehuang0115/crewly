@@ -728,6 +728,17 @@ export function classifyIntentCategory(intent: string): IntentCategory {
     return 'deployment';
   }
 
+  // Growth / money / marketing — non-software business goals. Checked before
+  // the software categories so "grow our audience" / "make money" / "marketing
+  // campaign" route to `growth` instead of falling through to code_change or
+  // `other`. Keywords are specific phrases, so software intents are unaffected.
+  if (
+    CATEGORY_KEYWORDS.growth.en.test(lower) ||
+    CATEGORY_KEYWORDS.growth.zh.test(intent)
+  ) {
+    return 'growth';
+  }
+
   // Review: code review, PR, audit
   if (
     CATEGORY_KEYWORDS.review.en.test(lower) ||

@@ -1,0 +1,23 @@
+{
+  "id": "web-search",
+  "name": "web-search",
+  "displayName": "Web Search",
+  "description": "Search the live web for a query and return ranked results (title, URL, snippet) as JSON. Works with no API key (DuckDuckGo fallback) and uses Brave Search API or SerpAPI when BRAVE_API_KEY / SERPAPI_KEY is set. For research, competitor/market analysis, trend lookups, fact-checking, and grounding non-software goals in real-world information.",
+  "category": "research",
+  "assignableRoles": ["*"],
+  "version": "1.0.0",
+  "author": "Crewly Team",
+  "tags": [
+    "search",
+    "web",
+    "research",
+    "competitor-analysis",
+    "market-research",
+    "sources",
+    "brave",
+    "serpapi",
+    "duckduckgo"
+  ],
+  "requires": [],
+  "optionalSecrets": ["BRAVE_API_KEY", "SERPAPI_KEY"]
+}

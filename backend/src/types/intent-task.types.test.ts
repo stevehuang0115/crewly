@@ -220,6 +220,21 @@ describe('classifyIntentCategory', () => {
     expect(classifyIntentCategory('Audit the security config')).toBe('review');
   });
 
+  it('should classify growth / money / marketing intents (P4)', () => {
+    expect(classifyIntentCategory('Grow our social media following')).toBe('growth');
+    expect(classifyIntentCategory('Help the team make money')).toBe('growth');
+    expect(classifyIntentCategory('Run a marketing campaign for the launch')).toBe('growth');
+    expect(classifyIntentCategory('Improve our conversion rate')).toBe('growth');
+    expect(classifyIntentCategory('帮我运营小红书账号涨粉')).toBe('growth');
+    expect(classifyIntentCategory('想办法变现挣钱')).toBe('growth');
+  });
+
+  it('does not misroute software intents to growth', () => {
+    // "build/create" stays code_change; growth keywords are specific phrases.
+    expect(classifyIntentCategory('Build the user dashboard')).toBe('code_change');
+    expect(classifyIntentCategory('Create a marketing-page component')).toBe('code_change');
+  });
+
   it('should classify research intents', () => {
     expect(classifyIntentCategory('Research the best auth library')).toBe('research');
     expect(classifyIntentCategory('Investigate the best framework options')).toBe('research');
