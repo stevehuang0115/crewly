@@ -69,6 +69,12 @@ export interface MaterializeOptions {
   /** Owner principal to attribute the created team to (multi-tenant). */
   readonly ownerUserId?: string;
   /**
+   * Parent team id, set when this team is a CHILD in a nested hierarchy (P3).
+   * Links the created team to its parent so the parent TL coordinates it.
+   * Undefined for a standalone or top-level team.
+   */
+  readonly parentTeamId?: string;
+  /**
    * Team provisioner. Defaults to {@link defaultProvisionTeam}, which creates
    * a live, persisted, template-backed team. Returns `null` when the
    * recommendation's `templateId` is not a registered template, signalling the
@@ -78,6 +84,7 @@ export interface MaterializeOptions {
     recommendation: TeamRecommendation,
     teamName: string,
     ownerUserId: string | undefined,
+    parentTeamId: string | undefined,
   ) => Promise<ProvisionedTeam | null>;
 }
 
@@ -161,7 +168,7 @@ export async function materializeTeam(
 
   let live: ProvisionedTeam | null = null;
   try {
-    live = await provisionTeam(recommendation, teamName, opts.ownerUserId);
+    live = await provisionTeam(recommendation, teamName, opts.ownerUserId, opts.parentTeamId);
   } catch (err) {
     // Tier-gated template, missing registry, or storage error — don't dead-end
     // the orc; drop to the minimal fallback with a warning.
@@ -236,6 +243,7 @@ async function defaultProvisionTeam(
   recommendation: TeamRecommendation,
   teamName: string,
   ownerUserId: string | undefined,
+  parentTeamId: string | undefined,
 ): Promise<ProvisionedTeam | null> {
   const { TemplateService } = await import('../../template/template.service.js');
   const { StorageService } = await import('../../core/storage.service.js');
@@ -250,6 +258,11 @@ async function defaultProvisionTeam(
   // single-user mode leaves the team unscoped (legacy behaviour).
   if (ownerUserId !== undefined) {
     result.team.ownerUserId = ownerUserId;
+  }
+
+  // Link to the parent team when this is a child in a nested hierarchy (P3).
+  if (parentTeamId !== undefined) {
+    result.team.parentTeamId = parentTeamId;
   }
 
   await StorageService.getInstance().saveTeam(result.team);
