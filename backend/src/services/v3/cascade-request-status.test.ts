@@ -107,14 +107,14 @@ describe('cascadeRequestStatus', () => {
     expect(updates).toEqual([]);
   });
 
-  it('cascades to done when every child landed on a success terminal', async () => {
+  it('cascades to done when every child landed on a verified terminal', async () => {
     const r = makeRequest({ status: 'running' });
     const { deps, updates, notified } = makeDeps({
       request: r,
       pool: [
         makeWI({ id: 'a', status: 'done' }),
         makeWI({ id: 'b', status: 'verified' }),
-        makeWI({ id: 'c', status: 'done_by_worker' }),
+        makeWI({ id: 'c', status: 'verified' }),
       ],
     });
     await cascadeRequestStatus(r.id, deps);
@@ -122,6 +122,24 @@ describe('cascadeRequestStatus', () => {
     expect(notified).toEqual([
       { event: 'v3:request_updated', payload: { requestId: 'req-1', status: 'done', previousStatus: 'running' } },
     ]);
+  });
+
+  it('P2 acceptance gate: a done_by_worker (unverified) child keeps the Request running, not done', async () => {
+    // The deliverable must NOT be marked done while a child still awaits a TL
+    // verdict — that would be the Request-level silent-pass. It stays running;
+    // P1's verify-enforcement escalates the unverified child for a verdict,
+    // after which a later cascade completes the Request.
+    const r = makeRequest({ status: 'running' });
+    const { deps, updates } = makeDeps({
+      request: r,
+      pool: [
+        makeWI({ id: 'a', status: 'verified' }),
+        makeWI({ id: 'b', status: 'done_by_worker' }),
+      ],
+    });
+    await cascadeRequestStatus(r.id, deps);
+    // running → running is a no-op write OR a running update; either way NOT done.
+    expect(updates.some(([, u]) => u.status === 'done')).toBe(false);
   });
 
   it('cascades to cancelled when every child is cancelled or failed', async () => {

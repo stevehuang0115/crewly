@@ -350,4 +350,54 @@ describe('EscalationRouterService', () => {
       expect(content.length).toBeLessThan(4_096);
     });
   });
+
+  describe('escalateUnverifiedWorkItem (verification enforcement — P1)', () => {
+    function makeUnverifiedWI(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'wi-unverified-1',
+        title: 'Build the login API',
+        type: 'delegate',
+        target: 'agent-dev',
+        retryCount: 0,
+        maxRetries: 3,
+        requestId: 'req-9',
+        ...overrides,
+      } as Parameters<EscalationRouterService['escalateUnverifiedWorkItem']>[0];
+    }
+
+    it('persists a tl_verification escalation targeted at the orchestrator', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as { atomicWriteJson: jest.Mock };
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      const id = await service.escalateUnverifiedWorkItem(makeUnverifiedWI(), 3 * 3_600_000);
+
+      expect(id).not.toBeNull();
+      expect(fileIo.atomicWriteJson).toHaveBeenCalledTimes(1);
+      const [, written] = fileIo.atomicWriteJson.mock.calls[0];
+      expect(written.source).toBe('tl_verification');
+      expect(written.target).toBe('orchestrator');
+      expect(written.workItemId).toBe('wi-unverified-1');
+      expect(written.summary).toContain('awaiting TL verification');
+    });
+
+    it('enqueues an ORC message demanding an explicit verdict (accept/reject)', async () => {
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      await service.escalateUnverifiedWorkItem(makeUnverifiedWI(), 2 * 3_600_000);
+
+      expect(mockEnqueue).toHaveBeenCalledTimes(1);
+      const payload = mockEnqueue.mock.calls[0][0];
+      expect(payload.content).toContain('[ESCALATION]');
+      expect(payload.content).toContain('wi-unverified-1');
+      expect(payload.content).toContain('not verified');
+      expect(payload.content.toLowerCase()).toContain('reject');
+      expect(payload.sourceMetadata.subtype).toBe('tl_verification');
+    });
+
+    it('is best-effort: still enqueues the ORC message when persistence throws', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as { atomicWriteJson: jest.Mock };
+      fileIo.atomicWriteJson.mockRejectedValueOnce(new Error('disk full'));
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      await service.escalateUnverifiedWorkItem(makeUnverifiedWI(), 3_600_000);
+      expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    });
+  });
 });
