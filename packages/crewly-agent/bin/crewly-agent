@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve the package directory even when installed as a dependency and
+# invoked via a hoisted symlink (e.g. node_modules/.bin/crewly-agent ->
+# ../crewly-agent/bin/crewly-agent).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "${SOURCE}" ]; do
+  DIR="$(cd -P -- "$(dirname -- "${SOURCE}")" && pwd)"
+  SOURCE="$(readlink -- "${SOURCE}")"
+  [[ "${SOURCE}" != /* ]] && SOURCE="${DIR}/${SOURCE}"
+done
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "${SOURCE}")" && pwd)"
+PACKAGE_DIR="$(cd -P -- "${SCRIPT_DIR}/.." && pwd)"
+
+# Find tsx — first try this package's own node_modules (standalone install),
+# then fall back to Node's resolver (npm-hoisted into a parent project).
+TSX_PATH="${PACKAGE_DIR}/node_modules/tsx/dist/cli.mjs"
+if [ ! -f "${TSX_PATH}" ]; then
+  TSX_PATH="$(node -e "try { console.log(require.resolve('tsx/dist/cli.mjs')); } catch { console.log(require.resolve('tsx/cli')); }" 2>/dev/null || true)"
+fi
+
+if [ -z "${TSX_PATH}" ] || [ ! -f "${TSX_PATH}" ]; then
+  echo "crewly-agent: cannot locate tsx — install via 'npm install crewly-agent' so tsx is present in node_modules." >&2
+  exit 1
+fi
+
+exec node "${TSX_PATH}" "${PACKAGE_DIR}/src/cli.ts" "$@"

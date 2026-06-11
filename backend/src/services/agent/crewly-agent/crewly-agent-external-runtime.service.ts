@@ -333,7 +333,7 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
           trimmed === CREWLY_AGENT_MANAGED_COMMAND ||
           (LEGACY_CREWLY_AGENT_SENTINELS as readonly string[]).includes(trimmed)
         ) {
-          return { command: CREWLY_AGENT_MANAGED_COMMAND, useShell: false };
+          return { command: await this.resolveManagedBinary(), useShell: false };
         }
 
         if (CrewlyAgentExternalRuntimeService.SAFE_SHELL_COMMAND_RE.test(trimmed)) {
@@ -350,7 +350,36 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     } catch {
       // Fall through to default command.
     }
-    return { command: CREWLY_AGENT_MANAGED_COMMAND, useShell: false };
+    return { command: await this.resolveManagedBinary(), useShell: false };
+  }
+
+  /**
+   * Resolve the managed `crewly-agent` runtime to an executable path.
+   *
+   * Prefers the binary VENDORED inside crewly itself at
+   * `packages/crewly-agent/bin/crewly-agent` (relative to the install dir,
+   * {@link this.projectRoot}). This is what makes the in-process runtime work
+   * out of the box now that crewly-agent lives in the OSS monorepo — it
+   * resolves identically whether the engine was started via an npm script
+   * (which puts `node_modules/.bin` on PATH) or directly via `node dist/...`
+   * (which does not), and whether running from a checkout or an installed
+   * npm package (the tarball ships `packages/crewly-agent/`).
+   *
+   * Falls back to the bare {@link CREWLY_AGENT_MANAGED_COMMAND} name (PATH
+   * lookup) for legacy global installs where the vendored copy is absent.
+   *
+   * @returns Absolute path to the vendored binary, or the bare command name
+   */
+  private async resolveManagedBinary(): Promise<string> {
+    const vendored = path.join(
+      this.projectRoot,
+      'packages',
+      'crewly-agent',
+      'bin',
+      'crewly-agent',
+    );
+    const found = await this.lookupOnPath(vendored, undefined);
+    return found ?? CREWLY_AGENT_MANAGED_COMMAND;
   }
 
   /**
