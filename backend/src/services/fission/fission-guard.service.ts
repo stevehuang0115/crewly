@@ -55,6 +55,38 @@ export interface BudgetChecker {
   isWithinBudget(agentId: string): Promise<boolean>;
 }
 
+/**
+ * Wrap a budget service as a fail-OPEN {@link BudgetChecker} for the fission
+ * budget gate (P5). A real over-budget verdict blocks new sub-tasks — the
+ * safety ceiling that stops an unattended multi-day run from burning unbounded
+ * money. But a TRANSIENT budget-service error must NOT brick the whole system
+ * (that would halt all work on a disk hiccup), so on error we return "within
+ * budget". The hard stop fires only when the budget service actually reports
+ * over-budget.
+ *
+ * @param budgetService - Anything exposing `isWithinBudget(agentId)`.
+ * @returns A fail-open BudgetChecker for {@link FissionGuardService.init}.
+ *
+ * @example
+ * ```ts
+ * const checker = createFailOpenBudgetChecker(BudgetService.getInstance());
+ * FissionGuardService.init(dataProvider, checker);
+ * ```
+ */
+export function createFailOpenBudgetChecker(
+  budgetService: { isWithinBudget(agentId: string): Promise<boolean> },
+): BudgetChecker {
+  return {
+    async isWithinBudget(agentId: string): Promise<boolean> {
+      try {
+        return await budgetService.isWithinBudget(agentId);
+      } catch {
+        return true; // fail-open: a budget-service error must not block all work
+      }
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // FissionGuardService
 // ---------------------------------------------------------------------------
