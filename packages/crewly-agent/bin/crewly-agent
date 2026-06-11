@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve the package directory even when installed as a dependency and
+# invoked via a hoisted symlink (e.g. node_modules/.bin/crewly-agent ->
+# ../crewly-agent/bin/crewly-agent).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "${SOURCE}" ]; do
+  DIR="$(cd -P -- "$(dirname -- "${SOURCE}")" && pwd)"
+  SOURCE="$(readlink -- "${SOURCE}")"
+  [[ "${SOURCE}" != /* ]] && SOURCE="${DIR}/${SOURCE}"
+done
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "${SOURCE}")" && pwd)"
+PACKAGE_DIR="$(cd -P -- "${SCRIPT_DIR}/.." && pwd)"
+
+# Find tsx — first try this package's own node_modules (standalone install),
+# then resolve it RELATIVE TO THIS PACKAGE (not the cwd). The latter matters
+# because the engine spawns this binary with cwd set to the agent's project
+# directory (outside the crewly install), and as a hoisted workspace package
+# our tsx lives in the parent install's node_modules. Passing `paths:
+# [PACKAGE_DIR]` walks up from packages/crewly-agent → <install>/node_modules,
+# independent of cwd. (A bare require.resolve would resolve from cwd and miss it.)
+TSX_PATH="${PACKAGE_DIR}/node_modules/tsx/dist/cli.mjs"
+if [ ! -f "${TSX_PATH}" ]; then
+  TSX_PATH="$(node -e "const o={paths:['${PACKAGE_DIR}']}; try { console.log(require.resolve('tsx/dist/cli.mjs', o)); } catch (e) { try { console.log(require.resolve('tsx/cli', o)); } catch (e2) {} }" 2>/dev/null || true)"
+fi
+
+if [ -z "${TSX_PATH}" ] || [ ! -f "${TSX_PATH}" ]; then
+  echo "crewly-agent: cannot locate tsx — install via 'npm install crewly-agent' so tsx is present in node_modules." >&2
+  exit 1
+fi
+
+exec node "${TSX_PATH}" "${PACKAGE_DIR}/src/cli.ts" "$@"

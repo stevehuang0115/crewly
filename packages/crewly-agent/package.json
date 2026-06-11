@@ -1,0 +1,39 @@
+{
+  "name": "crewly-agent",
+  "version": "0.1.1",
+  "type": "module",
+  "private": true,
+  "description": "Crewly Agent runtime — the canonical agent reasoning loop crewly spawns as a subprocess. Talks newline-delimited JSON over stdin/stdout. Vendored into the crewly monorepo (formerly the standalone crewly-agent repo).",
+  "bin": {
+    "crewly-agent": "./bin/crewly-agent"
+  },
+  "files": [
+    "bin/",
+    "src/runtime/",
+    "src/cli.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "./bin/crewly-agent",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.58",
+    "@ai-sdk/google": "^3.0.43",
+    "@ai-sdk/openai": "^3.0.41",
+    "ai": "^6.0.116",
+    "better-sqlite3": "^12.10.0",
+    "ollama-ai-provider": "^1.2.0",
+    "tsx": "^4.21.0",
+    "zod": "^3.25.76"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}

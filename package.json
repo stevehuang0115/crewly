@@ -26,7 +26,11 @@
     "frontend/dist/assets/*.woff2",
     "frontend/dist/logo/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "packages/crewly-agent/bin/",
+    "packages/crewly-agent/src/",
+    "packages/crewly-agent/package.json",
+    "packages/crewly-agent/README.md"
   ],
   "scripts": {
     "build": "npm run build:backend && npm run build:frontend && npm run build:cli",
@@ -109,7 +113,9 @@
     "tar": "^7.5.9",
     "uuid": "^9.0.0",
     "ws": "^8.14.2",
-    "yaml": "^2.3.2"
+    "yaml": "^2.3.2",
+    "tsx": "^4.21.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
