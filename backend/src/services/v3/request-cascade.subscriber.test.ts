@@ -192,14 +192,38 @@ describe('RequestCascadeSubscriber', () => {
     expect(services.updates).toEqual([['req-1', { status: 'cancelled' }]]);
   });
 
-  it('cascades on task:done_by_worker (closes Request when all children done)', async () => {
-    // Live wiring of the success path — proves the subscriber doesn't
-    // ONLY handle cancellation. After the last child reports done,
-    // the Request closes automatically.
+  it('cascades on task:done_by_worker but does NOT close the Request (P2 acceptance gate)', async () => {
+    // Live wiring of the success path — proves the subscriber handles the
+    // done_by_worker event. But per the P2 acceptance gate, a done_by_worker
+    // (unverified) child must NOT mark the deliverable done; the Request stays
+    // running pending a TL/orc verdict (which P1 escalates for).
     const r = makeRequest({ status: 'running' });
     const wis = [
       makeWI({ id: 'a', status: 'done' }),
       makeWI({ id: 'b', status: 'done_by_worker' }),
+    ];
+    const services = makeFakeServices({ request: r, pool: wis });
+    const bus = makeFakeBus();
+    const sub = new RequestCascadeSubscriber({
+      eventBus: bus as never,
+      ...services,
+      logger: SILENT_LOGGER as never,
+    });
+    sub.start();
+
+    bus.publish(makeEvent({ type: 'task:done_by_worker', workItemId: 'b', requestId: 'req-1' }));
+    await sub.flushPending();
+
+    expect(services.updates.some(([, u]) => u.status === 'done')).toBe(false);
+  });
+
+  it('cascades to done on task:verified once all children are verified', async () => {
+    // The real completion path: when the last child is verified, the Request
+    // closes automatically.
+    const r = makeRequest({ status: 'running' });
+    const wis = [
+      makeWI({ id: 'a', status: 'verified' }),
+      makeWI({ id: 'b', status: 'verified' }),
     ];
     const services = makeFakeServices({ request: r, pool: wis });
     const bus = makeFakeBus();

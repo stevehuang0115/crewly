@@ -113,7 +113,9 @@ function isSlaResolvedByVerifiedReply(metadata: Record<string, unknown> | undefi
  * Cascade rules — match the original V3DataService implementation so
  * behaviour is unchanged for paths that already cascade correctly:
  *
- *   - All children done/verified/done_by_worker → done
+ *   - All children done/verified                 → done
+ *     (P2: `done_by_worker` does NOT count — see the acceptance-gate note
+ *      at the rule below; unverified children keep the Request `running`)
  *   - Any child running                          → running
  *   - All children queued/scheduled              → no change
  *     (work delegated, not started — Request keeps current status)
@@ -181,7 +183,15 @@ export async function cascadeRequestStatus(
 
     let newStatus: RequestStatus;
     const allQueued = statuses.every((s) => s === 'queued' || s === 'scheduled');
-    if (statuses.every((s) => s === 'done' || s === 'verified' || s === 'done_by_worker')) {
+    // P2 acceptance gate: a Request is only `done` when its children are
+    // actually VERIFIED (or `done`), NOT merely `done_by_worker`. A
+    // `done_by_worker` child is awaiting a TL/orc verdict — counting it as
+    // complete would mark the deliverable done before it was ever accepted
+    // (the Request-level silent-pass). Such children keep the Request
+    // `running` (pending verification); P1's verify-enforcement escalates them
+    // to the orc for a verdict (→ verified, or rejected → rework), after which
+    // this cascade completes the Request honestly.
+    if (statuses.every((s) => s === 'done' || s === 'verified')) {
       newStatus = 'done';
     } else if (statuses.some((s) => s === 'running')) {
       newStatus = 'running';
