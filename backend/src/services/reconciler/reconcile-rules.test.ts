@@ -11,6 +11,9 @@ import {
   reconcileRequestStatus,
   detectOrphanWorkItems,
   detectTTLExpiredWorkItems,
+  detectUnverifiedWorkItems,
+  DEFAULT_VERIFY_ESCALATE_MS,
+  VERIFY_ESCALATED_AT_KEY,
   detectRecoverableWorkItems,
   cascadeCancelChildren,
   detectStaleQueuedWorkItems,
@@ -1306,5 +1309,67 @@ describe('detectUnclaimedTasks', () => {
       const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
       expect(wakeActions).toHaveLength(0);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectUnverifiedWorkItems — verification enforcement (P1)
+// ---------------------------------------------------------------------------
+
+describe('detectUnverifiedWorkItems', () => {
+  const PAST = (ms: number) => new Date(Date.now() - ms).toISOString();
+  const NOW = Date.now();
+
+  it('flags a done_by_worker item awaiting verification past the deadline', () => {
+    const stale = makeWorkItem({
+      status: 'done_by_worker',
+      completedAt: PAST(DEFAULT_VERIFY_ESCALATE_MS + 60_000),
+    });
+    const { items, unverifiedIds } = detectUnverifiedWorkItems([stale], NOW);
+    expect(unverifiedIds).toContain(stale.id);
+    expect(items).toHaveLength(1);
+  });
+
+  it('does NOT flag a freshly-done item still within the deadline', () => {
+    const fresh = makeWorkItem({
+      status: 'done_by_worker',
+      completedAt: PAST(60_000), // 1 min ago
+    });
+    const { unverifiedIds } = detectUnverifiedWorkItems([fresh], NOW);
+    expect(unverifiedIds).toHaveLength(0);
+  });
+
+  it('ignores items that are not done_by_worker', () => {
+    const running = makeWorkItem({ status: 'running', startedAt: PAST(DEFAULT_VERIFY_ESCALATE_MS * 5) });
+    const verified = makeWorkItem({ status: 'verified', completedAt: PAST(DEFAULT_VERIFY_ESCALATE_MS * 5) });
+    const { unverifiedIds } = detectUnverifiedWorkItems([running, verified], NOW);
+    expect(unverifiedIds).toHaveLength(0);
+  });
+
+  it('fires once per item — skips items already escalated', () => {
+    const alreadyEscalated = makeWorkItem({
+      status: 'done_by_worker',
+      completedAt: PAST(DEFAULT_VERIFY_ESCALATE_MS * 10),
+      metadata: { [VERIFY_ESCALATED_AT_KEY]: new Date().toISOString() },
+    });
+    const { unverifiedIds } = detectUnverifiedWorkItems([alreadyEscalated], NOW);
+    expect(unverifiedIds).toHaveLength(0);
+  });
+
+  it('honours a custom escalation deadline', () => {
+    const wi = makeWorkItem({ status: 'done_by_worker', completedAt: PAST(90_000) }); // 90s ago
+    // 60s deadline → flagged; 120s deadline → not flagged.
+    expect(detectUnverifiedWorkItems([wi], NOW, 60_000).unverifiedIds).toContain(wi.id);
+    expect(detectUnverifiedWorkItems([wi], NOW, 120_000).unverifiedIds).toHaveLength(0);
+  });
+
+  it('falls back to startedAt / createdAt when completedAt is absent', () => {
+    const wi = makeWorkItem({
+      status: 'done_by_worker',
+      completedAt: undefined,
+      startedAt: PAST(DEFAULT_VERIFY_ESCALATE_MS + 60_000),
+    });
+    const { unverifiedIds } = detectUnverifiedWorkItems([wi], NOW);
+    expect(unverifiedIds).toContain(wi.id);
   });
 });

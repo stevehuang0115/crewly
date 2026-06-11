@@ -37,6 +37,7 @@ import {
   detectRetryableFailedWorkItems,
   detectDependencyResolvedWorkItems,
   detectUnclaimedTasks,
+  detectUnverifiedWorkItems,
   runPruningPass,
 } from './reconcile-rules.js';
 import type { AgentHealth } from './reconcile-rules.js';
@@ -112,6 +113,13 @@ export class ReconcilerService {
   private fastLoopTimer: ReturnType<typeof setInterval> | null = null;
   private fullLoopTimer: ReturnType<typeof setInterval> | null = null;
   private history: ReconcileResult[] = [];
+  /**
+   * In-memory dedup of WorkItems already escalated for overdue TL verification
+   * (P1). Fires the verify-escalation once per item within the process; pruned
+   * each pass of ids that have left `done_by_worker` so a future cycle can
+   * re-escalate. Mirrors the existing stuck-WI dedup pattern.
+   */
+  private readonly escalatedVerifyIds = new Set<string>();
   private isRunning = false;
   private totalPasses = 0;
   private totalCorrections = 0;
@@ -211,6 +219,12 @@ export class ReconcilerService {
       const unblocked = detectDependencyResolvedWorkItems(workItems, workItemMap);
       result.corrections.push(...unblocked.corrections);
       result.workItemsRequeued += unblocked.unblockedIds.length;
+
+      // 3d. Verification enforcement (P1): a worker reported done but the TL
+      // never verified within the deadline. Escalate to the orchestrator for an
+      // explicit verdict so unverified work is never silently auto-accepted by
+      // the 24h TTL fallback (pickTTLExpiryTarget('done_by_worker') → verified).
+      await this.enforceVerification(workItems);
 
       // 4. Pruning pass (F4): TTL expiry + orphan cascade + deep cascade + stale queue detection
       const pruning = runPruningPass(workItems);
@@ -550,6 +564,76 @@ export class ReconcilerService {
         const message = err instanceof Error ? err.message : String(err);
         result.errors.push(`Failed to apply correction for ${correction.entityType}:${correction.entityId}: ${message}`);
       }
+    }
+  }
+
+  /**
+   * Verification enforcement (P1): escalate `done_by_worker` WorkItems the
+   * Team Leader never verified within the deadline to the orchestrator for an
+   * explicit verdict — so unverified work is never silently auto-accepted by
+   * the 24h TTL fallback. Fires once per item via {@link escalatedVerifyIds}
+   * (pruned of items that have left `done_by_worker`). Best-effort; failures
+   * are logged, never thrown.
+   *
+   * @param workItems - All active WorkItems for this pass.
+   */
+  private async enforceVerification(workItems: WorkItem[]): Promise<void> {
+    const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
+    try {
+      const { items } = detectUnverifiedWorkItems(workItems);
+
+      // Prune the dedup set: allow re-escalation for ids that have since left
+      // done_by_worker (verdict rendered, or cycled back through rework).
+      const stillAwaiting = new Set(
+        workItems.filter((w) => w.status === 'done_by_worker').map((w) => w.id),
+      );
+      for (const id of this.escalatedVerifyIds) {
+        if (!stillAwaiting.has(id)) this.escalatedVerifyIds.delete(id);
+      }
+
+      const fresh = items.filter((wi) => !this.escalatedVerifyIds.has(wi.id));
+      if (fresh.length === 0) return;
+
+      const { EscalationRouterService } = await import('../v3/escalation-router.service.js');
+      const router = EscalationRouterService.getInstance();
+      const now = Date.now();
+
+      for (const wi of fresh) {
+        const awaitingSince = new Date(
+          wi.completedAt ?? wi.startedAt ?? wi.createdAt,
+        ).getTime();
+        const awaitingMs = Number.isFinite(awaitingSince) ? now - awaitingSince : 0;
+        try {
+          await router.escalateUnverifiedWorkItem(
+            {
+              id: wi.id,
+              title: wi.title,
+              type: wi.type,
+              target: wi.target ?? null,
+              retryCount: wi.retryCount,
+              maxRetries: wi.maxRetries,
+              requestId: wi.requestId ?? null,
+              missionId: wi.missionId ?? null,
+              parentWorkItemId: wi.parentWorkItemId ?? null,
+            },
+            awaitingMs,
+          );
+          this.escalatedVerifyIds.add(wi.id);
+          log.info('Escalated unverified WorkItem to orchestrator for a verdict', {
+            workItemId: wi.id,
+            awaitingMs,
+          });
+        } catch (err) {
+          log.warn('Verify-escalation failed (non-fatal)', {
+            workItemId: wi.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } catch (err) {
+      log.warn('enforceVerification pass failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
