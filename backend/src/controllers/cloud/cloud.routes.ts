@@ -33,6 +33,7 @@ import {
   getDeviceId,
   getDevicesFromSync,
   verifyLicense,
+  mobilePair,
 } from './cloud.controller.js';
 import {
   cloudGoogleStart,
@@ -59,6 +60,8 @@ export function createCloudRouter(): Router {
   router.post('/send', sendCloudMessage);
   router.get('/templates', getCloudTemplates);
   router.get('/license/verify', verifyLicense);
+  // Mobile-app LAN pairing — adopt this OSS's cloud session (see mobilePair).
+  router.post('/mobile-pair', mobilePair);
 
   // Google OAuth login flow — browser-redirect (GET)
   router.get('/google/start', cloudGoogleStart);

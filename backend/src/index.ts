@@ -1625,6 +1625,23 @@ void (async () => {
 						});
 						chatRelayAdapter.start();
 						this.logger.info('ChatV2RelayAdapter started — Cloud Portal can now drive chat-v2 via relay');
+
+						// Mobile app: generic allowlisted REST passthrough over the same
+						// relay (api_request → local HTTP → api_response). Non-fatal.
+						try {
+							const { MobileApiRelayService } = await import(
+								'./services/cloud/mobile-api-relay.service.js'
+							);
+							const mobileRelay = new MobileApiRelayService({
+								cloudSync: sync,
+								webPort: this.config.webPort,
+							});
+							mobileRelay.start();
+						} catch (mobileErr) {
+							this.logger.warn('MobileApiRelayService wiring skipped', {
+								error: mobileErr instanceof Error ? mobileErr.message : String(mobileErr),
+							});
+						}
 					}
 				} catch (err) {
 					// Adapter wiring failure is non-fatal — local OSS UI still works.

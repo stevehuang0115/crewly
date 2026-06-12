@@ -632,3 +632,63 @@ export async function getDevicesFromSync(req: Request, res: Response, _next: Nex
     });
   }
 }
+
+/**
+ * POST /api/cloud/mobile-pair
+ *
+ * LAN pairing bootstrap for the Crewly mobile app. The phone, on the SAME
+ * network as this OSS, calls this once to ADOPT the OSS's cloud session:
+ * it receives the cloud URL + the access token + this device's identity, and
+ * can then register on the Cloud relay under the same account (pairing code =
+ * sha256("crewly-pair-" + userId) — same derivation as the web Portal) so the
+ * app keeps working OFF the LAN via the relay.
+ *
+ * Trust model: single-user OSS — anyone who can reach this HTTP port already
+ * has unauthenticated access to the full REST API (requireAuth dev-fallback),
+ * so returning the cloud token to a LAN caller does not widen the boundary.
+ * When the OSS is not logged into Cloud, returns `cloud: null` — the app then
+ * runs in LAN-only mode against this host.
+ *
+ * @param _req - Request (no body).
+ * @param res - JSON: `{ success, data: { deviceId, deviceName, cloud } }`
+ *   where `cloud` is `{ cloudUrl, accessToken, userId }` or null.
+ * @param next - Error handler.
+ */
+export async function mobilePair(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const identityService = DeviceIdentityService.getInstance();
+    const identity = await identityService.getOrCreateIdentity();
+
+    const client = CloudClientService.getInstance();
+    const token = client.getToken();
+    const cloudUrl = client.getCloudUrl();
+
+    let cloud: { cloudUrl: string; accessToken: string; userId: string | null } | null = null;
+    if (token && cloudUrl) {
+      // Best-effort sub extraction (the relay pairing code derives from it).
+      let userId: string | null = null;
+      try {
+        const mid = token.split('.')[1];
+        const claims = JSON.parse(Buffer.from(mid, 'base64url').toString('utf8')) as { sub?: string };
+        userId = typeof claims.sub === 'string' ? claims.sub : null;
+      } catch {
+        userId = null;
+      }
+      cloud = { cloudUrl, accessToken: token, userId };
+    }
+
+    res.json({
+      success: true,
+      data: {
+        deviceId: identity.deviceId,
+        deviceName: identity.deviceName,
+        cloud,
+      },
+    });
+  } catch (error) {
+    logger.error('mobile-pair failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    next(error);
+  }
+}
