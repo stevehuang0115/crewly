@@ -149,3 +149,19 @@ describe('MobileApiRelayService', () => {
     expect(sent).toHaveLength(0);
   });
 });
+
+describe('allowlist additions — projects/wiki/chat reads', () => {
+  it('allows the new mobile read surfaces', () => {
+    expect(isAllowedMobileApiCall('GET', '/projects')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/projects/abc/stats')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/wiki/vaults')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/wiki/page?vaultPath=/x&relativePath=a.md')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/chat/channels/c1/messages?limit=30&cursor=abc')).toBe(true);
+  });
+
+  it('still blocks writes to those surfaces', () => {
+    expect(isAllowedMobileApiCall('POST', '/projects')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/wiki/ingest')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/chat/channels/c1/messages')).toBe(false);
+  });
+});

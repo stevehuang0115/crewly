@@ -77,6 +77,9 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'GET', prefix: '/cloud/status' },
   { method: 'GET', prefix: '/cloud/devices' },
   { method: 'GET', prefix: '/team-health' },
+  { method: 'GET', prefix: '/projects' },   // list + /:id + /:id/status|stats
+  { method: 'GET', prefix: '/wiki/' },      // vaults/tree/page/search reads
+  { method: 'GET', prefix: '/chat/' },      // LAN-parity chat reads (messages incl. ?cursor=)
   // Mutations — human-in-the-loop actions only.
   { method: 'POST', prefix: '/escalations/' }, // …/:id/resolve
   { method: 'POST', prefix: '/approvals/' },   // …/:id/approve|reject
