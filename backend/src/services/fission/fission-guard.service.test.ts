@@ -8,7 +8,7 @@
  * @module services/fission/fission-guard.service.test
  */
 
-import { FissionGuardService, type FissionDataProvider, type BudgetChecker } from './fission-guard.service.js';
+import { FissionGuardService, type FissionDataProvider, type BudgetChecker, createFailOpenBudgetChecker } from './fission-guard.service.js';
 import { DEFAULT_FISSION_CONFIG } from './fission-guard.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 
@@ -381,6 +381,33 @@ describe('FissionGuardService', () => {
       const parent = createMockWorkItem();
       const result = await budgetGuard.canCreateSubTask(parent, 'agent-1');
       expect(result.allowed).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // createFailOpenBudgetChecker (P5 production wiring adapter)
+  // -----------------------------------------------------------------------
+  describe('createFailOpenBudgetChecker', () => {
+    it('delegates the within-budget verdict through', async () => {
+      const within = createFailOpenBudgetChecker({ isWithinBudget: async () => true });
+      const over = createFailOpenBudgetChecker({ isWithinBudget: async () => false });
+      expect(await within.isWithinBudget('a')).toBe(true);
+      expect(await over.isWithinBudget('a')).toBe(false);
+    });
+
+    it('fails OPEN (within budget) when the underlying service throws', async () => {
+      const checker = createFailOpenBudgetChecker({
+        isWithinBudget: async () => { throw new Error('budget service down'); },
+      });
+      expect(await checker.isWithinBudget('a')).toBe(true);
+    });
+
+    it('a real over-budget verdict still hard-stops sub-task creation end-to-end', async () => {
+      const checker = createFailOpenBudgetChecker({ isWithinBudget: async () => false });
+      const guard = new FissionGuardService(dataProvider, checker);
+      const result = await guard.canCreateSubTask(createMockWorkItem(), 'agent-1');
+      expect(result.allowed).toBe(false);
+      expect(result.violationType).toBe('budget_exceeded');
     });
   });
 

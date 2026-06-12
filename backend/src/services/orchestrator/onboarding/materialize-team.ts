@@ -1,22 +1,34 @@
 /**
- * Materialize-Team Logic (Onboarding v3, v0)
+ * Materialize-Team Logic (Onboarding v3)
  *
- * v0 stub: writes a minimal team `config.json` under `<teamsDir>/<id>/`
- * and flips a project `onboardingComplete` flag. Real provisioning
- * (template-engine wiring, agent-soul generation, system-prompt
- * personalisation) lands Wed–Fri — Sam's brief explicitly says a
- * "logs + flips flag" stub is acceptable for the Mon 5/4 EOD demo.
+ * Turns a confirmed {@link TeamRecommendation} into a REAL, persisted team
+ * that the rest of the system can run hands-off:
  *
- * The function is async + injection-friendly: callers pass a
- * `teamsDir`, a `projectFlagPath`, a UUID generator, and a clock — so
- * tests exercise the real write path with tmp dirs and deterministic
- * IDs.
+ *   1. Provision a live, template-backed team via the proven
+ *      `TemplateService.createTeamFromTemplate` + `StorageService.saveTeam`
+ *      path — the same path `onboarding-provision.service.ts` uses. The
+ *      created members carry real system prompts, skill sets, hierarchy
+ *      (`hierarchyLevel` / `parentMemberId`) and `canDelegate` flags from the
+ *      template, so the orchestrator can immediately delegate into the team
+ *      and the agents auto-activate on first claim.
+ *   2. Flip the project `onboardingComplete` flag.
  *
- * Wired downstream: when this module is upgraded post-Mon, swap the
- * inline write for a delegation to
- * `backend/src/services/onboarding/onboarding-provision.service.ts`
- * (it already provisions teams via TemplateService — see that file's
- * `provisionFromOnboarding`).
+ * Fallback: if the recommendation's `templateId` is not a registered template
+ * (or provisioning throws — e.g. a tier-gated template on OSS), we write the
+ * legacy minimal `config.json` stub so the orc never dead-ends. That stub has
+ * inactive members with empty prompts and is clearly marked `provisioned:false`
+ * so callers can warn the user that a generic team was created.
+ *
+ * History: this was a "Mon EOD v0 stub" that only wrote a dead config and
+ * flipped a flag (members `agentStatus:'inactive'`, empty `systemPrompt`),
+ * which meant every new-team goal required a human to actually stand up
+ * agents. P0 of the autonomy roadmap wires it to real provisioning.
+ *
+ * The function stays injection-friendly: callers pass `teamsDir`,
+ * `projectFlagPath`, a UUID generator, a clock, and (for tests) a
+ * `provisionTeam` implementation — so unit tests run against tmp dirs with
+ * deterministic IDs and a fake provisioner, never touching the real
+ * `~/.crewly` tree or the singletons.
  *
  * @module services/orchestrator/onboarding/materialize-team
  */
@@ -30,46 +42,78 @@ import type { TeamRecommendation } from './recommend-team.js';
 // Types
 // =============================================================================
 
+/** A live team produced by {@link MaterializeOptions.provisionTeam}. */
+export interface ProvisionedTeam {
+  /** Persisted team id (from StorageService). */
+  readonly teamId: string;
+  /** Number of members created from the template. */
+  readonly memberCount: number;
+}
+
 /**
  * Side-effects the materialize step needs. Injected so tests can run
- * against a tmp dir without touching the real `~/.crewly` tree.
+ * against a tmp dir + a fake provisioner without touching the real
+ * `~/.crewly` tree or the TemplateService/StorageService singletons.
  */
 export interface MaterializeOptions {
-  /** Root teams directory (e.g. `~/.crewly/teams`). */
+  /** Root teams directory for the FALLBACK stub write (e.g. `~/.crewly/teams`). */
   readonly teamsDir: string;
   /** File path for the project onboarding-complete flag. */
   readonly projectFlagPath: string;
-  /** UUID generator — defaults to {@link crypto.randomUUID} when omitted. */
+  /** UUID generator (fallback stub only) — defaults to {@link crypto.randomUUID}. */
   readonly uuid?: () => string;
   /** Clock — defaults to `() => new Date()` when omitted. */
   readonly now?: () => Date;
-  /**
-   * Optional logger sink. When provided, the function writes the
-   * Mon-EOD-stub log lines through it (so tests can assert).
-   */
+  /** Optional logger sink — receives the materialize log lines. */
   readonly log?: (message: string) => void;
+  /** Owner principal to attribute the created team to (multi-tenant). */
+  readonly ownerUserId?: string;
+  /**
+   * Parent team id, set when this team is a CHILD in a nested hierarchy (P3).
+   * Links the created team to its parent so the parent TL coordinates it.
+   * Undefined for a standalone or top-level team.
+   */
+  readonly parentTeamId?: string;
+  /**
+   * Team provisioner. Defaults to {@link defaultProvisionTeam}, which creates
+   * a live, persisted, template-backed team. Returns `null` when the
+   * recommendation's `templateId` is not a registered template, signalling the
+   * caller to fall back to a minimal stub. Tests inject a fake.
+   */
+  readonly provisionTeam?: (
+    recommendation: TeamRecommendation,
+    teamName: string,
+    ownerUserId: string | undefined,
+    parentTeamId: string | undefined,
+  ) => Promise<ProvisionedTeam | null>;
 }
 
 /**
  * Outcome of a successful materialize call.
  */
 export interface MaterializeResult {
-  /** Newly-generated team ID (UUID). */
+  /** Team ID — the persisted team id (live path) or the generated id (fallback). */
   readonly teamId: string;
-  /** Absolute path to the team's `config.json`. */
+  /**
+   * Absolute path to the team's fallback `config.json`. Empty string on the
+   * live path (the team is persisted via StorageService, not a flat file).
+   */
   readonly teamConfigPath: string;
-  /**
-   * Always `true` for a successful call — mirrors the brief's spec:
-   * "flips `onboardingComplete = true`".
-   */
+  /** Always `true` for a successful call — mirrors "flips `onboardingComplete = true`". */
   readonly onboardingComplete: true;
-  /** Echo of the recommendation that was materialized (for orc to summarise back to the user). */
+  /** Echo of the recommendation that was materialized (for the orc to summarise back). */
   readonly recommendation: TeamRecommendation;
-  /**
-   * Where the project flag was persisted. The flag is a tiny JSON file
-   * (`{ onboardingComplete: true, completedAt }`).
-   */
+  /** Where the project flag was persisted. */
   readonly projectFlagPath: string;
+  /** Number of members on the created team. */
+  readonly memberCount: number;
+  /**
+   * `true` when a live, template-backed team was provisioned (real agents,
+   * prompts, hierarchy). `false` when provisioning was unavailable and a
+   * minimal stub config was written instead — the orc should tell the user a
+   * generic team was created and offer to refine it.
+   */
+  readonly provisioned: boolean;
 }
 
 // =============================================================================
@@ -77,78 +121,92 @@ export interface MaterializeResult {
 // =============================================================================
 
 /**
- * Materialize a {@link TeamRecommendation} into a team config file +
- * project onboarding-complete flag.
- *
- * v0 (Mon 5/4 EOD) writes a minimal config:
- * ```json
- * {
- *   "id":   "<uuid>",
- *   "name": "<recommendation.templateId> Team",
- *   "createdAt": "...",
- *   "createdBy": "onboarding-v3",
- *   "templateId": "...",
- *   "members": [ ... ]
- * }
- * ```
- * No agent-soul personalisation, no project linkage, no goals.md
- * generation — those land Wed–Fri when this calls into
- * `onboarding-provision.service.ts`.
+ * Materialize a {@link TeamRecommendation} into a REAL team + project
+ * onboarding-complete flag.
  *
  * @param recommendation - Output of {@link recommendTeam} that the user confirmed.
- * @param opts - Side-effect injection (teamsDir, projectFlagPath, etc.).
- * @returns The team ID + config path + flag-path on success.
- * @throws If the team config write fails (filesystem error). Caller is
- *         expected to surface a brief, honest error to the user
- *         ("I couldn't create the team — error: …") rather than retry
- *         silently.
+ * @param opts - Side-effect injection (teamsDir, projectFlagPath, provisionTeam, …).
+ * @returns The team ID + member count + provisioned flag + flag-path on success.
+ * @throws If BOTH provisioning fails AND the fallback config write fails
+ *         (filesystem error). Caller surfaces a brief honest error rather than
+ *         retrying silently.
  *
  * @example
  * ```ts
  * import { getCrewlyHomePath } from '../../core/crewly-home.utils.js';
  *
- * const crewlyHome = getCrewlyHomePath(); // honours CREWLY_HOME env override
+ * const crewlyHome = getCrewlyHomePath();
  * const result = await materializeTeam(rec, {
  *   teamsDir: path.join(crewlyHome, 'teams'),
  *   projectFlagPath: path.join(crewlyHome, 'onboarding-complete.json'),
  * });
- * console.log(result.teamId, '→', result.teamConfigPath);
+ * // result.provisioned === true → live team `result.teamId` with `result.memberCount` agents
  * ```
  *
- * Do NOT inline `path.join(os.homedir(), '.crewly/teams')` — that
- * ignores CREWLY_HOME and breaks ESTestNode + dry-run-kit isolation
- * (see crewly-home.utils.ts for context).
+ * Do NOT inline `path.join(os.homedir(), '.crewly/teams')` — that ignores
+ * CREWLY_HOME and breaks ESTestNode + dry-run-kit isolation.
  */
 export async function materializeTeam(
   recommendation: TeamRecommendation,
   opts: MaterializeOptions,
 ): Promise<MaterializeResult> {
-  const uuid = opts.uuid ?? defaultUuid;
   const now = opts.now ?? defaultNow;
   const log = opts.log ?? noopLog;
-
-  const teamId = uuid();
-  const teamDir = path.join(opts.teamsDir, teamId);
-  const teamConfigPath = path.join(teamDir, 'config.json');
+  const provisionTeam = opts.provisionTeam ?? defaultProvisionTeam;
   const createdAt = now().toISOString();
+  const teamName = humanizeTemplateName(recommendation.templateId);
 
   log(
-    `[materialize-team] would materialize team for template "${recommendation.templateId}" with ${recommendation.agents.length} agents (id=${teamId})`,
+    `[materialize-team] materializing template "${recommendation.templateId}" (${recommendation.agents.length} recommended agents)`,
   );
 
-  // 1. Write the team config.
-  const config = buildTeamConfig(recommendation, teamId, createdAt);
-  await fs.mkdir(teamDir, { recursive: true });
-  await fs.writeFile(teamConfigPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  // 1. Provision a live, persisted, template-backed team when possible.
+  let teamId: string;
+  let memberCount: number;
+  let teamConfigPath = '';
+  let provisioned: boolean;
+
+  let live: ProvisionedTeam | null = null;
+  try {
+    live = await provisionTeam(recommendation, teamName, opts.ownerUserId, opts.parentTeamId);
+  } catch (err) {
+    // Tier-gated template, missing registry, or storage error — don't dead-end
+    // the orc; drop to the minimal fallback with a warning.
+    log(
+      `[materialize-team] WARN live provisioning failed for template "${recommendation.templateId}" ` +
+        `(${err instanceof Error ? err.message : String(err)}) — falling back to a minimal team`,
+    );
+  }
+
+  if (live) {
+    teamId = live.teamId;
+    memberCount = live.memberCount;
+    provisioned = true;
+    log(
+      `[materialize-team] provisioned LIVE team id=${teamId} (${memberCount} members) from template "${recommendation.templateId}"`,
+    );
+  } else {
+    // Fallback: template not registered / provisioning unavailable. Write a
+    // minimal stub config so the orc still has a team to talk about.
+    const uuid = opts.uuid ?? defaultUuid;
+    teamId = uuid();
+    const teamDir = path.join(opts.teamsDir, teamId);
+    teamConfigPath = path.join(teamDir, 'config.json');
+    const config = buildTeamConfig(recommendation, teamId, createdAt);
+    memberCount = recommendation.agents.length;
+    provisioned = false;
+    await fs.mkdir(teamDir, { recursive: true });
+    await fs.writeFile(teamConfigPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+    log(
+      `[materialize-team] wrote MINIMAL fallback config id=${teamId} ` +
+        `(template "${recommendation.templateId}" not provisionable)`,
+    );
+  }
 
   // 2. Flip the project onboarding-complete flag.
-  const flag = { onboardingComplete: true, completedAt: createdAt };
+  const flag = { onboardingComplete: true, completedAt: createdAt, teamId };
   await fs.mkdir(path.dirname(opts.projectFlagPath), { recursive: true });
-  await fs.writeFile(
-    opts.projectFlagPath,
-    JSON.stringify(flag, null, 2) + '\n',
-    'utf8',
-  );
+  await fs.writeFile(opts.projectFlagPath, JSON.stringify(flag, null, 2) + '\n', 'utf8');
 
   log(`[materialize-team] flipped onboardingComplete = true at ${opts.projectFlagPath}`);
 
@@ -158,6 +216,8 @@ export async function materializeTeam(
     onboardingComplete: true,
     recommendation,
     projectFlagPath: opts.projectFlagPath,
+    memberCount,
+    provisioned,
   };
 }
 
@@ -166,8 +226,59 @@ export async function materializeTeam(
 // =============================================================================
 
 /**
- * Build the minimal v0 team config. Members are derived 1:1 from the
- * recommendation's agents list.
+ * Default team provisioner: create a live, persisted team from the
+ * recommendation's template via the same path `onboarding-provision.service.ts`
+ * uses. Lazy-imports the singletons so this module stays dependency-light and
+ * unit-testable (callers inject a fake `provisionTeam` instead).
+ *
+ * @param recommendation - The confirmed recommendation (carries `templateId`).
+ * @param teamName - Human-readable team name to assign.
+ * @param ownerUserId - Owner principal, or undefined for OSS single-user mode.
+ * @returns The persisted team id + member count, or `null` when the template
+ *          is not registered (caller falls back to a minimal stub).
+ * @throws Propagates a tier-gating error from `createTeamFromTemplate` (the
+ *         caller catches it and falls back).
+ */
+async function defaultProvisionTeam(
+  recommendation: TeamRecommendation,
+  teamName: string,
+  ownerUserId: string | undefined,
+  parentTeamId: string | undefined,
+): Promise<ProvisionedTeam | null> {
+  const { TemplateService } = await import('../../template/template.service.js');
+  const { StorageService } = await import('../../core/storage.service.js');
+
+  const result = TemplateService.getInstance().createTeamFromTemplate(
+    recommendation.templateId,
+    teamName,
+  );
+  if (!result) return null;
+
+  // Attribute to the authenticated principal (multi-tenant). Undefined in OSS
+  // single-user mode leaves the team unscoped (legacy behaviour).
+  if (ownerUserId !== undefined) {
+    result.team.ownerUserId = ownerUserId;
+  }
+
+  // Link to the parent team when this is a child in a nested hierarchy (P3).
+  if (parentTeamId !== undefined) {
+    result.team.parentTeamId = parentTeamId;
+  }
+
+  await StorageService.getInstance().saveTeam(result.team);
+
+  return { teamId: result.team.id, memberCount: result.memberCount };
+}
+
+/**
+ * Build the minimal FALLBACK team config. Members are derived 1:1 from the
+ * recommendation's agents list, inactive with empty prompts. Only used when
+ * live provisioning is unavailable.
+ *
+ * @param rec - The recommendation to materialize.
+ * @param teamId - The generated team id.
+ * @param createdAt - ISO creation timestamp.
+ * @returns A plain config object ready to JSON-serialize.
  */
 function buildTeamConfig(
   rec: TeamRecommendation,
@@ -197,10 +308,10 @@ function buildTeamConfig(
 
 /**
  * Convert a kebab-case template id → human team name
- * (`"dtc-viral-content-team"` → `"Dtc Viral Content Team"`). The full
- * personalisation pass happens post-Mon when we wire into
- * `onboarding-provision.service.ts` — that service already builds
- * proper names.
+ * (`"dtc-viral-content-team"` → `"Dtc Viral Content Team"`).
+ *
+ * @param templateId - The kebab-case template id.
+ * @returns A title-cased, space-separated name.
  */
 function humanizeTemplateName(templateId: string): string {
   return templateId
@@ -211,6 +322,9 @@ function humanizeTemplateName(templateId: string): string {
 
 /**
  * Convert a kebab-case role → human display name.
+ *
+ * @param role - The kebab-case role id.
+ * @returns A title-cased, space-separated name.
  */
 function humanizeRoleName(role: string): string {
   return role
@@ -220,22 +334,29 @@ function humanizeRoleName(role: string): string {
 }
 
 /**
- * Default UUID generator. Uses Node's `crypto.randomUUID` so we don't
- * pull in a dep, and so the output is deterministic-shaped.
+ * Default UUID generator (fallback stub only).
+ *
+ * @returns A random UUID string.
  */
 function defaultUuid(): string {
-  // Lazy require to keep the import surface minimal and avoid loading
-  // `node:crypto` at module load.
   const { randomUUID } = require('node:crypto') as typeof import('node:crypto');
   return randomUUID();
 }
 
-/** Default clock — wall-clock time. */
+/**
+ * Default clock — wall-clock time.
+ *
+ * @returns The current Date.
+ */
 function defaultNow(): Date {
   return new Date();
 }
 
-/** Default log sink — drops the message on the floor. */
+/**
+ * Default log sink — drops the message on the floor.
+ *
+ * @param _message - Ignored.
+ */
 function noopLog(_message: string): void {
   /* intentional no-op */
 }

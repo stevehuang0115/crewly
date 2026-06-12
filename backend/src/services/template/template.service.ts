@@ -28,6 +28,21 @@ const logger = LoggerService.getInstance().createComponentLogger('TemplateServic
 /** Default path to templates directory */
 const DEFAULT_TEMPLATES_DIR = resolve(process.cwd(), 'config/templates');
 
+/**
+ * Convert a kebab-case role id into a human display name used as a member's
+ * default name when a roles-format template omits an explicit `defaultName`
+ * (e.g. `"team-lead"` → `"Team Lead"`).
+ *
+ * @param roleId - The kebab-case role identifier.
+ * @returns A title-cased, space-separated name.
+ */
+function humanizeRoleId(roleId: string): string {
+  return roleId
+    .split('-')
+    .map((p) => (p.length ? p[0].toUpperCase() + p.slice(1) : p))
+    .join(' ');
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -456,10 +471,64 @@ export class TemplateService {
       const content = readFileSync(filePath, 'utf-8');
       const data = JSON.parse(content);
 
-      // Legacy format has id, name, description, members[]
-      if (!data.name || !Array.isArray(data.members)) return;
-
+      if (!data.name) return;
       const id = data.id ?? fileName.replace('.json', '');
+
+      // Default verification pipeline for flat templates that omit one.
+      const defaultPipeline = {
+        name: 'Manual Review',
+        steps: [{
+          id: 'manual',
+          name: 'Manual Review',
+          description: 'Team leader reviews output manually',
+          method: 'manual_review',
+          critical: true,
+          config: {},
+        }],
+        passPolicy: 'all',
+        maxRetries: 1,
+      } as TeamTemplate['verificationPipeline'];
+
+      // New roles-format flat template (e.g. pragmatic-mvp-dev-team.json): the
+      // `roles` array is already in TeamTemplate shape. Load it directly so the
+      // template's real hierarchy (hierarchyLevel / canDelegate / reportsTo),
+      // skills and runtime survive. Previously these files were silently SKIPPED
+      // because the loader only accepted `members[]`, leaving every roles-format
+      // template — the only ones that define a delegating leader — unregistered.
+      if (Array.isArray(data.roles)) {
+        const rolesFromTemplate: TemplateRole[] = data.roles.map((r: Record<string, unknown>) => ({
+          ...(r as object),
+          role: String(r.role ?? 'developer'),
+          label: String(r.label ?? r.role ?? 'Member'),
+          defaultName: String(r.defaultName ?? humanizeRoleId(String(r.role ?? 'member'))),
+          count: typeof r.count === 'number' ? r.count : 1,
+          hierarchyLevel: typeof r.hierarchyLevel === 'number' ? r.hierarchyLevel : 2,
+          canDelegate: r.canDelegate === true,
+          defaultSkills: Array.isArray(r.defaultSkills) ? (r.defaultSkills as string[]) : [],
+        })) as TemplateRole[];
+
+        const rolesTemplate: TeamTemplate = {
+          id,
+          name: data.name,
+          description: data.description ?? '',
+          category: data.category ?? 'custom',
+          version: data.version ?? '0.1.0',
+          hierarchical: typeof data.hierarchical === 'boolean'
+            ? data.hierarchical
+            : rolesFromTemplate.some((r) => r.canDelegate),
+          roles: rolesFromTemplate,
+          defaultRuntime: data.defaultRuntime ?? 'claude-code',
+          verificationPipeline: data.verificationPipeline ?? defaultPipeline,
+          ...(typeof data.requiredTier === 'string' ? { requiredTier: data.requiredTier } : {}),
+          ...(Array.isArray(data.tags) ? { tags: data.tags } : {}),
+        };
+        this.templates.set(id, rolesTemplate);
+        return;
+      }
+
+      // Legacy members[] format (e.g. web-dev-team.json): convert members→roles.
+      if (!Array.isArray(data.members)) return;
+
       const roles: TemplateRole[] = data.members.map((m: { name: string; role: string; systemPrompt?: string }, i: number) => ({
         role: m.role ?? 'developer',
         label: m.name ?? `Member ${i + 1}`,

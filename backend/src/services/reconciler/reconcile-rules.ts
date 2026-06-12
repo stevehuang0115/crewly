@@ -440,6 +440,87 @@ export function detectTTLExpiredWorkItems(
 }
 
 // ---------------------------------------------------------------------------
+// Rule: Detect Unverified WorkItems (verification enforcement — P1)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a `done_by_worker` WorkItem may await TL verification before the
+ * reconciler escalates it to the orchestrator for a verdict. Deliberately far
+ * shorter than the 24h TTL fallback (which silently auto-`verified`s as a last
+ * resort) so unverified work gets a REAL verdict opportunity long before it
+ * could be implicitly accepted. Default 2 hours.
+ */
+export const DEFAULT_VERIFY_ESCALATE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Metadata flag the reconciler stamps once it has escalated a WorkItem for
+ * overdue verification, so the rule fires exactly once per item (no per-tick
+ * re-nudge spam). Exported so the reconciler service and tests share the key.
+ */
+export const VERIFY_ESCALATED_AT_KEY = 'verifyEscalatedAt';
+
+/**
+ * Detect WorkItems the worker reported done but the Team Leader has NOT
+ * verified within the deadline — the verification-enforcement gap.
+ *
+ * Background: a `done_by_worker` item sits awaiting a TL verdict
+ * (`done_by_worker → verified | rejected`). If the TL never acts, the only
+ * thing that eventually moves it is the 24h TTL rule, which treats
+ * "no-objection" as IMPLICIT ACCEPTANCE (auto-`verified`) — i.e. unverified
+ * work silently passes. That breaks the "verify → reject → iterate" loop the
+ * autonomous harness depends on.
+ *
+ * This rule surfaces such items so the reconciler can ESCALATE them to the
+ * orchestrator for an explicit verdict (which then either accepts, or rejects
+ * → the existing `rejected → queued` rework loop). It does NOT change status
+ * itself (the only legal edges are verified/rejected, and the verdict is the
+ * orc's to make) and it skips items already escalated (via
+ * {@link VERIFY_ESCALATED_AT_KEY}) so it fires once per item.
+ *
+ * Pure + deterministic for unit testing.
+ *
+ * @param workItems - All WorkItems to scan.
+ * @param nowMs - Current time in ms (injectable for tests). Defaults to now.
+ * @param escalateAfterMs - Awaiting-verification age before escalation.
+ *   Defaults to {@link DEFAULT_VERIFY_ESCALATE_MS}.
+ * @returns The unverified items needing escalation + their ids.
+ *
+ * @example
+ * ```ts
+ * const { items } = detectUnverifiedWorkItems(pool, Date.now());
+ * for (const wi of items) await escalateVerificationToOrc(wi);
+ * ```
+ */
+export function detectUnverifiedWorkItems(
+  workItems: WorkItem[],
+  nowMs: number = Date.now(),
+  escalateAfterMs: number = DEFAULT_VERIFY_ESCALATE_MS,
+): { items: WorkItem[]; unverifiedIds: string[] } {
+  const items: WorkItem[] = [];
+  const unverifiedIds: string[] = [];
+
+  for (const wi of workItems) {
+    if (wi.status !== 'done_by_worker') continue;
+
+    // Fire once per item — skip anything the reconciler already escalated.
+    const meta = wi.metadata as Record<string, unknown> | undefined;
+    if (meta && meta[VERIFY_ESCALATED_AT_KEY]) continue;
+
+    // Age since the worker reported done (when it entered done_by_worker).
+    const awaitingSinceIso = wi.completedAt ?? wi.startedAt ?? wi.createdAt;
+    const awaitingSince = new Date(awaitingSinceIso).getTime();
+    if (!Number.isFinite(awaitingSince)) continue;
+
+    if (nowMs - awaitingSince > escalateAfterMs) {
+      items.push(wi);
+      unverifiedIds.push(wi.id);
+    }
+  }
+
+  return { items, unverifiedIds };
+}
+
+// ---------------------------------------------------------------------------
 // Rule: Recover Blocked WorkItems
 // ---------------------------------------------------------------------------
 

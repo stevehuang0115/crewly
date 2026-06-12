@@ -116,7 +116,8 @@ import { CronTaskService } from './services/workflow/cron-task.service.js';
 import { ReconcilerService, type ReconcilerDataProvider } from './services/reconciler/reconciler.service.js';
 import { LiveReconcilerDataProvider } from './services/reconciler/reconciler-data-provider.js';
 import { setReconcilerService } from './controllers/reconciler/reconciler.controller.js';
-import { FissionGuardService, type FissionDataProvider } from './services/fission/fission-guard.service.js';
+import { FissionGuardService, type FissionDataProvider, type BudgetChecker, createFailOpenBudgetChecker } from './services/fission/fission-guard.service.js';
+import { BudgetService } from './services/autonomous/budget.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
 import { ProjectMemoryService } from './services/memory/project-memory.service.js';
@@ -944,7 +945,25 @@ void (async () => {
 					},
 				};
 
-				const fissionService = FissionGuardService.init(fissionDataProvider);
+				// P5 budget ceiling: wire the BudgetService into the fission budget
+				// gate so an unattended run can't create unbounded (and unbounded-cost)
+				// sub-tasks. Fail-open on a budget-service error so a transient hiccup
+				// never halts all work; a real over-budget verdict hard-stops creation.
+				let budgetChecker: BudgetChecker | undefined;
+				try {
+					const budgetSvc = BudgetService.getInstance();
+					// Fire-and-forget init — the checker fails open until it completes,
+					// so we don't need to (and can't, in this sync block) await it.
+					void budgetSvc.initialize().catch(() => { /* fail-open */ });
+					budgetChecker = createFailOpenBudgetChecker(budgetSvc);
+					fissionLogger.info('Fission budget gate wired to BudgetService');
+				} catch (budgetErr) {
+					fissionLogger.warn('BudgetService unavailable — fission budget gate stays open', {
+						error: budgetErr instanceof Error ? budgetErr.message : String(budgetErr),
+					});
+				}
+
+				const fissionService = FissionGuardService.init(fissionDataProvider, budgetChecker);
 				setFissionGuardService(fissionService);
 				fissionLogger.info('FissionGuardService initialized');
 			} catch (fissionErr) {

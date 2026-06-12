@@ -28,6 +28,11 @@ import {
   materializeTeam,
   type MaterializeOptions,
 } from '../../services/orchestrator/onboarding/materialize-team.js';
+import {
+  synthesizeHierarchyPlan,
+  materializeHierarchy,
+  type HierarchyPlan,
+} from '../../services/orchestrator/onboarding/synthesize-hierarchy.js';
 import type { TeamRecommendation } from '../../services/orchestrator/onboarding/recommend-team.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
@@ -150,6 +155,85 @@ export async function materializeTeamRoute(
   }
 }
 
+/**
+ * POST /api/orchestrator/onboarding/synthesize-hierarchy
+ *
+ * Body: `{ industry, scale, tasks, maxSubteams? }` (a {@link BusinessContext}
+ * plus an optional branching cap).
+ *
+ * Returns the {@link HierarchyPlan} for the goal — either a single flat team
+ * (no children, <2 parallel streams) or a parent coordination team plus one
+ * child team per detected stream. PURE — nothing is created; the orc shows the
+ * plan to the user for approval and then calls `materialize-hierarchy`.
+ *
+ * Returns 200 with `{ success, plan }`; 400 on malformed input.
+ */
+export async function synthesizeHierarchyRoute(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const ctx = parseBusinessContext(req.body);
+    if (!ctx.ok) {
+      res.status(400).json({ success: false, error: ctx.error });
+      return;
+    }
+    const maxSubteams =
+      typeof req.body?.maxSubteams === 'number' ? req.body.maxSubteams : undefined;
+    const plan = synthesizeHierarchyPlan(ctx.value, { maxSubteams });
+    res.status(200).json({ success: true, plan });
+  } catch (err) {
+    logger.error('synthesize-hierarchy route failed', { err });
+    next(err);
+  }
+}
+
+/**
+ * POST /api/orchestrator/onboarding/materialize-hierarchy
+ *
+ * Body: `{ plan: HierarchyPlan, teamsDir?, projectFlagPath? }` — the plan the
+ * user approved (echoed back from `synthesize-hierarchy`).
+ *
+ * Instantiates the parent team, then each child team linked to the parent via
+ * `parentTeamId`, all through the live P0 provisioning path. Returns 200 with
+ * the created team ids; 400 on a malformed plan; 500 on a hard failure
+ * creating the PARENT (a child fallback is surfaced via `provisioned:false`,
+ * not an error).
+ */
+export async function materializeHierarchyRoute(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const parsed = parseHierarchyPlan(req.body?.plan);
+    if (!parsed.ok) {
+      res.status(400).json({ success: false, error: parsed.error });
+      return;
+    }
+    const opts: MaterializeOptions = {
+      teamsDir:
+        typeof req.body?.teamsDir === 'string' && req.body.teamsDir.length > 0
+          ? req.body.teamsDir
+          : defaultTeamsDir(),
+      projectFlagPath:
+        typeof req.body?.projectFlagPath === 'string' && req.body.projectFlagPath.length > 0
+          ? req.body.projectFlagPath
+          : defaultProjectFlagPath(),
+      log: (m: string) => logger.info(m),
+    };
+    const result = await materializeHierarchy(parsed.value, opts);
+    res.status(200).json({ success: true, result });
+  } catch (err) {
+    logger.error('materialize-hierarchy route failed', { err });
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // =============================================================================
 // Parsers
 // =============================================================================
@@ -252,6 +336,49 @@ function parseRecommendation(body: unknown): ParseResult<TeamRecommendation> {
       agents,
       reasoning: r.reasoning,
       source: r.source,
+    },
+  };
+}
+
+/**
+ * Validate a {@link HierarchyPlan} round-tripped from `synthesize-hierarchy`:
+ * a parent recommendation plus zero or more `{stream, recommendation}` child
+ * nodes, each validated with {@link parseRecommendation}.
+ *
+ * @param body - The `plan` field of the request body.
+ * @returns The validated plan or a descriptive parse error.
+ */
+function parseHierarchyPlan(body: unknown): ParseResult<HierarchyPlan> {
+  if (!body || typeof body !== 'object') {
+    return { ok: false, error: 'plan must be an object' };
+  }
+  const p = body as Record<string, unknown>;
+
+  const parent = parseRecommendation(p.parent);
+  if (!parent.ok) {
+    return { ok: false, error: `plan.parent: ${parent.error}` };
+  }
+
+  const rawChildren = Array.isArray(p.children) ? p.children : [];
+  const children: { stream: string; recommendation: TeamRecommendation }[] = [];
+  for (let i = 0; i < rawChildren.length; i++) {
+    const node = rawChildren[i] as Record<string, unknown> | undefined;
+    if (!node || typeof node.stream !== 'string' || node.stream.length === 0) {
+      return { ok: false, error: `plan.children[${i}].stream must be a non-empty string` };
+    }
+    const rec = parseRecommendation(node.recommendation);
+    if (!rec.ok) {
+      return { ok: false, error: `plan.children[${i}].recommendation: ${rec.error}` };
+    }
+    children.push({ stream: node.stream, recommendation: rec.value });
+  }
+
+  return {
+    ok: true,
+    value: {
+      parent: parent.value,
+      children,
+      rationale: typeof p.rationale === 'string' ? p.rationale : '',
     },
   };
 }

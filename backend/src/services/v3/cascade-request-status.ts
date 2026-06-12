@@ -66,11 +66,28 @@ export interface CascadeNotifier {
   }): void;
 }
 
+/**
+ * Optional hook fired exactly once when the cascade completes a Request
+ * (transitions it to `done` — meaning all its children were actually
+ * VERIFIED per the P2 acceptance gate). The production wiring uses this to
+ * deliver the FINAL deliverable judgment to the orchestrator: "the whole
+ * deliverable is assembled and every piece is verified — do the final
+ * holistic check that it meets the original goal and is usable, then accept
+ * or reopen with specific gaps." This is the top-level "is the software
+ * actually usable" verdict the autonomous harness needs. Best-effort —
+ * the cascade never fails on a hook error.
+ */
+export interface RequestCompletedHook {
+  (request: Request, childItems: WorkItem[]): void | Promise<void>;
+}
+
 export interface CascadeDeps {
   requestService: CascadeRequestService;
   taskPool: CascadeTaskPool;
   logger?: ComponentLogger;
   notifier?: CascadeNotifier;
+  /** Fired once when a Request completes (→ done). See {@link RequestCompletedHook}. */
+  onRequestCompleted?: RequestCompletedHook;
 }
 
 /**
@@ -107,13 +124,42 @@ function isSlaResolvedByVerifiedReply(metadata: Record<string, unknown> | undefi
 }
 
 /**
+ * Fire the optional {@link CascadeDeps.onRequestCompleted} hook, best-effort.
+ * A hook error never breaks the cascade — the Request status change has
+ * already been persisted by the time this runs.
+ *
+ * @param deps - Cascade deps (hook may be absent).
+ * @param request - The completed Request (original pre-cascade object).
+ * @param childItems - The Request's child WorkItems.
+ * @param logger - Component logger for the non-fatal warning.
+ */
+async function fireRequestCompleted(
+  deps: CascadeDeps,
+  request: Request,
+  childItems: WorkItem[],
+  logger: ComponentLogger,
+): Promise<void> {
+  if (!deps.onRequestCompleted) return;
+  try {
+    await deps.onRequestCompleted(request, childItems);
+  } catch (err) {
+    logger.debug('onRequestCompleted hook failed (non-fatal)', {
+      requestId: request.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Recompute Request.status from the aggregate state of its child WIs
  * and persist any change.
  *
  * Cascade rules — match the original V3DataService implementation so
  * behaviour is unchanged for paths that already cascade correctly:
  *
- *   - All children done/verified/done_by_worker → done
+ *   - All children done/verified                 → done
+ *     (P2: `done_by_worker` does NOT count — see the acceptance-gate note
+ *      at the rule below; unverified children keep the Request `running`)
  *   - Any child running                          → running
  *   - All children queued/scheduled              → no change
  *     (work delegated, not started — Request keeps current status)
@@ -181,7 +227,15 @@ export async function cascadeRequestStatus(
 
     let newStatus: RequestStatus;
     const allQueued = statuses.every((s) => s === 'queued' || s === 'scheduled');
-    if (statuses.every((s) => s === 'done' || s === 'verified' || s === 'done_by_worker')) {
+    // P2 acceptance gate: a Request is only `done` when its children are
+    // actually VERIFIED (or `done`), NOT merely `done_by_worker`. A
+    // `done_by_worker` child is awaiting a TL/orc verdict — counting it as
+    // complete would mark the deliverable done before it was ever accepted
+    // (the Request-level silent-pass). Such children keep the Request
+    // `running` (pending verification); P1's verify-enforcement escalates them
+    // to the orc for a verdict (→ verified, or rejected → rework), after which
+    // this cascade completes the Request honestly.
+    if (statuses.every((s) => s === 'done' || s === 'verified')) {
       newStatus = 'done';
     } else if (statuses.some((s) => s === 'running')) {
       newStatus = 'running';
@@ -213,6 +267,9 @@ export async function cascadeRequestStatus(
         status: newStatus,
         previousStatus: request.status,
       });
+      if (newStatus === 'done') {
+        await fireRequestCompleted(deps, request, childItems, logger);
+      }
       return;
     }
 
@@ -237,6 +294,7 @@ export async function cascadeRequestStatus(
         status: newStatus,
         previousStatus: request.status,
       });
+      await fireRequestCompleted(deps, request, childItems, logger);
       return;
     }
 

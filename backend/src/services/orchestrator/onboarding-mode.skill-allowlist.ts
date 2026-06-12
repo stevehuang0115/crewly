@@ -40,6 +40,8 @@ export const ONBOARDING_SKILL_ALLOWLIST: readonly string[] = Object.freeze([
   // Onboarding-only skills — turn discovery answers into a real team.
   'recommend-team',
   'materialize-team',
+  // P3: nested hierarchy for complex multi-stream goals (plan + materialize).
+  'synthesize-hierarchy',
 
   // Escalation — surface to TL on blocker.
   'report-status',

@@ -54,13 +54,17 @@ function makeDeps(opts: {
   request?: Request;
   pool?: WorkItem[];
   updateThrows?: Error;
-} = {}): { deps: CascadeDeps; requestStore: Map<string, Request>; updates: Array<[string, Partial<Request>]>; notified: Array<{ event: string; payload: unknown }> } {
+} = {}): { deps: CascadeDeps; requestStore: Map<string, Request>; updates: Array<[string, Partial<Request>]>; notified: Array<{ event: string; payload: unknown }>; completed: Array<{ requestId: string; childCount: number }> } {
   const requestStore = new Map<string, Request>();
   if (opts.request) requestStore.set(opts.request.id, opts.request);
   const updates: Array<[string, Partial<Request>]> = [];
   const notified: Array<{ event: string; payload: unknown }> = [];
+  const completed: Array<{ requestId: string; childCount: number }> = [];
 
   const deps: CascadeDeps = {
+    onRequestCompleted: (request, childItems) => {
+      completed.push({ requestId: request.id, childCount: childItems.length });
+    },
     requestService: {
       getById: async (id: string) => requestStore.get(id) ?? null,
       update: async (id: string, patch: Partial<Request>) => {
@@ -80,7 +84,7 @@ function makeDeps(opts: {
     },
   };
 
-  return { deps, requestStore, updates, notified };
+  return { deps, requestStore, updates, notified, completed };
 }
 
 describe('cascadeRequestStatus', () => {
@@ -107,14 +111,14 @@ describe('cascadeRequestStatus', () => {
     expect(updates).toEqual([]);
   });
 
-  it('cascades to done when every child landed on a success terminal', async () => {
+  it('cascades to done when every child landed on a verified terminal', async () => {
     const r = makeRequest({ status: 'running' });
     const { deps, updates, notified } = makeDeps({
       request: r,
       pool: [
         makeWI({ id: 'a', status: 'done' }),
         makeWI({ id: 'b', status: 'verified' }),
-        makeWI({ id: 'c', status: 'done_by_worker' }),
+        makeWI({ id: 'c', status: 'verified' }),
       ],
     });
     await cascadeRequestStatus(r.id, deps);
@@ -122,6 +126,50 @@ describe('cascadeRequestStatus', () => {
     expect(notified).toEqual([
       { event: 'v3:request_updated', payload: { requestId: 'req-1', status: 'done', previousStatus: 'running' } },
     ]);
+  });
+
+  it('P2 acceptance gate: a done_by_worker (unverified) child keeps the Request running, not done', async () => {
+    // The deliverable must NOT be marked done while a child still awaits a TL
+    // verdict — that would be the Request-level silent-pass. It stays running;
+    // P1's verify-enforcement escalates the unverified child for a verdict,
+    // after which a later cascade completes the Request.
+    const r = makeRequest({ status: 'running' });
+    const { deps, updates } = makeDeps({
+      request: r,
+      pool: [
+        makeWI({ id: 'a', status: 'verified' }),
+        makeWI({ id: 'b', status: 'done_by_worker' }),
+      ],
+    });
+    await cascadeRequestStatus(r.id, deps);
+    // running → running is a no-op write OR a running update; either way NOT done.
+    expect(updates.some(([, u]) => u.status === 'done')).toBe(false);
+  });
+
+  it('P2b: fires onRequestCompleted with the child items when the Request completes', async () => {
+    const r = makeRequest({ status: 'running' });
+    const { deps, completed } = makeDeps({
+      request: r,
+      pool: [
+        makeWI({ id: 'a', status: 'verified' }),
+        makeWI({ id: 'b', status: 'verified' }),
+      ],
+    });
+    await cascadeRequestStatus(r.id, deps);
+    expect(completed).toEqual([{ requestId: 'req-1', childCount: 2 }]);
+  });
+
+  it('P2b: does NOT fire onRequestCompleted while the Request is still running (unverified child)', async () => {
+    const r = makeRequest({ status: 'running' });
+    const { deps, completed } = makeDeps({
+      request: r,
+      pool: [
+        makeWI({ id: 'a', status: 'verified' }),
+        makeWI({ id: 'b', status: 'done_by_worker' }),
+      ],
+    });
+    await cascadeRequestStatus(r.id, deps);
+    expect(completed).toEqual([]);
   });
 
   it('cascades to cancelled when every child is cancelled or failed', async () => {

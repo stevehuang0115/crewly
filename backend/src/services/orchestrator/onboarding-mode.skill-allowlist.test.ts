@@ -16,7 +16,7 @@ import {
 } from './onboarding-mode.skill-allowlist.js';
 
 describe('ONBOARDING_SKILL_ALLOWLIST', () => {
-  it('contains exactly the six expected skills', () => {
+  it('contains exactly the seven expected skills', () => {
     // Order doesn't matter for this assertion — sort for stability.
     const sorted = [...ONBOARDING_SKILL_ALLOWLIST].sort();
     expect(sorted).toEqual(
@@ -27,6 +27,7 @@ describe('ONBOARDING_SKILL_ALLOWLIST', () => {
         'record-learning',
         'remember',
         'report-status',
+        'synthesize-hierarchy',
       ].sort(),
     );
   });

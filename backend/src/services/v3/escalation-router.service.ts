@@ -430,6 +430,191 @@ export class EscalationRouterService {
   }
 
   /**
+   * Deliver the FINAL deliverable judgment to the orchestrator when a Request
+   * completes — every child WorkItem was verified (P2 acceptance gate), so the
+   * whole deliverable is assembled and per-piece accepted. Asks the orc (the
+   * top-level TL) to do the holistic check the per-piece verification cannot:
+   * does the ASSEMBLED result meet the original goal and is it actually usable?
+   * Accept to close, or reopen with concrete gaps (which re-delegates rework).
+   *
+   * Best-effort — enqueues a self-contained orc message; never throws.
+   *
+   * @param request - The completed Request (id + goal/title for the summary).
+   * @param childItems - Its child WorkItems (title + status, for the summary).
+   * @returns Resolves when the message is enqueued (or silently on failure).
+   */
+  async requestFinalDeliverableReview(
+    request: { id: string; title?: string; description?: string; objective?: string },
+    childItems: Array<{ title: string; status: string }>,
+  ): Promise<void> {
+    const total = childItems.length;
+    const verified = childItems.filter((c) => c.status === 'verified' || c.status === 'done').length;
+
+    const sanitize = (raw: string, maxLen: number): string =>
+      String(raw)
+        .replace(/\[[0-9;]*m/g, '')
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/\[(CHAT|NOTIFY|EVENT|ESCALATION)/gi, '[​$1')
+        .slice(0, maxLen);
+
+    const goal = sanitize(request.objective ?? request.title ?? request.description ?? '(unspecified)', 300);
+    const itemLines = childItems.slice(0, 20).map((c) => `  • [${c.status}] ${sanitize(c.title, 120)}`);
+
+    const lines = [
+      '[ESCALATION] Deliverable complete — your final verdict needed.',
+      '',
+      `Request: ${request.id}`,
+      `Goal:    ${goal}`,
+      `Pieces:  ${verified}/${total} work items verified`,
+      '',
+      'Completed work items:',
+      ...itemLines,
+      ...(total > 20 ? [`  … and ${total - 20} more`] : []),
+      '',
+      'Every piece passed TL verification. Now do the FINAL holistic check the',
+      'per-piece checks cannot: does the ASSEMBLED deliverable meet the original',
+      'goal and is it actually usable end-to-end?',
+      '  (a) If yes → accept and close; report the result to the user.',
+      '  (b) If it falls short → reopen with the specific gaps; the team reworks.',
+    ];
+
+    try {
+      const { MessageQueueService } = await import('../messaging/message-queue.service.js');
+      const mq = new MessageQueueService(process.cwd());
+      mq.enqueue({
+        content: lines.join('\n'),
+        conversationId: `final-review-${request.id}-${Date.now()}`,
+        source: 'system_event',
+        sourceMetadata: {
+          type: 'escalation',
+          subtype: 'final_deliverable_review',
+          requestId: request.id,
+        },
+      });
+      this.logger.info('Routed final deliverable review to ORC via MessageQueue', {
+        requestId: request.id,
+        verified,
+        total,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to enqueue final deliverable review for ORC (non-fatal)', {
+        requestId: request.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Escalate a WorkItem whose worker reported done but whose Team Leader has
+   * NOT verified it within the deadline (verification-enforcement, P1).
+   *
+   * Asks the orchestrator to render an EXPLICIT verdict — verify/accept
+   * (→ verified) or reject (→ rejected → the existing rework loop) — so
+   * unverified work is never silently auto-accepted by the 24h TTL fallback
+   * (`pickTTLExpiryTarget('done_by_worker') → 'verified'`). Mirrors
+   * {@link escalateFailedWorkItem}: persists a `tl_verification` escalation
+   * targeted at the orchestrator and enqueues a self-contained orc-facing
+   * message. Best-effort — persistence/message failures are logged, not
+   * thrown, so the reconciler pass never strands on it.
+   *
+   * @param wi - The unverified WorkItem (only read).
+   * @param awaitingMs - How long it has awaited verification (for the message).
+   * @returns The escalation id, or null on a hard failure.
+   */
+  async escalateUnverifiedWorkItem(
+    wi: WorkItemForEscalation,
+    awaitingMs: number,
+  ): Promise<string | null> {
+    const escalationId = uuidv4();
+    const awaitingH = Math.max(1, Math.round(awaitingMs / 3_600_000));
+    const escalation: PendingEscalation = {
+      id: escalationId,
+      status: 'pending',
+      source: 'tl_verification',
+      target: 'orchestrator',
+      summary: `WorkItem "${wi.title}" awaiting TL verification for ~${awaitingH}h — your verdict needed`,
+      details: {
+        workItemId: wi.id,
+        title: wi.title,
+        type: wi.type,
+        target: wi.target ?? null,
+        awaitingMs,
+        requestId: wi.requestId ?? null,
+        missionId: wi.missionId ?? null,
+      },
+      workItemId: wi.id,
+      missionId: wi.missionId ?? undefined,
+      taskId: wi.parentWorkItemId ?? undefined,
+      raisedBy: 'reconciler',
+      raisedAt: new Date().toISOString(),
+    };
+
+    try {
+      await this.saveEscalation(escalation);
+    } catch (err) {
+      this.logger.warn('Failed to persist tl_verification escalation (non-fatal)', {
+        workItemId: wi.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const sanitize = (raw: string, maxLen: number): string =>
+      String(raw)
+        .replace(/\[[0-9;]*m/g, '')
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/\[(CHAT|NOTIFY|EVENT|ESCALATION)/gi, '[​$1')
+        .slice(0, maxLen);
+    const safeTitle = sanitize(wi.title, 200);
+
+    const lines = [
+      `[ESCALATION] WorkItem awaiting verification for ~${awaitingH}h — your verdict needed.`,
+      '',
+      'The worker reported this done, but the Team Leader has not verified it.',
+      'Do NOT let it pass unverified — render an explicit verdict:',
+      '',
+      `WorkItem: ${wi.id} "${safeTitle}"`,
+      `Type:     ${wi.type}`,
+      `Target:   ${wi.target ?? '(unassigned)'}`,
+      '',
+      `Parent Request: ${wi.requestId ?? '(none)'}`,
+      `Parent Mission: ${wi.missionId ?? '(none)'}`,
+      '',
+      'Actions:',
+      '  (a) Verify against the acceptance criteria (yourself or via the TL) → accept',
+      '  (b) If it falls short, reject with concrete fix instructions → the team reworks it',
+      '',
+      `Escalation id: ${escalationId}`,
+    ];
+
+    try {
+      const { MessageQueueService } = await import('../messaging/message-queue.service.js');
+      const mq = new MessageQueueService(process.cwd());
+      mq.enqueue({
+        content: lines.join('\n'),
+        conversationId: `verify-escalation-${wi.id}-${Date.now()}`,
+        source: 'system_event',
+        sourceMetadata: {
+          type: 'escalation',
+          subtype: 'tl_verification',
+          workItemId: wi.id,
+          escalationId,
+        },
+      });
+      this.logger.info('Routed tl_verification escalation to ORC via MessageQueue', {
+        workItemId: wi.id,
+        escalationId,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to enqueue tl_verification message for ORC (non-fatal)', {
+        workItemId: wi.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return escalationId;
+  }
+
+  /**
    * List all pending escalations.
    */
   async listPending(): Promise<PendingEscalation[]> {

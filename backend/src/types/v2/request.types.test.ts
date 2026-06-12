@@ -47,10 +47,11 @@ describe('Request Types', () => {
   });
 
   describe('INTENT_CATEGORIES', () => {
-    it('should contain all 9 categories', () => {
-      expect(INTENT_CATEGORIES).toHaveLength(9);
+    it('should contain all 10 categories', () => {
+      expect(INTENT_CATEGORIES).toHaveLength(10);
       expect(INTENT_CATEGORIES).toContain('query');
       expect(INTENT_CATEGORIES).toContain('code_change');
+      expect(INTENT_CATEGORIES).toContain('growth');
       expect(INTENT_CATEGORIES).toContain('other');
     });
   });

@@ -47,7 +47,33 @@ import {
   type CascadeRequestService,
   type CascadeTaskPool,
   type CascadeNotifier,
+  type RequestCompletedHook,
 } from './cascade-request-status.js';
+
+/**
+ * Default {@link RequestCompletedHook}: when a Request completes (all children
+ * verified — P2), deliver the FINAL deliverable judgment to the orchestrator
+ * via the EscalationRouter (P2b). Lazy-imports the router to avoid a static
+ * cycle. Best-effort; the cascade swallows any error.
+ *
+ * @param request - The completed Request.
+ * @param childItems - Its child WorkItems.
+ */
+async function defaultRequestCompletedHook(
+  request: { id: string; title?: string; description?: string },
+  childItems: WorkItem[],
+): Promise<void> {
+  const { EscalationRouterService } = await import('./escalation-router.service.js');
+  await EscalationRouterService.getInstance().requestFinalDeliverableReview(
+    {
+      id: request.id,
+      title: request.title,
+      description: request.description,
+      objective: (request as { objective?: string }).objective,
+    },
+    childItems.map((wi) => ({ title: wi.title, status: wi.status })),
+  );
+}
 
 /**
  * Events that may signal a Request needs re-cascading.
@@ -77,6 +103,8 @@ export interface RequestCascadeSubscriberDependencies {
   /** Optional notifier — production wiring passes the same EventBus so
    * `v3:request_updated` reaches existing UI subscribers. */
   notifier?: CascadeNotifier;
+  /** Optional final-deliverable hook (P2b). Defaults to the EscalationRouter. */
+  onRequestCompleted?: RequestCompletedHook;
   logger?: ComponentLogger;
 }
 
@@ -85,6 +113,7 @@ export class RequestCascadeSubscriber {
   private readonly requestService: CascadeRequestService;
   private readonly taskPool: CascadeSubscriberTaskPool;
   private readonly notifier?: CascadeNotifier;
+  private readonly onRequestCompleted: RequestCompletedHook;
   private readonly logger: ComponentLogger;
 
   private unsubscribers: InProcessUnsubscribe[] = [];
@@ -97,6 +126,7 @@ export class RequestCascadeSubscriber {
     this.requestService = deps.requestService;
     this.taskPool = deps.taskPool;
     this.notifier = deps.notifier;
+    this.onRequestCompleted = deps.onRequestCompleted ?? defaultRequestCompletedHook;
     this.logger =
       deps.logger ?? LoggerService.getInstance().createComponentLogger('RequestCascadeSubscriber');
   }
@@ -185,6 +215,7 @@ export class RequestCascadeSubscriber {
       taskPool: this.taskPool,
       logger: this.logger,
       notifier: this.notifier,
+      onRequestCompleted: this.onRequestCompleted,
     });
   }
 }

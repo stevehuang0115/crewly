@@ -67,6 +67,7 @@ export type IntentCategory =
   | 'review'
   | 'planning'
   | 'communication'
+  | 'growth'
   | 'other';
 
 /** All valid IntentCategory values. */
@@ -79,6 +80,7 @@ export const INTENT_CATEGORIES: readonly IntentCategory[] = [
   'review',
   'planning',
   'communication',
+  'growth',
   'other',
 ] as const;
 

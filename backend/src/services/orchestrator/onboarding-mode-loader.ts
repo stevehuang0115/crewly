@@ -48,6 +48,7 @@ export const ONBOARDING_FALLBACK_ALLOWLIST: readonly string[] = Object.freeze([
   'record-learning',
   'recommend-team',
   'materialize-team',
+  'synthesize-hierarchy',
 ]);
 
 /**
